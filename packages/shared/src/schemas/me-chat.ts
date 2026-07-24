@@ -295,15 +295,13 @@ export const meChatRowSchema = z.object({
    */
   liveActivity: liveActivitySchema.nullable(),
   /**
-   * Speakers in this chat whose composite status is `failed` — i.e. reachable
-   * and either their per-(agent,chat) session is `errored` OR their global
-   * runtime is in `error` (the same `errored` input `getChatAgentStatuses`
-   * folds into `failed`; an unreachable agent is `offline`, not `failed`, so
-   * those are excluded). Drives the chat-list "failed" attention signal
-   * (red `!` badge) without opening the chat. Per-chat, derived at query
-   * time (no schema migration). `.default([])` for version skew: an older
-   * server build that predates this field would otherwise blank the row on a
-   * web-ahead deploy.
+   * Speakers in this chat whose per-(agent,chat) status is errored, independent
+   * of reachability. An errored unreachable agent displays as `offline`, but
+   * remains in this set so disconnects do not clear or repeatedly re-add the
+   * chat-list recovery signal (red `!` badge). Per-chat, derived at query time
+   * (no schema migration). `.default([])` for version skew: an older server
+   * build that predates this field would otherwise blank the row on a web-ahead
+   * deploy.
    */
   failedAgentIds: z.array(z.string()).default([]),
   /**
@@ -485,6 +483,17 @@ export type ChatSourceCount = z.infer<typeof chatSourceCountSchema>;
 
 export const listMeChatSourceCountsQuerySchema = z.object({
   engagement: chatEngagementViewSchema.default("active"),
+  /**
+   * Keep aggregate badges in the same membership projection as a
+   * `listMeChats({ watching: true })` result.
+   */
+  watching: z.preprocess((v) => {
+    if (typeof v === "string") {
+      if (v === "1" || v.toLowerCase() === "true") return true;
+      if (v === "0" || v.toLowerCase() === "false" || v === "") return false;
+    }
+    return v;
+  }, z.boolean().optional()),
 });
 export type ListMeChatSourceCountsQuery = z.infer<typeof listMeChatSourceCountsQuerySchema>;
 

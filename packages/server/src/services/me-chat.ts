@@ -618,7 +618,10 @@ async function enrichMeChatRows(
       }
       // failed — speaker-filtered AND narrowed to "mine" (R1): a peer's broken
       // agent in a shared chat no longer pins my row to "Needs attention".
-      if (isSpeaker && s.main === "failed" && isMine) failed.push(s.agentId);
+      // Use the errored axis rather than composite `main`: reachability makes an
+      // errored agent display as offline, but recovery attention must remain
+      // until the per-chat error itself clears.
+      if (isSpeaker && s.errored && isMine) failed.push(s.agentId);
       // busy — speakers with composite `working` (the D-axis truth from
       // `agent_chat_sessions.runtime_state`). NOT narrowed to mine — "someone
       // is working" is informational, not an attention signal.
@@ -1099,7 +1102,8 @@ export async function leaveMeChat(db: Database, chatId: string, humanAgentId: st
  * Filtering matches `listMeChats` for the corresponding tab so the badges
  * cannot drift from the list: same membership join, same `parent_chat_id IS
  * NULL` and `organization_id` scopes, same engagement view, same
- * `chat_user_state.unread_mention_count` source.
+ * `chat_user_state.unread_mention_count` source, and the optional watcher-only
+ * membership projection.
  */
 export async function listMeChatSourceCounts(
   db: Database,
@@ -1108,6 +1112,7 @@ export async function listMeChatSourceCounts(
   query: ListMeChatSourceCountsQuery,
 ): Promise<MeChatSourceCounts> {
   const engagementPredicate = ENGAGEMENT_VIEW_PREDICATE[query.engagement];
+  const filterWatchingOnly = query.watching === true;
 
   // GROUP BY 1 (select-list position) instead of the `source` alias or the
   // full CASE: `GROUP BY <alias>` doesn't transitively treat columns inside
@@ -1139,6 +1144,7 @@ export async function listMeChatSourceCounts(
         ON cus.chat_id = c.id AND cus.agent_id = ${humanAgentId}
      WHERE c.parent_chat_id IS NULL
        AND c.organization_id = ${organizationId}
+       AND (${!filterWatchingOnly}::bool OR cm.access_mode = 'watcher')
        AND ${engagementPredicate}
      GROUP BY 1
   `)) as unknown as Array<{
