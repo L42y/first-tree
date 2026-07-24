@@ -20,14 +20,6 @@ function appendAsyncScript(src: string): void {
   document.head.appendChild(tag);
 }
 
-function applyStoredTheme(): void {
-  const storedTheme = localStorage.getItem("theme");
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  if (storedTheme === "dark" || (!storedTheme && prefersDark)) {
-    document.documentElement.classList.add("dark");
-  }
-}
-
 function bootstrapProductionAnalytics(): void {
   const analyticsWindow = window as GtagWindow;
   analyticsWindow.dataLayer ??= [];
@@ -40,6 +32,8 @@ function bootstrapProductionAnalytics(): void {
   gtag("js", new Date());
   gtag("config", "G-BHG918MZ02", {
     send_page_view: false,
+    allow_google_signals: false,
+    allow_ad_personalization_signals: false,
     linker: { domains: ["first-tree.ai", PROD_HOST] },
   });
 
@@ -52,5 +46,8 @@ function bootstrapProductionAnalytics(): void {
   appendAsyncScript("https://www.clarity.ms/tag/xj2f9syfng");
 }
 
-applyStoredTheme();
 if (window.location.hostname === PROD_HOST) bootstrapProductionAnalytics();
+
+// Keep this as a dynamic import. It guarantees Zod is in jitless mode before
+// any Shared schema or application module can evaluate.
+void import("./main.js");

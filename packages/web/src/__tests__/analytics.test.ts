@@ -5,6 +5,7 @@ import { sanitizePath } from "../analytics.js";
 
 const indexHtml = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
 const bootstrapSource = readFileSync(new URL("../bootstrap.ts", import.meta.url), "utf8");
+const themeInitSource = readFileSync(new URL("../../public/theme-init.js", import.meta.url), "utf8");
 
 describe("production gtag bootstrap", () => {
   it("queues the official Arguments object so gtag.js processes commands", () => {
@@ -19,12 +20,34 @@ describe("production gtag bootstrap", () => {
     const scripts = [...document.scripts];
     expect(scripts).toHaveLength(2);
     expect(scripts.every((script) => script.hasAttribute("src"))).toBe(true);
-    expect(indexHtml).toContain('src="/src/bootstrap.ts"');
+    expect(scripts.map((script) => script.getAttribute("src"))).toEqual(["/theme-init.js", "/src/bootstrap.ts"]);
+    expect(scripts.every((script) => script.textContent?.trim() === "")).toBe(true);
   });
 
-  it("disables Zod runtime code generation before the application entry", () => {
+  it("disables Zod runtime code generation before importing the application", () => {
     expect(bootstrapSource).toContain("configureZod({ jitless: true })");
-    expect(indexHtml.indexOf('src="/src/bootstrap.ts"')).toBeLessThan(indexHtml.indexOf('src="/src/main.tsx"'));
+    expect(bootstrapSource.indexOf("configureZod({ jitless: true })")).toBeLessThan(
+      bootstrapSource.indexOf('import("./main.js")'),
+    );
+    expect(indexHtml).not.toContain('src="/src/main.tsx"');
+  });
+
+  it("keeps the theme initializer blocking, external, and storage-safe", () => {
+    const document = new Window().document;
+    document.write(indexHtml);
+    const [themeScript] = [...document.scripts];
+
+    expect(themeScript?.getAttribute("src")).toBe("/theme-init.js");
+    expect(themeScript?.hasAttribute("async")).toBe(false);
+    expect(themeScript?.hasAttribute("defer")).toBe(false);
+    expect(themeScript?.hasAttribute("type")).toBe(false);
+    expect(themeInitSource).toContain('localStorage.getItem("theme")');
+    expect(themeInitSource).toContain("catch");
+  });
+
+  it("keeps GA4 advertising endpoints disabled under the exact CSP allowlist", () => {
+    expect(bootstrapSource).toContain("allow_google_signals: false");
+    expect(bootstrapSource).toContain("allow_ad_personalization_signals: false");
   });
 });
 

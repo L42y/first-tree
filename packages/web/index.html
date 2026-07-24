@@ -8,13 +8,14 @@
     <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin />
     <title>First Tree</title>
-    <!-- Theme, GA4, and Clarity bootstrap live in an external module so the
-         enforced CSP never needs inline-script exceptions. Analytics remain
-         hostname-gated to production inside the module. -->
-    <script type="module" src="/src/bootstrap.ts"></script>
+    <!-- Blocking and external: apply the persisted theme before first paint
+         without weakening script-src for inline code. -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root" data-clarity-mask="true"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <!-- This single module configures Zod's CSP-safe interpreter path and
+         production analytics before it imports the React application. -->
+    <script type="module" src="/src/bootstrap.ts"></script>
   </body>
 </html>

@@ -5,6 +5,11 @@ import type { Config } from "./config.js";
 export const PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=()";
 
 const CLOUD_PRODUCTION_HOST = "cloud.first-tree.ai";
+export const CLARITY_COLLECTOR_ORIGINS = Array.from(
+  { length: 26 },
+  (_, index) => `https://${String.fromCharCode("a".charCodeAt(0) + index)}.clarity.ms`,
+);
+
 export const CLOUD_PRODUCTION_CSP_ORIGINS = {
   scriptOrigins: [
     "https://www.googletagmanager.com",
@@ -13,13 +18,22 @@ export const CLOUD_PRODUCTION_CSP_ORIGINS = {
     "https://static.cloudflareinsights.com",
   ],
   connectOrigins: [
+    "https://analytics.google.com",
+    "https://region1.analytics.google.com",
+    "https://region1.google-analytics.com",
     "https://www.google-analytics.com",
-    "https://e.clarity.ms",
+    "https://www.googletagmanager.com",
+    ...CLARITY_COLLECTOR_ORIGINS,
+    "https://cloudflareinsights.com",
     "https://o4510502633209856.ingest.us.sentry.io",
   ],
   imageOrigins: [
     "https://avatars.githubusercontent.com",
     "https://lh3.googleusercontent.com",
+    "https://region1.analytics.google.com",
+    "https://region1.google-analytics.com",
+    "https://www.google-analytics.com",
+    "https://www.googletagmanager.com",
     "https://c.clarity.ms",
     "https://c.bing.com",
   ],
@@ -52,11 +66,14 @@ export function buildHelmetOptions(config: Config): FastifyHelmetOptions {
 
   return {
     global: true,
+    enableCSPNonces: false,
     contentSecurityPolicy: {
       useDefaults: false,
+      reportOnly: false,
       directives: {
-        defaultSrc: ["'self'"],
-        baseUri: ["'self'"],
+        defaultSrc: ["'none'"],
+        baseUri: ["'none'"],
+        childSrc: ["'none'"],
         connectSrc: [
           "'self'",
           ...(wsOrigin ? [wsOrigin] : []),
@@ -68,12 +85,14 @@ export function buildHelmetOptions(config: Config): FastifyHelmetOptions {
         frameSrc: ["'none'"],
         imgSrc: ["'self'", "data:", "blob:", ...(configured?.imageOrigins ?? defaults.imageOrigins)],
         manifestSrc: ["'self'"],
-        mediaSrc: ["'self'", "data:", "blob:"],
+        mediaSrc: ["'none'"],
         objectSrc: ["'none'"],
         scriptSrc: ["'self'", ...(configured?.scriptOrigins ?? defaults.scriptOrigins)],
         scriptSrcAttr: ["'none'"],
+        // The current React UI uses inline style attributes extensively.
+        // This exception does not authorize inline or evaluated scripts.
         styleSrc: ["'self'", "'unsafe-inline'"],
-        workerSrc: ["'self'", "blob:"],
+        workerSrc: ["'none'"],
       },
     },
     // Cross-origin isolation is explicitly outside this hardening change. It

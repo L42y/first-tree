@@ -44,6 +44,9 @@ browser CSP enforcement, WebSocket behavior, deployed analytics, remote avatars,
   CSP violation, blocked-resource, mixed-content, or uncaught application error in the browser console.
 - Every allowed cross-origin request matches an exact configured origin. No wildcard or unobserved analytics/CDN origin
   is needed, and non-production hosts make no production analytics requests.
+- Clarity may select any exact `a.clarity.ms` through `z.clarity.ms` collector without a violation. GA4 uses only its
+  core analytics endpoints because Google Signals and ad-personalization signals are disabled; no advertising origin is
+  required.
 
 ## Expected Result
 
