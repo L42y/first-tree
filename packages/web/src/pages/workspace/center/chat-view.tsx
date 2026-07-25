@@ -2660,7 +2660,7 @@ export function ChatView({
   // where the user's viewport bottom was the last time they left
   // this chat. React Query's cache holds it after first read so a
   // chat re-open does not block on IDB.
-  const { data: readState } = useQuery({
+  const { data: readState, isLoading: readStateLoading } = useQuery({
     queryKey: ["chat-read-state", chatId],
     queryFn: () => getReadState(chatId),
     staleTime: Infinity,
@@ -3044,20 +3044,30 @@ export function ChatView({
   //    at the last message's bottom, leaving in-progress tool_call
   //    workgroups (events that arrived after messages) below the
   //    fold. Added the stable follow-up scroll.
+  //  - yuezengwu manual report → PR 1997's mobile Work surface landed
+  //    summarized chats at the timeline top (scrollTop = 0) so the
+  //    in-flow Current state card was visible on entry. Agent-owned
+  //    chats almost always carry a summary, so mobile opens were
+  //    stuck at the top of every chat. Reverted to the anchor/bottom
+  //    model on all presentations; the card stays reachable by
+  //    scrolling up, and its "Updated" badge flags fresh summaries.
+  //  - baixiaohang PR 2017 review → the one-shot guard could commit
+  //    the bottom fallback while the IDB read-state lookup was still
+  //    in flight (cached messages render first, `readState` still
+  //    `undefined`), permanently missing the stored anchor on a cold
+  //    open. Landing now also waits for the read-state query to
+  //    resolve; a resolved-but-empty row still falls through to the
+  //    bottom branch.
   const landedForChatRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (itemCount === 0) return;
     if (landedForChatRef.current === chatId) return;
-    // The Work detail's mobile entry context is the in-flow Current state
-    // card. Wait for the real detail instead of committing the list-cache
-    // stub's empty description, then land the single timeline scroller at the
-    // top when a summary exists so the card is genuinely visible on entry.
-    if (useMobileDetailsSheet && chatDetailFetching) return;
+    // The persisted anchor arrives asynchronously (IndexedDB); do not
+    // commit the one-shot landing until the query has resolved, or the
+    // bottom fallback would win the race on cold opens.
+    if (readStateLoading) return;
     landedForChatRef.current = chatId;
-    if (useMobileDetailsSheet && (chatDetail?.description?.trim().length ?? 0) > 0) {
-      const container = scrollContainerRef.current;
-      if (container) container.scrollTop = 0;
-    } else if (bottomVisibleResolution) {
+    if (bottomVisibleResolution) {
       // Land the stored anchor at the viewport bottom. Any messages
       // newer than the anchor sit below the fold; the pill will
       // surface them.
@@ -3073,9 +3083,7 @@ export function ChatView({
   }, [
     chatId,
     itemCount,
-    useMobileDetailsSheet,
-    chatDetailFetching,
-    chatDetail?.description,
+    readStateLoading,
     bottomVisibleResolution,
     scrollToMessageImmediate,
     scrollToBottomImmediate,
