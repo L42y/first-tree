@@ -1,3 +1,4 @@
+import { CONTEXT_TREE_RECOVERY_METADATA_KEY, SERVER_AUTHORED_METADATA_KEY } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { createChat } from "../services/chat.js";
 import { sendMessage } from "../services/message.js";
@@ -62,5 +63,32 @@ describe("sendMessage strips metadata.systemSender from untrusted callers", () =
 
     const stored = message.metadata as Record<string, unknown>;
     expect(stored.systemSender).toBe("github");
+    expect(stored[SERVER_AUTHORED_METADATA_KEY]).toBe(true);
+  });
+
+  it("rejects caller-supplied server provenance and recovery markers", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const { agent: human } = await createTestAgent(app, { name: `strip-h3-${uid}`, type: "human" });
+    const { agent: peer } = await createTestAgent(app, { name: `strip-p3-${uid}` });
+    const chat = await createChat(app.db, human.uuid, { type: "group", participantIds: [peer.uuid] });
+    const base = {
+      source: "api" as const,
+      format: "text" as const,
+      content: "hello",
+    };
+
+    await expect(
+      sendMessage(app.db, chat.id, human.uuid, {
+        ...base,
+        metadata: { [SERVER_AUTHORED_METADATA_KEY]: true, mentions: [peer.uuid] },
+      }),
+    ).rejects.toThrow(/derived by the server/i);
+    await expect(
+      sendMessage(app.db, chat.id, human.uuid, {
+        ...base,
+        metadata: { [CONTEXT_TREE_RECOVERY_METADATA_KEY]: "forged", mentions: [peer.uuid] },
+      }),
+    ).rejects.toThrow(/reserved/i);
   });
 });

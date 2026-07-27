@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { SERVER_AUTHORED_METADATA_KEY } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
@@ -113,6 +114,7 @@ describe("POST /me/onboarding/kickoff", () => {
     expect(msg?.metadata).toEqual({
       mentions: [agent.uuid],
       addressedAgentIds: [agent.uuid],
+      [SERVER_AUTHORED_METADATA_KEY]: true,
     });
 
     const deliveries = await app.db
@@ -435,6 +437,7 @@ describe("POST /me/onboarding/kickoff", () => {
       contextTreeRecoveryFingerprint: expect.any(String),
       mentions: [agent.uuid],
       addressedAgentIds: [agent.uuid],
+      [SERVER_AUTHORED_METADATA_KEY]: true,
     });
     const deliveries = await app.db
       .select()
@@ -484,6 +487,7 @@ describe("POST /me/onboarding/kickoff", () => {
     expect(chatMessages[1]?.metadata).toMatchObject({
       contextTreeRecoveryFingerprint: expect.any(String),
       addressedAgentIds: [agent.uuid],
+      [SERVER_AUTHORED_METADATA_KEY]: true,
     });
     const recoveryDeliveries = await app.db
       .select()

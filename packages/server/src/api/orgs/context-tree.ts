@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  CONTEXT_TREE_RECOVERY_METADATA_KEY,
   type ContextTreeActiveBinding,
   type ContextTreeRecoveryAction,
   contextTreeActiveBindingSchema,
@@ -104,7 +105,7 @@ export async function orgContextTreeRoutes(app: FastifyInstance): Promise<void> 
       organizationId: scope.organizationId,
       targetAgentId: body.agentUuid,
       bootstrap: recovery?.content ?? TREE_SETUP_BOOTSTRAP,
-      ...(recovery ? { bootstrapMetadata: { contextTreeRecoveryFingerprint: recovery.fingerprint } } : {}),
+      ...(recovery ? { bootstrapMetadata: { [CONTEXT_TREE_RECOVERY_METADATA_KEY]: recovery.fingerprint } } : {}),
       topic: TREE_SETUP_TOPIC,
       // A setup chat is an ordinary private task chat, so its stable identity
       // must stay inside the initiating human + selected private-agent ACL.

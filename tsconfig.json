@@ -19,6 +19,7 @@
     { "path": "packages/shared" },
     { "path": "packages/server" },
     { "path": "packages/client" },
+    { "path": "packages/product-metrics" },
     { "path": "apps/cli" },
     { "path": "packages/web" }
   ],

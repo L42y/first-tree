@@ -1,4 +1,4 @@
-import { CRON_TRIGGER_METADATA_KEY } from "@first-tree/shared";
+import { CRON_TRIGGER_METADATA_KEY, SERVER_AUTHORED_METADATA_KEY } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { describe, expect, it, vi } from "vitest";
@@ -192,6 +192,7 @@ describe("cron jobs integration", () => {
       return meta?.[CRON_TRIGGER_METADATA_KEY] != null;
     });
     expect(cronMessages).toHaveLength(1);
+    expect(cronMessages[0]?.metadata[SERVER_AUTHORED_METADATA_KEY]).toBe(true);
   });
 
   it("skips when previous trigger is still pending", async () => {

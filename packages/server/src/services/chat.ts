@@ -68,6 +68,10 @@ export type CreateTaskChatInput = {
   initialMessage: SendMessage;
   /** Trusted internal capability forwarded only for Context Reviewer bootstrap. */
   allowContextReviewRun?: boolean;
+  /** Trusted internal capability forwarded for a Context Tree recovery bootstrap. */
+  allowContextTreeRecovery?: boolean;
+  /** Persist durable server-authored provenance on the opening message. */
+  markInitialMessageServerAuthored?: boolean;
   /** Return session/kick effects to a caller that owns a wider transaction. */
   deferPostCommitEffects?: boolean;
   source: "agent" | "manual";
@@ -409,6 +413,8 @@ async function createTaskChat(db: Database, input: CreateTaskChatInput): Promise
     options: {
       normalizeMentionsInContent: input.source === "agent",
       allowContextReviewRun: input.allowContextReviewRun,
+      allowContextTreeRecovery: input.allowContextTreeRecovery,
+      markServerAuthored: input.markInitialMessageServerAuthored,
     },
     participants: allSpeakerRows.map(toSendIntentParticipant),
   });
@@ -510,6 +516,8 @@ async function createTaskChat(db: Database, input: CreateTaskChatInput): Promise
         deferPostCommitEffects: true,
         normalizeMentionsInContent: input.source === "agent",
         allowContextReviewRun: input.allowContextReviewRun,
+        allowContextTreeRecovery: input.allowContextTreeRecovery,
+        markServerAuthored: input.markInitialMessageServerAuthored,
       });
       if (!sent.deferredPostCommitEffects) {
         throw new Error("Keyed task-chat bootstrap did not return deferred post-commit effects");
@@ -573,6 +581,8 @@ async function createTaskChat(db: Database, input: CreateTaskChatInput): Promise
   const { message, recipients } = await sendMessage(db, chatId, effectiveSenderId, initialMessage, {
     normalizeMentionsInContent: input.source === "agent",
     allowContextReviewRun: input.allowContextReviewRun,
+    allowContextTreeRecovery: input.allowContextTreeRecovery,
+    markServerAuthored: input.markInitialMessageServerAuthored,
   });
   const participants = await db
     .select()

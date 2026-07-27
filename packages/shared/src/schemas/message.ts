@@ -198,6 +198,19 @@ export type MessagePurpose = z.infer<typeof messagePurposeSchema>;
  */
 export const AGENT_FINAL_TEXT_METADATA_KEY = "agentFinalText";
 export const RUNTIME_NOTICE_METADATA_KEY = "runtimeNotice";
+/**
+ * Durable provenance stamped by the message service for content authored by a
+ * trusted server path but persisted in another participant's voice. Callers
+ * cannot write this key through message metadata; the service derives it from
+ * an internal-only send option.
+ */
+export const SERVER_AUTHORED_METADATA_KEY = "serverAuthored";
+/**
+ * Idempotency marker for a server-generated Context Tree recovery diagnosis.
+ * It is reserved at the message boundary because the message is persisted in
+ * the owning human agent's voice.
+ */
+export const CONTEXT_TREE_RECOVERY_METADATA_KEY = "contextTreeRecoveryFingerprint";
 
 /** True when a stored message's metadata marks it as an agent final-text mirror. */
 export function isAgentFinalTextMetadata(metadata: Record<string, unknown> | null | undefined): boolean {

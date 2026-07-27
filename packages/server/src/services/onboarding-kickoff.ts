@@ -1,4 +1,5 @@
 import {
+  CONTEXT_TREE_RECOVERY_METADATA_KEY,
   type LandingCampaignActionContext,
   parseLandingCampaignTrialChatMetadata,
   type SendMessage,
@@ -189,7 +190,7 @@ export async function appendTreeSetupRecoveryMessage(
       .orderBy(desc(messages.createdAt), desc(messages.id))
       .limit(1);
     if (
-      latest?.metadata.contextTreeRecoveryFingerprint === args.recovery.fingerprint ||
+      latest?.metadata[CONTEXT_TREE_RECOVERY_METADATA_KEY] === args.recovery.fingerprint ||
       latest?.content === args.recovery.content
     ) {
       return null;
@@ -202,10 +203,14 @@ export async function appendTreeSetupRecoveryMessage(
       {
         format: "text",
         content: args.recovery.content,
-        metadata: { contextTreeRecoveryFingerprint: args.recovery.fingerprint },
+        metadata: { [CONTEXT_TREE_RECOVERY_METADATA_KEY]: args.recovery.fingerprint },
         source: "api",
       },
-      { addressedToAgentIds: [args.targetAgentId], deferPostCommitEffects: true },
+      {
+        addressedToAgentIds: [args.targetAgentId],
+        allowContextTreeRecovery: true,
+        deferPostCommitEffects: true,
+      },
     );
     if (!sent.deferredPostCommitEffects) {
       throw new Error("Context Tree recovery send did not return deferred post-commit effects");
@@ -325,6 +330,8 @@ export async function kickoffOnboarding(db: Database, args: KickoffOnboardingArg
     initialMessage,
     source: "manual",
     onboardingKickoffKey: args.kickoffKey,
+    allowContextTreeRecovery: args.bootstrapMetadata?.[CONTEXT_TREE_RECOVERY_METADATA_KEY] !== undefined,
+    markInitialMessageServerAuthored: true,
     beforeInitialMessage: args.onChatReady,
   });
 

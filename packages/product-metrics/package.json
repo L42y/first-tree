@@ -1,0 +1,35 @@
+{
+  "name": "@first-tree/product-metrics",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic offline product funnel, activity, retention, and interaction-depth reporting.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agent-team-foundation/first-tree.git",
+    "directory": "packages/product-metrics"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "bin": {
+    "first-tree-product-metrics": "./dist/cli.mjs"
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts src/cli.ts --format esm --dts",
+    "report": "node dist/cli.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.4",
+    "@types/node": "^22.16.0",
+    "@vitest/coverage-v8": "3.2.4",
+    "tsdown": "^0.21.4",
+    "vitest": "^3.2.0"
+  }
+}

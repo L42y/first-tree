@@ -847,6 +847,7 @@ export {
   CLI_BODY_ORIGINS,
   type CliBodyOrigin,
   type ClientMessage,
+  CONTEXT_TREE_RECOVERY_METADATA_KEY,
   clientMessageSchema,
   isAgentFinalTextMetadata,
   isRuntimeNoticeMetadata,
@@ -867,6 +868,7 @@ export {
   type RequestResolution,
   RUNTIME_NOTICE_METADATA_KEY,
   requestResolutionSchema,
+  SERVER_AUTHORED_METADATA_KEY,
   type SendMessage,
   sendMessageSchema,
 } from "./schemas/message.js";
