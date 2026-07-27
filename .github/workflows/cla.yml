@@ -37,9 +37,16 @@ jobs:
           path-to-signatures: signatures/version1/cla.json
           path-to-document: https://gist.githubusercontent.com/bestony/5a32ba8d5daa68b95adab6a9bba9c1cc/raw/dffb751c6fcb4c0d3b6df087e2353f149ab0e24b/icla.md
           branch: cla-signatures
+          # Add GitHub usernames from a verified CCLA Schedule A here.
           allowlist: "*[bot]"
           custom-notsigned-prcomment: >-
-            Thank you for your contribution. Before it can be accepted, $you must be covered by the [First Tree ICLA v1.0](https://gist.githubusercontent.com/bestony/5a32ba8d5daa68b95adab6a9bba9c1cc/raw/dffb751c6fcb4c0d3b6df087e2353f149ab0e24b/icla.md). Sign individually with the exact comment below. If you contribute for an organization, an authorized signatory can instead complete the [First Tree CCLA v1.0](https://gist.githubusercontent.com/bestony/5a32ba8d5daa68b95adab6a9bba9c1cc/raw/dffb751c6fcb4c0d3b6df087e2353f149ab0e24b/ccla.md) and send it to legal@first-tree.ai for verification.
+            Thank you for your contribution. Before it can be accepted, $you
+            must be covered by the [First Tree ICLA v1.0](https://gist.githubusercontent.com/bestony/5a32ba8d5daa68b95adab6a9bba9c1cc/raw/dffb751c6fcb4c0d3b6df087e2353f149ab0e24b/icla.md).
+            Sign individually with the exact comment below. If you contribute
+            for an organization, an authorized signatory can instead complete
+            the [First Tree CCLA v1.0](https://gist.githubusercontent.com/bestony/5a32ba8d5daa68b95adab6a9bba9c1cc/raw/dffb751c6fcb4c0d3b6df087e2353f149ab0e24b/ccla.md)
+            and send it to legal@first-tree.ai for verification.
           custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
           custom-allsigned-prcomment: All contributors are covered by the First Tree CLA.
           lock-pullrequest-aftermerge: true
+          suggest-recheck: true
