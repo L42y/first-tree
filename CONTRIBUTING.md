@@ -92,8 +92,11 @@ exempt.
 
 The `CLA` workflow records ICLA signature metadata in
 `signatures/version1/cla.json` on the dedicated `cla-signatures` branch. That
-branch is only a signature ledger; source changes continue to go through pull
-requests against `main`.
+record includes the GitHub username and stable account, comment, repository,
+and pull-request identifiers; the signature timestamp; and the profile name
+and public email exposed by GitHub at signing time. The branch is only a
+signature ledger; source changes continue to go through pull requests against
+`main`.
 
 ## Filing issues
 

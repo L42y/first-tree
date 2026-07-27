@@ -8,7 +8,8 @@ on:
 
 concurrency:
   group: cla-signatures-${{ github.repository }}
-  cancel-in-progress: false
+  # GitHub supports a FIFO queue here; actionlint v1.7.12 does not yet know it.
+  queue: max
 
 permissions: {}
 
@@ -29,6 +30,32 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      - name: Enforce verified commit range
+        id: commit-range
+        if: >-
+          github.event_name != 'pull_request_target' ||
+          github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+
+          commit_count="$(gh api \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '.commits')"
+
+          if [[ ! "${commit_count}" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Unable to verify CLA commit range::GitHub returned an invalid commit count."
+            exit 1
+          fi
+
+          if (( commit_count > 100 )); then
+            echo "::error title=CLA verification limit exceeded::This pull request has ${commit_count} commits, but the pinned CLA action can verify at most 100. Squash or rebase it to 100 commits or fewer."
+            exit 1
+          fi
+
       - name: Verify contributor signatures
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
@@ -50,3 +77,81 @@ jobs:
           custom-allsigned-prcomment: All contributors are covered by the First Tree CLA.
           lock-pullrequest-aftermerge: true
           suggest-recheck: true
+
+      - name: Capture public profile fields in the signature record
+        if: >-
+          always() &&
+          steps.commit-range.outcome == 'success' &&
+          github.event_name == 'issue_comment' &&
+          github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SIGNATURE_BRANCH: cla-signatures
+          SIGNATURE_PATH: signatures/version1/cla.json
+          SIGNATURE_COMMENT_ID: ${{ github.event.comment.id }}
+          SIGNER_ID: ${{ github.event.comment.user.id }}
+          SIGNER_LOGIN: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${SIGNATURE_COMMENT_ID}" =~ ^[0-9]+$ ]] ||
+             [[ ! "${SIGNER_ID}" =~ ^[0-9]+$ ]]; then
+            echo "::error title=Unable to enrich CLA signature::GitHub returned an invalid signer or comment ID."
+            exit 1
+          fi
+
+          profile="$(gh api "users/${SIGNER_LOGIN}")"
+          profile_name="$(jq -c '.name' <<<"${profile}")"
+          profile_email="$(jq -c '.email' <<<"${profile}")"
+          ledger_response="$(gh api \
+            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}?ref=${SIGNATURE_BRANCH}")"
+          ledger_sha="$(jq -r '.sha' <<<"${ledger_response}")"
+          ledger="$(jq -r '.content' <<<"${ledger_response}" | base64 --decode)"
+
+          signature_count="$(jq \
+            --argjson signer_id "${SIGNER_ID}" \
+            '[.signedContributors[] | select(.id == $signer_id)] | length' \
+            <<<"${ledger}")"
+
+          if (( signature_count == 0 )); then
+            echo "::error title=Unable to enrich CLA signature::The signer was not found in the signature ledger."
+            exit 1
+          fi
+
+          updated_ledger="$(jq \
+            --argjson comment_id "${SIGNATURE_COMMENT_ID}" \
+            --argjson signer_id "${SIGNER_ID}" \
+            --argjson full_name "${profile_name}" \
+            --argjson public_email "${profile_email}" \
+            '.signedContributors |= map(
+              if .comment_id == $comment_id or
+                 (.id == $signer_id and
+                  ((has("full_name") and has("public_email")) | not))
+              then . + {
+                full_name: $full_name,
+                public_email: $public_email
+              }
+              else .
+              end
+            )' \
+            <<<"${ledger}")"
+
+          if [[ "${updated_ledger}" == "${ledger}" ]]; then
+            exit 0
+          fi
+
+          encoded_ledger="$(printf '%s\n' "${updated_ledger}" | base64 | tr -d '\n')"
+          payload="$(jq -n \
+            --arg message "Record public profile fields for @${SIGNER_LOGIN}" \
+            --arg content "${encoded_ledger}" \
+            --arg sha "${ledger_sha}" \
+            --arg branch "${SIGNATURE_BRANCH}" \
+            '{message: $message, content: $content, sha: $sha, branch: $branch}')"
+
+          gh api \
+            --method PUT \
+            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}" \
+            --input - \
+            <<<"${payload}" \
+            >/dev/null
