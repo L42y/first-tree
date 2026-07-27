@@ -155,3 +155,45 @@ jobs:
             --input - \
             <<<"${payload}" \
             >/dev/null
+
+      - name: Validate signature record completeness
+        if: >-
+          always() &&
+          steps.commit-range.outcome == 'success' &&
+          (github.event_name != 'pull_request_target' ||
+           github.event.action != 'closed')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SIGNATURE_BRANCH: cla-signatures
+          SIGNATURE_PATH: signatures/version1/cla.json
+        run: |
+          set -euo pipefail
+
+          ledger_response="$(gh api \
+            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}?ref=${SIGNATURE_BRANCH}")"
+          ledger="$(jq -r '.content' <<<"${ledger_response}" | base64 --decode)"
+
+          if ! jq -e '
+            if (.signedContributors | type) != "array" then
+              false
+            else
+              all(.signedContributors[];
+                ((.name | type) == "string") and
+                ((.name | length) > 0) and
+                ((.id | type) == "number") and
+                ((.comment_id | type) == "number") and
+                ((.created_at | type) == "string") and
+                ((.created_at | length) > 0) and
+                ((.repoId | type) == "number") and
+                ((.pullRequestNo | type) == "number") and
+                has("full_name") and
+                (.full_name == null or (.full_name | type) == "string") and
+                has("public_email") and
+                (.public_email == null or (.public_email | type) == "string")
+              )
+            end
+          ' <<<"${ledger}" >/dev/null; then
+            echo "::error title=Incomplete CLA signature ledger::Every ICLA record must contain the base signature evidence plus the public profile fields promised by the agreement."
+            exit 1
+          fi

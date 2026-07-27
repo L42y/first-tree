@@ -43,6 +43,11 @@ the default branch. Immediately after that pull request merges:
    blocked, the exact ICLA signing comment records the documented fields on
    `cla-signatures`, and the same `CLA` check then succeeds.
 
+Every non-closed workflow run validates the complete ledger after the upstream
+action and any profile enrichment. A queued rerun therefore cannot make the
+required check succeed when an ICLA record is missing either its base evidence
+or the profile fields promised by the agreement.
+
 If adding the required check fails, stop merges until an administrator restores
 the gate. Do not weaken or replace the existing required checks as a workaround.
 
