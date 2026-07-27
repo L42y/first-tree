@@ -181,7 +181,9 @@ describe("Kimi Code handler", () => {
       permission: "yolo",
     });
     expect(captures.create).not.toHaveProperty("model");
-    expect(captures.create?.roleAdditional).toContain("First Tree");
+    expect(captures.create?.roleAdditional).toContain(
+      "including greetings, thanks, acknowledgements, and simple questions",
+    );
     expect(fakeSession.prompts).toEqual(["[From: human-1]\n\ndo work"]);
     expect(events.some((item) => item.kind === "thinking")).toBe(true);
     expect(events).toContainEqual({ kind: "assistant_text", payload: { text: "hello from Kimi" } });
@@ -229,7 +231,9 @@ describe("Kimi Code handler", () => {
     await handler.resume(message("m2", "continue"), "kimi-session-2", makeContext([]), makeToken());
 
     expect(captures.resume).toMatchObject({ id: "kimi-session-2" });
-    expect(captures.resume?.roleAdditional).toContain("First Tree");
+    expect(captures.resume?.roleAdditional).toContain(
+      "including greetings, thanks, acknowledgements, and simple questions",
+    );
     expect(fakeSession.setPermission).toHaveBeenCalledWith("yolo");
     expect(fakeSession.setModel).toHaveBeenCalledWith("kimi-for-coding");
   });

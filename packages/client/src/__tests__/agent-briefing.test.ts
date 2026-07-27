@@ -394,7 +394,8 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
     expect(briefing).toContain("first-tree chat send");
     expect(briefing).toContain("first-tree chat ask");
     expect(briefing).toContain("first-tree chat update --description");
-    expect(briefing).toMatch(/Human message: finish with one/);
+    expect(briefing).toMatch(/Human message: every fresh human turn/);
+    expect(briefing).toMatch(/including greetings, thanks,\s+acknowledgements, and simple questions/);
     expect(briefing).toMatch(/Agent handoff: `first-tree chat send <agent>`/);
     expect(briefing).toMatch(/Do not send\s+courtesy acknowledgements to agents/);
     expect(briefing).toContain("-F <file>");
@@ -474,6 +475,8 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
     expect(communication).toMatch(/business action changes the workspace\s+or outside world/);
     expect(communication).toContain("Replying to a human is required, not optional");
     expect(communication).toContain("never to a\nfresh human-directed message");
+    expect(communication).toMatch(/including greetings, thanks, acknowledgements, and simple questions/);
+    expect(communication).toMatch(/native final text and console output are not delivered replies/);
     expect(communication).toContain("Blocking questions never ride inside plain `chat send`");
     expect(communication).toContain("route by dependency, not importance");
     expect(communication).toContain("chat update --description -");

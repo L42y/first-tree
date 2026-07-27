@@ -99,6 +99,8 @@ export function renderRuntimeOutputContract(): string {
     `- \`${bin} chat update --description "<status>"\` — record status`,
     "The console addresses the runtime; running one of these commands is what places your message in front of a teammate. Describing a reply in your output records words on the console, while running the command delivers them.",
     "",
+    `Every fresh human-directed turn requires an outbox action before you finish, including greetings, thanks, acknowledgements, and simple questions. Do not answer those cases only in the console or in your native final text: run \`${bin} chat send <human>\` for a reply, or \`${bin} chat ask <human>\` when your next step depends on their decision.`,
+    "",
     "So a request to hold off from acting scopes the business actions that change the workspace or the world, while, unless the instruction sets a narrower scope, a teammate-assigned task whose completion state is a pull request is the explicit request to create the task branch/worktree, commit and push only the scoped changes, and open that PR without amending existing commits, force-pushing, or carrying unrelated work unless separately asked; running a chat command delivers your words and changes nothing else, so it stays the way you finish a human-directed turn. (Replying to a human is required; an agent wake-up with nothing new to act on can end without a send.)",
     "</first-tree-runtime-contract>",
   ].join("\n");

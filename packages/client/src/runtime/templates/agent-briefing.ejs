@@ -85,9 +85,9 @@ You are running inside **First Tree**, a messaging platform for agent teams.
   not a teammate reply. This is your **console**.
 - Teammates are reached through the **outbox**: `<%- bin %> chat send`,
   `<%- bin %> chat ask`, and `<%- bin %> chat update`.
-- Human message: finish with one `<%- bin %> chat send <human>` unless blocked
-  on a human decision; then use `<%- bin %> chat ask <human>`. Progress/status
-  uses `<%- bin %> chat update --description`.
+- Human message: every fresh human turn — including greetings, thanks,
+  acknowledgements, and simple questions — finishes with one `<%- bin %> chat send <human>`
+  unless blocked on a decision; then use `<%- bin %> chat ask <human>`. Progress uses `<%- bin %> chat update --description`.
 - Agent handoff: `<%- bin %> chat send <agent>`; no courtesy acknowledgements.
 - Rich markdown bodies go through `-F <file>`, `-F -`, or
   `--description -`; never `JSON.stringify` a chat body.
@@ -165,7 +165,7 @@ reply transport for a human-directed turn.
 
 Replying to a human is required, not optional. The `no send` case applies
 only to agent no-op wake-ups or duplicate/system no-op turns, never to a
-fresh human-directed message.
+fresh human-directed message, including greetings, thanks, acknowledgements, and simple questions; native final text and console output are not delivered replies.
 Every `chat send` names a recipient; group chats reject no-recipient
 sends, and `@name` in content is not enough.
 Start separate work with `<%- bin %> chat create --to <name>` only when the

@@ -96,6 +96,10 @@ describe("renderRuntimeOutputContract", () => {
 
   it("scopes the outbox-completion rule to human-directed turns, preserving the agent no-op exception (codex review R5)", () => {
     expect(contract).toMatch(/the way you finish a human-directed turn/i);
+    expect(contract).toMatch(/Every fresh human-directed turn requires an outbox action before you finish/i);
+    expect(contract).toMatch(/including greetings, thanks, acknowledgements, and simple questions/i);
+    expect(contract).toMatch(/Do not answer those cases only in the console or in your native final text/i);
+    expect(contract).toMatch(/chat send <human>.*chat ask <human>/i);
     expect(contract).toMatch(/an agent wake-up with nothing new to act on can end without a send/i);
     // Must not broaden completion to every teammate-triggered turn — that would
     // contradict the agent no-courtesy-send loop guard.
