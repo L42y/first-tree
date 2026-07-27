@@ -1,7 +1,7 @@
 ---
 name: first-tree-welcome
-version: 1.2.4
-description: Use for a First Tree onboarding first chat, including when the opening message is only a simple question or greeting such as "hi", "hello", or "你好". Load this skill before replying in those cases and deliver the reply with `chat send`; provider final text alone does not reply to the human. Also use for natural onboarding messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree", and for the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for dedicated tree setup chats, ordinary chats outside onboarding, PR/MR reviews, repo scans, tree writes, or maintenance.
+version: 1.2.3
+description: Use for a First Tree onboarding first chat, especially natural opening messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree." Also covers the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for dedicated tree setup chats, ordinary chats, PR/MR reviews, repo scans, tree writes, or maintenance.
 ---
 
 # First Tree Welcome

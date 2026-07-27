@@ -197,9 +197,6 @@ describe("first-tree-welcome floor invariants", () => {
     expect(yamlDescription).toContain("PR/MR reviews");
     expect(skillDescription).not.toContain("PR reviews");
     expect(yamlDescription).not.toContain("PR reviews");
-    expect(skillDescription).toContain("simple question or greeting");
-    expect(skillDescription).toContain("deliver the reply with `chat send`");
-    expect(skillDescription).toContain("provider final text alone does not reply to the human");
     // Guard the specific retired trigger the drift-guard exists to catch.
     expect(yamlDescription).not.toContain("explicitly names first-tree-welcome");
     expect(yamlDescription).toContain("repo scans");
