@@ -34,7 +34,7 @@ member_owned_agents AS (
   FROM members AS member
   INNER JOIN agents AS agent
     ON agent.organization_id = member.organization_id
-    AND agent.manager_id = member.agent_id
+    AND agent.manager_id = member.id
     AND agent.uuid <> member.agent_id
     AND agent.type <> 'human'
   ORDER BY member.id, agent.created_at, agent.uuid
@@ -89,7 +89,7 @@ member_raw_evidence AS (
         AND member.onboarding_suppressed_at IS NOT NULL
         THEN 'skipped'
       WHEN target_agent.uuid IS NOT NULL
-        AND target_agent.manager_id = member.agent_id
+        AND target_agent.manager_id = member.id
         AND target_agent.created_at >= member.created_at
         THEN 'created'
       WHEN target_agent.uuid IS NOT NULL
@@ -238,7 +238,11 @@ global_users AS (
     path.client_ready_at,
     path.client_ready_mode,
     path.agent_ready_at,
-    path.agent_ready_mode,
+    CASE
+      WHEN path.agent_ready_at IS NOT NULL
+        THEN path.agent_ready_mode
+      ELSE NULL
+    END AS agent_ready_mode,
     CASE
       WHEN path.client_ready_at IS NOT NULL
         AND path.agent_ready_at IS NOT NULL

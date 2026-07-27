@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 type JourneyRow = {
   user_id: string;
   client_ready_mode: string | null;
+  agent_ready_at: Date | null;
   agent_ready_mode: string | null;
   first_user_message_at: Date | null;
 };
@@ -55,12 +56,16 @@ const schemaAndFixtures = `
     source text NOT NULL,
     metadata jsonb NOT NULL DEFAULT '{}'::jsonb
   );
+  ALTER TABLE agents
+    ADD CONSTRAINT agents_manager_id_fkey
+    FOREIGN KEY (manager_id) REFERENCES members(id);
 
   INSERT INTO users (id, created_at) VALUES
     ('u-normal', '2026-07-20T00:00:00Z'),
     ('u-bootstrap-only', '2026-07-20T01:00:00Z'),
     ('u-skip', '2026-07-20T02:00:00Z'),
-    ('u-cross-org', '2026-07-20T03:00:00Z');
+    ('u-cross-org', '2026-07-20T03:00:00Z'),
+    ('u-agent-only', '2026-07-20T04:00:00Z');
 
   INSERT INTO members (
     id, user_id, organization_id, agent_id, created_at,
@@ -72,7 +77,8 @@ const schemaAndFixtures = `
       'm-skip', 'u-skip', 'org-a', 'human-skip', '2026-07-20T02:01:00Z',
       NULL, '2026-07-20T02:02:00Z', 'invitee_skip'
     ),
-    ('m-cross-org', 'u-cross-org', 'org-a', 'human-cross', '2026-07-20T03:01:00Z', NULL, NULL, NULL);
+    ('m-cross-org', 'u-cross-org', 'org-a', 'human-cross', '2026-07-20T03:01:00Z', NULL, NULL, NULL),
+    ('m-agent-only', 'u-agent-only', 'org-a', 'human-agent-only', '2026-07-20T04:01:00Z', NULL, NULL, NULL);
 
   INSERT INTO clients (user_id, organization_id, connected_at) VALUES
     ('u-normal', 'org-a', '2026-07-20T00:02:00Z'),
@@ -80,10 +86,11 @@ const schemaAndFixtures = `
     ('u-cross-org', 'org-a', '2026-07-20T03:02:00Z');
 
   INSERT INTO agents (uuid, organization_id, manager_id, type, created_at) VALUES
-    ('agent-normal', 'org-a', 'human-normal', 'agent', '2026-07-20T00:03:00Z'),
-    ('agent-bootstrap', 'org-a', 'human-bootstrap', 'agent', '2026-07-20T01:03:00Z'),
-    ('agent-skip', 'org-a', 'someone-else', 'agent', '2026-07-19T02:00:00Z'),
-    ('agent-cross', 'org-b', 'human-cross', 'agent', '2026-07-20T03:03:00Z');
+    ('agent-normal', 'org-a', 'm-normal', 'agent', '2026-07-20T00:03:00Z'),
+    ('agent-bootstrap', 'org-a', 'm-bootstrap-only', 'agent', '2026-07-20T01:03:00Z'),
+    ('agent-skip', 'org-a', 'm-normal', 'agent', '2026-07-19T02:00:00Z'),
+    ('agent-cross', 'org-b', 'm-cross-org', 'agent', '2026-07-20T03:03:00Z'),
+    ('agent-only', 'org-a', 'm-agent-only', 'agent', '2026-07-20T04:03:00Z');
 
   INSERT INTO chats (id, organization_id, onboarding_kickoff_key) VALUES
     ('chat-normal', 'org-a', 'human-normal:agent-normal:onboarding'),
@@ -170,6 +177,7 @@ describe("PostgreSQL extraction fixtures", () => {
     const byUser = new Map(result.rows.map((row) => [row.user_id, row]));
 
     expect(byUser.get("u-normal")?.first_user_message_at?.toISOString()).toBe("2026-07-20T00:10:00.000Z");
+    expect(byUser.get("u-normal")?.agent_ready_mode).toBe("created");
     expect(byUser.get("u-bootstrap-only")?.first_user_message_at).toBeNull();
     expect(byUser.get("u-skip")).toMatchObject({
       client_ready_mode: "skipped",
@@ -177,6 +185,12 @@ describe("PostgreSQL extraction fixtures", () => {
     });
     expect(byUser.get("u-skip")?.first_user_message_at?.toISOString()).toBe("2026-07-20T02:04:00.000Z");
     expect(byUser.get("u-cross-org")?.first_user_message_at).toBeNull();
+    expect(byUser.get("u-agent-only")).toMatchObject({
+      client_ready_mode: null,
+      agent_ready_at: null,
+      agent_ready_mode: null,
+      first_user_message_at: null,
+    });
   });
 
   it("excludes kickoff, cron, recovery, reviewer updates, and all trusted-system variants from activity", async () => {
