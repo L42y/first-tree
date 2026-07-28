@@ -34,6 +34,7 @@ const DEFAULT_SKILL_NAMES = [
   "context-tree-review",
   "context-tree-audit",
   "first-tree-qa",
+  "return-meeting-context",
 ] as const;
 
 function workspaceAgents(

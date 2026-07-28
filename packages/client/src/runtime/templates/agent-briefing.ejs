@@ -552,7 +552,8 @@ harness skills (`tdoc`, `review`, `simplify`, `update-config`, …).
 | `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
 | `first-tree-file-bug` | you hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and want it reported — gathers repro + version + chat/user IDs and opens an issue on First Tree's own repo (not the user's own/bound repo) via the user's `gh` CLI |
 | `context-tree-review` | a trusted GitHub App Context Review run or an explicit request to review a GitHub Context Tree pull request; GitLab MRs use ordinary GitLab review |
-| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems |<% } else { %>
+| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems |
+| `return-meeting-context` | an explicit profile-owner request to inspect owner-scoped meeting sources for settled durable conclusions; the current pilot keeps raw material outside the Tree and stops at a private sanitized report |<% } else { %>
 
 ## First Tree Family
 
@@ -569,4 +570,5 @@ binding, follow the Tree Location guidance before proceeding.
 | `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
 | `first-tree-file-bug` | the user hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and wants it reported — gathers repro + version + chat/user IDs and opens an issue on First Tree's own repo (not the user's own/bound repo) via the user's `gh` CLI |
 | `context-tree-review` | a trusted GitHub App Context Review run or an explicit request to review a GitHub Context Tree pull request; GitLab MRs use ordinary GitLab review |
-| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems; without a binding, the audit fails closed |<% } %>
+| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems; without a binding, the audit fails closed |
+| `return-meeting-context` | an explicit profile-owner request to inspect owner-scoped meeting sources for settled durable conclusions; the current pilot may report candidates but cannot publish to a Context Tree |<% } %>

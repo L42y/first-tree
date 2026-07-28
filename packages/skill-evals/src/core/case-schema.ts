@@ -11,15 +11,23 @@ export const SHIPPED_SKILLS = [
 // Skills that ship in the runtime but are intentionally NOT modeled by this
 // eval harness. skill-evals is built around per-suite, model-graded live runners
 // for the Context-Tree / onboarding skill family (each suite carries a bespoke
-// fixture + grader + gate runner). `first-tree-file-bug` performs an external
-// provider write by creating a public GitHub issue after human confirmation.
-// That side-effecting, credential-dependent flow belongs in isolated QA rather
-// than this live model harness. Its guardrails (core-tier install, trigger
-// boundary, family-map wiring, and generated-briefing routing) are covered by
-// client unit / drift tests. It is named here so its omission from
-// `SHIPPED_SKILLS` is explicit; revisit when it gains a deterministic,
-// model-gradable surface.
-export const UNEVALUATED_SHIPPED_SKILLS = ["first-tree-file-bug"] as const;
+// fixture + grader + gate runner).
+//
+// `first-tree-file-bug` performs an external provider write by creating a
+// public GitHub issue after human confirmation. That side-effecting,
+// credential-dependent flow belongs in isolated QA rather than this live model
+// harness.
+//
+// `return-meeting-context` is an explicit-only, report-only pilot whose
+// provider access and semantic meeting judgment are intentionally kept out of
+// the generic live harness until the one-shot source-authorization and trusted
+// tracked-answer UX exist. Its deterministic owner, privacy, revision,
+// validation, and cleanup gates execute in the client product-test suite; live
+// provider and model judgment remain formal QA.
+//
+// Both entries are named here so their omission from `SHIPPED_SKILLS` is
+// explicit. Revisit each when it gains a safe model-gradable surface.
+export const UNEVALUATED_SHIPPED_SKILLS = ["first-tree-file-bug", "return-meeting-context"] as const;
 
 export const SKILL_EVAL_TIERS = ["floor", "gate", "quality", "periodic"] as const;
 export const EVAL_CASE_STATUSES = ["implemented", "planned"] as const;

@@ -58,6 +58,7 @@ const SHIPPED_SKILLS = [
   "context-tree-review",
   "context-tree-audit",
   "first-tree-qa",
+  "return-meeting-context",
 ];
 
 const RETIRED_TREE_SUBCOMMANDS = [

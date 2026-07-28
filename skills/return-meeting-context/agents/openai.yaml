@@ -1,0 +1,7 @@
+interface:
+  display_name: "Return Meeting Context"
+  short_description: "Prepare private meeting context reports"
+  default_prompt: "Use $return-meeting-context to analyze explicitly authorized, owner-scoped meeting evidence and prepare a private report-only set of Context Tree candidates."
+
+policy:
+  allow_implicit_invocation: false

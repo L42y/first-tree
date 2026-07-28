@@ -19,6 +19,7 @@ const RUNTIME_SKILL_NAMES = [
   "first-tree-write",
   "first-tree-file-bug",
   "first-tree-qa",
+  "return-meeting-context",
 ] as const;
 
 type DomainNode = {
