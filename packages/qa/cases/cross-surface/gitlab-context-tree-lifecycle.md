@@ -27,9 +27,11 @@ runtime, network, credential, and cross-surface behavior.
   and an eligible Work Agent plus independent Review Agent.
 - Configure one exact GitLab connection and an instance-wide System Hook from
   the derived `/admin/hooks` page, with Push and Merge Request events enabled,
-  the default payload, and no custom template. First Tree must observe a
-  processable Merge Request event before routing or Context Review is treated
-  as ready. Connection creation must not depend on Web Context egress policy.
+  the default payload, and no custom template. Reuse the same one-time URL in a
+  trusted Project Hook with Merge Request, Issue, and Note events enabled.
+  First Tree must observe a processable System Hook Merge Request event before
+  routing or Context Review is treated as ready. Connection creation must not
+  depend on Web Context egress policy.
   For a Self-Managed origin, the deployment operator—not the Team
   admin—separately authorizes the exact HTTPS origin through
   `FIRST_TREE_GITLAB_ALLOWED_ORIGINS`. Retain evidence of policy shape but no
@@ -58,8 +60,14 @@ runtime, network, credential, and cross-surface behavior.
 - Deliver old-GitLab open/reopen/update and draft-to-ready MR payloads. Confirm
   the current exact connection/project/binding and configured active Review
   Agent select one stable MR-scoped Reviewer Chat. Replay a stable delivery id,
-  replace the connection, send a wrong project/host, and send ordinary Notes.
-  Require deduplication/fencing, no stale dispatch, and no Note self-trigger.
+  deliver the same MR occurrence through System and Project Hooks in both
+  orders, replace the connection, send a wrong project/host, and send ordinary
+  Project Hook Notes. Require one card/Reviewer dispatch for each overlapping
+  MR occurrence, System Hook readiness evidence even when its copy is
+  suppressed, ordinary Issue/Note routing, no stale dispatch, and no Note
+  self-trigger. Repeat an MR pair without `updated_at`, `oldrev`, or `changes`
+  and confirm the documented fail-open duplicate risk rather than false
+  suppression.
   Generic GitLab entity attention remains independently observable.
 - On a ready same-project MR, confirm the Reviewer resolves live state with the
   exact-host `glab` identity, fetches a detached exact head, runs

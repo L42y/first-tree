@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, NotFoundError } from "../../errors.js";
+import { createLogger } from "../../observability/index.js";
 import { handleContextReviewerMrEvent } from "../../services/context-reviewer-mr.js";
 import {
   findActiveGitlabEndpoint,
@@ -13,6 +14,11 @@ import {
   resolveGitlabReviewerMode,
   withGitlabIngressFence,
 } from "../../services/gitlab-connections.js";
+import {
+  isGitlabCrossHookDuplicate,
+  rememberSuccessfulGitlabHookEvent,
+  withGitlabCrossHookDedupFence,
+} from "../../services/gitlab-cross-hook-dedup.js";
 import {
   observeGitlabEntityAndResolveFollowers,
   refreshGitlabChatTopics,
@@ -32,6 +38,7 @@ import { processScmWebhookDelivery } from "../../services/scm-webhook-processing
 
 const MAX_GITLAB_WEBHOOK_BYTES = 512 * 1024;
 const GITLAB_CONNECTION_RATE_LIMIT = 120;
+const log = createLogger("GitlabWebhookRoute");
 
 export async function gitlabWebhookRoutes(app: FastifyInstance): Promise<void> {
   const endpointByRequest = new WeakMap<object, NonNullable<Awaited<ReturnType<typeof findActiveGitlabEndpoint>>>>();
@@ -62,26 +69,16 @@ export async function gitlabWebhookRoutes(app: FastifyInstance): Promise<void> {
         if (!endpoint) throw new NotFoundError("GitLab webhook endpoint not found");
         const eventHeader = request.headers["x-gitlab-event"];
         if (typeof eventHeader !== "string" || eventHeader.length === 0 || eventHeader.length > 100) {
-          await markGitlabProcessingFailure(
-            app.db,
-            endpoint.connection.id,
-            endpoint.connection.tokenHash,
-            "missing_or_invalid_event_header",
+          log.warn(
+            {
+              metric: "gitlab_hook_source_unresolved_failure_total",
+              connectionId: endpoint.connection.id,
+              reason: "missing_or_invalid_event_header",
+            },
+            "rejected GitLab webhook without a trustworthy hook source",
           );
           failureMarked.add(request);
           throw new BadRequestError("X-Gitlab-Event is required");
-        }
-        if (eventHeader !== "System Hook") {
-          await markGitlabProcessingFailure(
-            app.db,
-            endpoint.connection.id,
-            endpoint.connection.tokenHash,
-            "unsupported_hook_type",
-          );
-          failureMarked.add(request);
-          throw new BadRequestError(
-            "Only GitLab System Hooks are supported; configure this webhook URL under GitLab /admin/hooks",
-          );
         }
         eventHeaderByRequest.set(request, eventHeader);
         return payload;
@@ -90,12 +87,25 @@ export async function gitlabWebhookRoutes(app: FastifyInstance): Promise<void> {
         if (error.statusCode === 429) return;
         const endpoint = endpointByRequest.get(request);
         if (endpoint && !failureMarked.has(request)) {
-          await markGitlabProcessingFailure(
-            app.db,
-            endpoint.connection.id,
-            endpoint.connection.tokenHash,
-            "request_rejected",
-          ).catch(() => undefined);
+          const eventHeader = eventHeaderByRequest.get(request);
+          if (eventHeader === "System Hook") {
+            await markGitlabProcessingFailure(
+              app.db,
+              endpoint.connection.id,
+              endpoint.connection.tokenHash,
+              "request_rejected",
+            ).catch(() => undefined);
+          } else {
+            log.warn(
+              {
+                err: error,
+                metric: "gitlab_project_hook_processing_failed_total",
+                connectionId: endpoint.connection.id,
+                reason: "request_rejected",
+              },
+              "Project Hook request failed without changing System Hook readiness",
+            );
+          }
         }
       },
     },
@@ -116,133 +126,207 @@ export async function gitlabWebhookRoutes(app: FastifyInstance): Promise<void> {
         });
         const declaredVersion = parseDeclaredGitlabVersion(request.headers["user-agent"]);
         const isSystemHookMergeRequest = eventHeader === "System Hook" && normalized.hookEventKind === "merge_request";
-        const result = await withGitlabIngressFence(
-          app.db,
-          endpoint.connection.id,
-          endpoint.connection.tokenHash,
-          async (tx, fencedConnection) => {
-            const reviewerMode = resolveGitlabReviewerMode({
-              currentMode: fencedConnection.reviewerMode as "unknown" | "assignee" | "reviewers",
-              declaredVersion,
-              reviewerField: normalized.personnel.reviewerField,
-            });
-            const applied = applyGitlabPersonnelEvidence(normalized, reviewerMode);
-            let observedFollowers: Awaited<ReturnType<typeof observeGitlabEntityAndResolveFollowers>> = [];
-            const processed = await processScmWebhookDelivery({
-              db: tx,
-              ingress: normalized.ingress,
-              observation: normalized.observation,
-              event: applied.event,
-              applyObservation: async () => {
-                if (!normalized.entityIdentity) return;
-                observedFollowers = await observeGitlabEntityAndResolveFollowers(
-                  tx,
-                  fencedConnection.id,
-                  normalized.entityIdentity,
-                );
-                await refreshGitlabChatTopics(tx, fencedConnection.id, normalized.entityIdentity);
-              },
-              runProviderWork: async () => {
-                await markGitlabInboundSeen(tx, endpoint.connection.id, endpoint.connection.tokenHash);
-                if (normalized.ingress.stableDeliveryId) {
-                  await markGitlabStableDeliveryObserved(tx, fencedConnection.id);
+        const execution = await withGitlabCrossHookDedupFence(endpoint.connection.id, async () => {
+          let crossHookDuplicate = false;
+          let shouldRememberSuccessfulEvent = false;
+          const processed = await withGitlabIngressFence(
+            app.db,
+            endpoint.connection.id,
+            endpoint.connection.tokenHash,
+            async (tx, fencedConnection) => {
+              if (normalized.crossHookFingerprint) {
+                crossHookDuplicate = isGitlabCrossHookDuplicate({
+                  fingerprint: normalized.crossHookFingerprint,
+                  hookSource: normalized.hookSource,
+                });
+                if (crossHookDuplicate) {
+                  log.info(
+                    {
+                      metric: "gitlab_cross_hook_duplicate_total",
+                      connectionId: fencedConnection.id,
+                      hookSource: normalized.hookSource,
+                    },
+                    "skipping duplicate GitLab merge request from the opposite hook source",
+                  );
                 }
-                await observeGitlabCompatibility(tx, fencedConnection.id, {
-                  declaredVersion: declaredVersion?.value ?? null,
-                  reviewerMode,
-                  reviewersValid: normalized.personnel.reviewerField === "valid",
-                });
-                if (applied.schemaAnomalyCode) {
-                  await markGitlabReviewerSchemaAnomaly(tx, fencedConnection.id, applied.schemaAnomalyCode);
-                }
-                const contextReviewer = await handleContextReviewerMrEvent({
-                  database: tx,
-                  normalized,
-                  connection: fencedConnection,
-                  staleSeconds: app.config.runtime.presenceCleanupSeconds,
-                });
-                return { endpointSeen: true, contextReviewer };
-              },
-              resolveAudience: async (event) => {
-                if (!normalized.entityIdentity || !applied.event) {
-                  return { targets: [], actorHumanId: null };
-                }
-                return resolveGitlabAudience(tx, {
-                  organizationId: fencedConnection.organizationId,
-                  connectionId: fencedConnection.id,
-                  event,
-                  entityIdentity: normalized.entityIdentity,
-                  followers: observedFollowers,
-                });
-              },
-              deliver: async (event, audience) => {
-                if (!normalized.entityIdentity) return { delivered: 0, failed: 0, postCommitEffects: [] };
-                return deliverGitlabCards(app, {
-                  event,
-                  identity: normalized.entityIdentity,
-                  audience,
-                  organizationId: fencedConnection.organizationId,
-                  connectionId: fencedConnection.id,
-                  database: tx,
-                });
-              },
-            });
-            const partialCardDeliveryFailed = processed.outcome === "delivered" && processed.deliveryStats.failed > 0;
-            if (isSystemHookMergeRequest && processed.outcome !== "duplicate") {
-              if (processed.observationOutcome !== "applied") {
-                await markGitlabProcessingFailure(
-                  tx,
-                  endpoint.connection.id,
-                  endpoint.connection.tokenHash,
-                  "processing_failed",
-                );
-              } else if (partialCardDeliveryFailed) {
-                await markGitlabProcessingFailure(
-                  tx,
-                  endpoint.connection.id,
-                  endpoint.connection.tokenHash,
-                  "partial_card_delivery_failure",
-                );
-              } else {
-                await markGitlabSystemHookMergeRequestProcessed(
-                  tx,
-                  endpoint.connection.id,
-                  endpoint.connection.tokenHash,
+              } else if (normalized.hookEventKind === "merge_request") {
+                log.info(
+                  {
+                    metric: "gitlab_cross_hook_fingerprint_unavailable_total",
+                    connectionId: fencedConnection.id,
+                    hookSource: normalized.hookSource,
+                  },
+                  "GitLab merge request lacks a reliable cross-hook occurrence fingerprint",
                 );
               }
-            } else if (partialCardDeliveryFailed) {
-              await markGitlabProcessingFailure(
-                tx,
-                endpoint.connection.id,
-                endpoint.connection.tokenHash,
-                "partial_card_delivery_failure",
-              );
+
+              const reviewerMode = resolveGitlabReviewerMode({
+                currentMode: fencedConnection.reviewerMode as "unknown" | "assignee" | "reviewers",
+                declaredVersion,
+                reviewerField: normalized.personnel.reviewerField,
+              });
+              const applied = applyGitlabPersonnelEvidence(normalized, reviewerMode);
+              let observedFollowers: Awaited<ReturnType<typeof observeGitlabEntityAndResolveFollowers>> = [];
+              const processingResult = await processScmWebhookDelivery({
+                db: tx,
+                ingress: normalized.ingress,
+                observation: crossHookDuplicate ? null : normalized.observation,
+                event: crossHookDuplicate ? null : applied.event,
+                applyObservation: async () => {
+                  if (!normalized.entityIdentity) return;
+                  observedFollowers = await observeGitlabEntityAndResolveFollowers(
+                    tx,
+                    fencedConnection.id,
+                    normalized.entityIdentity,
+                  );
+                  await refreshGitlabChatTopics(tx, fencedConnection.id, normalized.entityIdentity);
+                },
+                runProviderWork: async () => {
+                  await markGitlabInboundSeen(tx, endpoint.connection.id, endpoint.connection.tokenHash);
+                  if (normalized.ingress.stableDeliveryId) {
+                    await markGitlabStableDeliveryObserved(tx, fencedConnection.id);
+                  }
+                  await observeGitlabCompatibility(tx, fencedConnection.id, {
+                    declaredVersion: declaredVersion?.value ?? null,
+                    reviewerMode,
+                    reviewersValid: normalized.personnel.reviewerField === "valid",
+                  });
+                  if (applied.schemaAnomalyCode) {
+                    await markGitlabReviewerSchemaAnomaly(tx, fencedConnection.id, applied.schemaAnomalyCode);
+                  }
+                  const contextReviewer = crossHookDuplicate
+                    ? ({ handled: false, reason: "unsupported_event" } as const)
+                    : await handleContextReviewerMrEvent({
+                        database: tx,
+                        normalized,
+                        connection: fencedConnection,
+                        staleSeconds: app.config.runtime.presenceCleanupSeconds,
+                      });
+                  return { endpointSeen: true, contextReviewer };
+                },
+                resolveAudience: async (event) => {
+                  if (!normalized.entityIdentity || !applied.event) {
+                    return { targets: [], actorHumanId: null };
+                  }
+                  return resolveGitlabAudience(tx, {
+                    organizationId: fencedConnection.organizationId,
+                    connectionId: fencedConnection.id,
+                    event,
+                    entityIdentity: normalized.entityIdentity,
+                    followers: observedFollowers,
+                  });
+                },
+                deliver: async (event, audience) => {
+                  if (!normalized.entityIdentity) return { delivered: 0, failed: 0, postCommitEffects: [] };
+                  return deliverGitlabCards(app, {
+                    event,
+                    identity: normalized.entityIdentity,
+                    audience,
+                    organizationId: fencedConnection.organizationId,
+                    connectionId: fencedConnection.id,
+                    database: tx,
+                  });
+                },
+              });
+              const partialCardDeliveryFailed =
+                processingResult.outcome === "delivered" && processingResult.deliveryStats.failed > 0;
+              if (isSystemHookMergeRequest && processingResult.outcome !== "duplicate") {
+                if (crossHookDuplicate) {
+                  await markGitlabSystemHookMergeRequestProcessed(
+                    tx,
+                    endpoint.connection.id,
+                    endpoint.connection.tokenHash,
+                  );
+                } else if (processingResult.observationOutcome !== "applied") {
+                  await markGitlabProcessingFailure(
+                    tx,
+                    endpoint.connection.id,
+                    endpoint.connection.tokenHash,
+                    "processing_failed",
+                  );
+                } else if (partialCardDeliveryFailed) {
+                  await markGitlabProcessingFailure(
+                    tx,
+                    endpoint.connection.id,
+                    endpoint.connection.tokenHash,
+                    "partial_card_delivery_failure",
+                  );
+                } else {
+                  await markGitlabSystemHookMergeRequestProcessed(
+                    tx,
+                    endpoint.connection.id,
+                    endpoint.connection.tokenHash,
+                  );
+                }
+              } else if (partialCardDeliveryFailed) {
+                log.warn(
+                  {
+                    metric: "gitlab_project_hook_processing_failed_total",
+                    connectionId: endpoint.connection.id,
+                    reason: "partial_card_delivery_failure",
+                  },
+                  "Project Hook delivery partially failed without changing System Hook readiness",
+                );
+              }
+              shouldRememberSuccessfulEvent =
+                normalized.crossHookFingerprint !== null &&
+                !crossHookDuplicate &&
+                processingResult.outcome !== "duplicate" &&
+                processingResult.observationOutcome === "applied" &&
+                !partialCardDeliveryFailed;
+              return processingResult;
+            },
+          );
+
+          if (processed.outcome === "delivered") {
+            for (const effects of processed.deliveryStats.postCommitEffects) {
+              await runDeferredScmCardPostCommitEffects(app, effects);
             }
-            return processed;
-          },
-        );
-        if (result.outcome === "delivered") {
-          for (const effects of result.deliveryStats.postCommitEffects) {
-            await runDeferredScmCardPostCommitEffects(app, effects);
           }
-        }
-        const contextReviewer = result.outcome === "duplicate" ? null : result.providerResult.contextReviewer;
-        if (contextReviewer?.handled) {
-          await runDeferredSendMessagePostCommitEffects(app.db, contextReviewer.deferredPostCommitEffects);
-          notifyRecipients(app.notifier, contextReviewer.recipients, contextReviewer.messageId);
-        }
-        return { ok: true, outcome: result.outcome };
+          const contextReviewer = processed.outcome === "duplicate" ? null : processed.providerResult.contextReviewer;
+          if (contextReviewer?.handled) {
+            await runDeferredSendMessagePostCommitEffects(app.db, contextReviewer.deferredPostCommitEffects);
+            notifyRecipients(app.notifier, contextReviewer.recipients, contextReviewer.messageId);
+          }
+          if (shouldRememberSuccessfulEvent && normalized.crossHookFingerprint) {
+            rememberSuccessfulGitlabHookEvent({
+              fingerprint: normalized.crossHookFingerprint,
+              hookSource: normalized.hookSource,
+            });
+          }
+          return { processed, crossHookDuplicate };
+        });
+        return {
+          ok: true,
+          outcome:
+            execution.crossHookDuplicate && execution.processed.outcome !== "duplicate"
+              ? "cross_hook_duplicate"
+              : execution.processed.outcome,
+        };
       } catch (err) {
         if (err instanceof GitlabPersonnelTargetLimitError) {
           failureMarked.add(request);
           throw err;
         }
-        await markGitlabProcessingFailure(
-          app.db,
-          endpoint.connection.id,
-          endpoint.connection.tokenHash,
-          err instanceof BadRequestError ? "malformed_payload" : "processing_failed",
-        ).catch(() => undefined);
+        const failureCode = err instanceof BadRequestError ? "malformed_payload" : "processing_failed";
+        if (eventHeader === "System Hook") {
+          await markGitlabProcessingFailure(
+            app.db,
+            endpoint.connection.id,
+            endpoint.connection.tokenHash,
+            failureCode,
+          ).catch(() => undefined);
+        } else {
+          log.warn(
+            {
+              err,
+              metric: "gitlab_project_hook_processing_failed_total",
+              connectionId: endpoint.connection.id,
+              reason: failureCode,
+            },
+            "Project Hook processing failed without changing System Hook readiness",
+          );
+        }
         failureMarked.add(request);
         throw err;
       }

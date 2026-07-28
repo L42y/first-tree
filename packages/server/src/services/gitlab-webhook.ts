@@ -19,6 +19,7 @@ import { createLogger } from "../observability/index.js";
 import { uuidv7 } from "../uuid.js";
 import { createChat } from "./chat.js";
 import { buildClaimReadyGitlabDeliveryId } from "./gitlab-connections.js";
+import { buildGitlabCrossHookFingerprint, type GitlabHookSource } from "./gitlab-cross-hook-dedup.js";
 import {
   type GitlabEntityIdentity,
   normalizeGitlabProjectPath,
@@ -60,6 +61,8 @@ export type GitlabHookEventKind = "merge_request" | "issue" | "note" | "test";
 
 export type NormalizedGitlabWebhook = ScmNormalizedWebhook & {
   hookEventKind: GitlabHookEventKind | null;
+  hookSource: GitlabHookSource;
+  crossHookFingerprint: string | null;
   entityIdentity: GitlabEntityIdentity | null;
   personnel: GitlabPersonnelEvidence;
 };
@@ -299,6 +302,7 @@ export function normalizeGitlabWebhook(input: {
   body: unknown;
 }): NormalizedGitlabWebhook {
   const payload = object(input.body, "GitLab webhook body");
+  const hookSource: GitlabHookSource = input.eventHeader === "System Hook" ? "system" : "project";
   const expectedKind: Record<string, GitlabHookEventKind> = {
     "Merge Request Hook": "merge_request",
     "Issue Hook": "issue",
@@ -341,6 +345,8 @@ export function normalizeGitlabWebhook(input: {
     return {
       ingress,
       hookEventKind: expected ?? null,
+      hookSource,
+      crossHookFingerprint: null,
       observation: null,
       event: null,
       entityIdentity: null,
@@ -372,6 +378,7 @@ export function normalizeGitlabWebhook(input: {
     anomalyCode: null,
   };
   let noteBody: string | undefined;
+  let mergeRequestChanges: JsonObject | null = null;
 
   if (expected === "merge_request") {
     attrs = object(payload.object_attributes, "object_attributes");
@@ -384,11 +391,11 @@ export function normalizeGitlabWebhook(input: {
       assigneeAdded: assigneeUsernames(payload, attrs, action),
       mentions: [],
     };
-    const changes = payload.changes ? object(payload.changes, "changes") : null;
-    const descriptionChanged = changes !== null && "description" in changes;
-    const titleChanged = changes !== null && "title" in changes;
+    mergeRequestChanges = payload.changes ? object(payload.changes, "changes") : null;
+    const descriptionChanged = mergeRequestChanges !== null && "description" in mergeRequestChanges;
+    const titleChanged = mergeRequestChanges !== null && "title" in mergeRequestChanges;
     const currentDescription = optionalString(attrs.description) ?? "";
-    const becameReady = draftBecameReady(changes);
+    const becameReady = draftBecameReady(mergeRequestChanges);
     if (becameReady && "reviewers" in payload) {
       const currentReviewers = optionalUserArray(payload.reviewers, "reviewers");
       personnel = { ...personnel, reviewerField: "valid", reviewerAdded: currentReviewers, anomalyCode: null };
@@ -448,6 +455,8 @@ export function normalizeGitlabWebhook(input: {
       return {
         ingress,
         hookEventKind: expected,
+        hookSource,
+        crossHookFingerprint: null,
         observation: null,
         event: null,
         entityIdentity: null,
@@ -482,6 +491,18 @@ export function normalizeGitlabWebhook(input: {
   const title = optionalString(attrs.title, 1000) ?? "";
   const description = noteBody ?? optionalString(attrs.description) ?? "";
   const action = optionalString(attrs.action, 100) ?? null;
+  const crossHookFingerprint =
+    entityType === "pull_request" && eventType === "merge_request"
+      ? buildGitlabCrossHookFingerprint({
+          connectionId: input.connectionId,
+          projectId,
+          mrIid: iid,
+          action,
+          updatedAt: optionalString(attrs.updated_at, 100) ?? null,
+          oldrev: optionalString(attrs.oldrev, 1000) ?? null,
+          changes: mergeRequestChanges,
+        })
+      : null;
   const fallbackUrl = `${projectUrl.replace(/\/$/, "")}/-/${entityType === "issue" ? "issues" : "merge_requests"}/${iid}`;
   const url = gitlabUrl(optionalString(attrs.url) ?? fallbackUrl, input.instanceOrigin, "entity url");
   const rawState = optionalString(attrs.state, 100);
@@ -542,7 +563,16 @@ export function normalizeGitlabWebhook(input: {
                 )
               : [],
         };
-  return { ingress, hookEventKind: expected, observation, event, entityIdentity, personnel };
+  return {
+    ingress,
+    hookEventKind: expected,
+    hookSource,
+    crossHookFingerprint,
+    observation,
+    event,
+    entityIdentity,
+    personnel,
+  };
 }
 
 export function applyGitlabPersonnelEvidence(

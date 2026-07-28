@@ -10,6 +10,7 @@ import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappin
 import { gitlabIdentityLinks } from "../db/schema/gitlab-identity-links.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
+import { organizationSettings } from "../db/schema/organization-settings.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agent.js";
 import {
@@ -27,7 +28,8 @@ import {
 import * as gitlabEntityFollowService from "../services/gitlab-entity-follow.js";
 import { createOrganization } from "../services/organization.js";
 import * as scmCardDelivery from "../services/scm-card-delivery.js";
-import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
+import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
+import { createTestAdmin, createTestAgent, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 const { declareGitlabEntityFollow, observeGitlabEntityAndResolveFollowers, removeGitlabEntityFollow } =
   gitlabEntityFollowService;
@@ -60,10 +62,13 @@ function issuePayload(iid = 42, input: { projectId?: number; projectPath?: strin
 function mergeRequestPayload(
   iid = 52,
   input: {
-    action?: "open" | "merge";
+    action?: "open" | "update" | "merge";
     state?: "opened" | "merged";
     projectId?: number;
     projectPath?: string;
+    updatedAt?: string;
+    oldrev?: string;
+    changes?: Record<string, unknown>;
   } = {},
 ) {
   const projectId = input.projectId ?? 501;
@@ -77,6 +82,7 @@ function mergeRequestPayload(
     },
     user: { username: "alice" },
     reviewers: [],
+    ...(input.changes ? { changes: input.changes } : {}),
     object_attributes: {
       iid,
       action: input.action ?? "open",
@@ -84,6 +90,8 @@ function mergeRequestPayload(
       description: "",
       url: `https://gitlab.internal/${projectPath}/-/merge_requests/${iid}`,
       state: input.state ?? "opened",
+      updated_at: input.updatedAt ?? "2026-07-28T10:00:00.000Z",
+      ...(input.oldrev ? { oldrev: input.oldrev } : {}),
     },
   };
 }
@@ -177,21 +185,19 @@ describe("GitLab Stage 2A backend", () => {
       stableId: `before-regeneration-${randomUUID()}`,
     });
     expect(observed.statusCode).toBe(200);
-    const rejectedProjectHook = await postWebhook(
-      app,
-      first.bearer,
-      { object_kind: "merge_request" },
-      { event: "Merge Request Hook" },
-    );
-    expect(rejectedProjectHook.statusCode).toBe(400);
+    const duplicateProjectHook = await postWebhook(app, first.bearer, mergeRequestPayload(), {
+      event: "Merge Request Hook",
+    });
+    expect(duplicateProjectHook.statusCode).toBe(200);
+    expect(duplicateProjectHook.json()).toMatchObject({ outcome: "cross_hook_duplicate" });
     expect(await getGitlabConnectionSummary(app.db, first.connectionId)).toMatchObject({
       endpointSeen: true,
       stableDeliveryObserved: true,
       health: {
         lastValidInboundAt: expect.any(String),
         lastSystemHookMergeRequestInboundAt: expect.any(String),
-        lastProcessingFailureAt: expect.any(String),
-        lastProcessingFailureCode: "unsupported_hook_type",
+        lastProcessingFailureAt: null,
+        lastProcessingFailureCode: null,
       },
     });
 
@@ -385,6 +391,148 @@ describe("GitLab Stage 2A backend", () => {
     expect(afterWebhookId).toHaveLength(before + 1);
   });
 
+  it("deduplicates matching MR events only across System and Project Hook sources", async () => {
+    const app = getApp();
+    const first = await connection(app);
+    const chatId = `chat_${randomUUID()}`;
+    await app.db
+      .insert(chats)
+      .values({ id: chatId, organizationId: first.admin.organizationId, type: "group", metadata: {} });
+    await app.db.insert(chatMembership).values({
+      chatId,
+      agentId: first.admin.humanAgentUuid,
+      role: "owner",
+      accessMode: "speaker",
+    });
+    for (const iid of [91, 92, 93]) {
+      await declareGitlabEntityFollow(app.db, {
+        organizationId: first.admin.organizationId,
+        connectionId: first.connectionId,
+        chatId,
+        declaredByAgentId: first.admin.humanAgentUuid,
+        humanAgentId: first.admin.humanAgentUuid,
+        delegateAgentId: first.admin.humanAgentUuid,
+        entityUrl: `https://gitlab.internal/Acme/API/-/merge_requests/${iid}`,
+      });
+    }
+
+    const projectFirst = await postWebhook(app, first.bearer, mergeRequestPayload(91), {
+      event: "Merge Request Hook",
+    });
+    expect(projectFirst.json()).toMatchObject({ outcome: "delivered" });
+    const systemDuplicate = await postWebhook(app, first.bearer, mergeRequestPayload(91));
+    expect(systemDuplicate.json()).toMatchObject({ outcome: "cross_hook_duplicate" });
+
+    const systemFirst = await postWebhook(app, first.bearer, mergeRequestPayload(92));
+    expect(systemFirst.json()).toMatchObject({ outcome: "delivered" });
+    const projectDuplicate = await postWebhook(app, first.bearer, mergeRequestPayload(92), {
+      event: "Merge Request Hook",
+    });
+    expect(projectDuplicate.json()).toMatchObject({ outcome: "cross_hook_duplicate" });
+
+    const distinctUpdate = await postWebhook(
+      app,
+      first.bearer,
+      mergeRequestPayload(92, {
+        action: "update",
+        updatedAt: "2026-07-28T10:01:00.000Z",
+        changes: { title: { previous: "System Hook MR", current: "Updated MR" } },
+      }),
+      { event: "Merge Request Hook" },
+    );
+    expect(distinctUpdate.json()).toMatchObject({ outcome: "delivered" });
+
+    const concurrent = await Promise.all([
+      postWebhook(app, first.bearer, mergeRequestPayload(93)),
+      postWebhook(app, first.bearer, mergeRequestPayload(93), { event: "Merge Request Hook" }),
+    ]);
+    expect(concurrent.map((response) => response.json().outcome).sort()).toEqual(["cross_hook_duplicate", "delivered"]);
+
+    expect(
+      await app.db
+        .select()
+        .from(messages)
+        .where(and(eq(messages.chatId, chatId), eq(messages.source, "gitlab"))),
+    ).toHaveLength(4);
+    expect((await getGitlabConnectionSummary(app.db, first.connectionId)).health).toMatchObject({
+      readiness: "routing_verified",
+      lastSystemHookMergeRequestInboundAt: expect.any(String),
+      lastProcessingFailureAt: null,
+      lastProcessingFailureCode: null,
+    });
+
+    const reviewer = await createTestAgent(app, { displayName: "GitLab Context Reviewer" });
+    const capabilityObservedAt = new Date();
+    await seedHealthyAgentRuntime(app, {
+      agentUuid: reviewer.agent.uuid,
+      clientId: reviewer.clientId,
+      now: capabilityObservedAt,
+    });
+    await app.db.insert(organizationSettings).values([
+      {
+        organizationId: first.admin.organizationId,
+        namespace: "context_tree",
+        value: {
+          provider: "gitlab",
+          repo: "https://gitlab.internal/acme/context-tree.git",
+          branch: "main",
+        },
+        version: 1,
+        updatedBy: first.admin.userId,
+      },
+      {
+        organizationId: first.admin.organizationId,
+        namespace: "context_tree_features",
+        value: {
+          contextReviewer: {
+            enabled: true,
+            agentUuid: reviewer.agent.uuid,
+          },
+        },
+        version: 1,
+        updatedBy: first.admin.userId,
+      },
+    ]);
+
+    for (const [event, objectKind] of [
+      ["Merge Request Hook", "merge_request"],
+      ["Issue Hook", "issue"],
+      ["Note Hook", "note"],
+    ] as const) {
+      const malformedProjectHook = await postWebhook(app, first.bearer, { object_kind: objectKind }, { event });
+      expect(malformedProjectHook.statusCode).toBe(400);
+    }
+    const invalidProjectJson = await app.inject({
+      method: "POST",
+      url: `/api/v1/webhooks/gitlab/${first.bearer}`,
+      headers: { "content-type": "application/json", "x-gitlab-event": "Note Hook" },
+      payload: "{",
+    });
+    expect(invalidProjectJson.statusCode).toBe(400);
+    expect((await getGitlabConnectionSummary(app.db, first.connectionId)).health).toMatchObject({
+      readiness: "routing_verified",
+      lastSystemHookMergeRequestInboundAt: expect.any(String),
+      lastProcessingFailureAt: null,
+      lastProcessingFailureCode: null,
+    });
+    const capabilities = await getTeamSetupCapabilities(app.db, first.admin.organizationId, {
+      now: () => capabilityObservedAt,
+      staleSeconds: 60,
+    });
+    expect(capabilities.repositoryAutomation.providers).toContainEqual(
+      expect.objectContaining({ provider: "gitlab", health: "ready", blockers: [] }),
+    );
+    expect(capabilities).toMatchObject({
+      contextTree: {
+        automaticReview: {
+          adoption: "enabled",
+          health: "ready",
+          blockers: [],
+        },
+      },
+    });
+  });
+
   it("resolves a pending follow and delivers one basic card per chat with wake and no outbound fetch", async () => {
     const app = getApp();
     const first = await connection(app);
@@ -455,7 +603,7 @@ describe("GitLab Stage 2A backend", () => {
     expect(after).toHaveLength(3);
   });
 
-  it("applies a terminal MR observation without emitting another card", async () => {
+  it("applies a terminal MR observation and routes a later Project Hook note", async () => {
     const app = getApp();
     const first = await connection(app);
     const chatId = `chat_${randomUUID()}`;
@@ -508,7 +656,15 @@ describe("GitLab Stage 2A backend", () => {
         url: "https://gitlab.internal/Acme/API/-/merge_requests/52",
       },
     };
-    expect((await postWebhook(app, first.bearer, note, { event: "Note Hook" })).statusCode).toBe(400);
+    const noteResponse = await postWebhook(app, first.bearer, note, { event: "Note Hook" });
+    expect(noteResponse.statusCode).toBe(200);
+    expect(noteResponse.json()).toMatchObject({ outcome: "delivered" });
+    expect(
+      await app.db
+        .select()
+        .from(messages)
+        .where(and(eq(messages.chatId, chatId), eq(messages.source, "gitlab"))),
+    ).toHaveLength(2);
     const [mapping] = await app.db
       .select()
       .from(gitlabEntityChatMappings)
@@ -554,14 +710,9 @@ describe("GitLab Stage 2A backend", () => {
     expect(unsupported.statusCode).toBe(200);
     expect(unsupported.json()).toMatchObject({ outcome: "provider_only" });
 
-    const projectHook = await postWebhook(
-      app,
-      first.bearer,
-      { object_kind: "merge_request" },
-      { event: "Merge Request Hook" },
-    );
-    expect(projectHook.statusCode).toBe(400);
-    expect(projectHook.json()).toMatchObject({ error: expect.stringContaining("/admin/hooks") });
+    const projectHook = await postWebhook(app, first.bearer, mergeRequestPayload(62), { event: "Merge Request Hook" });
+    expect(projectHook.statusCode).toBe(200);
+    expect(projectHook.json()).toMatchObject({ outcome: "audience_empty" });
 
     const wrongType = await app.inject({
       method: "POST",
@@ -581,13 +732,19 @@ describe("GitLab Stage 2A backend", () => {
   it("separates transport from System Hook MR processing and readiness evidence", async () => {
     const app = getApp();
     const first = await connection(app);
-    const rejectedProjectHook = await postWebhook(
-      app,
-      first.bearer,
-      { object_kind: "merge_request" },
-      { event: "Merge Request Hook" },
-    );
-    expect(rejectedProjectHook.statusCode).toBe(400);
+    const projectMergeRequest = await postWebhook(app, first.bearer, mergeRequestPayload(61), {
+      event: "Merge Request Hook",
+    });
+    expect(projectMergeRequest.statusCode).toBe(200);
+    expect(projectMergeRequest.json()).toMatchObject({ outcome: "audience_empty" });
+
+    const projectIssue = await postWebhook(app, first.bearer, issuePayload(), { event: "Issue Hook" });
+    expect(projectIssue.statusCode).toBe(200);
+    expect(projectIssue.json()).toMatchObject({ outcome: "audience_empty" });
+
+    const projectNote = await postWebhook(app, first.bearer, mergeRequestNotePayload(), { event: "Note Hook" });
+    expect(projectNote.statusCode).toBe(200);
+    expect(projectNote.json()).toMatchObject({ outcome: "audience_empty" });
 
     for (const body of [
       { event_name: "push" },
@@ -609,11 +766,11 @@ describe("GitLab Stage 2A backend", () => {
     expect(await getGitlabConnectionSummary(app.db, first.connectionId)).toMatchObject({
       endpointSeen: true,
       health: {
-        readiness: "needs_attention",
+        readiness: "transport_received",
         lastValidInboundAt: expect.any(String),
         lastSystemHookMergeRequestInboundAt: null,
-        lastProcessingFailureAt: expect.any(String),
-        lastProcessingFailureCode: "unsupported_hook_type",
+        lastProcessingFailureAt: null,
+        lastProcessingFailureCode: null,
       },
     });
 
@@ -622,8 +779,8 @@ describe("GitLab Stage 2A backend", () => {
     expect(await getGitlabConnectionSummary(app.db, first.connectionId)).toMatchObject({
       health: {
         lastSystemHookMergeRequestInboundAt: null,
-        lastProcessingFailureAt: expect.any(String),
-        lastProcessingFailureCode: "unsupported_hook_type",
+        lastProcessingFailureAt: null,
+        lastProcessingFailureCode: null,
       },
     });
 
@@ -692,6 +849,13 @@ describe("GitLab Stage 2A backend", () => {
           lastProcessingFailureCode: "processing_failed",
         },
       });
+
+      const oppositeSourceRecovery = await postWebhook(app, readyConnection.bearer, mergeRequestPayload(72), {
+        event: "Merge Request Hook",
+        stableId: `project-recovery-${randomUUID()}`,
+      });
+      expect(oppositeSourceRecovery.statusCode).toBe(200);
+      expect(oppositeSourceRecovery.json()).toMatchObject({ outcome: "audience_empty" });
 
       const duplicate = await postWebhook(app, readyConnection.bearer, mergeRequestPayload(72), {
         stableId: failedDeliveryId,
@@ -1101,6 +1265,7 @@ describe("GitLab Stage 2A backend", () => {
   it("isolates per-chat delivery failure and retains the whole-request stable claim", async () => {
     const app = getApp();
     const first = await connection(app);
+    expect((await postWebhook(app, first.bearer, mergeRequestPayload(53))).statusCode).toBe(200);
     for (const suffix of ["a", "b"]) {
       const routeAgent = await createTestAgent(app, { name: `failure-${suffix}-${randomUUID().slice(0, 8)}` });
       const chatId = `chat_${suffix}_${randomUUID()}`;
@@ -1129,14 +1294,28 @@ describe("GitLab Stage 2A backend", () => {
     const before = await app.db.select().from(messages).where(eq(messages.source, "gitlab"));
     const sendSpy = vi.spyOn(scmCardDelivery, "sendScmSystemCard").mockRejectedValueOnce(new Error("chat down"));
     const stableId = `partial-${randomUUID()}`;
-    const firstDelivery = await postWebhook(app, first.bearer, mergeRequestPayload(), { stableId });
+    const firstDelivery = await postWebhook(app, first.bearer, mergeRequestPayload(), {
+      event: "Merge Request Hook",
+      stableId,
+    });
     sendSpy.mockRestore();
     expect(firstDelivery.statusCode).toBe(200);
     expect(firstDelivery.json()).toMatchObject({ outcome: "delivered" });
     const after = await app.db.select().from(messages).where(eq(messages.source, "gitlab"));
     expect(after).toHaveLength(before.length + 1);
-    expect((await postWebhook(app, first.bearer, mergeRequestPayload(), { stableId })).json()).toMatchObject({
-      outcome: "duplicate",
+    expect(
+      (
+        await postWebhook(app, first.bearer, mergeRequestPayload(), {
+          event: "Merge Request Hook",
+          stableId,
+        })
+      ).json(),
+    ).toMatchObject({ outcome: "duplicate" });
+    expect((await getGitlabConnectionSummary(app.db, first.connectionId)).health).toMatchObject({
+      readiness: "routing_verified",
+      lastSystemHookMergeRequestInboundAt: expect.any(String),
+      lastProcessingFailureAt: null,
+      lastProcessingFailureCode: null,
     });
   });
 
@@ -1225,6 +1404,9 @@ describe("GitLab Stage 2A backend", () => {
       payload: '{"object_kind":',
     });
     expect(malformed.statusCode).toBe(400);
+    expect(
+      (await getGitlabConnectionSummary(app.db, malformedConnection.connectionId)).health.lastProcessingFailureCode,
+    ).toBe("request_rejected");
 
     const limited = await connection(app, { isolatedOrg: true });
     for (let index = 0; index < 119; index += 1) {
@@ -1246,9 +1428,9 @@ describe("GitLab Stage 2A backend", () => {
       payload: '{"object_kind":',
     });
     expect(rateLimitedBeforeJsonParsing.statusCode).toBe(429);
-    expect((await getGitlabConnectionSummary(app.db, limited.connectionId)).health.lastProcessingFailureCode).toBe(
-      "missing_or_invalid_event_header",
-    );
+    expect(
+      (await getGitlabConnectionSummary(app.db, limited.connectionId)).health.lastProcessingFailureCode,
+    ).toBeNull();
     expect((await postWebhook(app, malformedConnection.bearer, { event_name: "test" })).statusCode).toBe(200);
 
     const unknownSourceIp = "203.0.113.77";

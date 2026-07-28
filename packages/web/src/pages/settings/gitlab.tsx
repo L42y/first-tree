@@ -139,7 +139,7 @@ function OrganizationScopedGitlabPage(props: { role: string | null; organization
     <div className="flex flex-col" style={{ gap: "var(--sp-5)", padding: "var(--sp-2) var(--sp-5) var(--sp-7)" }}>
       <Section
         title="Connection"
-        description="Inbound-only GitLab Self-Managed webhooks. A System Hook provides full-instance merge request routing; First Tree never calls your GitLab server."
+        description="Inbound-only GitLab Self-Managed webhooks. A System Hook provides full-instance merge request routing; optional Project Hooks add project-level MR, Issue, and Note events. First Tree never calls your GitLab server."
         action={
           isAdmin && !connection ? (
             <Button size="sm" onClick={() => setConnectionDialog("create")}>
@@ -165,7 +165,7 @@ function OrganizationScopedGitlabPage(props: { role: string | null; organization
         isAdmin ? (
           <Section
             title="GitLab account bindings"
-            description="Bind exact GitLab usernames to Team members. System Hook merge request reviewers, assignees, and description mentions route to the current delegate."
+            description="Bind exact GitLab usernames to Team members. GitLab merge request reviewers, assignees, and description mentions route to the current delegate."
           >
             <IdentityPanel
               connection={connection}
@@ -269,7 +269,7 @@ function ConnectionSummary(props: {
       ) : null}
       <p className="m-0 text-caption text-muted-foreground">
         Regenerating invalidates the old URL immediately. Change or delete clears old entity follows and identity
-        routing; update the GitLab System Hook manually.
+        routing; update every GitLab System or Project Hook using the URL.
       </p>
     </div>
   );
@@ -296,7 +296,7 @@ function SystemHookRecovery(props: { connection: GitlabConnectionSummary; readin
       </p>
       <p className="m-0 text-label text-muted-foreground">
         {needsAttention
-          ? "The latest webhook was not fully processed. Confirm this is a System Hook using GitLab's default payload, then resend a real merge request event."
+          ? "The latest webhook was not fully processed. Confirm the System Hook uses GitLab's default payload, then resend a real merge request event."
           : received
             ? "GitLab reached First Tree. Confirm Merge request events is enabled, then create or update a merge request."
             : "Paste the one-time First Tree URL into a GitLab System Hook. Keep the default payload and SSL verification enabled."}
@@ -305,7 +305,10 @@ function SystemHookRecovery(props: { connection: GitlabConnectionSummary; readin
         Enable <strong>Push events</strong> for delivery-health evidence and <strong>Merge request events</strong> for
         full-instance MR routing.
       </p>
-      <p className="m-0 text-label text-muted-foreground">System Hooks do not deliver Issue or Note events.</p>
+      <p className="m-0 text-label text-muted-foreground">
+        System Hooks do not deliver Issue or Note events. Add trusted Project Hooks with the same URL when those events
+        are needed.
+      </p>
       <div className="flex flex-wrap items-center gap-3">
         <Button asChild size="sm" variant="outline">
           <a href={gitlabAdminHooksUrl(props.connection.instanceOrigin)} target="_blank" rel="noreferrer">
@@ -629,10 +632,11 @@ function OneTimeSecretDialog(props: {
     >
       <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Finish GitLab System Hook setup</DialogTitle>
+          <DialogTitle>Finish GitLab webhook setup</DialogTitle>
           <DialogDescription>
             This secret is shown once. Anyone holding it can forge personnel events that route and wake Team agents, so
-            configure it only in a trusted GitLab System Hook. Closing this dialog permanently removes it from the UI.
+            configure it only in trusted GitLab System or Project Hooks. Closing this dialog permanently removes it from
+            the UI.
           </DialogDescription>
         </DialogHeader>
         <ol className="m-0 list-decimal space-y-4 pl-5 text-body">
@@ -686,7 +690,14 @@ function OneTimeSecretDialog(props: {
             <p className="m-0 text-label text-muted-foreground">
               Keep SSL verification enabled and do not use a Custom webhook template.
             </p>
-            <p className="m-0 text-label text-muted-foreground">System Hooks do not deliver Issue or Note events.</p>
+          </li>
+          <li className="space-y-1 pl-1">
+            <p className="m-0 font-medium">Optionally add Project Hooks before closing</p>
+            <p className="m-0 text-label text-muted-foreground">
+              Reuse this URL in trusted projects that need Issue or Note events. Merge Request events are also
+              supported; when both hook types send the same MR occurrence within one minute, First Tree suppresses the
+              second one on a best-effort basis.
+            </p>
           </li>
           <li className="space-y-1 pl-1">
             <p className="m-0 font-medium">Add the hook, then create or update a merge request</p>
@@ -731,7 +742,7 @@ const CONFIRM_CONTENT: Record<
 > = {
   regenerate: {
     title: "Regenerate webhook URL?",
-    description: "The old URL stops authenticating immediately. Update the GitLab System Hook manually.",
+    description: "The old URL stops authenticating immediately. Update every GitLab System or Project Hook using it.",
     confirm: "Regenerate",
     destructive: true,
   },

@@ -30,6 +30,7 @@ function mergeRequestBody() {
       action: "open",
       title: "System Hook MR",
       url: "https://gitlab.internal/Acme/API/-/merge_requests/7",
+      updated_at: "2026-07-28T10:00:00.000Z",
     },
   };
 }
@@ -136,6 +137,33 @@ describe("GitLab webhook normalization", () => {
         body: { ...mergeRequestBody(), event_type: "push" },
       }),
     ).toThrow("event_type does not match event_name or object_kind");
+  });
+
+  it("derives one cross-hook fingerprint without treating missing occurrence fields as duplicates", () => {
+    const system = normalizeGitlabWebhook({
+      ...base,
+      eventHeader: "System Hook",
+      body: mergeRequestBody(),
+    });
+    const projectHook = normalizeGitlabWebhook({
+      ...base,
+      eventHeader: "Merge Request Hook",
+      body: mergeRequestBody(),
+    });
+
+    expect(system.hookSource).toBe("system");
+    expect(projectHook.hookSource).toBe("project");
+    expect(system.crossHookFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(projectHook.crossHookFingerprint).toBe(system.crossHookFingerprint);
+
+    const body = mergeRequestBody();
+    const { updated_at: _updatedAt, ...objectAttributes } = body.object_attributes;
+    const failOpen = normalizeGitlabWebhook({
+      ...base,
+      eventHeader: "Merge Request Hook",
+      body: { ...body, object_attributes: objectAttributes },
+    });
+    expect(failOpen.crossHookFingerprint).toBeNull();
   });
 
   it("normalizes merge request, issue, and note payloads without exposing raw provider fields", () => {
