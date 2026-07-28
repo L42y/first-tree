@@ -14,6 +14,7 @@ import { registerAgentCommands } from "../commands/agent/index.js";
 import { registerChatCommands } from "../commands/chat/index.js";
 import { registerComputerCommands } from "../commands/computer/index.js";
 import { registerConfigCommands } from "../commands/config/index.js";
+import { registerContextCommands } from "../commands/context/index.js";
 import { registerCronCommands } from "../commands/cron/index.js";
 import { registerDaemonCommands } from "../commands/daemon/index.js";
 import { registerDocCommands } from "../commands/doc/index.js";
@@ -83,6 +84,7 @@ registerGitlabCommands(program);
 registerOrgCommands(program);
 registerDaemonCommands(program);
 registerConfigCommands(program);
+registerContextCommands(program);
 
 registerTreeCommands(program);
 

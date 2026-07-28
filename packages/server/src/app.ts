@@ -52,6 +52,8 @@ import { orgAgentRoutes } from "./api/orgs/agents.js";
 import { orgAttachmentRoutes } from "./api/orgs/attachments.js";
 import { orgChatRoutes } from "./api/orgs/chats.js";
 import { orgClientRoutes } from "./api/orgs/clients.js";
+import { orgContextActivationRoutes } from "./api/orgs/context-activation.js";
+import { orgContextEnablementRoutes } from "./api/orgs/context-enablement.js";
 import { orgContextReviewerRoutes } from "./api/orgs/context-reviewer.js";
 import { orgContextTreeRoutes } from "./api/orgs/context-tree.js";
 import { orgContextTreeSnapshotRoutes } from "./api/orgs/context-tree-snapshot.js";
@@ -565,6 +567,8 @@ export async function buildApp(config: Config) {
           await scope.register(orgUsageRoutes, { prefix: "/usage" });
           await scope.register(orgSessionRoutes, { prefix: "/sessions" });
           await scope.register(orgClientRoutes, { prefix: "/clients" });
+          await scope.register(orgContextActivationRoutes, { prefix: "/context-activation" });
+          await scope.register(orgContextEnablementRoutes, { prefix: "/context-enablement" });
           await scope.register(orgInvitationRoutes, { prefix: "/invitations" });
           await scope.register(orgMemberRoutes, { prefix: "/members" });
           await scope.register(orgSettingsRoutes, { prefix: "/settings" });

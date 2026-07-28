@@ -237,6 +237,7 @@ export async function orgContextTreeRoutes(app: FastifyInstance): Promise<void> 
             humanAgentUuid: scope.humanAgentId,
           },
           requesterGithubLogin: body.requesterGithubLogin,
+          reviewerStaleSeconds: app.config.runtime.presenceCleanupSeconds,
         });
         return reply.status(200).send(
           contextTreeWritePreflightResponseSchema.parse({
@@ -246,7 +247,11 @@ export async function orgContextTreeRoutes(app: FastifyInstance): Promise<void> 
         );
       } catch (error) {
         if (error instanceof ContextTreeWritePreflightError) {
-          return reply.status(error.statusCode).send({ error: error.message, code: error.code });
+          return reply.status(error.statusCode).send({
+            error: error.message,
+            code: error.code,
+            nextAction: error.nextAction,
+          });
         }
         throw error;
       }

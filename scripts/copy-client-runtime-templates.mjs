@@ -12,14 +12,22 @@ if (!packageDirArg) {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = resolve(repoRoot, "packages/client/src/runtime/templates");
 const requiredTemplate = resolve(sourceDir, "agent-briefing.ejs");
+const canonicalPolicy = resolve(repoRoot, "packages/client/src/runtime/assets/context-tree-policy.md");
 const targetDir = resolve(repoRoot, packageDirArg, "dist/templates");
+const runtimeAssetsDir = resolve(repoRoot, packageDirArg, "dist/runtime-assets");
 
 if (!existsSync(requiredTemplate) || !statSync(requiredTemplate).isFile()) {
   throw new Error(`Required client runtime template is missing: ${requiredTemplate}`);
 }
+if (!existsSync(canonicalPolicy) || !statSync(canonicalPolicy).isFile()) {
+  throw new Error(`Canonical Context Tree policy is missing: ${canonicalPolicy}`);
+}
 
 if (existsSync(targetDir)) {
   rmSync(targetDir, { recursive: true, force: true });
+}
+if (existsSync(runtimeAssetsDir)) {
+  rmSync(runtimeAssetsDir, { recursive: true, force: true });
 }
 
 await mkdir(targetDir, { recursive: true });
@@ -27,3 +35,5 @@ await cp(sourceDir, targetDir, {
   recursive: true,
   filter: (source) => statSync(source).isDirectory() || source.endsWith(".ejs"),
 });
+await mkdir(runtimeAssetsDir, { recursive: true });
+await cp(canonicalPolicy, resolve(runtimeAssetsDir, "context-tree-policy.md"));

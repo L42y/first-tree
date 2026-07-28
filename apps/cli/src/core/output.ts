@@ -63,7 +63,12 @@ function line(text: string): void {
   process.stderr.write(text);
 }
 
-export const print = { result, fail, status, check, blank, line };
+/** Raw provider hook response. This is intentionally not the CLI result envelope. */
+function hook(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+export const print = { result, fail, status, check, blank, line, hook };
 
 // Backward-compatible named exports — callers that still import `status`
 // / `blank` directly keep working while the sweep to `print.*` completes.

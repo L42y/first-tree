@@ -12,6 +12,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const activityMocks = vi.hoisted(() => ({ listClients: vi.fn() }));
 const contextTreeMocks = vi.hoisted(() => ({ getContextTreeSnapshot: vi.fn() }));
+const contextEnablementMocks = vi.hoisted(() => ({ getContextEnablementHandoff: vi.fn() }));
 const onboardingEventMocks = vi.hoisted(() => ({ reportOnboardingEvent: vi.fn() }));
 const orgSettingsMocks = vi.hoisted(() => ({
   getRawContextTreeSetting: vi.fn(),
@@ -41,6 +42,7 @@ const authMock = vi.hoisted(() => ({
 
 vi.mock("../../../api/activity.js", () => activityMocks);
 vi.mock("../../../api/context-tree.js", () => contextTreeMocks);
+vi.mock("../../../api/context-enablement.js", () => contextEnablementMocks);
 vi.mock("../../../api/context-reviewer-settings.js", () => reviewerMocks);
 vi.mock("../../../api/onboarding-events.js", () => onboardingEventMocks);
 vi.mock("../../../api/org-settings.js", () => orgSettingsMocks);
@@ -269,6 +271,14 @@ beforeEach(() => {
   contextTreeMocks.getContextTreeSnapshot.mockResolvedValue({
     snapshotStatus: "active",
     contextStatus: { severity: "ok", label: "Available", detail: null },
+  });
+  contextEnablementMocks.getContextEnablementHandoff.mockResolvedValue({
+    organizationId: "org-1",
+    teamDisplayName: "Acme",
+    role: "admin",
+    provider: "claude-code",
+    command: "first-tree-dev context enable --provider claude-code --team org-1",
+    workingDirectoryInstruction: "Run this from the target repository.",
   });
   authMock.value = {
     role: "admin",

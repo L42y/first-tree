@@ -20,6 +20,7 @@ const agentApiMocks = vi.hoisted(() => ({
 }));
 
 const resourceApiMocks = vi.hoisted(() => ({
+  confirmTeamRepositoriesForOrg: vi.fn(),
   createTeamResourceForOrg: vi.fn(),
   listTeamResourcesForOrg: vi.fn(),
 }));
@@ -202,6 +203,7 @@ beforeEach(() => {
   contextApiMocks.initializeContextTree.mockReset();
   agentApiMocks.listManagedAgents.mockReset();
   resourceApiMocks.listTeamResourcesForOrg.mockReset();
+  resourceApiMocks.confirmTeamRepositoriesForOrg.mockReset();
   resourceApiMocks.createTeamResourceForOrg.mockReset();
   onboardingEventMocks.getTreeSetupStatus.mockReset();
   onboardingEventMocks.postOnboardingStartChat.mockReset();
@@ -210,6 +212,7 @@ beforeEach(() => {
   orgSettingsMocks.getContextTreeSetting.mockReset();
   agentApiMocks.listManagedAgents.mockResolvedValue([]);
   resourceApiMocks.listTeamResourcesForOrg.mockResolvedValue([]);
+  resourceApiMocks.confirmTeamRepositoriesForOrg.mockResolvedValue({ repositories: [] });
   resourceApiMocks.createTeamResourceForOrg.mockResolvedValue({
     id: "repo-1",
     type: "repo",

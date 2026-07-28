@@ -411,6 +411,24 @@ Use one ordered source-resolution rule and call its result
    task-local read checkout under the workspace `worktrees/` directory. These
    reads do not register team resources or mutate the source repo.
 
+In a clean explicit-Team setup, source discovery stays read-only until the
+Admin explicitly confirms the exact `resolvedSources`. After that confirmation
+and before Phase 1, register the whole set with one optimistic batch:
+
+```bash
+first-tree tree seed --team <team-id> \
+  --expected-source-key <each-active-key-observed-before-confirmation> \
+  --confirm-source <each-confirmed-repository-url>
+```
+
+Repeat both flags as needed. For a new Team with no active repositories, omit
+`--expected-source-key`. A `409` means another Admin changed Settings →
+Repositories after confirmation; refresh the current set and ask the Admin to
+confirm the resulting selection again. Never fall back to individual resource
+creates, and never retire repositories omitted from this batch. A managed
+workspace whose declared sources were already registered by the Web setup
+continuation does not repeat this mutation.
+
 For every resolved source, determine `sourceForge` from the supplied URL or,
 for a local repository, `git remote get-url origin` before choosing host tools.
 Use `gh` for GitHub and `glab` for GitLab; use plain `git` for an unrecognized

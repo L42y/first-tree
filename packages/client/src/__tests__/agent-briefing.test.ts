@@ -6,7 +6,9 @@ import {
   type BuildAgentBriefingOptions,
   buildAgentBriefing,
   FIRST_TREE_FAMILY_SKILL_NAMES,
+  readCanonicalContextTreePolicy,
   resolveAgentBriefingTemplatePath,
+  resolveCanonicalContextTreePolicyPath,
 } from "../runtime/agent-briefing.js";
 import type { PredeclaredSourceRepo } from "../runtime/bootstrap.js";
 import { setCliBinding } from "../runtime/cli-binding.js";
@@ -83,28 +85,49 @@ describe("buildAgentBriefing — generated skeleton", () => {
     expect(briefing.endsWith("\n\n")).toBe(false);
   });
 
-  it("keeps complete briefing prose in EJS and runtime code limited to structured data", () => {
+  it("keeps managed prose in EJS and the core Context Tree policy in its canonical source", () => {
     const templatePath = resolveAgentBriefingTemplatePath();
     const templateSource = readFileSync(templatePath, "utf8");
     const runtimeSource = readFileSync(resolve(dirname(templatePath), "..", "agent-briefing.ts"), "utf8");
+    const policySource = readFileSync(resolveCanonicalContextTreePolicyPath(), "utf8");
 
     for (const marker of [
       "You are running inside **First Tree**",
       "Blocking questions never ride inside plain `chat send`",
-      "The Context Tree is durable context",
       "## GitLab Working Posture",
       "# Skills (First Tree Managed)",
     ]) {
       expect(templateSource).toContain(marker);
       expect(runtimeSource).not.toContain(marker);
     }
+    expect(policySource).toContain("The Context Tree is durable context");
+    expect(templateSource).not.toContain("The Context Tree is durable context");
+    expect(templateSource).toContain("<%- contextTreePolicy %>");
+    expect(runtimeSource).not.toContain("The Context Tree is durable context");
 
-    expect(templateSource).not.toContain("<%=");
     expect(runtimeSource).not.toContain("requiredReadingBlock");
     expect(runtimeSource).not.toContain("function generatedBannerSection(");
     expect(runtimeSource).not.toContain("function workingInFirstTreeSection(");
     expect(runtimeSource).not.toContain("function contextTreeSection(");
     expect(runtimeSource.match(/getCliBinding\(\)/gu)).toHaveLength(1);
+  });
+
+  it("embeds the canonical Context Tree policy byte-for-byte in the managed briefing", () => {
+    const canonical = readCanonicalContextTreePolicy();
+    const briefing = buildAgentBriefing(makeOpts());
+
+    expect(briefing).toContain(canonical);
+    expect(briefing.split(canonical)).toHaveLength(2);
+  });
+
+  it("keeps managed Skills dependent on the generated briefing instead of an external Plugin reference", () => {
+    const repoRoot = resolve(import.meta.dirname, "../../../..");
+    for (const skillName of ["first-tree-read", "first-tree-write"]) {
+      const skill = readFileSync(join(repoRoot, "skills", skillName, "SKILL.md"), "utf8");
+      expect(skill).toContain("generated Context Tree Policy");
+      expect(skill).not.toContain("references/context-tree-policy.md");
+      expect(skill).not.toContain("../_shared/context-tree-policy.md");
+    }
   });
 
   it("keeps top-level section order stable and excludes per-chat Current Chat Context", () => {

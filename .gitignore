@@ -6,6 +6,7 @@ run_*.sh
 
 # Build outputs
 dist/
+apps/cli/context-integration/
 *.tsbuildinfo
 .portable-release/
 .portable-smoke/

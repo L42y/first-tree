@@ -21,6 +21,7 @@ export type CommandModule = {
 
 export type SubcommandModule = {
   name: string;
+  hidden?: boolean;
   alias: string;
   summary: string;
   description: string;

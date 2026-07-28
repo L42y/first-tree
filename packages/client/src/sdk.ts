@@ -14,6 +14,10 @@ import {
   type ChatGitlabEntityListResponse,
   type ChatParticipantDetail,
   type ClientCapabilities,
+  type ConfirmTeamRepositories,
+  type ConfirmTeamRepositoriesOutput,
+  type ContextActivationRequest,
+  type ContextActivationResponse,
   type ContextReviewSubmitRequest,
   type ContextReviewSubmitResponse,
   type ContextTreeSeedPreflightRequest,
@@ -26,6 +30,10 @@ import {
   type CronJob,
   type CronPreviewRequest,
   type CronPreviewResponse,
+  confirmTeamRepositoriesOutputSchema,
+  confirmTeamRepositoriesSchema,
+  contextActivationRequestSchema,
+  contextActivationResponseSchema,
   contextTreeSeedPreflightRequestSchema,
   contextTreeSeedPreflightResponseSchema,
   contextTreeWritePreflightRequestSchema,
@@ -440,6 +448,51 @@ export class FirstTreeHubSDK {
       { retry: options.retry ?? true },
     );
     return contextTreeSeedPreflightResponseSchema.parse(response);
+  }
+
+  /**
+   * Validate one handoff-selected Team against the current source repository.
+   * The Server does not search other memberships or mint durable authority.
+   */
+  async validateMemberContextActivation(
+    organizationId: string,
+    data: ContextActivationRequest,
+    options: { retry?: boolean; timeoutMs?: number } = {},
+  ): Promise<ContextActivationResponse> {
+    const body = contextActivationRequestSchema.parse(data);
+    const response = await this.requestJson<unknown>(
+      `/api/v1/orgs/${encodeURIComponent(organizationId)}/context-activation/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      {
+        retry: options.retry ?? false,
+        timeoutMs: options.timeoutMs,
+      },
+    );
+    return contextActivationResponseSchema.parse(response);
+  }
+
+  /**
+   * Atomically register the Admin-confirmed source repository set for one
+   * explicit Team. The expected keys prevent a stale setup chat from silently
+   * overwriting repository changes made by another Admin.
+   */
+  async confirmMemberTeamRepositories(
+    organizationId: string,
+    data: ConfirmTeamRepositories,
+  ): Promise<ConfirmTeamRepositoriesOutput> {
+    const body = confirmTeamRepositoriesSchema.parse(data);
+    const response = await this.requestJson<unknown>(
+      `/api/v1/orgs/${encodeURIComponent(organizationId)}/resources/repositories/confirm`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      { retry: false },
+    );
+    return confirmTeamRepositoriesOutputSchema.parse(response);
   }
 
   /** Read the signed-in member's Team memberships for explicit org selection. */
