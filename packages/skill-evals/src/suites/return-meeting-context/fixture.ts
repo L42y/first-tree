@@ -8,9 +8,10 @@ import { installRepoSkill, parseSkillDescription } from "../../core/skills/insta
 import type { RunPaths } from "../../core/types.js";
 import type { FixtureValidation, MeetingFixtureMode, ReturnMeetingContextEvalCase } from "./types.js";
 
-const SKILL_NAME = "return-meeting-context";
+const MEETING_SKILL_NAME = "return-meeting-context";
+const WRITE_SKILL_NAME = "first-tree-write";
 
-function workspaceAgentsMarkdown(skillDescription: string): string {
+function singleSkillAgentsMarkdown(skillDescription: string): string {
   return `# Meeting Context Eval Workspace
 
 Use the installed skill when its description applies.
@@ -28,6 +29,38 @@ and the files it references. Do not discover or follow any other source. Write
 only the sanitized packet \`meeting-context-output.json\` at workspace root.
 Run the installed validator. Do not call external providers, create a Context
 Tree, invoke first-tree-write, send messages, or create PRs in this eval.
+`;
+}
+
+function composedRoutingAgentsMarkdown(meetingDescription: string, writeDescription: string): string {
+  return `# Meeting Context Eval Workspace
+
+Use installed skills only when their descriptions apply to the user's prompt.
+
+## Available Skills
+
+| Skill | Load when |
+|---|---|
+| \`return-meeting-context\` | ${meetingDescription} |
+| \`first-tree-write\` | ${writeDescription} |
+
+## Context source routing
+
+- Meeting minutes, AI notes, transcripts, decision records, and equivalent
+  meeting artifacts always enter \`return-meeting-context\` first.
+- Concrete non-meeting source artifacts may enter \`first-tree-write\`
+  directly.
+- Meeting material reaches \`first-tree-write\` only after
+  \`return-meeting-context\` produces and validates a
+  \`DecisionEvidencePacket\`.
+
+The user-supplied source boundary is exactly \`source-artifacts/bundle.json\`
+and the files it references. Do not discover or follow any other source. If a
+decision-evidence packet is produced, write it to
+\`meeting-context-output.json\` at workspace root.
+
+No Context Tree binding is configured in this workspace. Do not call external
+providers, send messages, or create PRs.
 `;
 }
 
@@ -163,8 +196,15 @@ export function setupFixture(evalCase: ReturnMeetingContextEvalCase, paths: RunP
   });
   reporter.fixtureSetupStarted("meeting-artifacts");
 
-  const skillMarkdown = installRepoSkill(paths.repoRoot, paths.workspacePath, SKILL_NAME);
-  writeText(join(paths.workspacePath, "AGENTS.md"), workspaceAgentsMarkdown(parseSkillDescription(skillMarkdown)));
+  const meetingSkillMarkdown = installRepoSkill(paths.repoRoot, paths.workspacePath, MEETING_SKILL_NAME);
+  const agentsMarkdown =
+    evalCase.fixture.routing === "meeting-vs-write"
+      ? composedRoutingAgentsMarkdown(
+          parseSkillDescription(meetingSkillMarkdown),
+          parseSkillDescription(installRepoSkill(paths.repoRoot, paths.workspacePath, WRITE_SKILL_NAME)),
+        )
+      : singleSkillAgentsMarkdown(parseSkillDescription(meetingSkillMarkdown));
+  writeText(join(paths.workspacePath, "AGENTS.md"), agentsMarkdown);
 
   const sourceRepoPath = join(paths.workspacePath, "source-artifacts");
   mkdirSync(sourceRepoPath, { recursive: true });
@@ -185,14 +225,22 @@ export function setupFixture(evalCase: ReturnMeetingContextEvalCase, paths: RunP
   return sourceRepoPath;
 }
 
-export function validateFixture(paths: RunPaths, sourceRepoPath: string): FixtureValidation {
+export function validateFixture(
+  evalCase: ReturnMeetingContextEvalCase,
+  paths: RunPaths,
+  sourceRepoPath: string,
+): FixtureValidation {
   const required = [
     join(paths.workspacePath, "AGENTS.md"),
-    join(paths.workspacePath, ".agents", "skills", SKILL_NAME, "SKILL.md"),
-    join(paths.workspacePath, ".agents", "skills", SKILL_NAME, "scripts", "validate-output.mjs"),
+    join(paths.workspacePath, ".agents", "skills", MEETING_SKILL_NAME, "SKILL.md"),
+    join(paths.workspacePath, ".agents", "skills", MEETING_SKILL_NAME, "scripts", "validate-output.mjs"),
     join(sourceRepoPath, "bundle.json"),
   ];
-  const errors = required.filter((path) => !existsSync(path)).map((path) => `missing required file: ${path}`);
+  if (evalCase.fixture.routing === "meeting-vs-write") {
+    required.push(join(paths.workspacePath, ".agents", "skills", WRITE_SKILL_NAME, "SKILL.md"));
+  }
+  const missingFiles = required.filter((path) => !existsSync(path));
+  const errors = missingFiles.map((path) => `missing required file: ${path}`);
   const status = runCommand("git", ["status", "--porcelain"], sourceRepoPath);
   if (status.exitCode !== 0 || status.stdout.trim().length > 0) {
     errors.push("source artifact fixture is not clean after setup");
@@ -200,6 +248,6 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
   return {
     errors,
     ok: errors.length === 0,
-    requiredFilesOk: errors.length === 0,
+    requiredFilesOk: missingFiles.length === 0,
   };
 }

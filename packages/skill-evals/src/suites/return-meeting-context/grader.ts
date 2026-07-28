@@ -10,17 +10,70 @@ import type { EvalMetrics, FixtureValidation, ReturnMeetingContextEvalCase } fro
 
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 
+export type RoutingObservation = {
+  interpreterSkillReadOrder: number | null;
+  routingOrderObserved: boolean;
+  validatorInvocationOrder: number | null;
+  writerSkillReadOrder: number | null;
+};
+
 function eventType(event: Record<string, unknown>): string | null {
   return typeof event.type === "string" ? event.type : null;
 }
 
-function containsSkillFileRead(event: unknown): boolean {
+function containsSkillFileRead(event: unknown, skillName: string): boolean {
   if (!isRecord(event) || eventType(event) !== "codex_event") return false;
   const nested = event.event;
-  if (!findStringValue(nested, (value) => value.includes("return-meeting-context/SKILL.md"))) return false;
+  if (!findStringValue(nested, (value) => value.includes(`${skillName}/SKILL.md`))) return false;
   const serialized = JSON.stringify(nested) ?? "";
   if (serialized.includes("Available Skills")) return false;
   return /tool|exec|command|cmd|read|cat|sed/iu.test(serialized);
+}
+
+function successfulCommand(event: unknown): string | null {
+  if (!isRecord(event) || eventType(event) !== "codex_event" || !isRecord(event.event)) return null;
+  const item = event.event.item;
+  if (!isRecord(item) || item.type !== "command_execution" || typeof item.command !== "string") return null;
+  const exitCode =
+    typeof item.exit_code === "number" ? item.exit_code : typeof item.exitCode === "number" ? item.exitCode : null;
+  if (item.status !== "completed" || (exitCode !== null && exitCode !== 0)) return null;
+  return item.command;
+}
+
+export function deriveRoutingObservation(
+  events: readonly unknown[],
+  evalCase: ReturnMeetingContextEvalCase,
+): RoutingObservation {
+  let interpreterSkillReadOrder: number | null = null;
+  let validatorInvocationOrder: number | null = null;
+  let writerSkillReadOrder: number | null = null;
+  for (const [order, event] of events.entries()) {
+    if (interpreterSkillReadOrder === null && containsSkillFileRead(event, "return-meeting-context")) {
+      interpreterSkillReadOrder = order;
+    }
+    if (writerSkillReadOrder === null && containsSkillFileRead(event, "first-tree-write")) {
+      writerSkillReadOrder = order;
+    }
+    const command = successfulCommand(event);
+    if (validatorInvocationOrder === null && command?.includes("validate-output.mjs")) {
+      validatorInvocationOrder = order;
+    }
+  }
+
+  const routingOrderObserved =
+    evalCase.fixture.routing === "meeting-vs-write"
+      ? interpreterSkillReadOrder !== null &&
+        validatorInvocationOrder !== null &&
+        interpreterSkillReadOrder < validatorInvocationOrder &&
+        (writerSkillReadOrder === null || validatorInvocationOrder < writerSkillReadOrder)
+      : interpreterSkillReadOrder !== null;
+
+  return {
+    interpreterSkillReadOrder,
+    routingOrderObserved,
+    validatorInvocationOrder,
+    writerSkillReadOrder,
+  };
 }
 
 function isAssistantMessage(record: Record<string, unknown>): boolean {
@@ -140,6 +193,7 @@ export function deriveMetrics(
   const forbiddenClaimTerms = evalCase.expected.forbiddenClaimTerms.filter((term) =>
     claims.includes(term.toLowerCase()),
   );
+  const routing = deriveRoutingObservation(events, evalCase);
   return {
     candidateCountObserved: candidates.length === evalCase.expected.candidateCount,
     chronologyObserved: chronologyObserved(evalCase, candidates),
@@ -154,11 +208,15 @@ export function deriveMetrics(
     ),
     runnerExitCode,
     settlementObserved: settlementObserved(evalCase, candidates),
-    skillFileReadObserved: events.some(containsSkillFileRead),
+    interpreterSkillReadOrder: routing.interpreterSkillReadOrder,
+    routingOrderObserved: routing.routingOrderObserved,
+    skillFileReadObserved: routing.interpreterSkillReadOrder !== null,
     sourceRepoChanged: sourceRepoChanged(events, paths),
     statusObserved: packet?.status === evalCase.expected.status,
+    validatorInvocationOrder: routing.validatorInvocationOrder,
     validatorResult,
     validatorSucceeded: validatorResult.exitCode === 0,
+    writerSkillReadOrder: routing.writerSkillReadOrder,
   };
 }
 
@@ -175,7 +233,7 @@ function scores(fixtureValidation: FixtureValidation, metrics: EvalMetrics): Ski
       metrics.chronologyObserved,
     process_pass: fixtureValidation.ok && metrics.runnerExitCode === 0 && metrics.validatorSucceeded,
     risk_pass: !metrics.sourceRepoChanged && !metrics.contextTreeCreated,
-    routing_pass: metrics.skillFileReadObserved,
+    routing_pass: metrics.routingOrderObserved,
   };
 }
 
@@ -203,7 +261,10 @@ export function buildGrading(
   return {
     caseId: evalCase.id,
     evidence: [
-      evidence("routing_pass", `return-meeting-context skill read=${String(metrics.skillFileReadObserved)}`),
+      evidence(
+        "routing_pass",
+        `ordered=${String(metrics.routingOrderObserved)}; interpreter=${String(metrics.interpreterSkillReadOrder)}; validator=${String(metrics.validatorInvocationOrder)}; writer=${String(metrics.writerSkillReadOrder)}`,
+      ),
       evidence(
         "process_pass",
         `fixture=${String(fixtureValidation.ok)}; runner=${metrics.runnerExitCode}; validator=${metrics.validatorResult.exitCode}`,
@@ -224,7 +285,7 @@ export function buildGrading(
 }
 
 export function driftNote(metrics: EvalMetrics): string | null {
-  if (!metrics.skillFileReadObserved) return "skill routing was not observed";
+  if (!metrics.routingOrderObserved) return "meeting interpreter and validated writer handoff order was not observed";
   if (!metrics.validatorSucceeded) return "decision packet failed deterministic validation";
   if (metrics.sourceRepoChanged) return "source artifact fixture changed";
   if (metrics.contextTreeCreated) return "analysis-only eval created a Context Tree";

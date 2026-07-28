@@ -3,6 +3,7 @@ import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
 export type MeetingFixtureMode = "progress-only" | "later-override" | "ai-notes" | "partial-source";
+export type MeetingRoutingMode = "single-skill" | "meeting-vs-write";
 export type MeetingPacketStatus = "no-change" | "needs-confirmation" | "ready-for-write" | "blocked-source";
 export type MeetingSettlementExpectation = "none" | "settled" | "uncertain";
 
@@ -18,6 +19,7 @@ export type ReturnMeetingContextEvalCase = {
   };
   fixture: {
     mode: MeetingFixtureMode;
+    routing: MeetingRoutingMode;
   };
   id: string;
   prompt: string;
@@ -56,11 +58,15 @@ export type EvalMetrics = {
   requiredClaimTermsObserved: boolean;
   runnerExitCode: number;
   settlementObserved: boolean;
+  interpreterSkillReadOrder: number | null;
+  routingOrderObserved: boolean;
   skillFileReadObserved: boolean;
   sourceRepoChanged: boolean;
   statusObserved: boolean;
+  validatorInvocationOrder: number | null;
   validatorResult: CommandResult;
   validatorSucceeded: boolean;
+  writerSkillReadOrder: number | null;
 };
 
 export type CaseRunSummary = {

@@ -27,10 +27,12 @@ describe("return-meeting-context eval floor", () => {
     expect(naturalRoutingCase?.prompt).not.toContain("return-meeting-context");
     expect(naturalRoutingCase?.prompt).not.toContain("meeting-context-output.json");
     expect(naturalRoutingCase?.prompt).not.toContain("For this eval");
+    expect(naturalRoutingCase?.fixture.routing).toBe("meeting-vs-write");
 
     for (const evalCase of RETURN_MEETING_CONTEXT_GATE_CASES.filter(
       (candidate) => candidate.id !== naturalRoutingCase?.id,
     )) {
+      expect(evalCase.fixture.routing).toBe("single-skill");
       expect(evalCase.prompt).toContain("source-artifacts/bundle.json");
       expect(evalCase.prompt).toContain("meeting-context-output.json");
       expect(evalCase.prompt).toContain("Do not create or modify a Context Tree");

@@ -19,7 +19,7 @@ export const RETURN_MEETING_CONTEXT_GATE_CASES: readonly ReturnMeetingContextEva
       settlement: "none",
       status: "no-change",
     },
-    fixture: { mode: "progress-only" },
+    fixture: { mode: "progress-only", routing: "single-skill" },
     id: "meeting-progress-only-no-change",
     prompt:
       "Use return-meeting-context to analyze source-artifacts/bundle.json. Write the validated packet to meeting-context-output.json. Do not create or modify a Context Tree.",
@@ -39,7 +39,7 @@ export const RETURN_MEETING_CONTEXT_GATE_CASES: readonly ReturnMeetingContextEva
       settlement: "settled",
       status: "ready-for-write",
     },
-    fixture: { mode: "later-override" },
+    fixture: { mode: "later-override", routing: "meeting-vs-write" },
     id: "meeting-later-override-final-decision",
     prompt:
       "Reflect the durable decisions from the supplied meeting minutes at `source-artifacts/bundle.json` into the Context Tree.",
@@ -59,7 +59,7 @@ export const RETURN_MEETING_CONTEXT_GATE_CASES: readonly ReturnMeetingContextEva
       settlement: "uncertain",
       status: "needs-confirmation",
     },
-    fixture: { mode: "ai-notes" },
+    fixture: { mode: "ai-notes", routing: "single-skill" },
     id: "meeting-ai-notes-needs-confirmation",
     prompt:
       "Use return-meeting-context to analyze source-artifacts/bundle.json. Write the validated packet to meeting-context-output.json. Do not create or modify a Context Tree.",
@@ -79,7 +79,7 @@ export const RETURN_MEETING_CONTEXT_GATE_CASES: readonly ReturnMeetingContextEva
       settlement: "none",
       status: "blocked-source",
     },
-    fixture: { mode: "partial-source" },
+    fixture: { mode: "partial-source", routing: "single-skill" },
     id: "meeting-partial-source-blocked",
     prompt:
       "Use return-meeting-context to analyze source-artifacts/bundle.json. Write the validated packet to meeting-context-output.json. Do not create or modify a Context Tree.",

@@ -24,7 +24,7 @@ export async function runReturnMeetingContextCase(
   reporter.caseStarted();
 
   const sourceRepoPath = setupFixture(evalCase, paths, reporter);
-  const fixtureValidation = validateFixture(paths, sourceRepoPath);
+  const fixtureValidation = validateFixture(evalCase, paths, sourceRepoPath);
   const runnerResult = await runAgentProvider(
     {
       caseId: evalCase.id,
