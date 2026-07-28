@@ -2,9 +2,14 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionEvent } from "@first-tree/shared";
+import type { AgentRuntimeConfigPayload, SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildCursorTurnArgs, CURSOR_PENDING_SESSION_PREFIX, createCursorHandler } from "../handlers/cursor/index.js";
+import {
+  buildCursorMcpEnableArgs,
+  buildCursorTurnArgs,
+  CURSOR_PENDING_SESSION_PREFIX,
+  createCursorHandler,
+} from "../handlers/cursor/index.js";
 import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../runtime/handler.js";
 import { mockCtxPlumbing } from "./test-helpers.js";
 
@@ -168,6 +173,7 @@ function makeHandler(spawnFn: unknown, extraConfig: Record<string, unknown> = {}
     workspaceRoot,
     runtimeProvider: "cursor",
     cursorSpawnFn: spawnFn,
+    cursorMcpEnableFn: async () => {},
     cursorBinaryResolver: () => ({ ok: true, binary: "/fake/bin/cursor-agent", version: "2026.07.09-test" }),
     ...extraConfig,
   });
@@ -182,8 +188,8 @@ afterEach(() => {
 });
 
 describe("buildCursorTurnArgs — canonical spawn contract", () => {
-  it("locks the exact canonical argv, with MCP approval/model/resume only when supplied", () => {
-    expect(buildCursorTurnArgs({ approveMcps: false, model: "", resumeSessionId: null })).toEqual([
+  it("locks the exact canonical argv without the broad MCP approval flag", () => {
+    expect(buildCursorTurnArgs({ model: "", resumeSessionId: null })).toEqual([
       "-p",
       "--output-format",
       "stream-json",
@@ -191,19 +197,19 @@ describe("buildCursorTurnArgs — canonical spawn contract", () => {
       "disabled",
       "--force",
     ]);
-    expect(buildCursorTurnArgs({ approveMcps: true, model: "composer-2.5", resumeSessionId: "abc" })).toEqual([
+    expect(buildCursorTurnArgs({ model: "composer-2.5", resumeSessionId: "abc" })).toEqual([
       "-p",
       "--output-format",
       "stream-json",
       "--sandbox",
       "disabled",
       "--force",
-      "--approve-mcps",
       "--model",
       "composer-2.5",
       "--resume",
       "abc",
     ]);
+    expect(buildCursorMcpEnableArgs("managed-docs")).toEqual(["mcp", "enable", "managed-docs"]);
   });
 });
 
@@ -257,9 +263,10 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(seenStdin.indexOf("the prompt body")).toBeGreaterThan(0);
   });
 
-  it("resume: passes managed MCP approval, --resume, and the operator model verbatim", async () => {
+  it("resume: precisely approves managed MCP and passes --resume plus the operator model verbatim", async () => {
     const events: SessionEvent[] = [];
     const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "sess-real-2", text: "resumed" })]);
+    const enabledServers: string[] = [];
     const payload = {
       kind: "cursor" as const,
       prompt: { append: "" },
@@ -271,6 +278,7 @@ describe("cursor handler — per-turn CLI transport", () => {
     };
     const handler = makeHandler(spawnFn, {
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void enabledServers.push(serverName),
     });
 
     await handler.resume(makeMessage("m2", "continue"), "sess-real-2", makeContext({ events }), makeToken());
@@ -284,12 +292,13 @@ describe("cursor handler — per-turn CLI transport", () => {
       "--sandbox",
       "disabled",
       "--force",
-      "--approve-mcps",
       "--model",
       "gpt-5.3-codex-high",
       "--resume",
       "sess-real-2",
     ]);
+    expect(call.args).not.toContain("--approve-mcps");
+    expect(enabledServers).toEqual(["docs"]);
   });
 
   it("first-turn auth failure settles consumed-terminal, returns a synthetic id, and never resumes with it", async () => {
@@ -602,8 +611,14 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(completed.payload.args).toMatchObject({ cwd: contextTreePath });
   });
 
-  it("atomically materializes all managed MCP transports and approves them for the turn", async () => {
+  it("atomically materializes all managed MCP transports and approves only their names", async () => {
     const events: SessionEvent[] = [];
+    const enabledServers: Array<{
+      binary: string;
+      serverName: string;
+      workspaceCwd: string;
+      args: string[];
+    }> = [];
     const payload = {
       kind: "cursor" as const,
       prompt: { append: "" },
@@ -630,11 +645,39 @@ describe("cursor handler — per-turn CLI transport", () => {
     const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "s-mcp", text: "done" })]);
     const handler = makeHandler(spawnFn, {
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      cursorMcpEnableFn: async (input: { binary: string; serverName: string; workspaceCwd: string }) => {
+        enabledServers.push({
+          binary: input.binary,
+          serverName: input.serverName,
+          workspaceCwd: input.workspaceCwd,
+          args: buildCursorMcpEnableArgs(input.serverName),
+        });
+      },
     });
 
     await handler.start(makeMessage("m1", "hi"), makeContext({ events }), makeToken());
 
-    expect(calls[0]?.args).toContain("--approve-mcps");
+    expect(calls[0]?.args).not.toContain("--approve-mcps");
+    expect(enabledServers).toEqual([
+      {
+        binary: "/fake/bin/cursor-agent",
+        serverName: "docs",
+        workspaceCwd: workspaceRoot,
+        args: ["mcp", "enable", "docs"],
+      },
+      {
+        binary: "/fake/bin/cursor-agent",
+        serverName: "remote",
+        workspaceCwd: workspaceRoot,
+        args: ["mcp", "enable", "remote"],
+      },
+      {
+        binary: "/fake/bin/cursor-agent",
+        serverName: "events",
+        workspaceCwd: workspaceRoot,
+        args: ["mcp", "enable", "events"],
+      },
+    ]);
     const configPath = join(workspaceRoot, ".cursor", "mcp.json");
     expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
       mcpServers: {
@@ -666,11 +709,170 @@ describe("cursor handler — per-turn CLI transport", () => {
     mkdirSync(configDir, { recursive: true });
     writeFileSync(configPath, JSON.stringify({ mcpServers: { stale: { command: "stale-server" } } }));
     const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "s-empty-mcp", text: "done" })]);
-    const handler = makeHandler(spawnFn);
+    const enabledServers: string[] = [];
+    const handler = makeHandler(spawnFn, {
+      cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void enabledServers.push(serverName),
+    });
 
     await handler.start(makeMessage("m1", "hi"), makeContext({ events: [] }), makeToken());
 
     expect(calls[0]?.args).not.toContain("--approve-mcps");
+    expect(enabledServers).toEqual([]);
     expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ mcpServers: {} });
+  });
+
+  it("retries before provider spawn when targeted MCP approval fails", async () => {
+    const payload = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [{ name: "docs", transport: "stdio" as const, command: "docs-server" }],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const events: SessionEvent[] = [];
+    const { spawnFn, calls } = makeFakeSpawn([]);
+    const handler = makeHandler(spawnFn, {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      cursorMcpEnableFn: async () => {
+        throw new Error("private-provider-output");
+      },
+    });
+    const token = makeToken();
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events }), token);
+
+    expect(calls).toHaveLength(0);
+    expect(token.retried).toEqual(["cursor_mcp_projection_failed"]);
+    expect(token.completed).toEqual([]);
+    const surfaced = events.find((event) => event.kind === "error" && event.payload.source === "runtime");
+    if (!surfaced || !("message" in surfaced.payload) || typeof surfaced.payload.message !== "string") {
+      throw new Error("expected a runtime MCP setup error");
+    }
+    expect(surfaced?.payload.message).toContain("managed MCP setup failed");
+    expect(surfaced?.payload.message).not.toContain("private-provider-output");
+  });
+
+  it("converges add then remove from the latest payload on the same active handler", async () => {
+    const emptyPayload: AgentRuntimeConfigPayload = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const managedPayload: AgentRuntimeConfigPayload = {
+      ...emptyPayload,
+      model: "composer-managed",
+      mcpServers: [{ name: "docs", transport: "stdio" as const, command: "docs-server" }],
+    };
+    let payload = emptyPayload;
+    const enabledServers: string[] = [];
+    const { spawnFn, calls } = makeFakeSpawn([
+      successScript({ sessionId: "s-hot", text: "initial" }),
+      successScript({ sessionId: "s-hot", text: "added" }),
+      successScript({ sessionId: "s-hot", text: "removed" }),
+    ]);
+    const handler = makeHandler(spawnFn, {
+      agentConfigCache: {
+        refresh: async () => ({ payload }),
+        get: () => ({ payload }),
+      },
+      cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void enabledServers.push(serverName),
+    });
+    const sessionCtx = makeContext({ events: [] });
+
+    await handler.start(makeMessage("m1", "initial"), sessionCtx, makeToken());
+
+    payload = managedPayload;
+    const addToken = makeToken();
+    expect(handler.inject(makeMessage("m2", "add tools"), addToken)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(addToken.completed).toHaveLength(1));
+    expect(enabledServers).toEqual(["docs"]);
+    expect(calls[1]?.args).toContain("composer-managed");
+    expect(calls[1]?.args).not.toContain("--approve-mcps");
+    expect(JSON.parse(readFileSync(join(workspaceRoot, ".cursor", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { docs: { command: "docs-server" } },
+    });
+
+    payload = emptyPayload;
+    const removeToken = makeToken();
+    expect(handler.inject(makeMessage("m3", "remove tools"), removeToken)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(removeToken.completed).toHaveLength(1));
+    expect(enabledServers).toEqual(["docs"]);
+    expect(calls[2]?.args).not.toContain("composer-managed");
+    expect(calls[2]?.args).not.toContain("--approve-mcps");
+    expect(JSON.parse(readFileSync(join(workspaceRoot, ".cursor", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: {},
+    });
+  });
+
+  it("serializes projection and the full turn across handlers sharing one agent workspace", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstMayFinish = new Promise<void>((resolvePromise) => {
+      releaseFirst = resolvePromise;
+    });
+    const order: string[] = [];
+    const payloadA = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [{ name: "alpha", transport: "stdio" as const, command: "alpha-server" }],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const payloadB = {
+      ...payloadA,
+      mcpServers: [{ name: "beta", transport: "stdio" as const, command: "beta-server" }],
+    };
+    const firstSpawn = makeFakeSpawn([
+      (child) => {
+        order.push("alpha:provider");
+        void firstMayFinish.then(() => successScript({ sessionId: "s-alpha", text: "alpha" })(child));
+      },
+    ]);
+    const secondSpawn = makeFakeSpawn([
+      (child) => {
+        order.push("beta:provider");
+        successScript({ sessionId: "s-beta", text: "beta" })(child);
+      },
+    ]);
+    let secondPrepared = false;
+    const firstHandler = makeHandler(firstSpawn.spawnFn, {
+      agentConfigCache: { refresh: async () => ({ payload: payloadA }), get: () => ({ payload: payloadA }) },
+      cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void order.push(`${serverName}:enable`),
+    });
+    const secondHandler = makeHandler(secondSpawn.spawnFn, {
+      agentConfigCache: {
+        refresh: async () => {
+          secondPrepared = true;
+          return { payload: payloadB };
+        },
+        get: () => ({ payload: payloadB }),
+      },
+      cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void order.push(`${serverName}:enable`),
+    });
+
+    const first = firstHandler.start(makeMessage("m-alpha", "alpha"), makeContext({ events: [] }), makeToken());
+    await vi.waitFor(() => expect(firstSpawn.calls).toHaveLength(1));
+    expect(JSON.parse(readFileSync(join(workspaceRoot, ".cursor", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { alpha: { command: "alpha-server" } },
+    });
+
+    const second = secondHandler.start(makeMessage("m-beta", "beta"), makeContext({ events: [] }), makeToken());
+    await vi.waitFor(() => expect(secondPrepared).toBe(true));
+    expect(secondSpawn.calls).toHaveLength(0);
+    expect(order).toEqual(["alpha:enable", "alpha:provider"]);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(order).toEqual(["alpha:enable", "alpha:provider", "beta:enable", "beta:provider"]);
+    expect(JSON.parse(readFileSync(join(workspaceRoot, ".cursor", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { beta: { command: "beta-server" } },
+    });
   });
 });

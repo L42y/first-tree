@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import {
   type AgentRuntimeConfigPayload,
   classifyShellCommandIo,
@@ -65,8 +66,10 @@ import { type CursorStreamEvent, CursorStreamParser, type CursorToolCall, type C
  *
  * Canonical spawn contract (human-confirmed safety posture):
  *   <binary> -p --output-format stream-json --sandbox disabled --force
- *            [--approve-mcps when managed MCP servers are configured]
  *            [--model <exact-operator-value>] [--resume <confirmed-session-id>]
+ *   Before each turn, First Tree atomically projects only its managed servers
+ *   into `.cursor/mcp.json` and runs `<binary> mcp enable <managed-name>` for
+ *   each projected entry.
  *
  * Hard constraints enforced here, not by prompt:
  *   - process cwd = agent home; prompt rides stdin only (never argv);
@@ -74,7 +77,8 @@ import { type CursorStreamEvent, CursorStreamParser, type CursorToolCall, type C
  *   - no `--trust` / `--workspace` / `--stream-partial-output`, no
  *     `CURSOR_CONFIG_DIR`, no generated `.cursor/cli.json` — the operator's
  *     own Cursor login and permission config (including explicit denies) apply.
- *     `--approve-mcps` is present only for the runtime-owned `.cursor/mcp.json`;
+ *     The broad `--approve-mcps` flag is never used: provider-native
+ *     per-server approval keeps unrelated operator MCP approval unchanged;
  *   - `--resume` only ever carries a stream-confirmed provider session id;
  *     synthetic pending ids stay runtime-local;
  *   - settlement waits for child close + stdout/stderr drain (auth, invalid
@@ -134,14 +138,14 @@ function materializeCursorMcpConfig(workspaceCwd: string, payload: AgentRuntimeC
   }
 }
 
+/** Cursor's provider-native, single-server approval command. */
+export function buildCursorMcpEnableArgs(serverName: string): string[] {
+  return ["mcp", "enable", serverName];
+}
+
 /** Build the canonical argv (exported so tests can lock the spawn contract). */
-export function buildCursorTurnArgs(input: {
-  approveMcps: boolean;
-  model: string;
-  resumeSessionId: string | null;
-}): string[] {
+export function buildCursorTurnArgs(input: { model: string; resumeSessionId: string | null }): string[] {
   const args = ["-p", "--output-format", "stream-json", "--sandbox", "disabled", "--force"];
-  if (input.approveMcps) args.push("--approve-mcps");
   if (input.model) args.push("--model", input.model);
   if (input.resumeSessionId) args.push("--resume", input.resumeSessionId);
   return args;
@@ -152,8 +156,90 @@ const STDERR_TAIL_LIMIT = 8_192;
 /** Grace between SIGTERM and SIGKILL on abort, and the final close wait. */
 const KILL_GRACE_MS = 5_000;
 const FINAL_CLOSE_WAIT_MS = 10_000;
+/** `mcp enable` is a local config operation and must not stall a delivery. */
+const CURSOR_MCP_ENABLE_TIMEOUT_MS = 10_000;
+const CURSOR_MCP_ENABLE_MAX_BUFFER = 64 * 1024;
 
 type SpawnFn = typeof spawn;
+type CursorMcpEnableFn = (input: {
+  binary: string;
+  serverName: string;
+  workspaceCwd: string;
+  env: Record<string, string>;
+  abortSignal: AbortSignal;
+}) => Promise<void>;
+
+const execFileAsync = promisify(execFile);
+
+async function enableCursorMcpServer(input: Parameters<CursorMcpEnableFn>[0]): Promise<void> {
+  try {
+    await execFileAsync(input.binary, buildCursorMcpEnableArgs(input.serverName), {
+      cwd: input.workspaceCwd,
+      env: input.env,
+      shell: false,
+      signal: input.abortSignal,
+      timeout: CURSOR_MCP_ENABLE_TIMEOUT_MS,
+      maxBuffer: CURSOR_MCP_ENABLE_MAX_BUFFER,
+      windowsHide: true,
+    });
+  } catch (err) {
+    if (input.abortSignal.aborted) throw err;
+    // The CLI may include parsed config in stderr. Do not propagate it because
+    // remote MCP headers can be sensitive; a bounded code is enough to route
+    // the operator toward the failed provider-native approval step.
+    const code = typeof err === "object" && err !== null && "code" in err ? err.code : undefined;
+    throw new Error(
+      `cursor-agent mcp enable failed for managed server "${input.serverName}"${
+        typeof code === "string" || typeof code === "number" ? ` (code ${code})` : ""
+      }`,
+    );
+  }
+}
+
+/**
+ * A Cursor process reads project MCP config from the agent workspace. Multiple
+ * chats for one agent share that workspace, so their materialize/approve/spawn
+ * sequence must not interleave. Hold this lock for the complete provider turn:
+ * that is the only provider-supported boundary at which the process is known
+ * to be done reading and using the projected file.
+ */
+const cursorWorkspaceTurnTails = new Map<string, Promise<void>>();
+
+async function withCursorWorkspaceTurnLock<T>(
+  workspaceCwd: string,
+  abortSignal: AbortSignal,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = resolve(workspaceCwd);
+  const previous = cursorWorkspaceTurnTails.get(key) ?? Promise.resolve();
+  let releaseSelf: () => void = () => {};
+  const self = new Promise<void>((resolveSelf) => {
+    releaseSelf = resolveSelf;
+  });
+  const tail = previous.catch(() => {}).then(() => self);
+  cursorWorkspaceTurnTails.set(key, tail);
+  void tail.then(() => {
+    if (cursorWorkspaceTurnTails.get(key) === tail) cursorWorkspaceTurnTails.delete(key);
+  });
+
+  if (abortSignal.aborted) {
+    releaseSelf();
+    throw new DOMException("Aborted", "AbortError");
+  }
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_resolvePromise, reject) => {
+    onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([previous.catch(() => {}), aborted]);
+    if (abortSignal.aborted) throw new DOMException("Aborted", "AbortError");
+    return await fn();
+  } finally {
+    abortSignal.removeEventListener("abort", onAbort);
+    releaseSelf();
+  }
+}
 
 function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) {
@@ -203,6 +289,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
   const spawnFn = (config.cursorSpawnFn as SpawnFn | undefined) ?? spawn;
+  const enableMcpServer = (config.cursorMcpEnableFn as CursorMcpEnableFn | undefined) ?? enableCursorMcpServer;
   const resolveBinary =
     (config.cursorBinaryResolver as typeof resolveCursorRuntimeBinary | undefined) ?? resolveCursorRuntimeBinary;
 
@@ -262,15 +349,12 @@ export const createCursorHandler: HandlerFactory = (config) => {
     });
   }
 
-  function buildEnv(sessionCtx: SessionContext): Record<string, string> {
+  function buildEnv(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v === "string") env[k] = v;
     }
-    const payload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload;
-    if (payload) {
-      for (const e of payload.env) env[e.key] = e.value;
-    }
+    for (const e of payload.env) env[e.key] = e.value;
     // The First Tree envelope injects the runtime-session token FILE PATH and
     // identity ids — never a token value.
     const merged = sessionCtx.buildAgentEnv(env);
@@ -727,14 +811,114 @@ export const createCursorHandler: HandlerFactory = (config) => {
     token: DeliveryToken,
   ): Promise<boolean> {
     const workspaceCwd = cwd;
-    const activeBinary = binary;
-    if (!workspaceCwd || !activeBinary || !sessionActive) {
+    const fallbackPayload = activePayload;
+    if (!workspaceCwd || !binary || !fallbackPayload || !sessionActive) {
       // `sessionActive` closes the drain-vs-lifecycle race: a queued turn
       // whose drain passed its gates before suspend()/shutdown() ran must not
       // spawn a provider process on a suspended session.
       token.retry(messages, sessionActive ? "cursor_missing_workspace_or_binary" : "cursor_session_inactive");
       return false;
     }
+
+    const generation = ++turnGeneration;
+    const abort = new AbortController();
+    currentAbort = abort;
+    const turnPromise = withCursorWorkspaceTurnLock(workspaceCwd, abort.signal, async () => {
+      const activeBinary = binary;
+      if (
+        abort.signal.aborted ||
+        turnGeneration !== generation ||
+        cwd !== workspaceCwd ||
+        !activeBinary ||
+        !sessionActive
+      ) {
+        return false;
+      }
+      return runTurnLocked(
+        input,
+        sessionCtx,
+        messages,
+        token,
+        workspaceCwd,
+        activeBinary,
+        fallbackPayload,
+        generation,
+        abort,
+      );
+    }).catch((err: unknown) => {
+      if (abort.signal.aborted || turnGeneration !== generation) return false;
+      throw err;
+    });
+    currentTurnPromise = turnPromise.then(
+      () => {},
+      () => {},
+    );
+    try {
+      return await turnPromise;
+    } finally {
+      if (turnGeneration === generation) {
+        currentAbort = null;
+        currentTurnPromise = null;
+        scheduleQueuedMessagesDrain();
+      }
+    }
+  }
+
+  async function runTurnLocked(
+    input: string,
+    sessionCtx: SessionContext,
+    messages: readonly SessionMessage[],
+    token: DeliveryToken,
+    workspaceCwd: string,
+    activeBinary: string,
+    fallbackPayload: AgentRuntimeConfigPayload,
+    generation: number,
+    abort: AbortController,
+  ): Promise<boolean> {
+    // One immutable per-turn snapshot drives MCP projection, per-server
+    // approval, model, and env. SessionManager refreshes the cache before
+    // dispatch, so an active chat converges on its very next turn.
+    const turnPayload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload ?? fallbackPayload;
+    const model = turnPayload.model;
+    const env = buildEnv(sessionCtx, turnPayload);
+
+    try {
+      materializeCursorMcpConfig(workspaceCwd, turnPayload);
+      for (const server of turnPayload.mcpServers) {
+        await enableMcpServer({
+          binary: activeBinary,
+          serverName: server.name,
+          workspaceCwd,
+          env,
+          abortSignal: abort.signal,
+        });
+      }
+    } catch (err) {
+      if (abort.signal.aborted || turnGeneration !== generation) return false;
+      sessionCtx.log(
+        `cursor managed MCP projection failed before provider start: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      sessionCtx.emitEvent({
+        kind: "error",
+        payload: {
+          source: "runtime",
+          message: "Cursor managed MCP setup failed before the provider turn; delivery will retry.",
+        },
+      });
+      token.retry(messages, "cursor_mcp_projection_failed");
+      return false;
+    }
+
+    if (
+      abort.signal.aborted ||
+      turnGeneration !== generation ||
+      cwd !== workspaceCwd ||
+      binary !== activeBinary ||
+      !sessionActive
+    ) {
+      return false;
+    }
+
     // One-shot payload snapshot: a non-delivered exit (abort, retry-path
     // settlement) must put the chat-context/notice back so the redelivery
     // still carries it — otherwise the design's "spawn/transport failure must
@@ -746,13 +930,8 @@ export const createCursorHandler: HandlerFactory = (config) => {
     };
 
     token.processingStarted(messages);
-    const generation = ++turnGeneration;
-    const abort = new AbortController();
-    currentAbort = abort;
     gitWriteTracker.captureBaseline();
 
-    const model = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload?.model ?? activePayload?.model ?? "";
-    const env = buildEnv(sessionCtx);
     const turnStartedAt = Date.now();
 
     let finalText = "";
@@ -785,7 +964,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
         let retryDelay = 0;
 
         const args = buildCursorTurnArgs({
-          approveMcps: (activePayload?.mcpServers.length ?? 0) > 0,
           model,
           // Only a stream-confirmed id ever reaches --resume; the first turn
           // (and any turn after a synthetic placeholder) starts fresh.
@@ -882,15 +1060,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       }
     })();
 
-    currentTurnPromise = promise;
-    try {
-      await promise;
-    } finally {
-      if (turnGeneration === generation) {
-        currentAbort = null;
-        currentTurnPromise = null;
-      }
-    }
+    await promise;
 
     if (abort.signal.aborted || turnGeneration !== generation) {
       // Suspend/shutdown/preemption raced ahead — not a delivered turn; the
@@ -962,7 +1132,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
       );
     }
 
-    scheduleQueuedMessagesDrain();
     return settlement.action.kind === "complete";
   }
 
@@ -1125,7 +1294,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
       briefing,
       currentSourceRepoNames: currentSourceRepoNamesFromPayload(payload, payloadResolved),
     });
-    materializeCursorMcpConfig(workspaceCwd, payload);
     markWorkspaceInitComplete(workspaceCwd);
 
     const resolution = resolveBinary(process.env);

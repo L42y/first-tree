@@ -43,14 +43,17 @@ that case and the run-local plan, not this one.
   capability entry, and after success a fresh turn completes. First Tree must never see or store the token.
 - Real turn posture: during an authenticated turn, verify the spawned process runs from the agent workspace root with
   the canonical arguments (`-p --output-format stream-json --sandbox disabled --force`, plus `--model` only when the
-  operator set one, `--approve-mcps` only when First Tree-managed MCP is non-empty, and `--resume` only with a
-  stream-confirmed session id) — no `--trust`, `--workspace`, or prompt text in argv. A follow-up message in the same
-  chat must resume the same Cursor session id.
+  operator set one and `--resume` only with a stream-confirmed session id) — no `--approve-mcps`, `--trust`,
+  `--workspace`, or prompt text in argv. A follow-up message in the same chat must resume the same Cursor session id.
 - Managed MCP: configure a disposable local MCP server through First Tree, then verify the client atomically projects
-  it into `<agent workspace>/.cursor/mcp.json`, keeps that file private to the OS user, and the authenticated Cursor
-  turn calls one of its tools without an approval prompt. Exercise stdio plus the remote HTTP/SSE mapping when suitable
-  disposable endpoints are available. Removing all managed servers must replace stale projected entries with an empty
-  `mcpServers` object and remove `--approve-mcps` from the next turn; do not inspect or archive literal secret headers.
+  it into `<agent workspace>/.cursor/mcp.json`, keeps that file private to the OS user, invokes the provider-native
+  `<binary> mcp enable <managed-name>` command for that entry only, and the authenticated Cursor turn calls one of its
+  tools without an approval prompt. The broad `--approve-mcps` flag must remain absent so unrelated operator-owned MCP
+  servers retain their approval boundary. Exercise stdio plus the remote HTTP/SSE mapping when suitable disposable
+  endpoints are available. On one active handler, add a managed server for the next turn and then remove all managed
+  servers for the following turn; the latter must replace stale projected entries with an empty `mcpServers` object
+  and issue no managed approval command. Two concurrent chats sharing one agent workspace must not interleave
+  projection with the other chat's live provider turn. Do not inspect or archive literal secret headers.
 - Free-form model: set an exact model id through Web (free-form input with the `auto` hint — no reasoning-effort
   control for Cursor), confirm it round-trips and reaches the next turn's spawn; an id the provider rejects must fail
   visibly as a configuration failure with no silent fallback, and recover after an explicit config change.
@@ -71,7 +74,8 @@ edit and shell-read paths.
 `FAIL` means a reproducible product issue: e.g. prompt in argv, a synthetic session id sent to `--resume`, a terminal
 failure acked without a durable chat notice, silent model fallback, missing Context Tree I/O evidence, or a drain that
 misses a live Cursor process. It also includes stale managed MCP surviving an empty config, approval enabled without
-managed MCP, or a configured MCP tool unavailable to the turn.
+managed MCP, broad `--approve-mcps` use, a per-server approval aimed at the wrong identifier, cross-chat projection
+interleaving, or a configured MCP tool unavailable to the turn.
 
 `BLOCKED` means the CLI, account, entitlement, network, or run-cell topology (e.g. no desktop browser for OAuth)
 prevented a live branch — never a product `FAIL`. `INCONCLUSIVE` means turns ran but the evidence cannot distinguish
@@ -81,6 +85,7 @@ the claimed behavior (e.g. cannot observe the spawned argv in the run cell).
 
 Keep the capability snapshots (before/after install and login), the spawned process argv/cwd observation, the failing
 turn's runtime notice and the login action, the session id continuity across two turns, the model config write/readback
-and rejection surface, sanitized projected MCP shape/file mode plus the MCP tool-call event, Context tab I/O rows, and
-the drain classification result. Redact tokens, headers, account identifiers, and private chat content; never copy
-Cursor credential files into artifacts.
+and rejection surface, sanitized projected MCP shape/file mode, targeted approval command names, add/remove and
+same-workspace ordering, plus the MCP tool-call event, Context tab I/O rows, and the drain classification result.
+Redact tokens, headers, account identifiers, and private chat content; never copy Cursor credential files into
+artifacts.
