@@ -1,5 +1,5 @@
 {
-  "id": "8ccbbcc3-bcc7-4799-b50c-5734dbf91c92",
+  "id": "6a4962ef-db07-4d53-b005-8460238614b0",
   "prevId": "a85cf597-fe4f-431a-941b-dd1b309f6f0f",
   "version": "7",
   "dialect": "postgresql",
@@ -4212,8 +4212,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_inbox_chat_silent": {
-          "name": "idx_inbox_chat_silent",
+        "idx_inbox_chat_silent_pending": {
+          "name": "idx_inbox_chat_silent_pending",
           "columns": [
             {
               "expression": "inbox_id",
@@ -4228,13 +4228,29 @@
               "nulls": "last"
             },
             {
-              "expression": "notify",
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "status = 'pending' AND notify = false",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_inbox_chat_notify": {
+          "name": "idx_inbox_chat_notify",
+          "columns": [
+            {
+              "expression": "inbox_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "status",
+              "expression": "chat_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -4247,6 +4263,7 @@
             }
           ],
           "isUnique": false,
+          "where": "notify = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
