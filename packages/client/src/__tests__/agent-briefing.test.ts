@@ -363,7 +363,9 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(familyMap).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
     expect(familyMap).toMatch(/\|\s*`context-tree-review`\s*\| a trusted GitHub App Context Review run/);
     expect(familyMap).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
-    expect(familyMap).toMatch(/\|\s*`return-meeting-context`\s*\| an explicit profile-owner request/);
+    expect(familyMap).toMatch(
+      /\|\s*`return-meeting-context`\s*\| analyze meeting notes, transcripts, decision records/,
+    );
 
     const treelessFamily = topLevelSection(
       buildAgentBriefing(makeOpts({ contextTreePath: null })),

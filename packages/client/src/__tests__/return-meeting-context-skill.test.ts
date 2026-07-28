@@ -9,7 +9,7 @@ function repoRoot(): string {
 }
 
 describe("return-meeting-context shipped skill", () => {
-  it("passes its deterministic privacy, ownership, idempotency, and report-only gates", () => {
+  it("passes its deterministic artifact, chronology, settlement, privacy, and handoff gates", () => {
     const root = repoRoot();
     const output = execFileSync(
       process.execPath,

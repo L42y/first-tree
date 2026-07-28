@@ -6,6 +6,7 @@ export const SHIPPED_SKILLS = [
   "context-tree-review",
   "context-tree-audit",
   "first-tree-qa",
+  "return-meeting-context",
 ] as const;
 
 // Skills that ship in the runtime but are intentionally NOT modeled by this
@@ -17,17 +18,9 @@ export const SHIPPED_SKILLS = [
 // public GitHub issue after human confirmation. That side-effecting,
 // credential-dependent flow belongs in isolated QA rather than this live model
 // harness.
-//
-// `return-meeting-context` is an explicit-only, report-only pilot whose
-// provider access and semantic meeting judgment are intentionally kept out of
-// the generic live harness until the one-shot source-authorization and trusted
-// tracked-answer UX exist. Its deterministic owner, privacy, revision,
-// validation, and cleanup gates execute in the client product-test suite; live
-// provider and model judgment remain formal QA.
-//
-// Both entries are named here so their omission from `SHIPPED_SKILLS` is
-// explicit. Revisit each when it gains a safe model-gradable surface.
-export const UNEVALUATED_SHIPPED_SKILLS = ["first-tree-file-bug", "return-meeting-context"] as const;
+// The entry is named here so its omission from `SHIPPED_SKILLS` is explicit.
+// Revisit when it gains a safe model-gradable surface.
+export const UNEVALUATED_SHIPPED_SKILLS = ["first-tree-file-bug"] as const;
 
 export const SKILL_EVAL_TIERS = ["floor", "gate", "quality", "periodic"] as const;
 export const EVAL_CASE_STATUSES = ["implemented", "planned"] as const;

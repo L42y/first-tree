@@ -1,214 +1,149 @@
 ---
 name: return-meeting-context
-description: Recover settled durable decisions, constraints, and rationale from an explicitly requested, owner-scoped meeting run and produce a private sanitized report with one review candidate per coherent claim. Use for manual meeting-to-Context-Tree catch-up, meeting-source dedupe and revision recovery, or report-only evaluation. This pilot stops before tracked confirmation or Tree publication. Do not use for raw transcript archiving, progress or action-item summaries, implicit or scheduled capture, Tree writes, approval, or merge.
+description: Extract settled durable decisions, constraints, and rationale from meeting artifacts that the user explicitly supplies, including provider document links, uploaded attachments, local files, and pasted text. Use when a user asks to analyze meeting minutes, AI notes, transcripts, or decision records for reusable context, or asks to reflect such material into a Context Tree. Resolve only the supplied artifacts, keep raw content outside persistent output, produce a sanitized decision-evidence packet, and hand eligible claims to first-tree-write. Do not use for calendar discovery, meeting search, raw archiving, progress summaries, action-item tracking, provider authorization, scheduled capture, or direct Tree review or merge.
 ---
 
 # Return Meeting Context
 
-Turn authorized meeting evidence into reviewable Context Tree candidates without
-copying raw meeting material into the Tree.
+Turn user-supplied meeting artifacts into a small, sanitized set of durable
+claims. Treat every artifact as evidence, never as approved organizational
+truth.
 
-## Preserve the boundary
+## Keep acquisition outside the skill
 
-- Require an explicit request from the local provider-profile owner for every
-  live run. Bind it to the requested time window, owner-scoped sources, and
-  declared purpose. Local provider capability or a saved config is not source
-  authorization.
-- This version does not create or rely on persistent source grants or schedules.
-  Stop if the requesting human cannot be established as the configured profile
-  owner; do not infer authorization from calendar visibility.
-- Keep transcripts, AI notes, provider responses, participant identifiers,
-  progress, plans, blockers, and risks in the source system or run-lifetime
-  private temporary storage.
-- Never put raw meeting material in the Context Tree, a source repository,
-  a Tree PR/MR body, or a normal chat reply.
-- Treat a meeting as evidence, never as approved organizational truth.
-- Stop at a private sanitized report. This pilot does not send confirmation
-  asks or call `first-tree-write`.
-- Never change `owners`, create a top-level Tree domain, mark a Tree PR ready,
-  approve, repair, or merge it through this skill.
-- Treat no-change, already-present, already-proposed, revisit, skip, and
-  blocked-source as valid outcomes.
+- Accept only artifacts the user explicitly provides in the current task:
+  provider document links, attachments, local paths, or pasted text.
+- Use the environment's ordinary provider or file reader for that exact
+  artifact. Provider login, OAuth, access control, and attachment transport
+  belong to the reader or platform, not this skill.
+- Do not use a calendar, search for related meetings, infer an organizer, scan
+  a time window, or follow links embedded in the source.
+- If the exact artifact cannot be read, ask for an export, attachment, local
+  file, or pasted text. Do not widen the source scope.
+- Allow multiple artifacts only when the user explicitly supplies them as one
+  logical meeting bundle. Preserve their declared or document-visible order.
 
-## Choose the entry path
+## Normalize one task-local artifact bundle
 
-When a Context Tree is bound, load and follow `first-tree-read` before capture.
-Use that workflow's exact task snapshot commit as `tree_main_commit`; do not
-invent a SHA or substitute a mutable branch name. Use the same snapshot for
-semantic dedupe throughout the run.
+Create a task-local JSON file following
+[contracts.md](references/contracts.md). Record only metadata and a temporary
+content reference; never inline raw content in the bundle.
 
-### Provider-normalized pilot
-
-Start from a capture manifest that follows
-[contracts.md](references/contracts.md). Run:
+Use:
 
 ```sh
-node scripts/prepare-run.mjs --config <private-config.json> --capture <private-capture.json>
+node scripts/prepare-artifacts.mjs --bundle <meeting-artifact-bundle.json>
 ```
 
-The deterministic runner applies the owner and completeness gates before
-reading source files. Incomplete meetings become metadata-only
-`blocked_meetings` and are never model-facing. Complete meetings are assembled
-into a mode-`0600` ordered projection, compared with the private processed
-ledger, and returned through `analysis_input_path`.
+The command validates the source boundary and returns the exact
+`source_revision`. It does not open, copy, or persist artifact content.
 
-A normalized manifest is not provider authorization or proof of owner
-provenance by itself. Use this path only for synthetic evaluation or an
-authorized provider adapter whose identity and lineage gates are independently
-established. For live Feishu, use the bundled Feishu collector rather than a
-handwritten manifest.
+Classify each artifact as one of:
 
-If `changed_meeting_count` is zero, do not invoke a model and do not bother a
-human. Validate an output with an empty `meeting_results` array and finalize
-directly; the finalizer adds deterministic `blocked-source` results for any
-`blocked_meeting_count`.
+- `human_minutes`
+- `ai_notes`
+- `transcript`
+- `decision_record`
+- `unknown`
 
-### Feishu discovery
+Mark `completeness` from the reader result. Do not infer `complete` merely
+because some text was returned. A partial or unknown artifact makes the bundle
+`blocked-source`; do not analyze it or claim `no-change`.
 
-Read [feishu-adapter.md](references/feishu-adapter.md) before fetching Feishu
-sources. Keep provider commands read-only, write artifacts only beneath the
-run-lifetime temp directory, and fail closed when organizer ownership or
-chronology cannot be proven.
+Keep the bundle and raw content task-local. Delete temporary copies through the
+reader's normal cleanup path as soon as the task no longer needs them.
 
-Plan the bounded window from the private watermark:
+## Analyze the full supplied chronology
 
-```sh
-node scripts/plan-window.mjs \
-  --config <private-config.json> \
-  --end <manual-run-end-ISO>
-```
+Read every complete artifact in chronology order.
 
-Use the returned start/end exactly. The configured overlap makes late provider
-updates visible; source revision dedupe prevents duplicate model work.
+For every possible claim:
 
-For the validated calendar → notes → transcript path, run:
+1. Separate proposals, discussion, and final conclusions.
+2. Scan later material for correction, withdrawal, replacement, disagreement,
+   or an unresolved question.
+3. Keep only the surviving current-state claim.
+4. Apply the Context Tree Decision Test and Durability Test.
+5. Preserve `What`, `Why`, and implementation-independent `Constraints`.
+6. Exclude progress, tasks, owners' status updates, logistics, schedules,
+   temporary blockers, and unresolved plans.
+7. Produce one candidate per coherent durable decision.
 
-```sh
-node scripts/collect-feishu.mjs \
-  --config <private-config.json> \
-  --start <planned-ISO> \
-  --end <planned-ISO> \
-  --run-key <manual-run-key> \
-  --tree-main-commit <exact-40-hex-sha>
-```
+Evidence strength matters:
 
-Immediately pass the returned `capture_path` to `prepare-run.mjs`.
-`prepare-run.mjs` deletes the ephemeral provider capture after creating its own
-run-lifetime projection. If preparation cannot start, run:
+- Human-confirmed minutes or an explicit decision record may establish
+  settlement when the wording is unambiguous and no later material overrides
+  it.
+- AI-generated notes may identify a candidate but cannot alone prove human
+  settlement.
+- A transcript proves what was said. It establishes settlement only when the
+  supplied chronology contains an explicit final human choice or confirmation.
+- Unknown provenance or ambiguous language requires claim-level confirmation.
 
-```sh
-node scripts/cleanup-capture.mjs --capture <capture.json>
-```
+Do not guess speaker identity, participant authority, or missing chronology.
 
-Do not guess undocumented Feishu fields or weaken the owner gate to make
-discovery succeed. The adapter does not use title/body inference, `vc
-+recording`, `minutes +search`, or an unverified VC search result as proof that
-a meeting source is complete.
+## Produce a sanitized decision-evidence packet
 
-When no Context Tree is bound, omit `--tree-main-commit`. The run may still
-report `no-change`, `revisit`, `skip`, or `blocked-source`, but the validator
-will reject `draft-eligible`, `already-present`, and `already-proposed` claims
-without an exact Tree snapshot.
+Write one task-local packet following
+[decision-evidence-packet.schema.json](references/decision-evidence-packet.schema.json).
+Use exactly one packet status:
 
-## Analyze every changed meeting
+- `no-change` — complete sources contain no durable claim;
+- `needs-confirmation` — at least one plausible claim lacks settlement;
+- `ready-for-write` — every candidate is settled, durable, and survives later
+  override checks;
+- `blocked-source` — at least one supplied artifact is incomplete or cannot be
+  classified safely.
 
-Read the complete temporary chronology for each changed meeting. AI summaries
-may guide navigation but do not establish settlement.
+The packet contains claims and minimal artifact/location references only. It
+must not contain raw excerpts, URLs, provider IDs, participant or speaker
+identifiers, document tokens, file paths, credentials, customer or personnel
+details, exact commercial amounts, or copied meeting prose.
 
-For every candidate:
-
-1. Apply the Context Tree Decision Test and Durability Test.
-2. Separate durable current-state claims from progress, tasks, logistics,
-   plans, risks, and unresolved discussion.
-3. Require settlement evidence: an explicit human choice, approval of a
-   complete proposal, a terminal artifact that establishes the contract, or
-   repeated consistent human direction with no later withdrawal.
-4. Scan the full chronology and later sources for correction, supersession,
-   disagreement, `stop`, `ignore`, `freeze`, `redo`, or unresolved asks.
-5. Read current normal Tree content and open Tree PR/MR proposals before
-   selecting a disposition or target.
-6. Preserve the surviving rationale. Do not return a bare fact.
-7. Produce one candidate per coherent decision.
-
-Use these candidate dispositions:
-
-- `draft-eligible`
-- `already-present`
-- `already-proposed`
-- `revisit`
-- `skip`
-- `blocked-source`
-- `failed`
-
-Use `revisit` with one concrete re-evaluation trigger when settlement,
-chronology, target routing, or dedupe remains incomplete.
-
-## Emit and validate report-only output
-
-Write one analysis output JSON inside the returned run directory using the
-schema and examples in [contracts.md](references/contracts.md). Cover every
-changed meeting, including meetings with no candidates.
-
-Validate it deterministically:
+Validate it:
 
 ```sh
 node scripts/validate-output.mjs \
-  --analysis-input <analysis-input.json> \
-  --output <analysis-output.json>
+  --bundle <meeting-artifact-bundle.json> \
+  --output <decision-evidence-packet.json>
 ```
 
-The validator binds every candidate to the exact meeting source revision,
-normalizes candidate IDs and claim hashes, rejects raw-shaped fields and
-suspicious unredacted values, and blocks `draft-eligible` when source,
-settlement, chronology, target, or dedupe gates are incomplete.
+Validation binds the packet to the exact source revision, rejects raw/private
+shapes, and enforces settlement and chronology gates. A passing validator is a
+backstop, not proof that prose is safe; minimize and redact before validation.
 
-Do not show evidence excerpts in ordinary chat unless a human explicitly needs
-them to decide and the excerpt is already minimal and redacted.
+## Route by the user's intent
 
-## Finalize the report-only run
+If the user asked only for analysis, return a concise sanitized summary of the
+packet. Do not create a Tree branch or PR.
 
-After every changed meeting has a validated disposition, finalize immediately:
+If the user asked to reflect the meeting into the Context Tree:
 
-```sh
-node scripts/finalize-run.mjs \
-  --analysis-input <analysis-input.json> \
-  --validated-output <validated-output.json>
-```
+- For `ready-for-write`, load `first-tree-write` and use the supplied source
+  artifact plus the validated packet as its source context. Let
+  `first-tree-write` own current Tree and open-proposal dedupe, target
+  selection, current-state rewriting, verification, branch/PR preparation,
+  and provider follow.
+- For `needs-confirmation`, ask one focused question about the exact durable
+  claim. Re-read or re-hash the supplied source before continuing if it can
+  change. After confirmation, regenerate and revalidate the packet.
+- For `no-change` or `blocked-source`, stop without calling
+  `first-tree-write`.
 
-The finalizer advances only safe ledger states, writes a private sanitized
-report, removes the run-lifetime raw projection, and releases the run lock.
-Never wait for a human while retaining transcript temp files.
+The Tree PR is a proposal, not active truth. Review and merge remain outside
+this skill.
 
-Use only the default dedicated temp root or an explicit private directory whose
-basename starts with `return-meeting-context` and that remains strictly beneath
-the operating-system temp directory. Existing shared or symlinked directories
-are rejected rather than permission-rewritten.
+## Preserve hard boundaries
 
-If analysis cannot finish, run:
-
-```sh
-node scripts/abort-run.mjs --analysis-input <analysis-input.json>
-```
-
-This removes the temp projection and releases the lock without advancing the
-watermark.
-
-## Stop at the report-only pilot boundary
-
-Return only the sanitized run summary and candidate count in ordinary chat.
-Keep the detailed report in the configured private state directory. Do not
-send a tracked confirmation ask, create a Tree packet, call `first-tree-write`,
-or open a Tree PR/MR.
-
-`draft-eligible` means only that the candidate passed the analysis gates and is
-worth evaluating in a later confirmation phase. It is not approval and is not
-publishable.
-
-The next phase requires a server-authenticated tracked-answer receipt that
-binds the exact ask, recipient, selected option, candidate revision, claim
-hash, and current source revision. A caller-provided message ID or plain chat
-reply is not sufficient. Until that receipt exists and receives live formal
-QA, this skill remains report-only.
+- Never archive raw meeting material in the Context Tree, source repo, packet,
+  PR body, or ordinary chat response.
+- Never maintain meeting discovery watermarks, processed ledgers, provider
+  profiles, organizer gates, persistent reports, locks, schedules, or approval
+  state.
+- Never create a tracked ask merely to authorize reading an artifact the user
+  already supplied. Ask only when the semantic claim itself needs confirmation.
+- Never duplicate `first-tree-write` target, edit, verification, or PR logic.
+- Treat valid `no-change` as a successful outcome.
 
 ## Validate skill changes
 
@@ -217,10 +152,8 @@ Run:
 ```sh
 node skills/return-meeting-context/scripts/test.mjs
 python3 scripts/quick_validate_skill.py skills/return-meeting-context
+pnpm --filter @first-tree/skill-evals eval:floor -- --suite return-meeting-context
 ```
 
-Use [eval-cases.md](references/eval-cases.md) for semantic forward tests. The
-deterministic suite owns privacy, owner gate, profile binding, segment assembly,
-revision idempotency, output coverage, and cleanup. Agent evals own settlement,
-later override, Double Test, semantic dedupe, rationale retention, and
-no-change correctness.
+Use [eval-cases.md](references/eval-cases.md) for model-backed gate cases.
+Those gates require explicit human instruction to run.

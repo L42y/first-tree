@@ -1,0 +1,233 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { runCommand } from "../../core/commands.js";
+import { findStringValue, isRecord } from "../../core/events.js";
+import { evidence, riskFlag } from "../../core/grading.js";
+import { allScoresPass, type SkillCaseGrading, type SkillCaseScores } from "../../core/result-schema.js";
+import type { RunPaths } from "../../core/types.js";
+import type { EvalMetrics, FixtureValidation, ReturnMeetingContextEvalCase } from "./types.js";
+
+const TEXT_KEYS = ["content", "message", "output_text", "text"];
+
+function eventType(event: Record<string, unknown>): string | null {
+  return typeof event.type === "string" ? event.type : null;
+}
+
+function containsSkillFileRead(event: unknown): boolean {
+  if (!isRecord(event) || eventType(event) !== "codex_event") return false;
+  const nested = event.event;
+  if (!findStringValue(nested, (value) => value.includes("return-meeting-context/SKILL.md"))) return false;
+  const serialized = JSON.stringify(nested) ?? "";
+  if (serialized.includes("Available Skills")) return false;
+  return /tool|exec|command|cmd|read|cat|sed/iu.test(serialized);
+}
+
+function isAssistantMessage(record: Record<string, unknown>): boolean {
+  const type = eventType(record);
+  const role = typeof record.role === "string" ? record.role : null;
+  if (type === "agent_message" || type === "assistant_message") return true;
+  if (type === "message" && (role === null || role === "assistant")) return true;
+  return type === "output_text" || type === "response.output_text.done";
+}
+
+function collectText(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(collectText);
+  if (!isRecord(value)) return [];
+  const texts: string[] = [];
+  if (isAssistantMessage(value)) {
+    for (const key of TEXT_KEYS) {
+      const item = value[key];
+      if (typeof item === "string") texts.push(item);
+      if (Array.isArray(item)) texts.push(...item.flatMap(collectText));
+    }
+  }
+  for (const key of ["item", "message", "response", "output"]) {
+    const item = value[key];
+    if (isRecord(item) || Array.isArray(item)) texts.push(...collectText(item));
+  }
+  return texts;
+}
+
+function finalResponse(events: readonly unknown[]): string {
+  const texts: string[] = [];
+  for (const event of events) {
+    if (!isRecord(event) || eventType(event) !== "codex_event") continue;
+    texts.push(...collectText(event.event));
+  }
+  return texts.at(-1) ?? "";
+}
+
+function sourceBaselineHead(events: readonly unknown[]): string | null {
+  for (const event of events) {
+    if (isRecord(event) && eventType(event) === "fixture_setup_finished" && typeof event.sourceRepoHead === "string") {
+      return event.sourceRepoHead;
+    }
+  }
+  return null;
+}
+
+function sourceRepoChanged(events: readonly unknown[], paths: RunPaths): boolean {
+  const sourceRepoPath = join(paths.workspacePath, "source-artifacts");
+  const baseline = sourceBaselineHead(events);
+  if (!existsSync(sourceRepoPath) || baseline === null) return true;
+  const status = runCommand("git", ["status", "--porcelain"], sourceRepoPath);
+  const head = runCommand("git", ["rev-parse", "HEAD"], sourceRepoPath);
+  return (
+    status.exitCode !== 0 || status.stdout.trim().length > 0 || head.exitCode !== 0 || head.stdout.trim() !== baseline
+  );
+}
+
+function parsePacket(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function candidateRecords(packet: Record<string, unknown> | null): readonly Record<string, unknown>[] {
+  if (packet === null || !Array.isArray(packet.candidates)) return [];
+  return packet.candidates.filter(isRecord);
+}
+
+function claimText(candidates: readonly Record<string, unknown>[]): string {
+  return candidates
+    .map((candidate) => (isRecord(candidate.claim) ? JSON.stringify(candidate.claim) : ""))
+    .join("\n")
+    .toLowerCase();
+}
+
+function settlementObserved(
+  evalCase: ReturnMeetingContextEvalCase,
+  candidates: readonly Record<string, unknown>[],
+): boolean {
+  if (evalCase.expected.settlement === "none") return candidates.length === 0;
+  return candidates.every(
+    (candidate) => isRecord(candidate.settlement) && candidate.settlement.status === evalCase.expected.settlement,
+  );
+}
+
+function chronologyObserved(
+  evalCase: ReturnMeetingContextEvalCase,
+  candidates: readonly Record<string, unknown>[],
+): boolean {
+  if (evalCase.expected.status !== "ready-for-write") return true;
+  return candidates.every(
+    (candidate) =>
+      isRecord(candidate.chronology) &&
+      candidate.chronology.later_override_checked === true &&
+      candidate.chronology.overridden_claims_excluded === true,
+  );
+}
+
+export function deriveMetrics(
+  events: readonly unknown[],
+  evalCase: ReturnMeetingContextEvalCase,
+  fixtureValidation: FixtureValidation,
+  runnerExitCode: number,
+  validatorResult: EvalMetrics["validatorResult"],
+  paths: RunPaths,
+): EvalMetrics {
+  void fixtureValidation;
+  const packetPath = join(paths.workspacePath, "meeting-context-output.json");
+  const packet = parsePacket(packetPath);
+  const candidates = candidateRecords(packet);
+  const claims = claimText(candidates);
+  const forbiddenClaimTerms = evalCase.expected.forbiddenClaimTerms.filter((term) =>
+    claims.includes(term.toLowerCase()),
+  );
+  return {
+    candidateCountObserved: candidates.length === evalCase.expected.candidateCount,
+    chronologyObserved: chronologyObserved(evalCase, candidates),
+    contextTreeCreated: existsSync(join(paths.workspacePath, "context-tree")),
+    finalResponse: finalResponse(events),
+    forbiddenClaimTerms,
+    handoffObserved: packet?.handoff === evalCase.expected.handoff,
+    packetExists: packet !== null,
+    packetText: packetPath && existsSync(packetPath) ? readFileSync(packetPath, "utf8") : "",
+    requiredClaimTermsObserved: evalCase.expected.requiredClaimTerms.every((term) =>
+      claims.includes(term.toLowerCase()),
+    ),
+    runnerExitCode,
+    settlementObserved: settlementObserved(evalCase, candidates),
+    skillFileReadObserved: events.some(containsSkillFileRead),
+    sourceRepoChanged: sourceRepoChanged(events, paths),
+    statusObserved: packet?.status === evalCase.expected.status,
+    validatorResult,
+    validatorSucceeded: validatorResult.exitCode === 0,
+  };
+}
+
+function scores(fixtureValidation: FixtureValidation, metrics: EvalMetrics): SkillCaseScores {
+  return {
+    outcome_pass:
+      metrics.packetExists &&
+      metrics.statusObserved &&
+      metrics.candidateCountObserved &&
+      metrics.handoffObserved &&
+      metrics.requiredClaimTermsObserved &&
+      metrics.forbiddenClaimTerms.length === 0 &&
+      metrics.settlementObserved &&
+      metrics.chronologyObserved,
+    process_pass: fixtureValidation.ok && metrics.runnerExitCode === 0 && metrics.validatorSucceeded,
+    risk_pass: !metrics.sourceRepoChanged && !metrics.contextTreeCreated,
+    routing_pass: metrics.skillFileReadObserved,
+  };
+}
+
+export function casePassed(fixtureValidation: FixtureValidation, metrics: EvalMetrics): boolean {
+  return allScoresPass(scores(fixtureValidation, metrics));
+}
+
+export function buildGrading(
+  evalCase: ReturnMeetingContextEvalCase,
+  fixtureValidation: FixtureValidation,
+  metrics: EvalMetrics,
+): SkillCaseGrading {
+  const caseScores = scores(fixtureValidation, metrics);
+  const riskFlags = [
+    ...(metrics.sourceRepoChanged
+      ? [riskFlag("source_artifact_changed", "The user-supplied source artifact fixture changed.")]
+      : []),
+    ...(metrics.contextTreeCreated
+      ? [riskFlag("unexpected_tree_write", "The analysis-only eval created a Context Tree.")]
+      : []),
+    ...metrics.forbiddenClaimTerms.map((term) =>
+      riskFlag("overridden_or_nondurable_claim", `Forbidden claim term survived: ${term}`),
+    ),
+  ];
+  return {
+    caseId: evalCase.id,
+    evidence: [
+      evidence("routing_pass", `return-meeting-context skill read=${String(metrics.skillFileReadObserved)}`),
+      evidence(
+        "process_pass",
+        `fixture=${String(fixtureValidation.ok)}; runner=${metrics.runnerExitCode}; validator=${metrics.validatorResult.exitCode}`,
+      ),
+      evidence(
+        "outcome_pass",
+        `status=${String(metrics.statusObserved)}; candidates=${String(metrics.candidateCountObserved)}; handoff=${String(metrics.handoffObserved)}; settlement=${String(metrics.settlementObserved)}; chronology=${String(metrics.chronologyObserved)}`,
+      ),
+      evidence(
+        "risk_pass",
+        `source changed=${String(metrics.sourceRepoChanged)}; tree created=${String(metrics.contextTreeCreated)}; forbidden claims=${metrics.forbiddenClaimTerms.length}`,
+      ),
+    ],
+    passed: allScoresPass(caseScores),
+    riskFlags,
+    scores: caseScores,
+  };
+}
+
+export function driftNote(metrics: EvalMetrics): string | null {
+  if (!metrics.skillFileReadObserved) return "skill routing was not observed";
+  if (!metrics.validatorSucceeded) return "decision packet failed deterministic validation";
+  if (metrics.sourceRepoChanged) return "source artifact fixture changed";
+  if (metrics.contextTreeCreated) return "analysis-only eval created a Context Tree";
+  if (metrics.forbiddenClaimTerms.length > 0) return "overridden or non-durable material survived";
+  return null;
+}

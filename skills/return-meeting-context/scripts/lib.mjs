@@ -1,73 +1,121 @@
-import crypto from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
-export const CAPTURE_SCHEMA = "return-meeting-context.capture.v1";
-export const CONFIG_SCHEMA = "return-meeting-context.config.v1";
-export const INPUT_SCHEMA = "return-meeting-context.analysis-input.v1";
-export const OUTPUT_SCHEMA = "return-meeting-context.analysis-output.v1";
-export const VALIDATED_SCHEMA = "return-meeting-context.validated-output.v1";
-export const STATE_SCHEMA = "return-meeting-context.state.v1";
-
-export const CANDIDATE_DISPOSITIONS = new Set([
-  "draft-eligible",
-  "already-present",
-  "already-proposed",
-  "revisit",
-  "skip",
-  "blocked-source",
-  "failed",
+const INPUT_KINDS = ["provider_link", "attachment", "local_file", "pasted_text"];
+const SOURCE_ROLES = ["human_minutes", "ai_notes", "transcript", "decision_record", "unknown"];
+const COMPLETENESS = ["complete", "partial", "unknown"];
+const INTENTS = ["analyze", "write"];
+const CONTENT_REF_KINDS = ["conversation", "task_file"];
+const PACKET_STATUSES = ["no-change", "needs-confirmation", "ready-for-write", "blocked-source"];
+const HANDOFFS = ["none", "first-tree-write"];
+const SETTLEMENT_STATUSES = ["settled", "uncertain"];
+const SETTLEMENT_BASES = [
+  "human_confirmed_minutes",
+  "explicit_decision_record",
+  "transcript_explicit_human_choice",
+  "ai_generated_summary",
+  "unknown",
+];
+const STRONG_SETTLEMENT_BASES = new Set([
+  "human_confirmed_minutes",
+  "explicit_decision_record",
+  "transcript_explicit_human_choice",
 ]);
 
-export const MEETING_DISPOSITIONS = new Set(["no-change", "candidates", "blocked-source", "failed"]);
+const FORBIDDEN_KEY_PARTS = [
+  "raw",
+  "content",
+  "excerpt",
+  "transcript_text",
+  "url",
+  "locator",
+  "file_path",
+  "source_path",
+  "token",
+  "open_id",
+  "provider_id",
+  "participant",
+  "speaker",
+  "credential",
+  "secret",
+];
 
-export function parseArgs(argv) {
-  const result = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2).replaceAll("-", "_");
-    const next = argv[index + 1];
-    if (!next || next.startsWith("--")) result[key] = true;
-    else {
-      result[key] = next;
-      index += 1;
+function fail(message) {
+  throw new Error(message);
+}
+
+export function readJson(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+export function parseArgs(argv, required) {
+  const parsed = {};
+  for (let index = 0; index < argv.length; index += 2) {
+    const key = argv[index];
+    const value = argv[index + 1];
+    if (typeof key !== "string" || !key.startsWith("--") || value === undefined) {
+      fail("Arguments must use --name <value> pairs.");
+    }
+    parsed[key.slice(2)] = value;
+  }
+  for (const name of required) {
+    if (typeof parsed[name] !== "string" || parsed[name].length === 0) {
+      fail(`Missing required --${name}.`);
     }
   }
-  return result;
+  return parsed;
 }
 
-export function assert(condition, message) {
-  if (!condition) throw new Error(message);
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, "utf8"));
+function requireObject(value, label) {
+  if (!isObject(value)) fail(`${label} must be an object.`);
+  return value;
 }
 
-export function readJsonIfExists(file, fallback) {
-  try {
-    return readJson(file);
-  } catch (error) {
-    if (error.code === "ENOENT") return fallback;
-    throw error;
+function requireAllowedKeys(value, allowed, label) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) fail(`${label} contains unknown field '${key}'.`);
   }
 }
 
-export function writeJsonAtomic(file, value, mode = 0o600) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp-${process.pid}`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
-  fs.renameSync(temporary, file);
-  fs.chmodSync(file, mode);
+function requireKeys(value, required, label) {
+  for (const key of required) {
+    if (!(key in value)) fail(`${label} is missing '${key}'.`);
+  }
 }
 
-export function stableStringify(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+function requireString(value, label, min, max) {
+  if (typeof value !== "string" || value.length < min || value.length > max) {
+    fail(`${label} must be a string between ${min} and ${max} characters.`);
   }
-  if (value && typeof value === "object") {
+  return value;
+}
+
+function requireEnum(value, allowed, label) {
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    fail(`${label} must be one of: ${allowed.join(", ")}.`);
+  }
+  return value;
+}
+
+function requireBoolean(value, label) {
+  if (typeof value !== "boolean") fail(`${label} must be a boolean.`);
+  return value;
+}
+
+function requireStringArray(value, label, maxItems, maxChars) {
+  if (!Array.isArray(value) || value.length > maxItems) {
+    fail(`${label} must be an array with at most ${maxItems} items.`);
+  }
+  return value.map((item, index) => requireString(item, `${label}[${index}]`, 1, maxChars));
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (isObject(value)) {
     return `{${Object.keys(value)
       .sort()
       .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
@@ -76,254 +124,235 @@ export function stableStringify(value) {
   return JSON.stringify(value);
 }
 
-export function sha256(value) {
-  return crypto
-    .createHash("sha256")
-    .update(typeof value === "string" ? value : stableStringify(value))
-    .digest("hex");
-}
-
-export function requireAbsolute(file, label) {
-  assert(typeof file === "string" && path.isAbsolute(file), `${label} must be an absolute path`);
-  return path.resolve(file);
-}
-
-export function ensurePrivateStateDir(stateDir) {
-  const resolved = requireAbsolute(stateDir, "config.state_dir");
-  const existed = fs.existsSync(resolved);
-  if (existed) {
-    const existing = fs.lstatSync(resolved);
-    assert(existing.isDirectory() && !existing.isSymbolicLink(), "config.state_dir must be a real directory");
-  } else {
-    fs.mkdirSync(resolved, { recursive: true, mode: 0o700 });
-  }
-  const canonical = fs.realpathSync(resolved);
-  const forbiddenParts = new Set(["context-tree", "source-repos", "worktrees", ".git"]);
-  for (const part of canonical.split(path.sep)) {
-    assert(!forbiddenParts.has(part), `config.state_dir must stay outside ${part}`);
-  }
-  if (existed && process.platform !== "win32") {
-    assert((fs.statSync(canonical).mode & 0o077) === 0, "config.state_dir must not be accessible by group or others");
-  } else if (!existed) {
-    fs.chmodSync(canonical, 0o700);
-  }
-  return canonical;
-}
-
-export function safeStem(value) {
-  const cleaned = String(value ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
-  return cleaned || sha256(String(value ?? "")).slice(0, 16);
-}
-
-export function normalizeIso(value, label) {
-  const date = new Date(value);
-  assert(!Number.isNaN(date.getTime()), `${label} must be an ISO-8601 timestamp`);
-  return date.toISOString();
-}
-
-export function within(parent, child) {
-  const relative = path.relative(path.resolve(parent), path.resolve(child));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-export function systemTempRoot() {
-  return fs.realpathSync(os.tmpdir());
-}
-
-export function ensureDedicatedTempDir(name) {
-  assert(/^return-meeting-context(?:-[a-z0-9-]+)?$/.test(name), "invalid dedicated temp directory name");
-  const systemRoot = systemTempRoot();
-  const root = path.join(systemRoot, name);
-  const existed = fs.existsSync(root);
-  if (existed) {
-    const existing = fs.lstatSync(root);
-    assert(existing.isDirectory() && !existing.isSymbolicLink(), `${name} must be a real directory`);
-  } else {
-    fs.mkdirSync(root, { mode: 0o700 });
-  }
-  const canonical = fs.realpathSync(root);
-  assert(
-    path.dirname(canonical) === systemRoot,
-    `${name} must stay directly beneath the operating-system temp directory`,
-  );
-  if (existed && process.platform !== "win32") {
-    assert((fs.statSync(canonical).mode & 0o077) === 0, `${name} must not be accessible by group or others`);
-  } else if (!existed) {
-    fs.chmodSync(canonical, 0o700);
-  }
-  return canonical;
-}
-
-export function runTempRoot(explicitRoot) {
-  if (!explicitRoot) return ensureDedicatedTempDir("return-meeting-context");
-  const root = requireAbsolute(explicitRoot, "--tmp-root");
-  assert(
-    /^return-meeting-context(?:-[a-z0-9-]+)?$/.test(path.basename(root)),
-    "--tmp-root must use a dedicated return-meeting-context name",
-  );
-  const systemRoot = systemTempRoot();
-  const existed = fs.existsSync(root);
-  let canonical;
-  if (existed) {
-    const existing = fs.lstatSync(root);
-    assert(existing.isDirectory() && !existing.isSymbolicLink(), "--tmp-root must be a real directory");
-    canonical = fs.realpathSync(root);
-  } else {
-    const parent = path.dirname(root);
-    const parentStat = fs.lstatSync(parent);
-    assert(parentStat.isDirectory() && !parentStat.isSymbolicLink(), "--tmp-root parent must be a real directory");
-    const canonicalParent = fs.realpathSync(parent);
-    assert(within(systemRoot, canonicalParent), "--tmp-root parent must stay within the OS temp directory");
-    canonical = path.join(canonicalParent, path.basename(root));
-    assert(
-      canonical !== systemRoot && within(systemRoot, canonical),
-      "--tmp-root must stay strictly beneath the OS temp directory",
-    );
-    fs.mkdirSync(canonical, { mode: 0o700 });
-  }
-  canonical = fs.realpathSync(canonical);
-  assert(
-    canonical !== systemRoot && within(systemRoot, canonical),
-    "--tmp-root resolves outside the OS temp directory",
-  );
-  if (existed && process.platform !== "win32") {
-    assert((fs.statSync(canonical).mode & 0o077) === 0, "--tmp-root must not be accessible by group or others");
-  } else if (!existed) {
-    fs.chmodSync(canonical, 0o700);
-  }
-  return canonical;
-}
-
-export function acquireLock(stateDir, runId, { recoverStale = false, staleAfterMs = 6 * 60 * 60 * 1000 } = {}) {
-  const lockPath = path.join(stateDir, "run.lock.json");
-  const lock = {
-    schema: "return-meeting-context.lock.v1",
-    run_id: runId,
-    created_at: new Date().toISOString(),
+function sourceRevision(bundle) {
+  const projection = {
+    meeting_scope: bundle.meeting_scope,
+    requested_intent: bundle.requested_intent,
+    artifacts: bundle.artifacts.map((artifact) => ({
+      artifact_id: artifact.artifact_id,
+      chronology_index: artifact.chronology_index,
+      completeness: artifact.completeness,
+      extraction_warnings: artifact.extraction_warnings,
+      input_kind: artifact.input_kind,
+      media_type: artifact.media_type,
+      revision: artifact.revision,
+      source_role: artifact.source_role,
+    })),
   };
-  try {
-    const descriptor = fs.openSync(lockPath, "wx", 0o600);
-    try {
-      fs.writeFileSync(descriptor, `${JSON.stringify(lock, null, 2)}\n`);
-    } catch (error) {
-      try {
-        fs.unlinkSync(lockPath);
-      } catch {
-        // The original write failure is authoritative.
-      }
-      throw error;
-    } finally {
-      fs.closeSync(descriptor);
+  return createHash("sha256").update(stableStringify(projection)).digest("hex");
+}
+
+export function validateArtifactBundle(input) {
+  const bundle = requireObject(input, "bundle");
+  const topKeys = ["schema", "meeting_scope", "requested_intent", "artifacts"];
+  requireAllowedKeys(bundle, topKeys, "bundle");
+  requireKeys(bundle, topKeys, "bundle");
+  if (bundle.schema !== "return-meeting-context.artifact-bundle.v1") {
+    fail("bundle.schema is unsupported.");
+  }
+  if (bundle.meeting_scope !== "single-meeting") {
+    fail("bundle.meeting_scope must be single-meeting.");
+  }
+  requireEnum(bundle.requested_intent, INTENTS, "bundle.requested_intent");
+  if (!Array.isArray(bundle.artifacts) || bundle.artifacts.length < 1 || bundle.artifacts.length > 8) {
+    fail("bundle.artifacts must contain between 1 and 8 artifacts.");
+  }
+
+  const ids = new Set();
+  const chronology = new Set();
+  const artifacts = bundle.artifacts.map((value, index) => {
+    const label = `bundle.artifacts[${index}]`;
+    const artifact = requireObject(value, label);
+    const keys = [
+      "artifact_id",
+      "input_kind",
+      "media_type",
+      "source_role",
+      "revision",
+      "completeness",
+      "chronology_index",
+      "content_ref",
+      "extraction_warnings",
+    ];
+    requireAllowedKeys(artifact, keys, label);
+    requireKeys(artifact, keys, label);
+    const artifactId = requireString(artifact.artifact_id, `${label}.artifact_id`, 1, 64);
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(artifactId)) {
+      fail(`${label}.artifact_id has an invalid format.`);
     }
-    return lockPath;
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
+    if (ids.has(artifactId)) fail(`Duplicate artifact_id '${artifactId}'.`);
+    ids.add(artifactId);
+    requireEnum(artifact.input_kind, INPUT_KINDS, `${label}.input_kind`);
+    requireString(artifact.media_type, `${label}.media_type`, 3, 120);
+    requireEnum(artifact.source_role, SOURCE_ROLES, `${label}.source_role`);
+    requireString(artifact.revision, `${label}.revision`, 1, 200);
+    requireEnum(artifact.completeness, COMPLETENESS, `${label}.completeness`);
+    if (!Number.isInteger(artifact.chronology_index) || artifact.chronology_index < 0) {
+      fail(`${label}.chronology_index must be a non-negative integer.`);
+    }
+    if (chronology.has(artifact.chronology_index)) {
+      fail(`Duplicate chronology_index '${artifact.chronology_index}'.`);
+    }
+    chronology.add(artifact.chronology_index);
+    const contentRef = requireObject(artifact.content_ref, `${label}.content_ref`);
+    requireAllowedKeys(contentRef, ["kind", "locator"], `${label}.content_ref`);
+    requireKeys(contentRef, ["kind", "locator"], `${label}.content_ref`);
+    requireEnum(contentRef.kind, CONTENT_REF_KINDS, `${label}.content_ref.kind`);
+    requireString(contentRef.locator, `${label}.content_ref.locator`, 1, 1024);
+    requireStringArray(artifact.extraction_warnings, `${label}.extraction_warnings`, 8, 240);
+    return artifact;
+  });
+
+  for (let index = 1; index < artifacts.length; index += 1) {
+    if (artifacts[index - 1].chronology_index > artifacts[index].chronology_index) {
+      fail("bundle.artifacts must be ordered by chronology_index.");
+    }
   }
 
-  const existing = readJsonIfExists(lockPath, null);
-  const age = existing ? Date.now() - new Date(existing.created_at).getTime() : Number.NaN;
-  assert(
-    existing && recoverStale && Number.isFinite(age) && age > staleAfterMs,
-    `another run is active or needs explicit stale-lock recovery: ${existing?.run_id ?? "unknown"}`,
-  );
-  try {
-    fs.unlinkSync(lockPath);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  return acquireLock(stateDir, runId);
-}
-
-export function assertLockOwned(lockPath, runId) {
-  const lock = readJsonIfExists(lockPath, null);
-  assert(lock?.run_id === runId, "run lock is missing or owned by another run");
-}
-
-export function releaseLock(lockPath, runId) {
-  const lock = readJsonIfExists(lockPath, null);
-  if (!lock) return;
-  assert(lock.run_id === runId, "refusing to release a lock owned by another run");
-  fs.unlinkSync(lockPath);
-}
-
-export function defaultState() {
   return {
-    schema: STATE_SCHEMA,
-    source_revisions: {},
-    watermarks: {},
-    processed_run_keys: {},
-    meeting_dispositions: {},
-    candidate_dispositions: {},
-    updated_at: null,
+    bundle,
+    source_revision: sourceRevision(bundle),
+    source_status: artifacts.every((artifact) => artifact.completeness === "complete") ? "complete" : "blocked-source",
   };
 }
 
-export function readState(file) {
-  const state = readJsonIfExists(file, defaultState());
-  assert(state.schema === STATE_SCHEMA, `unsupported state schema: ${state.schema}`);
-  return state;
-}
-
-export function meetingKey(provider, profile, providerMeetingId) {
-  return `${provider}:${profile}:${providerMeetingId}`;
-}
-
-export function sourceRevision(meeting, segmentHashes) {
-  return sha256({
-    provider_meeting_id: meeting.provider_meeting_id,
-    calendar_event_id: meeting.calendar_event_id,
-    started_at: meeting.started_at,
-    ended_at: meeting.ended_at ?? null,
-    source_status: meeting.source_status,
-    source_refs: meeting.source_refs ?? [],
-    segment_hashes: segmentHashes,
-  });
-}
-
-export function normalizeClaimText(value) {
-  return String(value ?? "")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-export function claimHash(candidate) {
-  return sha256({
-    what: normalizeClaimText(candidate.claim?.what),
-    why: normalizeClaimText(candidate.claim?.why),
-    constraints: (candidate.claim?.constraints ?? []).map(normalizeClaimText),
-    target_hint: normalizeClaimText(candidate.target?.path_hint),
-  });
-}
-
-export function candidateId(meetingId, hash) {
-  return `meeting-${safeStem(meetingId)}-${hash.slice(0, 16)}`;
-}
-
-export function removeRunDir(runDir, tempRoot) {
-  const resolved = path.resolve(runDir);
-  const root = fs.realpathSync(requireAbsolute(tempRoot, "run temp root"));
-  const base = path.basename(resolved);
-  assert(base.startsWith("run-"), "refusing to remove a directory without the run- prefix");
-  assert(path.dirname(resolved) === root, "refusing to remove a run outside its bound temp root");
-  assert(
-    root !== systemTempRoot() &&
-      within(systemTempRoot(), root) &&
-      /^return-meeting-context(?:-[a-z0-9-]+)?$/.test(path.basename(root)),
-    "run temp root must be a dedicated directory beneath the operating-system temp directory",
-  );
-  const canonicalRun = fs.realpathSync(resolved);
-  assert(path.dirname(canonicalRun) === root, "run directory resolves outside its bound temp root");
-  fs.rmSync(resolved, { recursive: true, force: true });
-}
-
-export function cleanObject(value) {
-  if (Array.isArray(value)) return value.map(cleanObject);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, cleanObject(child)]));
+function scanPrivateOutput(value, path = "packet") {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      scanPrivateOutput(item, `${path}[${index}]`);
+    });
+    return;
   }
-  return value;
+  if (isObject(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      const normalizedKey = key.toLowerCase();
+      if (FORBIDDEN_KEY_PARTS.some((part) => normalizedKey.includes(part))) {
+        fail(`${path} contains forbidden raw/private field '${key}'.`);
+      }
+      scanPrivateOutput(child, `${path}.${key}`);
+    }
+    return;
+  }
+  if (typeof value !== "string") return;
+  const checks = [
+    [/https?:\/\//iu, "URL"],
+    [/(?:^|\s)\/(?:Users|home|tmp|var|private|mnt)\//u, "absolute path"],
+    [/[A-Za-z]:\\(?:Users|Temp|Documents)\\/u, "absolute path"],
+    [/\b(?:ou|on|oc|cli|docx|doxcn)_[A-Za-z0-9_-]{8,}\b/u, "provider identifier"],
+    [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu, "email address"],
+    [/\b(?:sk|ghp|gho|xox[baprs])_[A-Za-z0-9_-]{8,}\b/u, "secret"],
+    [/(?:[$€£¥￥]\s?\d[\d,.]*|\b(?:USD|EUR|GBP|CNY|RMB)\s+\d[\d,.]*)/iu, "exact currency amount"],
+  ];
+  for (const [pattern, label] of checks) {
+    if (pattern.test(value)) fail(`${path} contains a forbidden ${label}.`);
+  }
+}
+
+function validateCandidate(value, index, artifactIds) {
+  const label = `packet.candidates[${index}]`;
+  const candidate = requireObject(value, label);
+  const keys = ["claim", "settlement", "chronology", "evidence"];
+  requireAllowedKeys(candidate, keys, label);
+  requireKeys(candidate, keys, label);
+
+  const claim = requireObject(candidate.claim, `${label}.claim`);
+  requireAllowedKeys(claim, ["what", "why", "constraints"], `${label}.claim`);
+  requireKeys(claim, ["what", "why", "constraints"], `${label}.claim`);
+  requireString(claim.what, `${label}.claim.what`, 1, 500);
+  requireString(claim.why, `${label}.claim.why`, 1, 1000);
+  requireStringArray(claim.constraints, `${label}.claim.constraints`, 8, 400);
+
+  const settlement = requireObject(candidate.settlement, `${label}.settlement`);
+  requireAllowedKeys(settlement, ["status", "basis"], `${label}.settlement`);
+  requireKeys(settlement, ["status", "basis"], `${label}.settlement`);
+  requireEnum(settlement.status, SETTLEMENT_STATUSES, `${label}.settlement.status`);
+  requireEnum(settlement.basis, SETTLEMENT_BASES, `${label}.settlement.basis`);
+  if (settlement.status === "settled" && !STRONG_SETTLEMENT_BASES.has(settlement.basis)) {
+    fail(`${label} uses a weak settlement basis for a settled claim.`);
+  }
+
+  const chronology = requireObject(candidate.chronology, `${label}.chronology`);
+  requireAllowedKeys(chronology, ["later_override_checked", "overridden_claims_excluded"], `${label}.chronology`);
+  requireKeys(chronology, ["later_override_checked", "overridden_claims_excluded"], `${label}.chronology`);
+  requireBoolean(chronology.later_override_checked, `${label}.chronology.later_override_checked`);
+  requireBoolean(chronology.overridden_claims_excluded, `${label}.chronology.overridden_claims_excluded`);
+
+  if (!Array.isArray(candidate.evidence) || candidate.evidence.length < 1 || candidate.evidence.length > 3) {
+    fail(`${label}.evidence must contain between 1 and 3 items.`);
+  }
+  for (let evidenceIndex = 0; evidenceIndex < candidate.evidence.length; evidenceIndex += 1) {
+    const evidenceLabel = `${label}.evidence[${evidenceIndex}]`;
+    const evidence = requireObject(candidate.evidence[evidenceIndex], evidenceLabel);
+    requireAllowedKeys(evidence, ["artifact_id", "location_hint"], evidenceLabel);
+    requireKeys(evidence, ["artifact_id", "location_hint"], evidenceLabel);
+    const artifactId = requireString(evidence.artifact_id, `${evidenceLabel}.artifact_id`, 1, 64);
+    if (!artifactIds.has(artifactId)) fail(`${evidenceLabel} references an unknown artifact_id.`);
+    requireString(evidence.location_hint, `${evidenceLabel}.location_hint`, 1, 200);
+  }
+  return candidate;
+}
+
+export function validateDecisionPacket(bundleInput, packetInput) {
+  const prepared = validateArtifactBundle(bundleInput);
+  const packet = requireObject(packetInput, "packet");
+  const keys = ["schema", "source_revision", "status", "reason", "handoff", "candidates"];
+  requireAllowedKeys(packet, keys, "packet");
+  requireKeys(packet, keys, "packet");
+  if (packet.schema !== "return-meeting-context.decision-evidence-packet.v1") {
+    fail("packet.schema is unsupported.");
+  }
+  if (packet.source_revision !== prepared.source_revision) {
+    fail("packet.source_revision does not match the supplied artifact bundle.");
+  }
+  requireEnum(packet.status, PACKET_STATUSES, "packet.status");
+  requireString(packet.reason, "packet.reason", 1, 400);
+  requireEnum(packet.handoff, HANDOFFS, "packet.handoff");
+  if (!Array.isArray(packet.candidates) || packet.candidates.length > 3) {
+    fail("packet.candidates must be an array with at most 3 items.");
+  }
+  const artifactIds = new Set(prepared.bundle.artifacts.map((artifact) => artifact.artifact_id));
+  const candidates = packet.candidates.map((candidate, index) => validateCandidate(candidate, index, artifactIds));
+
+  if (packet.status === "blocked-source") {
+    if (prepared.source_status !== "blocked-source") fail("blocked-source requires an incomplete artifact.");
+    if (candidates.length !== 0 || packet.handoff !== "none") {
+      fail("blocked-source requires zero candidates and no handoff.");
+    }
+  } else {
+    if (prepared.source_status !== "complete") fail(`${packet.status} requires every artifact to be complete.`);
+  }
+
+  if (packet.status === "no-change" && (candidates.length !== 0 || packet.handoff !== "none")) {
+    fail("no-change requires zero candidates and no handoff.");
+  }
+
+  if (packet.status === "needs-confirmation") {
+    if (candidates.length === 0 || !candidates.some((candidate) => candidate.settlement.status === "uncertain")) {
+      fail("needs-confirmation requires at least one uncertain candidate.");
+    }
+    if (packet.handoff !== "none") fail("needs-confirmation cannot hand off to first-tree-write.");
+  }
+
+  if (packet.status === "ready-for-write") {
+    if (candidates.length === 0) fail("ready-for-write requires at least one candidate.");
+    for (const [index, candidate] of candidates.entries()) {
+      if (candidate.settlement.status !== "settled") {
+        fail(`packet.candidates[${index}] must be settled for ready-for-write.`);
+      }
+      if (!candidate.chronology.later_override_checked || !candidate.chronology.overridden_claims_excluded) {
+        fail(`packet.candidates[${index}] has incomplete later-override gates.`);
+      }
+    }
+    const expectedHandoff = prepared.bundle.requested_intent === "write" ? "first-tree-write" : "none";
+    if (packet.handoff !== expectedHandoff) {
+      fail(`ready-for-write requires handoff '${expectedHandoff}' for the requested intent.`);
+    }
+  }
+
+  if ((packet.status === "no-change" || packet.status === "blocked-source") && packet.handoff !== "none") {
+    fail(`${packet.status} cannot hand off to first-tree-write.`);
+  }
+
+  scanPrivateOutput(packet);
+  return { packet, source_revision: prepared.source_revision };
 }
