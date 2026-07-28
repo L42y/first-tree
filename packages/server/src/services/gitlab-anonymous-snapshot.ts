@@ -51,6 +51,20 @@ export function gitlabAnonymousGitConfig(destination: GitlabPinnedDestination | 
   ];
 }
 
+export class GitLabSnapshotAuthorityChangedError extends Error {
+  constructor() {
+    super("The GitLab Context Tree binding or connection changed before snapshot publication.");
+    this.name = "GitLabSnapshotAuthorityChangedError";
+  }
+}
+
+export class GitLabAnonymousSafetyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitLabAnonymousSafetyError";
+  }
+}
+
 /** Recheck live binding/policy and require DNS to remain on the pinned answer set. */
 export async function revalidateGitlabDestination(
   enabled: boolean,
@@ -61,22 +75,27 @@ export async function revalidateGitlabDestination(
 ): Promise<void> {
   if (!enabled || !before) return;
   if (executionGuard && !(await executionGuard())) {
-    throw new GitlabEgressPolicyError("origin_not_authorized");
+    throw new GitLabSnapshotAuthorityChangedError();
   }
-  const after = await resolveAuthorizedGitlabDestination(allowlist, before.origin, lookup);
+  let after: GitlabPinnedDestination;
+  try {
+    after = await resolveAuthorizedGitlabDestination(allowlist, before.origin, lookup);
+  } catch (error) {
+    if (error instanceof GitlabEgressPolicyError) {
+      throw new GitLabAnonymousSafetyError(
+        "The GitLab origin no longer satisfies its pinned destination policy during the anonymous snapshot operation.",
+      );
+    }
+    throw error;
+  }
   if (
     after.pinnedAddress !== before.pinnedAddress ||
     after.addresses.length !== before.addresses.length ||
     after.addresses.some((address, index) => address !== before.addresses[index])
   ) {
-    throw new GitlabEgressPolicyError("address_not_authorized");
-  }
-}
-
-export class GitLabSnapshotAuthorityChangedError extends Error {
-  constructor() {
-    super("The GitLab Context Tree binding or connection changed before snapshot publication.");
-    this.name = "GitLabSnapshotAuthorityChangedError";
+    throw new GitLabAnonymousSafetyError(
+      "The GitLab origin DNS answer set changed during the anonymous snapshot operation.",
+    );
   }
 }
 
@@ -100,7 +119,9 @@ export async function assertAnonymousLocalConfigSafe(root: string): Promise<void
     /^\s*\[(?:credential|http|url|include(?:if)?)\b/imu.test(raw) ||
     /^\s*(?:extraheader|cookiefile|sslcert|sslkey|proxy|sshcommand|curloptresolve|followredirects)\s*=/imu.test(raw)
   ) {
-    throw new GitlabEgressPolicyError("address_not_authorized");
+    throw new GitLabAnonymousSafetyError(
+      "The cached GitLab checkout contains local configuration that is unsafe for anonymous Cloud reads.",
+    );
   }
 }
 

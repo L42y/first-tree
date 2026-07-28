@@ -13,6 +13,7 @@ import { runStage } from "./bootstrap-utils.js";
 import type { Config } from "./config.js";
 import { runMigrations } from "./db/migrate.js";
 import { applyLoggerConfig, createLogger, initTelemetry, shutdownTelemetry } from "./observability/index.js";
+import { withDefaultGitlabOrigin } from "./services/gitlab-egress-policy.js";
 
 const log = createLogger("Bootstrap");
 
@@ -39,9 +40,35 @@ async function loadServerConfig(): Promise<ServerConfig> {
   });
 }
 
-function buildRuntimeConfig(serverConfig: ServerConfig, instanceId: string, webDistPath: string | undefined): Config {
+export function buildRuntimeConfig(
+  serverConfig: ServerConfig,
+  instanceId: string,
+  webDistPath: string | undefined,
+): Config {
+  const configuredAllowlist = serverConfig.gitlab?.egressAllowlist;
+  const legacyAllowlist = serverConfig.gitlab?.legacyEgressAllowlist;
+  if (configuredAllowlist !== undefined && legacyAllowlist !== undefined) {
+    throw new Error(
+      "Set only FIRST_TREE_GITLAB_ALLOWED_ORIGINS or deprecated FIRST_TREE_GITLAB_EGRESS_ALLOWLIST, not both.",
+    );
+  }
+  if (legacyAllowlist !== undefined) {
+    log.warn("FIRST_TREE_GITLAB_EGRESS_ALLOWLIST is deprecated; migrate to FIRST_TREE_GITLAB_ALLOWED_ORIGINS.");
+  }
+  const egressAllowlist =
+    legacyAllowlist !== undefined
+      ? legacyAllowlist.map((entry) =>
+          entry.addressPolicy.kind === "public"
+            ? { origin: entry.origin, addressPolicy: { kind: "public" as const } }
+            : {
+                origin: entry.origin,
+                addressPolicy: { kind: "cidrs" as const, cidrs: entry.addressPolicy.cidrs },
+              },
+        )
+      : withDefaultGitlabOrigin(configuredAllowlist ?? []);
   return {
     ...serverConfig,
+    gitlab: { egressAllowlist, legacyEgressAllowlist: undefined },
     instanceId: `srv_${instanceId.slice(0, 8)}`,
     webDistPath: webDistPath && webDistPath.length > 0 ? webDistPath : undefined,
   };

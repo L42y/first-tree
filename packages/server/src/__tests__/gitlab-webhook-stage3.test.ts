@@ -136,9 +136,6 @@ describe("GitLab Stage 3 personnel routing", () => {
       {
         updatedBy: admin.userId,
         memberId: admin.memberId,
-        gitlabEgressAllowlist: [
-          { origin: "https://gitlab.internal", addressPolicy: { kind: "cidrs", cidrs: ["10.0.0.0/8"] } },
-        ],
       },
     );
     await putOrgSetting(
@@ -218,9 +215,6 @@ describe("GitLab Stage 3 personnel routing", () => {
       {
         updatedBy: admin.userId,
         memberId: admin.memberId,
-        gitlabEgressAllowlist: [
-          { origin: "https://gitlab.internal", addressPolicy: { kind: "cidrs", cidrs: ["10.0.0.0/8"] } },
-        ],
       },
     );
 
@@ -398,9 +392,6 @@ describe("GitLab Stage 3 personnel routing", () => {
       {
         updatedBy: admin.userId,
         memberId: admin.memberId,
-        gitlabEgressAllowlist: [
-          { origin: "https://gitlab.internal", addressPolicy: { kind: "cidrs", cidrs: ["10.0.0.0/8"] } },
-        ],
       },
     );
     await putOrgSetting(

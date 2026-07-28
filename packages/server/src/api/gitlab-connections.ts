@@ -8,7 +8,6 @@ import {
   regenerateGitlabConnectionBearer,
   replaceGitlabConnection,
 } from "../services/gitlab-connections.js";
-import { isGitlabOriginAuthorized } from "../services/gitlab-egress-policy.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
 
 export async function gitlabConnectionRoutes(app: FastifyInstance): Promise<void> {
@@ -32,9 +31,6 @@ export async function gitlabConnectionRoutes(app: FastifyInstance): Promise<void
     async (request) => {
       const { connection, scope } = await requireGitlabConnectionAccess(request, app.db, "admin");
       const body = gitlabConnectionCreateSchema.parse(request.body);
-      if (!isGitlabOriginAuthorized(app.config.gitlab?.egressAllowlist ?? [], body.instanceOrigin)) {
-        throw new BadRequestError("GitLab origin is not authorized by the deployment egress allowlist");
-      }
       let replaced: Awaited<ReturnType<typeof replaceGitlabConnection>>;
       try {
         replaced = await replaceGitlabConnection(app.db, {

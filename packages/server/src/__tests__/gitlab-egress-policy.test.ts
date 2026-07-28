@@ -4,6 +4,7 @@ import {
   type GitlabEgressPolicyError,
   isGitlabOriginAuthorized,
   resolveAuthorizedGitlabDestination,
+  withDefaultGitlabOrigin,
 } from "../services/gitlab-egress-policy.js";
 
 const publicEntry = {
@@ -12,6 +13,15 @@ const publicEntry = {
 };
 
 describe("GitLab snapshot egress policy", () => {
+  it("adds gitlab.com as the only built-in origin without overriding explicit policy", () => {
+    expect(withDefaultGitlabOrigin([])).toEqual([{ origin: "https://gitlab.com", addressPolicy: { kind: "public" } }]);
+    expect(
+      withDefaultGitlabOrigin([
+        { origin: "https://GITLAB.COM", addressPolicy: { kind: "cidrs", cidrs: ["172.16.0.0/12"] } },
+      ]),
+    ).toEqual([{ origin: "https://GITLAB.COM", addressPolicy: { kind: "cidrs", cidrs: ["172.16.0.0/12"] } }]);
+  });
+
   it("matches exact normalized HTTPS origin including port", () => {
     expect(isGitlabOriginAuthorized([publicEntry], "https://GITLAB.EXAMPLE:8443")).toBe(true);
     expect(isGitlabOriginAuthorized([publicEntry], "https://gitlab.example")).toBe(false);

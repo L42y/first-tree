@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ServerConfig } from "@first-tree/shared/config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertBootConfigValid } from "../boot-guards.js";
-import { shouldAutoGenerateServerSecrets, startServer } from "../bootstrap-server.js";
+import { buildRuntimeConfig, shouldAutoGenerateServerSecrets, startServer } from "../bootstrap-server.js";
 import { bootstrapState, markReady, markStage } from "../bootstrap-state.js";
 import { runStage, withTimeout } from "../bootstrap-utils.js";
 import { runMigrations } from "../db/migrate.js";
@@ -69,6 +69,61 @@ const baseServerConfig: ServerConfig = {
 };
 
 describe("server bootstrap", () => {
+  it("normalizes built-in, simplified, and deprecated GitLab egress configuration", () => {
+    expect(buildRuntimeConfig(baseServerConfig, "12345678-1234", undefined).gitlab?.egressAllowlist).toEqual([
+      { origin: "https://gitlab.com", addressPolicy: { kind: "public" } },
+    ]);
+
+    const configured = buildRuntimeConfig(
+      {
+        ...baseServerConfig,
+        gitlab: {
+          egressAllowlist: [
+            { origin: "https://gitlab.example", addressPolicy: { kind: "cidrs", cidrs: ["10.20.0.0/16"] } },
+          ],
+          legacyEgressAllowlist: undefined,
+        },
+      },
+      "12345678-1234",
+      undefined,
+    );
+    expect(configured.gitlab?.egressAllowlist).toEqual([
+      { origin: "https://gitlab.com", addressPolicy: { kind: "public" } },
+      { origin: "https://gitlab.example", addressPolicy: { kind: "cidrs", cidrs: ["10.20.0.0/16"] } },
+    ]);
+
+    const legacy = buildRuntimeConfig(
+      {
+        ...baseServerConfig,
+        gitlab: {
+          egressAllowlist: undefined,
+          legacyEgressAllowlist: [{ origin: "https://gitlab.legacy", addressPolicy: { kind: "public" } }],
+        },
+      },
+      "12345678-1234",
+      undefined,
+    );
+    expect(legacy.gitlab?.egressAllowlist).toEqual([
+      { origin: "https://gitlab.legacy", addressPolicy: { kind: "public" } },
+    ]);
+  });
+
+  it("rejects simultaneous new and deprecated GitLab egress variables", () => {
+    expect(() =>
+      buildRuntimeConfig(
+        {
+          ...baseServerConfig,
+          gitlab: {
+            egressAllowlist: [],
+            legacyEgressAllowlist: [],
+          },
+        },
+        "12345678-1234",
+        undefined,
+      ),
+    ).toThrow(/not both/u);
+  });
+
   it("allows generated server secrets only for the dev channel", () => {
     const configDir = makeTempConfigDir();
 

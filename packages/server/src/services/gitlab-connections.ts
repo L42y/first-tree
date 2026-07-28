@@ -12,6 +12,7 @@ import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { organizations } from "../db/schema/organizations.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
+import { normalizeGitlabHttpsOrigin } from "./gitlab-egress-policy.js";
 import { getOrgContextTreeBinding } from "./org-settings.js";
 
 export function mintGitlabUrlBearer(): string {
@@ -23,12 +24,7 @@ export function hashGitlabUrlBearer(token: string): string {
 }
 
 export function normalizeGitlabOrigin(raw: string): string {
-  const url = new URL(raw);
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("GitLab origin must use HTTP or HTTPS");
-  if (url.username || url.password) throw new Error("GitLab origin must not include credentials");
-  if (url.pathname !== "/" || url.search || url.hash)
-    throw new Error("GitLab origin must not include a path, query, or fragment");
-  return url.origin;
+  return normalizeGitlabHttpsOrigin(raw);
 }
 
 export function buildClaimReadyGitlabDeliveryId(connectionId: string, upstreamId: string): string {
@@ -149,6 +145,7 @@ export async function createGitlabConnection(
   db: Database,
   input: GitlabConnectionInput,
 ): Promise<{ connectionId: string; bearer: string }> {
+  const normalizedInput = { ...input, instanceOrigin: normalizeGitlabOrigin(input.instanceOrigin) };
   const bearer = mintGitlabUrlBearer();
   const connectionId = await db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Database;
@@ -159,8 +156,8 @@ export async function createGitlabConnection(
       .where(eq(gitlabConnections.organizationId, input.organizationId))
       .limit(1);
     if (existing) throw new ConflictError("Organization already has a GitLab connection");
-    await assertConnectionOriginMatchesContextTree(tx, input.organizationId, input.instanceOrigin);
-    return insertGitlabConnection(tx, input, bearer);
+    await assertConnectionOriginMatchesContextTree(tx, input.organizationId, normalizedInput.instanceOrigin);
+    return insertGitlabConnection(tx, normalizedInput, bearer);
   });
   return { connectionId, bearer };
 }
@@ -170,6 +167,7 @@ export async function replaceGitlabConnection(
   db: Database,
   input: GitlabConnectionInput & { expectedConnectionId: string },
 ): Promise<{ connectionId: string; bearer: string }> {
+  const normalizedInput = { ...input, instanceOrigin: normalizeGitlabOrigin(input.instanceOrigin) };
   const bearer = mintGitlabUrlBearer();
   const connectionId = await db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Database;
@@ -185,13 +183,13 @@ export async function replaceGitlabConnection(
     if (!current || current.id !== input.expectedConnectionId) {
       throw new ConflictError("GitLab connection changed or was removed; refresh before replacing it");
     }
-    await assertConnectionOriginMatchesContextTree(tx, input.organizationId, input.instanceOrigin);
+    await assertConnectionOriginMatchesContextTree(tx, input.organizationId, normalizedInput.instanceOrigin);
     const [deleted] = await tx
       .delete(gitlabConnections)
       .where(eq(gitlabConnections.id, input.expectedConnectionId))
       .returning({ id: gitlabConnections.id });
     if (!deleted) throw new ConflictError("GitLab connection changed or was removed; refresh before replacing it");
-    return insertGitlabConnection(tx, input, bearer);
+    return insertGitlabConnection(tx, normalizedInput, bearer);
   });
   return { connectionId, bearer };
 }

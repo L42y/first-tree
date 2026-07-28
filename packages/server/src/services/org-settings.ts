@@ -27,7 +27,6 @@ import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { pickDefaultMembership } from "./auth.js";
-import { type GitlabEgressAllowlistEntry, isGitlabOriginAuthorized } from "./gitlab-egress-policy.js";
 
 /**
  * Per-organization settings, keyed by `(organizationId, namespace)`. The
@@ -427,7 +426,6 @@ export async function putOrgSetting<K extends OrgSettingNamespace>(
   options: {
     updatedBy: string;
     memberId?: string;
-    gitlabEgressAllowlist?: readonly GitlabEgressAllowlistEntry[];
   },
 ): Promise<OrgSettingOutput<K>> {
   assertNamespace(namespace);
@@ -463,12 +461,7 @@ export async function putOrgSetting<K extends OrgSettingNamespace>(
         contextTree,
         contextTreeInput,
       )) as OrgSettingStorage<K>;
-      await assertContextTreeBindingTargetAuthorized(
-        txDb,
-        orgId,
-        merged as OrgSettingStorage<"context_tree">,
-        options.gitlabEgressAllowlist ?? [],
-      );
+      await assertContextTreeBindingTargetAuthorized(txDb, orgId, merged as OrgSettingStorage<"context_tree">);
     }
     if (namespace === "context_tree_features") {
       await assertContextReviewerAgentAllowed(txDb, orgId, input as OrgContextTreeFeaturesInput, options.memberId);
@@ -528,7 +521,6 @@ export async function putInitializedOrgContextTreeBinding(
   options: {
     updatedBy: string;
     expectedUnboundBranch: string;
-    gitlabEgressAllowlist?: readonly GitlabEgressAllowlistEntry[];
   },
 ): Promise<ContextTreeActiveBinding> {
   const binding = contextTreeActiveBindingSchema.parse(rawInput);
@@ -546,7 +538,7 @@ export async function putInitializedOrgContextTreeBinding(
     if (current.kind !== "unbound" || current.branch !== expectedUnboundBranch) {
       throw new ConflictError("Context Tree setting changed after tree initialization began");
     }
-    await assertContextTreeBindingTargetAuthorized(txDb, orgId, binding, options.gitlabEgressAllowlist ?? []);
+    await assertContextTreeBindingTargetAuthorized(txDb, orgId, binding);
     const now = new Date();
 
     const [row] = await tx
@@ -716,7 +708,6 @@ export async function assertContextTreeBindingTargetAuthorized(
   db: Database,
   orgId: string,
   binding: OrgSettingStorage<"context_tree">,
-  allowlist: readonly GitlabEgressAllowlistEntry[],
 ): Promise<void> {
   if (!binding.provider || !binding.repo) return;
   const resolution = resolveContextTreeProvider({
@@ -738,11 +729,6 @@ export async function assertContextTreeBindingTargetAuthorized(
   const identity = resolveGitLabRepositoryWebIdentity(binding.repo, connection.instanceOrigin);
   if (!identity?.originMatchesConnection) {
     throw new BadRequestError("GitLab Context Tree repository origin must match the current GitLab connection origin");
-  }
-  if (!isGitlabOriginAuthorized(allowlist, identity.origin)) {
-    throw new BadRequestError(
-      "GitLab Context Tree repository origin is not authorized by the deployment egress allowlist",
-    );
   }
 }
 

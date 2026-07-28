@@ -20,8 +20,25 @@ const landingCampaignRuntimeProviderSchema = runtimeProviderSchema
   })
   .default("codex");
 
-const gitlabEgressAllowlistSchema = z.preprocess(
-  (value) => {
+const gitlabExactOriginSchema = z.string().transform((raw, ctx) => {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+      ctx.addIssue({
+        code: "custom",
+        message: "GitLab egress origin must be an exact credential-free HTTPS origin",
+      });
+      return z.NEVER;
+    }
+    return url.origin.toLowerCase();
+  } catch {
+    ctx.addIssue({ code: "custom", message: "GitLab egress origin must be a valid HTTPS origin" });
+    return z.NEVER;
+  }
+});
+
+function jsonEnvironmentArray<T extends z.ZodType>(schema: T) {
+  return z.preprocess((value) => {
     if (typeof value !== "string") return value;
     const trimmed = value.trim();
     if (!trimmed) return [];
@@ -30,33 +47,35 @@ const gitlabEgressAllowlistSchema = z.preprocess(
     } catch {
       return value;
     }
-  },
+  }, schema);
+}
+
+const gitlabAllowedOriginsSchema = jsonEnvironmentArray(
+  z.array(
+    z.union([
+      gitlabExactOriginSchema.transform((origin) => ({
+        origin,
+        addressPolicy: { kind: "public" as const },
+      })),
+      z
+        .object({
+          origin: gitlabExactOriginSchema,
+          cidrs: z.array(z.string().trim().min(1)).min(1),
+        })
+        .strict()
+        .transform(({ origin, cidrs }) => ({
+          origin,
+          addressPolicy: { kind: "cidrs" as const, cidrs },
+        })),
+    ]),
+  ),
+);
+
+const legacyGitlabEgressAllowlistSchema = jsonEnvironmentArray(
   z.array(
     z
       .object({
-        origin: z.string().transform((raw, ctx) => {
-          try {
-            const url = new URL(raw);
-            if (
-              url.protocol !== "https:" ||
-              url.username ||
-              url.password ||
-              url.pathname !== "/" ||
-              url.search ||
-              url.hash
-            ) {
-              ctx.addIssue({
-                code: "custom",
-                message: "GitLab egress origin must be an exact credential-free HTTPS origin",
-              });
-              return z.NEVER;
-            }
-            return url.origin.toLowerCase();
-          } catch {
-            ctx.addIssue({ code: "custom", message: "GitLab egress origin must be a valid HTTPS origin" });
-            return z.NEVER;
-          }
-        }),
+        origin: gitlabExactOriginSchema,
         addressPolicy: z.discriminatedUnion("kind", [
           z.object({ kind: z.literal("public") }).strict(),
           z.object({ kind: z.literal("cidrs"), cidrs: z.array(z.string().trim().min(1)).min(1) }).strict(),
@@ -265,11 +284,17 @@ export const serverConfigSchema = defineConfig({
   // no global token belongs here.
   gitlab: optional({
     /**
-     * Deployment-operator-owned outbound authorization for anonymous GitLab
-     * Context Tree snapshots. JSON array of exact HTTPS origins and either a
-     * public-address policy or explicit IPv4/IPv6 CIDRs. Empty means deny all.
+     * Additional deployment-authorized GitLab origins. Public origins use a
+     * string; private destinations attach explicit IPv4/IPv6 CIDRs.
      */
-    egressAllowlist: field(gitlabEgressAllowlistSchema.default([]), {
+    egressAllowlist: field(gitlabAllowedOriginsSchema.optional(), {
+      env: "FIRST_TREE_GITLAB_ALLOWED_ORIGINS",
+    }),
+    /**
+     * Deprecated compatibility input. Bootstrap normalizes this old shape
+     * into `egressAllowlist` and rejects simultaneous old/new configuration.
+     */
+    legacyEgressAllowlist: field(legacyGitlabEgressAllowlistSchema.optional(), {
       env: "FIRST_TREE_GITLAB_EGRESS_ALLOWLIST",
     }),
   }),

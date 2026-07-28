@@ -616,7 +616,7 @@ describe("org context tree routes with mocked service edges", () => {
       ctx.app.db,
       ctx.scope.organizationId,
       { provider: "github", repo: expectedRepo.cloneUrl, branch: "main" },
-      { expectedUnboundBranch: "main", updatedBy: ctx.scope.userId, gitlabEgressAllowlist: [] },
+      { expectedUnboundBranch: "main", updatedBy: ctx.scope.userId },
     );
   });
 });

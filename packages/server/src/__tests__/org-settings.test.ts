@@ -180,7 +180,6 @@ describe("org-settings service", () => {
       {
         updatedBy: admin.userId,
         memberId: admin.memberId,
-        gitlabEgressAllowlist: [{ origin: "https://gitlab.internal", addressPolicy: { kind: "public" } }],
       },
     );
     const expectedRuntime = await orgSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId);
@@ -962,7 +961,6 @@ describe("org-settings service", () => {
       {
         updatedBy: admin.userId,
         memberId: admin.memberId,
-        gitlabEgressAllowlist: [{ origin: "https://gitlab.internal", addressPolicy: { kind: "public" } }],
       },
     );
 
@@ -1707,7 +1705,6 @@ describe("org-settings API (admin gating + masking)", () => {
       {
         updatedBy: admin.userId,
         memberId: admin.memberId,
-        gitlabEgressAllowlist: [{ origin: "https://gitlab.internal:8443", addressPolicy: { kind: "public" } }],
       },
     );
     expect(initial).toEqual({

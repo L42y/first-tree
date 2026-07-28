@@ -157,6 +157,8 @@ describe("SettingsGitlabPage", () => {
     expect(rendered.container.textContent).toContain("No GitLab connection");
 
     await act(async () => button(rendered.container, "Connect GitLab").click());
+    expect(document.body.textContent).toContain("This creates an inbound Webhook connection");
+    expect(document.body.textContent).toContain("Web Context access is checked separately");
     const name = document.querySelector<HTMLInputElement>("#gitlab-display-name");
     const origin = document.querySelector<HTMLInputElement>("#gitlab-origin");
     if (!name || !origin) throw new Error("connection form missing");

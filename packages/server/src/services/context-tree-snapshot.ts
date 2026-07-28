@@ -31,6 +31,7 @@ import {
   anonymousGitEnv,
   assertAnonymousLocalConfigSafe,
   GitLabAnonymousAuthenticationRequiredError,
+  GitLabAnonymousSafetyError,
   GitLabSnapshotAuthorityChangedError,
   gitlabAnonymousGitConfig,
   isGitlabAnonymousAuthenticationFailure,
@@ -285,18 +286,20 @@ export async function getContextTreeSnapshot(
         reason: "invalid_binding",
       });
     }
+    if (provider === "gitlab" && error instanceof GitLabAnonymousSafetyError) {
+      return unavailableSnapshot(repo, branch, error.message, provider, {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: "gitlab_egress_denied",
+      });
+    }
     if (provider === "gitlab" && error instanceof GitlabEgressPolicyError) {
-      return unavailableSnapshot(
-        repo,
-        branch,
-        "GitLab Web Context origin or resolved address changed before snapshot publication.",
-        provider,
-        {
-          status: "unavailable",
-          accessMode: "anonymous",
-          reason: error.reason === "origin_not_authorized" ? "gitlab_origin_not_authorized" : "gitlab_egress_denied",
-        },
-      );
+      const unavailable = gitlabEgressUnavailable(error);
+      return unavailableSnapshot(repo, branch, unavailable.detail, provider, {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: unavailable.reason,
+      });
     }
     const message = error instanceof Error ? error.message : "Unable to read Context Tree snapshot";
     return unavailableSnapshot(repo, branch, message, provider, {
@@ -421,14 +424,11 @@ async function resolveContextTreeRoot(
         options.gitlabDnsLookup,
       );
     } catch (error) {
-      const reason =
-        error instanceof GitlabEgressPolicyError && error.reason === "origin_not_authorized"
-          ? "gitlab_origin_not_authorized"
-          : "gitlab_egress_denied";
-      return gitlabUnavailable(
-        "GitLab Web Context origin or resolved address is not authorized by this First Tree deployment.",
-        reason,
-      );
+      if (error instanceof GitlabEgressPolicyError) {
+        const unavailable = gitlabEgressUnavailable(error);
+        return gitlabUnavailable(unavailable.detail, unavailable.reason);
+      }
+      throw error;
     }
     anonymousGitlabRepo = gitlabIdentity.cloneUrl;
   }
@@ -481,6 +481,15 @@ async function resolveContextTreeRoot(
           : {}),
       };
     } catch (error) {
+      if (provider === "gitlab" && error instanceof GitLabSnapshotAuthorityChangedError) {
+        return gitlabUnavailable(error.message, "invalid_binding");
+      }
+      if (provider === "gitlab" && error instanceof GitLabAnonymousSafetyError) {
+        return gitlabUnavailable(
+          "First Tree stopped the anonymous GitLab read because the destination or cached checkout changed during a network safety check.",
+          "gitlab_egress_denied",
+        );
+      }
       if (provider === "gitlab" && isGitlabAnonymousAuthenticationFailure(error)) {
         return {
           root: null,
@@ -501,9 +510,13 @@ async function resolveContextTreeRoot(
         );
       }
       if (provider === "gitlab" && error instanceof GitlabEgressPolicyError) {
+        const unavailable = gitlabEgressUnavailable(error);
+        return gitlabUnavailable(unavailable.detail, unavailable.reason);
+      }
+      if (provider === "gitlab") {
         return gitlabUnavailable(
-          "GitLab Web Context origin or resolved address is no longer authorized.",
-          error.reason === "origin_not_authorized" ? "gitlab_origin_not_authorized" : "gitlab_egress_denied",
+          `First Tree could not read the GitLab Context Tree repository or branch "${resolvedBranch}". ${errorMessage(error)}`,
+          "gitlab_repository_unavailable",
         );
       }
       return {
@@ -542,8 +555,11 @@ function gitlabUnavailable(
   availabilityReason:
     | "invalid_binding"
     | "gitlab_origin_not_authorized"
+    | "gitlab_dns_unavailable"
+    | "gitlab_address_not_authorized"
     | "gitlab_egress_denied"
-    | "gitlab_redirect_forbidden",
+    | "gitlab_redirect_forbidden"
+    | "gitlab_repository_unavailable",
 ): ResolvedContextTreeRoot {
   return {
     root: null,
@@ -554,6 +570,31 @@ function gitlabUnavailable(
       accessMode: "anonymous",
       reason: availabilityReason,
     },
+  };
+}
+
+function gitlabEgressUnavailable(error: GitlabEgressPolicyError): {
+  detail: string;
+  reason: "gitlab_origin_not_authorized" | "gitlab_dns_unavailable" | "gitlab_address_not_authorized";
+} {
+  if (error.reason === "origin_not_authorized") {
+    return {
+      detail:
+        "This GitLab origin is not enabled for Web Context. Add a public origin string or a private origin with trusted CIDRs to FIRST_TREE_GITLAB_ALLOWED_ORIGINS; inbound Webhook automation remains available.",
+      reason: "gitlab_origin_not_authorized",
+    };
+  }
+  if (error.reason === "dns_unavailable") {
+    return {
+      detail:
+        "First Tree Server could not resolve this GitLab origin. Check deployment DNS and network access; inbound Webhook automation remains available.",
+      reason: "gitlab_dns_unavailable",
+    };
+  }
+  return {
+    detail:
+      "This GitLab origin resolved to an address outside its authorized public or CIDR policy. Update FIRST_TREE_GITLAB_ALLOWED_ORIGINS only if this destination is trusted.",
+    reason: "gitlab_address_not_authorized",
   };
 }
 
@@ -794,7 +835,12 @@ async function syncRemoteContextTree(
       // redirect response.
       throw error;
     }
-    if (anonymousGitlab && error instanceof GitlabEgressPolicyError) {
+    if (
+      anonymousGitlab &&
+      (error instanceof GitlabEgressPolicyError ||
+        error instanceof GitLabAnonymousSafetyError ||
+        error instanceof GitLabSnapshotAuthorityChangedError)
+    ) {
       // Policy, DNS-pin, and live-binding failures are authorization failures,
       // not transient refresh errors. Serving the cached tree would bypass the
       // deployment operator's current egress boundary.

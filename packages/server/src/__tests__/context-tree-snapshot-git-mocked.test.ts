@@ -247,6 +247,61 @@ describe("Context Tree snapshot service with mocked git", () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
+  it("reports DNS failure separately without attempting git egress", async () => {
+    const { execFile, service } = await loadSnapshotServiceWithGit(() => {
+      throw new Error("git must not run");
+    });
+    const resolved = await service.contextTreeSnapshotTestInternals.resolveContextTreeRoot(
+      "https://gitlab.example/acme/context.git",
+      null,
+      "main",
+      "gitlab",
+      true,
+      undefined,
+      undefined,
+      {
+        gitlabInstanceOrigin: "https://gitlab.example",
+        gitlabEgressAllowlist: [{ origin: "https://gitlab.example", addressPolicy: { kind: "public" } }],
+        gitlabDnsLookup: async () => {
+          throw new Error("dns unavailable");
+        },
+      },
+    );
+    expect(resolved.contentAvailability).toEqual({
+      status: "unavailable",
+      accessMode: "anonymous",
+      reason: "gitlab_dns_unavailable",
+    });
+    expect(resolved.reason).toContain("could not resolve");
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("reports an initially unauthorized DNS address separately without attempting git egress", async () => {
+    const { execFile, service } = await loadSnapshotServiceWithGit(() => {
+      throw new Error("git must not run");
+    });
+    const resolved = await service.contextTreeSnapshotTestInternals.resolveContextTreeRoot(
+      "https://gitlab.example/acme/context.git",
+      null,
+      "main",
+      "gitlab",
+      true,
+      undefined,
+      undefined,
+      {
+        gitlabInstanceOrigin: "https://gitlab.example",
+        gitlabEgressAllowlist: [{ origin: "https://gitlab.example", addressPolicy: { kind: "public" } }],
+        gitlabDnsLookup: async () => [{ address: "10.20.30.40", family: 4 }],
+      },
+    );
+    expect(resolved.contentAvailability).toEqual({
+      status: "unavailable",
+      accessMode: "anonymous",
+      reason: "gitlab_address_not_authorized",
+    });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
   it("fails closed when DNS changes across the pinned clone guard", async () => {
     const head = "b".repeat(40);
     const repo = `https://gitlab.example/acme/rebinding-${crypto.randomUUID()}.git`;
@@ -275,7 +330,7 @@ describe("Context Tree snapshot service with mocked git", () => {
         {
           gitlabInstanceOrigin: "https://gitlab.example",
           gitlabEgressAllowlist: [{ origin: "https://gitlab.example", addressPolicy: { kind: "public" } }],
-          gitlabDnsLookup: async () => [{ address: lookupCount++ === 0 ? "8.8.8.8" : "1.1.1.1", family: 4 }],
+          gitlabDnsLookup: async () => [{ address: lookupCount++ === 0 ? "8.8.8.8" : "10.20.30.40", family: 4 }],
         },
       );
       expect(resolved.contentAvailability).toMatchObject({
@@ -318,7 +373,7 @@ describe("Context Tree snapshot service with mocked git", () => {
       );
       expect(resolved.contentAvailability).toMatchObject({
         status: "unavailable",
-        reason: "gitlab_origin_not_authorized",
+        reason: "invalid_binding",
       });
       expect(guardCount).toBe(2);
     } finally {
@@ -510,6 +565,121 @@ describe("Context Tree snapshot service with mocked git", () => {
       expect(snapshot.nodes).toHaveLength(0);
     } finally {
       await rm(root, { recursive: true, force: true });
+      service.contextTreeSnapshotTestInternals.clearRemoteSyncState();
+    }
+  });
+
+  it("does not publish a stale cached GitLab tree with unsafe local config", async () => {
+    const repo = `https://gitlab.example/acme/unsafe-cache-${crypto.randomUUID()}.git`;
+    const { service } = await loadSnapshotServiceWithGit((args) => {
+      if (args.includes("clone")) {
+        const root = args.at(-1);
+        if (!root) return new Error("missing clone root");
+        mkdirSync(join(root, ".git"), { recursive: true });
+        writeFileSync(join(root, "NODE.md"), "---\ntitle: Context\nowners: [team]\n---\nContext\n");
+      }
+      return "";
+    });
+    const options = {
+      gitlabInstanceOrigin: "https://gitlab.example",
+      gitlabEgressAllowlist: [{ origin: "https://gitlab.example", addressPolicy: { kind: "public" as const } }],
+      gitlabDnsLookup: async () => [{ address: "8.8.8.8", family: 4 as const }],
+    };
+    const first = await service.contextTreeSnapshotTestInternals.resolveContextTreeRoot(
+      repo,
+      null,
+      "main",
+      "gitlab",
+      true,
+      undefined,
+      undefined,
+      options,
+    );
+    if (!first.root) throw new Error("cached GitLab root missing");
+    await writeFile(
+      join(first.root, ".git", "config"),
+      '[core]\n\trepositoryformatversion = 0\n[http "https://gitlab.example/"]\n\textraHeader = Authorization: secret\n',
+    );
+    service.contextTreeSnapshotTestInternals.clearRemoteSyncState();
+    try {
+      const resolved = await service.contextTreeSnapshotTestInternals.resolveContextTreeRoot(
+        repo,
+        null,
+        "main",
+        "gitlab",
+        true,
+        undefined,
+        undefined,
+        options,
+      );
+      expect(resolved.root).toBeNull();
+      expect(resolved.contentAvailability).toEqual({
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: "gitlab_egress_denied",
+      });
+    } finally {
+      await rm(first.root, { recursive: true, force: true });
+      service.contextTreeSnapshotTestInternals.clearRemoteSyncState();
+    }
+  });
+
+  it("does not publish a stale cached GitLab tree after its live authority changes", async () => {
+    const repo = `https://gitlab.example/acme/stale-authority-${crypto.randomUUID()}.git`;
+    const { service } = await loadSnapshotServiceWithGit((args) => {
+      if (args.includes("clone")) {
+        const root = args.at(-1);
+        if (!root) return new Error("missing clone root");
+        mkdirSync(join(root, ".git"), { recursive: true });
+        writeFileSync(join(root, "NODE.md"), "---\ntitle: Context\nowners: [team]\n---\nContext\n");
+      }
+      return "";
+    });
+    const options = {
+      gitlabInstanceOrigin: "https://gitlab.example",
+      gitlabEgressAllowlist: [{ origin: "https://gitlab.example", addressPolicy: { kind: "public" as const } }],
+      gitlabDnsLookup: async () => [{ address: "8.8.8.8", family: 4 as const }],
+    };
+    const first = await service.contextTreeSnapshotTestInternals.resolveContextTreeRoot(
+      repo,
+      null,
+      "main",
+      "gitlab",
+      true,
+      undefined,
+      undefined,
+      options,
+    );
+    if (!first.root) throw new Error("cached GitLab root missing");
+    await writeFile(join(first.root, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
+    service.contextTreeSnapshotTestInternals.clearRemoteSyncState();
+    let guardCount = 0;
+    try {
+      const resolved = await service.contextTreeSnapshotTestInternals.resolveContextTreeRoot(
+        repo,
+        null,
+        "main",
+        "gitlab",
+        true,
+        undefined,
+        undefined,
+        {
+          ...options,
+          gitlabExecutionGuard: async () => {
+            guardCount++;
+            return false;
+          },
+        },
+      );
+      expect(guardCount).toBe(1);
+      expect(resolved.root).toBeNull();
+      expect(resolved.contentAvailability).toEqual({
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: "invalid_binding",
+      });
+    } finally {
+      await rm(first.root, { recursive: true, force: true });
       service.contextTreeSnapshotTestInternals.clearRemoteSyncState();
     }
   });

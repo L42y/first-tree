@@ -1,10 +1,9 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
 
-export type GitlabEgressAllowlistEntry = {
-  origin: string;
-  addressPolicy: { kind: "public" } | { kind: "cidrs"; cidrs: string[] };
-};
+export type GitlabEgressAllowlistEntry =
+  | { origin: string; addressPolicy: { kind: "public" } }
+  | { origin: string; addressPolicy: { kind: "cidrs"; cidrs: string[] } };
 
 export type GitlabPinnedDestination = {
   origin: string;
@@ -17,6 +16,7 @@ export type GitlabPinnedDestination = {
 
 export type GitlabDnsLookup = (hostname: string) => Promise<ReadonlyArray<{ address: string; family: number }>>;
 
+const DEFAULT_GITLAB_ORIGIN = "https://gitlab.com";
 const PERMANENTLY_BLOCKED_RANGES = new Set([
   "unspecified",
   "broadcast",
@@ -31,10 +31,10 @@ const PERMANENTLY_BLOCKED_ADDRESSES = new Set([
   "100.100.100.200",
 ]);
 
-export function normalizeAuthorizedGitlabOrigin(raw: string): string {
+export function normalizeGitlabHttpsOrigin(raw: string): string {
   const url = new URL(raw);
   if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
-    throw new Error("GitLab egress origin must be an exact credential-free HTTPS origin");
+    throw new Error("GitLab origin must be an exact credential-free HTTPS origin");
   }
   return url.origin.toLowerCase();
 }
@@ -42,7 +42,7 @@ export function normalizeAuthorizedGitlabOrigin(raw: string): string {
 export function assertGitlabEgressAllowlistValid(entries: readonly GitlabEgressAllowlistEntry[]): void {
   const origins = new Set<string>();
   for (const entry of entries) {
-    const origin = normalizeAuthorizedGitlabOrigin(entry.origin);
+    const origin = normalizeGitlabHttpsOrigin(entry.origin);
     if (origins.has(origin)) throw new Error(`Duplicate GitLab egress origin: ${origin}`);
     origins.add(origin);
     if (entry.addressPolicy.kind === "cidrs") {
@@ -67,11 +67,22 @@ export function assertGitlabEgressAllowlistValid(entries: readonly GitlabEgressA
 export function isGitlabOriginAuthorized(entries: readonly GitlabEgressAllowlistEntry[], origin: string): boolean {
   let normalized: string;
   try {
-    normalized = normalizeAuthorizedGitlabOrigin(origin);
+    normalized = normalizeGitlabHttpsOrigin(origin);
   } catch {
     return false;
   }
-  return entries.some((entry) => normalizeAuthorizedGitlabOrigin(entry.origin) === normalized);
+  return entries.some((entry) => normalizeGitlabHttpsOrigin(entry.origin) === normalized);
+}
+
+export function withDefaultGitlabOrigin(entries: readonly GitlabEgressAllowlistEntry[]): GitlabEgressAllowlistEntry[] {
+  if (isGitlabOriginAuthorized(entries, DEFAULT_GITLAB_ORIGIN)) return [...entries];
+  return [
+    {
+      origin: DEFAULT_GITLAB_ORIGIN,
+      addressPolicy: { kind: "public" },
+    },
+    ...entries,
+  ];
 }
 
 export async function resolveAuthorizedGitlabDestination(
@@ -80,8 +91,8 @@ export async function resolveAuthorizedGitlabDestination(
   lookup: GitlabDnsLookup = async (hostname) => dnsLookup(hostname, { all: true, verbatim: true }),
 ): Promise<GitlabPinnedDestination> {
   assertGitlabEgressAllowlistValid(entries);
-  const normalized = normalizeAuthorizedGitlabOrigin(origin);
-  const entry = entries.find((candidate) => normalizeAuthorizedGitlabOrigin(candidate.origin) === normalized);
+  const normalized = normalizeGitlabHttpsOrigin(origin);
+  const entry = entries.find((candidate) => normalizeGitlabHttpsOrigin(candidate.origin) === normalized);
   if (!entry) throw new GitlabEgressPolicyError("origin_not_authorized");
   const url = new URL(normalized);
   let answers: ReadonlyArray<{ address: string; family: number }>;

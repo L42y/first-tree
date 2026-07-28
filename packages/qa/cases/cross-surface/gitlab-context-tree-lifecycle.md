@@ -29,9 +29,11 @@ runtime, network, credential, and cross-surface behavior.
   the derived `/admin/hooks` page, with Push and Merge Request events enabled,
   the default payload, and no custom template. First Tree must observe a
   processable Merge Request event before routing or Context Review is treated
-  as ready. The deployment operator, not the Team admin, authorizes the exact
-  HTTPS origin through the GitLab egress allowlist. Retain evidence of policy
-  shape but no bearer or repository credential.
+  as ready. Connection creation must not depend on Web Context egress policy.
+  For a Self-Managed origin, the deployment operator—not the Team
+  admin—separately authorizes the exact HTTPS origin through
+  `FIRST_TREE_GITLAB_ALLOWED_ORIGINS`. Retain evidence of policy shape but no
+  bearer or repository credential.
 - Authenticate `git`, `glab`, and the Review Agent's git identity only on the
   Agent hosts. Do not give First Tree Cloud a GitLab API/repository token.
 - Prepare public anonymous-readable and private repositories on the same
@@ -80,14 +82,22 @@ runtime, network, credential, and cross-surface behavior.
   require a provider-specific unavailable state directing the user to an
   Agent with local git/glab access. Confirm Cloud never requests, stores, logs,
   or injects a credential and never publishes an Agent snapshot.
-- Remove the egress allowlist entry while preserving the Team binding and
+- Separately exercise built-in `https://gitlab.com` with public DNS answers.
+  Confirm it needs no additional origin entry. For a Self-Managed public
+  origin, use the simplified string form; for a private destination, use
+  `{ origin, cidrs }`. Confirm the deprecated legacy variable still preserves
+  its exact old policy and simultaneous old/new variables fail startup.
+- Remove the allowed-origin entry while preserving the Team binding and
   connection. Confirm the next Web Context refresh performs no GitLab egress
-  and reports origin-not-authorized, while inbound Webhook health and automatic
-  MR review remain ready. Exercise exact port mismatch, mixed allowed/denied
-  A/AAAA answers, DNS changes, redirect, loopback/link-local/private/ULA/
+  and reports an actionable origin-not-authorized state, while the saved
+  binding, inbound Webhook health, and automatic MR review remain ready.
+  Exercise DNS-unavailable, exact port mismatch, mixed allowed/denied A/AAAA
+  answers, DNS changes, redirect, loopback/link-local/private/ULA/
   reserved/metadata destinations, ambient proxy, credential helper, and local
-  Git config. Only an operator-authorized CIDR may admit private/ULA addresses;
-  permanently blocked destinations stay denied.
+  Git config. Require distinct Web recovery copy for origin, DNS, address,
+  anonymous-auth, redirect, and repository/branch failures. Only an
+  operator-authorized CIDR may admit private/ULA addresses; permanently blocked
+  destinations stay denied.
 
 ## Expected Result
 
