@@ -42,7 +42,7 @@ export const RETURN_MEETING_CONTEXT_GATE_CASES: readonly ReturnMeetingContextEva
     fixture: { mode: "later-override" },
     id: "meeting-later-override-final-decision",
     prompt:
-      "Use return-meeting-context to analyze source-artifacts/bundle.json. Write the validated packet to meeting-context-output.json. Do not create or modify a Context Tree.",
+      "Reflect the durable decisions from the supplied meeting minutes at `source-artifacts/bundle.json` into the Context Tree.",
     provider: "codex",
     skill: "return-meeting-context",
     status: "implemented",

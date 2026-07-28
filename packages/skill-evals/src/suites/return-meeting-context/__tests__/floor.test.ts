@@ -17,8 +17,20 @@ describe("return-meeting-context eval floor", () => {
     ]);
   });
 
-  it("keeps every gate synthetic and analysis-only", () => {
-    for (const evalCase of RETURN_MEETING_CONTEXT_GATE_CASES) {
+  it("keeps one natural routing prompt and the remaining gates explicitly analysis-only", () => {
+    const naturalRoutingCase = RETURN_MEETING_CONTEXT_GATE_CASES.find(
+      (evalCase) => evalCase.id === "meeting-later-override-final-decision",
+    );
+    expect(naturalRoutingCase?.prompt).toBe(
+      "Reflect the durable decisions from the supplied meeting minutes at `source-artifacts/bundle.json` into the Context Tree.",
+    );
+    expect(naturalRoutingCase?.prompt).not.toContain("return-meeting-context");
+    expect(naturalRoutingCase?.prompt).not.toContain("meeting-context-output.json");
+    expect(naturalRoutingCase?.prompt).not.toContain("For this eval");
+
+    for (const evalCase of RETURN_MEETING_CONTEXT_GATE_CASES.filter(
+      (candidate) => candidate.id !== naturalRoutingCase?.id,
+    )) {
       expect(evalCase.prompt).toContain("source-artifacts/bundle.json");
       expect(evalCase.prompt).toContain("meeting-context-output.json");
       expect(evalCase.prompt).toContain("Do not create or modify a Context Tree");

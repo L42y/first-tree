@@ -467,19 +467,20 @@ tree bootstrap from readable sources, load `first-tree-seed`.<% } %><% if (conte
 
 ## Writing the Tree
 
-Tree writes are source-driven. A chat is **fresh context**; the tree is
-**persistent context** for future agents. When a specific PR/MR, design doc,
-meeting note, review thread, or pasted source changes a durable decision,
-constraint, owner, or cross-domain relationship, load `first-tree-write`
-and make the smallest correct tree diff. When a task calls for a tree write,
-the request explicitly includes creating and updating the needed tree-node
-files (`NODE.md` and other `*.md` nodes) as structured persistent-context
-output. Implementation-only changes skip the tree write — not the read.
+Tree writes are source-driven. A chat is **fresh context**; the tree is **persistent context** for future agents. When a specific non-meeting PR/MR, design doc,
+review thread, or pasted source changes a durable decision, constraint, owner,
+or cross-domain relationship, load `first-tree-write` and make the smallest
+correct tree diff. Meeting minutes, AI notes, transcripts, decision records,
+and equivalent meeting artifacts always load `return-meeting-context` first;
+only its validated `DecisionEvidencePacket` may hand the supplied meeting
+source to `first-tree-write`. A tree-write request includes creating and
+updating the needed tree-node files (`NODE.md` and other `*.md` nodes) as
+structured persistent-context output. Implementation-only changes skip the
+tree write — not the read.
 
-If there is no specific source artifact, there is no write task yet:
-ask for the PR/MR, design doc, meeting note, or pasted source before
-editing the tree. Before editing, read the target/parent/soft-linked
-nodes the skill identifies; after editing, run `<%- contextTree.verifyCommand %>`.
+Without a specific non-meeting source artifact or validated meeting packet,
+there is no write task. Ask for the non-meeting source, or route supplied meeting artifacts through `return-meeting-context`.
+Before editing, read the target/parent/soft-linked nodes the skill identifies; after editing, run `<%- contextTree.verifyCommand %>`.
 
 When a code PR/MR and tree PR/MR are both needed, open them together, cross-link
 the descriptions, open the tree PR/MR as a draft, merge the code PR/MR first,

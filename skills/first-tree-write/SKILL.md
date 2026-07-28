@@ -229,9 +229,10 @@ that mirrors source detail.
 ### Worked Examples
 
 In the examples below, **"Trigger: …"** labels what prompted the
-tree-write (a PR/MR, a meeting note, a report). The labels are
-meta-narration in this skill — they are not a body section template;
-no `## Trigger` / `## Source` heading goes into the actual node.
+tree-write (a PR/MR, a validated `DecisionEvidencePacket` from a supplied
+meeting artifact, a report). The labels are meta-narration in this skill —
+they are not a body section template; no `## Trigger` / `## Source` heading
+goes into the actual node.
 
 Some examples split `Belongs:` into `Belongs (What):` and `Belongs
 (Why):` to make the Content Model distinction concrete; others
@@ -246,7 +247,8 @@ X's SDK"; "we chose Redis over Memcached because of pubsub support".
 Does not belong: the cache key format, the eviction policy class, the
 retry constants.
 
-**Trigger: meeting note "we are moving billing to a new repo".**
+**Trigger: a validated `DecisionEvidencePacket` from a supplied meeting
+artifact says "billing is moving to a new repo".**
 Belongs: workspace map gets a new repo; ownership for billing shifts;
 the `billing/` ↔ `platform/` boundary is updated.
 Does not belong: migration timeline, release-day playbook, per-PR/MR
