@@ -12,6 +12,7 @@ export {
   computePerTurnUsageDelta,
   createCodexSdkHandler,
   isTransientCodexErrorMessage,
+  isUnsupportedCodexServiceTierWarning,
   toolFileRefsForTerminalCodexTool,
   toolFileRefsFromCodexFileChange,
 } from "./sdk.js";

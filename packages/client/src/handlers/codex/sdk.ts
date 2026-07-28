@@ -92,11 +92,12 @@ const RESULT_PREVIEW_LIMIT = 400;
 /**
  * Build the provider-native Codex config shared by both handler engines.
  *
- * `features.fast_mode` exposes the stable Fast-mode capability, while
  * `service_tier` selects Standard (`default`), Fast (`fast`), or another
- * provider-advertised tier. First Tree forwards the configured tier unchanged
- * and lets Codex report model/account incompatibility without a silent
- * fallback.
+ * provider-advertised tier. Non-default tiers explicitly enable the stable
+ * Fast-mode capability; Standard leaves the feature unset so provider-managed
+ * policy remains authoritative. First Tree forwards the configured tier
+ * unchanged and treats Codex's unsupported-tier warning as a configuration
+ * failure instead of accepting a silently downgraded turn.
  */
 export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
   const cfg: CodexConfigObject = {
@@ -106,8 +107,10 @@ export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfi
     project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
   };
   if (payload.kind === "codex") {
-    cfg.features = { fast_mode: true };
     cfg.service_tier = payload.serviceTier;
+    if (payload.serviceTier !== "default") {
+      cfg.features = { fast_mode: true };
+    }
   }
   if (payload.mcpServers.length === 0) return cfg;
 
@@ -124,6 +127,19 @@ export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfi
   }
   cfg.mcp_servers = mcpServers;
   return cfg;
+}
+
+const UNSUPPORTED_CODEX_SERVICE_TIER_WARNING =
+  /^Configured service tier `[^`]+` is not advertised as supported for model `[^`]+` and will be omitted from requests\.$/;
+
+/**
+ * Codex 0.144.1 reports an unsupported provider-native service tier as a
+ * warning and then proceeds without that tier. Both handler engines use this
+ * predicate to turn that otherwise-silent downgrade into a terminal
+ * configuration error.
+ */
+export function isUnsupportedCodexServiceTierWarning(message: string): boolean {
+  return UNSUPPORTED_CODEX_SERVICE_TIER_WARNING.test(message.trim());
 }
 
 async function emitTurnEnd(
@@ -921,6 +937,15 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
               } else if (event.type === "turn.started") {
                 // No-op — runtime state already "working".
               } else if (event.type === "item.completed") {
+                if (event.item.type === "error" && isUnsupportedCodexServiceTierWarning(event.item.message)) {
+                  providerAttempt.recordSignal({
+                    kind: "provider_error",
+                    error: new Error(`Codex service tier configuration failed: ${event.item.message}`),
+                  });
+                  const settlement = providerAttempt.settle({ attempt: attempt + 1 });
+                  if (settlement) stopCodexFailure(settlement);
+                  break;
+                }
                 const text = processItem(event.item, sessionCtx);
                 if (text) finalResponse = text;
                 if (isUserVisibleItem(event.item)) {

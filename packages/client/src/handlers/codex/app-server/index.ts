@@ -53,6 +53,7 @@ import {
   collectCodexFileChangePaths,
   isCodexStreamDiagnosticMessage,
   isTransientCodexErrorMessage,
+  isUnsupportedCodexServiceTierWarning,
 } from "../sdk.js";
 import {
   extractCodexStaleRolloutThreadId,
@@ -202,6 +203,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   let currentModel = "";
   let currentReasoningEffort = "high";
   let activePayload: AgentRuntimeConfigPayload | null = null;
+  let serviceTierConfigurationFailure: string | null = null;
   let currentTurn: CurrentTurn | null = null;
   let currentTurnPromise: Promise<void> | null = null;
   let turnSettlementInProgress = false;
@@ -522,9 +524,32 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     return params;
   }
 
+  function recordServiceTierConfigurationFailure(message: string): void {
+    if (serviceTierConfigurationFailure) return;
+    serviceTierConfigurationFailure = message;
+    ctx?.emitEvent({
+      kind: "error",
+      payload: {
+        source: "runtime",
+        message: `Codex service tier configuration failed: ${message}`,
+      },
+    });
+  }
+
+  function validateEffectiveServiceTier(result: unknown, payload: AgentRuntimeConfigPayload): void {
+    if (payload.kind !== "codex" || payload.serviceTier === "default") return;
+    const response = asRecord(result);
+    const effectiveTier = readString(response, "serviceTier") ?? readString(response, "service_tier");
+    if (effectiveTier === payload.serviceTier) return;
+    recordServiceTierConfigurationFailure(
+      `Configured service tier \`${payload.serviceTier}\` was not activated by Codex and will not be used for requests.`,
+    );
+  }
+
   async function startThread(payload: AgentRuntimeConfigPayload): Promise<string> {
     const client = requireAppServer();
     let result: unknown;
+    serviceTierConfigurationFailure = null;
     try {
       result = await client.request("thread/start", {
         ...threadParams(payload),
@@ -533,6 +558,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     } catch (err) {
       throw new CodexAppServerStartupError("thread-start", err);
     }
+    validateEffectiveServiceTier(result, payload);
     const id = extractThreadId(result);
     if (!id) throw new CodexAppServerStartupError("thread-start", "missing thread id");
     threadId = id;
@@ -543,11 +569,13 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   async function resumeThread(sessionId: string, payload: AgentRuntimeConfigPayload): Promise<void> {
     const client = requireAppServer();
     resetThreadUsageTracking(null);
+    serviceTierConfigurationFailure = null;
     try {
-      await client.request("thread/resume", {
+      const result = await client.request("thread/resume", {
         threadId: sessionId,
         ...threadParams(payload),
       });
+      validateEffectiveServiceTier(result, payload);
     } catch (err) {
       throw new CodexAppServerStartupError("thread-resume", err);
     }
@@ -776,6 +804,13 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     if (!params) return;
 
     switch (notification.method) {
+      case "warning": {
+        const message = readString(params, "message");
+        if (message && isUnsupportedCodexServiceTierWarning(message)) {
+          recordServiceTierConfigurationFailure(message);
+        }
+        return;
+      }
       case "item/completed": {
         const item = asRecord(params.item);
         if (item && turn) processItem(item, sessionCtx, turn);
@@ -1034,6 +1069,23 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     }
     if (turnStartInProgress) {
       token.retry(messages, "codex_app_server_turn_start_already_in_progress");
+      return false;
+    }
+    if (serviceTierConfigurationFailure) {
+      token.processingStarted(messages);
+      const providerAttempt = createProviderAttempt();
+      providerAttempt.recordSignal({
+        kind: "provider_error",
+        error: new Error(`Codex service tier configuration failed: ${serviceTierConfigurationFailure}`),
+      });
+      const providerSettlement = providerAttempt.settle({ attempt: 1 });
+      if (!providerSettlement || providerSettlement.decision.action !== "stop") {
+        token.retry(messages, "codex_service_tier_configuration_unclassified");
+        return false;
+      }
+      emitProviderSettlementEvent(sessionCtx, providerSettlement);
+      sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+      await token.complete(messages, consumedErrorOutcome(providerSettlement.decision.reasonCode));
       return false;
     }
 

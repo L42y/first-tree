@@ -41,11 +41,10 @@ describe("buildCodexConfig", () => {
     });
   });
 
-  it("pins Standard mode explicitly when the service tier is default", () => {
-    expect(buildCodexConfig(basePayload())).toMatchObject({
-      features: { fast_mode: true },
-      service_tier: "default",
-    });
+  it("pins Standard explicitly without overriding provider-managed Fast-mode policy", () => {
+    const config = buildCodexConfig(basePayload());
+    expect(config.service_tier).toBe("default");
+    expect(config).not.toHaveProperty("features");
   });
 });
 

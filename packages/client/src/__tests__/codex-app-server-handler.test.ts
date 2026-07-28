@@ -97,12 +97,20 @@ class FakeAppServerClient {
     this.requests.push({ method, params });
     if (method === "thread/start") {
       if (this.threadStartDeferred) return this.threadStartDeferred.promise;
-      return { thread: { id: "thread-app-server" } };
+      const config = (params as { config?: { service_tier?: unknown } } | undefined)?.config;
+      return {
+        thread: { id: "thread-app-server" },
+        ...(typeof config?.service_tier === "string" ? { serviceTier: config.service_tier } : {}),
+      };
     }
     if (method === "thread/resume") {
       this.beforeThreadResumeReturn?.();
       if (this.threadResumeError) throw this.threadResumeError;
-      return { thread: { id: "thread-app-server" } };
+      const config = (params as { config?: { service_tier?: unknown } } | undefined)?.config;
+      return {
+        thread: { id: "thread-app-server" },
+        ...(typeof config?.service_tier === "string" ? { serviceTier: config.service_tier } : {}),
+      };
     }
     if (method === "turn/start") {
       if (this.turnStartError) {
@@ -642,6 +650,75 @@ describe("codex app-server handler", () => {
 
     completeTurn(fake, "turn-1", "final answer");
     await startPromise;
+    await handler.shutdown();
+  });
+
+  it("keeps Standard compatible with provider-managed Fast-mode policy", async () => {
+    const fake = new FakeAppServerClient();
+    const mutable = makeMutableConfigCache("", "default");
+    const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const config = (threadStart?.params as { config?: Record<string, unknown> } | undefined)?.config;
+    expect(config?.service_tier).toBe("default");
+    expect(config).not.toHaveProperty("features");
+
+    completeTurn(fake, "turn-1", "final answer");
+    await startPromise;
+    await handler.shutdown();
+  });
+
+  it("fails an unsupported service tier before app-server starts a turn", async () => {
+    const fake = new FakeAppServerClient();
+    fake.deferThreadStart();
+    const mutable = makeMutableConfigCache("", "fast");
+    const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
+    const token = makeDeliveryToken();
+    const emitEvent = vi.fn<SessionContext["emitEvent"]>();
+    const ctx = makeContext({ emitEvent });
+    const message = makeMessage("m1", "first");
+    const warning =
+      "Configured service tier `fast` is not advertised as supported for model `gpt-test` and will be omitted from requests.";
+
+    const startPromise = handler.start(message, ctx, token);
+    await waitFor(() => fake.requests.some((request) => request.method === "thread/start"));
+    fake.emit("warning", { threadId: "thread-app-server", message: warning });
+    fake.resolveThreadStart();
+
+    await expect(startPromise).resolves.toMatchObject({
+      sessionId: "thread-app-server",
+      route: { kind: "owned", mode: "processing" },
+    });
+    expect(fake.requests.some((request) => request.method === "turn/start")).toBe(false);
+    expect(token.processingStarted).toHaveBeenCalledWith([message]);
+    expect(token.complete).toHaveBeenCalledWith([message], {
+      status: "error",
+      terminal: true,
+      completion: "consumed",
+      reason: "codex_service_tier_unsupported",
+    });
+    expect(emitEvent).toHaveBeenCalledWith({
+      kind: "error",
+      payload: {
+        source: "runtime",
+        message: `Codex service tier configuration failed: ${warning}`,
+      },
+    });
+    const providerFailure = emitEvent.mock.calls
+      .map(([event]) => (event.kind === "error" ? parseProviderRetryEventMessage(event.payload.message) : null))
+      .find((payload) => payload?.event === "provider_failure_terminal");
+    expect(providerFailure).toMatchObject({
+      provider: "codex",
+      scope: "provider_turn",
+      category: "configuration",
+      reasonCode: "codex_service_tier_unsupported",
+    });
+    expect(emitEvent).toHaveBeenCalledWith({ kind: "turn_end", payload: { status: "error" } });
+
     await handler.shutdown();
   });
 
