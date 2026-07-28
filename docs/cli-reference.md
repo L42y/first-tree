@@ -348,6 +348,8 @@ first-tree chat
 ├── invite <agentName>                               # add to FIRST_TREE_CHAT_ID before same-task send
 ├── list
 ├── history <chatId>
+├── archive [chatId]                                 # archive from the signed-in user's Active view; defaults to FIRST_TREE_CHAT_ID
+│     --agent <name>                                 #   selected agent must participate in the target chat
 ├── update                                           # update topic and/or description (each independently)
 │     --topic <text> / --clear-topic                 #   set/clear the short display label
 │     --description <text> / --clear-description      #   set/clear the work summary + status report (Markdown; `-` = read from stdin/heredoc)
@@ -471,6 +473,21 @@ first-tree chat send code-agent "now we can talk"
 first-tree chat list
 first-tree chat history <chatId>
 
+# Archive a chat from the signed-in user's Active workspace view. The selected
+# agent must be a speaking participant, so the eligible set is exactly the
+# structural scope exposed by `chat list`. Omitting the id targets
+# FIRST_TREE_CHAT_ID. The write is private to the signed-in user: it does not
+# archive the chat for other participants or change membership. It is
+# idempotent, and a later message automatically returns the chat to Active.
+first-tree chat archive <chatId>
+first-tree chat archive
+
+# When archiving the current chat on a user's behalf, send the completion reply
+# first and run `chat archive` as the final action. Any reply sent after the
+# archive is new chat activity and immediately returns the chat to Active.
+first-tree chat send alice "Done — I’m archiving this conversation now."
+first-tree chat archive
+
 # Self-description: a short topic label + a work summary + status report,
 # updated independently through `chat update` (topic and description each on
 # their own). The description carries task background + plan + progress, renders
@@ -506,6 +523,12 @@ first-tree chat open code-agent
 `FIRST_TREE_CHAT_ID`, which the runtime injects into the agent's session
 environment. The recipient must be a participant of that chat; if not,
 `invite` first.
+
+`chat archive` also defaults to `FIRST_TREE_CHAT_ID`, but accepts an explicit
+chat id from `chat list`. The list is a structural membership inventory and may
+continue to include a chat after archival; archival changes the signed-in
+user's private Workspace engagement state, hiding the row from their default
+Active view until new chat activity revives it.
 
 `chat create` is different: it creates a new task chat and writes the first
 message in one command. Use it to split genuinely new work into a fresh chat.

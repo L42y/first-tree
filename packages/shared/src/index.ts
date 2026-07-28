@@ -229,7 +229,9 @@ export {
 } from "./schemas/auth.js";
 export {
   type AddParticipant,
+  type ArchiveChatResponse,
   addParticipantSchema,
+  archiveChatResponseSchema,
   CHAT_ENGAGEMENT_STATUSES,
   CHAT_TYPES,
   type Chat,

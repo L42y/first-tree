@@ -51,8 +51,8 @@ const DAEMON_CLIENT_COMMAND_CHANNEL = "daemon_client_commands";
  */
 const DAEMON_CLIENT_COMMAND_RESULT_CHANNEL = "daemon_client_command_results";
 /**
- * A viewer's PRIVATE me-chats projection changed (currently: they pinned or
- * unpinned a chat). Carries `<humanAgentId>:<organizationId>` so the WS layer
+ * A viewer's PRIVATE me-chats projection changed (for example, they pinned,
+ * unpinned, or archived a chat). Carries `<humanAgentId>:<organizationId>` so the WS layer
  * can fan a bare `me-chats:changed` invalidation to ONLY that user's own
  * sockets in that org. Pin state is private per-user and must never reach
  * another member's devices — so unlike `chat_updated_events` (audience-scoped
@@ -174,7 +174,7 @@ export type Notifier = {
   /** Chat metadata changed (description / topic): kick admin WS sockets to invalidate `["chat-detail", chatId]` + `["me","chats"]`. */
   notifyChatUpdated(chatId: string): Promise<void>;
   /**
-   * A viewer's private me-chats list changed (pin / unpin). Kicks ONLY that
+   * A viewer's private me-chats list changed (pin / engagement). Kicks ONLY that
    * user's own admin WS sockets (in `organizationId`) to invalidate
    * `["me","chats"]`, so the change syncs across their devices without ever
    * touching another member's sockets.
@@ -217,7 +217,7 @@ export type Notifier = {
   onChatAudience(handler: ChatAudienceChangeHandler): void;
   /** Register a handler for chat:updated (metadata change) notifications. */
   onChatUpdated(handler: ChatUpdatedChangeHandler): void;
-  /** Register a handler for per-user me-chats invalidations (pin / unpin). */
+  /** Register a handler for per-user me-chats invalidations (pin / engagement). */
   onMeChatsChanged(handler: MeChatsChangedHandler): void;
   /** Register a handler for agent runtime route changes. */
   onAgentRouteChange(handler: AgentRouteChangeHandler): void;

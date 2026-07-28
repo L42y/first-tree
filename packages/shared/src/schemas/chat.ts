@@ -35,6 +35,12 @@ export const patchChatEngagementSchema = z.object({
 });
 export type PatchChatEngagement = z.infer<typeof patchChatEngagementSchema>;
 
+export const archiveChatResponseSchema = z.object({
+  chatId: z.string(),
+  engagementStatus: z.literal(CHAT_ENGAGEMENT_STATUSES.ARCHIVED),
+});
+export type ArchiveChatResponse = z.infer<typeof archiveChatResponseSchema>;
+
 /**
  * First Tree keeps a single group-chat model (see first-tree-context PR #281),
  * so every newly created chat MUST be a `group`. `chatTypeSchema` survives

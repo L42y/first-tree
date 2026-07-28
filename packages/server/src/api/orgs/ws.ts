@@ -190,8 +190,8 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
     }
   }
 
-  // Per-USER sibling of dispatchChatUpdated: a private me-chats change (pin /
-  // unpin) fans a bare `me-chats:changed` invalidation to ONLY the acting
+  // Per-USER sibling of dispatchChatUpdated: a private me-chats change (pin or
+  // engagement) fans a bare `me-chats:changed` invalidation to ONLY the acting
   // user's own sockets in that org. Deliberately NO chat-audience lookup — pin
   // state is private and must never reach another member's devices, so the gate
   // is identity (`humanAgentId`) + org, not chat membership. One user with two
