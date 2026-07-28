@@ -171,12 +171,12 @@ describe("SettingsGitlabPage", () => {
     await act(async () => button(document, "Create").click());
     await flush();
     expect(document.body.textContent).toContain(webhookUrl);
-    expect(document.body.textContent).toContain("Finish GitLab System Hook setup");
+    expect(document.body.textContent).toContain("Finish GitLab webhook setup");
     expect(document.body.textContent).toContain("Push events");
     expect(document.body.textContent).toContain("Merge request events");
     expect(document.body.textContent).toContain("default payload");
-    expect(document.body.textContent).toContain("System Hooks do not deliver Issue or Note events");
-    expect(document.body.textContent).not.toContain("project webhook");
+    expect(document.body.textContent).toContain("Optionally add Project Hooks before closing");
+    expect(document.body.textContent).toContain("best-effort basis");
     expect(document.querySelector<HTMLAnchorElement>('a[href="https://gitlab.internal/admin/hooks"]')).not.toBeNull();
     expect(
       JSON.stringify(
@@ -320,7 +320,7 @@ describe("SettingsGitlabPage", () => {
     await flush();
     expect(apiMocks.regenerateGitlabBearer).toHaveBeenCalledWith("connection-1");
     expect(document.body.textContent).toContain("new-secret");
-    expect(document.body.textContent).toContain("Finish GitLab System Hook setup");
+    expect(document.body.textContent).toContain("Finish GitLab webhook setup");
     expect(document.querySelector('[data-testid="gitlab-one-time-setup-status"]')?.textContent).toContain(
       "Waiting for webhook",
     );
@@ -343,7 +343,7 @@ describe("SettingsGitlabPage", () => {
     const received = await renderPage();
     expect(received.container.textContent).toContain("Webhook received · waiting for MR event");
     expect(received.container.textContent).toContain("Finish MR verification");
-    expect(received.container.textContent).toContain("System Hooks do not deliver Issue or Note events");
+    expect(received.container.textContent).toContain("Add trusted Project Hooks with the same URL");
     expect(received.container.textContent).toContain("Regenerate only if it was not saved");
     expect(
       received.container.querySelector<HTMLAnchorElement>('a[href="https://gitlab.internal:8443/admin/hooks"]'),

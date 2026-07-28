@@ -1139,10 +1139,11 @@ exists, the forge webhook creates or reuses its stable provider-scoped
 Reviewer Chat and trusted review run. Writers do not create or wake a review
 Chat, repair the change, publish a verdict, or merge. GitHub uses the App
 webhook and App review path. GitLab uses a processable Merge Request event from
-the Team's inbound System Hook; the Reviewer reads and mutates GitLab with
-host-local `git` and `glab` credentials. System Hooks do not deliver Note
-events, and a normal GitLab Note never starts Context Review, so a Reviewer
-note cannot self-trigger another run.
+the Team's inbound System or Project Hook; a processed System Hook MR remains
+the connection-readiness requirement. The Reviewer reads and mutates GitLab
+with host-local `git` and `glab` credentials. Project Hook Notes can supply
+ordinary entity attention but never start Context Review, so a Reviewer note
+cannot self-trigger another run.
 
 `first-tree tree review` is the GitHub App publication command and is available
 only inside an active GitHub Context Reviewer runtime session. It accepts a

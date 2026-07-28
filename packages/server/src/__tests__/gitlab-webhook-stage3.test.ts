@@ -70,6 +70,7 @@ function mergeRequestPayload(input: {
       description: "Please review",
       url: `https://gitlab.internal/${projectPath}/-/merge_requests/${input.iid ?? 17}`,
       state: "opened",
+      updated_at: "2026-07-28T10:00:00.000Z",
       ...(input.draft === undefined ? {} : { draft: input.draft }),
       ...(input.oldrev === undefined ? {} : { oldrev: input.oldrev }),
     },
@@ -147,7 +148,7 @@ describe("GitLab Stage 3 personnel routing", () => {
     );
 
     const payload = mergeRequestPayload({ projectPath: "Acme/Reviews" });
-    const rejectedProjectHook = await app.inject({
+    const projectHook = await app.inject({
       method: "POST",
       url: `/api/v1/webhooks/gitlab/${connection.bearer}`,
       headers: {
@@ -156,13 +157,14 @@ describe("GitLab Stage 3 personnel routing", () => {
       },
       payload: JSON.stringify(payload),
     });
-    expect(rejectedProjectHook.statusCode).toBe(400);
+    expect(projectHook.statusCode).toBe(200);
     expect(
       (await app.db.select().from(chats)).filter((chat) => chat.metadata.contextTreeReviewer === true),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
 
     const first = await postMr(app, connection.bearer, payload, "context-review-old-gitlab", "GitLab/11.11.3");
     expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ outcome: "cross_hook_duplicate" });
 
     const reviewerChats = await app.db.select().from(chats).where(eq(chats.organizationId, admin.organizationId));
     const reviewerChat = reviewerChats.find((chat) => chat.metadata.contextTreeReviewer === true);
@@ -371,7 +373,7 @@ describe("GitLab Stage 3 personnel routing", () => {
         },
       }),
     });
-    expect(note.statusCode).toBe(400);
+    expect(note.statusCode).toBe(200);
     expect(
       reviewerChat ? await app.db.select().from(messages).where(eq(messages.chatId, reviewerChat.id)) : [],
     ).toHaveLength(3);
