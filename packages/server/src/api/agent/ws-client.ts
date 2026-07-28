@@ -473,6 +473,12 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         const rowByAgentId = new Map(rows.map((row) => [row.uuid, row]));
 
         for (const agentId of candidates) {
+          // Read the binding *after* the query, not before. A rebind updates
+          // the row and the local binding together, so comparing a binding
+          // read before the query against a row read after it reports a
+          // provider mismatch and drops an agent that just rebound
+          // successfully. Both orders leave a window — this one is a loop
+          // iteration rather than a database round-trip.
           const info = boundAgents.get(agentId);
           if (!info) continue;
           const row = rowByAgentId.get(agentId);

@@ -202,26 +202,34 @@ describe("batched preceding-context assembly", () => {
     expect(unscoped.message.precedingMessages).toEqual([]);
   });
 
-  it("assembles context in one statement regardless of how many triggers a drain claims", async () => {
+  it("issues the same number of queries no matter how many triggers a drain claims", async () => {
     const app = getApp();
-    const uid = crypto.randomUUID().slice(0, 6);
-    const { human, observer, chat } = await seedChatWithObserver(app, uid);
 
-    const triggerCount = 8;
-    for (let i = 0; i < triggerCount; i++) {
-      await sendSilent(app, chat.id, human.agent.uuid, `silent-${i}`);
-      await sendTrigger(app, chat.id, human.agent.uuid, observer.agent.uuid, `trigger-${i}`);
+    async function drainAndCount(triggerCount: number): Promise<{ execute: number; select: number }> {
+      const uid = crypto.randomUUID().slice(0, 6);
+      const { human, observer, chat } = await seedChatWithObserver(app, uid);
+      for (let i = 0; i < triggerCount; i++) {
+        await sendSilent(app, chat.id, human.agent.uuid, `silent-${i}`);
+        await sendTrigger(app, chat.id, human.agent.uuid, observer.agent.uuid, `trigger-${i}`);
+      }
+
+      const probe = countingDb(app.db);
+      const claimed = await inboxService.claimBacklogForPush(probe.db, observer.agent.inboxId, 50);
+      expect(claimed).toHaveLength(triggerCount);
+      expect(claimed.map(precedingContents)).toEqual(Array.from({ length: triggerCount }, (_, i) => [`silent-${i}`]));
+      return probe.counts();
     }
 
-    const probe = countingDb(app.db);
-    const claimed = await inboxService.claimBacklogForPush(probe.db, observer.agent.inboxId, 50);
-    expect(claimed).toHaveLength(triggerCount);
-    expect(claimed.map(precedingContents)).toEqual(Array.from({ length: triggerCount }, (_, i) => [`silent-${i}`]));
+    const small = await drainAndCount(2);
+    const large = await drainAndCount(8);
 
+    // Counting both statement kinds matters: `execute` alone would still read
+    // as 1 if someone reintroduced a per-trigger `select` alongside the
+    // batched statement.
+    expect(large).toEqual(small);
     // The batched preceding-context query is the only raw statement on this
-    // path, so this pins the cost at O(1) rather than O(triggers). The old
-    // per-trigger loop would report `triggerCount` here.
-    expect(probe.executeCalls()).toBe(1);
+    // path. The per-trigger loop this replaced would report `triggerCount`.
+    expect(large.execute).toBe(1);
   });
 
   it("skips silent rows another transaction holds instead of blocking on them", async () => {
@@ -270,16 +278,21 @@ describe("batched preceding-context assembly", () => {
 });
 
 /**
- * Wrap a database so raw `execute` calls issued inside a delivery transaction
- * can be counted.
+ * Wrap a database so statements issued inside a delivery transaction can be
+ * counted. Both `execute` and `select` are tracked — counting only raw
+ * statements would miss a per-trigger `select` reintroduced next to the
+ * batched one.
  *
  * The casts are unavoidable: Drizzle's transaction callback is generically
  * typed over the schema, and a `Proxy` cannot preserve that relationship. The
- * proxy only intercepts `transaction` and `execute` and forwards everything
- * else untouched, so runtime behaviour is identical.
+ * proxy only intercepts `transaction`, `execute`, and `select`, forwarding
+ * everything else untouched, so runtime behaviour is identical.
  */
-function countingDb(db: FastifyInstance["db"]): { db: FastifyInstance["db"]; executeCalls: () => number } {
-  let executeCalls = 0;
+function countingDb(db: FastifyInstance["db"]): {
+  db: FastifyInstance["db"];
+  counts: () => { execute: number; select: number };
+} {
+  const tally = { execute: 0, select: 0 };
   const wrapped = new Proxy(db, {
     get(target, prop, receiver) {
       if (prop !== "transaction") return Reflect.get(target, prop, receiver);
@@ -289,9 +302,10 @@ function countingDb(db: FastifyInstance["db"]): { db: FastifyInstance["db"]; exe
             const txProxy = new Proxy(tx, {
               get(txTarget, txProp, txReceiver) {
                 const value = Reflect.get(txTarget, txProp, txReceiver);
-                if (txProp !== "execute" || typeof value !== "function") return value;
+                const counted = txProp === "execute" || txProp === "select";
+                if (!counted || typeof value !== "function") return value;
                 return (...args: unknown[]) => {
-                  executeCalls += 1;
+                  tally[txProp] += 1;
                   return value.apply(txTarget, args);
                 };
               },
@@ -303,5 +317,5 @@ function countingDb(db: FastifyInstance["db"]): { db: FastifyInstance["db"]; exe
         );
     },
   });
-  return { db: wrapped, executeCalls: () => executeCalls };
+  return { db: wrapped, counts: () => ({ ...tally }) };
 }
