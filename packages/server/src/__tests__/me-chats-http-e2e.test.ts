@@ -460,13 +460,13 @@ describe("cross-user isolation — the original #366 / #367 bug scenario", () =>
     });
     expect(res.statusCode).toBe(200);
     const body = res.json<{
-      priorityRows: { attention: Array<{ chatId: string }>; pinned: Array<{ chatId: string }> };
-      rows: Array<{ chatId: string }>;
+      priorityRows: { pinned: Array<{ chatId: string }> };
+      rows: Array<{ chatId: string; openRequestCount: number }>;
     }>();
 
     // The route has no Fastify response schema, so priorityRows must survive the
     // default serializer end-to-end (the failure mode that would strip it).
-    expect(body.priorityRows.attention.some((r) => r.chatId === request.chatId)).toBe(true);
+    expect(body.rows.find((r) => r.chatId === request.chatId)?.openRequestCount).toBe(1);
     expect(body.priorityRows.pinned.some((r) => r.chatId === pinned.chatId)).toBe(true);
   });
 });

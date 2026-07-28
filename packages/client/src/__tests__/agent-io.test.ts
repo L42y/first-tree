@@ -125,6 +125,53 @@ describe("formatInboundContent", () => {
     expect(await formatInboundContent(msg, cache)).toBe("[From: alice · type=agent]\n\nhello");
   });
 
+  it("adds the trusted Ask agent reply contract without changing the visible question", async () => {
+    setCliBinding({ binName: "first-tree-staging", packageName: "first-tree-staging" });
+    const human = { ...mkParticipant("human-1", "liuchao", "Liu Chao"), type: "human" };
+    const cache = createParticipantCache(
+      mkSdk(async () => [human, mkParticipant("agent-a", "alice")]),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "clarification-1",
+      chatId: "chat-1",
+      senderId: "human-1",
+      format: "markdown",
+      content: "What does the second option change?",
+      metadata: {
+        askAgent: {
+          requestId: "request-1",
+          agentId: "agent-a",
+        },
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    expect(out).toContain("<first-tree-ask-agent-contract>");
+    expect(out).toContain("Answer only from context already present in this session.");
+    expect(out).toContain("first-tree-staging chat send liuchao --reply-to clarification-1 -f markdown -F -");
+    expect(out).toContain("[From: liuchao · type=human]\n\nWhat does the second option change?");
+    expect(out).not.toContain("first-tree-staging chat ask");
+  });
+
+  it("does not trust malformed Ask agent metadata", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "m1",
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "ordinary",
+      metadata: { askAgent: { requestId: "" } },
+    };
+    expect(await formatInboundContent(msg, cache)).toBe("[From: alice · type=agent]\n\nordinary");
+  });
+
   it("resolves the participant SDK lazily so rebound sessions use the current transport", async () => {
     const firstSdk = mkSdk(async () => []);
     const secondSdk = mkSdk(async () => participants);

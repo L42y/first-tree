@@ -116,7 +116,7 @@ const BASE_ROWS: MeChatRow[] = [
   row({
     chatId: "chat-needs",
     title: "Waiting approval",
-    // An open ask (R2) — pins to "Needs attention". The unread badge below
+    // An open ask (R2) — pins to "Need you". The unread badge below
     // still renders (unreadMentionCount: 1), but the mention is no longer
     // what pins the row; the open request is.
     openRequestCount: 1,
@@ -150,15 +150,10 @@ const BASE_ROWS: MeChatRow[] = [
   }),
 ];
 
-// Model the server priority projection the way the wire does: attention = the
-// failed / open-request rows (server order preserved), pinned = pinned rows not
-// already in attention. Ordinary `rows` stay ADDITIVE (they still include the
-// priority chats); the component de-duplicates them against the groups.
+// Model the server priority projection: pins only. Open requests and recovery
+// remain status marks on additive ordinary rows.
 function priorityFrom(rows: MeChatRow[]): MeChatPriorityRows {
-  const attention = rows.filter((r) => r.failedAgentIds.length > 0 || r.openRequestCount > 0);
-  const attentionIds = new Set(attention.map((r) => r.chatId));
-  const pinned = rows.filter((r) => r.pinnedAt !== null && !attentionIds.has(r.chatId));
-  return { attention, pinned };
+  return { pinned: rows.filter((r) => r.pinnedAt !== null) };
 }
 
 // The rail uses `useInfiniteQuery`, so seeded cache entries must be the
@@ -278,6 +273,7 @@ function StatefulList({
       }}
       group={group}
       onGroupChange={setGroup}
+      onOpenNeedYou={() => undefined}
       width={360}
     />
   );
@@ -330,7 +326,7 @@ describe("ConversationList", () => {
     const onNewChat = vi.fn();
     const container = await renderDom(<StatefulList onSelectChat={onSelectChat} onNewChat={onNewChat} />);
 
-    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("Need you");
     expect(container.textContent).toContain("Broken deploy");
     expect(container.textContent).toContain("Waiting approval");
     expect(container.textContent).toContain("Manual");
@@ -614,7 +610,7 @@ describe("ConversationList", () => {
     );
 
     expect(container.textContent).not.toContain("No conversations yet.");
-    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("Need you");
     expect(container.textContent).toContain("Only failed");
   });
 
@@ -631,7 +627,7 @@ describe("ConversationList", () => {
     expect(buttonByText(container, "Load more")).toBeTruthy();
   });
 
-  it("de-duplicates a Needs-attention chat — renders exactly once", async () => {
+  it("de-duplicates a Need-you chat — renders exactly once", async () => {
     // Count-guard the attention half of the priority dedup (the Pinned half is
     // guarded above). A regression narrowing `priorityIds` to pinned-only would
     // double-render every attention row; `.toContain` would miss it, this won't.
@@ -646,7 +642,7 @@ describe("ConversationList", () => {
 
     const attRows = [...container.querySelectorAll("button")].filter((b) => b.textContent?.includes("Attention chat"));
     expect(attRows.length).toBe(1);
-    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("Need you");
   });
 
   it("toasts the submitted pin direction after an Attention row rerenders in place (regression)", async () => {

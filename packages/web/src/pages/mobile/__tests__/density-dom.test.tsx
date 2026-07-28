@@ -50,6 +50,7 @@ const authMock = vi.hoisted(() => {
 const meChatMocks = vi.hoisted(() => ({
   listMeChats: vi.fn(),
   listMeChatSourceCounts: vi.fn(),
+  listNeedYouRequests: vi.fn(),
 }));
 
 vi.mock("../../../auth/auth-context.js", () => ({
@@ -164,10 +165,11 @@ describe("mobile density tiers", () => {
         chatRow({ chatId: "working", title: "Context docs", busyAgentIds: ["agent-1"] }),
         chatRow({ chatId: "recent", title: "Team roster polish" }),
       ],
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       nextCursor: null,
     });
     meChatMocks.listMeChatSourceCounts.mockResolvedValue({ counts: {} });
+    meChatMocks.listNeedYouRequests.mockResolvedValue({ items: [], total: 1, nextCursor: null });
   });
 
   afterEach(() => {
@@ -175,35 +177,35 @@ describe("mobile density tiers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders one continuous Work feed in Attention then Pinned then Recency order", async () => {
+  it("renders one continuous Chat list without promoting ask or recovery states", async () => {
     renderWithClient(harness, <MobileWorkPage />, "/m/work");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Release readiness"));
-    expect(harness.container.textContent).toContain("Work");
+    expect(harness.container.textContent).toContain("Chat");
 
     const sectionHeadings = [...harness.container.querySelectorAll("h2")].map((heading) => heading.textContent);
     expect(sectionHeadings).toEqual([]);
 
     const cards = [...harness.container.querySelectorAll<HTMLElement>("[data-mobile-card]")];
     expect(cards).toHaveLength(3);
-    expect(cards[0]?.getAttribute("data-mobile-card")).toBe("action");
+    expect(cards[0]?.getAttribute("data-mobile-card")).toBe("work");
     expect(cards[0]?.textContent).toContain("Release readiness");
-    expect(cards[0]?.querySelector("[data-mobile-primary-action]")?.textContent).toContain("Answer");
+    expect(cards[0]?.querySelector("[data-mobile-primary-action]")).toBeNull();
     expect(cards[1]?.getAttribute("data-mobile-card")).toBe("work");
     expect(cards[1]?.textContent).toContain("Context docs");
     expect(cards[2]?.textContent).toContain("Team roster polish");
   });
 
-  it("gives ordinary summaries three lines while keeping dynamic and action evidence compact", async () => {
+  it("gives summaries three lines while keeping dynamic evidence compact", async () => {
     renderWithClient(harness, <MobileWorkPage />, "/m/work");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Release readiness"));
 
     const cards = [...harness.container.querySelectorAll<HTMLElement>("[data-mobile-card]")];
-    const actionCard = cards.find((card) => card.textContent?.includes("Release readiness"));
+    const requestCard = cards.find((card) => card.textContent?.includes("Release readiness"));
     const workingCard = cards.find((card) => card.textContent?.includes("Context docs"));
     const ordinaryCard = cards.find((card) => card.textContent?.includes("Team roster polish"));
-    if (!actionCard || !workingCard || !ordinaryCard) throw new Error("Missing expected Work cards");
+    if (!requestCard || !workingCard || !ordinaryCard) throw new Error("Missing expected Chat cards");
 
-    expect(actionCard.querySelector("[data-mobile-card-preview]")?.getAttribute("data-line-clamp")).toBe("2");
+    expect(requestCard.querySelector("[data-mobile-card-preview]")?.getAttribute("data-line-clamp")).toBe("3");
     expect(workingCard.getAttribute("style")).toContain("min-height: calc(var(--sp-20) + var(--sp-8))");
     expect(workingCard.querySelector("[data-mobile-card-preview]")?.className).toContain("text-mobile-body");
     expect(workingCard.querySelector("[data-mobile-card-preview]")?.className).toContain("truncate");
@@ -215,7 +217,7 @@ describe("mobile density tiers", () => {
     expect(harness.container.querySelector("[data-mobile-swipe-surface]")).toBeNull();
   });
 
-  it("counts pinned attention rows and unread rows from the same Work projection", async () => {
+  it("shows the request-level Need you count separately from pinned and unread chat counts", async () => {
     const pinnedAttention = chatRow({
       chatId: "pinned-attention",
       title: "Pinned urgent work",
@@ -229,7 +231,7 @@ describe("mobile density tiers", () => {
     });
     meChatMocks.listMeChats.mockResolvedValue({
       rows: [pinnedAttention, pinnedQuiet],
-      priorityRows: { attention: [pinnedAttention], pinned: [pinnedQuiet] },
+      priorityRows: { pinned: [pinnedAttention, pinnedQuiet] },
       nextCursor: null,
     });
     meChatMocks.listMeChatSourceCounts.mockResolvedValue({
@@ -239,8 +241,9 @@ describe("mobile density tiers", () => {
     renderWithClient(harness, <MobileWorkPage />, "/m/work");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Pinned urgent work"));
 
+    const needYou = harness.container.querySelector<HTMLButtonElement>('button[aria-label="Need you, 1 question"]');
+    expect(needYou?.textContent).toContain("1");
     const chips = [...harness.container.querySelectorAll<HTMLButtonElement>("[data-mobile-work-quick-views] button")];
-    expect(chips.find((chip) => chip.textContent?.includes("Need you"))?.textContent).toContain("1");
     expect(chips.find((chip) => chip.textContent?.includes("Unread"))?.textContent).toContain("2");
     expect(chips.find((chip) => chip.textContent?.includes("Pinned"))?.textContent).toContain("2");
     const pinnedCard = [...harness.container.querySelectorAll<HTMLElement>('[data-mobile-card="work"]')].find((card) =>
@@ -260,7 +263,7 @@ describe("mobile density tiers", () => {
           description: "**Task:** run the seed (`first-tree-seed`)",
         }),
       ],
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       nextCursor: null,
     });
     renderWithClient(harness, <MobileWorkPage />, "/m/work");
@@ -320,7 +323,7 @@ describe("mobile density tiers", () => {
     );
     meChatMocks.listMeChats.mockResolvedValue({
       rows,
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       nextCursor: null,
     });
 
@@ -368,28 +371,28 @@ describe("mobile density tiers", () => {
     meChatMocks.listMeChats
       .mockResolvedValueOnce({
         rows: [chatRow({ chatId: "page-1", title: "First page only" })],
-        priorityRows: { attention: [], pinned: [] },
+        priorityRows: { pinned: [] },
         nextCursor: "next-page",
       })
       .mockResolvedValueOnce({
         rows: [chatRow({ chatId: "page-2", title: "Needle on later page" })],
-        priorityRows: { attention: [], pinned: [] },
+        priorityRows: { pinned: [] },
         nextCursor: null,
       });
 
     renderWithClient(harness, <MobileWorkPage />, "/m/work");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("First page only"));
 
-    const searchToggle = harness.container.querySelector<HTMLButtonElement>('button[aria-label="Search Work"]');
+    const searchToggle = harness.container.querySelector<HTMLButtonElement>('button[aria-label="Search Chat"]');
     await act(async () => searchToggle?.click());
-    const searchInput = harness.container.querySelector<HTMLInputElement>('input[aria-label="Search work"]');
+    const searchInput = harness.container.querySelector<HTMLInputElement>('input[aria-label="Search chats"]');
     if (!searchInput) throw new Error("Missing search input");
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(searchInput, "Needle");
       searchInput.dispatchEvent(new InputEvent("input", { bubbles: true, data: "Needle", inputType: "insertText" }));
     });
 
-    await waitForSettled(harness, () => expect(harness.container.textContent).toContain("No matching work"));
+    await waitForSettled(harness, () => expect(harness.container.textContent).toContain("No matching chats"));
     expect(harness.container.querySelector("[data-mobile-work-render-sentinel]")).toBeNull();
     const loadMore = [...harness.container.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Load more",

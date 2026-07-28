@@ -50,9 +50,11 @@ const chatMocks = vi.hoisted(() => ({
   getChat: vi.fn(),
   listChatMessages: vi.fn(),
   listChatOpenRequests: vi.fn(),
+  listRequestThread: vi.fn(),
   patchChatEngagement: vi.fn(),
   readFileAsBase64: vi.fn(),
   renameChat: vi.fn(),
+  sendAskAgentQuestion: vi.fn(),
   sendChatMessage: vi.fn(),
   sendFileMessageBatch: vi.fn(),
 }));
@@ -741,9 +743,23 @@ beforeEach(() => {
   chatMocks.getChat.mockResolvedValue(chatDetail());
   chatMocks.listChatMessages.mockResolvedValue(BASE_MESSAGES);
   chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+  chatMocks.listRequestThread.mockResolvedValue({ items: [] });
   chatMocks.patchChatEngagement.mockResolvedValue({ chatId: "chat-1", engagementStatus: "active" });
   chatMocks.readFileAsBase64.mockResolvedValue("image-base64");
   chatMocks.renameChat.mockResolvedValue({ id: "chat-1", topic: "Renamed launch" });
+  chatMocks.sendAskAgentQuestion.mockImplementation((chatId: string, requestId: string, content: string) =>
+    Promise.resolve(
+      message({
+        id: "clarification-1",
+        chatId,
+        senderId: "human-agent-self",
+        content,
+        inReplyTo: requestId,
+        metadata: { askAgent: { requestId, agentId: "agent-1" } },
+        createdAt: "2026-05-28T12:00:30.000Z",
+      }),
+    ),
+  );
   chatMocks.sendChatMessage.mockImplementation((chatId: string, content: string) =>
     Promise.resolve(
       message({
@@ -2274,7 +2290,7 @@ describe("ChatView", () => {
       queryClient.setQueryData(["chat-messages", "chat-1"], dockMessages);
     });
     await flush();
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     await waitForCondition(() => textarea.value === "", "Expected late request dock to clear auto-primed @");
 
     // Decoupled: clicking an option highlights the pill but does NOT fill the
@@ -2282,7 +2298,7 @@ describe("ChatView", () => {
     // Answering happens in the overlay: the composer stays empty.
     await click(askOption(container, "Blue-green"));
     expect(textarea.value).toBe("");
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected option answer send");
     // The answer is the selected option label, resolving the question.
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "Blue-green", ["agent-1"], {
@@ -2323,13 +2339,13 @@ describe("ChatView", () => {
       queryClient.setQueryData(["chat-messages", "chat-1"], dockMessages);
     });
     await flush();
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
 
     // Reply is disabled until an option is picked, then resolves with the label.
-    expect(buttonByText(container, "Reply")?.disabled).toBe(true);
+    expect(buttonByText(container, "Submit")?.disabled).toBe(true);
     await click(askOption(container, "Blue-green"));
-    expect(buttonByText(container, "Reply")?.disabled).toBe(false);
-    await click(buttonByText(container, "Reply"));
+    expect(buttonByText(container, "Submit")?.disabled).toBe(false);
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(
       () => chatMocks.sendChatMessage.mock.calls.length > 0,
       "Expected the options answer to resolve",
@@ -2378,8 +2394,65 @@ describe("ChatView", () => {
 
     // The blocking takeover still appears, driven by the open-requests source.
     await waitForText(container, "Approve the migration?");
-    expect(buttonByText(container, "Reply")).toBeTruthy();
+    expect(buttonByText(container, "Submit")).toBeTruthy();
     expect(buttonByText(container, "Skip")).toBeTruthy();
+
+    await act(async () => root.unmount());
+  });
+
+  it("supports request inspection without enabling ordinary chat sends", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const firstAsk = message({
+      id: "req-inspect-1",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    const secondAsk = message({
+      id: "req-inspect-2",
+      senderId: "agent-1",
+      format: "request",
+      content: "Choose the rollout window.",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:30:00.000Z",
+    });
+    const laterMessage = message({
+      id: "msg-after-asks",
+      senderId: "agent-1",
+      content: "Extra evidence after both questions.",
+      createdAt: "2026-05-28T11:45:00.000Z",
+    });
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [firstAsk, secondAsk] });
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([firstAsk, secondAsk, laterMessage]));
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [firstAsk, secondAsk] });
+      },
+      "/?showAsk=false",
+    );
+
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).toBeNull();
+    expect(container.textContent).toContain("Approve the migration?");
+    expect(container.textContent).toContain("Choose the rollout window.");
+    expect(container.textContent).toContain("Extra evidence after both questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+
+    const blockedComposer = container.querySelector<HTMLButtonElement>("[data-inspect-ask-composer]");
+    expect(blockedComposer).not.toBeNull();
+    expect(blockedComposer?.textContent).toContain("有 2 条待处理的问题");
+    await click(blockedComposer);
+    await waitForText(container, "Submit");
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).not.toBeNull();
+    expect(container.textContent).toContain("Approve the migration?");
+
+    await click(container.querySelector('button[aria-label="Close question"]'));
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).toBeNull();
+    expect(container.querySelector("[data-inspect-ask-composer]")?.textContent).toContain("有 2 条待处理的问题");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
@@ -2458,19 +2531,19 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const other = askTextarea(container);
     if (!other) throw new Error("Overlay free-text input missing");
 
     // No option picked + empty Other → Reply disabled.
-    expect(buttonByText(container, "Reply")?.disabled).toBe(true);
+    expect(buttonByText(container, "Submit")?.disabled).toBe(true);
 
     // Typing a free-text answer (without picking an option) enables Reply.
     await setValue(other, "Neither — let's hold the deploy");
-    expect(buttonByText(container, "Reply")?.disabled).toBe(false);
+    expect(buttonByText(container, "Submit")?.disabled).toBe(false);
 
     // ...and Reply resolves with the free text as the answer.
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected free-text answer send");
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "Neither — let's hold the deploy", ["agent-1"], {
       inReplyTo: "req-opt",
@@ -2517,7 +2590,7 @@ describe("ChatView", () => {
       queryClient.setQueryData(["chat-messages", "chat-1"], dockMessages);
     });
     await flush();
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     expect(textarea.value).toBe("");
 
     await setValue(textarea, "@");
@@ -2555,11 +2628,11 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const answerBox = askTextarea(container);
     if (!answerBox) throw new Error("Overlay free-text input missing");
     await setValue(answerBox, "Screenshot evidence attached");
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected text resolve send");
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "Screenshot evidence attached", ["agent-1"], {
       inReplyTo: "req-file",
@@ -2578,7 +2651,7 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const answerBox = askTextarea(container);
     if (!answerBox) throw new Error("Overlay free-text input missing");
     await setValue(answerBox, "Screenshot evidence attached");
@@ -2590,7 +2663,7 @@ describe("ChatView", () => {
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!fileInput) throw new Error("File input missing");
     await changeFiles(fileInput, [file]);
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(
       () => chatMocks.sendFileMessageBatch.mock.calls.length > 0,
       "Expected image file-batch resolve",
@@ -2623,13 +2696,13 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const file = new File(["pdf"], "evidence.pdf", { type: "application/pdf" });
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!fileInput) throw new Error("File input missing");
     await changeFiles(fileInput, [file]);
     await waitForText(container, "evidence.pdf");
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected document resolve send");
     expect(attachmentMocks.uploadAttachment).toHaveBeenCalledWith(file);
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "", ["agent-1"], {

@@ -66,7 +66,7 @@ describe("MobileWorkPage back navigation", () => {
     harness = createDomHarness();
     meChatMocks.listMeChats.mockReset();
     meChatMocks.listMeChats.mockResolvedValue({
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       rows: [],
       nextCursor: null,
     });
@@ -96,7 +96,7 @@ describe("MobileWorkPage back navigation", () => {
       back?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     await harness.flush();
-    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active work"));
+    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active chats"));
 
     // clearChat must REPLACE the detail with the list (not PUSH), so the
     // browser Back button / swipe cannot reopen the chat detail just exited.
@@ -106,7 +106,7 @@ describe("MobileWorkPage back navigation", () => {
   it("preserves the selected quick view after opening a chat and returning", async () => {
     const pinned = chatRow({ pinnedAt: "2026-07-24T05:30:00.000Z" });
     meChatMocks.listMeChats.mockResolvedValue({
-      priorityRows: { attention: [], pinned: [pinned] },
+      priorityRows: { pinned: [pinned] },
       rows: [pinned],
       nextCursor: null,
     });

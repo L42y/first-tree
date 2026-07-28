@@ -1085,6 +1085,7 @@ describe("page SSR smoke coverage", () => {
           onClearFilters={noop}
           group="source"
           onGroupChange={noop}
+          onOpenNeedYou={noop}
         />,
       ),
     ).toContain("Launch planning");

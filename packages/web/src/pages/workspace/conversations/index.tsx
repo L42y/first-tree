@@ -11,6 +11,7 @@ import { Popover } from "../../../components/ui/popover.js";
 import { useParticipantNames } from "../../../lib/participant-name-cache.js";
 import { useAgentNameMap } from "../../../lib/use-agent-name-map.js";
 import { cn, formatRowTime } from "../../../lib/utils.js";
+import { NeedYouEntry } from "../need-you/need-you-entry.js";
 import { FilterPopover, GROUP_OPTIONS, originLabel } from "./filter-popover.js";
 import { type GroupBucket, type GroupMode, groupRows, rowActivityInstant, rowIsFailed } from "./group-rows.js";
 import { RowEngagementMenu } from "./row-engagement-menu.js";
@@ -26,19 +27,18 @@ import { RowEngagementMenu } from "./row-engagement-menu.js";
  * Redesign (content-first / near-monochrome): the header is a single
  * row — New chat + the primary `All / Unread / Watching` triad + a `⚙`
  * popover that holds the lower-frequency Status / Source controls.
- * Rows carry exactly one signal per line: the title row + time, and a
- * second line that is *either* an attention state *or* the last-message
- * preview *or* (when there's neither) nothing at all. Colour appears only
- * on attention rows (left border + state line), the selected row (green),
- * and the unread dot — never as decoration. Avatars use the desaturated
- * hue companions so a dense rail stays quiet.
+ * Rows carry compact status icons for unread, open request, and recovery
+ * without changing their position. The only ordering layer above recency is
+ * the user's private Pinned group. Colour appears only on those state icons,
+ * the selected row (green), and the unread dot — never as decoration.
+ * Avatars use the desaturated hue companions so a dense rail stays quiet.
  */
 
 export const DRAFT_CHAT_ID = "draft" as const;
 
 // Stable identity for the "no priority groups" case so the derived memos below
 // don't re-run every render on a fresh object literal.
-const EMPTY_PRIORITY: MeChatPriorityRows = { attention: [], pinned: [] };
+const EMPTY_PRIORITY: MeChatPriorityRows = { pinned: [] };
 
 /**
  * Primary engagement filter — the single-select triad in the header.
@@ -65,6 +65,7 @@ export function ConversationList({
   onClearFilters,
   group,
   onGroupChange,
+  onOpenNeedYou,
   width = 320,
 }: {
   selectedChatId: string | null;
@@ -102,6 +103,8 @@ export function ConversationList({
   onClearFilters: () => void;
   group: GroupMode;
   onGroupChange: (next: GroupMode) => void;
+  /** Enter the cross-Chat request review flow. */
+  onOpenNeedYou: () => void;
 }) {
   const { agentId: selfAgentId } = useAuth();
   // Per-bucket collapse override. Absence in the map means "use the
@@ -183,15 +186,12 @@ export function ConversationList({
   // list and a stable React key. No per-page staleness sieve is needed — the
   // infinite query refetches every loaded page on `refetchInterval`, so each
   // row's `busyAgentIds` is refreshed on the same cadence.
-  // The server supplies the whole-matching-set priority groups on the FIRST
-  // page (attention + pinned); later pages carry them empty. `rows` is additive
-  // — a priority chat is repeated in the ordinary stream — so we de-duplicate the
-  // recency list against the priority ids and render each chat exactly once.
+  // The server supplies the whole-matching-set pin projection on the FIRST
+  // page; later pages carry it empty. `rows` is additive — a pinned chat is
+  // repeated in the ordinary stream — so de-duplicate the recency list against
+  // the pin ids and render each chat exactly once.
   const priorityRows = data?.pages[0]?.priorityRows ?? EMPTY_PRIORITY;
-  const priorityIds = useMemo(
-    () => new Set([...priorityRows.attention, ...priorityRows.pinned].map((r) => r.chatId)),
-    [priorityRows],
-  );
+  const priorityIds = useMemo(() => new Set(priorityRows.pinned.map((r) => r.chatId)), [priorityRows]);
 
   // Flatten every loaded page into the ordinary recency list, de-duplicating by
   // chatId AND dropping any chat already shown in a priority group. A background
@@ -210,12 +210,11 @@ export function ConversationList({
     return rows;
   }, [data, priorityIds]);
 
-  // Render order: Needs attention → Pinned → the recency groups. Attention and
-  // Pinned come straight from the server projection (viewer-scoped failed / open
-  // request, and the viewer's private pins — both extracted across the whole
-  // MATCHING set, not just the loaded page), so a low-activity pin or a failure
-  // deep in history still surfaces at the top. An empty group is omitted; a plain
-  // unread mention still never pins. Row meta (`formatRowTime`) and the Today /
+  // Render order: Pinned → the recency groups. Need you is a separate
+  // request-level entry above this list; open asks, unread, and recovery remain
+  // row icons and never affect chat ordering. Pinned comes straight from the
+  // server's whole matching-set projection, so a low-activity pin still
+  // surfaces at the top. Row meta (`formatRowTime`) and the Today /
   // Yesterday buckets are clock-derived, so they must re-evaluate on the 30s
   // refetch cadence — TanStack Query structurally shares an identical successful
   // response, so `dataUpdatedAt` (a tracked field advancing on every successful
@@ -225,14 +224,6 @@ export function ConversationList({
   const buckets = useMemo<GroupBucket[]>(() => {
     const now = new Date();
     const groups: GroupBucket[] = [];
-    if (priorityRows.attention.length > 0) {
-      groups.push({
-        key: "needs-attention",
-        label: "Needs attention",
-        rows: priorityRows.attention,
-        defaultCollapsed: false,
-      });
-    }
     if (priorityRows.pinned.length > 0) {
       groups.push({ key: "pinned", label: "Pinned", rows: priorityRows.pinned, defaultCollapsed: false });
     }
@@ -240,15 +231,15 @@ export function ConversationList({
     return groups;
   }, [allRows, priorityRows, group, dataUpdatedAt]);
 
-  // Whether ANY row renders — an ordinary recency row OR a server priority-group
-  // row (Needs attention / Pinned). The empty / loading / load-more gates key off
+  // Whether ANY row renders — an ordinary recency row OR a server Pinned row.
+  // The empty / loading / load-more gates key off
   // THIS, not `allRows.length`: `rows` is additive and every priority chat is
   // de-duplicated OUT of `allRows`, so an all-priority list (a new user whose one
   // chat is pinned or has a failed agent) has `allRows.length === 0` while the
   // rail is NOT empty. Gating the empty state on `allRows.length` there would
-  // paint "No conversations yet" directly above a populated Pinned /
-  // Needs-attention group, and hide "Load more" when the whole first page is
-  // priority rows but more ordinary chats wait on the next page. `.some(rows>0)`
+  // paint "No conversations yet" directly above a populated Pinned group, and
+  // hide "Load more" when the whole first page is pinned rows but more ordinary
+  // chats wait on the next page. `.some(rows>0)`
   // (not `buckets.length`) because `groupRows([])` returns a single label-less
   // zero-row spacer bucket, so the bucket count is never 0.
   const hasAnyRow = buckets.some((b) => b.rows.length > 0);
@@ -256,11 +247,7 @@ export function ConversationList({
   // Page-local unread count across every rendered chat (priority groups +
   // ordinary rows). The global server aggregate is deferred to a later PR.
   const totalUnread = useMemo(
-    () =>
-      [...priorityRows.attention, ...priorityRows.pinned, ...allRows].reduce(
-        (acc, r) => acc + (r.unreadMentionCount > 0 ? 1 : 0),
-        0,
-      ),
+    () => [...priorityRows.pinned, ...allRows].reduce((acc, r) => acc + (r.unreadMentionCount > 0 ? 1 : 0), 0),
     [priorityRows, allRows],
   );
   const isDraftActive = selectedChatId === DRAFT_CHAT_ID;
@@ -465,6 +452,7 @@ export function ConversationList({
 
       {/* List */}
       <div className="flex-1 overflow-y-auto">
+        <NeedYouEntry variant="desktop" onOpen={onOpenNeedYou} />
         {isLoading && !hasAnyRow && (
           <div className="text-center text-body" style={{ padding: "var(--sp-6) var(--sp-3)", color: "var(--fg-3)" }}>
             Loading…

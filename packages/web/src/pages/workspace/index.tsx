@@ -16,6 +16,7 @@ import {
   storeGroupMode,
 } from "./conversations/group-rows.js";
 import { ConversationList, DRAFT_CHAT_ID, type RailFilter } from "./conversations/index.js";
+import { NeedYouPage } from "./need-you/need-you-page.js";
 
 /**
  * Workspace shell — chat-first. The left rail is `ConversationList`; the
@@ -161,6 +162,7 @@ export function WorkspaceBody() {
   // filter affordances) and show the chat full-bleed.
   const isTrial = isLandingTrialSurface(location.pathname);
   const selectedChatId = searchParams.get("c");
+  const reviewingNeedYou = searchParams.get("review") === "need-you";
   const legacyAgentId = searchParams.get("a");
   const legacySource = searchParams.get("source");
   const engagement: ChatEngagementView = engagementViewParser.parse(searchParams.get("engagement"));
@@ -236,6 +238,8 @@ export function WorkspaceBody() {
       // switching chats doesn't reset the user's filter context.
       const next = new URLSearchParams(searchParams);
       next.set("c", chatId);
+      next.delete("review");
+      next.delete("showAsk");
       clearDocPreviewParams(next);
       setSearchParams(next);
       // Auto-dismiss the conversation-list overlay on narrow viewports —
@@ -249,6 +253,8 @@ export function WorkspaceBody() {
   const openDraft = useCallback(() => {
     const next = new URLSearchParams(searchParams);
     next.set("c", DRAFT_CHAT_ID);
+    next.delete("review");
+    next.delete("showAsk");
     clearDocPreviewParams(next);
     setSearchParams(next);
   }, [searchParams, setSearchParams]);
@@ -256,10 +262,41 @@ export function WorkspaceBody() {
   const clearSelectedChat = useCallback(() => {
     const next = new URLSearchParams(searchParams);
     next.delete("c");
+    next.delete("showAsk");
     clearDocPreviewParams(next);
     setSearchParams(next, { replace: true });
     setConvOverlayOpen(false);
   }, [searchParams, setSearchParams]);
+
+  const openNeedYou = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.set("review", "need-you");
+    next.delete("c");
+    next.delete("showAsk");
+    clearDocPreviewParams(next);
+    setSearchParams(next);
+    setConvOverlayOpen(false);
+  }, [searchParams, setSearchParams]);
+
+  const closeNeedYou = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("review");
+    next.delete("showAsk");
+    clearDocPreviewParams(next);
+    setSearchParams(next);
+  }, [searchParams, setSearchParams]);
+
+  const openFullChatFromNeedYou = useCallback(
+    (chatId: string) => {
+      const next = new URLSearchParams(searchParams);
+      next.delete("review");
+      next.set("c", chatId);
+      next.set("showAsk", "false");
+      clearDocPreviewParams(next);
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
 
   const setEngagement = useCallback(
     (view: ChatEngagementView) => {
@@ -362,6 +399,7 @@ export function WorkspaceBody() {
       onClearFilters={clearFilters}
       group={group}
       onGroupChange={setGroup}
+      onOpenNeedYou={openNeedYou}
       width={conversationListWidth}
     />
   );
@@ -370,7 +408,7 @@ export function WorkspaceBody() {
   // overlay. Avoids trapping the user on NoChatView with no way back to
   // their chats (the inline rail is hidden, the hamburger only renders
   // inside ChatView). Same component reused, just stretched full-bleed.
-  if (isNarrow && !selectedChatId) {
+  if (isNarrow && !selectedChatId && !reviewingNeedYou) {
     return (
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 flex">{conversationList}</div>
@@ -386,14 +424,18 @@ export function WorkspaceBody() {
       {isNarrow ? null : conversationList}
 
       <main className="flex-1 flex flex-col overflow-hidden min-w-0" style={{ background: "var(--bg)" }}>
-        <CenterPanel
-          selectedChatId={selectedChatId}
-          onSelectChat={selectChat}
-          onClearChat={clearSelectedChat}
-          narrow={isNarrow}
-          onShowConversations={isNarrow ? () => setConvOverlayOpen(true) : null}
-          initialParticipantIds={participants}
-        />
+        {reviewingNeedYou ? (
+          <NeedYouPage mobile={isNarrow} onClose={closeNeedYou} onOpenFullChat={openFullChatFromNeedYou} />
+        ) : (
+          <CenterPanel
+            selectedChatId={selectedChatId}
+            onSelectChat={selectChat}
+            onClearChat={clearSelectedChat}
+            narrow={isNarrow}
+            onShowConversations={isNarrow ? () => setConvOverlayOpen(true) : null}
+            initialParticipantIds={participants}
+          />
+        )}
       </main>
       <DocPreviewDrawer />
 

@@ -111,7 +111,7 @@ function ModeBlock({
           mobile={mobile}
           onReply={(answer) =>
             setStatus(
-              `Reply → ${answer.content.replace(/\n/g, " · ")}` +
+              `Submit → ${answer.content.replace(/\n/g, " · ")}` +
                 (answer.mentions.length > 0 ? ` · @${answer.mentions.length}` : "") +
                 (answer.images.length > 0 ? ` · ${answer.images.length}🖼` : ""),
             )
@@ -135,8 +135,8 @@ export function RequestDockPreviewPage() {
         AskTakeover preview
       </h1>
       <p className="text-body" style={{ color: "var(--fg-3)", marginBottom: "var(--sp-4)" }}>
-        The ask body and the answer surface (options + Other) share one scroll region; only the Skip / Reply footer
-        stays pinned, so Reply is reachable at any height. Both resolve the question: Reply sends the composed answer,
+        The ask body and the answer surface (options + Other) share one scroll region; only the Skip / Submit footer
+        stays pinned, so Submit is reachable at any height. Both resolve the question: Submit sends the composed answer,
         Skip sends a skipped answer (there is no keep-it-open path).
       </p>
       {MODES.map((m) => (
@@ -148,7 +148,7 @@ export function RequestDockPreviewPage() {
       </h2>
       <p className="text-body" style={{ color: "var(--fg-3)", margin: "var(--sp-1) 0 var(--sp-4)" }}>
         A short box (the phone case): the answer surface no longer fits, so it scrolls inside the card while the Skip /
-        Reply footer stays pinned and visible. Regression guard for the off-screen-button bug.
+        Submit footer stays pinned and visible. Regression guard for the off-screen-button bug.
       </p>
       <ModeBlock label="options · single · short" payload={SINGLE_PAYLOAD} height={300} mobile />
       <ModeBlock label="options · multi · short" payload={MULTI_PAYLOAD} height={300} mobile />

@@ -7,7 +7,7 @@ import { ConversationList, type RailFilter } from "./workspace/conversations/ind
 /**
  * DEV-only visual review for the redesigned `ConversationList` (workspace
  * left rail). Renders the REAL component — header triad, `⚙` popover,
- * de-decorated rows, attention lines, muted avatars — against a seeded
+ * de-decorated rows, independent status icons, muted avatars — against a seeded
  * react-query cache so it needs no backend.
  *
  * Mounted outside `<Layout>` (see `app.tsx`), so `useAuth()` resolves to
@@ -58,8 +58,8 @@ const DESIGN = p("design-critique", "agent-design");
 const MARKET = p("marketing-writer", "agent-market");
 const RESEARCH = p("research", "agent-res");
 
-// Attention rows (failed + explicit mention) — pinned into the "Needs attention"
-// bucket at the top by the list.
+// Status rows (failed + explicit mention). They remain in activity order; only
+// an explicit private pin moves a chat into the Pinned group.
 const ATTENTION_ROWS: MeChatRow[] = [
   row({
     chatId: "c-failed",
@@ -230,14 +230,11 @@ function seededClient(): QueryClient {
   });
   // `ConversationList` reads via `useInfiniteQuery`, so seeded cache entries
   // must be the `InfiniteData` shape (`{ pages, pageParams }`). Model the server
-  // priority projection so the preview shows the Needs attention + Pinned groups
-  // (attention = failed / open-request rows; pinned = pinned rows not in
-  // attention). Ordinary rows stay additive; the component de-dupes them.
+  // Complete pin projection. Open questions and failures remain status marks on
+  // ordinary rows; the request-level Need you entry is rendered separately.
   const priorityFrom = (rows: MeChatRow[]): MeChatPriorityRows => {
-    const attention = rows.filter((r) => r.failedAgentIds.length > 0 || r.openRequestCount > 0);
-    const attentionIds = new Set(attention.map((r) => r.chatId));
-    const pinned = rows.filter((r) => r.pinnedAt !== null && !attentionIds.has(r.chatId));
-    return { attention, pinned };
+    const pinned = rows.filter((r) => r.pinnedAt !== null);
+    return { pinned };
   };
   const page = (rows: MeChatRow[]) => ({
     pages: [{ rows, nextCursor: null, priorityRows: priorityFrom(rows) }],
@@ -317,6 +314,7 @@ export function ConversationListPreviewPage() {
           onClearFilters={onClearFilters}
           group={group}
           onGroupChange={setGroup}
+          onOpenNeedYou={() => undefined}
         />
         <div style={{ flex: 1, padding: "var(--sp-6)", maxWidth: 560 }}>
           <h2 className="text-title" style={{ color: "var(--fg)", marginBottom: "var(--sp-1)" }}>
@@ -332,12 +330,12 @@ export function ConversationListPreviewPage() {
             <LegendRow
               chat="Deploy pipeline"
               state="agent failed"
-              how="red ! badge on avatar corner (pinned to Needs attention)"
+              how="red ! badge on avatar corner (activity order)"
             />
             <LegendRow
               chat="Release checklist"
-              state="needs your reply"
-              how="amber ? badge on avatar corner (pinned)"
+              state="unread @mention"
+              how="red dot on avatar corner (activity order)"
             />
             <LegendRow
               chat="Q2 hero copy"

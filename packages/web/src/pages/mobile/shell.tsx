@@ -45,13 +45,10 @@ export function MobileShell() {
   const immersiveChat = workRoute && selectedChatId !== null;
   const firstWorkPage = tabCountsQuery.data?.pages[0];
   const rows = mobileRowsFromList(firstWorkPage);
-  const attentionRows = firstWorkPage?.priorityRows.attention ?? [];
-  const attentionUnread = attentionRows.reduce((count, row) => count + (row.unreadMentionCount > 0 ? 1 : 0), 0);
   const totalUnread = Object.values(unreadCountsQuery.data?.counts ?? {}).reduce(
     (count, source) => count + source.unreadChatCount,
     0,
   );
-  const workCount = attentionRows.length + totalUnread - attentionUnread;
 
   // Kept above the onboarding early-return so hook order stays unconditional.
   const installGuide = useInstallGuideAuto({ hasContent: rows.length > 0, immersive: immersiveChat });
@@ -74,7 +71,7 @@ export function MobileShell() {
       <main className="flex-1 min-h-0 overflow-hidden">
         <Outlet />
       </main>
-      {immersiveChat ? null : <MobileBottomTabs workCount={workCount} />}
+      {immersiveChat ? null : <MobileBottomTabs chatCount={totalUnread} />}
       {installGuide.open && installGuide.mode ? (
         <InstallGuideSheet mode={installGuide.mode} onInstall={installGuide.install} onClose={installGuide.dismiss} />
       ) : null}

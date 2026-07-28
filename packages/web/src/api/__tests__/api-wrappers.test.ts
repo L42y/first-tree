@@ -231,7 +231,7 @@ describe("api wrapper paths", () => {
       with: ["agent-1", "agent-2"],
       watching: true,
     });
-    expect(listed.priorityRows).toEqual({ attention: [], pinned: [] });
+    expect(listed.priorityRows).toEqual({ pinned: [] });
     await meChats.listMeChatSourceCounts({ engagement: "archived", watching: true });
     await meChats.createMeChat({ participantIds: ["agent-1"] });
     await meChats.createMeTaskChat({

@@ -29,7 +29,7 @@ describe("MobileWorkPage document-evidence surface", () => {
     harness = createDomHarness();
     meChatMocks.listMeChats.mockReset();
     meChatMocks.listMeChats.mockResolvedValue({
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       rows: [],
       nextCursor: null,
     });
@@ -51,6 +51,6 @@ describe("MobileWorkPage document-evidence surface", () => {
     await harness.waitFor(() =>
       expect(harness.container.querySelector('[data-testid="mobile-doc-drawer"]')).not.toBeNull(),
     );
-    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active work"));
+    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active chats"));
   });
 });

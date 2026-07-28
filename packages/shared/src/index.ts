@@ -841,8 +841,13 @@ export {
 } from "./schemas/member.js";
 export {
   AGENT_FINAL_TEXT_METADATA_KEY,
+  ASK_AGENT_METADATA_KEY,
+  type AskAgentMessageMetadata,
+  type AskAgentQuestion,
   type AskOption,
   type AskRequest,
+  askAgentMessageMetadataSchema,
+  askAgentQuestionSchema,
   askOptionSchema,
   askRequestSchema,
   CLI_BODY_ORIGIN_METADATA_KEY,
@@ -868,10 +873,25 @@ export {
   precedingMessageSchema,
   type RequestResolution,
   RUNTIME_NOTICE_METADATA_KEY,
+  readAskAgentMessageMetadata,
   requestResolutionSchema,
   type SendMessage,
   sendMessageSchema,
 } from "./schemas/message.js";
+export {
+  type ListNeedYouRequestsQuery,
+  type ListNeedYouRequestsResponse,
+  listNeedYouRequestsQuerySchema,
+  listNeedYouRequestsResponseSchema,
+  NEED_YOU_DEFAULT_LIMIT,
+  NEED_YOU_MAX_LIMIT,
+  type NeedYouAsker,
+  type NeedYouRequestItem,
+  needYouAskerSchema,
+  needYouRequestItemSchema,
+  type RequestThreadResponse,
+  requestThreadResponseSchema,
+} from "./schemas/need-you.js";
 export {
   GITHUB_EVENT_CARD_REASONS,
   type GithubEventCard,

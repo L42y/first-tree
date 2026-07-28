@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { listMeChatsQuerySchema } from "../schemas/me-chat.js";
+import { listMeChatsQuerySchema, meChatPriorityRowsSchema } from "../schemas/me-chat.js";
 
 describe("listMeChatsQuerySchema", () => {
   it("coerces comma-separated origin and participant filters", () => {
@@ -39,5 +39,12 @@ describe("listMeChatsQuerySchema", () => {
     expect(listMeChatsQuerySchema.parse({ watching: "false" }).watching).toBe(false);
     expect(listMeChatsQuerySchema.parse({ watching: "" }).watching).toBe(false);
     expect(listMeChatsQuerySchema.parse({ watching: true }).watching).toBe(true);
+  });
+});
+
+describe("meChatPriorityRowsSchema", () => {
+  it("defaults to a pin-only projection and drops the retired attention bucket", () => {
+    expect(meChatPriorityRowsSchema.parse(undefined)).toEqual({ pinned: [] });
+    expect(meChatPriorityRowsSchema.parse({ pinned: [], attention: [] })).toEqual({ pinned: [] });
   });
 });

@@ -5,6 +5,7 @@ import type {
   CreateWebTaskChat,
   ListMeChatsQuery,
   ListMeChatsResponse,
+  ListNeedYouRequestsResponse,
   MeChatLeaveResponse,
   MeChatPinResponse,
   MeChatReadResponse,
@@ -12,7 +13,7 @@ import type {
   MeChatUnreadResponse,
   PinMeChat,
 } from "@first-tree/shared";
-import { listMeChatsResponseSchema } from "@first-tree/shared";
+import { listMeChatsResponseSchema, listNeedYouRequestsResponseSchema } from "@first-tree/shared";
 import { api, withOrg } from "./client.js";
 
 /**
@@ -54,6 +55,19 @@ export async function listMeChats(
   // `undefined`. Zod ignores unknown keys, so a newer server stays compatible.
   const res = await api.get<unknown>(withOrg(`/chats${query ? `?${query}` : ""}`), opts);
   return listMeChatsResponseSchema.parse(res);
+}
+
+/** Exact request-level Need you queue for the current human in the active Team. */
+export async function listNeedYouRequests(
+  params?: { limit?: number; cursor?: string },
+  opts?: { signal?: AbortSignal },
+): Promise<ListNeedYouRequestsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params?.cursor) qs.set("cursor", params.cursor);
+  const query = qs.toString();
+  const res = await api.get<unknown>(withOrg(`/chats/open-requests${query ? `?${query}` : ""}`), opts);
+  return listNeedYouRequestsResponseSchema.parse(res);
 }
 
 export function listMeChatSourceCounts(

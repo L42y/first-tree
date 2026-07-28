@@ -88,7 +88,7 @@ import { AddParticipantDropdown } from "../../../components/add-participant-drop
 import { Avatar as RealAvatar } from "../../../components/avatar.js";
 import { AgentHovercard } from "../../../components/chat/agent-hovercard.js";
 import { sendAskAnswer } from "../../../components/chat/ask-answer-transport.js";
-import { type AskAnswer, AskTakeover } from "../../../components/chat/ask-takeover.js";
+import { type AskAnswer, AskTakeover, clearAskTakeoverDraft } from "../../../components/chat/ask-takeover.js";
 import { awaitedAgentsFromMessage, ChatOfflineNotice } from "../../../components/chat/chat-offline-notice.js";
 import { ComposeStatusBar } from "../../../components/chat/compose-status-bar.js";
 import {
@@ -112,6 +112,7 @@ import {
   readMentions,
   readRequestPayload,
 } from "../../../components/chat/request-state.js";
+import { useAskAgent } from "../../../components/chat/use-ask-agent.js";
 import { WorkingTurn } from "../../../components/chat/working-turn.js";
 import { HistoryGapBanner } from "../../../components/history-gap-banner.js";
 import {
@@ -1472,6 +1473,7 @@ export function ChatView({
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
+  const inspectAskMode = searchParams.get("showAsk") === "false";
   const agentName = useAgentNameMap();
   const agentIdentity = useAgentIdentityMap();
   /**
@@ -1693,6 +1695,7 @@ export function ChatView({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const readOnlyComposerRef = useRef<HTMLDivElement | null>(null);
+  const inspectComposerRef = useRef<HTMLButtonElement | null>(null);
   // The composer footer band — wraps BOTH the request dock (with its option
   // radios) and the composer. The Enter-to-resolve backstop binds its keydown
   // listener here, not on `window`, so it only sees keys from inside the
@@ -2339,7 +2342,12 @@ export function ChatView({
     setAskBusy(true);
     try {
       await sendAskAnswer({ chatId, request, answer });
+      clearAskTakeoverDraft(request.id);
       queryClient.invalidateQueries({ queryKey: messagesQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["chat-open-requests", chatId] });
+      queryClient.invalidateQueries({ queryKey: ["request-thread", chatId, request.id] });
+      queryClient.invalidateQueries({ queryKey: ["need-you"] });
+      queryClient.invalidateQueries({ queryKey: ["me", "chats"] });
       queryClient.invalidateQueries({ queryKey: agentSessionsQueryKey(agentId) });
       scrollToBottom("smooth");
       // Leave `askBusy` true: the overlay disables itself until the resolved
@@ -2460,12 +2468,29 @@ export function ChatView({
     [readOnly, blockingMessages, myAgentId],
   );
   const dockPayload = useMemo(() => (dockRequest ? readRequestPayload(dockRequest.metadata) : null), [dockRequest]);
-  // The full-coverage ask card is active (and owns answering) iff a question
-  // blocks me. Both Reply and Skip resolve the question (Skip sends a "skipped"
-  // answer — see the `onSkip` handler), so the overlay clears the moment the
-  // resolving reply lands; there is no "dismiss but keep it open" path.
-  const askOverlayActive = dockRequest != null && dockPayload != null;
+  // `showAsk=false` is a viewer-local inspect mode: all currently loaded
+  // messages (plus every open ask) remain readable and the composer becomes a
+  // reopen affordance. It never changes request lifecycle or permits an
+  // ordinary send while questions remain open.
+  const askOverlayActive = dockRequest != null && dockPayload != null && !inspectAskMode;
   const dockRequestId = askOverlayActive ? dockRequest.id : undefined;
+  const openRequestCount = Math.max(openRequestsData?.items.length ?? 0, dockRequest ? 1 : 0);
+  const askAgent = useAskAgent({
+    chatId,
+    requestId: dockRequest?.id ?? null,
+    humanAgentId: myAgentId,
+    askerAgentId: dockRequest?.senderId ?? null,
+  });
+  const enterAskInspectMode = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.set("showAsk", "false");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+  const reopenAskTakeover = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("showAsk");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   // Reset the ask card's send state whenever the blocking question changes (a
   // resolved one unmounts the card; a different FIFO ask takes over): a stale
   // error or a stuck "Replying…" from the previous question must not bleed into
@@ -2499,6 +2524,7 @@ export function ChatView({
   // Answer state lives in the AskTakeover overlay (remounted per request via
   // `key`), so chat-view no longer resets per-question selections here.
 
+  const timelineMessages = inspectAskMode ? blockingMessages : mergedMessages;
   const items: TimelineItem[] = useMemo(() => {
     // mergedMessages (IDB cache ∪ server) feeds the timeline, not the raw server
     // window — otherwise cached messages outside the "last 50" window would
@@ -2506,7 +2532,7 @@ export function ChatView({
     // hide toggle is active, mergedMessages is already the filtered visible set
     // (see its useMemo), so the timeline, pill, divider, and read-tracker all
     // share one source.
-    const out: TimelineItem[] = mergedMessages.map((m) => ({
+    const out: TimelineItem[] = timelineMessages.map((m) => ({
       kind: "message" as const,
       at: m.createdAt,
       key: `m-${m.id}`,
@@ -2556,7 +2582,7 @@ export function ChatView({
 
     out.sort((a, b) => a.at.localeCompare(b.at));
     return out;
-  }, [mergedMessages, eventFeedsData]);
+  }, [timelineMessages, eventFeedsData]);
 
   const itemCount = items.length;
 
@@ -3541,16 +3567,16 @@ export function ChatView({
           style={askOverlayActive ? { zIndex: 40 } : undefined}
         >
           {/* The ask pops up as a card INSIDE the workspace body — offset below
-              the (stable, single-row) topic header so the header and the
-              right rail stay visible. Owns answering: Reply resolves with the
-              composed answer; Skip ALSO resolves, sending a "skipped" answer so
-              the asking agent unblocks and the red dot clears (skip is an answer,
-              not a temporary dismiss). Keyed by request id so its answer state
-              resets when the blocking question changes. */}
+              the (stable, single-row) topic header so the header and the right
+              rail stay visible. Submit and Skip resolve; Ask agent keeps the
+              request open; closing enters the read-only inspect mode. Keyed by
+              request id so its answer state resets when the blocking question
+              changes. */}
           {askOverlayActive && dockRequest && dockPayload ? (
             <div style={{ position: "absolute", top: 52, left: 0, right: 0, bottom: 0, zIndex: 30 }}>
               <AskTakeover
                 key={dockRequest.id}
+                requestId={dockRequest.id}
                 body={typeof dockRequest.content === "string" ? dockRequest.content : ""}
                 images={imageAttachmentRefsFromMetadata(dockRequest.metadata).map((ref) => ({
                   imageId: ref.attachmentId,
@@ -3564,6 +3590,14 @@ export function ChatView({
                 markdownComponents={askMarkdownComponents}
                 isTrial={isTrial}
                 mobile={composerMobile}
+                askAgent={{
+                  exchanges: askAgent.exchanges,
+                  waiting: askAgent.waiting,
+                  sending: askAgent.sending,
+                  error: askAgent.error,
+                  onAsk: askAgent.ask,
+                }}
+                onDismiss={enterAskInspectMode}
                 onReply={(answer) => {
                   void submitAskAnswer(dockRequest, answer);
                 }}
@@ -4043,7 +4077,7 @@ export function ChatView({
                 <ComposeStatusBar
                   chatId={chatId}
                   agents={(chatDetail?.participants ?? []).filter((p) => p.type !== "human")}
-                  fallbackFocusRef={readOnly ? readOnlyComposerRef : textareaRef}
+                  fallbackFocusRef={readOnly ? readOnlyComposerRef : inspectAskMode ? inspectComposerRef : textareaRef}
                 />
                 {readOnly ? (
                   <div
@@ -4085,6 +4119,42 @@ export function ChatView({
                       </Button>
                     )}
                   </div>
+                ) : inspectAskMode && openRequestCount > 0 ? (
+                  <button
+                    ref={inspectComposerRef}
+                    type="button"
+                    data-inspect-ask-composer
+                    onClick={reopenAskTakeover}
+                    className="composer-card flex w-full items-center text-left transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{
+                      gap: "var(--sp-3)",
+                      minHeight: composerMobile ? 52 : 46,
+                      padding: "var(--sp-2_5) var(--sp-3)",
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      color: "var(--fg-2)",
+                    }}
+                  >
+                    <span
+                      aria-hidden
+                      className="mono inline-flex shrink-0 items-center justify-center"
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: "var(--radius-full)",
+                        background: "var(--state-needs-you)",
+                        color: "var(--primary-on)",
+                      }}
+                    >
+                      ?
+                    </span>
+                    <span className="text-body flex-1">
+                      {openRequestCount === 1 ? "有 1 条待处理的问题" : `有 ${openRequestCount} 条待处理的问题`}
+                    </span>
+                    <span className="text-label" style={{ color: "var(--fg-4)" }}>
+                      Open
+                    </span>
+                  </button>
                 ) : (
                   <>
                     {/* A blocking question is answered in the full-coverage

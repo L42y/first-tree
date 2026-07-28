@@ -132,8 +132,8 @@ describe("MobileShell", () => {
     await harness.flush();
 
     expect(harness.container.querySelector("header")).toBeNull();
-    expect(harness.container.textContent).toContain("Work");
-    expect(harness.container.textContent).not.toContain("Chat");
+    expect(harness.container.textContent).toContain("Chat");
+    expect(harness.container.textContent).not.toContain("Work");
     expect(harness.container.textContent).not.toContain("Current team");
   });
 
@@ -165,15 +165,15 @@ describe("MobileShell", () => {
     expect(harness.container.textContent).not.toContain("work content");
   });
 
-  it("shares one active-list poller and one source-count poller between shell and Work", async () => {
+  it("shares one active-list poller and one source-count poller between shell and Chat", async () => {
     meChatMocks.listMeChats.mockResolvedValue({
       rows: [],
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       nextCursor: null,
     });
     renderUnifiedWorkShell(harness);
 
-    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active work"));
+    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active chats"));
     expect(meChatMocks.listMeChats).toHaveBeenCalledTimes(1);
     expect(meChatMocks.listMeChatSourceCounts).toHaveBeenCalledTimes(1);
     expect(meChatMocks.listMeChatSourceCounts).toHaveBeenCalledWith(

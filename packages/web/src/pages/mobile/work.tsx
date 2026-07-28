@@ -1,6 +1,6 @@
 import type { MeChatRow } from "@first-tree/shared";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { AlertCircle, ArrowRight, CircleHelp, Filter, Pin, Plus, Search, X } from "lucide-react";
+import { Filter, Pin, Plus, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
@@ -9,15 +9,16 @@ import { DocPreviewDrawer } from "../../components/doc-preview-drawer.js";
 import { Button } from "../../components/ui/button.js";
 import { cn, formatRowTime } from "../../lib/utils.js";
 import { CenterPanel } from "../workspace/center/index.js";
-import { MobileAskSheet } from "./ask-sheet.js";
+import { NeedYouEntry } from "../workspace/need-you/need-you-entry.js";
+import { NeedYouPage } from "../workspace/need-you/need-you-page.js";
 import { MobileChatActionsSheet } from "./chat-actions-sheet.js";
 import { MobilePage, MobileSystemState, mobileCardStyle } from "./components.js";
-import { formatMobileAge, mobileCardContent, mobileChatSignal, mobileRowsFromList, sortMobileChats } from "./data.js";
-import { longPressSurfaceStyle, useLongPress } from "./use-long-press.js";
+import { mobileCardContent, mobileChatSignal, mobileRowsFromList, sortMobileChats } from "./data.js";
+import { useLongPress } from "./use-long-press.js";
 import { type MobileWorkFilters, MobileWorkFiltersSheet } from "./work-filters-sheet.js";
 import { mobileWorkListQueryOptions, mobileWorkSourceCountsQueryOptions } from "./work-queries.js";
 
-type MobileWorkQuickView = "all" | "attention" | "unread" | "pinned";
+type MobileWorkQuickView = "all" | "unread" | "pinned";
 
 const DEFAULT_FILTERS: MobileWorkFilters = {
   engagement: "active",
@@ -32,11 +33,14 @@ export function MobileWorkPage() {
   const [quickView, setQuickView] = useState<MobileWorkQuickView>("all");
   const [filters, setFilters] = useState<MobileWorkFilters>(DEFAULT_FILTERS);
   const selectedChatId = searchParams.get("c");
+  const reviewingNeedYou = searchParams.get("review") === "need-you";
 
   const selectChat = useCallback(
     (chatId: string) => {
       const next = new URLSearchParams(searchParams);
       next.set("c", chatId);
+      next.delete("review");
+      next.delete("showAsk");
       setSearchParams(next);
     },
     [searchParams, setSearchParams],
@@ -46,12 +50,41 @@ export function MobileWorkPage() {
     const next = new URLSearchParams(searchParams);
     next.delete("c");
     next.delete("with");
+    next.delete("showAsk");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  const openNeedYou = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.set("review", "need-you");
+    next.delete("c");
+    next.delete("showAsk");
+    setSearchParams(next);
+  }, [searchParams, setSearchParams]);
+
+  const closeNeedYou = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("review");
+    next.delete("showAsk");
+    setSearchParams(next);
+  }, [searchParams, setSearchParams]);
+
+  const openFullChat = useCallback(
+    (chatId: string) => {
+      const next = new URLSearchParams(searchParams);
+      next.delete("review");
+      next.set("c", chatId);
+      next.set("showAsk", "false");
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
+
   return (
     <>
-      {selectedChatId !== null ? (
+      {reviewingNeedYou ? (
+        <NeedYouPage mobile onClose={closeNeedYou} onOpenFullChat={openFullChat} />
+      ) : selectedChatId !== null ? (
         <div className="flex h-full min-h-0 overflow-hidden">
           <CenterPanel
             selectedChatId={selectedChatId}
@@ -70,6 +103,7 @@ export function MobileWorkPage() {
           onQuickViewChange={setQuickView}
           filters={filters}
           onFiltersChange={setFilters}
+          onOpenNeedYou={openNeedYou}
         />
       )}
       <DocPreviewDrawer />
@@ -83,17 +117,18 @@ function MobileWorkList({
   onQuickViewChange,
   filters,
   onFiltersChange,
+  onOpenNeedYou,
 }: {
   onSelectChat: (chatId: string) => void;
   quickView: MobileWorkQuickView;
   onQuickViewChange: (quickView: MobileWorkQuickView) => void;
   filters: MobileWorkFilters;
   onFiltersChange: (filters: MobileWorkFilters) => void;
+  onOpenNeedYou: () => void;
 }) {
   const { agentId, organizationId } = useAuth();
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [answeringChatId, setAnsweringChatId] = useState<string | null>(null);
   const [actionsRow, setActionsRow] = useState<MeChatRow | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [renderedRowCount, setRenderedRowCount] = useState(MOBILE_WORK_INITIAL_RENDER_COUNT);
@@ -127,8 +162,7 @@ function MobileWorkList({
 
   const visibleRows = useMemo(() => {
     let rows = allRows;
-    if (quickView === "attention") rows = rows.filter((row) => mobileChatSignal(row).attention);
-    else if (quickView === "pinned") rows = rows.filter((row) => row.pinnedAt !== null);
+    if (quickView === "pinned") rows = rows.filter((row) => row.pinnedAt !== null);
     else if (quickView === "unread") rows = rows.filter((row) => row.unreadMentionCount > 0);
 
     const needle = search.trim().toLocaleLowerCase();
@@ -140,25 +174,10 @@ function MobileWorkList({
     );
   }, [allRows, quickView, search]);
 
-  const orderedRows = useMemo(() => {
-    const attention: MeChatRow[] = [];
-    const pinned: MeChatRow[] = [];
-    const recent: MeChatRow[] = [];
-    for (const row of visibleRows) {
-      if (mobileChatSignal(row).attention) attention.push(row);
-      else if (row.pinnedAt !== null) pinned.push(row);
-      else recent.push(row);
-    }
-    return [...attention, ...pinned, ...recent];
-  }, [visibleRows]);
+  const orderedRows = visibleRows;
 
   const priorityRows = allChatsQuery.data?.pages[0]?.priorityRows;
-  const attentionCount = priorityRows?.attention.length ?? 0;
-  const pinnedCount = new Set(
-    [...(priorityRows?.attention ?? []), ...(priorityRows?.pinned ?? [])]
-      .filter((row) => row.pinnedAt !== null)
-      .map((row) => row.chatId),
-  ).size;
+  const pinnedCount = priorityRows?.pinned.length ?? 0;
   const unreadCount = Object.values(sourceCountsQuery.data?.counts ?? {}).reduce(
     (count, source) => count + source.unreadChatCount,
     0,
@@ -202,11 +221,11 @@ function MobileWorkList({
       <MobilePage className="flex flex-col" padded>
         <div className="flex items-center" style={{ gap: "var(--sp-2)", marginBottom: "var(--sp-3)" }}>
           <h1 className="text-mobile-title min-w-0 flex-1" style={{ color: "var(--fg)", margin: 0 }}>
-            Work
+            Chat
           </h1>
           <button
             type="button"
-            aria-label={searchOpen ? "Close Work search" : "Search Work"}
+            aria-label={searchOpen ? "Close Chat search" : "Search Chat"}
             aria-expanded={searchOpen}
             onClick={() => {
               setSearchOpen((open) => !open);
@@ -222,7 +241,7 @@ function MobileWorkList({
           </button>
           <Link
             to="/m/work?c=draft"
-            aria-label="Start new work"
+            aria-label="Start new chat"
             className="inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-full)]"
             style={{ background: "var(--bg-active)", color: "var(--fg)", textDecoration: "none" }}
           >
@@ -239,13 +258,15 @@ function MobileWorkList({
                 setSearch(event.currentTarget.value);
                 setRenderedRowCount(MOBILE_WORK_INITIAL_RENDER_COUNT);
               }}
-              placeholder="Search work"
-              aria-label="Search work"
+              placeholder="Search chats"
+              aria-label="Search chats"
               className="text-mobile-body h-11 w-full rounded-[var(--radius-input)] border bg-[var(--bg-raised)] px-3 outline-none focus:border-ring"
               style={{ borderColor: "var(--border)", color: "var(--fg)" }}
             />
           </div>
         ) : null}
+
+        <NeedYouEntry variant="mobile" onOpen={onOpenNeedYou} />
 
         <div
           className="flex shrink-0 items-center"
@@ -253,12 +274,6 @@ function MobileWorkList({
           data-mobile-work-quick-views
         >
           <div className="flex min-w-0 flex-1 items-center overflow-x-auto" style={{ gap: "var(--sp-2)" }}>
-            <QuickViewChip
-              label="Need you"
-              count={attentionCount}
-              active={quickView === "attention"}
-              onClick={() => toggleQuickView("attention")}
-            />
             <QuickViewChip
               label="Unread"
               count={unreadCount}
@@ -274,7 +289,7 @@ function MobileWorkList({
           </div>
           <button
             type="button"
-            aria-label="Filter Work"
+            aria-label="Filter Chat"
             aria-pressed={narrowed}
             onClick={() => setFiltersOpen(true)}
             className="relative inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-input)] transition-colors hover:bg-[var(--bg-hover)]"
@@ -303,13 +318,13 @@ function MobileWorkList({
         </div>
 
         {chatsQuery.isLoading && allRows.length === 0 ? (
-          <MobileSystemState title="Loading work" />
+          <MobileSystemState title="Loading chats" />
         ) : chatsQuery.isLoadingError ? (
-          <MobileSystemState title="Failed to load work" detail={formatError(chatsQuery.error)} tone="error" />
+          <MobileSystemState title="Failed to load chats" detail={formatError(chatsQuery.error)} tone="error" />
         ) : visibleRows.length === 0 ? (
           <MobileSystemState
-            title={search.trim() ? "No matching work" : emptyTitle(quickView, filters)}
-            detail={search.trim() ? "Try another search." : "Change a quick view or filter to see more work."}
+            title={search.trim() ? "No matching chats" : emptyTitle(quickView, filters)}
+            detail={search.trim() ? "Try another search." : "Change a quick view or filter to see more chats."}
           />
         ) : (
           <div
@@ -319,25 +334,15 @@ function MobileWorkList({
             data-mobile-work-rendered={renderedRows.length}
             data-mobile-work-total={orderedRows.length}
           >
-            {renderedRows.map((row) =>
-              mobileChatSignal(row).attention ? (
-                <MobileActionCard
-                  key={row.chatId}
-                  row={row}
-                  onSelect={onSelectChat}
-                  onAnswer={setAnsweringChatId}
-                  onActions={setActionsRow}
-                />
-              ) : (
-                <MobileWorkRow
-                  key={row.chatId}
-                  row={row}
-                  selfAgentId={agentId ?? ""}
-                  onSelect={onSelectChat}
-                  onActions={setActionsRow}
-                />
-              ),
-            )}
+            {renderedRows.map((row) => (
+              <MobileWorkRow
+                key={row.chatId}
+                row={row}
+                selfAgentId={agentId ?? ""}
+                onSelect={onSelectChat}
+                onActions={setActionsRow}
+              />
+            ))}
             {hasBufferedRows ? (
               <div
                 ref={renderSentinelRef}
@@ -363,12 +368,11 @@ function MobileWorkList({
         ) : null}
         {chatsQuery.isFetchNextPageError ? (
           <p role="alert" className="text-mobile-caption" style={{ color: "var(--state-error)", textAlign: "center" }}>
-            More work could not be loaded. Try again.
+            More chats could not be loaded. Try again.
           </p>
         ) : null}
       </MobilePage>
 
-      {answeringChatId ? <MobileAskSheet chatId={answeringChatId} onClose={() => setAnsweringChatId(null)} /> : null}
       {actionsRow ? <MobileChatActionsSheet row={actionsRow} onClose={() => setActionsRow(null)} /> : null}
       {filtersOpen ? (
         <MobileWorkFiltersSheet
@@ -417,99 +421,6 @@ function QuickViewChip({
   );
 }
 
-function MobileActionCard({
-  row,
-  onSelect,
-  onAnswer,
-  onActions,
-}: {
-  row: MeChatRow;
-  onSelect: (chatId: string) => void;
-  onAnswer: (chatId: string) => void;
-  onActions: (row: MeChatRow) => void;
-}) {
-  const signal = mobileChatSignal(row);
-  const content = mobileCardContent(row);
-  const actionLabel = signal.tone === "needs-you" ? "Answer" : "Review";
-  const longPress = useLongPress(
-    () => onActions(row),
-    () => onSelect(row.chatId),
-  );
-
-  return (
-    <article
-      style={{
-        ...mobileCardStyle("priorityFeed"),
-        ...longPressSurfaceStyle,
-        position: "relative",
-      }}
-      data-mobile-card="action"
-    >
-      <button
-        type="button"
-        aria-label={`Open ${row.title}`}
-        {...longPress}
-        className="absolute inset-0 cursor-pointer border-0 bg-transparent"
-        style={{ zIndex: 0, ...longPress.style }}
-      />
-      <div className="relative flex h-full flex-col" style={{ gap: "var(--sp-2)", zIndex: 1, pointerEvents: "none" }}>
-        <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
-          {signal.tone === "error" ? (
-            <AlertCircle aria-hidden className="h-4 w-4" style={{ color: "var(--state-error)" }} />
-          ) : (
-            <CircleHelp aria-hidden className="h-4 w-4" style={{ color: "var(--state-needs-you)" }} />
-          )}
-          <span
-            className="text-mobile-subtitle min-w-0 flex-1"
-            style={{ color: signal.tone === "error" ? "var(--state-error)" : "var(--fg-needs-you-strong)" }}
-          >
-            {signal.label}
-          </span>
-          {(row.activityAt ?? row.lastMessageAt) ? (
-            <span className="mono text-mobile-caption shrink-0" style={{ color: "var(--fg-4)" }}>
-              {formatMobileAge(row.activityAt ?? row.lastMessageAt)}
-            </span>
-          ) : null}
-        </div>
-        <h3 className="text-mobile-title" style={{ color: "var(--fg)", margin: 0 }}>
-          {row.title}
-        </h3>
-        <p
-          className="text-mobile-body"
-          style={{
-            color: "var(--fg-3)",
-            margin: 0,
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical",
-            overflow: "hidden",
-          }}
-          data-mobile-card-preview
-          data-line-clamp={2}
-        >
-          {content.primary}
-        </p>
-        <div className="flex justify-end" style={{ marginTop: "auto", pointerEvents: "auto" }}>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="min-h-11"
-            onClick={() => {
-              if (signal.tone === "needs-you") onAnswer(row.chatId);
-              else onSelect(row.chatId);
-            }}
-            data-mobile-primary-action
-          >
-            {actionLabel}
-            <ArrowRight aria-hidden className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
-    </article>
-  );
-}
-
 function MobileWorkRow({
   row,
   selfAgentId,
@@ -544,13 +455,13 @@ function MobileWorkRow({
           type={row.type}
           participants={row.participants}
           selfAgentId={selfAgentId}
-          unreadCount={0}
-          failed={false}
-          needsYou={false}
+          unreadCount={row.unreadMentionCount}
+          failed={row.failedAgentIds.length > 0}
+          needsYou={row.openRequestCount > 0}
           size={36}
           muted
           badge={false}
-          statusDot={false}
+          statusDot
           imageLoading="lazy"
         />
         <div className="min-w-0 flex-1">
@@ -605,11 +516,10 @@ function MobileWorkRow({
 }
 
 function emptyTitle(quickView: MobileWorkQuickView, filters: MobileWorkFilters): string {
-  if (quickView === "attention") return "Nothing needs you";
-  if (quickView === "unread") return "No unread work";
-  if (quickView === "pinned") return "No pinned work";
-  if (filters.engagement === "archived") return "No archived work";
-  return "No active work";
+  if (quickView === "unread") return "No unread chats";
+  if (quickView === "pinned") return "No pinned chats";
+  if (filters.engagement === "archived") return "No archived chats";
+  return "No active chats";
 }
 
 function parseParticipantList(params: URLSearchParams): string[] {
