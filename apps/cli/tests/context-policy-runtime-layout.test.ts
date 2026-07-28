@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -34,6 +34,7 @@ type BuiltBriefingRuntime = {
 
 let builtCli: BuiltBriefingRuntime;
 let builtClient: BuiltBriefingRuntime;
+const cliEntryDir = join(cliRoot, "dist", "cli");
 
 function buildPrivateRuntimeEntry(outDir: string): void {
   execFileSync(
@@ -74,9 +75,9 @@ beforeAll(async () => {
     encoding: "utf8",
     maxBuffer: 20 * 1024 * 1024,
   });
-  buildPrivateRuntimeEntry(join(cliRoot, "dist"));
+  buildPrivateRuntimeEntry(cliEntryDir);
   builtCli = (await import(
-    `${pathToFileURL(join(cliRoot, "dist", smokeEntryName)).href}?built-policy-smoke`
+    `${pathToFileURL(join(cliEntryDir, smokeEntryName)).href}?built-policy-smoke`
   )) as BuiltBriefingRuntime;
 });
 
@@ -127,7 +128,8 @@ describe("canonical Policy runtime layouts", () => {
     assertRuntimeEmbedsCanonicalPolicy(builtClient);
   });
 
-  it("builds a Managed briefing from the actual CLI dist layout", () => {
+  it("builds a Managed briefing from beside the actual dist/cli entry", () => {
+    expect(existsSync(join(cliEntryDir, "index.mjs"))).toBe(true);
     assertRuntimeEmbedsCanonicalPolicy(builtCli);
   });
 
@@ -136,9 +138,10 @@ describe("canonical Policy runtime layouts", () => {
     roots.push(portableRoot);
     const appRoot = join(portableRoot, "app");
     cpSync(join(cliRoot, "dist"), appRoot, { recursive: true });
+    expect(existsSync(join(appRoot, "cli", "index.mjs"))).toBe(true);
 
     const portableRuntime = (await import(
-      `${pathToFileURL(join(appRoot, smokeEntryName)).href}?portable-policy-smoke`
+      `${pathToFileURL(join(appRoot, "cli", smokeEntryName)).href}?portable-policy-smoke`
     )) as BuiltBriefingRuntime;
     assertRuntimeEmbedsCanonicalPolicy(portableRuntime);
   });

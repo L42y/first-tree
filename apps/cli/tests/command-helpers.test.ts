@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
 
-import { createCommandContext } from "../src/commands/context.js";
+import { createCommandContext } from "../src/commands/command-context.js";
 import { registerSubcommands } from "../src/commands/groups.js";
 import type { SubcommandModule } from "../src/commands/types.js";
 

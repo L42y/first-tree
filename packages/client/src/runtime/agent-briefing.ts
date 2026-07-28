@@ -18,16 +18,22 @@ const require = createRequire(import.meta.url);
 const ejsRuntime: typeof ejs = require("ejs");
 const AGENT_BRIEFING_TEMPLATE_FILENAME = "agent-briefing.ejs";
 const TEMPLATE_CANDIDATE_URLS = [
-  // Source execution already has runtime/templates beside this module. The
-  // build preserves that relative layout for client, CLI, and portable chunks.
+  // Source execution and root-level client/CLI chunks keep templates beside
+  // this module.
   new URL(`./templates/${AGENT_BRIEFING_TEMPLATE_FILENAME}`, import.meta.url),
+  // The shipped CLI entry lives in dist/cli/ (portable: app/cli/) while its
+  // copied runtime assets remain at the dist/app root.
+  new URL(`../templates/${AGENT_BRIEFING_TEMPLATE_FILENAME}`, import.meta.url),
 ] as const;
 const CONTEXT_TREE_POLICY_CANDIDATE_URLS = [
   // Source execution: packages/client/src/runtime/agent-briefing.ts
   new URL("./assets/context-tree-policy.md", import.meta.url),
-  // Bundled client, CLI, and portable execution. This non-discoverable runtime
-  // asset is copied beside the built chunks; it is never installed as a Skill.
+  // Root-level client/CLI chunks. This non-discoverable runtime asset is
+  // copied beside the built chunks; it is never installed as a Skill.
   new URL("./runtime-assets/context-tree-policy.md", import.meta.url),
+  // Shipped CLI and portable entries are nested one level below the copied
+  // runtime asset directories.
+  new URL("../runtime-assets/context-tree-policy.md", import.meta.url),
 ] as const;
 
 type CachedTemplate = {

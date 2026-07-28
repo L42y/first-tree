@@ -40,6 +40,13 @@ function setupHome(prefix: string): string {
   return home;
 }
 
+function writeRollbackPlugin(marketplaceRoot: string): void {
+  const pluginRoot = join(marketplaceRoot, "plugins", "first-tree-context");
+  mkdirSync(join(pluginRoot, "bin"), { recursive: true });
+  writeFileSync(join(pluginRoot, "bin", "context-session-start"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  writeFileSync(join(pluginRoot, "old.txt"), "old\n");
+}
+
 function probe(installed: boolean): ProviderPluginProbe {
   return {
     provider: "codex",
@@ -96,7 +103,7 @@ describe("Context integration cross-resource operation", () => {
     const manifest = installManifest();
     writeContextIntegrationInstallManifest(manifest);
     const stableMarketplace = contextIntegrationMarketplaceSourcePath("codex");
-    mkdirSync(join(stableMarketplace, "plugins", "first-tree-context"), { recursive: true });
+    writeRollbackPlugin(stableMarketplace);
     const install = vi.fn();
     const uninstall = vi.fn();
     const disabledDriver: ContextIntegrationProviderDriver = {
@@ -265,7 +272,7 @@ describe("Context integration cross-resource operation", () => {
     const manifest = installManifest();
     writeContextIntegrationInstallManifest(manifest);
     const stableMarketplace = contextIntegrationMarketplaceSourcePath("codex");
-    mkdirSync(join(stableMarketplace, "plugins", "first-tree-context"), { recursive: true });
+    writeRollbackPlugin(stableMarketplace);
     const binding = {
       provider: "codex" as const,
       checkoutRoot: "/work/payments",
@@ -363,8 +370,7 @@ describe("Context integration cross-resource operation", () => {
     const operationId = "12345678-1234-4123-8123-123456789abc";
     const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
     const recoveryMarketplaceRoot = join(recoveryRoot, "marketplace");
-    mkdirSync(join(recoveryMarketplaceRoot, "plugins", "first-tree-context"), { recursive: true });
-    writeFileSync(join(recoveryMarketplaceRoot, "plugins", "first-tree-context", "old.txt"), "old\n");
+    writeRollbackPlugin(recoveryMarketplaceRoot);
     mkdirSync(join(home, "state", "context"), { recursive: true });
     writeFileSync(
       join(home, "state", "context", "operation-journal.json"),
@@ -402,8 +408,7 @@ describe("Context integration cross-resource operation", () => {
     const operationId = "12345678-1234-4123-8123-123456789abc";
     const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
     const recoveryMarketplaceRoot = join(recoveryRoot, "marketplace");
-    mkdirSync(join(recoveryMarketplaceRoot, "plugins", "first-tree-context"), { recursive: true });
-    writeFileSync(join(recoveryMarketplaceRoot, "plugins", "first-tree-context", "old.txt"), "old\n");
+    writeRollbackPlugin(recoveryMarketplaceRoot);
     mkdirSync(join(home, "state", "context"), { recursive: true });
     const journalPath = join(home, "state", "context", "operation-journal.json");
     writeFileSync(
