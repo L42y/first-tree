@@ -296,7 +296,7 @@ describe("mobile density tiers", () => {
     }
     vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
 
-    const rows = Array.from({ length: 24 }, (_, index) =>
+    const rows = Array.from({ length: 50 }, (_, index) =>
       chatRow({
         chatId: `progressive-${index}`,
         title: `Progressive ${index}`,
@@ -329,18 +329,38 @@ describe("mobile density tiers", () => {
 
     const list = harness.container.querySelector("[data-mobile-work-list]");
     expect(list?.getAttribute("data-mobile-work-rendered")).toBe("16");
-    expect(list?.getAttribute("data-mobile-work-total")).toBe("24");
+    expect(list?.getAttribute("data-mobile-work-total")).toBe("50");
     expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(16);
     expect(harness.container.querySelector("img")?.getAttribute("loading")).toBe("lazy");
     expect(activeObserver).not.toBeNull();
+
+    const initialObserver = activeObserver;
+    await act(async () => {
+      activeObserver?.trigger();
+    });
+    await harness.flush();
+
+    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(32);
+    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("32");
+    expect(activeObserver).not.toBe(initialObserver);
+
+    const secondObserver = activeObserver;
+    await act(async () => {
+      activeObserver?.trigger();
+    });
+    await harness.flush();
+
+    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(48);
+    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("48");
+    expect(activeObserver).not.toBe(secondObserver);
 
     await act(async () => {
       activeObserver?.trigger();
     });
     await harness.flush();
 
-    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(24);
-    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("24");
+    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(50);
+    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("50");
     expect(harness.container.querySelector("[data-mobile-work-render-sentinel]")).toBeNull();
   });
 

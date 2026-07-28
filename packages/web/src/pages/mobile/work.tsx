@@ -176,16 +176,21 @@ function MobileWorkList({
       return;
     }
 
+    // Bind one observer to one rendered batch. React can replace the unkeyed
+    // sentinel when keyed cards are inserted ahead of it, so the rendered-row
+    // dependency deliberately disconnects the old node and observes the
+    // current sentinel after every append.
+    const nextRenderedRowCount = Math.min(renderedRows.length + MOBILE_WORK_RENDER_BATCH_SIZE, orderedRows.length);
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
-        setRenderedRowCount((count) => Math.min(count + MOBILE_WORK_RENDER_BATCH_SIZE, orderedRows.length));
+        setRenderedRowCount((count) => Math.max(count, nextRenderedRowCount));
       },
       { rootMargin: "50% 0%" },
     );
     observer.observe(target);
     return () => observer.disconnect();
-  }, [hasBufferedRows, orderedRows.length]);
+  }, [hasBufferedRows, orderedRows.length, renderedRows.length]);
 
   const toggleQuickView = (next: Exclude<MobileWorkQuickView, "all">): void => {
     setRenderedRowCount(MOBILE_WORK_INITIAL_RENDER_COUNT);
