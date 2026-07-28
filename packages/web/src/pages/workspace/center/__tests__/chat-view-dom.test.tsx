@@ -2123,6 +2123,83 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows agent mention capsules for Ask agent, its response, and the resolving answer", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const request = message({
+      id: "req-tagged-history",
+      senderId: "agent-1",
+      format: "request",
+      content: "Which rollout should we choose?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      source: "cli",
+      createdAt: "2026-05-28T12:00:00.000Z",
+    });
+    const clarification = message({
+      id: "clarification-tagged-history",
+      senderId: "human-agent-self",
+      content: "What is the migration risk?",
+      metadata: {
+        mentions: ["agent-1"],
+        askAgent: { requestId: request.id, agentId: "agent-1" },
+      },
+      inReplyTo: request.id,
+      source: "web",
+      createdAt: "2026-05-28T12:01:00.000Z",
+    });
+    const clarificationReply = message({
+      id: "clarification-reply-tagged-history",
+      senderId: "agent-1",
+      content: "@gandy Option B reduces the migration risk.",
+      metadata: { mentions: ["human-agent-self"] },
+      inReplyTo: clarification.id,
+      source: "cli",
+      createdAt: "2026-05-28T12:02:00.000Z",
+    });
+    const answer = message({
+      id: "answer-tagged-history",
+      senderId: "human-agent-self",
+      content: "Proceed with option B.",
+      metadata: {
+        mentions: ["agent-1"],
+        resolves: { request: request.id, kind: "answered" },
+      },
+      inReplyTo: request.id,
+      source: "web",
+      createdAt: "2026-05-28T12:03:00.000Z",
+    });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([request, clarification, clarificationReply, answer])),
+      "/",
+    );
+
+    await waitForText(container, "Proceed with option B.");
+    const requestRow = container.querySelector('[data-message-id="req-tagged-history"]');
+    const clarificationRow = container.querySelector('[data-message-id="clarification-tagged-history"]');
+    const replyRow = container.querySelector('[data-message-id="clarification-reply-tagged-history"]');
+    const answerRow = container.querySelector('[data-message-id="answer-tagged-history"]');
+
+    // A plain request is not relabelled. The two human request actions expose
+    // their metadata-only route with a synthetic tag.
+    expect(requestRow?.querySelector("[data-request-agent-tag]")).toBeNull();
+    expect(
+      clarificationRow?.querySelector('[data-request-agent-tag] .mention-chip[data-mention-agent-id="agent-1"]')
+        ?.textContent,
+    ).toBe("@Nova");
+    expect(
+      answerRow?.querySelector('[data-request-agent-tag] .mention-chip[data-mention-agent-id="agent-1"]')?.textContent,
+    ).toBe("@Nova");
+
+    // `chat send` already normalized the agent reply to a leading persisted
+    // mention. It remains a single inline chip instead of gaining a duplicate
+    // synthetic one.
+    expect(replyRow?.querySelector("[data-request-agent-tag]")).toBeNull();
+    expect(replyRow?.querySelectorAll('.mention-chip[data-mention-agent-id="human-agent-self"]')).toHaveLength(1);
+    expect(replyRow?.querySelector(".mention-chip")?.textContent).toBe("@Gandy");
+
+    await act(async () => root.unmount());
+  });
+
   // R3: opening an attachment preview (new `docChat` + `docAttachment` params)
   // collapses the right sidebar so the preview rail gets the slot, then restores
   // it when the preview params clear. Keys on the new params — before the fix

@@ -18,6 +18,7 @@ import {
   parseProviderRetryEventMessage,
   type RequestResolution,
   type RuntimeProvider,
+  readAskAgentMessageMetadata,
   statusReasonFromProviderRetryEvent,
 } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -107,10 +108,12 @@ import {
 } from "../../../components/chat/gitlab-event-card.js";
 import { ImageRefGallery } from "../../../components/chat/image-ref-gallery.js";
 import {
+  contentStartsWithMention,
   findBlockingRequest,
   findThreadableRequestId,
   readMentions,
   readRequestPayload,
+  readResolution,
 } from "../../../components/chat/request-state.js";
 import { useAskAgent } from "../../../components/chat/use-ask-agent.js";
 import { WorkingTurn } from "../../../components/chat/working-turn.js";
@@ -550,6 +553,10 @@ function Avatar({
 
 type MessageRowProps = {
   msg: MessageWithDelivery;
+  /** Participant explicitly tagged by a request action (Ask agent,
+   *  its reply, or a resolving answer). Ordinary routed chat messages do not
+   *  receive a synthetic tag. */
+  requestTagAgentId: string | null;
   myAgentId: string | null;
   agentNameFn: (id: string) => string;
   agentAvatarFn: (id: string) => string | null;
@@ -565,6 +572,7 @@ const GitlabInstanceOriginContext = createContext<string | null>(null);
 
 type MessageBodyProps = {
   msg: MessageWithDelivery;
+  requestTagAgentId: string | null;
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
 };
@@ -575,6 +583,51 @@ type MessageMarkdownProps = {
   rehypePlugins: MarkdownProps["rehypePlugins"];
 };
 
+/**
+ * Render the request action's routing target with the same visual and copy
+ * contract as an inline `@mention`. Web request actions intentionally keep the
+ * user's visible body unchanged, so the persisted routing metadata is the only
+ * place their target lives. This tag makes that relationship visible without
+ * rewriting chat history.
+ */
+function RequestAgentTag({
+  participant,
+  participants,
+  isSelf,
+}: {
+  participant: RenderedMentionParticipant;
+  participants: readonly RenderedMentionParticipant[];
+  isSelf: boolean;
+}) {
+  const canonicalName = participant.name?.trim();
+  if (!canonicalName) return null;
+  const displayName = participant.displayName?.trim() || canonicalName;
+  const duplicateDisplayName =
+    participants.filter((candidate) => {
+      const candidateDisplayName = candidate.displayName?.trim() || candidate.name?.trim();
+      if (!candidateDisplayName) return false;
+      return candidateDisplayName.toLowerCase() === displayName.toLowerCase();
+    }).length > 1;
+  const disambiguate = duplicateDisplayName && displayName !== canonicalName;
+  const displayLabel = `@${displayName}`;
+  const identityLabel = disambiguate ? `${displayLabel} (@${canonicalName})` : displayLabel;
+
+  return (
+    <div data-request-agent-tag className="flex flex-wrap" style={{ marginBottom: "var(--sp-1)" }}>
+      <span
+        className={cn("mention-chip", isSelf && "is-self")}
+        data-mention-agent-id={participant.agentId}
+        data-mention-name={canonicalName}
+        data-mention-display-name={displayName}
+        title={identityLabel}
+      >
+        <span className="mention-chip-display">{displayLabel}</span>
+        {disambiguate ? <span className="mention-chip-handle">(@{canonicalName})</span> : null}
+      </span>
+    </div>
+  );
+}
+
 const MessageMarkdown = memo(function MessageMarkdown({ children, components, rehypePlugins }: MessageMarkdownProps) {
   return (
     <Markdown components={components} rehypePlugins={rehypePlugins}>
@@ -583,7 +636,12 @@ const MessageMarkdown = memo(function MessageMarkdown({ children, components, re
   );
 });
 
-const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipants }: MessageBodyProps) {
+const MessageBody = memo(function MessageBody({
+  msg,
+  requestTagAgentId,
+  myAgentId,
+  mentionParticipants,
+}: MessageBodyProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const gitlabInstanceOrigin = useContext(GitlabInstanceOriginContext);
@@ -655,6 +713,20 @@ const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipa
     }
     return msg.content;
   }, [msg.format, msg.content, msg.source, failedDocMentions]);
+  const requestTagParticipant = useMemo(
+    () => mentionParticipants.find((participant) => participant.agentId === requestTagAgentId) ?? null,
+    [mentionParticipants, requestTagAgentId],
+  );
+  const requestTagAlreadyInline = useMemo(() => {
+    if (!requestTagParticipant?.name) return false;
+    const visibleContent =
+      typeof msg.content === "string"
+        ? msg.content
+        : isImageBatchRefContent(msg.content)
+          ? (msg.content.caption ?? "")
+          : "";
+    return contentStartsWithMention(visibleContent, [requestTagParticipant.name]);
+  }, [msg.content, requestTagParticipant]);
   // Highlight `@<participant>` tokens in sent messages with the same
   // chip styling the composer's mirror overlay uses. Code blocks and
   // link text are skipped by the plugin itself, so a message containing
@@ -793,6 +865,13 @@ const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipa
         marginTop: 2,
       }}
     >
+      {requestTagParticipant && !requestTagAlreadyInline ? (
+        <RequestAgentTag
+          participant={requestTagParticipant}
+          participants={mentionParticipants}
+          isSelf={requestTagParticipant.agentId === myAgentId}
+        />
+      ) : null}
       {msg.format === "file" && isImageBatchRefContent(msg.content) ? (
         <ImageBatchFromRef
           content={msg.content}
@@ -855,6 +934,7 @@ const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipa
 
 const MessageRow = memo(function MessageRow({
   msg,
+  requestTagAgentId,
   myAgentId,
   agentNameFn,
   agentAvatarFn,
@@ -952,7 +1032,12 @@ const MessageRow = memo(function MessageRow({
             <ReadReceipt msg={msg} myAgentId={myAgentId} />
           </span>
         </div>
-        <MessageBody msg={msg} myAgentId={myAgentId} mentionParticipants={mentionParticipants} />
+        <MessageBody
+          msg={msg}
+          requestTagAgentId={requestTagAgentId}
+          myAgentId={myAgentId}
+          mentionParticipants={mentionParticipants}
+        />
       </div>
     </div>
   );
@@ -961,6 +1046,7 @@ const MessageRow = memo(function MessageRow({
 function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): boolean {
   return (
     messageRenderFieldsEqual(prev.msg, next.msg) &&
+    prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
     prev.agentNameFn === next.agentNameFn &&
     prev.agentAvatarFn === next.agentAvatarFn &&
@@ -973,6 +1059,7 @@ function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): 
 function areMessageBodyPropsEqual(prev: MessageBodyProps, next: MessageBodyProps): boolean {
   return (
     messageBodyFieldsEqual(prev.msg, next.msg) &&
+    prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
     mentionParticipantsEqual(prev.mentionParticipants, next.mentionParticipants)
   );
@@ -1190,6 +1277,40 @@ type TimelineItem =
   | { kind: "event"; at: string; key: string; data: SessionEventRow }
   | { kind: "workgroup"; at: string; key: string; events: SessionEventRow[] };
 
+/**
+ * Resolve the one participant whose tag must remain visible on request-action
+ * history rows:
+ *   - a trusted Ask agent clarification targets the original asker;
+ *   - its matching agent reply targets the human who asked for clarification;
+ *   - a resolving Submit/Skip answer targets the agent that raised the request.
+ *
+ * The relation is derived from trusted metadata plus the loaded parent row.
+ * Agent replies normally already start with a server-normalized mention; the
+ * target is still returned so MessageBody can guarantee the pill without
+ * duplicating that inline chip.
+ */
+function requestTagTargetAgentId(
+  message: MessageWithDelivery,
+  messagesById: ReadonlyMap<string, MessageWithDelivery>,
+): string | null {
+  const askAgent = readAskAgentMessageMetadata(message.metadata);
+  if (askAgent) return askAgent.agentId;
+
+  const resolution = readResolution(message.metadata);
+  if (resolution) {
+    const request = messagesById.get(resolution.request);
+    if (request?.format === "request") return request.senderId;
+    return readMentions(message.metadata)[0] ?? null;
+  }
+
+  if (!message.inReplyTo) return null;
+  const clarification = messagesById.get(message.inReplyTo);
+  if (!clarification) return null;
+  const clarificationMarker = readAskAgentMessageMetadata(clarification.metadata);
+  if (!clarificationMarker || clarificationMarker.agentId !== message.senderId) return null;
+  return readMentions(message.metadata)[0] ?? clarification.senderId;
+}
+
 type ChatTimelineProps = {
   mobile: boolean;
   currentState: ReactNode;
@@ -1254,6 +1375,13 @@ const ChatTimeline = memo(function ChatTimeline({
   pillCount,
   onPillClick,
 }: ChatTimelineProps) {
+  const messagesById = useMemo(() => {
+    const map = new Map<string, MessageWithDelivery>();
+    for (const item of visibleItems) {
+      if (item.kind === "message") map.set(item.data.id, item.data);
+    }
+    return map;
+  }, [visibleItems]);
   // Which non-human agents this turn awaits a reply from — routing-derived from
   // the latest message's persisted recipients (metadata.addressedAgentIds, which
   // includes the system addressedToAgentIds routing the onboarding bootstrap uses
@@ -1326,6 +1454,7 @@ const ChatTimeline = memo(function ChatTimeline({
                   <MessageRow
                     key={item.key}
                     msg={msg}
+                    requestTagAgentId={requestTagTargetAgentId(msg, messagesById)}
                     myAgentId={myAgentId}
                     agentNameFn={agentNameFn}
                     agentAvatarFn={agentAvatarFn}
