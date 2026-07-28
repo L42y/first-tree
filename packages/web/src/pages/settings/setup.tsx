@@ -159,6 +159,8 @@ const BLOCKER_COPY = {
   github_pull_requests_permission_required: "GitHub pull-request write access is required.",
   github_tree_repo_not_covered: "The GitHub App cannot access this Context Tree repository.",
   gitlab_webhook_not_seen: "Waiting for the first valid GitLab webhook.",
+  gitlab_hook_source_not_identified:
+    "Webhook traffic was received before source-specific health was available. Trigger an enabled event from the configured Hook.",
   gitlab_merge_request_event_not_seen: "Waiting for the first valid GitLab merge request event.",
   gitlab_processing_failed: "Recent GitLab webhook processing failed.",
   context_tree_binding_invalid: "The Context Tree binding is invalid.",
@@ -254,7 +256,24 @@ function providerSummary(providers: SetupRepositoryAutomationProvider[], isAdmin
 
   const ready = configured.filter((provider) => provider.health === "ready");
   const providerDetail = providers
-    .map((provider) => `${PROVIDER_LABELS[provider.provider]} ${providerHealthLabel(provider)}`)
+    .flatMap((provider) => {
+      const details = [`${PROVIDER_LABELS[provider.provider]} ${providerHealthLabel(provider)}`];
+      if (!provider.gitlabHookSources) return details;
+      if (provider.gitlabHookSources.legacyTransportObserved) {
+        details.push("GitLab webhook received · Hook source not yet identified");
+      }
+      if (provider.gitlabHookSources.project === "observed") {
+        details.push("GitLab Project Hook active");
+      }
+      if (provider.gitlabHookSources.system === "transport_received") {
+        details.push("GitLab System Hook waiting for an MR event");
+      } else if (provider.gitlabHookSources.system === "routing_verified") {
+        details.push("GitLab System Hook MR routing verified");
+      } else if (provider.gitlabHookSources.system === "needs_attention") {
+        details.push("GitLab System Hook needs attention");
+      }
+      return details;
+    })
     .join(" · ");
   const blockers = configured.flatMap((provider) => provider.blockers);
   const issues = blockerDetail(blockers, isAdmin);

@@ -262,28 +262,50 @@ function GitlabAutomationHealth({ repo, organizationId }: { repo: string; organi
     connection !== null &&
     resolveGitLabRepositoryWebIdentity(repo, connection.instanceOrigin)?.originMatchesConnection === true;
   const readiness = connection?.health.readiness ?? null;
+  const systemHookObserved = connection?.health.lastSystemHookInboundAt != null;
+  const projectHookObserved = connection?.health.lastProjectHookInboundAt != null;
+  const legacyTransportObserved =
+    connection?.health.lastValidInboundAt != null && !systemHookObserved && !projectHookObserved;
   const status = !connection
     ? "Degraded · no GitLab Webhook connection"
     : !originMatches
       ? `Degraded · Webhook origin ${connection.instanceOrigin} does not match the repository origin`
       : readiness === GITLAB_CONNECTION_READINESS.needsAttention
-        ? "Degraded · Webhook processing needs attention"
+        ? projectHookObserved
+          ? "Mixed · Project Hook active · System Hook needs attention"
+          : "Degraded · System Hook needs attention"
         : readiness === GITLAB_CONNECTION_READINESS.routingVerified
-          ? "Healthy · MR routing observed"
-          : readiness === GITLAB_CONNECTION_READINESS.transportReceived
-            ? "Waiting · Webhook received; waiting for an MR event"
-            : "Waiting · configure the System Hook";
+          ? projectHookObserved
+            ? "Healthy · System and Project Hooks active"
+            : "Healthy · System Hook MR routing observed"
+          : systemHookObserved
+            ? projectHookObserved
+              ? "Mixed · Project Hook active · System Hook waiting for an MR event"
+              : "Waiting · System Hook received; waiting for an MR event"
+            : projectHookObserved
+              ? "Healthy · Project Hook observed"
+              : legacyTransportObserved
+                ? "Observed · Webhook source not yet identified"
+                : "Waiting · configure a GitLab webhook";
+  const healthy =
+    originMatches &&
+    (readiness === GITLAB_CONNECTION_READINESS.routingVerified || (projectHookObserved && !systemHookObserved));
   return (
     <div
       className="text-label"
       style={{
-        color:
-          originMatches && readiness === GITLAB_CONNECTION_READINESS.routingVerified ? "var(--success)" : "var(--fg-3)",
+        color: healthy ? "var(--success)" : "var(--fg-3)",
         marginTop: "var(--sp-2)",
       }}
     >
       GitLab Webhook: {status}
       {connection?.health.lastValidInboundAt ? ` · last valid inbound ${connection.health.lastValidInboundAt}` : ""}
+      {connection?.health.lastSystemHookInboundAt
+        ? ` · last System Hook inbound ${connection.health.lastSystemHookInboundAt}`
+        : ""}
+      {connection?.health.lastProjectHookInboundAt
+        ? ` · last Project Hook inbound ${connection.health.lastProjectHookInboundAt}`
+        : ""}
       {connection?.health.lastSystemHookMergeRequestInboundAt
         ? ` · last System Hook MR event ${connection.health.lastSystemHookMergeRequestInboundAt}`
         : ""}

@@ -17,6 +17,7 @@ export const setupBlockerCodeSchema = z.enum([
   "github_pull_requests_permission_required",
   "github_tree_repo_not_covered",
   "gitlab_webhook_not_seen",
+  "gitlab_hook_source_not_identified",
   "gitlab_merge_request_event_not_seen",
   "gitlab_processing_failed",
   "context_tree_binding_invalid",
@@ -64,8 +65,25 @@ export const setupRepositoryAutomationProviderSchema = z
     health: setupCapabilityHealthSchema,
     blockers: z.array(setupBlockerSchema),
     observedAt: z.string().datetime(),
+    gitlabHookSources: z
+      .object({
+        legacyTransportObserved: z.boolean(),
+        system: z.enum(["unobserved", "transport_received", "routing_verified", "needs_attention"]),
+        project: z.enum(["unobserved", "observed"]),
+      })
+      .strict()
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((provider, ctx) => {
+    if (provider.provider !== "gitlab" && provider.gitlabHookSources !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["gitlabHookSources"],
+        message: "GitLab Hook source health is only valid for the GitLab provider",
+      });
+    }
+  });
 
 export const setupContextTreeBindingSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("unbound") }).strict(),

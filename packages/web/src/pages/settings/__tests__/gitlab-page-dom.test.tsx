@@ -48,6 +48,8 @@ function connection(overrides: Partial<GitlabConnectionSummary> = {}): GitlabCon
     health: {
       readiness: "routing_verified",
       lastValidInboundAt: "2026-07-15T08:00:00.000Z",
+      lastSystemHookInboundAt: "2026-07-15T08:00:00.000Z",
+      lastProjectHookInboundAt: null,
       lastSystemHookMergeRequestInboundAt: "2026-07-15T08:00:00.000Z",
       lastProcessingFailureAt: null,
       lastProcessingFailureCode: null,
@@ -173,9 +175,13 @@ describe("SettingsGitlabPage", () => {
     expect(document.body.textContent).toContain(webhookUrl);
     expect(document.body.textContent).toContain("Finish GitLab webhook setup");
     expect(document.body.textContent).toContain("Push events");
-    expect(document.body.textContent).toContain("Merge request events");
+    expect(document.body.textContent).toContain("Merge Request events");
     expect(document.body.textContent).toContain("default payload");
-    expect(document.body.textContent).toContain("Optionally add Project Hooks before closing");
+    expect(document.body.textContent).toContain("Choose the hook scope you need");
+    expect(document.body.textContent).toContain("Each hook type works independently");
+    expect(document.body.textContent).toContain("Project Hook:");
+    expect(document.body.textContent).toContain("enable only the project-level");
+    expect(document.body.textContent).not.toContain("enable both triggers");
     expect(document.body.textContent).toContain("best-effort basis");
     expect(document.querySelector<HTMLAnchorElement>('a[href="https://gitlab.internal/admin/hooks"]')).not.toBeNull();
     expect(
@@ -284,7 +290,7 @@ describe("SettingsGitlabPage", () => {
     authMock.value = { role: "member", organizationId: "org-member" };
     apiMocks.listGitlabConnections.mockResolvedValue([connection({ organizationId: "org-member" })]);
     const { container, root } = await renderPage();
-    expect(container.textContent).toContain("MR routing verified");
+    expect(container.textContent).toContain("System Hook MR routing verified");
     expect(container.textContent).toContain("GitLab version");
     expect(container.textContent).not.toContain("Regenerate URL");
     expect(container.textContent).not.toContain("GitLab account bindings");
@@ -301,6 +307,8 @@ describe("SettingsGitlabPage", () => {
         health: {
           readiness: "waiting",
           lastValidInboundAt: null,
+          lastSystemHookInboundAt: null,
+          lastProjectHookInboundAt: null,
           lastSystemHookMergeRequestInboundAt: null,
           lastProcessingFailureAt: null,
           lastProcessingFailureCode: null,
@@ -327,34 +335,109 @@ describe("SettingsGitlabPage", () => {
     await act(async () => root.unmount());
   });
 
-  it("separates transport receipt, MR routing verification, and processing failure", async () => {
+  it("shows only observed Hook sources and keeps unconfigured sources optional", async () => {
     apiMocks.listGitlabConnections.mockResolvedValue([
       connection({
         instanceOrigin: "https://gitlab.internal:8443",
         health: {
           readiness: "transport_received",
           lastValidInboundAt: "2026-07-15T08:00:00.000Z",
+          lastSystemHookInboundAt: null,
+          lastProjectHookInboundAt: "2026-07-15T08:00:00.000Z",
           lastSystemHookMergeRequestInboundAt: null,
           lastProcessingFailureAt: null,
           lastProcessingFailureCode: null,
         },
       }),
     ]);
-    const received = await renderPage();
-    expect(received.container.textContent).toContain("Webhook received · waiting for MR event");
-    expect(received.container.textContent).toContain("Finish MR verification");
-    expect(received.container.textContent).toContain("Add trusted Project Hooks with the same URL");
-    expect(received.container.textContent).toContain("Regenerate only if it was not saved");
+    const projectOnly = await renderPage();
+    expect(projectOnly.container.textContent).toContain("Project Hook active");
+    expect(projectOnly.container.textContent).toContain("Project Hook observed");
+    expect(projectOnly.container.textContent).toContain(
+      "Project Hook traffic is reaching First Tree; enabled event types can be delivered.",
+    );
+    expect(projectOnly.container.textContent).toContain("Last Project Hook inbound");
+    expect(projectOnly.container.textContent).not.toContain("Last System Hook inbound");
+    expect(projectOnly.container.textContent).not.toContain("Finish MR verification");
+    expect(projectOnly.container.textContent).not.toContain("Open GitLab System hooks");
+    expect(projectOnly.container.querySelector('[data-testid="gitlab-system-hook-recovery"]')).toBeNull();
+    await act(async () => projectOnly.root.unmount());
+
+    apiMocks.listGitlabConnections.mockResolvedValue([
+      connection({
+        instanceOrigin: "https://gitlab.internal:8443",
+        health: {
+          readiness: "transport_received",
+          lastValidInboundAt: "2026-07-15T08:00:00.000Z",
+          lastSystemHookInboundAt: null,
+          lastProjectHookInboundAt: null,
+          lastSystemHookMergeRequestInboundAt: null,
+          lastProcessingFailureAt: null,
+          lastProcessingFailureCode: null,
+        },
+      }),
+    ]);
+    const legacyTransport = await renderPage();
+    expect(legacyTransport.container.textContent).toContain("Webhook received · source not yet identified");
+    expect(legacyTransport.container.textContent).toContain("Webhook traffic observed");
+    expect(legacyTransport.container.textContent).toContain("Identify the configured Hook source");
+    expect(legacyTransport.container.textContent).toContain("Trigger any enabled event");
+    expect(legacyTransport.container.textContent).not.toContain("Finish webhook setup");
+    expect(legacyTransport.container.textContent).not.toContain("Finish MR verification");
+    expect(legacyTransport.container.textContent).not.toContain("Open GitLab System hooks");
+    expect(legacyTransport.container.querySelector('[data-testid="gitlab-system-hook-recovery"]')).toBeNull();
+    await act(async () => legacyTransport.root.unmount());
+
+    apiMocks.listGitlabConnections.mockResolvedValue([
+      connection({
+        instanceOrigin: "https://gitlab.internal:8443",
+        health: {
+          readiness: "transport_received",
+          lastValidInboundAt: "2026-07-15T08:00:00.000Z",
+          lastSystemHookInboundAt: "2026-07-15T08:00:00.000Z",
+          lastProjectHookInboundAt: null,
+          lastSystemHookMergeRequestInboundAt: null,
+          lastProcessingFailureAt: null,
+          lastProcessingFailureCode: null,
+        },
+      }),
+    ]);
+    const systemOnly = await renderPage();
+    expect(systemOnly.container.textContent).toContain("System Hook waiting for MR");
+    expect(systemOnly.container.textContent).toContain("Finish MR verification");
+    expect(systemOnly.container.textContent).not.toContain("Project Hook observed");
     expect(
-      received.container.querySelector<HTMLAnchorElement>('a[href="https://gitlab.internal:8443/admin/hooks"]'),
+      systemOnly.container.querySelector<HTMLAnchorElement>('a[href="https://gitlab.internal:8443/admin/hooks"]'),
     ).not.toBeNull();
-    await act(async () => received.root.unmount());
+    await act(async () => systemOnly.root.unmount());
+
+    apiMocks.listGitlabConnections.mockResolvedValue([
+      connection({
+        health: {
+          readiness: "transport_received",
+          lastValidInboundAt: "2026-07-15T08:00:00.000Z",
+          lastSystemHookInboundAt: "2026-07-15T08:00:00.000Z",
+          lastProjectHookInboundAt: "2026-07-15T08:00:00.000Z",
+          lastSystemHookMergeRequestInboundAt: null,
+          lastProcessingFailureAt: null,
+          lastProcessingFailureCode: null,
+        },
+      }),
+    ]);
+    const both = await renderPage();
+    expect(both.container.textContent).toContain("Project Hook active · System Hook waiting for MR");
+    expect(both.container.textContent).toContain("System Hook observed");
+    expect(both.container.textContent).toContain("Project Hook observed");
+    expect(both.container.textContent).toContain("Finish MR verification");
+    await act(async () => both.root.unmount());
 
     apiMocks.listGitlabConnections.mockResolvedValue([
       connection({
         health: {
           readiness: "needs_attention",
           lastValidInboundAt: "2026-07-15T08:00:00.000Z",
+          lastSystemHookInboundAt: "2026-07-15T08:00:00.000Z",
+          lastProjectHookInboundAt: null,
           lastSystemHookMergeRequestInboundAt: "2026-07-15T08:00:00.000Z",
           lastProcessingFailureAt: "2026-07-15T07:59:00.000Z",
           lastProcessingFailureCode: "malformed_payload",
@@ -362,7 +445,7 @@ describe("SettingsGitlabPage", () => {
       }),
     ]);
     const failed = await renderPage();
-    expect(failed.container.textContent).toContain("Webhook needs attention");
+    expect(failed.container.textContent).toContain("System Hook needs attention");
     expect(failed.container.textContent).toContain("Resolve the processing issue");
     expect(failed.container.textContent).toContain("Latest processing issue: malformed_payload");
     expect(failed.container.querySelector('[data-testid="gitlab-system-hook-recovery"]')?.textContent).not.toContain(
@@ -372,7 +455,7 @@ describe("SettingsGitlabPage", () => {
 
     apiMocks.listGitlabConnections.mockResolvedValue([connection()]);
     const verified = await renderPage();
-    expect(verified.container.textContent).toContain("MR routing verified");
+    expect(verified.container.textContent).toContain("System Hook MR routing verified");
     expect(verified.container.querySelector('[data-testid="gitlab-system-hook-recovery"]')).toBeNull();
     await act(async () => verified.root.unmount());
   });

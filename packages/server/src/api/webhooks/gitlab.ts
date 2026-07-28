@@ -182,7 +182,12 @@ export async function gitlabWebhookRoutes(app: FastifyInstance): Promise<void> {
                   await refreshGitlabChatTopics(tx, fencedConnection.id, normalized.entityIdentity);
                 },
                 runProviderWork: async () => {
-                  await markGitlabInboundSeen(tx, endpoint.connection.id, endpoint.connection.tokenHash);
+                  await markGitlabInboundSeen(
+                    tx,
+                    endpoint.connection.id,
+                    endpoint.connection.tokenHash,
+                    normalized.hookSource,
+                  );
                   if (normalized.ingress.stableDeliveryId) {
                     await markGitlabStableDeliveryObserved(tx, fencedConnection.id);
                   }

@@ -170,6 +170,23 @@ function projectRepositoryAutomation(
 
   let gitlab: SetupRepositoryAutomationProvider;
   const gitlabReadiness = gitlabConnection ? projectGitlabConnectionReadiness(gitlabConnection) : null;
+  const systemHookObserved =
+    gitlabConnection?.lastSystemHookInboundAt != null || gitlabConnection?.lastSystemHookMergeRequestInboundAt != null;
+  const projectHookObserved = gitlabConnection?.lastProjectHookInboundAt != null;
+  const legacyTransportObserved =
+    gitlabConnection?.lastValidInboundAt != null && !systemHookObserved && !projectHookObserved;
+  const gitlabHookSources = {
+    legacyTransportObserved,
+    system:
+      gitlabReadiness === GITLAB_CONNECTION_READINESS.needsAttention
+        ? ("needs_attention" as const)
+        : gitlabReadiness === GITLAB_CONNECTION_READINESS.routingVerified
+          ? ("routing_verified" as const)
+          : systemHookObserved
+            ? ("transport_received" as const)
+            : ("unobserved" as const),
+    project: projectHookObserved ? ("observed" as const) : ("unobserved" as const),
+  };
   if (!gitlabConnection) {
     gitlab = {
       provider: "gitlab",
@@ -185,22 +202,34 @@ function projectRepositoryAutomation(
       health: "degraded",
       blockers: [blocker("gitlab_processing_failed", "admin", "configure_gitlab_webhook")],
       observedAt,
+      gitlabHookSources,
     };
-  } else if (gitlabReadiness === GITLAB_CONNECTION_READINESS.waiting) {
+  } else if (legacyTransportObserved) {
+    gitlab = {
+      provider: "gitlab",
+      adoption: "configuring",
+      health: "pending_verification",
+      blockers: [blocker("gitlab_hook_source_not_identified", "admin", "configure_gitlab_webhook")],
+      observedAt,
+      gitlabHookSources,
+    };
+  } else if (!systemHookObserved && !projectHookObserved) {
     gitlab = {
       provider: "gitlab",
       adoption: "configuring",
       health: "pending_verification",
       blockers: [blocker("gitlab_webhook_not_seen", "admin", "configure_gitlab_webhook")],
       observedAt,
+      gitlabHookSources,
     };
-  } else if (gitlabReadiness === GITLAB_CONNECTION_READINESS.transportReceived) {
+  } else if (systemHookObserved && gitlabReadiness === GITLAB_CONNECTION_READINESS.transportReceived) {
     gitlab = {
       provider: "gitlab",
       adoption: "configuring",
       health: "pending_verification",
       blockers: [blocker("gitlab_merge_request_event_not_seen", "admin", "configure_gitlab_webhook")],
       observedAt,
+      gitlabHookSources,
     };
   } else {
     gitlab = {
@@ -209,6 +238,7 @@ function projectRepositoryAutomation(
       health: "ready",
       blockers: [],
       observedAt,
+      gitlabHookSources,
     };
   }
 

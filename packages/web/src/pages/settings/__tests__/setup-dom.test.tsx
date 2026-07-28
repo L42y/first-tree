@@ -483,6 +483,11 @@ describe("Settings Setup overview", () => {
       gitlab: {
         adoption: "configuring",
         health: "pending_verification",
+        gitlabHookSources: {
+          legacyTransportObserved: false,
+          system: "transport_received",
+          project: "observed",
+        },
         blockers: [
           {
             code: "gitlab_merge_request_event_not_seen",
@@ -502,11 +507,44 @@ describe("Settings Setup overview", () => {
     );
 
     expect(admin.status).toMatchObject({ label: "Verification pending", kind: "attention" });
+    expect(admin.status.detail).toContain("GitLab Project Hook active");
+    expect(admin.status.detail).toContain("GitLab System Hook waiting for an MR event");
     expect(admin.status.detail).toContain("Waiting for the first valid GitLab merge request event.");
     expect(admin.action).toEqual({ label: "Set up GitLab", to: "/settings/integrations/gitlab" });
     expect(member.status).toMatchObject({ label: "Verification pending", kind: "pending" });
     expect(member.status.detail).toContain("Ask an admin");
     expect(member.action).toBeUndefined();
+  });
+
+  it("keeps historical GitLab transport neutral until a configured Hook identifies its source", () => {
+    const capabilities = capabilityFixture({
+      github: { adoption: "available", health: "not_observed" },
+      gitlab: {
+        adoption: "configuring",
+        health: "pending_verification",
+        gitlabHookSources: {
+          legacyTransportObserved: true,
+          system: "unobserved",
+          project: "unobserved",
+        },
+        blockers: [
+          {
+            code: "gitlab_hook_source_not_identified",
+            resolutionOwner: "admin",
+            actionKind: "configure_gitlab_webhook",
+          },
+        ],
+      },
+    });
+    const admin = rowFor(
+      "repository-automation",
+      facts({ role: "admin", capabilities: { state: "ready", value: capabilities } }),
+    );
+
+    expect(admin.status).toMatchObject({ label: "Verification pending", kind: "attention" });
+    expect(admin.status.detail).toContain("GitLab webhook received · Hook source not yet identified");
+    expect(admin.status.detail).toContain("Trigger an enabled event from the configured Hook.");
+    expect(admin.status.detail).not.toContain("System Hook waiting");
   });
 
   it("routes GitLab processing recovery for both adopted capabilities to the owner surface", () => {

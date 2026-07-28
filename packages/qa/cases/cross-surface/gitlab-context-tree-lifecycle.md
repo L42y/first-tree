@@ -69,6 +69,18 @@ runtime, network, credential, and cross-surface behavior.
   and confirm the documented fail-open duplicate risk rather than false
   suppression.
   Generic GitLab entity attention remains independently observable.
+- Observe connection health in Web Settings and Setup with only a Project Hook,
+  only a System Hook, and both hooks. Require each observed source to appear
+  independently. A Project-only Issue or Note must show the Project Hook as
+  observed without claiming untested event types, and without a System Hook
+  warning or Merge Request prompt. When both sources are observed, Project Hook
+  activity must remain visible while an incomplete System Hook shows its own
+  source-specific completion prompt. A System Hook Merge Request must establish
+  full-instance routing readiness. An unobserved optional hook source must not
+  appear broken or incomplete. Also load a pre-source-health connection with
+  valid historical transport: require a neutral unidentified-source state that
+  asks for an enabled event from the already configured Hook, never a guessed
+  System Hook recovery.
 - On a ready same-project MR, confirm the Reviewer resolves live state with the
   exact-host `glab` identity, fetches a detached exact head, runs
   `tree verify` before semantic reads, and completes Evidence plus Challenge
