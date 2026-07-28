@@ -54,11 +54,13 @@ that case and the run-local plan, not this one.
   servers for the following turn; the latter must replace stale projected entries with an empty `mcpServers` object
   and issue no managed approval command. Concurrent chats with the same projection fingerprint — including the empty
   projection — must keep the agent's configured parallelism; a different fingerprint waits for live users of the old
-  projection to drain before one exclusive transition, so neither turn observes the other's file. Abort leaves the
-  delivery recoverable. A bounded setup timeout/transport failure follows the provider-turn retry budget, while an
-  unsupported approval command, permission/configuration failure, or retry exhaustion emits the standard terminal
-  provider event and durable runtime notice before the delivery is consumed. Do not inspect or archive literal secret
-  headers.
+  projection to drain before one exclusive transition, so neither turn observes the other's file. The fingerprint
+  includes the effective Cursor approval-store selector: changing `CURSOR_DATA_DIR`, or the process home used when it
+  is blank, must rerun targeted approval even when the managed MCP list is unchanged. Abort leaves the delivery
+  recoverable. A bounded setup timeout/transport failure follows the provider-turn retry budget, while an unsupported
+  approval command, permission/configuration failure, or retry exhaustion emits the standard terminal provider event
+  and durable runtime notice before the delivery is consumed. Do not inspect or archive literal secret headers or
+  approval-store paths.
 - Free-form model: set an exact model id through Web (free-form input with the `auto` hint — no reasoning-effort
   control for Cursor), confirm it round-trips and reaches the next turn's spawn; an id the provider rejects must fail
   visibly as a configuration failure with no silent fallback, and recover after an explicit config change.
@@ -81,7 +83,8 @@ failure acked without a durable chat notice, silent model fallback, missing Cont
 misses a live Cursor process. It also includes stale managed MCP surviving an empty config, approval enabled without
 managed MCP, broad `--approve-mcps` use, a per-server approval aimed at the wrong identifier, cross-chat projection
 interleaving, matching/empty projections being serialized for a full provider turn, unbounded redelivery after a
-deterministic setup failure, or a configured MCP tool unavailable to the turn.
+deterministic setup failure, reuse of a matching projection after its approval-store root changes, or a configured MCP
+tool unavailable to the turn.
 
 `BLOCKED` means the CLI, account, entitlement, network, or run-cell topology (e.g. no desktop browser for OAuth)
 prevented a live branch — never a product `FAIL`. `INCONCLUSIVE` means turns ran but the evidence cannot distinguish

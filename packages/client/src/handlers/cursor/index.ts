@@ -117,10 +117,32 @@ export function mapCursorMcpServers(payload: AgentRuntimeConfigPayload): Record<
 }
 
 /**
- * Hash the shared project-state portion of one turn snapshot. Header values
- * may contain secrets, so the coordinator retains only the digest.
+ * Cursor stores project MCP approvals beneath a non-blank CURSOR_DATA_DIR, or
+ * beneath the child process home otherwise. Keep the exact selector from the
+ * final child env in the coordination identity so approval in one store can
+ * never authorize a matching projection lease that reads another store.
  */
-function cursorMcpProjectionFingerprint(payload: AgentRuntimeConfigPayload): string {
+function cursorMcpApprovalStoreIdentity(env: Readonly<Record<string, string>>): {
+  source: "cursor_data_dir" | "process_home";
+  value: string | null;
+} {
+  const dataDir = env.CURSOR_DATA_DIR;
+  if (dataDir !== undefined && dataDir.trim().length > 0) {
+    return { source: "cursor_data_dir", value: dataDir };
+  }
+  const homeKey = process.platform === "win32" ? "USERPROFILE" : "HOME";
+  return { source: "process_home", value: env[homeKey] ?? null };
+}
+
+/**
+ * Hash the shared project-state portion of one turn snapshot. Header values
+ * and approval-store paths may contain secrets, so the coordinator retains
+ * only the digest.
+ */
+function cursorMcpProjectionFingerprint(
+  payload: AgentRuntimeConfigPayload,
+  env: Readonly<Record<string, string>>,
+): string {
   const canonicalServers = Object.entries(mapCursorMcpServers(payload))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, config]) => {
@@ -140,7 +162,16 @@ function cursorMcpProjectionFingerprint(payload: AgentRuntimeConfigPayload): str
         },
       ];
     });
-  return createHash("sha256").update(JSON.stringify(canonicalServers)).digest("hex");
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        // An empty projection performs no approval, so approval-root changes
+        // must not serialize otherwise-identical empty turns.
+        approvalStore: canonicalServers.length > 0 ? cursorMcpApprovalStoreIdentity(env) : null,
+        servers: canonicalServers,
+      }),
+    )
+    .digest("hex");
 }
 
 function materializeCursorMcpConfig(workspaceCwd: string, payload: AgentRuntimeConfigPayload): void {
@@ -1117,7 +1148,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
     const turnPayload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload ?? fallbackPayload;
     const model = turnPayload.model;
     const env = buildEnv(sessionCtx, turnPayload);
-    const projectionFingerprint = cursorMcpProjectionFingerprint(turnPayload);
+    const projectionFingerprint = cursorMcpProjectionFingerprint(turnPayload, env);
     const generation = ++turnGeneration;
     const abort = new AbortController();
     currentAbort = abort;

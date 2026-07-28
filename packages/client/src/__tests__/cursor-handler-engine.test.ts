@@ -882,7 +882,7 @@ describe("cursor handler — per-turn CLI transport", () => {
   });
 
   it.each([
-    { label: "empty", mcpServers: [] },
+    { label: "empty across approval stores", mcpServers: [] },
     {
       label: "matching managed",
       mcpServers: [{ name: "alpha", transport: "stdio" as const, command: "alpha-server" }],
@@ -902,6 +902,19 @@ describe("cursor handler — per-turn CLI transport", () => {
       gitRepos: [],
       resourceSkills: [],
     };
+    const secondPayload =
+      mcpServers.length === 0
+        ? {
+            ...payload,
+            env: [
+              {
+                key: "CURSOR_DATA_DIR",
+                value: join(workspaceRoot, "unused-empty-approval-root"),
+                sensitive: false,
+              },
+            ],
+          }
+        : payload;
     const firstSpawn = makeFakeSpawn([
       (child) => {
         order.push("first:provider");
@@ -915,12 +928,19 @@ describe("cursor handler — per-turn CLI transport", () => {
       },
     ]);
     const enabledServers: string[] = [];
-    const handlerConfig = {
+    const firstHandlerConfig = {
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void enabledServers.push(serverName),
     };
-    const firstHandler = makeHandler(firstSpawn.spawnFn, handlerConfig);
-    const secondHandler = makeHandler(secondSpawn.spawnFn, handlerConfig);
+    const secondHandlerConfig = {
+      agentConfigCache: {
+        refresh: async () => ({ payload: secondPayload }),
+        get: () => ({ payload: secondPayload }),
+      },
+      cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void enabledServers.push(serverName),
+    };
+    const firstHandler = makeHandler(firstSpawn.spawnFn, firstHandlerConfig);
+    const secondHandler = makeHandler(secondSpawn.spawnFn, secondHandlerConfig);
 
     const first = firstHandler.start(makeMessage("m-first", "first"), makeContext({ events: [] }), makeToken());
     await vi.waitFor(() => expect(firstSpawn.calls).toHaveLength(1));
@@ -998,6 +1018,89 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(JSON.parse(readFileSync(join(workspaceRoot, ".cursor", "mcp.json"), "utf8"))).toEqual({
       mcpServers: { beta: { command: "beta-server" } },
     });
+  });
+
+  it.each([
+    { label: "CURSOR_DATA_DIR", usesDataDir: true },
+    { label: "process home", usesDataDir: false },
+  ])("treats the $label approval store as part of a matching MCP projection identity", async ({ usesDataDir }) => {
+    let releaseFirst: () => void = () => {};
+    const firstMayFinish = new Promise<void>((resolvePromise) => {
+      releaseFirst = resolvePromise;
+    });
+    const order: string[] = [];
+    const homeKey = process.platform === "win32" ? "USERPROFILE" : "HOME";
+    const firstApprovalRoot = join(workspaceRoot, "cursor-approval-a");
+    const secondApprovalRoot = join(workspaceRoot, "cursor-approval-b");
+    const payloadForApprovalRoot = (approvalRoot: string): AgentRuntimeConfigPayload => ({
+      kind: "cursor",
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [{ name: "alpha", transport: "stdio", command: "alpha-server" }],
+      env: usesDataDir
+        ? [{ key: "CURSOR_DATA_DIR", value: approvalRoot, sensitive: false }]
+        : [
+            { key: "CURSOR_DATA_DIR", value: "", sensitive: false },
+            { key: homeKey, value: approvalRoot, sensitive: false },
+          ],
+      gitRepos: [],
+      resourceSkills: [],
+    });
+    const payloadA = payloadForApprovalRoot(firstApprovalRoot);
+    const payloadB = payloadForApprovalRoot(secondApprovalRoot);
+    const firstSpawn = makeFakeSpawn([
+      (child) => {
+        order.push("first:provider");
+        void firstMayFinish.then(() => successScript({ sessionId: "s-first-root", text: "first" })(child));
+      },
+    ]);
+    const secondSpawn = makeFakeSpawn([
+      (child) => {
+        order.push("second:provider");
+        successScript({ sessionId: "s-second-root", text: "second" })(child);
+      },
+    ]);
+    const enabledApprovalRoots: string[] = [];
+    const enableMcp = async ({ env }: { env: Record<string, string> }): Promise<void> => {
+      const dataDir = env.CURSOR_DATA_DIR;
+      enabledApprovalRoots.push(dataDir !== undefined && dataDir.trim().length > 0 ? dataDir : (env[homeKey] ?? ""));
+    };
+    let secondPrepared = false;
+    const firstHandler = makeHandler(firstSpawn.spawnFn, {
+      agentConfigCache: { refresh: async () => ({ payload: payloadA }), get: () => ({ payload: payloadA }) },
+      cursorMcpEnableFn: enableMcp,
+    });
+    const secondHandler = makeHandler(secondSpawn.spawnFn, {
+      agentConfigCache: {
+        refresh: async () => {
+          secondPrepared = true;
+          return { payload: payloadB };
+        },
+        get: () => ({ payload: payloadB }),
+      },
+      cursorMcpEnableFn: enableMcp,
+    });
+
+    const first = firstHandler.start(makeMessage("m-first-root", "first"), makeContext({ events: [] }), makeToken());
+    await vi.waitFor(() => expect(firstSpawn.calls).toHaveLength(1));
+
+    const second = secondHandler.start(
+      makeMessage("m-second-root", "second"),
+      makeContext({ events: [] }),
+      makeToken(),
+    );
+    await vi.waitFor(() => expect(secondPrepared).toBe(true));
+    expect(secondSpawn.calls).toHaveLength(0);
+    expect(enabledApprovalRoots).toEqual([firstApprovalRoot]);
+    expect(order).toEqual(["first:provider"]);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(enabledApprovalRoots).toEqual([firstApprovalRoot, secondApprovalRoot]);
+    expect(order).toEqual(["first:provider", "second:provider"]);
+    expect(secondSpawn.calls[0]?.options.env).toMatchObject(
+      usesDataDir ? { CURSOR_DATA_DIR: secondApprovalRoot } : { CURSOR_DATA_DIR: "", [homeKey]: secondApprovalRoot },
+    );
   });
 
   it("invalidates shared projection state when approval fails after file replacement", async () => {
