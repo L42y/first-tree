@@ -87,9 +87,9 @@ describe("renderRuntimeOutputContract", () => {
 
   it("classifies reply transport apart from business actions (hold-off carve-out)", () => {
     expect(contract).toMatch(/`chat send` \/ `chat ask` deliver your words and change nothing else/i);
-    expect(contract).toMatch(/explicit request to archive the current chat/i);
-    expect(contract).toMatch(/send the required final human reply first/i);
-    expect(contract).toMatch(/run `chat archive` as the last business action/i);
+    expect(contract).toMatch(/only when a human explicitly asks to archive this current chat/i);
+    expect(contract).toMatch(/reply first and run `chat archive` last/i);
+    expect(contract).toMatch(/never archive by default/i);
     expect(contract).toMatch(/hold off from acting/i);
     expect(contract).toMatch(/teammate-assigned task whose completion state is a pull request/i);
     expect(contract).toMatch(/explicit request to create the task branch\/worktree/i);

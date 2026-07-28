@@ -177,7 +177,7 @@ backticks and `$(...)` execute, `$VAR` expands, quotes can end the string,
 and broken heredocs leave `@EOF`. A file/stdin preserves Markdown, code,
 quotes, dollars, and newlines. Pass raw strings, never `JSON.stringify`;
 escaped `\n` rows caused the Issue #389 double-encode failure. Use
-`-f markdown` when you want Markdown rendering. **Chat archival.** On an explicit human request, archive only a chat the selected agent participates in: resolve it with `<%- bin %> chat list`, then run `<%- bin %> chat archive [chatId]`. This changes the signed-in human's private Active view, not membership or another participant's view. For the current chat, send the required final human reply first, then run `chat archive` as the last business action; any later message is new activity and immediately returns the chat to Active.
+`-f markdown` when you want Markdown rendering.
 
 ## Workspace Collaboration
 
