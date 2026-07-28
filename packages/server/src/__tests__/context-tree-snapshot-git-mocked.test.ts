@@ -38,6 +38,8 @@ describe("Context Tree snapshot service with mocked git", () => {
   it("materializes public GitLab content anonymously without credential injection", async () => {
     const repo = `https://gitlab.example/public/context-${crypto.randomUUID()}`;
     const head = "a".repeat(40);
+    const previousSslCert = process.env.GIT_SSL_CERT;
+    const previousSslKey = process.env.GIT_SSL_KEY;
     const { execFile, service } = await loadSnapshotServiceWithGit((args) => {
       if (args.includes("clone")) {
         const root = args.at(-1);
@@ -55,6 +57,8 @@ describe("Context Tree snapshot service with mocked git", () => {
     const root = service.contextTreeSnapshotTestInternals.managedContextTreePath(anonymousUrl, "main");
 
     try {
+      process.env.GIT_SSL_CERT = join(tmpdir(), "ambient-client-cert.pem");
+      process.env.GIT_SSL_KEY = join(tmpdir(), "ambient-client-key.pem");
       const resolved = await service.contextTreeSnapshotTestInternals.resolveContextTreeRoot(
         repo,
         null,
@@ -91,6 +95,10 @@ describe("Context Tree snapshot service with mocked git", () => {
       const env = (cloneCall?.[2] as { env?: Record<string, string> } | undefined)?.env ?? {};
       expect(Object.keys(env).some((key) => /gitlab.*token|git_password/iu.test(key))).toBe(false);
       expect(Object.keys(env).some((key) => /^(?:http|https|all|no)_proxy$/iu.test(key))).toBe(false);
+      expect(env.GIT_SSL_CERT).toBeUndefined();
+      expect(env.GIT_SSL_KEY).toBeUndefined();
+      expect(cloneCall?.[1]).not.toContain("http.sslCert=");
+      expect(cloneCall?.[1]).not.toContain("http.sslKey=");
       expect(cloneCall?.[1]).toEqual(
         expect.arrayContaining([
           "-c",
@@ -100,6 +108,10 @@ describe("Context Tree snapshot service with mocked git", () => {
         ]),
       );
     } finally {
+      if (previousSslCert === undefined) delete process.env.GIT_SSL_CERT;
+      else process.env.GIT_SSL_CERT = previousSslCert;
+      if (previousSslKey === undefined) delete process.env.GIT_SSL_KEY;
+      else process.env.GIT_SSL_KEY = previousSslKey;
       await rm(root, { recursive: true, force: true });
     }
   });
