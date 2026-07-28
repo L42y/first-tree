@@ -7,7 +7,7 @@ import { buildAgentBriefing } from "../../runtime/agent-briefing.js";
 import type { AgentConfigCache } from "../../runtime/agent-config-cache.js";
 import type { PredeclaredSourceRepo } from "../../runtime/bootstrap.js";
 import { type ChatContext, fetchChatContext } from "../../runtime/chat-context.js";
-import { renderChatContextPrompt } from "../../runtime/chat-context-section.js";
+import { renderChatContextPrompt, renderRuntimeOutputContract } from "../../runtime/chat-context-section.js";
 import { createContextTreeGitWriteTracker } from "../../runtime/context-tree-git-status.js";
 import {
   type AgentHandler,
@@ -159,10 +159,10 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   let ctx: SessionContext | null = null;
   let configTempDir: string | null = null;
   const queuedMessages: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
-  // Per-chat state captured at session start — fed to claude via
-  // `--append-system-prompt-file`. The TUI handler can't update system prompt
-  // mid-thread (claude is a persistent process), so we snapshot once per
-  // startClaude().
+  // Per-chat state captured at session start — combined with the shared runtime
+  // output contract and fed to claude via `--append-system-prompt-file`. The TUI
+  // handler can't update system prompt mid-thread (claude is a persistent
+  // process), so we snapshot once per startClaude().
   let chatContextForPrompt: ChatContext | undefined;
   let sourceReposForPrompt: PredeclaredSourceRepo[] = [];
 
@@ -251,16 +251,17 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
       args.push("--strict-mcp-config");
     }
 
-    const chatPrompt = renderChatContextPrompt(chatContextForPrompt);
-    if (chatPrompt) {
-      const chatPromptPath = join(tempDir, "current-chat-context.md");
-      writeFileSync(chatPromptPath, chatPrompt, "utf-8");
-      args.push("--append-system-prompt-file", shellQuote(chatPromptPath));
-    }
+    const appendedSystemPrompt = [renderRuntimeOutputContract(), renderChatContextPrompt(chatContextForPrompt)]
+      .filter((part): part is string => Boolean(part))
+      .join("\n\n");
+    const systemPromptPath = join(tempDir, "runtime-context.md");
+    writeFileSync(systemPromptPath, appendedSystemPrompt, "utf-8");
+    args.push("--append-system-prompt-file", shellQuote(systemPromptPath));
 
     // The shared briefing is delivered via `<cwd>/CLAUDE.md` (symlink to
     // AGENTS.md) which `--setting-sources user,project` instructs claude to
-    // load at startup. Per-chat context is delivered separately above.
+    // load at startup. The runtime contract and per-chat context are delivered
+    // separately above.
     args.push("--setting-sources", "user,project");
 
     return args.join(" ");

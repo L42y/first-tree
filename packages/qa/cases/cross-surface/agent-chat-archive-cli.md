@@ -50,10 +50,11 @@ archive/revive sequence across a real message path.
   `me-chats:changed` invalidation and refetches promptly rather than waiting for the polling floor. User B receives no
   private invalidation and sees no list change. The agent-scoped `chat list` may continue returning the archived chat
   because it is a structural membership inventory, not the human's engagement view.
-- Confirm the generated agent briefing explains the safe current-chat order. In a live agent turn, send the required
-  final human confirmation first and run `chat archive` as the final business action; the chat remains archived. In a
-  separate disposable chat, deliberately send a message after archiving and confirm normal new-activity projection
-  returns the acting human's view to Active.
+- Confirm every supported runtime, including Claude Code TUI, receives the shared runtime output contract with the
+  explicit-human-only safe current-chat order. In a live agent turn, send the required final human confirmation first
+  and run `chat archive` as the final business action; the chat remains archived. In a separate disposable chat,
+  deliberately send a message after archiving and confirm normal new-activity projection returns the acting human's
+  view to Active.
 - If the runtime-session enforcement mode is part of the target deployment, repeat one success with a valid current
   token and one request with a missing or invalid token. The invalid request must fail before the archive write.
 
