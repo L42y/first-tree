@@ -34,6 +34,10 @@ const serverChannelStateMock = vi.hoisted(() => ({
   } | null,
 }));
 
+const routerCommitMock = vi.hoisted(() => ({
+  selectedChatIdAfterUrgentUpdate: null as string | null,
+}));
+
 vi.mock("../hooks/use-server-channel.js", () => ({
   useServerChannelState: () => serverChannelStateMock,
   useContextTreeSetupPreviewBootstrapState: () => serverChannelStateMock,
@@ -62,7 +66,38 @@ vi.mock("../pages/onboarding/github-connected.js", () => ({
 }));
 vi.mock("../pages/onboarding/onboarding-page.js", () => ({ OnboardingPage: () => <div>onboarding page</div> }));
 vi.mock("../pages/quickstart/quickstart-page.js", () => ({ QuickstartPage: () => <div>quickstart page</div> }));
-vi.mock("../pages/workspace/index.js", () => ({ WorkspacePage: () => <div>workspace page</div> }));
+vi.mock("../pages/workspace/index.js", async () => {
+  const { useState } = await import("react");
+  const { flushSync } = await import("react-dom");
+  const { useSearchParams } = await import("react-router");
+  return {
+    WorkspacePage: () => {
+      const [searchParams, setSearchParams] = useSearchParams();
+      const [urgentUpdateCount, setUrgentUpdateCount] = useState(0);
+      const selectedChatId = searchParams.get("c") ?? "none";
+      return (
+        <div>
+          <div>workspace page</div>
+          <div data-testid="selected-chat-id">{selectedChatId}</div>
+          <div data-testid="urgent-update-count">{urgentUpdateCount}</div>
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.set("c", "new");
+              setSearchParams(next);
+              flushSync(() => setUrgentUpdateCount((count) => count + 1));
+              routerCommitMock.selectedChatIdAfterUrgentUpdate =
+                document.querySelector('[data-testid="selected-chat-id"]')?.textContent ?? null;
+            }}
+          >
+            switch chat
+          </button>
+        </div>
+      );
+    },
+  };
+});
 vi.mock("../pages/context.js", () => ({ ContextPage: () => <div>context page</div> }));
 vi.mock("../pages/docs/docs-list-page.js", () => ({ DocsListPage: () => <div>docs list page</div> }));
 vi.mock("../pages/docs/doc-page.js", () => ({ DocPage: () => <div>doc page</div> }));
@@ -229,6 +264,7 @@ describe("App routes", () => {
         "~/.local/bin/first-tree-staging login FIRST_TREE_CONNECT_CODE_PLACEHOLDER",
       codePlaceholder: "FIRST_TREE_CONNECT_CODE_PLACEHOLDER",
     };
+    routerCommitMock.selectedChatIdAfterUrgentUpdate = null;
   });
 
   afterEach(async () => {
@@ -343,6 +379,20 @@ describe("App routes", () => {
     document.body.innerHTML = "";
 
     expect(await renderAppAt("/preview/command-palette")).toContain("command palette preview");
+  });
+
+  it("commits URL-backed navigation before competing urgent updates", async () => {
+    expect(await renderAppAt("/?c=old")).toContain("workspace page");
+    const switchChat = [...document.querySelectorAll("button")].find((button) => button.textContent === "switch chat");
+    expect(switchChat).toBeDefined();
+
+    await act(async () => {
+      switchChat?.click();
+    });
+
+    expect(window.location.search).toBe("?c=new");
+    expect(routerCommitMock.selectedChatIdAfterUrgentUpdate).toBe("new");
+    expect(document.querySelector('[data-testid="selected-chat-id"]')?.textContent).toBe("new");
   });
 
   it("opens the mobile experience on prod", async () => {
