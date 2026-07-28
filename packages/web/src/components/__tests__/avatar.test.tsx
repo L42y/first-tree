@@ -102,4 +102,23 @@ describe("ChatRowAvatar — group composite uses identicons", () => {
     expect(html).toContain('src="https://example.com/a.png"');
     expect(html).toContain("<svg"); // bob still falls back to an identicon
   });
+
+  it("forwards an explicit lazy policy to uploaded images", () => {
+    const withImages = [
+      participant("self"),
+      participant("alice", { avatarImageUrl: "https://example.com/a.png" }),
+      participant("bob", { avatarImageUrl: "https://example.com/b.png" }),
+    ];
+    const html = renderToStaticMarkup(
+      <ChatRowAvatar
+        title="Team"
+        type="group"
+        participants={withImages}
+        selfAgentId="self"
+        unreadCount={0}
+        imageLoading="lazy"
+      />,
+    );
+    expect(html.match(/loading="lazy"/g) ?? []).toHaveLength(2);
+  });
 });

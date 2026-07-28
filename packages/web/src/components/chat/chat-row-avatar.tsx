@@ -138,6 +138,7 @@ export function ChatRowAvatar({
   muted = false,
   badge = true,
   statusDot = false,
+  imageLoading,
 }: {
   /** Resolved chat title — used as a fallback initial when no peer exists. */
   title: string;
@@ -174,6 +175,10 @@ export function ChatRowAvatar({
    *  dot. Used by the conversation list (with `badge={false}`) so the avatar
    *  carries the WeChat / iMessage / Telegram corner mark. */
   statusDot?: boolean;
+  /** Optional native image loading policy. Dense mobile lists pass `lazy` so
+   *  uploaded avatars outside the rendered viewport do not compete with the
+   *  first visible cards. Omitted by default to preserve existing surfaces. */
+  imageLoading?: "eager" | "lazy";
 }) {
   const isDirect = type === "direct";
   // Defensive: older server builds may omit `participants` from the me/chats
@@ -206,9 +211,10 @@ export function ChatRowAvatar({
           colorToken={peer?.avatarColorToken ?? null}
           imageUrl={peer?.avatarImageUrl ?? null}
           muted={muted}
+          imageLoading={imageLoading}
         />
       ) : (
-        <CompositeAvatar size={size} peers={peers} muted={muted} />
+        <CompositeAvatar size={size} peers={peers} muted={muted} imageLoading={imageLoading} />
       )}
       {badge && <AttentionBadge failed={failed} unread={unreadCount} />}
       {statusDot && <ListCornerMark failed={failed} needsYou={needsYou} unread={unreadCount > 0} />}
@@ -280,6 +286,7 @@ function SingleAvatar({
   colorToken,
   imageUrl,
   muted = false,
+  imageLoading,
 }: {
   size: number;
   name: string;
@@ -287,6 +294,7 @@ function SingleAvatar({
   colorToken?: string | null;
   imageUrl?: string | null;
   muted?: boolean;
+  imageLoading?: "eager" | "lazy";
 }) {
   if (imageUrl) {
     return (
@@ -295,6 +303,7 @@ function SingleAvatar({
         alt={name}
         width={size}
         height={size}
+        loading={imageLoading}
         style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", display: "block" }}
       />
     );
@@ -306,10 +315,12 @@ function CompositeAvatar({
   size,
   peers,
   muted = false,
+  imageLoading,
 }: {
   size: number;
   peers: ReadonlyArray<Participant>;
   muted?: boolean;
+  imageLoading?: "eager" | "lazy";
 }) {
   // Layout decision keyed off `pickCompositeShape` (see header docstring):
   //   n2  → vertical bisection
@@ -342,30 +353,30 @@ function CompositeAvatar({
     >
       {shape === "n2" && (
         <>
-          <Seg peer={peers[0]} idx={0} muted={muted} />
-          <Seg peer={peers[1]} idx={1} muted={muted} />
+          <Seg peer={peers[0]} idx={0} muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[1]} idx={1} muted={muted} imageLoading={imageLoading} />
         </>
       )}
       {shape === "n3" && (
         <>
-          <Seg peer={peers[0]} idx={0} fullWidth muted={muted} />
-          <Seg peer={peers[1]} idx={1} muted={muted} />
-          <Seg peer={peers[2]} idx={2} muted={muted} />
+          <Seg peer={peers[0]} idx={0} fullWidth muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[1]} idx={1} muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[2]} idx={2} muted={muted} imageLoading={imageLoading} />
         </>
       )}
       {shape === "n4" && (
         <>
-          <Seg peer={peers[0]} idx={0} muted={muted} />
-          <Seg peer={peers[1]} idx={1} muted={muted} />
-          <Seg peer={peers[2]} idx={2} muted={muted} />
-          <Seg peer={peers[3]} idx={3} muted={muted} />
+          <Seg peer={peers[0]} idx={0} muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[1]} idx={1} muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[2]} idx={2} muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[3]} idx={3} muted={muted} imageLoading={imageLoading} />
         </>
       )}
       {shape === "n5+" && (
         <>
-          <Seg peer={peers[0]} idx={0} muted={muted} />
-          <Seg peer={peers[1]} idx={1} muted={muted} />
-          <Seg peer={peers[2]} idx={2} muted={muted} />
+          <Seg peer={peers[0]} idx={0} muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[1]} idx={1} muted={muted} imageLoading={imageLoading} />
+          <Seg peer={peers[2]} idx={2} muted={muted} imageLoading={imageLoading} />
           <SegMore count={n - 3} fontSize={fontSizeMore} />
         </>
       )}
@@ -378,6 +389,7 @@ function Seg({
   idx,
   fullWidth,
   muted = false,
+  imageLoading,
 }: {
   /** The peer in this slot, or `undefined` for a defensive empty cell. */
   peer: Participant | undefined;
@@ -385,6 +397,7 @@ function Seg({
   idx: number;
   fullWidth?: boolean;
   muted?: boolean;
+  imageLoading?: "eager" | "lazy";
 }) {
   const seed = peer?.agentId ?? String(idx);
   const base: CSSProperties = {
@@ -398,7 +411,7 @@ function Seg({
   // deterministic identicon. `slice` cover-crops the square grid into the
   // (often non-square) composite cell without distorting the pixels.
   if (peer?.avatarImageUrl) {
-    return <img src={peer.avatarImageUrl} alt="" style={{ ...base, objectFit: "cover" }} />;
+    return <img src={peer.avatarImageUrl} alt="" loading={imageLoading} style={{ ...base, objectFit: "cover" }} />;
   }
   return (
     <span

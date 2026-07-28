@@ -589,6 +589,42 @@ describe("agent-chat-status", () => {
       expect((await resolveAgentChatStatuses(getApp().db, [])).size).toBe(0);
     });
 
+    it("accepts known list speakers and omits detail-only status reasons", async () => {
+      const { app, peer, chatId } = await newChatWithAgent();
+      await bindPresence(peer.agent.uuid, peer.clientId);
+      await setSession(peer.agent.uuid, chatId, "active");
+      await insertEvent(peer.agent.uuid, chatId, 1, "error", {
+        message: encodeProviderRetryEventMessage({
+          event: "provider_retry_scheduled",
+          provider: "codex",
+          scope: "provider_turn",
+          category: "transient_transport",
+          reasonCode: "provider_transient_transport",
+          attempt: 1,
+          maxAttempts: 2,
+          retryMode: "foreground",
+          delayMs: 500,
+          replaySafety: "pre_visible",
+          userSeverity: "info",
+        }),
+      });
+
+      const full = (await resolveAgentChatStatuses(app.db, [chatId])).get(chatId)?.[0];
+      const list = (
+        await resolveAgentChatStatuses(app.db, [chatId], {
+          includeStatusReason: false,
+          nonHumanSpeakersByChat: new Map([[chatId, new Set([peer.agent.uuid])]]),
+        })
+      ).get(chatId)?.[0];
+
+      expect(full?.statusReason?.kind).toBe("retrying");
+      expect(list?.statusReason).toBeUndefined();
+      expect(list?.agentId).toBe(full?.agentId);
+      expect(list?.main).toBe(full?.main);
+      expect(list?.working).toBe(full?.working);
+      expect(list?.errored).toBe(full?.errored);
+    });
+
     it("excludes humans from the union (a human speaker never appears)", async () => {
       const { app, admin, chatId } = await newChatWithAgent();
       const all = (await resolveAgentChatStatuses(app.db, [chatId])).get(chatId) ?? [];

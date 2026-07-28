@@ -1,7 +1,7 @@
 import type { MeChatRow } from "@first-tree/shared";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { AlertCircle, ArrowRight, CircleHelp, Filter, Pin, Plus, Search, X } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
 import { ChatRowAvatar } from "../../components/chat/chat-row-avatar.js";
@@ -23,6 +23,9 @@ const DEFAULT_FILTERS: MobileWorkFilters = {
   engagement: "active",
   watching: false,
 };
+
+const MOBILE_WORK_INITIAL_RENDER_COUNT = 16;
+const MOBILE_WORK_RENDER_BATCH_SIZE = 16;
 
 export function MobileWorkPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -93,6 +96,8 @@ function MobileWorkList({
   const [answeringChatId, setAnsweringChatId] = useState<string | null>(null);
   const [actionsRow, setActionsRow] = useState<MeChatRow | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [renderedRowCount, setRenderedRowCount] = useState(MOBILE_WORK_INITIAL_RENDER_COUNT);
+  const renderSentinelRef = useRef<HTMLDivElement>(null);
 
   const queryScope = {
     organizationId: organizationId ?? null,
@@ -159,8 +164,31 @@ function MobileWorkList({
     0,
   );
   const narrowed = filters.engagement !== "active" || filters.watching;
+  const renderedRows = orderedRows.slice(0, renderedRowCount);
+  const hasBufferedRows = renderedRows.length < orderedRows.length;
+  const mayLoadNextPage = (quickView === "all" || quickView === "unread") && chatsQuery.hasNextPage;
+
+  useEffect(() => {
+    const target = renderSentinelRef.current;
+    if (!target || !hasBufferedRows) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setRenderedRowCount(orderedRows.length);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setRenderedRowCount((count) => Math.min(count + MOBILE_WORK_RENDER_BATCH_SIZE, orderedRows.length));
+      },
+      { rootMargin: "50% 0%" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasBufferedRows, orderedRows.length]);
 
   const toggleQuickView = (next: Exclude<MobileWorkQuickView, "all">): void => {
+    setRenderedRowCount(MOBILE_WORK_INITIAL_RENDER_COUNT);
     onQuickViewChange(quickView === next ? "all" : next);
   };
 
@@ -177,7 +205,10 @@ function MobileWorkList({
             aria-expanded={searchOpen}
             onClick={() => {
               setSearchOpen((open) => !open);
-              if (searchOpen) setSearch("");
+              if (searchOpen) {
+                setSearch("");
+                setRenderedRowCount(MOBILE_WORK_INITIAL_RENDER_COUNT);
+              }
             }}
             className="inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-full)] transition-colors hover:bg-[var(--bg-hover)]"
             style={{ border: 0, background: "transparent", color: "var(--fg)" }}
@@ -199,7 +230,10 @@ function MobileWorkList({
             <input
               type="search"
               value={search}
-              onChange={(event) => setSearch(event.currentTarget.value)}
+              onChange={(event) => {
+                setSearch(event.currentTarget.value);
+                setRenderedRowCount(MOBILE_WORK_INITIAL_RENDER_COUNT);
+              }}
               placeholder="Search work"
               aria-label="Search work"
               className="text-mobile-body h-11 w-full rounded-[var(--radius-input)] border bg-[var(--bg-raised)] px-3 outline-none focus:border-ring"
@@ -273,8 +307,14 @@ function MobileWorkList({
             detail={search.trim() ? "Try another search." : "Change a quick view or filter to see more work."}
           />
         ) : (
-          <div className="flex flex-col" style={{ gap: "var(--sp-2)" }} data-mobile-work-list>
-            {orderedRows.map((row) =>
+          <div
+            className="flex flex-col"
+            style={{ gap: "var(--sp-2)" }}
+            data-mobile-work-list
+            data-mobile-work-rendered={renderedRows.length}
+            data-mobile-work-total={orderedRows.length}
+          >
+            {renderedRows.map((row) =>
               mobileChatSignal(row).attention ? (
                 <MobileActionCard
                   key={row.chatId}
@@ -293,10 +333,18 @@ function MobileWorkList({
                 />
               ),
             )}
+            {hasBufferedRows ? (
+              <div
+                ref={renderSentinelRef}
+                aria-hidden
+                style={{ minHeight: "var(--sp-1)" }}
+                data-mobile-work-render-sentinel
+              />
+            ) : null}
           </div>
         )}
 
-        {(quickView === "all" || quickView === "unread") && chatsQuery.hasNextPage ? (
+        {mayLoadNextPage ? (
           <Button
             type="button"
             variant="outline"
@@ -305,7 +353,7 @@ function MobileWorkList({
             onClick={() => void chatsQuery.fetchNextPage()}
             style={{ marginTop: "var(--sp-4)", alignSelf: "center" }}
           >
-            {chatsQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+            {chatsQuery.isFetchingNextPage ? "Loading…" : chatsQuery.isFetchNextPageError ? "Retry" : "Load more"}
           </Button>
         ) : null}
         {chatsQuery.isFetchNextPageError ? (
@@ -318,7 +366,14 @@ function MobileWorkList({
       {answeringChatId ? <MobileAskSheet chatId={answeringChatId} onClose={() => setAnsweringChatId(null)} /> : null}
       {actionsRow ? <MobileChatActionsSheet row={actionsRow} onClose={() => setActionsRow(null)} /> : null}
       {filtersOpen ? (
-        <MobileWorkFiltersSheet value={filters} onChange={onFiltersChange} onClose={() => setFiltersOpen(false)} />
+        <MobileWorkFiltersSheet
+          value={filters}
+          onChange={(next) => {
+            setRenderedRowCount(MOBILE_WORK_INITIAL_RENDER_COUNT);
+            onFiltersChange(next);
+          }}
+          onClose={() => setFiltersOpen(false)}
+        />
       ) : null}
     </>
   );
@@ -491,6 +546,7 @@ function MobileWorkRow({
           muted
           badge={false}
           statusDot={false}
+          imageLoading="lazy"
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>

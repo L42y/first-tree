@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
+import type { Database } from "../db/connection.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
@@ -114,6 +115,43 @@ describe("listMeChats — server priority projection (PR3)", () => {
     if (res.rows.some((r) => r.chatId === chatId)) return "rows";
     return null;
   }
+
+  function countDatabaseQueries(db: Database): { db: Database; getCount: () => number } {
+    let count = 0;
+    const countedMethods = new Set<PropertyKey>(["select", "selectDistinctOn", "execute"]);
+    const countedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        if (!countedMethods.has(property)) return value.bind(target);
+        return (...args: unknown[]) => {
+          count += 1;
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    return { db: countedDb, getCount: () => count };
+  }
+
+  it("hydrates overlapping first-page slices within one eight-query budget", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const peer = await managedAgent(app, owner, "query-budget-peer");
+    const chatId = await chatWith(app, owner, peer.uuid, "query budget");
+    await pinMeChat(app.db, chatId, owner.humanAgentUuid, true);
+    await raiseRequest(app, chatId, peer.uuid, owner.humanAgentUuid);
+
+    const counted = countDatabaseQueries(app.db);
+    const res = await listMeChats(counted.db, owner.humanAgentUuid, owner.memberId, owner.organizationId, {
+      limit: 50,
+      filter: "all",
+      engagement: "all",
+    });
+
+    expect(res.priorityRows.attention.map((row) => row.chatId)).toContain(chatId);
+    expect(res.rows.map((row) => row.chatId)).toContain(chatId);
+    expect(counted.getCount()).toBe(8);
+  });
 
   it("pinned chats surface in priorityRows.pinned (pinned_at DESC); rows stays additive", async () => {
     const app = getApp();
