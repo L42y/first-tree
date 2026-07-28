@@ -181,7 +181,8 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <ToastProvider>
-          <BrowserRouter>
+          {/* Keep URL-backed user navigation from being starved by continuous live runtime updates. */}
+          <BrowserRouter unstable_useTransitions={false}>
             <MobileExperienceHead />
             <MobileStandaloneOpenTracker />
             <RouteTracker />
