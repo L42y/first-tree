@@ -646,35 +646,18 @@ function UnavailableState({
       : null;
   const unavailableGitlabContent = gitlabContentAvailability !== null;
   const gitlabUnavailableReason = gitlabContentAvailability?.reason ?? null;
-  const privateGitlabContent = gitlabUnavailableReason === "gitlab_authentication_required";
+  const gitlabCopy = gitlabUnavailableReason ? gitlabUnavailableCopy(gitlabUnavailableReason) : null;
   const title = snapshot.repo
     ? unavailableGitlabContent
-      ? privateGitlabContent
-        ? "Private GitLab content is unavailable in Cloud"
-        : gitlabUnavailableReason === "gitlab_origin_not_authorized" ||
-            gitlabUnavailableReason === "gitlab_egress_denied"
-          ? "GitLab origin is not authorized for Web Context"
-          : gitlabUnavailableReason === "gitlab_redirect_forbidden"
-            ? "GitLab repository redirect is not allowed"
-            : gitlabUnavailableReason === "invalid_binding"
-              ? "GitLab Context Tree binding is invalid"
-              : "GitLab content is unavailable in Cloud"
+      ? (gitlabCopy?.title ?? "GitLab content is unavailable in Cloud")
       : "Context Tree sync unavailable"
     : isAdmin
       ? "Your team doesn't have a Context Tree yet"
       : "Connect Context Tree";
   const detail = snapshot.repo
     ? unavailableGitlabContent
-      ? privateGitlabContent
-        ? "First Tree Cloud only reads GitLab repositories anonymously. Use an Agent on a host with local git/glab access to read this Context Tree; Webhook review automation can remain active."
-        : gitlabUnavailableReason === "gitlab_origin_not_authorized" ||
-            gitlabUnavailableReason === "gitlab_egress_denied"
-          ? "This First Tree deployment has not authorized the exact GitLab origin or its resolved address for Web Context. Use an Agent with local git/glab access; inbound Webhook review automation is independent."
-          : gitlabUnavailableReason === "gitlab_redirect_forbidden"
-            ? "Web Context never follows GitLab repository redirects. Bind the exact operator-authorized repository origin, or use an Agent with local git/glab access; inbound Webhook review automation is independent."
-            : gitlabUnavailableReason === "invalid_binding"
-              ? "The repository provider, origin, connection, or branch no longer forms one valid live binding. Repair Team Settings; inbound Webhook review automation remains a separate health state."
-              : "The anonymous GitLab repository refresh failed. Use an Agent with local git/glab access to inspect it; inbound Webhook review automation is independent."
+      ? (gitlabCopy?.detail ??
+        "The anonymous GitLab repository refresh failed. Use an Agent with local git/glab access to inspect it; inbound Webhook automation is independent.")
       : isAdmin
         ? "Open a chat with your agent to inspect the tree and this sync issue."
         : "Ask an admin to inspect this Context Tree sync issue."
@@ -718,6 +701,65 @@ function UnavailableState({
       </PanelBody>
     </Panel>
   );
+}
+
+function gitlabUnavailableCopy(reason: string): { title: string; detail: string } {
+  switch (reason) {
+    case "gitlab_authentication_required":
+      return {
+        title: "Private GitLab content is unavailable in Cloud",
+        detail:
+          "First Tree Cloud only reads GitLab repositories anonymously. Make the Context Tree repository anonymously readable, or use an Agent on a host with local git/glab access. Webhook review automation can remain active.",
+      };
+    case "gitlab_origin_not_authorized":
+      return {
+        title: "GitLab Web Context needs deployment authorization",
+        detail:
+          "This GitLab origin is not enabled for Web Context. Ask the deployment administrator to add its exact public origin, or its private origin with trusted CIDRs, to FIRST_TREE_GITLAB_ALLOWED_ORIGINS. Your GitLab Webhook connection remains active.",
+      };
+    case "gitlab_dns_unavailable":
+      return {
+        title: "First Tree cannot resolve this GitLab address",
+        detail:
+          "The Server could not resolve the GitLab hostname. Ask the deployment administrator to check DNS and network access from First Tree. Your GitLab Webhook connection remains active.",
+      };
+    case "gitlab_address_not_authorized":
+      return {
+        title: "GitLab resolved to an unauthorized address",
+        detail:
+          "The hostname resolved outside its authorized public or CIDR policy. Ask the deployment administrator to verify DNS and add trusted private CIDRs when needed. Your GitLab Webhook connection remains active.",
+      };
+    case "gitlab_egress_denied":
+      return {
+        title: "GitLab Web Context failed a network safety check",
+        detail:
+          "First Tree stopped the anonymous read because the destination changed or failed its egress policy. Ask the deployment administrator to verify the origin and DNS. Webhook automation remains independent.",
+      };
+    case "gitlab_redirect_forbidden":
+      return {
+        title: "GitLab repository redirect is not allowed",
+        detail:
+          "Web Context never follows GitLab repository redirects. Bind the repository at the exact configured GitLab origin, or use an Agent with local git/glab access. Webhook automation remains independent.",
+      };
+    case "gitlab_repository_unavailable":
+      return {
+        title: "GitLab repository or branch is unavailable",
+        detail:
+          "Confirm that the repository URL and branch exist and allow anonymous reads from First Tree Server. Private repositories remain available to Agents with local git/glab credentials, and Webhook automation can stay active.",
+      };
+    case "invalid_binding":
+      return {
+        title: "GitLab Context Tree binding is invalid",
+        detail:
+          "The repository provider, origin, connection, or branch no longer forms one valid live binding. Repair Team Settings; inbound Webhook automation remains a separate health state.",
+      };
+    default:
+      return {
+        title: "GitLab content is unavailable in Cloud",
+        detail:
+          "The anonymous GitLab repository refresh failed. Check the repository, branch, and network settings, or use an Agent with local git/glab access. Webhook automation remains independent.",
+      };
+  }
 }
 
 function EmptyChanges() {

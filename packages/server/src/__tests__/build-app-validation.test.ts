@@ -73,6 +73,7 @@ describe("buildApp — token-lifetime config validation", () => {
             addressPolicy: { kind: "cidrs", cidrs: ["127.0.0.0/8"] },
           },
         ],
+        legacyEgressAllowlist: undefined,
       },
     };
     await expect(buildApp(cfg)).rejects.toThrow(/permanently blocked range/u);

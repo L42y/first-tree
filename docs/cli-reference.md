@@ -888,12 +888,15 @@ git@gitlab.company.example:group/subgroup/context-tree.git
 ```
 
 For a GitLab repository, the Team must already have a current GitLab
-connection for the same exact web origin and the deployment operator must
-authorize that origin through `FIRST_TREE_GITLAB_EGRESS_ALLOWLIST`. A rejected
-origin does not trigger any outbound request. The Settings page deliberately
-keeps repository and branch editing available to admins in this release; every
-later Write, Review, and Web Context operation rereads the live binding and
-fails closed if it changed.
+connection for the same exact web origin. Saving the binding does not require
+Cloud egress authority: GitLab Webhook routing and Agent-local workflows remain
+usable when Web Context cannot read the repository. Web Context supports
+`gitlab.com` by default; deployment operators authorize other exact origins
+through `FIRST_TREE_GITLAB_ALLOWED_ORIGINS`. An unauthorized origin does not
+trigger an outbound request. The Settings page deliberately keeps repository
+and branch editing available to admins in this release; every later Write,
+Review, and Web Context operation rereads the live binding and fails closed if
+it changed.
 
 When `--branch` is omitted, the request body contains only `{ "repo": "..." }`
 and an existing valid branch is preserved. On a first binding, the server's
@@ -1642,32 +1645,36 @@ server secrets even if `FIRST_TREE_CHANNEL` is omitted or defaults to `dev`.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `FIRST_TREE_GITLAB_EGRESS_ALLOWLIST` | Deployment-operator-owned JSON allowlist for Cloud anonymous HTTPS reads from exact GitLab origins. | `[]` (deny all) |
+| `FIRST_TREE_GITLAB_ALLOWED_ORIGINS` | Additional exact GitLab origins that Cloud may read anonymously over HTTPS. | `[]` plus built-in `https://gitlab.com` |
+| `FIRST_TREE_GITLAB_EGRESS_ALLOWLIST` | Deprecated compatibility input using the former `{ origin, addressPolicy }` shape. | — |
 
-Each entry authorizes one normalized `https://hostname:port` origin and either
-public-routable addresses or explicit IPv4/IPv6 CIDRs:
+Public origins are strings. Private destinations attach explicit IPv4/IPv6
+CIDRs:
 
 ```json
 [
-  {
-    "origin": "https://gitlab.example.com",
-    "addressPolicy": { "kind": "public" }
-  },
+  "https://gitlab.example.com",
   {
     "origin": "https://gitlab.company.local:8443",
-    "addressPolicy": {
-      "kind": "cidrs",
-      "cidrs": ["10.20.0.0/16", "fd12:3456::/32"]
-    }
+    "cidrs": ["10.20.0.0/16", "fd12:3456::/32"]
   }
 ]
 ```
 
-This is deployment authority, not a Team setting. A Team admin can bind only a
-GitLab connection and repository whose exact origin is already authorized; the
-Web UI does not extend the allowlist. Invalid JSON, duplicate origins, empty or
-malformed CIDR policy, and any CIDR rooted in a permanently blocked range fail
-server startup.
+This is deployment authority, not a Team setting. A public string entry allows
+only public-routable DNS results. A CIDR entry requires every resolved address
+to fall within its declared ranges. A Team admin may create an inbound GitLab
+connection and save a matching Context Tree binding without extending this
+policy; Web Context then reports an actionable unavailable state until the
+deployment authorizes that origin.
+
+The deprecated `FIRST_TREE_GITLAB_EGRESS_ALLOWLIST` remains accepted so
+existing deployments can upgrade without rewriting configuration immediately.
+When it is set, its exact legacy list is preserved and the built-in
+`gitlab.com` origin is not added. Setting both old and new variables fails
+startup instead of choosing an ambiguous precedence. Invalid JSON, duplicate
+origins, empty or malformed CIDR policy, and any CIDR rooted in a permanently
+blocked range also fail server startup.
 
 Every anonymous clone/fetch rechecks the live Team binding, current GitLab
 connection, current deployment allowlist, and every DNS A/AAAA result. The

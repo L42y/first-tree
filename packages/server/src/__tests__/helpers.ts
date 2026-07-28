@@ -166,6 +166,7 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
           origin: `https://${host}`,
           addressPolicy: { kind: "public" as const },
         })),
+      legacyEgressAllowlist: undefined,
     },
     ...(opts.allowedOrganizationId !== undefined
       ? { access: { allowedOrganizationId: opts.allowedOrganizationId.trim() || undefined } }

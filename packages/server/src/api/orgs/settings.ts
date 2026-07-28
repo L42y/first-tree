@@ -53,7 +53,6 @@ export async function orgSettingsRoutes(app: FastifyInstance): Promise<void> {
         {
           updatedBy: scope.userId,
           expectedUnboundBranch: input.expectedUnboundBranch,
-          gitlabEgressAllowlist: app.config.gitlab?.egressAllowlist ?? [],
         },
       );
     },
@@ -102,7 +101,6 @@ export async function orgSettingsRoutes(app: FastifyInstance): Promise<void> {
       return orgSettingsService.putOrgSetting(app.db, scope.organizationId, namespace, request.body, {
         memberId: scope.memberId,
         updatedBy: scope.userId,
-        gitlabEgressAllowlist: app.config.gitlab?.egressAllowlist ?? [],
       });
     },
   );

@@ -457,6 +457,38 @@ describe("ContextPage DOM behavior", () => {
     await act(async () => root.unmount());
   });
 
+  it.each([
+    ["gitlab_origin_not_authorized", "GitLab Web Context needs deployment authorization", "ALLOWED_ORIGINS"],
+    ["gitlab_dns_unavailable", "First Tree cannot resolve this GitLab address", "check DNS and network access"],
+    ["gitlab_address_not_authorized", "GitLab resolved to an unauthorized address", "trusted private CIDRs"],
+    ["gitlab_egress_denied", "GitLab Web Context failed a network safety check", "verify the origin and DNS"],
+    ["gitlab_repository_unavailable", "GitLab repository or branch is unavailable", "allow anonymous reads"],
+  ] as const)("shows actionable GitLab recovery copy for %s", async (reason, title, recovery) => {
+    const { ContextPage } = await import("../context.js");
+    const unavailable = snapshot({
+      provider: "gitlab",
+      contentAvailability: {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason,
+      },
+      repo: "https://gitlab.example/acme/context-tree.git",
+      branch: "main",
+      snapshotStatus: "unavailable",
+      contextStatus: {
+        label: "Team context unavailable",
+        detail: "Provider-specific diagnostic",
+        severity: "error",
+      },
+    });
+
+    const { container, root } = await renderDom(<ContextPage previewSnapshot={unavailable} />);
+    expect(container.textContent).toContain(title);
+    expect(container.textContent).toContain(recovery);
+    expect(container.textContent).toContain("Webhook");
+    await act(async () => root.unmount());
+  });
+
   const treeAgent = {
     uuid: "agent-1",
     name: "agent-1",

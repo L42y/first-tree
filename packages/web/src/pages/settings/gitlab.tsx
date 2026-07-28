@@ -562,7 +562,7 @@ function ConnectionEditorDialog(props: {
           <DialogDescription>
             {props.mode === "replace"
               ? "The current URL and all old follows stop immediately. A stale replace returns a conflict and is never retried automatically."
-              : "First Tree stores only a hash of the generated URL bearer and never calls this origin."}
+              : "This creates an inbound Webhook connection. First Tree stores only a hash of the generated URL bearer; Web Context access is checked separately."}
           </DialogDescription>
         </DialogHeader>
         <form

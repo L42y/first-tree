@@ -3,7 +3,7 @@ import { createGitlabConnection } from "../services/gitlab-connections.js";
 import * as orgSettingsService from "../services/org-settings.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
-describe("GitLab egress authorization on Settings writes", () => {
+describe("GitLab egress authorization boundaries on Settings writes", () => {
   const getApp = useTestApp({
     gitlabEgressAllowlist: [
       {
@@ -13,31 +13,44 @@ describe("GitLab egress authorization on Settings writes", () => {
     ],
   });
 
-  it("accepts only an exact allowlisted connection origin", async () => {
+  it("creates inbound connections independently from Web Context egress authorization", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const accepted = await app.inject({
+    const insecureOrigin = await app.inject({
       method: "POST",
       url: `/api/v1/orgs/${admin.organizationId}/gitlab-connections`,
       headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: { displayName: "Authorized GitLab", instanceOrigin: "https://gitlab.authorized:8443" },
+      payload: { displayName: "Insecure", instanceOrigin: "http://gitlab.authorized" },
     });
-    expect(accepted.statusCode).toBe(201);
+    expect(insecureOrigin.statusCode).toBe(400);
 
-    const other = await createTestAdmin(app);
+    const malformedOrigin = await app.inject({
+      method: "POST",
+      url: `/api/v1/orgs/${admin.organizationId}/gitlab-connections`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { displayName: "Invalid", instanceOrigin: "https://gitlab.authorized/path" },
+    });
+    expect(malformedOrigin.statusCode).toBe(400);
+
     const wrongPort = await app.inject({
       method: "POST",
-      url: `/api/v1/orgs/${other.organizationId}/gitlab-connections`,
-      headers: { authorization: `Bearer ${other.accessToken}` },
+      url: `/api/v1/orgs/${admin.organizationId}/gitlab-connections`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
       payload: { displayName: "Wrong port", instanceOrigin: "https://gitlab.authorized" },
     });
-    expect(wrongPort.statusCode).toBe(400);
-    expect(wrongPort.json()).toMatchObject({
-      error: expect.stringMatching(/deployment egress allowlist/u),
+    expect(wrongPort.statusCode).toBe(201);
+    const created = wrongPort.json() as { connection: { id: string } };
+
+    const insecureReplacement = await app.inject({
+      method: "POST",
+      url: `/api/v1/gitlab-connections/${created.connection.id}/replace`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { displayName: "Insecure replacement", instanceOrigin: "http://gitlab.authorized" },
     });
+    expect(insecureReplacement.statusCode).toBe(400);
   });
 
-  it("rejects a new binding when connection or allowlist authority is absent", async () => {
+  it("rejects a new binding when its current connection authority is absent or mismatched", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     await expect(
@@ -50,10 +63,7 @@ describe("GitLab egress authorization on Settings writes", () => {
           repo: "https://gitlab.authorized:8443/acme/context.git",
           branch: "main",
         },
-        {
-          updatedBy: admin.userId,
-          gitlabEgressAllowlist: app.config.gitlab?.egressAllowlist ?? [],
-        },
+        { updatedBy: admin.userId },
       ),
     ).rejects.toThrow(/requires a current GitLab connection/u);
 
@@ -73,15 +83,12 @@ describe("GitLab egress authorization on Settings writes", () => {
           repo: "https://gitlab.authorized:8443/acme/context.git",
           branch: "main",
         },
-        {
-          updatedBy: admin.userId,
-          gitlabEgressAllowlist: app.config.gitlab?.egressAllowlist ?? [],
-        },
+        { updatedBy: admin.userId },
       ),
     ).rejects.toThrow(/must match the current GitLab connection origin/u);
   });
 
-  it("preserves an existing binding when the operator removes its allowlist entry", async () => {
+  it("preserves and updates a binding when Web Context egress authorization is removed", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     await createGitlabConnection(app.db, {
@@ -99,10 +106,7 @@ describe("GitLab egress authorization on Settings writes", () => {
         repo: "https://gitlab.authorized:8443/acme/context.git",
         branch: "main",
       },
-      {
-        updatedBy: admin.userId,
-        gitlabEgressAllowlist: app.config.gitlab?.egressAllowlist ?? [],
-      },
+      { updatedBy: admin.userId },
     );
 
     await expect(
@@ -111,11 +115,11 @@ describe("GitLab egress authorization on Settings writes", () => {
         admin.organizationId,
         "context_tree",
         { branch: "trunk" },
-        { updatedBy: admin.userId, gitlabEgressAllowlist: [] },
+        { updatedBy: admin.userId },
       ),
-    ).rejects.toThrow(/not authorized/u);
+    ).resolves.toMatchObject({ branch: "trunk", provider: "gitlab" });
     await expect(orgSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toMatchObject({
-      branch: "main",
+      branch: "trunk",
       provider: "gitlab",
     });
   });

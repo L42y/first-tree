@@ -97,7 +97,7 @@ describe("server config", () => {
     });
   });
 
-  it("loads the deployment GitLab egress allowlist from operator JSON and defaults to deny", async () => {
+  it("loads simplified additional GitLab origins and leaves deployment defaults to bootstrap", async () => {
     const defaultDir = makeTempConfigDir();
     stubRequiredProductionConfig();
     const denied = await initConfig({
@@ -110,11 +110,12 @@ describe("server config", () => {
     resetConfig();
     const configuredDir = makeTempConfigDir();
     vi.stubEnv(
-      "FIRST_TREE_GITLAB_EGRESS_ALLOWLIST",
+      "FIRST_TREE_GITLAB_ALLOWED_ORIGINS",
       JSON.stringify([
+        "https://GITLAB.PUBLIC.EXAMPLE",
         {
           origin: "https://GITLAB.COMPANY.LOCAL:8443",
-          addressPolicy: { kind: "cidrs", cidrs: ["10.20.0.0/16"] },
+          cidrs: ["10.20.0.0/16"],
         },
       ]),
     );
@@ -125,16 +126,47 @@ describe("server config", () => {
     });
     expect(configured.gitlab?.egressAllowlist).toEqual([
       {
+        origin: "https://gitlab.public.example",
+        addressPolicy: { kind: "public" },
+      },
+      {
         origin: "https://gitlab.company.local:8443",
         addressPolicy: { kind: "cidrs", cidrs: ["10.20.0.0/16"] },
       },
     ]);
+    expect(configured.gitlab?.legacyEgressAllowlist).toBeUndefined();
   });
 
-  it("rejects malformed GitLab egress allowlist JSON during config initialization", async () => {
+  it("loads the deprecated GitLab egress allowlist for bootstrap compatibility", async () => {
     const configDir = makeTempConfigDir();
     stubRequiredProductionConfig();
-    vi.stubEnv("FIRST_TREE_GITLAB_EGRESS_ALLOWLIST", "not-json");
+    vi.stubEnv(
+      "FIRST_TREE_GITLAB_EGRESS_ALLOWLIST",
+      JSON.stringify([
+        {
+          origin: "https://GITLAB.LEGACY.EXAMPLE",
+          addressPolicy: { kind: "public" },
+        },
+      ]),
+    );
+    const configured = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir,
+    });
+    expect(configured.gitlab?.egressAllowlist).toBeUndefined();
+    expect(configured.gitlab?.legacyEgressAllowlist).toEqual([
+      {
+        origin: "https://gitlab.legacy.example",
+        addressPolicy: { kind: "public" },
+      },
+    ]);
+  });
+
+  it("rejects malformed GitLab origin JSON during config initialization", async () => {
+    const configDir = makeTempConfigDir();
+    stubRequiredProductionConfig();
+    vi.stubEnv("FIRST_TREE_GITLAB_ALLOWED_ORIGINS", "not-json");
     await expect(
       initConfig({
         schema: createServerConfigSchema({ autoGenerateSecrets: false }),

@@ -470,7 +470,6 @@ export async function orgContextTreeRoutes(app: FastifyInstance): Promise<void> 
       setting = await putInitializedOrgContextTreeBinding(app.db, finalScope.organizationId, initializedBinding.data, {
         expectedUnboundBranch: existing.branch,
         updatedBy: finalScope.userId,
-        gitlabEgressAllowlist: app.config.gitlab?.egressAllowlist ?? [],
       });
     } catch (error) {
       if (error instanceof ConflictError) {
