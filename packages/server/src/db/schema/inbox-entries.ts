@@ -47,8 +47,17 @@ export const inboxEntries = pgTable(
      * Bundling lookup: given a notify=true trigger, find all silent pending
      * rows in the same chat that should be attached as preceding context.
      * Composite shape mirrors the actual WHERE clause used in pollInbox.
+     *
+     * `id` is the trailing column because preceding-context assembly bounds
+     * each trigger's window by `id` (`> previous notify cursor`, `< trigger`).
+     * Those bounds are correlated values inside a LATERAL, so the planner
+     * cannot estimate their width and would otherwise scan every silent row
+     * in the chat before discarding almost all of them. Keeping `id` in the
+     * index lets the range collapse into the index scan itself. It is a
+     * superset of the previous four-column shape, so every lookup that used
+     * the old index still resolves here.
      */
-    index("idx_inbox_chat_silent").on(table.inboxId, table.chatId, table.notify, table.status),
+    index("idx_inbox_chat_silent").on(table.inboxId, table.chatId, table.notify, table.status, table.id),
     /**
      * Message-history delivery status lookup. The chat messages API checks
      * whether any inbox row for a message is acked, delivered, or still
