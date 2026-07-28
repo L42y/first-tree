@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionEvent } from "@first-tree/shared";
@@ -182,8 +182,8 @@ afterEach(() => {
 });
 
 describe("buildCursorTurnArgs — canonical spawn contract", () => {
-  it("locks the exact canonical argv, with model/resume only when supplied", () => {
-    expect(buildCursorTurnArgs({ model: "", resumeSessionId: null })).toEqual([
+  it("locks the exact canonical argv, with MCP approval/model/resume only when supplied", () => {
+    expect(buildCursorTurnArgs({ approveMcps: false, model: "", resumeSessionId: null })).toEqual([
       "-p",
       "--output-format",
       "stream-json",
@@ -191,13 +191,14 @@ describe("buildCursorTurnArgs — canonical spawn contract", () => {
       "disabled",
       "--force",
     ]);
-    expect(buildCursorTurnArgs({ model: "composer-2.5", resumeSessionId: "abc" })).toEqual([
+    expect(buildCursorTurnArgs({ approveMcps: true, model: "composer-2.5", resumeSessionId: "abc" })).toEqual([
       "-p",
       "--output-format",
       "stream-json",
       "--sandbox",
       "disabled",
       "--force",
+      "--approve-mcps",
       "--model",
       "composer-2.5",
       "--resume",
@@ -256,14 +257,14 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(seenStdin.indexOf("the prompt body")).toBeGreaterThan(0);
   });
 
-  it("resume: passes --resume with the stream-confirmed id and the operator model verbatim", async () => {
+  it("resume: passes managed MCP approval, --resume, and the operator model verbatim", async () => {
     const events: SessionEvent[] = [];
     const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "sess-real-2", text: "resumed" })]);
     const payload = {
       kind: "cursor" as const,
       prompt: { append: "" },
       model: "gpt-5.3-codex-high",
-      mcpServers: [],
+      mcpServers: [{ name: "docs", transport: "stdio" as const, command: "docs-server" }],
       env: [],
       gitRepos: [],
       resourceSkills: [],
@@ -283,6 +284,7 @@ describe("cursor handler — per-turn CLI transport", () => {
       "--sandbox",
       "disabled",
       "--force",
+      "--approve-mcps",
       "--model",
       "gpt-5.3-codex-high",
       "--resume",
@@ -600,27 +602,75 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(completed.payload.args).toMatchObject({ cwd: contextTreePath });
   });
 
-  it("emits a one-time MCP unsupported diagnostic when the payload configures MCP servers", async () => {
+  it("atomically materializes all managed MCP transports and approves them for the turn", async () => {
     const events: SessionEvent[] = [];
     const payload = {
       kind: "cursor" as const,
       prompt: { append: "" },
       model: "",
-      mcpServers: [{ name: "docs", transport: "stdio" as const, command: "docs-server", args: [] }],
+      mcpServers: [
+        { name: "docs", transport: "stdio" as const, command: "docs-server", args: ["--stdio"] },
+        {
+          name: "remote",
+          transport: "http" as const,
+          url: "https://mcp.example.test/rpc",
+          headers: { "X-Test": "http" },
+        },
+        {
+          name: "events",
+          transport: "sse" as const,
+          url: "https://mcp.example.test/events",
+          headers: { "X-Test": "sse" },
+        },
+      ],
       env: [],
       gitRepos: [],
       resourceSkills: [],
     };
-    const { spawnFn } = makeFakeSpawn([successScript({ sessionId: "s-mcp", text: "done" })]);
+    const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "s-mcp", text: "done" })]);
     const handler = makeHandler(spawnFn, {
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
     });
 
     await handler.start(makeMessage("m1", "hi"), makeContext({ events }), makeToken());
 
-    const diagnostics = events.filter(
-      (e) => e.kind === "error" && e.payload.source === "runtime" && /MCP server/.test(e.payload.message),
-    );
-    expect(diagnostics).toHaveLength(1);
+    expect(calls[0]?.args).toContain("--approve-mcps");
+    const configPath = join(workspaceRoot, ".cursor", "mcp.json");
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({
+      mcpServers: {
+        docs: { command: "docs-server", args: ["--stdio"] },
+        remote: {
+          type: "http",
+          url: "https://mcp.example.test/rpc",
+          headers: { "X-Test": "http" },
+        },
+        events: {
+          type: "sse",
+          url: "https://mcp.example.test/events",
+          headers: { "X-Test": "sse" },
+        },
+      },
+    });
+    if (process.platform !== "win32") {
+      expect(statSync(configPath).mode & 0o777).toBe(0o600);
+    }
+    expect(readdirSync(join(workspaceRoot, ".cursor"))).toEqual(["mcp.json"]);
+    expect(
+      events.some((e) => e.kind === "error" && e.payload.source === "runtime" && /MCP server/.test(e.payload.message)),
+    ).toBe(false);
+  });
+
+  it("clears stale managed MCP config and omits approval when the payload is empty", async () => {
+    const configDir = join(workspaceRoot, ".cursor");
+    const configPath = join(configDir, "mcp.json");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ mcpServers: { stale: { command: "stale-server" } } }));
+    const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "s-empty-mcp", text: "done" })]);
+    const handler = makeHandler(spawnFn);
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events: [] }), makeToken());
+
+    expect(calls[0]?.args).not.toContain("--approve-mcps");
+    expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ mcpServers: {} });
   });
 });

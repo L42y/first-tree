@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   type AgentRuntimeConfigPayload,
@@ -64,14 +65,16 @@ import { type CursorStreamEvent, CursorStreamParser, type CursorToolCall, type C
  *
  * Canonical spawn contract (human-confirmed safety posture):
  *   <binary> -p --output-format stream-json --sandbox disabled --force
+ *            [--approve-mcps when managed MCP servers are configured]
  *            [--model <exact-operator-value>] [--resume <confirmed-session-id>]
  *
  * Hard constraints enforced here, not by prompt:
  *   - process cwd = agent home; prompt rides stdin only (never argv);
  *   - args go to `spawn` as an array with `shell: false`;
- *   - no `--trust` / `--workspace` / `--approve-mcps` / `--stream-partial-output`,
- *     no `CURSOR_CONFIG_DIR`, no generated `.cursor/cli.json` — the operator's
- *     own Cursor login and permission config (including explicit denies) apply;
+ *   - no `--trust` / `--workspace` / `--stream-partial-output`, no
+ *     `CURSOR_CONFIG_DIR`, no generated `.cursor/cli.json` — the operator's
+ *     own Cursor login and permission config (including explicit denies) apply.
+ *     `--approve-mcps` is present only for the runtime-owned `.cursor/mcp.json`;
  *   - `--resume` only ever carries a stream-confirmed provider session id;
  *     synthetic pending ids stay runtime-local;
  *   - settlement waits for child close + stdout/stderr drain (auth, invalid
@@ -86,9 +89,59 @@ export function isCursorPendingSessionId(sessionId: string): boolean {
   return sessionId.startsWith(CURSOR_PENDING_SESSION_PREFIX);
 }
 
+type CursorMcpServerConfig =
+  | { command: string; args?: string[] }
+  | { type: "http" | "sse"; url: string; headers?: Record<string, string> };
+
+export function mapCursorMcpServers(payload: AgentRuntimeConfigPayload): Record<string, CursorMcpServerConfig> {
+  const servers: Record<string, CursorMcpServerConfig> = {};
+  for (const server of payload.mcpServers) {
+    if (server.transport === "stdio") {
+      servers[server.name] = {
+        command: server.command,
+        ...(server.args === undefined ? {} : { args: server.args }),
+      };
+    } else {
+      servers[server.name] = {
+        type: server.transport,
+        url: server.url,
+        ...(server.headers === undefined ? {} : { headers: server.headers }),
+      };
+    }
+  }
+  return servers;
+}
+
+function materializeCursorMcpConfig(workspaceCwd: string, payload: AgentRuntimeConfigPayload): void {
+  const configDir = join(workspaceCwd, ".cursor");
+  const configPath = join(configDir, "mcp.json");
+  const temporaryPath = join(configDir, `.mcp.json.${process.pid}.${randomUUID()}.tmp`);
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(temporaryPath, `${JSON.stringify({ mcpServers: mapCursorMcpServers(payload) }, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, configPath);
+  } catch (error) {
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      // The write may have failed before the temporary file was created.
+    }
+    throw error;
+  }
+}
+
 /** Build the canonical argv (exported so tests can lock the spawn contract). */
-export function buildCursorTurnArgs(input: { model: string; resumeSessionId: string | null }): string[] {
+export function buildCursorTurnArgs(input: {
+  approveMcps: boolean;
+  model: string;
+  resumeSessionId: string | null;
+}): string[] {
   const args = ["-p", "--output-format", "stream-json", "--sandbox", "disabled", "--force"];
+  if (input.approveMcps) args.push("--approve-mcps");
   if (input.model) args.push("--model", input.model);
   if (input.resumeSessionId) args.push("--resume", input.resumeSessionId);
   return args;
@@ -161,7 +214,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
   let providerSessionId: string | null = null;
   /** Runtime-local placeholder returned when the first turn settled before init. */
   let pendingSyntheticId: string | null = null;
-  let mcpDiagnosticEmitted = false;
   /**
    * Session-liveness fence for the run-to-completion transport. True from the
    * end of prepareSession until suspend()/shutdown(). Queued drains and
@@ -270,21 +322,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
 
   function declareSourceRepos(payload: AgentRuntimeConfigPayload, workspaceCwd: string): void {
     sourceReposForPrompt = declaredSourceRepos(workspaceCwd, payload);
-  }
-
-  function emitMcpUnsupportedDiagnosticOnce(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): void {
-    if (mcpDiagnosticEmitted || payload.mcpServers.length === 0) return;
-    mcpDiagnosticEmitted = true;
-    sessionCtx.emitEvent({
-      kind: "error",
-      payload: {
-        source: "runtime",
-        message:
-          `cursor provider does not materialize First Tree-managed MCP servers in v1; ` +
-          `${payload.mcpServers.length} configured MCP server(s) are NOT loaded for this agent. ` +
-          "The session continues without them (the operator's own Cursor config still applies).",
-      },
-    });
   }
 
   function cursorNativePathRefs(filePath: string | null, origin: "tool_arg" | "file_change"): ToolFileRef[] {
@@ -748,6 +785,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
         let retryDelay = 0;
 
         const args = buildCursorTurnArgs({
+          approveMcps: (activePayload?.mcpServers.length ?? 0) > 0,
           model,
           // Only a stream-confirmed id ever reaches --resume; the first turn
           // (and any turn after a synthetic placeholder) starts fresh.
@@ -1087,9 +1125,8 @@ export const createCursorHandler: HandlerFactory = (config) => {
       briefing,
       currentSourceRepoNames: currentSourceRepoNamesFromPayload(payload, payloadResolved),
     });
+    materializeCursorMcpConfig(workspaceCwd, payload);
     markWorkspaceInitComplete(workspaceCwd);
-
-    emitMcpUnsupportedDiagnosticOnce(sessionCtx, payload);
 
     const resolution = resolveBinary(process.env);
     if (!resolution.ok) {
