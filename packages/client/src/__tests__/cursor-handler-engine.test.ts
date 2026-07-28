@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentRuntimeConfigPayload, SessionEvent } from "@first-tree/shared";
+import { type AgentRuntimeConfigPayload, parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildCursorMcpEnableArgs,
@@ -721,7 +721,7 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ mcpServers: {} });
   });
 
-  it("retries before provider spawn when targeted MCP approval fails", async () => {
+  it("settles an MCP approval-store permission failure through the terminal notice contract", async () => {
     const payload = {
       kind: "cursor" as const,
       prompt: { append: "" },
@@ -736,7 +736,7 @@ describe("cursor handler — per-turn CLI transport", () => {
     const handler = makeHandler(spawnFn, {
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       cursorMcpEnableFn: async () => {
-        throw new Error("private-provider-output");
+        throw Object.assign(new Error("private-provider-output"), { code: "EACCES" });
       },
     });
     const token = makeToken();
@@ -744,14 +744,85 @@ describe("cursor handler — per-turn CLI transport", () => {
     await handler.start(makeMessage("m1", "hi"), makeContext({ events }), token);
 
     expect(calls).toHaveLength(0);
-    expect(token.retried).toEqual(["cursor_mcp_projection_failed"]);
-    expect(token.completed).toEqual([]);
-    const surfaced = events.find((event) => event.kind === "error" && event.payload.source === "runtime");
-    if (!surfaced || !("message" in surfaced.payload) || typeof surfaced.payload.message !== "string") {
-      throw new Error("expected a runtime MCP setup error");
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toEqual([
+      {
+        status: "error",
+        terminal: true,
+        completion: "consumed",
+        reason: "provider_configuration_error",
+      },
+    ]);
+    const providerEvents = events
+      .filter((event) => event.kind === "error")
+      .map((event) => parseProviderRetryEventMessage(event.payload.message))
+      .filter((event) => event !== null);
+    expect(providerEvents).toMatchObject([
+      {
+        event: "provider_failure_terminal",
+        category: "configuration",
+        reasonCode: "provider_configuration_error",
+        replaySafety: "pre_provider",
+      },
+    ]);
+    expect(events.some((event) => event.kind === "turn_end" && event.payload.status === "error")).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("private-provider-output");
+  });
+
+  it("bounds transient MCP setup timeouts and consumes retry exhaustion", async () => {
+    vi.useFakeTimers();
+    try {
+      const timeoutError = (): Error => Object.assign(new Error("private-timeout-output"), { code: "ETIMEDOUT" });
+      const payload = {
+        kind: "cursor" as const,
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [{ name: "docs", transport: "stdio" as const, command: "docs-server" }],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      };
+      const events: SessionEvent[] = [];
+      const { spawnFn, calls } = makeFakeSpawn([]);
+      let enableAttempts = 0;
+      const handler = makeHandler(spawnFn, {
+        agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+        cursorMcpEnableFn: async () => {
+          enableAttempts++;
+          throw timeoutError();
+        },
+      });
+      const token = makeToken();
+
+      const started = handler.start(makeMessage("m-timeout", "hi"), makeContext({ events }), token);
+      await vi.runAllTimersAsync();
+      await started;
+
+      expect(enableAttempts).toBe(3);
+      expect(calls).toHaveLength(0);
+      expect(token.retried).toEqual([]);
+      expect(token.completed).toEqual([
+        {
+          status: "error",
+          terminal: true,
+          completion: "consumed",
+          reason: "provider_retry_exhausted",
+        },
+      ]);
+      const providerEvents = events
+        .filter((event) => event.kind === "error")
+        .map((event) => parseProviderRetryEventMessage(event.payload.message))
+        .filter((event) => event !== null);
+      expect(providerEvents.map((event) => event.event)).toEqual([
+        "provider_retry_scheduled",
+        "provider_retry_scheduled",
+        "provider_retry_exhausted",
+      ]);
+      expect(providerEvents.every((event) => event.category === "transient_transport")).toBe(true);
+      expect(JSON.stringify(events)).not.toContain("private-timeout-output");
+    } finally {
+      vi.useRealTimers();
     }
-    expect(surfaced?.payload.message).toContain("managed MCP setup failed");
-    expect(surfaced?.payload.message).not.toContain("private-provider-output");
   });
 
   it("converges add then remove from the latest payload on the same active handler", async () => {
@@ -810,7 +881,60 @@ describe("cursor handler — per-turn CLI transport", () => {
     });
   });
 
-  it("serializes projection and the full turn across handlers sharing one agent workspace", async () => {
+  it.each([
+    { label: "empty", mcpServers: [] },
+    {
+      label: "matching managed",
+      mcpServers: [{ name: "alpha", transport: "stdio" as const, command: "alpha-server" }],
+    },
+  ])("keeps $label projection turns parallel across handlers sharing one workspace", async ({ mcpServers }) => {
+    let releaseFirst: () => void = () => {};
+    const firstMayFinish = new Promise<void>((resolvePromise) => {
+      releaseFirst = resolvePromise;
+    });
+    const order: string[] = [];
+    const payload = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers,
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const firstSpawn = makeFakeSpawn([
+      (child) => {
+        order.push("first:provider");
+        void firstMayFinish.then(() => successScript({ sessionId: "s-first", text: "first" })(child));
+      },
+    ]);
+    const secondSpawn = makeFakeSpawn([
+      (child) => {
+        order.push("second:provider");
+        successScript({ sessionId: "s-second", text: "second" })(child);
+      },
+    ]);
+    const enabledServers: string[] = [];
+    const handlerConfig = {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      cursorMcpEnableFn: async ({ serverName }: { serverName: string }) => void enabledServers.push(serverName),
+    };
+    const firstHandler = makeHandler(firstSpawn.spawnFn, handlerConfig);
+    const secondHandler = makeHandler(secondSpawn.spawnFn, handlerConfig);
+
+    const first = firstHandler.start(makeMessage("m-first", "first"), makeContext({ events: [] }), makeToken());
+    await vi.waitFor(() => expect(firstSpawn.calls).toHaveLength(1));
+
+    const second = secondHandler.start(makeMessage("m-second", "second"), makeContext({ events: [] }), makeToken());
+    await vi.waitFor(() => expect(secondSpawn.calls).toHaveLength(1));
+    expect(order).toEqual(["first:provider", "second:provider"]);
+    expect(enabledServers).toEqual(mcpServers.length === 0 ? [] : ["alpha"]);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+  });
+
+  it("waits for active projection leases before switching a shared workspace", async () => {
     let releaseFirst: () => void = () => {};
     const firstMayFinish = new Promise<void>((resolvePromise) => {
       releaseFirst = resolvePromise;
@@ -873,6 +997,59 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(order).toEqual(["alpha:enable", "alpha:provider", "beta:enable", "beta:provider"]);
     expect(JSON.parse(readFileSync(join(workspaceRoot, ".cursor", "mcp.json"), "utf8"))).toEqual({
       mcpServers: { beta: { command: "beta-server" } },
+    });
+  });
+
+  it("invalidates shared projection state when approval fails after file replacement", async () => {
+    const payloadA = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [{ name: "alpha", transport: "stdio" as const, command: "alpha-server" }],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const payloadB = {
+      ...payloadA,
+      mcpServers: [{ name: "beta", transport: "stdio" as const, command: "beta-server" }],
+    };
+    const enabledServers: string[] = [];
+    const enableMcp = async ({ serverName }: { serverName: string }): Promise<void> => {
+      enabledServers.push(serverName);
+      if (serverName === "beta") {
+        throw Object.assign(new Error("private-approval-output"), { code: "EACCES" });
+      }
+    };
+    const firstSpawn = makeFakeSpawn([successScript({ sessionId: "s-alpha-first", text: "first" })]);
+    const failedSpawn = makeFakeSpawn([]);
+    const recoveredSpawn = makeFakeSpawn([successScript({ sessionId: "s-alpha-recovered", text: "recovered" })]);
+    const firstHandler = makeHandler(firstSpawn.spawnFn, {
+      agentConfigCache: { refresh: async () => ({ payload: payloadA }), get: () => ({ payload: payloadA }) },
+      cursorMcpEnableFn: enableMcp,
+    });
+    const failedHandler = makeHandler(failedSpawn.spawnFn, {
+      agentConfigCache: { refresh: async () => ({ payload: payloadB }), get: () => ({ payload: payloadB }) },
+      cursorMcpEnableFn: enableMcp,
+    });
+    const recoveredHandler = makeHandler(recoveredSpawn.spawnFn, {
+      agentConfigCache: { refresh: async () => ({ payload: payloadA }), get: () => ({ payload: payloadA }) },
+      cursorMcpEnableFn: enableMcp,
+    });
+
+    await firstHandler.start(makeMessage("m-alpha-first", "first"), makeContext({ events: [] }), makeToken());
+    const failedToken = makeToken();
+    await failedHandler.start(makeMessage("m-beta", "will fail"), makeContext({ events: [] }), failedToken);
+    await recoveredHandler.start(makeMessage("m-alpha-recovered", "recover"), makeContext({ events: [] }), makeToken());
+
+    expect(failedSpawn.calls).toHaveLength(0);
+    expect(failedToken.completed).toMatchObject([
+      { status: "error", completion: "consumed", reason: "provider_configuration_error" },
+    ]);
+    expect(enabledServers).toEqual(["alpha", "beta", "alpha"]);
+    expect(recoveredSpawn.calls).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(workspaceRoot, ".cursor", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { alpha: { command: "alpha-server" } },
     });
   });
 });

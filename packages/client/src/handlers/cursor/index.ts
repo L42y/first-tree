@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -53,7 +53,7 @@ import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../ru
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { chunkAssistantText } from "../assistant-text.js";
 import { formatAuthHint, isCursorAuthError } from "../auth-error-hint.js";
-import { resolveTurnSettlement } from "../turn-settlement.js";
+import { consumedErrorOutcome, resolveTurnSettlement } from "../turn-settlement.js";
 import { type CursorStreamEvent, CursorStreamParser, type CursorToolCall, type CursorUsage } from "./parser.js";
 
 /**
@@ -116,6 +116,33 @@ export function mapCursorMcpServers(payload: AgentRuntimeConfigPayload): Record<
   return servers;
 }
 
+/**
+ * Hash the shared project-state portion of one turn snapshot. Header values
+ * may contain secrets, so the coordinator retains only the digest.
+ */
+function cursorMcpProjectionFingerprint(payload: AgentRuntimeConfigPayload): string {
+  const canonicalServers = Object.entries(mapCursorMcpServers(payload))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, config]) => {
+      if ("command" in config) {
+        return [name, { command: config.command, ...(config.args === undefined ? {} : { args: config.args }) }];
+      }
+      const headers =
+        config.headers === undefined
+          ? undefined
+          : Object.fromEntries(Object.entries(config.headers).sort(([left], [right]) => left.localeCompare(right)));
+      return [
+        name,
+        {
+          type: config.type,
+          url: config.url,
+          ...(headers === undefined ? {} : { headers }),
+        },
+      ];
+    });
+  return createHash("sha256").update(JSON.stringify(canonicalServers)).digest("hex");
+}
+
 function materializeCursorMcpConfig(workspaceCwd: string, payload: AgentRuntimeConfigPayload): void {
   const configDir = join(workspaceCwd, ".cursor");
   const configPath = join(configDir, "mcp.json");
@@ -171,6 +198,82 @@ type CursorMcpEnableFn = (input: {
 
 const execFileAsync = promisify(execFile);
 
+type CursorMcpSetupPhase = "projection" | "approval";
+
+class CursorMcpSetupError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string | number,
+  ) {
+    super(message);
+    this.name = "CursorMcpSetupError";
+  }
+}
+
+class CursorMcpProjectionSettlementError extends Error {
+  constructor(readonly settlement: ProviderAttemptSettlement) {
+    super(`Cursor managed MCP setup stopped: ${settlement.decision.reasonCode}`);
+    this.name = "CursorMcpProjectionSettlementError";
+  }
+}
+
+function cursorMcpSetupErrorCode(err: unknown): string | number | undefined {
+  if (!err || typeof err !== "object" || !("code" in err)) return undefined;
+  const code = err.code;
+  return typeof code === "string" || typeof code === "number" ? code : undefined;
+}
+
+function cursorMcpSetupErrorIsTransient(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const record = err as Record<string, unknown>;
+  const code = cursorMcpSetupErrorCode(err);
+  const name = err instanceof Error ? err.name : typeof record.name === "string" ? record.name : "";
+  const message = err instanceof Error ? err.message : typeof record.message === "string" ? record.message : "";
+  return (
+    name === "AbortError" ||
+    name === "TimeoutError" ||
+    record.killed === true ||
+    (typeof code === "string" &&
+      /^(?:EAGAIN|EBUSY|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|EAI_AGAIN|EMFILE|ENETUNREACH|ENFILE|ENOTFOUND|EPIPE|ETIMEDOUT)$/.test(
+        code,
+      )) ||
+    /timed out|timeout|network|connection (?:refused|reset)|socket hang up/i.test(message)
+  );
+}
+
+/**
+ * Convert provider/FS output into a secret-safe error that the shared failure
+ * taxonomy can route without retaining raw stderr or projected headers.
+ */
+function sanitizeCursorMcpSetupError(
+  err: unknown,
+  phase: CursorMcpSetupPhase,
+  serverName?: string,
+): CursorMcpSetupError {
+  if (err instanceof CursorMcpSetupError) return err;
+  const code = cursorMcpSetupErrorCode(err);
+  if (phase === "approval" && code === "ENOENT") {
+    return new CursorMcpSetupError(
+      formatCursorBinaryMissingMessage("the bound cursor binary disappeared during managed MCP approval"),
+      code,
+    );
+  }
+  if (cursorMcpSetupErrorIsTransient(err)) {
+    const error = new CursorMcpSetupError(
+      "Cursor managed MCP setup timed out or hit a transient transport failure",
+      code,
+    );
+    error.name = "TimeoutError";
+    return error;
+  }
+  return new CursorMcpSetupError(
+    phase === "approval"
+      ? `Cursor managed MCP approval configuration failed${serverName ? ` for server "${serverName}"` : ""}`
+      : "Cursor managed MCP projection failed because the project configuration is invalid or unavailable (bad config)",
+    code,
+  );
+}
+
 async function enableCursorMcpServer(input: Parameters<CursorMcpEnableFn>[0]): Promise<void> {
   try {
     await execFileAsync(input.binary, buildCursorMcpEnableArgs(input.serverName), {
@@ -184,61 +287,160 @@ async function enableCursorMcpServer(input: Parameters<CursorMcpEnableFn>[0]): P
     });
   } catch (err) {
     if (input.abortSignal.aborted) throw err;
-    // The CLI may include parsed config in stderr. Do not propagate it because
-    // remote MCP headers can be sensitive; a bounded code is enough to route
-    // the operator toward the failed provider-native approval step.
-    const code = typeof err === "object" && err !== null && "code" in err ? err.code : undefined;
-    throw new Error(
-      `cursor-agent mcp enable failed for managed server "${input.serverName}"${
-        typeof code === "string" || typeof code === "number" ? ` (code ${code})` : ""
-      }`,
-    );
+    // The CLI may include parsed config in stderr. Preserve only a safe
+    // category/code; raw output can contain remote MCP headers.
+    throw sanitizeCursorMcpSetupError(err, "approval", input.serverName);
   }
 }
 
 /**
- * A Cursor process reads project MCP config from the agent workspace. Multiple
- * chats for one agent share that workspace, so their materialize/approve/spawn
- * sequence must not interleave. Hold this lock for the complete provider turn:
- * that is the only provider-supported boundary at which the process is known
- * to be done reading and using the projected file.
+ * Cursor processes share project MCP state through the agent workspace.
+ * Matching fingerprints take shared leases and keep the configured agent
+ * concurrency intact. A different fingerprint waits for the old projection's
+ * live turns to release, then performs one exclusive materialize/approval
+ * transition before its cohort starts.
  */
-const cursorWorkspaceTurnTails = new Map<string, Promise<void>>();
+type CursorWorkspaceProjectionLease = { release(): void };
+type CursorWorkspaceProjectionWaiter = {
+  fingerprint: string;
+  setup: () => Promise<void>;
+  abortSignal: AbortSignal;
+  resolve: (lease: CursorWorkspaceProjectionLease) => void;
+  reject: (err: unknown) => void;
+  onAbort: () => void;
+  phase: "queued" | "transitioning" | "settled";
+};
+type CursorWorkspaceProjectionState = {
+  fingerprint: string | null;
+  activeLeases: number;
+  transitioning: boolean;
+  queue: CursorWorkspaceProjectionWaiter[];
+};
 
-async function withCursorWorkspaceTurnLock<T>(
-  workspaceCwd: string,
-  abortSignal: AbortSignal,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const key = resolve(workspaceCwd);
-  const previous = cursorWorkspaceTurnTails.get(key) ?? Promise.resolve();
-  let releaseSelf: () => void = () => {};
-  const self = new Promise<void>((resolveSelf) => {
-    releaseSelf = resolveSelf;
-  });
-  const tail = previous.catch(() => {}).then(() => self);
-  cursorWorkspaceTurnTails.set(key, tail);
-  void tail.then(() => {
-    if (cursorWorkspaceTurnTails.get(key) === tail) cursorWorkspaceTurnTails.delete(key);
-  });
+const cursorWorkspaceProjectionStates = new Map<string, CursorWorkspaceProjectionState>();
 
-  if (abortSignal.aborted) {
-    releaseSelf();
-    throw new DOMException("Aborted", "AbortError");
-  }
-  let onAbort: () => void = () => {};
-  const aborted = new Promise<never>((_resolvePromise, reject) => {
-    onAbort = () => reject(new DOMException("Aborted", "AbortError"));
-    abortSignal.addEventListener("abort", onAbort, { once: true });
+function cursorAbortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
+
+function settleCursorProjectionWaiterWithError(waiter: CursorWorkspaceProjectionWaiter, err: unknown): void {
+  if (waiter.phase === "settled") return;
+  waiter.phase = "settled";
+  waiter.abortSignal.removeEventListener("abort", waiter.onAbort);
+  waiter.reject(err);
+}
+
+function grantCursorProjectionLease(
+  state: CursorWorkspaceProjectionState,
+  waiter: CursorWorkspaceProjectionWaiter,
+): void {
+  if (waiter.phase === "settled") return;
+  waiter.phase = "settled";
+  waiter.abortSignal.removeEventListener("abort", waiter.onAbort);
+  state.activeLeases++;
+  let released = false;
+  waiter.resolve({
+    release: () => {
+      if (released) return;
+      released = true;
+      state.activeLeases = Math.max(0, state.activeLeases - 1);
+      drainCursorProjectionQueue(state);
+    },
   });
-  try {
-    await Promise.race([previous.catch(() => {}), aborted]);
-    if (abortSignal.aborted) throw new DOMException("Aborted", "AbortError");
-    return await fn();
-  } finally {
-    abortSignal.removeEventListener("abort", onAbort);
-    releaseSelf();
+}
+
+function drainCursorProjectionQueue(state: CursorWorkspaceProjectionState): void {
+  if (state.transitioning) return;
+
+  while (state.queue[0]?.abortSignal.aborted) {
+    const aborted = state.queue.shift();
+    if (aborted) settleCursorProjectionWaiterWithError(aborted, cursorAbortError());
   }
+  const first = state.queue[0];
+  if (!first) return;
+
+  if (state.activeLeases > 0) {
+    // Preserve FIFO transition fairness: matching turns may share the current
+    // projection only until a different fingerprint reaches the queue head.
+    while (state.queue[0]?.fingerprint === state.fingerprint) {
+      const matching = state.queue.shift();
+      if (matching) grantCursorProjectionLease(state, matching);
+    }
+    return;
+  }
+
+  if (state.fingerprint === first.fingerprint) {
+    while (state.queue[0]?.fingerprint === state.fingerprint) {
+      const matching = state.queue.shift();
+      if (matching) grantCursorProjectionLease(state, matching);
+    }
+    return;
+  }
+
+  const transition = state.queue.shift();
+  if (!transition) return;
+  transition.phase = "transitioning";
+  state.transitioning = true;
+  void transition.setup().then(
+    () => {
+      state.transitioning = false;
+      if (transition.abortSignal.aborted) {
+        // Setup may already have replaced the shared file before observing
+        // abort. Treat the live projection as unknown until the next owner
+        // materializes it again.
+        state.fingerprint = null;
+        settleCursorProjectionWaiterWithError(transition, cursorAbortError());
+      } else {
+        state.fingerprint = transition.fingerprint;
+        grantCursorProjectionLease(state, transition);
+      }
+      drainCursorProjectionQueue(state);
+    },
+    (err: unknown) => {
+      state.transitioning = false;
+      // A failed approval can follow a successful atomic file replacement.
+      // Never let the previous fingerprint lease that potentially-new file.
+      state.fingerprint = null;
+      settleCursorProjectionWaiterWithError(transition, err);
+      drainCursorProjectionQueue(state);
+    },
+  );
+}
+
+function acquireCursorWorkspaceProjectionLease(input: {
+  workspaceCwd: string;
+  fingerprint: string;
+  abortSignal: AbortSignal;
+  setup: () => Promise<void>;
+}): Promise<CursorWorkspaceProjectionLease> {
+  if (input.abortSignal.aborted) return Promise.reject(cursorAbortError());
+  const key = resolve(input.workspaceCwd);
+  let state = cursorWorkspaceProjectionStates.get(key);
+  if (!state) {
+    state = { fingerprint: null, activeLeases: 0, transitioning: false, queue: [] };
+    cursorWorkspaceProjectionStates.set(key, state);
+  }
+  const projectionState = state;
+  return new Promise<CursorWorkspaceProjectionLease>((resolveLease, reject) => {
+    const waiter: CursorWorkspaceProjectionWaiter = {
+      fingerprint: input.fingerprint,
+      setup: input.setup,
+      abortSignal: input.abortSignal,
+      resolve: resolveLease,
+      reject,
+      onAbort: () => {
+        if (waiter.phase !== "queued") return;
+        const index = projectionState.queue.indexOf(waiter);
+        if (index >= 0) projectionState.queue.splice(index, 1);
+        settleCursorProjectionWaiterWithError(waiter, cursorAbortError());
+        drainCursorProjectionQueue(projectionState);
+      },
+      phase: "queued",
+    };
+    input.abortSignal.addEventListener("abort", waiter.onAbort, { once: true });
+    projectionState.queue.push(waiter);
+    drainCursorProjectionQueue(projectionState);
+  });
 }
 
 function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
@@ -347,6 +549,93 @@ export const createCursorHandler: HandlerFactory = (config) => {
         message: encodeProviderRetryEventMessage(settlement.eventPayload),
       },
     });
+  }
+
+  function consumedReasonForProviderSettlement(settlement: ProviderAttemptSettlement): TurnConsumedErrorReason {
+    return settlement.decision.action === "stop" && settlement.decision.terminalKind === "capacity_wait_required"
+      ? "capacity_wait_required"
+      : settlement.decision.action === "stop" && settlement.decision.terminalKind === "exhausted"
+        ? "provider_retry_exhausted"
+        : settlement.decision.reasonCode;
+  }
+
+  async function prepareCursorMcpProjection(input: {
+    workspaceCwd: string;
+    activeBinary: string;
+    turnPayload: AgentRuntimeConfigPayload;
+    env: Record<string, string>;
+    sessionCtx: SessionContext;
+    generation: number;
+    abortSignal: AbortSignal;
+  }): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      let setupError: CursorMcpSetupError | null = null;
+      try {
+        materializeCursorMcpConfig(input.workspaceCwd, input.turnPayload);
+      } catch (err) {
+        setupError = sanitizeCursorMcpSetupError(err, "projection");
+      }
+
+      if (!setupError) {
+        for (const server of input.turnPayload.mcpServers) {
+          try {
+            await enableMcpServer({
+              binary: input.activeBinary,
+              serverName: server.name,
+              workspaceCwd: input.workspaceCwd,
+              env: input.env,
+              abortSignal: input.abortSignal,
+            });
+          } catch (err) {
+            if (input.abortSignal.aborted || turnGeneration !== input.generation) throw cursorAbortError();
+            setupError = sanitizeCursorMcpSetupError(err, "approval", server.name);
+            break;
+          }
+        }
+      }
+
+      if (!setupError) {
+        if (input.abortSignal.aborted || turnGeneration !== input.generation) throw cursorAbortError();
+        return;
+      }
+      if (input.abortSignal.aborted || turnGeneration !== input.generation) throw cursorAbortError();
+
+      const providerAttempt = new ProviderAttempt({
+        provider: runtimeProvider,
+        scope: "provider_turn",
+        source: "stream",
+        replaySafety: "pre_provider",
+      });
+      providerAttempt.recordSignal({ kind: "local_error", error: setupError });
+      const settlement = providerAttempt.settle({ attempt });
+      if (!settlement) throw setupError;
+      emitProviderTurnSettlementEvent(input.sessionCtx, settlement);
+
+      if (settlement.decision.action === "retry") {
+        input.sessionCtx.log(
+          `cursor managed MCP setup retry ${attempt}/${providerTurnMaxRetries + 1} ` +
+            `after ${settlement.decision.delayMs}ms; ${settlement.classification.category}/` +
+            settlement.decision.reasonCode,
+        );
+        await sleepWithAbort(settlement.decision.delayMs, input.abortSignal);
+        continue;
+      }
+
+      input.sessionCtx.log(
+        `cursor managed MCP setup stopped before provider start: ${settlement.classification.category}/` +
+          settlement.decision.reasonCode,
+      );
+      input.sessionCtx.emitEvent({
+        kind: "error",
+        payload: {
+          source: "sdk",
+          message:
+            `Cursor managed MCP setup failed (${settlement.classification.category}/` +
+            `${settlement.decision.reasonCode}).`,
+        },
+      });
+      throw new CursorMcpProjectionSettlementError(settlement);
+    }
   }
 
   function buildEnv(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): Record<string, string> {
@@ -820,32 +1109,72 @@ export const createCursorHandler: HandlerFactory = (config) => {
       return false;
     }
 
+    const activeBinary = binary;
+    // One immutable per-turn snapshot drives MCP projection, targeted
+    // approval, model, and env. SessionManager refreshes the cache before
+    // dispatch, so an active chat converges on its very next turn even when a
+    // projection transition must wait for older live turns to drain.
+    const turnPayload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload ?? fallbackPayload;
+    const model = turnPayload.model;
+    const env = buildEnv(sessionCtx, turnPayload);
+    const projectionFingerprint = cursorMcpProjectionFingerprint(turnPayload);
     const generation = ++turnGeneration;
     const abort = new AbortController();
     currentAbort = abort;
-    const turnPromise = withCursorWorkspaceTurnLock(workspaceCwd, abort.signal, async () => {
-      const activeBinary = binary;
-      if (
-        abort.signal.aborted ||
-        turnGeneration !== generation ||
-        cwd !== workspaceCwd ||
-        !activeBinary ||
-        !sessionActive
-      ) {
-        return false;
+    const turnPromise = (async () => {
+      let projectionLease: CursorWorkspaceProjectionLease;
+      try {
+        projectionLease = await acquireCursorWorkspaceProjectionLease({
+          workspaceCwd,
+          fingerprint: projectionFingerprint,
+          abortSignal: abort.signal,
+          setup: () =>
+            prepareCursorMcpProjection({
+              workspaceCwd,
+              activeBinary,
+              turnPayload,
+              env,
+              sessionCtx,
+              generation,
+              abortSignal: abort.signal,
+            }),
+        });
+      } catch (err) {
+        if (abort.signal.aborted || turnGeneration !== generation) return false;
+        if (err instanceof CursorMcpProjectionSettlementError) {
+          sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+          await token.complete(messages, consumedErrorOutcome(consumedReasonForProviderSettlement(err.settlement)));
+          return true;
+        }
+        throw err;
       }
-      return runTurnLocked(
-        input,
-        sessionCtx,
-        messages,
-        token,
-        workspaceCwd,
-        activeBinary,
-        fallbackPayload,
-        generation,
-        abort,
-      );
-    }).catch((err: unknown) => {
+
+      try {
+        if (
+          abort.signal.aborted ||
+          turnGeneration !== generation ||
+          cwd !== workspaceCwd ||
+          binary !== activeBinary ||
+          !sessionActive
+        ) {
+          return false;
+        }
+        return await runTurnWithProjection(
+          input,
+          sessionCtx,
+          messages,
+          token,
+          workspaceCwd,
+          activeBinary,
+          model,
+          env,
+          generation,
+          abort,
+        );
+      } finally {
+        projectionLease.release();
+      }
+    })().catch((err: unknown) => {
       if (abort.signal.aborted || turnGeneration !== generation) return false;
       throw err;
     });
@@ -864,51 +1193,18 @@ export const createCursorHandler: HandlerFactory = (config) => {
     }
   }
 
-  async function runTurnLocked(
+  async function runTurnWithProjection(
     input: string,
     sessionCtx: SessionContext,
     messages: readonly SessionMessage[],
     token: DeliveryToken,
     workspaceCwd: string,
     activeBinary: string,
-    fallbackPayload: AgentRuntimeConfigPayload,
+    model: string,
+    env: Record<string, string>,
     generation: number,
     abort: AbortController,
   ): Promise<boolean> {
-    // One immutable per-turn snapshot drives MCP projection, per-server
-    // approval, model, and env. SessionManager refreshes the cache before
-    // dispatch, so an active chat converges on its very next turn.
-    const turnPayload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload ?? fallbackPayload;
-    const model = turnPayload.model;
-    const env = buildEnv(sessionCtx, turnPayload);
-
-    try {
-      materializeCursorMcpConfig(workspaceCwd, turnPayload);
-      for (const server of turnPayload.mcpServers) {
-        await enableMcpServer({
-          binary: activeBinary,
-          serverName: server.name,
-          workspaceCwd,
-          env,
-          abortSignal: abort.signal,
-        });
-      }
-    } catch (err) {
-      if (abort.signal.aborted || turnGeneration !== generation) return false;
-      sessionCtx.log(
-        `cursor managed MCP projection failed before provider start: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      sessionCtx.emitEvent({
-        kind: "error",
-        payload: {
-          source: "runtime",
-          message: "Cursor managed MCP setup failed before the provider turn; delivery will retry.",
-        },
-      });
-      token.retry(messages, "cursor_mcp_projection_failed");
-      return false;
-    }
-
     if (
       abort.signal.aborted ||
       turnGeneration !== generation ||
