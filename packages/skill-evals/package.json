@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.16.0",
+    "first-tree-dev": "workspace:*",
     "tsx": "^4.21.0",
     "yaml": "^2.8.3"
   }
