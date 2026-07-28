@@ -38,14 +38,15 @@ export async function anonymousGitEnv(cacheRoot: string): Promise<NodeJS.Process
 /** Git config for anonymous, address-pinned HTTPS with redirect/auth isolation. */
 export function gitlabAnonymousGitConfig(destination: GitlabPinnedDestination | null | undefined): string[] {
   if (!destination) throw new GitlabEgressPolicyError("origin_not_authorized");
+  // Client certificates are isolated through anonymousGitEnv and the cached
+  // repository config guard. Empty http.sslCert values make some Git/libcurl
+  // builds fail before network access instead of clearing the certificate.
   return [
     "http.followRedirects=false",
     "http.curloptResolve=",
     `http.${destination.origin}/.curloptResolve=${destination.curlResolve}`,
     "http.extraHeader=",
     "http.cookieFile=",
-    "http.sslCert=",
-    "http.sslKey=",
     "http.proxy=",
     "credential.helper=",
   ];
