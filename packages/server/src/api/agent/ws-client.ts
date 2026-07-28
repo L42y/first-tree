@@ -474,11 +474,18 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
 
         for (const agentId of candidates) {
           // Read the binding *after* the query, not before. A rebind updates
-          // the row and the local binding together, so comparing a binding
-          // read before the query against a row read after it reports a
-          // provider mismatch and drops an agent that just rebound
-          // successfully. Both orders leave a window — this one is a loop
-          // iteration rather than a database round-trip.
+          // the row and the local binding together, so whichever side is read
+          // first can go stale and report a provider mismatch that drops an
+          // agent which had just rebound successfully.
+          //
+          // This relocates that window rather than closing it. `row` is a
+          // snapshot from the moment Postgres executed the SELECT, so reading
+          // the binding afterwards exposes [snapshot .. result delivery +
+          // event loop turn] where reading it first exposed [binding read ..
+          // snapshot] — two halves of the same round-trip, comparable in
+          // width. Neither is negligible: the socket's message handler is not
+          // awaited by the emitter, and bind frames are not serialised
+          // against heartbeat frames, so the interleaving is reachable.
           const info = boundAgents.get(agentId);
           if (!info) continue;
           const row = rowByAgentId.get(agentId);
