@@ -21,6 +21,11 @@ const STRONG_SETTLEMENT_BASES = new Set([
   "explicit_decision_record",
   "transcript_explicit_human_choice",
 ]);
+const SETTLEMENT_BASIS_SOURCE_ROLES = new Map([
+  ["human_confirmed_minutes", "human_minutes"],
+  ["explicit_decision_record", "decision_record"],
+  ["transcript_explicit_human_choice", "transcript"],
+]);
 
 const FORBIDDEN_KEY_PARTS = [
   "raw",
@@ -124,6 +129,10 @@ function stableStringify(value) {
   return JSON.stringify(value);
 }
 
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function sourceRevision(bundle) {
   const projection = {
     meeting_scope: bundle.meeting_scope,
@@ -136,10 +145,11 @@ function sourceRevision(bundle) {
       input_kind: artifact.input_kind,
       media_type: artifact.media_type,
       revision: artifact.revision,
+      content_ref_digest: sha256(stableStringify(artifact.content_ref)),
       source_role: artifact.source_role,
     })),
   };
-  return createHash("sha256").update(stableStringify(projection)).digest("hex");
+  return sha256(stableStringify(projection));
 }
 
 export function validateArtifactBundle(input) {
@@ -248,7 +258,7 @@ function scanPrivateOutput(value, path = "packet") {
   }
 }
 
-function validateCandidate(value, index, artifactIds) {
+function validateCandidate(value, index, artifactRoles) {
   const label = `packet.candidates[${index}]`;
   const candidate = requireObject(value, label);
   const keys = ["claim", "settlement", "chronology", "evidence"];
@@ -280,14 +290,23 @@ function validateCandidate(value, index, artifactIds) {
   if (!Array.isArray(candidate.evidence) || candidate.evidence.length < 1 || candidate.evidence.length > 3) {
     fail(`${label}.evidence must contain between 1 and 3 items.`);
   }
+  const citedSourceRoles = new Set();
   for (let evidenceIndex = 0; evidenceIndex < candidate.evidence.length; evidenceIndex += 1) {
     const evidenceLabel = `${label}.evidence[${evidenceIndex}]`;
     const evidence = requireObject(candidate.evidence[evidenceIndex], evidenceLabel);
     requireAllowedKeys(evidence, ["artifact_id", "location_hint"], evidenceLabel);
     requireKeys(evidence, ["artifact_id", "location_hint"], evidenceLabel);
     const artifactId = requireString(evidence.artifact_id, `${evidenceLabel}.artifact_id`, 1, 64);
-    if (!artifactIds.has(artifactId)) fail(`${evidenceLabel} references an unknown artifact_id.`);
+    const sourceRole = artifactRoles.get(artifactId);
+    if (sourceRole === undefined) fail(`${evidenceLabel} references an unknown artifact_id.`);
+    citedSourceRoles.add(sourceRole);
     requireString(evidence.location_hint, `${evidenceLabel}.location_hint`, 1, 200);
+  }
+  const requiredSourceRole = SETTLEMENT_BASIS_SOURCE_ROLES.get(settlement.basis);
+  if (requiredSourceRole !== undefined && !citedSourceRoles.has(requiredSourceRole)) {
+    fail(
+      `${label}.settlement.basis '${settlement.basis}' requires cited evidence with source_role '${requiredSourceRole}'.`,
+    );
   }
   return candidate;
 }
@@ -310,8 +329,10 @@ export function validateDecisionPacket(bundleInput, packetInput) {
   if (!Array.isArray(packet.candidates) || packet.candidates.length > 3) {
     fail("packet.candidates must be an array with at most 3 items.");
   }
-  const artifactIds = new Set(prepared.bundle.artifacts.map((artifact) => artifact.artifact_id));
-  const candidates = packet.candidates.map((candidate, index) => validateCandidate(candidate, index, artifactIds));
+  const artifactRoles = new Map(
+    prepared.bundle.artifacts.map((artifact) => [artifact.artifact_id, artifact.source_role]),
+  );
+  const candidates = packet.candidates.map((candidate, index) => validateCandidate(candidate, index, artifactRoles));
 
   if (packet.status === "blocked-source") {
     if (prepared.source_status !== "blocked-source") fail("blocked-source requires an incomplete artifact.");

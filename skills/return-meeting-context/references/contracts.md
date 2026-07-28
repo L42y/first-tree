@@ -70,8 +70,11 @@ task-local routing data and must not be copied into the output packet.
 artifact blocks semantic analysis.
 
 `revision` uses the provider's document revision when available; otherwise use
-a content SHA-256. The preparation script hashes artifact metadata into one
-bundle-level `source_revision`.
+a content SHA-256. The preparation script hashes each `content_ref` separately
+and includes only that privacy-safe digest, alongside the declared revision and
+artifact metadata, in the bundle-level `source_revision`. Changing the supplied
+document, attachment, local file, or pasted-text reference therefore changes
+the packet binding without exposing its URL or path.
 
 ## Decision-evidence packet
 
@@ -144,6 +147,8 @@ candidates. It is not interchangeable with `no-change`.
 - every candidate has What and Why;
 - every candidate is settled;
 - every candidate uses a strong settlement basis;
+- the cited evidence includes the matching source role for that basis:
+  `human_minutes`, `decision_record`, or `transcript`;
 - later override was checked and overridden claims were excluded;
 - evidence references only artifact IDs in the bundle;
 - `handoff` is `first-tree-write` only when `requested_intent` is `write`.

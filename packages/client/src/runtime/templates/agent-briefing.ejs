@@ -547,13 +547,13 @@ harness skills (`tdoc`, `review`, `simplify`, `update-config`, …).
 |---|---|
 | `first-tree-welcome` | the onboarding first chat — a natural welcome / "help me get started" message from the user; value-first intro, not a repo scan or tree setup chat |
 | `first-tree-read`    | read relevant Context Tree files before acting from task / path / feature signals |
-| `first-tree-write`   | reflect a concrete source artifact (PR/MR, design doc, meeting note, review thread, or pasted source) into the Context Tree |
+| `first-tree-write`   | reflect a concrete non-meeting source artifact (PR/MR, design doc, review thread, or pasted non-meeting source) into the Context Tree; meeting sources enter only as a validated `DecisionEvidencePacket` from `return-meeting-context` |
 | `first-tree-seed`    | bootstrap the team's Context Tree from readable sources (declared repos or a local Git repo / GitHub or GitLab URL supplied in chat); create + bind if none exists, fill a bound-but-empty tree, or continue Phase 2 after Phase 1 merges |
 | `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
 | `first-tree-file-bug` | you hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and want it reported — gathers repro + version + chat/user IDs and opens an issue on First Tree's own repo (not the user's own/bound repo) via the user's `gh` CLI |
 | `context-tree-review` | a trusted GitHub App Context Review run or an explicit request to review a GitHub Context Tree pull request; GitLab MRs use ordinary GitLab review |
 | `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems |
-| `return-meeting-context` | analyze meeting notes, transcripts, decision records, or other meeting artifacts the user explicitly supplies; keep raw material outside the Tree and hand settled durable claims to `first-tree-write` |<% } else { %>
+| `return-meeting-context` | always handle meeting minutes, AI notes, transcripts, decision records, or other user-supplied meeting artifacts first; keep raw material outside the Tree and hand settled durable claims to `first-tree-write` |<% } else { %>
 
 ## First Tree Family
 
@@ -565,10 +565,10 @@ binding, follow the Tree Location guidance before proceeding.
 |---|---|
 | `first-tree-welcome` | the onboarding first chat — a natural welcome / "help me get started" message from the user; value-first intro, not a repo scan or tree setup chat |
 | `first-tree-read`    | read relevant Context Tree files before acting from task / path / feature signals |
-| `first-tree-write`   | reflect a concrete source artifact (PR/MR, design doc, meeting note, review thread, or pasted source) into the Context Tree |
+| `first-tree-write`   | reflect a concrete non-meeting source artifact (PR/MR, design doc, review thread, or pasted non-meeting source) into the Context Tree; meeting sources enter only as a validated `DecisionEvidencePacket` from `return-meeting-context` |
 | `first-tree-seed` | set up the team's Context Tree from readable sources — declared workspace repos or a local Git repo / GitHub or GitLab URL supplied in chat; creates + binds the tree if none exists, fills a bound-but-empty tree, and can continue Phase 2 after Phase 1 merges |
 | `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
 | `first-tree-file-bug` | the user hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and wants it reported — gathers repro + version + chat/user IDs and opens an issue on First Tree's own repo (not the user's own/bound repo) via the user's `gh` CLI |
 | `context-tree-review` | a trusted GitHub App Context Review run or an explicit request to review a GitHub Context Tree pull request; GitLab MRs use ordinary GitLab review |
 | `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems; without a binding, the audit fails closed |
-| `return-meeting-context` | analyze meeting notes, transcripts, decision records, or other meeting artifacts the user explicitly supplies; without a binding it may report candidates but cannot hand them to a Tree write |<% } %>
+| `return-meeting-context` | always handle meeting minutes, AI notes, transcripts, decision records, or other user-supplied meeting artifacts first; without a binding it may report candidates but cannot hand them to a Tree write |<% } %>

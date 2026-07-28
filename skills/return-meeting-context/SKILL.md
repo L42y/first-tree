@@ -1,13 +1,14 @@
 ---
 name: return-meeting-context
-description: Extract settled durable decisions, constraints, and rationale from meeting artifacts that the user explicitly supplies, including provider document links, uploaded attachments, local files, and pasted text. Use when a user asks to analyze meeting minutes, AI notes, transcripts, or decision records for reusable context, or asks to reflect such material into a Context Tree. Resolve only the supplied artifacts, keep raw content outside persistent output, produce a sanitized decision-evidence packet, and hand eligible claims to first-tree-write. Do not use for calendar discovery, meeting search, raw archiving, progress summaries, action-item tracking, provider authorization, scheduled capture, or direct Tree review or merge.
+description: Extract settled durable decisions, constraints, and rationale from meeting artifacts that the user explicitly supplies, including provider document links, uploaded attachments, local files, and pasted text. Always use this skill first for meeting minutes, AI notes, transcripts, decision records, or equivalent meeting artifacts, including when the user asks to reflect them into a Context Tree. Resolve only the supplied artifacts, keep raw content outside persistent output, produce a sanitized decision-evidence packet, and hand eligible claims to first-tree-write. Do not use for calendar discovery, meeting search, raw archiving, progress summaries, action-item tracking, provider authorization, scheduled capture, or direct Tree review or merge.
 ---
 
 # Return Meeting Context
 
 Turn user-supplied meeting artifacts into a small, sanitized set of durable
 claims. Treat every artifact as evidence, never as approved organizational
-truth.
+truth. Meeting artifacts always enter this interpreter before
+`first-tree-write`, even when the user's initial request is a Tree update.
 
 ## Keep acquisition outside the skill
 

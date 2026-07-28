@@ -77,6 +77,20 @@ for (const inputKind of ["provider_link", "attachment", "local_file", "pasted_te
   assert.equal(validateArtifactBundle(value).source_status, "complete");
 }
 
+const alternateLocatorBundle = bundle({
+  artifacts: [
+    {
+      ...bundle().artifacts[0],
+      content_ref: { ...bundle().artifacts[0].content_ref, locator: "source-artifacts/other-minutes.md" },
+    },
+  ],
+});
+assert.notEqual(
+  validateArtifactBundle(bundle()).source_revision,
+  validateArtifactBundle(alternateLocatorBundle).source_revision,
+  "source_revision must change when only the supplied artifact locator changes",
+);
+
 const ordered = bundle({
   artifacts: [
     { ...bundle().artifacts[0], artifact_id: "proposal", chronology_index: 0 },
@@ -157,6 +171,18 @@ expectReject(
     ),
   /weak settlement basis/u,
 );
+for (const forgedBasis of ["human_confirmed_minutes", "explicit_decision_record", "transcript_explicit_human_choice"]) {
+  expectReject(
+    () =>
+      validateDecisionPacket(
+        aiBundle,
+        packet(aiBundle, {
+          candidates: [candidate({ settlement: { status: "settled", basis: forgedBasis } })],
+        }),
+      ),
+    /requires cited evidence with source_role/u,
+  );
+}
 assert.doesNotThrow(() =>
   validateDecisionPacket(
     aiBundle,
@@ -168,6 +194,24 @@ assert.doesNotThrow(() =>
     }),
   ),
 );
+
+for (const [basis, sourceRole] of [
+  ["human_confirmed_minutes", "human_minutes"],
+  ["explicit_decision_record", "decision_record"],
+  ["transcript_explicit_human_choice", "transcript"],
+]) {
+  const matchingBundle = bundle({
+    artifacts: [{ ...bundle().artifacts[0], source_role: sourceRole }],
+  });
+  assert.doesNotThrow(() =>
+    validateDecisionPacket(
+      matchingBundle,
+      packet(matchingBundle, {
+        candidates: [candidate({ settlement: { status: "settled", basis } })],
+      }),
+    ),
+  );
+}
 
 expectReject(
   () =>

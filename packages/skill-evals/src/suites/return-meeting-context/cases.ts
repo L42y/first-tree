@@ -130,6 +130,7 @@ export function validateReturnMeetingContextFloor(cases: readonly SkillEvalCase[
 
   const skill = readRepoFile("skills/return-meeting-context/SKILL.md");
   for (const marker of [
+    "Always use this skill first for meeting minutes",
     "Accept only artifacts the user explicitly provides",
     "Do not use a calendar",
     "AI-generated notes may identify a candidate but cannot alone prove human",
@@ -137,6 +138,14 @@ export function validateReturnMeetingContextFloor(cases: readonly SkillEvalCase[
     "Never maintain meeting discovery watermarks",
   ]) {
     if (!skill.includes(marker)) errors.push(`skill is missing required boundary: ${marker}`);
+  }
+  const writeSkill = readRepoFile("skills/first-tree-write/SKILL.md");
+  for (const marker of [
+    "Use when a concrete non-meeting source artifact",
+    "use return-meeting-context first",
+    "accepts them only with its validated DecisionEvidencePacket",
+  ]) {
+    if (!writeSkill.includes(marker)) errors.push(`first-tree-write is missing meeting routing boundary: ${marker}`);
   }
   for (const path of [
     "skills/return-meeting-context/scripts/prepare-artifacts.mjs",

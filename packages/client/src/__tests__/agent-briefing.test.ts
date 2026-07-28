@@ -360,11 +360,14 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     );
     expect(familyMap).toContain("The generated Context Tree Policy is always present");
     expect(familyMap).toMatch(/\|\s*`first-tree-read`\s*\| read relevant Context Tree files before acting/);
-    expect(familyMap).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
+    expect(familyMap).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete non-meeting source artifact/);
     expect(familyMap).toMatch(/\|\s*`context-tree-review`\s*\| a trusted GitHub App Context Review run/);
     expect(familyMap).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
     expect(familyMap).toMatch(
-      /\|\s*`return-meeting-context`\s*\| analyze meeting notes, transcripts, decision records/,
+      /\|\s*`return-meeting-context`\s*\| always handle meeting minutes, AI notes, transcripts, decision records/,
+    );
+    expect(familyMap).toContain(
+      "meeting sources enter only as a validated `DecisionEvidencePacket` from `return-meeting-context`",
     );
 
     const treelessFamily = topLevelSection(
@@ -378,7 +381,7 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(treelessFamily).toContain("first-tree-qa");
     expect(treelessFamily).toContain("return-meeting-context");
     expect(treelessFamily).toMatch(/\|\s*`first-tree-read`\s*\| read relevant Context Tree files before acting/);
-    expect(treelessFamily).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
+    expect(treelessFamily).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete non-meeting source artifact/);
     expect(treelessFamily).toMatch(/\|\s*`context-tree-review`\s*\| a trusted GitHub App Context Review run/);
     expect(treelessFamily).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
     expect(treelessFamily).toMatch(/without a binding, the audit fails closed/);
