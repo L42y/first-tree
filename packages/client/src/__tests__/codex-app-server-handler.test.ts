@@ -98,18 +98,24 @@ class FakeAppServerClient {
     if (method === "thread/start") {
       if (this.threadStartDeferred) return this.threadStartDeferred.promise;
       const config = (params as { config?: { service_tier?: unknown } } | undefined)?.config;
+      const requestedServiceTier = config?.service_tier;
       return {
         thread: { id: "thread-app-server" },
-        ...(typeof config?.service_tier === "string" ? { serviceTier: config.service_tier } : {}),
+        ...(typeof requestedServiceTier === "string"
+          ? { serviceTier: requestedServiceTier === "fast" ? "priority" : requestedServiceTier }
+          : {}),
       };
     }
     if (method === "thread/resume") {
       this.beforeThreadResumeReturn?.();
       if (this.threadResumeError) throw this.threadResumeError;
       const config = (params as { config?: { service_tier?: unknown } } | undefined)?.config;
+      const requestedServiceTier = config?.service_tier;
       return {
         thread: { id: "thread-app-server" },
-        ...(typeof config?.service_tier === "string" ? { serviceTier: config.service_tier } : {}),
+        ...(typeof requestedServiceTier === "string"
+          ? { serviceTier: requestedServiceTier === "fast" ? "priority" : requestedServiceTier }
+          : {}),
       };
     }
     if (method === "turn/start") {
@@ -631,7 +637,7 @@ describe("codex app-server handler", () => {
     await handler.shutdown();
   });
 
-  it("passes the configured Codex service tier through app-server thread startup", async () => {
+  it("accepts Codex's canonical priority response for the shipped Fast alias", async () => {
     const fake = new FakeAppServerClient();
     const mutable = makeMutableConfigCache("", "fast");
     const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
@@ -647,6 +653,35 @@ describe("codex app-server handler", () => {
         service_tier: "fast",
       },
     });
+    expect(fake.requests.some((request) => request.method === "turn/start")).toBe(true);
+
+    completeTurn(fake, "turn-1", "final answer");
+    await startPromise;
+    await handler.shutdown();
+  });
+
+  it("treats a legacy missing serviceTier as Standard in app-server", async () => {
+    const fake = new FakeAppServerClient();
+    const mutable = makeMutableConfigCache("", "default");
+    const legacyConfig = await (
+      mutable.cache as unknown as { refresh: () => Promise<{ payload: Record<string, unknown> }> }
+    ).refresh();
+    delete legacyConfig.payload.serviceTier;
+    const cache = {
+      ...(mutable.cache as Record<string, unknown>),
+      get: () => legacyConfig,
+      refresh: async () => legacyConfig,
+    };
+    const handler = makeHandler(fake, { agentConfigCache: cache });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const config = (threadStart?.params as { config?: Record<string, unknown> } | undefined)?.config;
+    expect(config?.service_tier).toBe("default");
+    expect(config).not.toHaveProperty("features");
 
     completeTurn(fake, "turn-1", "final answer");
     await startPromise;

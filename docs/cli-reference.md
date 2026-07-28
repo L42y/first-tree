@@ -299,7 +299,9 @@ combinations are reported by the provider.
 
 Codex service tiers are passed to the provider unchanged. `default` selects
 Standard mode and `fast` selects Fast mode; unsupported model/account
-combinations fail visibly without a silent fallback.
+combinations fail visibly without a silent fallback. Codex may report its
+canonical `priority` id after accepting the `fast` request alias; both represent
+the same Fast selection.
 
 ### agent bind
 

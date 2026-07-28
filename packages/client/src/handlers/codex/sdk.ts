@@ -107,8 +107,9 @@ export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfi
     project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
   };
   if (payload.kind === "codex") {
-    cfg.service_tier = payload.serviceTier;
-    if (payload.serviceTier !== "default") {
+    const serviceTier = configuredCodexServiceTier(payload);
+    cfg.service_tier = serviceTier;
+    if (serviceTier !== "default") {
       cfg.features = { fast_mode: true };
     }
   }
@@ -127,6 +128,29 @@ export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfi
   }
   cfg.mcp_servers = mcpServers;
   return cfg;
+}
+
+/**
+ * A newer Client can briefly talk to a Server that predates `serviceTier`
+ * during a rolling upgrade. Treat that missing wire field like every legacy
+ * Codex config row: explicit Standard mode.
+ */
+export function configuredCodexServiceTier(payload: AgentRuntimeConfigPayload): string {
+  if (payload.kind !== "codex") return "default";
+  const serviceTier: unknown = payload.serviceTier;
+  return typeof serviceTier === "string" && serviceTier.length > 0 ? serviceTier : "default";
+}
+
+function canonicalCodexServiceTier(serviceTier: string): string {
+  // Codex accepts `fast` as the product-facing request alias, then reports the
+  // provider-canonical `priority` id in app-server ThreadStart/ResumeResponse.
+  // This is response validation only: First Tree still forwards the configured
+  // value unchanged and does not maintain model/account compatibility data.
+  return serviceTier === "fast" ? "priority" : serviceTier;
+}
+
+export function codexServiceTiersEquivalent(configured: string, effective: string): boolean {
+  return canonicalCodexServiceTier(configured) === canonicalCodexServiceTier(effective);
 }
 
 const UNSUPPORTED_CODEX_SERVICE_TIER_WARNING =

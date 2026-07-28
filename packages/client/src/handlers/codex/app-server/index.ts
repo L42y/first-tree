@@ -50,7 +50,9 @@ import {
   buildCodexConfig,
   buildCodexThreadOptions,
   type CodexConfigObject,
+  codexServiceTiersEquivalent,
   collectCodexFileChangePaths,
+  configuredCodexServiceTier,
   isCodexStreamDiagnosticMessage,
   isTransientCodexErrorMessage,
   isUnsupportedCodexServiceTierWarning,
@@ -537,12 +539,14 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   }
 
   function validateEffectiveServiceTier(result: unknown, payload: AgentRuntimeConfigPayload): void {
-    if (payload.kind !== "codex" || payload.serviceTier === "default") return;
+    if (payload.kind !== "codex") return;
+    const configuredTier = configuredCodexServiceTier(payload);
+    if (configuredTier === "default") return;
     const response = asRecord(result);
     const effectiveTier = readString(response, "serviceTier") ?? readString(response, "service_tier");
-    if (effectiveTier === payload.serviceTier) return;
+    if (effectiveTier && codexServiceTiersEquivalent(configuredTier, effectiveTier)) return;
     recordServiceTierConfigurationFailure(
-      `Configured service tier \`${payload.serviceTier}\` was not activated by Codex and will not be used for requests.`,
+      `Configured service tier \`${configuredTier}\` was not activated by Codex and will not be used for requests.`,
     );
   }
 
