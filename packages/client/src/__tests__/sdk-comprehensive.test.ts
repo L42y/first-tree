@@ -168,6 +168,7 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
       jsonResponse({ status: "created", entity: githubEntity }, 201),
       jsonResponse({ removed: 1 }),
       jsonResponse({ items: [githubEntity] }),
+      jsonResponse({ chatId: "chat/with space", engagementStatus: "archived" }),
       jsonResponse({ id: "chat-1", topic: "New topic", description: null }),
     );
     const sdk = makeSdk();
@@ -179,6 +180,10 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
     });
     await expect(sdk.unfollowGithubEntity("chat-1", "owner/repo#42 & label")).resolves.toEqual({ removed: 1 });
     await expect(sdk.listChatGithubEntities("chat-1")).resolves.toEqual({ items: [githubEntity] });
+    await expect(sdk.archiveChat("chat/with space")).resolves.toEqual({
+      chatId: "chat/with space",
+      engagementStatus: "archived",
+    });
     await expect(sdk.updateChat("chat-1", { topic: "New topic", description: null })).resolves.toMatchObject({
       id: "chat-1",
       topic: "New topic",
@@ -189,6 +194,7 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
       `${SERVER_URL}/api/v1/agent/chats/chat-1/github-entities`,
       `${SERVER_URL}/api/v1/agent/chats/chat-1/github-entities?entity=owner%2Frepo%2342%20%26%20label`,
       `${SERVER_URL}/api/v1/agent/chats/chat-1/github-entities`,
+      `${SERVER_URL}/api/v1/agent/chats/chat%2Fwith%20space/archive`,
       `${SERVER_URL}/api/v1/agent/chats/chat-1`,
     ]);
     expect(requestInit(fetchMock, 1)).toMatchObject({
@@ -196,7 +202,8 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
       body: JSON.stringify({ entity: "owner/repo#42", rebind: true }),
     });
     expect(requestInit(fetchMock, 2)).toMatchObject({ method: "DELETE" });
-    expect(requestInit(fetchMock, 4)).toMatchObject({
+    expect(requestInit(fetchMock, 4)).toMatchObject({ method: "POST" });
+    expect(requestInit(fetchMock, 5)).toMatchObject({
       method: "PATCH",
       body: JSON.stringify({ topic: "New topic", description: null }),
     });

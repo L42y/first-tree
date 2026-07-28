@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
+import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
@@ -324,6 +325,56 @@ describe("Agent Chats API", () => {
     const res = await a.request("GET", "/api/v1/agent/chats");
     expect(res.statusCode).toBe(200);
     expect(res.json().items.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("archives a participating agent's chat for the signed-in human view", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: "archive-member" });
+    const { chatId } = await createMeChat(app.db, runtime.humanAgentUuid, runtime.organizationId, {
+      participantIds: [runtime.agent.uuid],
+    });
+    const notifySpy = vi.spyOn(app.notifier, "notifyMeChatsChanged");
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await runtime.request("POST", `/api/v1/agent/chats/${chatId}/archive`);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ chatId, engagementStatus: "archived" });
+    }
+
+    const [humanState] = await app.db
+      .select({ engagementStatus: chatUserState.engagementStatus })
+      .from(chatUserState)
+      .where(and(eq(chatUserState.chatId, chatId), eq(chatUserState.agentId, runtime.humanAgentUuid)))
+      .limit(1);
+    expect(humanState?.engagementStatus).toBe("archived");
+
+    const [runtimeState] = await app.db
+      .select({ engagementStatus: chatUserState.engagementStatus })
+      .from(chatUserState)
+      .where(and(eq(chatUserState.chatId, chatId), eq(chatUserState.agentId, runtime.agent.uuid)))
+      .limit(1);
+    expect(runtimeState?.engagementStatus ?? "active").toBe("active");
+    expect(notifySpy).toHaveBeenLastCalledWith(runtime.humanAgentUuid, runtime.organizationId);
+    notifySpy.mockRestore();
+  });
+
+  it("refuses to archive a chat when the selected agent is not a participant", async () => {
+    const app = getApp();
+    const participant = await createTestAgent(app, { name: "archive-owner" });
+    const outsider = await createTestAgent(app, { name: "archive-outsider" });
+    const { chatId } = await createMeChat(app.db, participant.humanAgentUuid, participant.organizationId, {
+      participantIds: [participant.agent.uuid],
+    });
+
+    const res = await outsider.request("POST", `/api/v1/agent/chats/${chatId}/archive`);
+    expect(res.statusCode).toBe(403);
+
+    const [outsiderState] = await app.db
+      .select({ engagementStatus: chatUserState.engagementStatus })
+      .from(chatUserState)
+      .where(and(eq(chatUserState.chatId, chatId), eq(chatUserState.agentId, outsider.humanAgentUuid)))
+      .limit(1);
+    expect(outsiderState?.engagementStatus ?? "active").toBe("active");
   });
 
   it("rejects chat creation with non-existent participant", async () => {

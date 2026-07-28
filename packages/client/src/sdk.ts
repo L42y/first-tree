@@ -5,6 +5,7 @@ import {
   type Agent,
   type AgentRuntimeConfig,
   type AgentVisibility,
+  type ArchiveChatResponse,
   ATTACHMENT_FILENAME_HEADER,
   ATTACHMENT_MIME_HEADER,
   type Chat,
@@ -502,6 +503,17 @@ export class FirstTreeHubSDK {
 
   async listActiveRuntimeChatIds(): Promise<ActiveRuntimeChatIdsResponse> {
     return this.requestJson<ActiveRuntimeChatIdsResponse>("/api/v1/agent/chats/active-runtime-ids");
+  }
+
+  /**
+   * Archive a chat from the signed-in user's private conversation view.
+   * Server authorization requires this SDK's selected agent to be a speaker in
+   * the chat, matching the scope returned by `listChats`.
+   */
+  async archiveChat(chatId: string): Promise<ArchiveChatResponse> {
+    return this.requestJson<ArchiveChatResponse>(`/api/v1/agent/chats/${encodeURIComponent(chatId)}/archive`, {
+      method: "POST",
+    });
   }
 
   /**

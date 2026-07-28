@@ -157,7 +157,7 @@ afterEach(() => {
 });
 
 describe("claude-code-tui suspend queued recovery", () => {
-  it("starts claude with per-session Current Chat Context via append-system-prompt-file", async () => {
+  it("starts claude with the runtime output contract and Current Chat Context", async () => {
     const handler = createClaudeCodeTuiHandler({ workspaceRoot: state.workspaceRoot, clientId: "client-test" });
     const ctx = makeContext();
     const first = makeMessage("m1", "active turn");
@@ -173,8 +173,13 @@ describe("claude-code-tui suspend queued recovery", () => {
     expect(promptPath).toBeTruthy();
     if (!promptPath) throw new Error("missing append-system-prompt-file path");
     const prompt = readFileSync(promptPath, "utf-8");
+    expect(prompt).toContain("<first-tree-runtime-contract>");
+    expect(prompt).toContain("never archive by default");
     expect(prompt).toContain('<first-tree-current-chat-context format="json">');
     expect(prompt).toContain('"chatId": "chat-tui-suspend-queued-recovery"');
+    expect(prompt.indexOf("<first-tree-runtime-contract>")).toBeLessThan(
+      prompt.indexOf('<first-tree-current-chat-context format="json">'),
+    );
 
     await handler.suspend();
     await start;

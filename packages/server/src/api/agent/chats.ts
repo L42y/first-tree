@@ -1,6 +1,8 @@
 import {
   activeRuntimeChatIdsResponseSchema,
   addParticipantSchema,
+  archiveChatResponseSchema,
+  CHAT_ENGAGEMENT_STATUSES,
   createTaskChatSchema,
   followChatGitlabEntityRequestSchema,
   followGithubEntityRequestSchema,
@@ -26,6 +28,7 @@ import {
   listCurrentChatGitlabEntities,
   removeCurrentGitlabEntityFollow,
 } from "../../services/gitlab-entity-follow.js";
+import { setChatEngagement } from "../../services/me-chat.js";
 import { WIRE_RECIPIENT_MODE } from "../../services/message-dispatcher.js";
 import { notifyRecipients } from "../../services/notifier.js";
 import { resolveAgentScmBindingPair } from "../../services/scm-attention-line.js";
@@ -39,6 +42,22 @@ function serializeChat(chat: { createdAt: Date; updatedAt: Date; [key: string]: 
     createdAt: chat.createdAt.toISOString(),
     updatedAt: chat.updatedAt.toISOString(),
   };
+}
+
+async function requireCallerHumanAgentId(
+  app: FastifyInstance,
+  userId: string,
+  organizationId: string,
+): Promise<string> {
+  const [member] = await app.db
+    .select({ humanAgentId: members.agentId })
+    .from(members)
+    .where(and(eq(members.userId, userId), eq(members.organizationId, organizationId), eq(members.status, "active")))
+    .limit(1);
+  if (!member) {
+    throw new ForbiddenError("Agent belongs to an organization the caller is not a member of");
+  }
+  return member.humanAgentId;
 }
 
 export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
@@ -110,26 +129,41 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
     const user = request.user;
     if (!user) throw new ForbiddenError("User authentication required");
 
-    const [member] = await app.db
-      .select({ humanAgentId: members.agentId })
-      .from(members)
-      .where(
-        and(
-          eq(members.userId, user.userId),
-          eq(members.organizationId, identity.organizationId),
-          eq(members.status, "active"),
-        ),
-      )
-      .limit(1);
-    if (!member) throw new ForbiddenError("Agent belongs to an organization the caller is not a member of");
+    const humanAgentId = await requireCallerHumanAgentId(app, user.userId, identity.organizationId);
 
     const chatIds = await chatService.listActiveRuntimeChatIds(
       app.db,
       identity.uuid,
-      member.humanAgentId,
+      humanAgentId,
       identity.organizationId,
     );
     return activeRuntimeChatIdsResponseSchema.parse({ chatIds });
+  });
+
+  /**
+   * Archive one chat from the signed-in user's private conversation view.
+   * The selected runtime agent must be a speaker in the chat, matching the
+   * structural scope exposed by `GET /agent/chats` (`first-tree chat list`).
+   * The write targets the caller's human-agent row, never another participant's
+   * state and never the runtime agent's own projection.
+   */
+  app.post<{ Params: { chatId: string } }>("/:chatId/archive", async (request, reply) => {
+    const identity = requireAgent(request);
+    await chatService.assertParticipant(app.db, request.params.chatId, identity.uuid);
+
+    const user = request.user;
+    if (!user) throw new ForbiddenError("User authentication required");
+    const humanAgentId = await requireCallerHumanAgentId(app, user.userId, identity.organizationId);
+
+    await setChatEngagement(app.db, request.params.chatId, humanAgentId, CHAT_ENGAGEMENT_STATUSES.ARCHIVED);
+    void app.notifier.notifyMeChatsChanged(humanAgentId, identity.organizationId);
+
+    return reply.status(200).send(
+      archiveChatResponseSchema.parse({
+        chatId: request.params.chatId,
+        engagementStatus: CHAT_ENGAGEMENT_STATUSES.ARCHIVED,
+      }),
+    );
   });
 
   app.get<{ Params: { chatId: string } }>("/:chatId", async (request) => {

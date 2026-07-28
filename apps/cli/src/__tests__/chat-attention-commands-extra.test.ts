@@ -110,6 +110,7 @@ beforeEach(() => {
       effectiveSenderId: "agent-self",
     })),
     sendMessage: vi.fn(async () => ({ id: "msg-1" })),
+    archiveChat: vi.fn(async (chatId: string) => ({ chatId, engagementStatus: "archived" })),
     updateChat: vi.fn(async (_chatId: string, patch: unknown) => {
       const patchObject = patch && typeof patch === "object" ? patch : {};
       return { id: "chat-1", ...patchObject };
@@ -814,6 +815,24 @@ describe("chat command behavior", () => {
 
     await expect(runChat(["history", "chat-1"])).rejects.toBe(error);
     expect(localAgentMocks.handleSdkError).toHaveBeenCalledWith(error);
+  });
+
+  it("archives an explicit or current chat and requires one of those targets", async () => {
+    const sdk = localAgentMocks.createSdk();
+
+    await runChat(["archive", "chat-1", "--agent", "nova"]);
+    expect(localAgentMocks.createSdk).toHaveBeenCalledWith("nova");
+    expect(sdk.archiveChat).toHaveBeenCalledWith("chat-1");
+    expect(outputMocks.success).toHaveBeenLastCalledWith({
+      chatId: "chat-1",
+      engagementStatus: "archived",
+    });
+
+    await runChat(["archive"]);
+    expect(sdk.archiveChat).toHaveBeenLastCalledWith("chat-env");
+
+    delete process.env.FIRST_TREE_CHAT_ID;
+    await expect(runChat(["archive"])).rejects.toMatchObject({ code: "NO_CHAT_CONTEXT", exitCode: 2 });
   });
 
   it("updates topic and description independently via `chat update`", async () => {
