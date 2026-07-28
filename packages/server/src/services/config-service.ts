@@ -126,8 +126,15 @@ export function createConfigService(opts: ConfigServiceOptions): ConfigService {
         code: "reasoning_effort_unsupported",
       });
     }
+    if (patch.serviceTier !== undefined && !("serviceTier" in current)) {
+      throw new BadRequestError("serviceTier is only supported by the Codex runtime provider", {
+        code: "service_tier_unsupported",
+      });
+    }
     const currentEffort = "reasoningEffort" in current ? current.reasoningEffort : undefined;
     const nextEffort = patch.reasoningEffort ?? currentEffort;
+    const currentServiceTier = "serviceTier" in current ? current.serviceTier : undefined;
+    const nextServiceTier = patch.serviceTier ?? currentServiceTier;
     const next = {
       // `kind` is pinned to `agents.runtime_provider` and never patchable
       // from the config side; preserve the current value here and let
@@ -139,6 +146,7 @@ export function createConfigService(opts: ConfigServiceOptions): ConfigService {
       env: patch.env ? mergeEnv(current.env, patch.env) : current.env,
       gitRepos: patch.gitRepos ?? current.gitRepos,
       ...(nextEffort !== undefined ? { reasoningEffort: nextEffort } : {}),
+      ...(nextServiceTier !== undefined ? { serviceTier: nextServiceTier } : {}),
     } as AgentRuntimeConfigPayload;
     return next;
   }
@@ -395,12 +403,30 @@ function computeDiff(
   b: AgentRuntimeConfigPayload,
 ): AgentRuntimeConfigDryRunResult["diff"] {
   const out: AgentRuntimeConfigDryRunResult["diff"] = [];
-  const fields = ["prompt", "model", "mcpServers", "env", "gitRepos", "reasoningEffort"] as const;
+  const fields = ["prompt", "model", "mcpServers", "env", "gitRepos", "reasoningEffort", "serviceTier"] as const;
   for (const f of fields) {
-    // `reasoningEffort` is absent on variants without an effort channel
-    // (cursor) — diff it as undefined rather than indexing the union.
-    const before = f === "reasoningEffort" ? ("reasoningEffort" in a ? a.reasoningEffort : undefined) : a[f];
-    const after = f === "reasoningEffort" ? ("reasoningEffort" in b ? b.reasoningEffort : undefined) : b[f];
+    // Provider-only fields are absent on other variants — diff them as
+    // undefined rather than indexing the tagged union.
+    const before =
+      f === "reasoningEffort"
+        ? "reasoningEffort" in a
+          ? a.reasoningEffort
+          : undefined
+        : f === "serviceTier"
+          ? "serviceTier" in a
+            ? a.serviceTier
+            : undefined
+          : a[f];
+    const after =
+      f === "reasoningEffort"
+        ? "reasoningEffort" in b
+          ? b.reasoningEffort
+          : undefined
+        : f === "serviceTier"
+          ? "serviceTier" in b
+            ? b.serviceTier
+            : undefined
+          : b[f];
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       out.push({ path: f, op: "replace", before, after });
     }

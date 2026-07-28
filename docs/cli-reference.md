@@ -267,8 +267,9 @@ first-tree agent reset <name>         # reset agent error state to idle
 
 ### agent config
 
-Mutate the agent's server-side runtime configuration (model, prompt,
-MCP servers, env, repos). Edits the `agent_configs.payload` JSONB row
+Mutate the agent's server-side runtime configuration (model, reasoning,
+Codex service tier, prompt, MCP servers, env, repos). Edits the
+`agent_configs.payload` JSONB row
 through the Admin API.
 
 ```
@@ -276,6 +277,7 @@ first-tree agent config
 ├── show <agent>
 ├── set-model <agent> <model>                       # alias: opus | sonnet | haiku, or full id (e.g. claude-opus-4-7)
 ├── set-reasoning-effort <agent> <level>
+├── set-service-tier <agent> <tier>                 # Codex: default (Standard), fast (Fast), or provider-advertised id
 ├── prompt show <agent> [--raw]                     # per-agent prompt fragment; --raw is verbatim (round-trippable)
 ├── prompt set <agent> [-f <file>] [--force]        # replace the fragment ONLY; reads stdin if no file.
 │                                                   #   Rejects copies of the assembled AGENTS.md (generated marker /
@@ -294,6 +296,10 @@ TUI accept `""` (inherit the operator's local setting), `low`, `medium`,
 `high`, or `max`. Codex accepts `low`, `medium`, `high`, `xhigh`, `max`, or
 `ultra`; availability of the higher levels is model-dependent and rejected
 combinations are reported by the provider.
+
+Codex service tiers are passed to the provider unchanged. `default` selects
+Standard mode and `fast` selects Fast mode; unsupported model/account
+combinations fail visibly without a silent fallback.
 
 ### agent bind
 

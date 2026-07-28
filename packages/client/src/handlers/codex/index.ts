@@ -6,6 +6,7 @@ import { createCodexSdkHandler } from "./sdk.js";
 export {
   appendGitStatusDeltaRefs,
   buildCodexAgentBriefing,
+  buildCodexConfig,
   buildCodexThreadOptions,
   collectCodexFileChangePaths,
   computePerTurnUsageDelta,

@@ -282,8 +282,8 @@ function makeHandler(fake: FakeAppServerClient, extraConfig: Record<string, unkn
  * payload whose prompt body the test can flip mid-session to simulate an admin
  * prompt change. Only the methods the handler actually calls are real.
  */
-function makeMutableConfigCache(initialAppend: string) {
-  const state = { append: initialAppend };
+function makeMutableConfigCache(initialAppend: string, serviceTier = "default") {
+  const state = { append: initialAppend, serviceTier };
   const config = () => ({
     agentId: AGENT_ID,
     version: 1,
@@ -296,6 +296,7 @@ function makeMutableConfigCache(initialAppend: string) {
       gitRepos: [],
       resourceSkills: [],
       reasoningEffort: "high" as const,
+      serviceTier: state.serviceTier,
     },
     updatedAt: "",
     updatedBy: "",
@@ -616,6 +617,28 @@ describe("codex app-server handler", () => {
     const threadStart = fake.requests.find((request) => request.method === "thread/start");
     expect(threadStart?.params).toMatchObject({ sandbox: "danger-full-access" });
     expect((threadStart?.params as Record<string, unknown> | undefined)?.permissions).toBeUndefined();
+
+    completeTurn(fake, "turn-1", "final answer");
+    await startPromise;
+    await handler.shutdown();
+  });
+
+  it("passes the configured Codex service tier through app-server thread startup", async () => {
+    const fake = new FakeAppServerClient();
+    const mutable = makeMutableConfigCache("", "fast");
+    const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    expect(threadStart?.params).toMatchObject({
+      config: {
+        features: { fast_mode: true },
+        service_tier: "fast",
+      },
+    });
 
     completeTurn(fake, "turn-1", "final answer");
     await startPromise;

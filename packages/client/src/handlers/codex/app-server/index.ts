@@ -10,11 +10,7 @@ import {
 import { ensureAgentBootstrap as ensureAgentBootstrapShared } from "../../../runtime/agent-bootstrap.js";
 import { buildAgentBriefing } from "../../../runtime/agent-briefing.js";
 import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
-import {
-  FIRST_TREE_WORKSPACE_MARKER,
-  type PredeclaredSourceRepo,
-  writeAgentBriefing,
-} from "../../../runtime/bootstrap.js";
+import { type PredeclaredSourceRepo, writeAgentBriefing } from "../../../runtime/bootstrap.js";
 import { type CodexBinaryResolution, resolveCodexRuntimeBinary } from "../../../runtime/capabilities/codex.js";
 import { type ChatContext, fetchChatContext } from "../../../runtime/chat-context.js";
 import { renderChatContextPrompt, renderRuntimeOutputContract } from "../../../runtime/chat-context-section.js";
@@ -51,7 +47,9 @@ import { chunkAssistantText } from "../../assistant-text.js";
 import { formatAuthHint, isCodexAuthError } from "../../auth-error-hint.js";
 import { consumedErrorOutcome, resolveTurnSettlement } from "../../turn-settlement.js";
 import {
+  buildCodexConfig,
   buildCodexThreadOptions,
+  type CodexConfigObject,
   collectCodexFileChangePaths,
   isCodexStreamDiagnosticMessage,
   isTransientCodexErrorMessage,
@@ -81,9 +79,6 @@ import {
   LANDING_CODEX_PERMISSIONS_PROFILE,
   prepareWorkspaceOnlyOutboxHome,
 } from "./workspace-sandbox.js";
-
-type CodexConfigValue = string | number | boolean | null | CodexConfigValue[] | CodexConfigObject;
-type CodexConfigObject = { [key: string]: CodexConfigValue };
 
 type JsonRecord = Record<string, unknown>;
 
@@ -358,26 +353,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     return out;
   }
 
-  function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
-    const cfg: CodexConfigObject = {
-      project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
-    };
-    if (payload.mcpServers.length === 0) return cfg;
-
-    const mcpServers: CodexConfigObject = {};
-    for (const m of payload.mcpServers) {
-      if (m.transport === "stdio") {
-        mcpServers[m.name] = { command: m.command, args: m.args ?? [] };
-      } else {
-        const entry: CodexConfigObject = { url: m.url };
-        if (m.headers) entry.headers = m.headers;
-        mcpServers[m.name] = entry;
-      }
-    }
-    cfg.mcp_servers = mcpServers;
-    return cfg;
-  }
-
   function buildLandingCodexConfig(payload: AgentRuntimeConfigPayload, workspacePath: string): CodexConfigObject {
     const codexHome = workspaceOnlyCodexHome;
     const hostHome = workspaceOnlyHostHome;
@@ -452,6 +427,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
         gitRepos: [],
         resourceSkills: [],
         reasoningEffort: "high",
+        serviceTier: "default",
       },
     };
   }

@@ -31,6 +31,10 @@ function effortOf(payload: AgentRuntimeConfigPayload): string | undefined {
   return "reasoningEffort" in payload ? payload.reasoningEffort : undefined;
 }
 
+function serviceTierOf(payload: AgentRuntimeConfigPayload): string | undefined {
+  return "serviceTier" in payload ? payload.serviceTier : undefined;
+}
+
 /**
  * Lock the server-side default model. This default backs two separate paths:
  *   - `server.services.agent.createAgent` seeds fresh rows from this constant.
@@ -71,6 +75,7 @@ describe("agent runtime config — codex defaults", () => {
   it("DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD.model is empty (defer to CLI auth-mode default)", () => {
     expect(DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD.model).toBe("");
     expect(DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD.kind).toBe("codex");
+    expect(serviceTierOf(DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD)).toBe("default");
   });
 
   it("defaultRuntimeConfigPayload(provider) selects the matching variant", () => {
@@ -85,6 +90,7 @@ describe("agent runtime config — codex defaults", () => {
     expect(defaultRuntimeConfigPayload("codex")).toMatchObject({
       kind: "codex",
       model: "",
+      serviceTier: "default",
     });
   });
 
@@ -135,6 +141,20 @@ describe("agent runtime config — codex defaults", () => {
     });
     expect(parsed.kind).toBe("codex");
     expect(parsed.model).toBe("gpt-5.5");
+    expect(serviceTierOf(parsed)).toBe("default");
+  });
+
+  it("preserves provider-advertised Codex service tiers without a local compatibility matrix", () => {
+    expect(serviceTierOf(agentRuntimeConfigPayloadSchema.parse({ kind: "codex", serviceTier: "fast" }))).toBe("fast");
+    expect(
+      serviceTierOf(agentRuntimeConfigPayloadSchema.parse({ kind: "codex", serviceTier: "priority-preview" })),
+    ).toBe("priority-preview");
+    expect(agentRuntimeConfigPayloadSchema.safeParse({ kind: "codex", serviceTier: "" }).success).toBe(false);
+  });
+
+  it("strips a stray service tier from non-Codex payloads", () => {
+    const parsed = agentRuntimeConfigPayloadSchema.parse({ kind: "claude-code", serviceTier: "fast" });
+    expect("serviceTier" in parsed).toBe(false);
   });
 });
 
@@ -248,6 +268,25 @@ describe("agent runtime config — reasoning effort", () => {
     expect(
       updateAgentRuntimeConfigSchema.parse({ expectedVersion: 1, payload: { model: "sonnet" } }).payload,
     ).not.toHaveProperty("reasoningEffort");
+  });
+});
+
+describe("agent runtime config — Codex service tier", () => {
+  it("backfills Standard mode for legacy Codex rows", () => {
+    expect(serviceTierOf(agentRuntimeConfigPayloadSchema.parse({ kind: "codex" }))).toBe("default");
+  });
+
+  it("accepts a non-empty serviceTier patch and leaves it absent when omitted", () => {
+    expect(updateAgentRuntimeConfigSchema.parse({ expectedVersion: 1, payload: { serviceTier: "fast" } })).toEqual({
+      expectedVersion: 1,
+      payload: { serviceTier: "fast" },
+    });
+    expect(
+      updateAgentRuntimeConfigSchema.parse({ expectedVersion: 1, payload: { model: "gpt-5.6" } }).payload,
+    ).not.toHaveProperty("serviceTier");
+    expect(updateAgentRuntimeConfigSchema.safeParse({ expectedVersion: 1, payload: { serviceTier: "" } }).success).toBe(
+      false,
+    );
   });
 });
 

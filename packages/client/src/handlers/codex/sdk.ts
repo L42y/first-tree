@@ -84,10 +84,47 @@ import {
  * minimal shape we need (`mcp_servers.<name>.{...}`, `project_root_markers`).
  * Mirrors the recursive structure from the SDK's `dist/index.d.ts`.
  */
-type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
-type CodexConfigObject = { [key: string]: CodexConfigValue };
+export type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
+export type CodexConfigObject = { [key: string]: CodexConfigValue };
 
 const RESULT_PREVIEW_LIMIT = 400;
+
+/**
+ * Build the provider-native Codex config shared by both handler engines.
+ *
+ * `features.fast_mode` exposes the stable Fast-mode capability, while
+ * `service_tier` selects Standard (`default`), Fast (`fast`), or another
+ * provider-advertised tier. First Tree forwards the configured tier unchanged
+ * and lets Codex report model/account incompatibility without a silent
+ * fallback.
+ */
+export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
+  const cfg: CodexConfigObject = {
+    // Gap-2: anchor codex's project-root walk-up at the workspace marker
+    // we wrote in bootstrap, so `AGENTS.md` is read from this workspace
+    // instead of leaking up to the operator's repo or HOME.
+    project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
+  };
+  if (payload.kind === "codex") {
+    cfg.features = { fast_mode: true };
+    cfg.service_tier = payload.serviceTier;
+  }
+  if (payload.mcpServers.length === 0) return cfg;
+
+  const mcpServers: CodexConfigObject = {};
+  for (const m of payload.mcpServers) {
+    if (m.transport === "stdio") {
+      mcpServers[m.name] = { command: m.command, args: m.args ?? [] };
+    } else {
+      // http / sse — codex's TOML schema accepts url + optional headers.
+      const entry: CodexConfigObject = { url: m.url };
+      if (m.headers) entry.headers = m.headers;
+      mcpServers[m.name] = entry;
+    }
+  }
+  cfg.mcp_servers = mcpServers;
+  return cfg;
+}
 
 async function emitTurnEnd(
   sessionCtx: SessionContext,
@@ -508,30 +545,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       if (typeof v === "string") out[k] = v;
     }
     return out;
-  }
-
-  function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
-    const cfg: CodexConfigObject = {
-      // Gap-2: anchor codex's project-root walk-up at the workspace marker
-      // we wrote in bootstrap, so `AGENTS.md` is read from this workspace
-      // instead of leaking up to the operator's repo or HOME.
-      project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
-    };
-    if (payload.mcpServers.length === 0) return cfg;
-
-    const mcpServers: CodexConfigObject = {};
-    for (const m of payload.mcpServers) {
-      if (m.transport === "stdio") {
-        mcpServers[m.name] = { command: m.command, args: m.args ?? [] };
-      } else {
-        // http / sse — codex's TOML schema accepts url + optional headers.
-        const entry: CodexConfigObject = { url: m.url };
-        if (m.headers) entry.headers = m.headers;
-        mcpServers[m.name] = entry;
-      }
-    }
-    cfg.mcp_servers = mcpServers;
-    return cfg;
   }
 
   function createCodexClient(options: CodexOptions, sessionCtx: SessionContext): Codex {
@@ -1496,6 +1509,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           gitRepos: [],
           resourceSkills: [],
           reasoningEffort: "high",
+          serviceTier: "default",
         };
       }
 
@@ -1573,6 +1587,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           gitRepos: [],
           resourceSkills: [],
           reasoningEffort: "high",
+          serviceTier: "default",
         };
       }
 

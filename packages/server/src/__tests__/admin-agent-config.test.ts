@@ -249,6 +249,53 @@ describe("Admin agent-config API (Step 2)", () => {
     }
   });
 
+  it("persists provider-native service tiers for Codex and rejects them for other runtimes", async () => {
+    const app = getApp();
+    const req = await authedRequest(app);
+    const seedAgent = await seedAgentFactory(app);
+    const codexAgent = await seedAgent({
+      name: `cfg-codex-tier-${crypto.randomUUID().slice(0, 8)}`,
+      type: "agent",
+      runtimeProvider: "codex",
+    });
+
+    const before = await req("GET", `/api/v1/agents/${codexAgent.uuid}/config`);
+    expect(before.statusCode).toBe(200);
+    expect(before.json().payload).toMatchObject({ kind: "codex", serviceTier: "default" });
+
+    const enabled = await req("PATCH", `/api/v1/agents/${codexAgent.uuid}/config`, {
+      expectedVersion: 1,
+      payload: { serviceTier: "fast" },
+    });
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json().payload.serviceTier).toBe("fast");
+    await app.configService.flush(codexAgent.uuid);
+
+    const dryRun = await req("POST", `/api/v1/agents/${codexAgent.uuid}/config/dry-run`, {
+      payload: { serviceTier: "priority-preview" },
+    });
+    expect(dryRun.statusCode).toBe(200);
+    expect(dryRun.json().next.serviceTier).toBe("priority-preview");
+    expect(dryRun.json().diff).toContainEqual({
+      path: "serviceTier",
+      op: "replace",
+      before: "fast",
+      after: "priority-preview",
+    });
+
+    const claudeAgent = await seedAgent({
+      name: `cfg-claude-tier-${crypto.randomUUID().slice(0, 8)}`,
+      type: "agent",
+      runtimeProvider: "claude-code",
+    });
+    const rejected = await req("PATCH", `/api/v1/agents/${claudeAgent.uuid}/config`, {
+      expectedVersion: 1,
+      payload: { serviceTier: "fast" },
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json<{ error: string }>().error).toContain("only supported by the Codex");
+  });
+
   it("PATCH with stale expectedVersion returns 409", async () => {
     const app = getApp();
     const req = await authedRequest(app);
