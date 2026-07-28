@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { stripShellCommandDisplayWrapper } from "@first-tree/shared";
+
 import { runCommand } from "../../core/commands.js";
 import { findStringValue, isRecord } from "../../core/events.js";
 import { evidence, riskFlag } from "../../core/grading.js";
@@ -40,6 +42,158 @@ function successfulCommand(event: unknown): string | null {
   return item.command;
 }
 
+function commandBasename(value: string): string {
+  const normalized = value.replace(/\\/g, "/");
+  return normalized.split("/").filter(Boolean).at(-1)?.toLowerCase() ?? normalized.toLowerCase();
+}
+
+function tokenizeStaticCommand(command: string): string[] | null {
+  const unwrapped = stripShellCommandDisplayWrapper(command);
+  if (unwrapped.trim().length === 0) return null;
+
+  const tokens: string[] = [];
+  let value = "";
+  let quote: "'" | '"' | null = null;
+
+  const flush = (): void => {
+    if (value.length === 0) return;
+    tokens.push(value);
+    value = "";
+  };
+
+  for (let index = 0; index < unwrapped.length; index++) {
+    const character = unwrapped[index];
+    if (character === undefined) break;
+
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      else value += character;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null;
+        continue;
+      }
+      if (character === "\\") {
+        const next = unwrapped[index + 1];
+        if (next === undefined) return null;
+        value += next;
+        index++;
+        continue;
+      }
+      if (character === "$" || character === "`") return null;
+      value += character;
+      continue;
+    }
+
+    if (/\s/u.test(character)) {
+      flush();
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "\\") {
+      const next = unwrapped[index + 1];
+      if (next === undefined) return null;
+      value += next;
+      index++;
+      continue;
+    }
+    if (
+      character === "|" ||
+      character === ";" ||
+      character === "&" ||
+      character === ">" ||
+      character === "<" ||
+      character === "\n" ||
+      character === "\r" ||
+      character === "$" ||
+      character === "`"
+    ) {
+      return null;
+    }
+    value += character;
+  }
+
+  if (quote !== null) return null;
+  flush();
+  return tokens.length > 0 ? tokens : null;
+}
+
+function isStaticEnvironmentAssignment(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=[^$`]*$/u.test(value);
+}
+
+function isValidatorScriptPath(value: string): boolean {
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\//u, "");
+  const suffix = "skills/return-meeting-context/scripts/validate-output.mjs";
+  return normalized === suffix || normalized.endsWith(`/${suffix}`);
+}
+
+const SAFE_NODE_BOOLEAN_OPTIONS = new Set([
+  "--enable-source-maps",
+  "--experimental-strip-types",
+  "--inspect",
+  "--inspect-brk",
+  "--no-deprecation",
+  "--no-warnings",
+  "--pending-deprecation",
+  "--preserve-symlinks",
+  "--preserve-symlinks-main",
+  "--throw-deprecation",
+  "--trace-deprecation",
+  "--trace-warnings",
+]);
+
+function executesMeetingContextValidator(command: string): boolean {
+  const tokens = tokenizeStaticCommand(command);
+  if (tokens === null) return false;
+
+  let index = 0;
+  if (commandBasename(tokens[index] ?? "") === "exec") index++;
+
+  if (commandBasename(tokens[index] ?? "") === "env") {
+    index++;
+    if (tokens[index] === "--") index++;
+    while (isStaticEnvironmentAssignment(tokens[index] ?? "")) index++;
+  }
+
+  if (commandBasename(tokens[index] ?? "") !== "node") return false;
+  index++;
+
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === undefined) return false;
+    if (token === "--") {
+      index++;
+      break;
+    }
+    if (!token.startsWith("-")) break;
+    const option = token.split("=", 1)[0];
+    if (
+      option === "-c" ||
+      option === "--check" ||
+      option === "-e" ||
+      option === "--eval" ||
+      option === "-p" ||
+      option === "--print" ||
+      option === "--run" ||
+      option === "--test"
+    ) {
+      return false;
+    }
+    if (!token.includes("=") && !SAFE_NODE_BOOLEAN_OPTIONS.has(token)) return false;
+    index++;
+  }
+
+  const script = tokens[index];
+  return script !== undefined && isValidatorScriptPath(script);
+}
+
 export function deriveRoutingObservation(
   events: readonly unknown[],
   evalCase: ReturnMeetingContextEvalCase,
@@ -55,7 +209,7 @@ export function deriveRoutingObservation(
       writerSkillReadOrder = order;
     }
     const command = successfulCommand(event);
-    if (validatorInvocationOrder === null && command?.includes("validate-output.mjs")) {
+    if (validatorInvocationOrder === null && command !== null && executesMeetingContextValidator(command)) {
       validatorInvocationOrder = order;
     }
   }

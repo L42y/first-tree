@@ -125,12 +125,68 @@ describe("return-meeting-context grader", () => {
     expect(casePassed(fixtureValidation, { ...passingMetrics(), ...routing })).toBe(false);
   });
 
+  it.each([
+    "cat .agents/skills/return-meeting-context/scripts/validate-output.mjs",
+    "sed -n '1,80p' .agents/skills/return-meeting-context/scripts/validate-output.mjs",
+    "rg validate-output.mjs .agents/skills/return-meeting-context/scripts/validate-output.mjs",
+    "node --check .agents/skills/return-meeting-context/scripts/validate-output.mjs",
+    "node --require .agents/skills/return-meeting-context/scripts/validate-output.mjs other-script.mjs",
+    "echo node .agents/skills/return-meeting-context/scripts/validate-output.mjs",
+    "node .agents/skills/return-meeting-context/scripts/validate-output.mjs | tee output.json",
+    "node .agents/skills/return-meeting-context/scripts/validate-output.mjs && echo done",
+  ])("does not count a validator mention as execution: %s", (mentionCommand) => {
+    const evalCase = composedRoutingCase();
+    const routing = deriveRoutingObservation(
+      [
+        command("cat .agents/skills/return-meeting-context/SKILL.md"),
+        command(mentionCommand),
+        command("cat .agents/skills/first-tree-write/SKILL.md"),
+        command(
+          "node /tmp/eval/.agents/skills/return-meeting-context/scripts/validate-output.mjs --bundle bundle.json --output packet.json",
+        ),
+      ],
+      evalCase,
+    );
+
+    expect(routing).toEqual({
+      interpreterSkillReadOrder: 0,
+      routingOrderObserved: false,
+      validatorInvocationOrder: 3,
+      writerSkillReadOrder: 2,
+    });
+    expect(casePassed(fixtureValidation, { ...passingMetrics(), ...routing })).toBe(false);
+  });
+
   it("passes the composed route when interpreter and validation precede first-tree-write", () => {
     const evalCase = composedRoutingCase();
     const routing = deriveRoutingObservation(
       [
         command("cat .agents/skills/return-meeting-context/SKILL.md"),
         command("node .agents/skills/return-meeting-context/scripts/validate-output.mjs"),
+        command("cat .agents/skills/first-tree-write/SKILL.md"),
+      ],
+      evalCase,
+    );
+
+    expect(routing).toEqual({
+      interpreterSkillReadOrder: 0,
+      routingOrderObserved: true,
+      validatorInvocationOrder: 1,
+      writerSkillReadOrder: 2,
+    });
+    expect(casePassed(fixtureValidation, { ...passingMetrics(), ...routing })).toBe(true);
+  });
+
+  it.each([
+    "node .agents/skills/return-meeting-context/scripts/validate-output.mjs --bundle bundle.json --output packet.json",
+    "/usr/bin/env NODE_NO_WARNINGS=1 /opt/homebrew/bin/node --no-warnings /tmp/eval/.agents/skills/return-meeting-context/scripts/validate-output.mjs --bundle bundle.json --output packet.json",
+    "/bin/zsh -lc 'node .agents/skills/return-meeting-context/scripts/validate-output.mjs --bundle bundle.json --output packet.json'",
+  ])("recognizes a successful validator execution: %s", (validatorCommand) => {
+    const evalCase = composedRoutingCase();
+    const routing = deriveRoutingObservation(
+      [
+        command("cat .agents/skills/return-meeting-context/SKILL.md"),
+        command(validatorCommand),
         command("cat .agents/skills/first-tree-write/SKILL.md"),
       ],
       evalCase,
