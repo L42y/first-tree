@@ -16,13 +16,15 @@ permissions: {}
 jobs:
   cla:
     name: CLA
+    # GitHub expressions do not provide trim; the classifier below rejects
+    # every prefix match except an exact command plus trailing whitespace.
     if: >-
       github.event_name == 'pull_request_target' &&
       (github.event.action != 'closed' || github.event.pull_request.merged == true) ||
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
-      (github.event.comment.body == 'recheck' ||
-       github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA')
+      (startsWith(github.event.comment.body, 'recheck') ||
+       startsWith(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -30,6 +32,30 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      - name: Classify issue comment
+        id: comment
+        if: github.event_name == 'issue_comment'
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+
+          normalized_body="$(jq -nr \
+            --arg body "${COMMENT_BODY}" \
+            '$body | sub("\\s+$"; "")')"
+
+          case "${normalized_body}" in
+            recheck)
+              echo "command=recheck" >>"${GITHUB_OUTPUT}"
+              ;;
+            'I have read the CLA Document and I hereby sign the CLA')
+              echo "command=sign" >>"${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "command=ignore" >>"${GITHUB_OUTPUT}"
+              ;;
+          esac
+
       - name: Enforce verified commit range
         id: commit-range
         if: >-
@@ -57,6 +83,9 @@ jobs:
           fi
 
       - name: Verify contributor signatures
+        if: >-
+          github.event_name != 'issue_comment' ||
+          steps.comment.outputs.command != 'ignore'
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -78,88 +107,12 @@ jobs:
           lock-pullrequest-aftermerge: true
           suggest-recheck: true
 
-      - name: Capture public profile fields in the signature record
+      - name: Complete and validate signature records
         if: >-
           always() &&
           steps.commit-range.outcome == 'success' &&
-          github.event_name == 'issue_comment' &&
-          github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
-          SIGNATURE_BRANCH: cla-signatures
-          SIGNATURE_PATH: signatures/version1/cla.json
-          SIGNATURE_COMMENT_ID: ${{ github.event.comment.id }}
-          SIGNER_ID: ${{ github.event.comment.user.id }}
-          SIGNER_LOGIN: ${{ github.event.comment.user.login }}
-        run: |
-          set -euo pipefail
-
-          if [[ ! "${SIGNATURE_COMMENT_ID}" =~ ^[0-9]+$ ]] ||
-             [[ ! "${SIGNER_ID}" =~ ^[0-9]+$ ]]; then
-            echo "::error title=Unable to enrich CLA signature::GitHub returned an invalid signer or comment ID."
-            exit 1
-          fi
-
-          profile="$(gh api "users/${SIGNER_LOGIN}")"
-          profile_name="$(jq -c '.name' <<<"${profile}")"
-          profile_email="$(jq -c '.email' <<<"${profile}")"
-          ledger_response="$(gh api \
-            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}?ref=${SIGNATURE_BRANCH}")"
-          ledger_sha="$(jq -r '.sha' <<<"${ledger_response}")"
-          ledger="$(jq -r '.content' <<<"${ledger_response}" | base64 --decode)"
-
-          signature_count="$(jq \
-            --argjson signer_id "${SIGNER_ID}" \
-            '[.signedContributors[] | select(.id == $signer_id)] | length' \
-            <<<"${ledger}")"
-
-          if (( signature_count == 0 )); then
-            echo "::error title=Unable to enrich CLA signature::The signer was not found in the signature ledger."
-            exit 1
-          fi
-
-          updated_ledger="$(jq \
-            --argjson comment_id "${SIGNATURE_COMMENT_ID}" \
-            --argjson signer_id "${SIGNER_ID}" \
-            --argjson full_name "${profile_name}" \
-            --argjson public_email "${profile_email}" \
-            '.signedContributors |= map(
-              if .comment_id == $comment_id or
-                 (.id == $signer_id and
-                  ((has("full_name") and has("public_email")) | not))
-              then . + {
-                full_name: $full_name,
-                public_email: $public_email
-              }
-              else .
-              end
-            )' \
-            <<<"${ledger}")"
-
-          if [[ "${updated_ledger}" == "${ledger}" ]]; then
-            exit 0
-          fi
-
-          encoded_ledger="$(printf '%s\n' "${updated_ledger}" | base64 | tr -d '\n')"
-          payload="$(jq -n \
-            --arg message "Record public profile fields for @${SIGNER_LOGIN}" \
-            --arg content "${encoded_ledger}" \
-            --arg sha "${ledger_sha}" \
-            --arg branch "${SIGNATURE_BRANCH}" \
-            '{message: $message, content: $content, sha: $sha, branch: $branch}')"
-
-          gh api \
-            --method PUT \
-            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}" \
-            --input - \
-            <<<"${payload}" \
-            >/dev/null
-
-      - name: Validate signature record completeness
-        if: >-
-          always() &&
-          steps.commit-range.outcome == 'success' &&
+          (github.event_name != 'issue_comment' ||
+           steps.comment.outputs.command != 'ignore') &&
           (github.event_name != 'pull_request_target' ||
            github.event.action != 'closed')
         env:
@@ -170,14 +123,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          ledger_response="$(gh api \
-            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}?ref=${SIGNATURE_BRANCH}")"
-          ledger="$(jq -r '.content' <<<"${ledger_response}" | base64 --decode)"
+          validate_base_ledger() {
+            jq -e '
+              (.signedContributors | type) == "array" and
+              all(.signedContributors[];
+                ((.name | type) == "string") and
+                ((.name | length) > 0) and
+                ((.id | type) == "number") and
+                ((.comment_id | type) == "number") and
+                ((.created_at | type) == "string") and
+                ((.created_at | length) > 0) and
+                ((.repoId | type) == "number") and
+                ((.pullRequestNo | type) == "number")
+              )
+            ' <<<"$1" >/dev/null
+          }
 
-          if ! jq -e '
-            if (.signedContributors | type) != "array" then
-              false
-            else
+          validate_complete_ledger() {
+            jq -e '
+              (.signedContributors | type) == "array" and
               all(.signedContributors[];
                 ((.name | type) == "string") and
                 ((.name | length) > 0) and
@@ -192,8 +156,94 @@ jobs:
                 has("public_email") and
                 (.public_email == null or (.public_email | type) == "string")
               )
-            end
-          ' <<<"${ledger}" >/dev/null; then
+            ' <<<"$1" >/dev/null
+          }
+
+          ledger_commit="$(gh api \
+            "repos/${REPOSITORY}/git/ref/heads/${SIGNATURE_BRANCH}" \
+            --jq '.object.sha')"
+          ledger_response="$(gh api \
+            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}?ref=${ledger_commit}")"
+          ledger_sha="$(jq -r '.sha' <<<"${ledger_response}")"
+          ledger="$(jq -r '.content' <<<"${ledger_response}" | base64 --decode)"
+          original_ledger="${ledger}"
+
+          if ! validate_base_ledger "${ledger}"; then
+            echo "::error title=Invalid CLA signature ledger::Every ICLA record must contain valid base signature evidence."
+            exit 1
+          fi
+
+          mapfile -t incomplete_signer_ids < <(jq -r '
+            [.signedContributors[] |
+             select((has("full_name") and has("public_email")) | not) |
+             .id] |
+            unique[]
+          ' <<<"${ledger}")
+
+          for signer_id in "${incomplete_signer_ids[@]}"; do
+            if [[ ! "${signer_id}" =~ ^[0-9]+$ ]]; then
+              echo "::error title=Unable to enrich CLA signature::The ledger contains an invalid signer ID."
+              exit 1
+            fi
+
+            profile="$(gh api "user/${signer_id}")"
+            profile_id="$(jq -r '.id' <<<"${profile}")"
+            profile_name="$(jq -c '.name' <<<"${profile}")"
+            profile_email="$(jq -c '.email' <<<"${profile}")"
+
+            if [[ "${profile_id}" != "${signer_id}" ]]; then
+              echo "::error title=Unable to enrich CLA signature::GitHub returned a profile for the wrong signer ID."
+              exit 1
+            fi
+
+            ledger="$(jq \
+              --argjson signer_id "${signer_id}" \
+              --argjson full_name "${profile_name}" \
+              --argjson public_email "${profile_email}" \
+              '.signedContributors |= map(
+                if .id == $signer_id and
+                   ((has("full_name") and has("public_email")) | not)
+                then . + {
+                  full_name: $full_name,
+                  public_email: $public_email
+                }
+                else .
+                end
+              )' \
+              <<<"${ledger}")"
+          done
+
+          if ! validate_complete_ledger "${ledger}"; then
             echo "::error title=Incomplete CLA signature ledger::Every ICLA record must contain the base signature evidence plus the public profile fields promised by the agreement."
+            exit 1
+          fi
+
+          if [[ "${ledger}" == "${original_ledger}" ]]; then
+            exit 0
+          fi
+
+          encoded_ledger="$(printf '%s\n' "${ledger}" | base64 | tr -d '\n')"
+          payload="$(jq -n \
+            --arg message "Complete CLA signature profile fields" \
+            --arg content "${encoded_ledger}" \
+            --arg sha "${ledger_sha}" \
+            --arg branch "${SIGNATURE_BRANCH}" \
+            '{message: $message, content: $content, sha: $sha, branch: $branch}')"
+
+          write_response="$(gh api \
+            --method PUT \
+            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}" \
+            --input - \
+            <<<"${payload}")"
+
+          persisted_commit="$(jq -r '.commit.sha' <<<"${write_response}")"
+          persisted_response="$(gh api \
+            "repos/${REPOSITORY}/contents/${SIGNATURE_PATH}?ref=${persisted_commit}")"
+          persisted_ledger="$(jq -r '.content' <<<"${persisted_response}" | base64 --decode)"
+
+          if [[ "$(jq -S -c . <<<"${persisted_ledger}")" != \
+                "$(jq -S -c . <<<"${ledger}")" ]] ||
+             ! validate_complete_ledger "${persisted_ledger}"; then
+            echo "::error title=Unable to verify CLA signature ledger::GitHub did not persist the complete signature evidence."
             exit 1
           fi
