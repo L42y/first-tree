@@ -388,19 +388,14 @@ const pairKey = (chatId: string, agentId: string) => `${chatId}${ROW_SEP}${agent
 export async function resolveAgentChatStatuses(
   db: Database,
   chatIds: string[],
-  opts?: { withTurnText?: boolean },
+  opts?: {
+    withTurnText?: boolean;
+    includeStatusReason?: boolean;
+    nonHumanSpeakersByChat?: ReadonlyMap<string, ReadonlySet<string>>;
+  },
 ): Promise<Map<string, AgentChatStatus[]>> {
   const out = new Map<string, AgentChatStatus[]>();
   if (chatIds.length === 0) return out;
-
-  // -- Non-human speakers per chat.
-  const speakerRows = await db
-    .select({ chatId: chatMembership.chatId, agentId: chatMembership.agentId })
-    .from(chatMembership)
-    .innerJoin(agents, eq(chatMembership.agentId, agents.uuid))
-    .where(
-      and(inArray(chatMembership.chatId, chatIds), eq(chatMembership.accessMode, "speaker"), ne(agents.type, "human")),
-    );
 
   const unionByChat = new Map<string, Set<string>>();
   const addUnion = (chatId: string, agentId: string) => {
@@ -411,7 +406,32 @@ export async function resolveAgentChatStatuses(
     }
     s.add(agentId);
   };
-  for (const r of speakerRows) addUnion(r.chatId, r.agentId);
+
+  // -- Non-human speakers per chat.
+  // The conversation-list hydration has already loaded speaker membership for
+  // its participant chips. Let that caller provide the same canonical set so a
+  // list request does not immediately repeat the membership query. Detail
+  // surfaces omit the map and retain the self-contained resolver path.
+  if (opts?.nonHumanSpeakersByChat) {
+    for (const chatId of chatIds) {
+      for (const agentId of opts.nonHumanSpeakersByChat.get(chatId) ?? []) {
+        addUnion(chatId, agentId);
+      }
+    }
+  } else {
+    const speakerRows = await db
+      .select({ chatId: chatMembership.chatId, agentId: chatMembership.agentId })
+      .from(chatMembership)
+      .innerJoin(agents, eq(chatMembership.agentId, agents.uuid))
+      .where(
+        and(
+          inArray(chatMembership.chatId, chatIds),
+          eq(chatMembership.accessMode, "speaker"),
+          ne(agents.type, "human"),
+        ),
+      );
+    for (const r of speakerRows) addUnion(r.chatId, r.agentId);
+  }
   if (unionByChat.size === 0) return out;
 
   const allAgentIds = [...new Set([...unionByChat.values()].flatMap((s) => [...s]))];
@@ -458,8 +478,15 @@ export async function resolveAgentChatStatuses(
   //    Pure description: 60s drop here means "5-min-old tool_call is not the
   //    current activity description", not "agent is not working" (which is
   //    decided by `computeWorking` above).
-  const activityByChat = await deriveActivities(db, chatIds, opts);
-  const statusReasonByChat = await deriveStatusReasons(db, chatIds);
+  const activityByChat = await deriveActivities(db, chatIds, { withTurnText: opts?.withTurnText });
+  // The list DTO consumes working / errored / activity only. Provider retry
+  // reasons belong to the chat-detail agent-status surface, so list hydration
+  // explicitly skips this LATERAL session-event seek while the default detail
+  // path remains unchanged.
+  const statusReasonByChat =
+    opts?.includeStatusReason === false
+      ? new Map<string, Map<string, AgentStatusReason>>()
+      : await deriveStatusReasons(db, chatIds);
 
   const now = Date.now();
   for (const [chatId, agentSet] of unionByChat) {

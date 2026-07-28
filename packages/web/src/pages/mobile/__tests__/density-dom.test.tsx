@@ -4,7 +4,7 @@ import type { MeChatRow, MeMembership } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../../../components/ui/toast.js";
 import { createDomHarness, type DomHarness } from "../../../test-utils/dom-harness.js";
 import { MobileWorkPage } from "../work.js";
@@ -170,6 +170,11 @@ describe("mobile density tiers", () => {
     meChatMocks.listMeChatSourceCounts.mockResolvedValue({ counts: {} });
   });
 
+  afterEach(() => {
+    harness.cleanup();
+    vi.unstubAllGlobals();
+  });
+
   it("renders one continuous Work feed in Attention then Pinned then Recency order", async () => {
     renderWithClient(harness, <MobileWorkPage />, "/m/work");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Release readiness"));
@@ -265,5 +270,134 @@ describe("mobile density tiers", () => {
     expect(preview?.textContent).toBe("Task: run the seed (first-tree-seed)");
     expect(preview?.textContent).not.toContain("**");
     expect(preview?.textContent).not.toContain("`");
+  });
+
+  it("mounts the initial row budget, appends the next batch near the sentinel, and lazy-loads avatars", async () => {
+    let activeObserver: TestIntersectionObserver | null = null;
+    class TestIntersectionObserver implements IntersectionObserver {
+      readonly root = null;
+      readonly rootMargin = "50% 0%";
+      readonly thresholds = [0];
+
+      constructor(private readonly callback: IntersectionObserverCallback) {
+        activeObserver = this;
+      }
+
+      disconnect(): void {}
+      observe(): void {}
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+      unobserve(): void {}
+
+      trigger(): void {
+        this.callback([{ isIntersecting: true } as IntersectionObserverEntry], this);
+      }
+    }
+    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
+
+    const rows = Array.from({ length: 50 }, (_, index) =>
+      chatRow({
+        chatId: `progressive-${index}`,
+        title: `Progressive ${index}`,
+        participants: [
+          {
+            agentId: "human-agent-self",
+            displayName: "Gandy",
+            type: "human",
+            avatarColorToken: null,
+            avatarImageUrl: null,
+          },
+          {
+            agentId: `agent-${index}`,
+            displayName: `Agent ${index}`,
+            type: "agent",
+            avatarColorToken: null,
+            avatarImageUrl: `https://example.com/${index}.png`,
+          },
+        ],
+      }),
+    );
+    meChatMocks.listMeChats.mockResolvedValue({
+      rows,
+      priorityRows: { attention: [], pinned: [] },
+      nextCursor: null,
+    });
+
+    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Progressive 0"));
+
+    const list = harness.container.querySelector("[data-mobile-work-list]");
+    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("16");
+    expect(list?.getAttribute("data-mobile-work-total")).toBe("50");
+    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(16);
+    expect(harness.container.querySelector("img")?.getAttribute("loading")).toBe("lazy");
+    expect(activeObserver).not.toBeNull();
+
+    const initialObserver = activeObserver;
+    await act(async () => {
+      activeObserver?.trigger();
+    });
+    await harness.flush();
+
+    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(32);
+    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("32");
+    expect(activeObserver).not.toBe(initialObserver);
+
+    const secondObserver = activeObserver;
+    await act(async () => {
+      activeObserver?.trigger();
+    });
+    await harness.flush();
+
+    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(48);
+    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("48");
+    expect(activeObserver).not.toBe(secondObserver);
+
+    await act(async () => {
+      activeObserver?.trigger();
+    });
+    await harness.flush();
+
+    expect(harness.container.querySelectorAll("[data-mobile-card]")).toHaveLength(50);
+    expect(list?.getAttribute("data-mobile-work-rendered")).toBe("50");
+    expect(harness.container.querySelector("[data-mobile-work-render-sentinel]")).toBeNull();
+  });
+
+  it("keeps explicit network paging available when a local search has no first-page match", async () => {
+    meChatMocks.listMeChats
+      .mockResolvedValueOnce({
+        rows: [chatRow({ chatId: "page-1", title: "First page only" })],
+        priorityRows: { attention: [], pinned: [] },
+        nextCursor: "next-page",
+      })
+      .mockResolvedValueOnce({
+        rows: [chatRow({ chatId: "page-2", title: "Needle on later page" })],
+        priorityRows: { attention: [], pinned: [] },
+        nextCursor: null,
+      });
+
+    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    await waitForSettled(harness, () => expect(harness.container.textContent).toContain("First page only"));
+
+    const searchToggle = harness.container.querySelector<HTMLButtonElement>('button[aria-label="Search Work"]');
+    await act(async () => searchToggle?.click());
+    const searchInput = harness.container.querySelector<HTMLInputElement>('input[aria-label="Search work"]');
+    if (!searchInput) throw new Error("Missing search input");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(searchInput, "Needle");
+      searchInput.dispatchEvent(new InputEvent("input", { bubbles: true, data: "Needle", inputType: "insertText" }));
+    });
+
+    await waitForSettled(harness, () => expect(harness.container.textContent).toContain("No matching work"));
+    expect(harness.container.querySelector("[data-mobile-work-render-sentinel]")).toBeNull();
+    const loadMore = [...harness.container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Load more",
+    );
+    expect(loadMore).toBeDefined();
+
+    await act(async () => loadMore?.click());
+    await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Needle on later page"));
+    expect(meChatMocks.listMeChats).toHaveBeenCalledTimes(2);
   });
 });

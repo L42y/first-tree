@@ -596,7 +596,11 @@ async function enrichMeChatRows(
 
   // One producer for every per-(agent,chat) status signal (live-dot / failed /
   // busy), shared with `GET /chats/:id/agent-status`.
-  const statusByChat = await resolveAgentChatStatuses(db, chatIds, { withTurnText: false });
+  const statusByChat = await resolveAgentChatStatuses(db, chatIds, {
+    withTurnText: false,
+    includeStatusReason: false,
+    nonHumanSpeakersByChat,
+  });
 
   const liveActivityByChat = new Map<string, LiveActivity>();
   const failedByChat = new Map<string, string[]>();
@@ -790,19 +794,19 @@ export async function listMeChats(
   // stay ADDITIVE: later pages never exclude priority ids, so the ordinary
   // stream is the complete recency list — backward-compatible with a client that
   // ignores `priorityRows`. See docblock.
-  let attention: MeChatRow[] = [];
-  let pinned: MeChatRow[] = [];
+  let attnCandidateRaw: RawMeChatRow[] = [];
+  let pinnedRaw: RawMeChatRow[] = [];
   if (cursor === null) {
     // Attention candidates — the bounded pre-canonical set the enrichment pass
     // resolves (see `selectAttentionCandidateRows` for the superset rationale).
-    const attnCandidateRaw = await selectAttentionCandidateRows(db, {
+    attnCandidateRaw = await selectAttentionCandidateRows(db, {
       humanAgentId,
       organizationId,
       callerMemberId,
       filters,
       orderBy: activityOrder,
     });
-    const pinnedRaw = await selectMeChatRawRows(db, {
+    pinnedRaw = await selectMeChatRawRows(db, {
       humanAgentId,
       organizationId,
       filters,
@@ -810,33 +814,6 @@ export async function listMeChats(
       orderBy: sql`cus.pinned_at DESC, c.id DESC`,
       limit: null,
     });
-
-    // Enrich the priority union once; `failedByChat` splits attention below.
-    const priorityRawUnion = dedupeRawByChatId([...attnCandidateRaw, ...pinnedRaw]);
-    const { rows: priorityRowsFlat, failedByChat } = await enrichMeChatRows(db, priorityRawUnion, {
-      humanAgentId,
-      managedAgentIds,
-    });
-    const priorityRowById = new Map(priorityRowsFlat.map((r) => [r.chatId, r]));
-
-    // Attention = candidates that qualify (failed OR open request), failed-first
-    // then activity DESC. Each candidate slice is already activity DESC from the
-    // query and `filter` preserves order.
-    const attnQualified = attnCandidateRaw.filter((r) => failedByChat.has(r.chat_id) || r.open_request_count > 0);
-    attention = [
-      ...attnQualified.filter((r) => failedByChat.has(r.chat_id)),
-      ...attnQualified.filter((r) => !failedByChat.has(r.chat_id)),
-    ]
-      .map((r) => priorityRowById.get(r.chat_id))
-      .filter((r): r is MeChatRow => r !== undefined);
-    const attentionIds = new Set(attention.map((r) => r.chatId));
-
-    // Pinned excludes anything already surfaced in attention (attention wins),
-    // preserving the `pinned_at` DESC order.
-    pinned = pinnedRaw
-      .filter((r) => !attentionIds.has(r.chat_id))
-      .map((r) => priorityRowById.get(r.chat_id))
-      .filter((r): r is MeChatRow => r !== undefined);
   }
 
   // --- Ordinary page (EVERY page) -----------------------------------------
@@ -859,10 +836,58 @@ export async function listMeChats(
   const last = pageRaw[pageRaw.length - 1];
   const lastActivity = last ? toChatDate(last.activity_at) : null;
   const nextCursor = hasMore && last && lastActivity ? encodeCursor(lastActivity, last.chat_id) : null;
-  const { rows } = await enrichMeChatRows(db, pageRaw, { humanAgentId, managedAgentIds });
 
+  // First page: priority projections and the additive ordinary page overlap in
+  // the common case. Hydrate their de-duplicated union once, then map the same
+  // canonical rows back into each wire slice without changing the additive
+  // response contract. Cursor pages have no priority projection and hydrate
+  // only their ordinary page.
+  if (cursor === null) {
+    // Prefer the ordinary-page copy for overlaps because it comes from the
+    // latest of the three reads and is the canonical additive stream. Priority
+    // ordering still comes from its own raw slices below.
+    const firstPageRawUnion = dedupeRawByChatId([...pageRaw, ...attnCandidateRaw, ...pinnedRaw]);
+    const { rows: firstPageRows, failedByChat } = await enrichMeChatRows(db, firstPageRawUnion, {
+      humanAgentId,
+      managedAgentIds,
+    });
+    const rowById = new Map(firstPageRows.map((row) => [row.chatId, row]));
+
+    // Attention = candidates that qualify (failed OR open request), failed-first
+    // then activity DESC. Each candidate slice is already activity DESC from the
+    // query and `filter` preserves order.
+    const attnQualified = attnCandidateRaw.filter((row) => {
+      const hydrated = rowById.get(row.chat_id);
+      return failedByChat.has(row.chat_id) || (hydrated?.openRequestCount ?? 0) > 0;
+    });
+    const attention = [
+      ...attnQualified.filter((row) => failedByChat.has(row.chat_id)),
+      ...attnQualified.filter((row) => !failedByChat.has(row.chat_id)),
+    ]
+      .map((row) => rowById.get(row.chat_id))
+      .filter((row): row is MeChatRow => row !== undefined);
+    const attentionIds = new Set(attention.map((row) => row.chatId));
+
+    // Pinned excludes anything already surfaced in attention (attention wins),
+    // preserving the `pinned_at` DESC order. Re-check the canonical hydrated
+    // row so an overlap that changed between the priority reads and the later
+    // ordinary-page read never emits a pinned row with `pinnedAt: null`.
+    const pinned = pinnedRaw
+      .filter((row) => !attentionIds.has(row.chat_id))
+      .map((row) => rowById.get(row.chat_id))
+      .filter((row): row is MeChatRow => row?.pinnedAt != null);
+    const rows = pageRaw.map((row) => rowById.get(row.chat_id)).filter((row): row is MeChatRow => row !== undefined);
+
+    return {
+      priorityRows: { attention, pinned },
+      rows,
+      nextCursor,
+    };
+  }
+
+  const { rows } = await enrichMeChatRows(db, pageRaw, { humanAgentId, managedAgentIds });
   return {
-    priorityRows: { attention, pinned },
+    priorityRows: { attention: [], pinned: [] },
     rows,
     nextCursor,
   };
