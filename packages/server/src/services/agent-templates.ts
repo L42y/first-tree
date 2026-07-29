@@ -146,7 +146,10 @@ export async function loadAgentPromptBudgetUsage(
     }
     const resourceById = new Map(resourceRows.map((row) => [row.id, row]));
     for (const state of stateChunk) {
-      const bindings = bindingOverrides.get(state.agentId) ?? bindingsByAgent.get(state.agentId) ?? [];
+      const bindingRows = bindingOverrides.get(state.agentId) ?? bindingsByAgent.get(state.agentId) ?? [];
+      const bindings = Array.from(bindingRows).filter(
+        (binding): binding is AgentResourceBindingInput => binding !== undefined && binding !== null,
+      );
       const disabled = new Set<string>();
       const replaced = new Set<string>();
       const explicitlyBound = new Set<string>();
