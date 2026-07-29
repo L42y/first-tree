@@ -646,6 +646,10 @@ function UnavailableState({
       : null;
   const unavailableGitlabContent = gitlabContentAvailability !== null;
   const gitlabUnavailableReason = gitlabContentAvailability?.reason ?? null;
+  const privateGitlabContextUnavailable =
+    snapshot.provider === "gitlab" &&
+    snapshot.contentAvailability?.status === "unavailable" &&
+    snapshot.contentAvailability.reason === "gitlab_authentication_required";
   const gitlabCopy = gitlabUnavailableReason ? gitlabUnavailableCopy(gitlabUnavailableReason) : null;
   const title = snapshot.repo
     ? unavailableGitlabContent
@@ -664,7 +668,7 @@ function UnavailableState({
     : isAdmin
       ? "Your agent can build it with you in a chat. Share a local project folder or GitHub repository URL there."
       : "Ask an admin to set up your team's Context Tree.";
-  const syncDetail = snapshot.contextStatus.detail;
+  const syncDetail = privateGitlabContextUnavailable ? null : snapshot.contextStatus.detail;
   const repoLabel = snapshot.repo ? redactRepoForDisplay(snapshot.repo) : null;
   return (
     <Panel>
@@ -681,10 +685,10 @@ function UnavailableState({
                 {syncDetail}
               </div>
             ) : null}
-            {/* Every admin-facing unavailable state continues in the same
-                chat-first setup flow. The tab never diagnoses or mutates source
-                access itself; the agent inspects the real workspace and tree. */}
-            {canOpenChat ? (
+            {/* Recoverable admin-facing unavailable states continue in the
+                chat-first setup flow. Private GitLab is a product capability
+                gap, so the same coming-soon state is shown to every role. */}
+            {canOpenChat && !privateGitlabContextUnavailable ? (
               <div style={{ marginTop: "var(--sp-3)" }}>
                 <ContextTreeBuildEntry intent={snapshot.repo ? "recover" : "build"} />
               </div>
@@ -707,9 +711,9 @@ function gitlabUnavailableCopy(reason: string): { title: string; detail: string 
   switch (reason) {
     case "gitlab_authentication_required":
       return {
-        title: "Private GitLab content is unavailable in Cloud",
+        title: "Private GitLab Context is coming soon",
         detail:
-          "First Tree Cloud only reads GitLab repositories anonymously. Make the Context Tree repository anonymously readable, or use an Agent on a host with local git/glab access. Webhook review automation can remain active.",
+          "First Tree can’t display private GitLab Context Trees in the web app yet. Agents and Context Reviewer with repository access can continue using the tree as usual.",
       };
     case "gitlab_origin_not_authorized":
       return {
