@@ -4,6 +4,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -474,18 +475,51 @@ function tryWriteExclusiveJson(path: string, value: unknown): "created" | "exist
   }
 }
 
-function removeOwnedJson(path: string, instanceId: string): boolean {
+function readInstanceId(path: string): string | undefined {
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(path, "utf8"));
   } catch {
+    return undefined;
+  }
+  return isRecord(value) && typeof value.instanceId === "string" ? value.instanceId : undefined;
+}
+
+function restoreQuarantinedFileIfAbsent(quarantinePath: string, path: string): boolean {
+  try {
+    // A hard link is an exclusive, non-overwriting restore: unlike rename on
+    // POSIX it cannot replace a contender that claimed the canonical path.
+    linkSync(quarantinePath, path);
+  } catch (error) {
+    if (errorCode(error) === "EEXIST") return false;
     return false;
   }
-  if (!isRecord(value) || value.instanceId !== instanceId) return false;
   try {
-    rmSync(path);
+    rmSync(quarantinePath);
+  } catch {
+    // The canonical link is authoritative even if the quarantine alias remains.
+  }
+  return true;
+}
+
+function removeOwnedJson(path: string, instanceId: string): boolean {
+  if (readInstanceId(path) !== instanceId) return false;
+  const cleanupPath = `${path}.cleanup.${instanceId}.${randomUUID()}`;
+  try {
+    renameSync(path, cleanupPath);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
+    return false;
+  }
+  if (readInstanceId(cleanupPath) !== instanceId) {
+    restoreQuarantinedFileIfAbsent(cleanupPath, path);
+    return false;
+  }
+  try {
+    rmSync(cleanupPath);
     return true;
   } catch {
+    restoreQuarantinedFileIfAbsent(cleanupPath, path);
     return false;
   }
 }
@@ -538,6 +572,32 @@ function recoveryGuardErrorFromInspection(
   );
 }
 
+function assertOwnedRecoveryGuard(recoveryPath: string, recovery: RecoveryGuard, lockPath: string): void {
+  const inspection = readRecoveryGuardInspection(recoveryPath);
+  if (inspection.state === "live" && inspection.guard.instanceId === recovery.instanceId) return;
+  if (inspection.state === "untrusted") {
+    throw recoveryGuardErrorFromInspection(inspection, lockPath);
+  }
+  throw new DaemonRuntimeOwnershipError(
+    DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
+    `Recovery guard ${recoveryPath} is no longer held by exact instance ${recovery.instanceId}; refusing daemon startup`,
+    lockPath,
+  );
+}
+
+function assertOwnedMainLock(lockPath: string, home: string, owner: DaemonRuntimeOwner): void {
+  const inspection = readOwnerInspection(lockPath, home);
+  if (inspection.state === "live" && inspection.owner.instanceId === owner.instanceId) return;
+  if (inspection.state === "live" || inspection.state === "untrusted") {
+    throw ownershipErrorFromInspection(inspection);
+  }
+  throw new DaemonRuntimeOwnershipError(
+    DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
+    `Daemon ownership ${lockPath} is no longer held by exact instance ${owner.instanceId}; refusing daemon startup`,
+    lockPath,
+  );
+}
+
 function quarantineStaleRecoveryGuard(recoveryPath: string, lockPath: string): string | undefined {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const inspection = readRecoveryGuardInspection(recoveryPath);
@@ -578,19 +638,7 @@ function quarantineStaleRecoveryGuard(recoveryPath: string, lockPath: string): s
       return quarantinePath;
     }
 
-    if (!existsSync(recoveryPath)) {
-      try {
-        renameSync(quarantinePath, recoveryPath);
-      } catch (error) {
-        throw new DaemonRuntimeOwnershipError(
-          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.io,
-          `Recovery guard ${recoveryPath} changed while being quarantined and could not be restored: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          lockPath,
-        );
-      }
-    }
+    restoreQuarantinedFileIfAbsent(quarantinePath, recoveryPath);
     throw new DaemonRuntimeOwnershipError(
       DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
       `Recovery guard ${recoveryPath} changed while being quarantined; refusing daemon startup`,
@@ -701,6 +749,7 @@ export function acquireDaemonRuntimeOwnership(opts: {
   }
 
   let quarantinedLockPath: string | undefined;
+  let ownerCreated = false;
   try {
     const guardedInspection = readOwnerInspection(lockPath, home);
     if (guardedInspection.state === "live" || guardedInspection.state === "untrusted") {
@@ -708,6 +757,7 @@ export function acquireDaemonRuntimeOwnership(opts: {
     }
     if (guardedInspection.state === "stale") {
       quarantinedLockPath = `${lockPath}.stale.${Date.now()}.${guardedInspection.owner.instanceId}.${recovery.instanceId}`;
+      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
       try {
         renameSync(lockPath, quarantinedLockPath);
       } catch (error) {
@@ -720,10 +770,26 @@ export function acquireDaemonRuntimeOwnership(opts: {
           guardedInspection.owner,
         );
       }
+      const movedOwner = readInstanceId(quarantinedLockPath);
+      if (movedOwner !== guardedInspection.owner.instanceId) {
+        restoreQuarantinedFileIfAbsent(quarantinedLockPath, lockPath);
+        throw new DaemonRuntimeOwnershipError(
+          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
+          `Daemon ownership ${lockPath} changed while being quarantined; refusing daemon startup`,
+          lockPath,
+        );
+      }
+      try {
+        assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+      } catch (error) {
+        restoreQuarantinedFileIfAbsent(quarantinedLockPath, lockPath);
+        throw error;
+      }
     }
 
     // Exactly one retry is allowed after the stale owner has been isolated (or
     // after a colliding owner released between the first read and the guard).
+    assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
     if (tryWriteExclusiveJson(lockPath, owner) === "exists") {
       const retryInspection = readOwnerInspection(lockPath, home);
       if (retryInspection.state === "absent") {
@@ -735,7 +801,14 @@ export function acquireDaemonRuntimeOwnership(opts: {
       }
       throw ownershipErrorFromInspection(retryInspection);
     }
+    ownerCreated = true;
+    assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+    assertOwnedMainLock(lockPath, home, owner);
+    assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
     return makeLease(lockPath, owner, quarantinedLockPath, quarantinedRecoveryGuardPath);
+  } catch (error) {
+    if (ownerCreated) removeOwnedJson(lockPath, owner.instanceId);
+    throw error;
   } finally {
     // A concurrent stale-guard inspector may have atomically moved this guard
     // aside just before discovering the instance mismatch. Give that process a

@@ -115,6 +115,18 @@ function waitForExit(child: ChildProcessWithoutNullStreams): Promise<number | nu
   });
 }
 
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+function releaseBarrier(barrierDir: string, role: string, name: string): void {
+  writeFileSync(join(barrierDir, `${role}.${name}.go`), "\n", "utf8");
+}
+
 describe("daemon runtime ownership", () => {
   it("records the authoritative owner fields and releases only its own instance", () => {
     const home = join(root, "home");
@@ -441,5 +453,79 @@ describe("daemon runtime ownership", () => {
       state: "absent",
     });
     expect(stateFiles.some((name) => name.includes(".recovery.stale."))).toBe(true);
+  });
+
+  it("keeps a three-contender stale-guard race to one exact owner", async () => {
+    const home = join(root, "three-contender-recovery");
+    const barrierDir = join(root, "barriers");
+    mkdirSync(barrierDir, { recursive: true });
+    const original = acquire(home);
+    const staleOwner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:three-contender-owner",
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, staleOwner);
+    writeRecoveryGuard(home, {
+      lockVersion: 1,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:three-contender-guard",
+      startedAt: new Date().toISOString(),
+    });
+
+    const fixture = fileURLToPath(new URL("./fixtures/daemon-runtime-owner-race-child.ts", import.meta.url));
+    const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const children: ChildProcessWithoutNullStreams[] = [];
+    const spawnContender = async (role: "p1" | "p2" | "p3") => {
+      const child = spawn(process.execPath, ["--import", "tsx", fixture, home, role, barrierDir], {
+        cwd: cliRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(child);
+      const next = waitForChildMessage(child);
+      expect((await next()).event).toBe("ready");
+      child.stdin.write("go\n");
+      return { child, next };
+    };
+
+    try {
+      const p1 = await spawnContender("p1");
+      await waitForFile(join(barrierDir, "p1.guard-before-rename.ready"));
+
+      const p2 = await spawnContender("p2");
+      await waitForFile(join(barrierDir, "p2.owner-before-rename.ready"));
+
+      releaseBarrier(barrierDir, "p1", "guard-before-rename");
+      await waitForFile(join(barrierDir, "p1.guard-after-rename.ready"));
+
+      const p3 = await spawnContender("p3");
+      await waitForFile(join(barrierDir, "p3.owner-before-rename.ready"));
+
+      releaseBarrier(barrierDir, "p1", "guard-after-rename");
+      const p1Result = await p1.next();
+      releaseBarrier(barrierDir, "p2", "owner-before-rename");
+      const p2Result = await p2.next();
+      releaseBarrier(barrierDir, "p3", "owner-before-rename");
+      const p3Result = await p3.next();
+      const results = [p1Result, p2Result, p3Result];
+      const winners = results.filter((result) => result.event === "acquired");
+
+      expect(results.every((result) => result.event === "acquired" || result.event === "rejected")).toBe(true);
+      expect(winners, JSON.stringify(results, null, 2)).toHaveLength(1);
+      const winnerIndex = results.findIndex((result) => result.event === "acquired");
+      children[winnerIndex]?.stdin.write("release\n");
+
+      const exits = await Promise.all(children.map((child) => waitForExit(child)));
+      expect(exits.filter((code) => code === 0)).toHaveLength(1);
+      expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({ state: "absent" });
+      expect(existsSync(recoveryGuardPath(home))).toBe(false);
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }
+    }
   });
 });
