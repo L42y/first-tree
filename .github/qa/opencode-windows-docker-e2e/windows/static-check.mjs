@@ -21,10 +21,7 @@ function includesEvery(text, values, label) {
 
 const packageJson = JSON.parse(read("package.json"));
 const packageLock = JSON.parse(read("package-lock.json"));
-assert(
-  packageJson.dependencies?.["opencode-ai"] === "1.18.7",
-  "opencode-ai must be exactly 1.18.7",
-);
+assert(packageJson.dependencies?.["opencode-ai"] === "1.18.7", "opencode-ai must be exactly 1.18.7");
 assert(
   !Object.hasOwn(packageJson.dependencies ?? {}, "@opencode-ai/sdk"),
   "Windows CLI candidate must not depend on the SDK",
@@ -56,10 +53,8 @@ for (const [packageName, integrity] of Object.entries({
 }
 
 const dockerfile = read("Dockerfile.windows");
-const windowsBaseDigest =
-  "sha256:b841bb042e13a079f68fc82461f15abcefe8063fb9a3072120348252f13a6ce3";
-const expectedWindowsBase =
-  `mcr.microsoft.com/windows/servercore:ltsc2022@${windowsBaseDigest}`;
+const windowsBaseDigest = "sha256:b841bb042e13a079f68fc82461f15abcefe8063fb9a3072120348252f13a6ce3";
+const expectedWindowsBase = `mcr.microsoft.com/windows/servercore:ltsc2022@${windowsBaseDigest}`;
 includesEvery(
   dockerfile,
   [
@@ -110,7 +105,7 @@ includesEvery(
     "requiredArgumentsPresent: true",
     "background pid identity changed across OpenCode root exit",
     "background pid no longer identifies the child that wrote the evidence record",
-    '$record = [ordered]@{',
+    "$record = [ordered]@{",
     '.join("\\r\\n")',
     "windows-actions-runner-identity.json",
     "windows-runner-identity.json",
@@ -122,10 +117,7 @@ includesEvery(
 );
 assert(!harness.includes('"serve"'), "Windows candidate still launches opencode serve");
 assert(!harness.includes("@opencode-ai/sdk"), "Windows candidate still imports the SDK");
-assert(
-  !harness.includes('execFileSync(binary, ["--version"]'),
-  "OpenCode version probe bypasses Job pre-admission",
-);
+assert(!harness.includes('execFileSync(binary, ["--version"]'), "OpenCode version probe bypasses Job pre-admission");
 const processRecordSource = harness.slice(
   harness.indexOf("function processRecord(pid)"),
   harness.indexOf("async function jobRequest(action)"),
@@ -144,8 +136,7 @@ includesEvery(
   "processRecord PowerShell statement boundaries",
 );
 assert(
-  !processRecordSource.includes('.join(" ")') &&
-    !processRecordSource.includes("[ordered]@{;"),
+  !processRecordSource.includes('.join(" ")') && !processRecordSource.includes("[ordered]@{;"),
   "processRecord still emits ambiguous PowerShell statement boundaries",
 );
 const evidenceCleanupSource = harness.slice(
@@ -157,31 +148,22 @@ includesEvery(
   [
     'name === "windows-actions-runner-identity.json"',
     'name === "windows-runner-identity.json"',
-    "name.startsWith(\"windows-\") && !currentRunIdentity",
+    'name.startsWith("windows-") && !currentRunIdentity',
   ],
   "current-run identity evidence preserve allowlist",
 );
 assert(
-  harness.match(/const windowsBase\s*=\s*\n?\s*"([^"]+)"/u)?.[1] ===
-    expectedWindowsBase,
+  harness.match(/const windowsBase\s*=\s*\n?\s*"([^"]+)"/u)?.[1] === expectedWindowsBase,
   "runtime receipt base digest differs from Dockerfile",
 );
 assert(
   dockerfile.match(/^FROM\s+(\S+)$/mu)?.[1] === expectedWindowsBase,
   "Dockerfile FROM does not equal the pinned Windows base",
 );
-const newObserveIndex = harness.indexOf(
-  "const newConcurrencyProof = await observeConcurrentBatch(",
-);
-const newCollectIndex = harness.indexOf(
-  "const [newARun, newBRun] = await Promise.all(",
-);
-const resumeObserveIndex = harness.indexOf(
-  "const resumeConcurrencyProof = await observeConcurrentBatch(",
-);
-const resumeCollectIndex = harness.indexOf(
-  "const [resumeARun, resumeBRun] = await Promise.all(",
-);
+const newObserveIndex = harness.indexOf("const newConcurrencyProof = await observeConcurrentBatch(");
+const newCollectIndex = harness.indexOf("const [newARun, newBRun] = await Promise.all(");
+const resumeObserveIndex = harness.indexOf("const resumeConcurrencyProof = await observeConcurrentBatch(");
+const resumeCollectIndex = harness.indexOf("const [resumeARun, resumeBRun] = await Promise.all(");
 assert(
   newObserveIndex >= 0 &&
     newCollectIndex > newObserveIndex &&
@@ -190,8 +172,7 @@ assert(
   "new/resume concurrency barrier must precede collection",
 );
 assert(
-  harness.indexOf("providerCleanup = await stopProvider();") <
-    harness.indexOf('status: "PASS"'),
+  harness.indexOf("providerCleanup = await stopProvider();") < harness.indexOf('status: "PASS"'),
   "main PASS is written before local provider cleanup",
 );
 
@@ -222,11 +203,7 @@ assert(
 const wrapper = read("windows/job-launch-wrapper.mjs");
 includesEvery(
   wrapper,
-  [
-    "while (!existsSync(spec.goFile))",
-    "spawn(spec.binary, spec.args",
-    "child.stdin.end(spec.stdinText",
-  ],
+  ["while (!existsSync(spec.goFile))", "spawn(spec.binary, spec.args", "child.stdin.end(spec.stdinText"],
   "windows/job-launch-wrapper.mjs",
 );
 
@@ -252,14 +229,7 @@ includesEvery(
 );
 
 const compose = read("compose.windows.yaml");
-includesEvery(
-  compose,
-  [
-    "Dockerfile.windows",
-    "FTQA_EVIDENCE_DIR",
-  ],
-  "compose.windows.yaml",
-);
+includesEvery(compose, ["Dockerfile.windows", "FTQA_EVIDENCE_DIR"], "compose.windows.yaml");
 
 const runner = read("windows/run-windows.ps1");
 includesEvery(
@@ -287,8 +257,7 @@ includesEvery(
   "windows/run-windows.ps1",
 );
 assert(
-  runner.match(/^\$windowsBase\s*=\s*"([^"]+)"$/mu)?.[1] ===
-    expectedWindowsBase,
+  runner.match(/^\$windowsBase\s*=\s*"([^"]+)"$/mu)?.[1] === expectedWindowsBase,
   "runner identity base digest differs from Dockerfile",
 );
 assert(
@@ -296,13 +265,7 @@ assert(
   "runner still uses compose images -q before a service container exists",
 );
 
-const workflowPath = path.join(
-  root,
-  "..",
-  "..",
-  "workflows",
-  "opencode-windows-docker-e2e.yml",
-);
+const workflowPath = path.join(root, "..", "..", "workflows", "opencode-windows-docker-e2e.yml");
 if (existsSync(workflowPath)) {
   const workflow = readFileSync(workflowPath, "utf8");
   includesEvery(
@@ -319,13 +282,9 @@ if (existsSync(workflowPath)) {
     ],
     ".github/workflows/opencode-windows-docker-e2e.yml",
   );
+  assert(!/^\s*images\s*`\s*$[\s\S]{0,80}^\s*-q\s*`/mu.test(workflow), "workflow cleanup still uses compose images -q");
   assert(
-    !/^\s*images\s*`\s*$[\s\S]{0,80}^\s*-q\s*`/mu.test(workflow),
-    "workflow cleanup still uses compose images -q",
-  );
-  assert(
-    workflow.indexOf('if ($receipt.status -ne "PASS")') <
-      workflow.indexOf("exit 0"),
+    workflow.indexOf('if ($receipt.status -ne "PASS")') < workflow.indexOf("exit 0"),
     "workflow cleanup PASS does not explicitly exit zero after the fail-closed guard",
   );
 }

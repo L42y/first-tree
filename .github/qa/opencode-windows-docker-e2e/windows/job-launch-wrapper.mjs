@@ -1,11 +1,5 @@
 import { spawn } from "node:child_process";
-import {
-  closeSync,
-  existsSync,
-  openSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 const specPath = process.argv[2];
@@ -60,7 +54,4 @@ const result = await new Promise((resolve, reject) => {
 });
 
 writeFileSync(spec.resultPath, `${JSON.stringify(result)}\n`, { mode: 0o600 });
-process.exitCode =
-  Number.isInteger(result.exitCode) && result.exitCode >= 0
-    ? result.exitCode
-    : 1;
+process.exitCode = Number.isInteger(result.exitCode) && result.exitCode >= 0 ? result.exitCode : 1;

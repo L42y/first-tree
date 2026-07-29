@@ -1,5 +1,5 @@
-import http from "node:http";
 import fs from "node:fs";
+import http from "node:http";
 
 const port = Number(process.env.QA_PROVIDER_PORT || "43127");
 const logPath = process.env.QA_PROVIDER_LOG;
@@ -10,28 +10,15 @@ if (!logPath) {
 
 let requestSequence = 0;
 const barrierDefinitions = {
-  new: [
-    "QA_CONCURRENCY_NEW_A_218A",
-    "QA_CONCURRENCY_NEW_B_218A",
-  ],
-  resume: [
-    "QA_CONCURRENCY_RESUME_A_218A",
-    "QA_CONCURRENCY_RESUME_B_218A",
-  ],
+  new: ["QA_CONCURRENCY_NEW_A_218A", "QA_CONCURRENCY_NEW_B_218A"],
+  resume: ["QA_CONCURRENCY_RESUME_A_218A", "QA_CONCURRENCY_RESUME_B_218A"],
 };
 const barrierState = new Map(
-  Object.entries(barrierDefinitions).map(([name, markers]) => [
-    name,
-    { markers, pending: [], released: false },
-  ]),
+  Object.entries(barrierDefinitions).map(([name, markers]) => [name, { markers, pending: [], released: false }]),
 );
 
 function writeLog(event) {
-  fs.appendFileSync(
-    logPath,
-    `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`,
-    "utf8",
-  );
+  fs.appendFileSync(logPath, `${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`, "utf8");
 }
 
 function contentText(content) {
@@ -234,17 +221,11 @@ const server = http.createServer((request, response) => {
     return;
   }
 
-  const releaseMatch = request.url?.match(
-    /^\/ftqa\/barriers\/(new|resume)\/release$/,
-  );
+  const releaseMatch = request.url?.match(/^\/ftqa\/barriers\/(new|resume)\/release$/);
   if (request.method === "POST" && releaseMatch) {
     const name = releaseMatch[1];
     const barrier = barrierState.get(name);
-    if (
-      !barrier ||
-      barrier.released ||
-      barrier.pending.length !== barrier.markers.length
-    ) {
+    if (!barrier || barrier.released || barrier.pending.length !== barrier.markers.length) {
       response.writeHead(409, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -337,9 +318,7 @@ const server = http.createServer((request, response) => {
     const toolMessageCount = (Array.isArray(body.messages) ? body.messages : []).filter(
       (message) => message?.role === "tool",
     ).length;
-    const toolNames = (Array.isArray(body.tools) ? body.tools : [])
-      .map((tool) => tool?.function?.name)
-      .filter(Boolean);
+    const toolNames = (Array.isArray(body.tools) ? body.tools : []).map((tool) => tool?.function?.name).filter(Boolean);
 
     writeLog({
       kind: "request",
@@ -377,9 +356,7 @@ const server = http.createServer((request, response) => {
       if (
         !barrier ||
         barrier.released ||
-        barrier.pending.some(
-          (pending) => pending.marker === concurrencyBarrier.marker,
-        )
+        barrier.pending.some((pending) => pending.marker === concurrencyBarrier.marker)
       ) {
         writeLog({
           kind: "barrier_error",
@@ -502,11 +479,7 @@ const server = http.createServer((request, response) => {
     }
 
     const toolName = toolNames.find((name) => name === "bash");
-    if (
-      userText.includes("QA_CALL_BRIDGE") &&
-      toolMessageCount === 0 &&
-      toolName
-    ) {
+    if (userText.includes("QA_CALL_BRIDGE") && toolMessageCount === 0 && toolName) {
       writeLog({
         kind: "response",
         requestID,
@@ -521,7 +494,7 @@ const server = http.createServer((request, response) => {
           toolName,
           argumentsJson: JSON.stringify({
             command:
-              "printf 'FT_AGENT=%s FT_CHAT=%s OC_PASS=%s FT_MARKER=%s' \"$FIRST_TREE_AGENT_ID\" \"$FIRST_TREE_CHAT_ID\" \"$OPENCODE_SERVER_PASSWORD\" \"$FIRST_TREE_PROVIDER_MARKER\"",
+              'printf \'FT_AGENT=%s FT_CHAT=%s OC_PASS=%s FT_MARKER=%s\' "$FIRST_TREE_AGENT_ID" "$FIRST_TREE_CHAT_ID" "$OPENCODE_SERVER_PASSWORD" "$FIRST_TREE_PROVIDER_MARKER"',
             description: "Read deterministic First Tree bridge environment",
           }),
         }),
@@ -529,11 +502,7 @@ const server = http.createServer((request, response) => {
       return;
     }
 
-    if (
-      userText.includes("QA_CALL_BASH") &&
-      toolMessageCount === 0 &&
-      toolName
-    ) {
+    if (userText.includes("QA_CALL_BASH") && toolMessageCount === 0 && toolName) {
       writeLog({
         kind: "response",
         requestID,
@@ -547,9 +516,7 @@ const server = http.createServer((request, response) => {
           model: body.model || "qa-model",
           toolName,
           argumentsJson: JSON.stringify({
-            command:
-              process.env.FTQA_SHELL_COMMAND ??
-              "printf QA_TOOL_RESULT_218A",
+            command: process.env.FTQA_SHELL_COMMAND ?? "printf QA_TOOL_RESULT_218A",
             description: "Emit deterministic QA marker",
           }),
         }),
@@ -557,11 +524,7 @@ const server = http.createServer((request, response) => {
       return;
     }
 
-    if (
-      userText.includes("QA_CALL_BACKGROUND") &&
-      toolMessageCount === 0 &&
-      toolName
-    ) {
+    if (userText.includes("QA_CALL_BACKGROUND") && toolMessageCount === 0 && toolName) {
       writeLog({
         kind: "response",
         requestID,
@@ -575,9 +538,7 @@ const server = http.createServer((request, response) => {
           model: body.model || "qa-model",
           toolName,
           argumentsJson: JSON.stringify({
-            command:
-              process.env.FTQA_BACKGROUND_COMMAND ??
-              "/usr/bin/python3 \"$FTQA_DAEMONIZE_SCRIPT\"",
+            command: process.env.FTQA_BACKGROUND_COMMAND ?? '/usr/bin/python3 "$FTQA_DAEMONIZE_SCRIPT"',
             description: "Start one double-forked synthetic QA daemon",
           }),
         }),
@@ -585,10 +546,7 @@ const server = http.createServer((request, response) => {
       return;
     }
 
-    if (
-      userText.includes("QA_CALL_BACKGROUND_HOLD") &&
-      toolMessageCount > 0
-    ) {
+    if (userText.includes("QA_CALL_BACKGROUND_HOLD") && toolMessageCount > 0) {
       writeLog({
         kind: "response",
         requestID,
@@ -629,11 +587,7 @@ const server = http.createServer((request, response) => {
     }
 
     const mcpToolName = toolNames.find((name) => name.includes("qa_echo"));
-    if (
-      userText.includes("QA_CALL_MCP") &&
-      toolMessageCount === 0 &&
-      mcpToolName
-    ) {
+    if (userText.includes("QA_CALL_MCP") && toolMessageCount === 0 && mcpToolName) {
       writeLog({
         kind: "response",
         requestID,

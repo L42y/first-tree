@@ -4,8 +4,8 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -41,8 +41,7 @@ const chatIDB = "chat-windows-cli-b-218a";
 const marker = "ft-opencode-windows-cli-218a";
 const expectedNodeVersion = "v24.18.0";
 const expectedOpenCodeVersion = "1.18.7";
-const expectedNodeArchiveSha256 =
-  "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821";
+const expectedNodeArchiveSha256 = "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821";
 const expectedOpenCodeNpmIntegrity =
   "sha512-/C4Bc+mHbTK+GvhiZ83rguwVSNBs1sCzooQ3CCOz7G8SBYqbsXajlm0OtZ7RaMEUWxHWeMvOnGi4RC4OpAnC/g==";
 const windowsBase =
@@ -53,7 +52,7 @@ function assert(condition, message) {
 }
 
 function errorText(error) {
-  return error instanceof Error ? error.stack ?? error.message : String(error);
+  return error instanceof Error ? (error.stack ?? error.message) : String(error);
 }
 
 function readJson(file) {
@@ -85,9 +84,7 @@ async function waitUntil(check, timeoutMs, label, intervalMs = 25) {
     }
     await delay(intervalMs);
   }
-  throw new Error(
-    `Timed out waiting for ${label}${lastError ? `: ${errorText(lastError)}` : ""}`,
-  );
+  throw new Error(`Timed out waiting for ${label}${lastError ? `: ${errorText(lastError)}` : ""}`);
 }
 
 async function freePort() {
@@ -104,23 +101,13 @@ async function freePort() {
 }
 
 function environmentValue(name) {
-  const key = Object.keys(process.env).find(
-    (candidate) => candidate.toLowerCase() === name.toLowerCase(),
-  );
+  const key = Object.keys(process.env).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
   return key ? process.env[key] : undefined;
 }
 
 function minimalEnvironment(extra = {}) {
   const env = {};
-  for (const key of [
-    "PATH",
-    "SystemRoot",
-    "ComSpec",
-    "TEMP",
-    "TMP",
-    "PATHEXT",
-    "USERNAME",
-  ]) {
+  for (const key of ["PATH", "SystemRoot", "ComSpec", "TEMP", "TMP", "PATHEXT", "USERNAME"]) {
     const value = environmentValue(key);
     if (value) env[key] = value;
   }
@@ -223,15 +210,7 @@ function processRecord(pid) {
   return JSON.parse(
     execFileSync(
       "powershell.exe",
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        script,
-      ],
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
       { encoding: "utf8", windowsHide: true },
     ).replace(/^\uFEFF/, ""),
   );
@@ -287,8 +266,7 @@ async function admitLaunch({ name, args, cwd, stdinText, env }) {
   assert(!admission.error, `${name} admission failed: ${admission.error}`);
   assert(admission.killOnJobClose === true, `${name} lacks KILL_ON_JOB_CLOSE`);
   assert(
-    Number.isInteger(Number(admission.wrapperPid)) &&
-      Number(admission.wrapperPid) > 1,
+    Number.isInteger(Number(admission.wrapperPid)) && Number(admission.wrapperPid) > 1,
     `${name} returned invalid wrapper pid`,
   );
   return {
@@ -307,10 +285,7 @@ async function admitBatch(specs) {
   const handles = await Promise.all(specs.map((spec) => admitLaunch(spec)));
   const snapshot = await jobRequest("snapshot");
   for (const handle of handles) {
-    assert(
-      snapshot.pids.includes(handle.wrapperPid),
-      `${handle.name} wrapper was released outside the Job`,
-    );
+    assert(snapshot.pids.includes(handle.wrapperPid), `${handle.name} wrapper was released outside the Job`);
   }
   for (const handle of handles) {
     writeFileSync(handle.goFile, "go\n", { mode: 0o600 });
@@ -336,11 +311,15 @@ async function collectLaunch(handle, timeoutMs = 90_000) {
 }
 
 async function launchPid(handle, timeoutMs = 10_000) {
-  return waitUntil(() => {
-    if (!existsSync(handle.pidFile)) return undefined;
-    const value = Number(readFileSync(handle.pidFile, "utf8").trim());
-    return Number.isInteger(value) && value > 1 ? value : undefined;
-  }, timeoutMs, `${handle.name} OpenCode root pid`);
+  return waitUntil(
+    () => {
+      if (!existsSync(handle.pidFile)) return undefined;
+      const value = Number(readFileSync(handle.pidFile, "utf8").trim());
+      return Number.isInteger(value) && value > 1 ? value : undefined;
+    },
+    timeoutMs,
+    `${handle.name} OpenCode root pid`,
+  );
 }
 
 function parseJsonl(text, label) {
@@ -360,21 +339,14 @@ function parseJsonl(text, label) {
 function analyzeTurn(run, { expectedSessionID } = {}) {
   assert(run.wrapperResult.exitCode === 0, `${run.name} exit ${run.wrapperResult.exitCode}`);
   const events = parseJsonl(run.stdout, run.name);
-  const sessionIDs = new Set(
-    events
-      .flatMap((event) => [event.sessionID, event.part?.sessionID])
-      .filter(Boolean),
-  );
+  const sessionIDs = new Set(events.flatMap((event) => [event.sessionID, event.part?.sessionID]).filter(Boolean));
   assert(sessionIDs.size === 1, `${run.name} emitted ambiguous session IDs`);
   const [sessionID] = sessionIDs;
   if (expectedSessionID) {
     assert(sessionID === expectedSessionID, `${run.name} resumed the wrong session`);
   }
   const terminalEvents = events.filter(
-    (event) =>
-      event.type === "step_finish" &&
-      event.part?.reason &&
-      event.part.reason !== "tool-calls",
+    (event) => event.type === "step_finish" && event.part?.reason && event.part.reason !== "tool-calls",
   );
   assert(terminalEvents.length > 0, `${run.name} emitted no terminal step_finish`);
   assert(!events.some((event) => event.type === "error"), `${run.name} emitted error`);
@@ -413,9 +385,7 @@ function processIntervalsOverlap(turns, label) {
   assert(
     intervals.every(
       (interval) =>
-        Number.isFinite(interval.startMs) &&
-        Number.isFinite(interval.endMs) &&
-        interval.endMs >= interval.startMs,
+        Number.isFinite(interval.startMs) && Number.isFinite(interval.endMs) && interval.endMs >= interval.startMs,
     ),
     `${label} has invalid wrapper lifecycle timestamps`,
   );
@@ -448,15 +418,7 @@ function runArgs({ workdir, sessionID, title }) {
   return args;
 }
 
-function runSpec({
-  name,
-  workdir,
-  prompt,
-  providerPort,
-  chatID,
-  sessionID,
-  title = "First Tree Windows CLI QA",
-}) {
+function runSpec({ name, workdir, prompt, providerPort, chatID, sessionID, title = "First Tree Windows CLI QA" }) {
   return {
     name,
     args: runArgs({ workdir, sessionID, title }),
@@ -475,35 +437,27 @@ function providerRecords() {
 }
 
 async function observeConcurrentBatch(batch, barrier, providerPort) {
-  const rootPids = await Promise.all(
-    batch.handles.map((handle) => launchPid(handle)),
+  const rootPids = await Promise.all(batch.handles.map((handle) => launchPid(handle)));
+  const arrivals = await waitUntil(
+    () => {
+      const rows = providerRecords().filter(
+        (record) => record.kind === "barrier_arrival" && record.barrier === barrier,
+      );
+      return rows.length === 2 ? rows : undefined;
+    },
+    20_000,
+    `${barrier} provider concurrency barrier`,
   );
-  const arrivals = await waitUntil(() => {
-    const rows = providerRecords().filter(
-      (record) =>
-        record.kind === "barrier_arrival" && record.barrier === barrier,
-    );
-    return rows.length === 2 ? rows : undefined;
-  }, 20_000, `${barrier} provider concurrency barrier`);
   const membership = await jobRequest("snapshot");
   for (const rootPid of rootPids) {
-    assert(
-      membership.pids.includes(rootPid),
-      `${barrier} Job snapshot missed concurrent OpenCode root ${rootPid}`,
-    );
+    assert(membership.pids.includes(rootPid), `${barrier} Job snapshot missed concurrent OpenCode root ${rootPid}`);
   }
-  const releaseResponse = await fetch(
-    `http://127.0.0.1:${providerPort}/ftqa/barriers/${barrier}/release`,
-    {
-      method: "POST",
-      signal: AbortSignal.timeout(5_000),
-    },
-  );
+  const releaseResponse = await fetch(`http://127.0.0.1:${providerPort}/ftqa/barriers/${barrier}/release`, {
+    method: "POST",
+    signal: AbortSignal.timeout(5_000),
+  });
   const release = await releaseResponse.json();
-  assert(
-    releaseResponse.ok,
-    `${barrier} provider barrier release failed: ${JSON.stringify(release)}`,
-  );
+  assert(releaseResponse.ok, `${barrier} provider barrier release failed: ${JSON.stringify(release)}`);
   return {
     barrier,
     arrivals: arrivals.map((record) => ({
@@ -518,20 +472,13 @@ async function observeConcurrentBatch(batch, barrier, providerPort) {
 }
 
 function barrierProof(records, name) {
-  const arrivals = records.filter(
-    (record) => record.kind === "barrier_arrival" && record.barrier === name,
-  );
-  const releases = records.filter(
-    (record) => record.kind === "barrier_release" && record.barrier === name,
-  );
+  const arrivals = records.filter((record) => record.kind === "barrier_arrival" && record.barrier === name);
+  const releases = records.filter((record) => record.kind === "barrier_release" && record.barrier === name);
   assert(arrivals.length === 2, `${name} barrier lacks two arrivals`);
   assert(releases.length === 2, `${name} barrier lacks two releases`);
   const arrivalTimes = arrivals.map((record) => Date.parse(record.arrivedAt));
   const releaseTimes = releases.map((record) => Date.parse(record.releasedAt));
-  assert(
-    [...arrivalTimes, ...releaseTimes].every(Number.isFinite),
-    `${name} barrier has invalid timestamps`,
-  );
+  assert([...arrivalTimes, ...releaseTimes].every(Number.isFinite), `${name} barrier has invalid timestamps`);
   assert(
     Math.max(...arrivalTimes) <= Math.min(...releaseTimes),
     `${name} barrier released before both requests arrived`,
@@ -554,9 +501,7 @@ function barrierProof(records, name) {
 function providerAssertions() {
   const records = providerRecords();
   const requests = records.filter((record) => record.kind === "request");
-  const responseModes = records
-    .filter((record) => record.kind === "response")
-    .map((record) => record.responseMode);
+  const responseModes = records.filter((record) => record.kind === "response").map((record) => record.responseMode);
   assert(requests.length >= 7, "provider observed too few real OpenCode requests");
   assert(
     requests.every((record) => record.model === "qa-model"),
@@ -566,15 +511,8 @@ function providerAssertions() {
     requests.every((record) => record.markers?.slock === true),
     "managed agent prompt marker was missing",
   );
-  for (const expected of [
-    "tool_call",
-    "background_tool_call",
-    "background_hold",
-  ]) {
-    assert(
-      responseModes.includes(expected),
-      `provider did not exercise ${expected}`,
-    );
+  for (const expected of ["tool_call", "background_tool_call", "background_hold"]) {
+    assert(responseModes.includes(expected), `provider did not exercise ${expected}`);
   }
   return {
     requestCount: requests.length,
@@ -635,31 +573,13 @@ async function stopProvider() {
     if (processAlive(pid)) {
       provider.kill();
       try {
-        await waitUntil(
-          () => (!processAlive(pid) ? true : undefined),
-          3_000,
-          "local QA provider exit",
-          50,
-        );
+        await waitUntil(() => (!processAlive(pid) ? true : undefined), 3_000, "local QA provider exit", 50);
       } catch {
-        execFileSync(
-          "taskkill.exe",
-          ["/pid", String(pid), "/f", "/t"],
-          { stdio: "ignore", windowsHide: true },
-        );
-        await waitUntil(
-          () => (!processAlive(pid) ? true : undefined),
-          3_000,
-          "forced local QA provider exit",
-          50,
-        );
+        execFileSync("taskkill.exe", ["/pid", String(pid), "/f", "/t"], { stdio: "ignore", windowsHide: true });
+        await waitUntil(() => (!processAlive(pid) ? true : undefined), 3_000, "forced local QA provider exit", 50);
       }
     }
-    exitObserved =
-      (await Promise.race([
-        exitObservation,
-        delay(3_000).then(() => false),
-      ])) === true;
+    exitObserved = (await Promise.race([exitObservation, delay(3_000).then(() => false)])) === true;
     if (!exitObserved) {
       cleanupError = "local QA provider exit event was not observed";
     }
@@ -689,8 +609,7 @@ try {
   }
   for (const name of readdirSync(evidence)) {
     const currentRunIdentity =
-      name === "windows-actions-runner-identity.json" ||
-      name === "windows-runner-identity.json";
+      name === "windows-actions-runner-identity.json" || name === "windows-runner-identity.json";
     if (name.startsWith("windows-") && !currentRunIdentity) {
       rmSync(path.join(evidence, name), { recursive: true, force: true });
     }
@@ -723,15 +642,9 @@ try {
   ]);
   const versionRun = await collectLaunch(versionBatch.handles[0], 30_000);
   timings.runtimeVersionGateMs = Date.now() - runtimeVersionStarted;
-  assert(
-    versionRun.wrapperResult.exitCode === 0,
-    `runtime version gate exit ${versionRun.wrapperResult.exitCode}`,
-  );
+  assert(versionRun.wrapperResult.exitCode === 0, `runtime version gate exit ${versionRun.wrapperResult.exitCode}`);
   const openCodeVersion = versionRun.stdout.trim();
-  assert(
-    openCodeVersion === expectedOpenCodeVersion,
-    `unexpected OpenCode ${openCodeVersion}`,
-  );
+  assert(openCodeVersion === expectedOpenCodeVersion, `unexpected OpenCode ${openCodeVersion}`);
 
   const providerPort = await freePort();
   const backgroundCommand = [
@@ -758,25 +671,13 @@ try {
   provider.stderr.on("data", (chunk) => {
     providerError += chunk.toString();
   });
-  await waitUntil(
-    () => providerOutput.includes("QA provider ready"),
-    5_000,
-    "local OpenAI-compatible provider",
-  );
+  await waitUntil(() => providerOutput.includes("QA provider ready"), 5_000, "local OpenAI-compatible provider");
 
   const dbGateStarted = Date.now();
   const dbBatch = await admitBatch([
     {
       name: "db-gate",
-      args: [
-        "db",
-        "SELECT 1 AS ready",
-        "--format",
-        "json",
-        "--print-logs",
-        "--log-level",
-        "ERROR",
-      ],
+      args: ["db", "SELECT 1 AS ready", "--format", "json", "--print-logs", "--log-level", "ERROR"],
       cwd: workdirA,
       stdinText: "",
       env: opencodeEnvironment(providerPort),
@@ -786,10 +687,7 @@ try {
   timings.dbGateMs = Date.now() - dbGateStarted;
   assert(dbRun.wrapperResult.exitCode === 0, `DB gate exit ${dbRun.wrapperResult.exitCode}`);
   const dbGateOutput = JSON.parse(dbRun.stdout.replace(/^\uFEFF/, ""));
-  assert(
-    JSON.stringify(dbGateOutput).includes('"ready":1'),
-    "DB gate did not return ready=1",
-  );
+  assert(JSON.stringify(dbGateOutput).includes('"ready":1'), "DB gate did not return ready=1");
   assert(existsSync(database), "default isolated OpenCode database was not created");
 
   const concurrentStarted = Date.now();
@@ -811,21 +709,12 @@ try {
       title: "First Tree Windows CLI B",
     }),
   ]);
-  const newConcurrencyProof = await observeConcurrentBatch(
-    newBatch,
-    "new",
-    providerPort,
-  );
-  const [newARun, newBRun] = await Promise.all(
-    newBatch.handles.map((handle) => collectLaunch(handle)),
-  );
+  const newConcurrencyProof = await observeConcurrentBatch(newBatch, "new", providerPort);
+  const [newARun, newBRun] = await Promise.all(newBatch.handles.map((handle) => collectLaunch(handle)));
   timings.concurrentNewMs = Date.now() - concurrentStarted;
   const newA = analyzeTurn(newARun);
   const newB = analyzeTurn(newBRun);
-  const newProcessOverlap = processIntervalsOverlap(
-    [newA, newB],
-    "concurrent new",
-  );
+  const newProcessOverlap = processIntervalsOverlap([newA, newB], "concurrent new");
   assert(newA.sessionID !== newB.sessionID, "concurrent workdirs shared a session ID");
   assert(newA.text.includes("firstTurn=true"), "chat A provider history marker missing");
   assert(newB.text.includes("firstTurn=true"), "chat B provider history marker missing");
@@ -849,21 +738,12 @@ try {
       sessionID: newB.sessionID,
     }),
   ]);
-  const resumeConcurrencyProof = await observeConcurrentBatch(
-    resumeBatch,
-    "resume",
-    providerPort,
-  );
-  const [resumeARun, resumeBRun] = await Promise.all(
-    resumeBatch.handles.map((handle) => collectLaunch(handle)),
-  );
+  const resumeConcurrencyProof = await observeConcurrentBatch(resumeBatch, "resume", providerPort);
+  const [resumeARun, resumeBRun] = await Promise.all(resumeBatch.handles.map((handle) => collectLaunch(handle)));
   timings.concurrentResumeMs = Date.now() - resumeStarted;
   const resumeA = analyzeTurn(resumeARun, { expectedSessionID: newA.sessionID });
   const resumeB = analyzeTurn(resumeBRun, { expectedSessionID: newB.sessionID });
-  const resumeProcessOverlap = processIntervalsOverlap(
-    [resumeA, resumeB],
-    "concurrent resume",
-  );
+  const resumeProcessOverlap = processIntervalsOverlap([resumeA, resumeB], "concurrent resume");
   assert(resumeA.text.includes("firstTurn=true"), "chat A resume lost history");
   assert(resumeB.text.includes("firstTurn=true"), "chat B resume lost history");
 
@@ -885,10 +765,7 @@ try {
   assert(shellEvent, "OpenCode emitted no shell tool event");
   assert(shellEvent.status === "completed", "shell tool did not complete");
   assert(shellEvent.exit === 0, "shell tool returned non-zero");
-  assert(
-    String(shellEvent.output).includes("QA_TOOL_RESULT_218A"),
-    "shell tool output marker missing",
-  );
+  assert(String(shellEvent.output).includes("QA_TOOL_RESULT_218A"), "shell tool output marker missing");
 
   rmSync(backgroundRecordFile, { force: true });
   const backgroundStarted = Date.now();
@@ -903,11 +780,15 @@ try {
     }),
   ]);
   const backgroundHandle = backgroundBatch.handles[0];
-  backgroundRootPid = await waitUntil(() => {
-    if (!existsSync(backgroundHandle.pidFile)) return undefined;
-    const value = Number(readFileSync(backgroundHandle.pidFile, "utf8").trim());
-    return Number.isInteger(value) && value > 1 ? value : undefined;
-  }, 10_000, "background OpenCode root pid");
+  backgroundRootPid = await waitUntil(
+    () => {
+      if (!existsSync(backgroundHandle.pidFile)) return undefined;
+      const value = Number(readFileSync(backgroundHandle.pidFile, "utf8").trim());
+      return Number.isInteger(value) && value > 1 ? value : undefined;
+    },
+    10_000,
+    "background OpenCode root pid",
+  );
   const backgroundRecord = await waitUntil(
     () => (existsSync(backgroundRecordFile) ? readJson(backgroundRecordFile) : undefined),
     20_000,
@@ -920,37 +801,32 @@ try {
   assert(backgroundRecord.agentId === agentID, "background lost agent attribution");
   assert(backgroundRecord.chatId === chatIDB, "background lost chat attribution");
   assert(backgroundRecord.providerMarker === marker, "background marker mismatch");
-  assert(
-    backgroundRecord.parentPid !== backgroundRootPid,
-    "background child remained a direct child of OpenCode root",
-  );
+  assert(backgroundRecord.parentPid !== backgroundRootPid, "background child remained a direct child of OpenCode root");
   assert(processAlive(backgroundRootPid), "OpenCode root exited before explicit stop");
   assert(processAlive(backgroundPid), "background child exited before root stop");
 
-  const backgroundEventsBeforeStop = await waitUntil(() => {
-    if (!existsSync(backgroundHandle.stdoutPath)) return undefined;
-    const text = readFileSync(backgroundHandle.stdoutPath, "utf8");
-    if (!text.includes('"type":"tool_use"')) return undefined;
-    return parseJsonl(text, "background partial JSONL");
-  }, 10_000, "background shell tool event");
+  const backgroundEventsBeforeStop = await waitUntil(
+    () => {
+      if (!existsSync(backgroundHandle.stdoutPath)) return undefined;
+      const text = readFileSync(backgroundHandle.stdoutPath, "utf8");
+      if (!text.includes('"type":"tool_use"')) return undefined;
+      return parseJsonl(text, "background partial JSONL");
+    },
+    10_000,
+    "background shell tool event",
+  );
   const backgroundTool = backgroundEventsBeforeStop.find(
     (event) => event.type === "tool_use" && event.part?.tool === "bash",
   );
   assert(backgroundTool, "background run emitted no shell tool event");
-  assert(
-    backgroundTool.part?.state?.status === "completed",
-    "background shell tool did not complete",
-  );
+  assert(backgroundTool.part?.state?.status === "completed", "background shell tool did not complete");
 
   const membershipBeforeRootStop = await jobRequest("snapshot");
   assert(
     membershipBeforeRootStop.pids.includes(backgroundHandle.wrapperPid),
     "Job missed background wrapper before root stop",
   );
-  assert(
-    membershipBeforeRootStop.pids.includes(backgroundRootPid),
-    "Job missed OpenCode root before root stop",
-  );
+  assert(membershipBeforeRootStop.pids.includes(backgroundRootPid), "Job missed OpenCode root before root stop");
   assert(
     membershipBeforeRootStop.pids.includes(backgroundPid),
     "Job missed detached background child before root stop",
@@ -961,8 +837,7 @@ try {
       path.normalize(binary).toLowerCase(),
     "root pid no longer identifies the admitted OpenCode binary",
   );
-  const backgroundRootCommandLine =
-    backgroundRootProcessBeforeStop.commandLine.toLowerCase();
+  const backgroundRootCommandLine = backgroundRootProcessBeforeStop.commandLine.toLowerCase();
   for (const expectedArguments of [
     " run ",
     "--format json",
@@ -977,9 +852,7 @@ try {
     );
   }
   assert(
-    !backgroundRootProcessBeforeStop.commandLine.includes(
-      "QA_CALL_BACKGROUND_HOLD",
-    ),
+    !backgroundRootProcessBeforeStop.commandLine.includes("QA_CALL_BACKGROUND_HOLD"),
     "background prompt leaked into the OpenCode process command line",
   );
   const backgroundProcessBeforeRootStop = processRecord(backgroundPid);
@@ -991,36 +864,43 @@ try {
   const rootStopStarted = Date.now();
   process.kill(backgroundRootPid, "SIGTERM");
   await waitUntil(
-    () =>
-      !processAlive(backgroundRootPid) &&
-      !processAlive(backgroundHandle.wrapperPid),
+    () => !processAlive(backgroundRootPid) && !processAlive(backgroundHandle.wrapperPid),
     10_000,
     "OpenCode root and wrapper exit",
   );
   timings.rootStopMs = Date.now() - rootStopStarted;
   assert(processAlive(backgroundPid), "background did not survive OpenCode root exit");
-  const membershipAfterRootStop = await waitUntil(async () => {
-    const snapshot = await jobRequest("snapshot");
-    return snapshot.pids.includes(backgroundPid) &&
-      !snapshot.pids.includes(backgroundRootPid) &&
-      !snapshot.pids.includes(backgroundHandle.wrapperPid)
-      ? snapshot
-      : undefined;
-  }, 8_000, "detached child Job membership after root exit", 50);
+  const membershipAfterRootStop = await waitUntil(
+    async () => {
+      const snapshot = await jobRequest("snapshot");
+      return snapshot.pids.includes(backgroundPid) &&
+        !snapshot.pids.includes(backgroundRootPid) &&
+        !snapshot.pids.includes(backgroundHandle.wrapperPid)
+        ? snapshot
+        : undefined;
+    },
+    8_000,
+    "detached child Job membership after root exit",
+    50,
+  );
   const backgroundProcessAfterRootStop = processRecord(backgroundPid);
   assert(
-    backgroundProcessAfterRootStop.startedAt ===
-      backgroundProcessBeforeRootStop.startedAt,
+    backgroundProcessAfterRootStop.startedAt === backgroundProcessBeforeRootStop.startedAt,
     "background pid identity changed across OpenCode root exit",
   );
 
   const terminateStarted = Date.now();
   const terminateResponse = await jobRequest("terminate");
   jobTerminated = true;
-  const zeroScan1 = await waitUntil(async () => {
-    const snapshot = await jobRequest("snapshot");
-    return snapshot.pids.length === 0 ? snapshot : undefined;
-  }, 8_000, "first empty Job process list", 50);
+  const zeroScan1 = await waitUntil(
+    async () => {
+      const snapshot = await jobRequest("snapshot");
+      return snapshot.pids.length === 0 ? snapshot : undefined;
+    },
+    8_000,
+    "first empty Job process list",
+    50,
+  );
   await delay(500);
   const zeroScan2 = await jobRequest("snapshot");
   assert(zeroScan2.pids.length === 0, "second Job process list was not empty");
@@ -1061,10 +941,7 @@ try {
         { chatID: chatIDB, workdir: workdirB },
       ],
       isolatedHome: home,
-      opencodeDbOverridePresent: Object.hasOwn(
-        opencodeEnvironment(providerPort),
-        "OPENCODE_DB",
-      ),
+      opencodeDbOverridePresent: Object.hasOwn(opencodeEnvironment(providerPort), "OPENCODE_DB"),
       defaultDatabase: {
         path: database,
         bytes: statSync(database).size,
@@ -1196,14 +1073,9 @@ try {
     finalResidue: {
       runtimeScope: {
         jobPids: cleanup.finalJobPids,
-        backgroundAlive:
-          Number.isInteger(backgroundPid) && backgroundPid > 1
-            ? processAlive(backgroundPid)
-            : null,
+        backgroundAlive: Number.isInteger(backgroundPid) && backgroundPid > 1 ? processAlive(backgroundPid) : null,
         rootAlive:
-          Number.isInteger(backgroundRootPid) && backgroundRootPid > 1
-            ? processAlive(backgroundRootPid)
-            : null,
+          Number.isInteger(backgroundRootPid) && backgroundRootPid > 1 ? processAlive(backgroundRootPid) : null,
       },
       harnessSupport: {
         localProvider: providerCleanup,
@@ -1222,11 +1094,7 @@ try {
   if (!jobTerminated && existsSync(readyPath)) {
     await failClosedCleanup();
   }
-  if (
-    provider &&
-    Number.isInteger(provider.pid) &&
-    processAlive(provider.pid)
-  ) {
+  if (provider && Number.isInteger(provider.pid) && processAlive(provider.pid)) {
     await stopProvider();
   }
 }
