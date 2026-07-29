@@ -1,20 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  chmodSync,
-  closeSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const DEFAULT_LOCK_ACQUIRE_TIMEOUT_MS = 5_000;
 const DEFAULT_LOCK_RETRY_DELAY_MS = 10;
-const DEFAULT_UNREADABLE_LOCK_STALE_MS = 5 * 60_000;
 const LOCK_WAIT_BUFFER = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
 export type RuntimeSessionTokenCleanupResult = "removed" | "missing" | "empty" | "mismatch";
@@ -22,7 +11,6 @@ export type RuntimeSessionTokenCleanupResult = "removed" | "missing" | "empty" |
 export type RuntimeSessionTokenFileOptions = {
   lockAcquireTimeoutMs?: number;
   lockRetryDelayMs?: number;
-  unreadableLockStaleMs?: number;
 };
 
 /**
@@ -37,14 +25,12 @@ export class RuntimeSessionTokenFile {
   readonly lockPath: string;
   private readonly lockAcquireTimeoutMs: number;
   private readonly lockRetryDelayMs: number;
-  private readonly unreadableLockStaleMs: number;
 
   constructor(path: string, options: RuntimeSessionTokenFileOptions = {}) {
     this.path = path;
     this.lockPath = `${path}.lock`;
     this.lockAcquireTimeoutMs = options.lockAcquireTimeoutMs ?? DEFAULT_LOCK_ACQUIRE_TIMEOUT_MS;
     this.lockRetryDelayMs = options.lockRetryDelayMs ?? DEFAULT_LOCK_RETRY_DELAY_MS;
-    this.unreadableLockStaleMs = options.unreadableLockStaleMs ?? DEFAULT_UNREADABLE_LOCK_STALE_MS;
   }
 
   persist(token: string): string {
@@ -145,54 +131,15 @@ export class RuntimeSessionTokenFile {
           throw new Error("Failed to acquire the runtime session token mutation lock.", { cause: error });
         }
 
-        if (this.removeStaleMutationLock()) continue;
-
+        // A pathname-only stale-lock delete cannot prove that the path still
+        // names the lock it inspected. Leave every existing lock untouched;
+        // bind fails unavailable and cleanup preserves the token on timeout.
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) {
           throw new Error("Timed out acquiring the runtime session token mutation lock.", { cause: error });
         }
         sleepSync(Math.min(Math.max(1, this.lockRetryDelayMs), remainingMs));
       }
-    }
-  }
-
-  /**
-   * Returns true when the contender should retry immediately. Unknown or
-   * unreadable ownership always stays in place: mutation then times out rather
-   * than risking two owners.
-   */
-  private removeStaleMutationLock(): boolean {
-    let ownerText: string;
-    try {
-      ownerText = readFileSync(this.lockPath, "utf8").trim();
-    } catch (error) {
-      return errorCode(error) === "ENOENT";
-    }
-
-    const owner = Number(ownerText);
-    if (Number.isInteger(owner) && owner > 0) {
-      try {
-        process.kill(owner, 0);
-        return false;
-      } catch (error) {
-        const code = errorCode(error);
-        if (code === "EPERM") return false;
-        if (code !== "ESRCH") return false;
-        try {
-          rmSync(this.lockPath);
-          return true;
-        } catch (removeError) {
-          return errorCode(removeError) === "ENOENT";
-        }
-      }
-    }
-
-    try {
-      if (Date.now() - statSync(this.lockPath).mtimeMs <= this.unreadableLockStaleMs) return false;
-      rmSync(this.lockPath);
-      return true;
-    } catch (error) {
-      return errorCode(error) === "ENOENT";
     }
   }
 

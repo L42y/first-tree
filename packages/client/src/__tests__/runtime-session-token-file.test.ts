@@ -158,6 +158,58 @@ describe("RuntimeSessionTokenFile", () => {
     expect(exitCode).toBe(0);
   });
 
+  it("fails both contenders closed when they race over the same stale lock", async () => {
+    const tokenPath = makeTokenPath();
+    mkdirSync(join(tokenPath, ".."), { recursive: true, mode: 0o700 });
+    const lockPath = `${tokenPath}.lock`;
+    writeFileSync(lockPath, "99999999\n", { mode: 0o600 });
+    const moduleUrl = new URL("../runtime/runtime-session-token-file.ts", import.meta.url).href;
+    const script = [
+      "const [moduleUrl, tokenPath, token] = process.argv.slice(1);",
+      "const { RuntimeSessionTokenFile } = await import(moduleUrl);",
+      "const store = new RuntimeSessionTokenFile(tokenPath, {",
+      "  lockAcquireTimeoutMs: 50,",
+      "  lockRetryDelayMs: 2,",
+      "});",
+      "try {",
+      "  store.persist(token);",
+      '  process.stdout.write("acquired\\n");',
+      "} catch {",
+      '  process.stdout.write("blocked\\n");',
+      "}",
+    ].join("\n");
+    const spawnContender = (token: string) =>
+      spawn(
+        process.execPath,
+        [
+          "--no-warnings",
+          "--experimental-strip-types",
+          "--input-type=module",
+          "-e",
+          script,
+          moduleUrl,
+          tokenPath,
+          token,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+    const contenderB = spawnContender("runtime-token-B");
+    const contenderC = spawnContender("runtime-token-C");
+    const outputB = once(contenderB.stdout, "data");
+    const outputC = once(contenderC.stdout, "data");
+    const exitB = once(contenderB, "exit");
+    const exitC = once(contenderC, "exit");
+
+    const [[chunkB], [chunkC], [exitCodeB], [exitCodeC]] = await Promise.all([outputB, outputC, exitB, exitC]);
+
+    expect(exitCodeB).toBe(0);
+    expect(exitCodeC).toBe(0);
+    expect(String(chunkB).trim()).toBe("blocked");
+    expect(String(chunkC).trim()).toBe("blocked");
+    expect(readFileSync(lockPath, "utf8")).toBe("99999999\n");
+    expect(existsSync(tokenPath)).toBe(false);
+  });
+
   it("removes only a readable, non-empty matching generation", () => {
     const tokenPath = makeTokenPath();
     const store = new RuntimeSessionTokenFile(tokenPath);
