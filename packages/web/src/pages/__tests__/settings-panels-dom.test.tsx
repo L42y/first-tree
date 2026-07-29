@@ -531,7 +531,13 @@ describe("settings panels", () => {
     await act(async () => admin.root.unmount());
   });
 
-  it("does not mark private GitLab Web Context as admin setup attention", async () => {
+  it.each([
+    "gitlab_authentication_required",
+    "gitlab_origin_not_authorized",
+    "gitlab_dns_unavailable",
+    "gitlab_address_not_authorized",
+    "gitlab_egress_denied",
+  ] as const)("does not mark non-actionable GitLab Web Context as admin setup attention for %s", async (reason) => {
     const { SettingsLayout } = await import("../settings.js");
     const capabilities = teamSetupCapabilities();
     capabilities.contextTree.binding = {
@@ -547,14 +553,14 @@ describe("settings panels", () => {
       contentAvailability: {
         status: "unavailable",
         accessMode: "anonymous",
-        reason: "gitlab_authentication_required",
+        reason,
       },
     });
 
     const admin = await renderDom(<SettingsLayout />, "/settings/account");
     await waitForCondition(
       () => contextApiMocks.getContextTreeSnapshot.mock.calls.length === 1,
-      "Expected the private GitLab Context Tree snapshot to load",
+      "Expected the non-actionable GitLab Context Tree snapshot to load",
     );
 
     expect(admin.container.querySelector("[data-setup-attention]")).toBeNull();

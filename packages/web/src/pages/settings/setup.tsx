@@ -37,9 +37,12 @@ import { getTeamSetupCapabilitiesAt, setupCapabilitiesQueryKey } from "../../api
 import { useAuth } from "../../auth/auth-context.js";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { cn } from "../../lib/utils.js";
+import {
+  GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL,
+  isTeamNonActionableGitlabWebContext,
+} from "../context-tree-availability.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
 import { ContextEnablement } from "./context-enablement.js";
-import { isPrivateGitlabContextUnavailable } from "./setup-attention.js";
 import { SetupContextTreeControls } from "./setup-context-tree-controls.js";
 import { SetupReviewerControls } from "./setup-reviewer-controls.js";
 
@@ -54,7 +57,7 @@ type Fact<T> =
 type ContextTreeFact = {
   binding: SetupContextTreeBinding;
   availability: "active" | "stale" | "unavailable" | "checking" | "unknown" | null;
-  privateGitlabContextUnavailable: boolean;
+  teamNonActionableGitlabWebContext: boolean;
 };
 
 type ContextTreeSnapshotFact = Pick<ContextTreeSnapshot, "snapshotStatus" | "provider" | "contentAvailability">;
@@ -117,19 +120,19 @@ function contextTreeFact(
   if (binding.state !== "bound") {
     return {
       state: "ready",
-      value: { binding, availability: null, privateGitlabContextUnavailable: false },
+      value: { binding, availability: null, teamNonActionableGitlabWebContext: false },
     };
   }
   if (snapshot.state === "loading") {
     return {
       state: "ready",
-      value: { binding, availability: "checking", privateGitlabContextUnavailable: false },
+      value: { binding, availability: "checking", teamNonActionableGitlabWebContext: false },
     };
   }
   if (snapshot.state === "error") {
     return {
       state: "ready",
-      value: { binding, availability: "unknown", privateGitlabContextUnavailable: false },
+      value: { binding, availability: "unknown", teamNonActionableGitlabWebContext: false },
     };
   }
   return {
@@ -137,7 +140,7 @@ function contextTreeFact(
     value: {
       binding,
       availability: snapshot.value?.snapshotStatus ?? "unknown",
-      privateGitlabContextUnavailable: isPrivateGitlabContextUnavailable(snapshot.value),
+      teamNonActionableGitlabWebContext: isTeamNonActionableGitlabWebContext(snapshot.value),
     },
   };
 }
@@ -355,7 +358,7 @@ function contextTreeStatus(
   if (contextTree.state === "loading") return loadingStatus();
   if (contextTree.state === "error") return unknownStatus();
 
-  const { binding, availability, privateGitlabContextUnavailable } = contextTree.value;
+  const { binding, availability, teamNonActionableGitlabWebContext } = contextTree.value;
   if (binding.state === "unbound") {
     return {
       label: "Not set up",
@@ -380,10 +383,10 @@ function contextTreeStatus(
   ].join(" · ");
   const issueDetail = blockerDetail(blockers, isAdmin);
   const detail = [bindingDetail, issueDetail].filter((item): item is string => Boolean(item)).join(" · ");
-  if (privateGitlabContextUnavailable) {
+  if (teamNonActionableGitlabWebContext) {
     return {
-      label: "Coming soon",
-      detail: `${bindingDetail} · First Tree can’t display private GitLab Context Trees in the web app yet. Agents and Context Reviewer with repository access can continue using the tree as usual.`,
+      label: "Web Context unavailable",
+      detail: `${bindingDetail} · ${GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL}`,
       kind: "neutral",
     };
   }
@@ -404,7 +407,7 @@ function contextTreeStatus(
 
 function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean): SetupRowModel["action"] | undefined {
   if (contextTree.state !== "ready") return undefined;
-  const { binding, availability, privateGitlabContextUnavailable } = contextTree.value;
+  const { binding, availability, teamNonActionableGitlabWebContext } = contextTree.value;
   if (binding.state === "unbound") {
     return isAdmin
       ? { label: "Set up", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
@@ -415,7 +418,7 @@ function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean)
       ? { label: "Repair", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
       : { label: "View", to: "/context" };
   }
-  if (privateGitlabContextUnavailable) {
+  if (teamNonActionableGitlabWebContext) {
     return isAdmin
       ? { label: "Manage", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
       : { label: "View", to: "/context" };
@@ -823,7 +826,7 @@ export function SettingsSetupPage() {
                     key={`context-tree-${organizationId}`}
                     binding={contextTree.value.binding}
                     availability={contextTree.value.availability}
-                    privateGitlabContextUnavailable={contextTree.value.privateGitlabContextUnavailable}
+                    teamNonActionableGitlabWebContext={contextTree.value.teamNonActionableGitlabWebContext}
                   >
                     {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
                       <SetupReviewerControls

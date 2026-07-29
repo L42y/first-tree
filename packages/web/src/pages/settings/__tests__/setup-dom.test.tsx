@@ -658,7 +658,13 @@ describe("Settings Setup overview", () => {
     expect(row.action?.label).toBe(action);
   });
 
-  it("keeps private GitLab Web Context neutral and role-consistent", () => {
+  it.each([
+    "gitlab_authentication_required",
+    "gitlab_origin_not_authorized",
+    "gitlab_dns_unavailable",
+    "gitlab_address_not_authorized",
+    "gitlab_egress_denied",
+  ] as const)("keeps non-actionable GitLab Web Context neutral and role-consistent for %s", (reason) => {
     const capabilities = capabilityFixture({
       binding: {
         state: "bound",
@@ -673,7 +679,7 @@ describe("Settings Setup overview", () => {
       contentAvailability: {
         status: "unavailable",
         accessMode: "anonymous",
-        reason: "gitlab_authentication_required",
+        reason,
       },
     } as const;
     const admin = rowFor(
@@ -693,8 +699,8 @@ describe("Settings Setup overview", () => {
     );
 
     for (const row of [admin, member]) {
-      expect(row.status).toMatchObject({ label: "Coming soon", kind: "neutral" });
-      expect(row.status.detail).toContain("First Tree can’t display private GitLab Context Trees");
+      expect(row.status).toMatchObject({ label: "Web Context unavailable", kind: "neutral" });
+      expect(row.status.detail).toContain("First Tree can’t display this Context Tree in the web app");
       expect(row.status.detail).toContain("Agents and Context Reviewer");
       expect(row.status.detail).not.toContain("recover");
     }
@@ -1288,7 +1294,7 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("suppresses private GitLab recovery chat while keeping independent review controls", async () => {
+  it("suppresses non-actionable GitLab recovery chat while keeping independent review controls", async () => {
     setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
       capabilityFixture({
         binding: {
@@ -1305,23 +1311,23 @@ describe("Settings Setup overview", () => {
       contentAvailability: {
         status: "unavailable",
         accessMode: "anonymous",
-        reason: "gitlab_authentication_required",
+        reason: "gitlab_origin_not_authorized",
       },
       contextStatus: {
         severity: "error",
         label: "Team context unavailable",
-        detail: "Private GitLab server diagnostic",
+        detail: "GitLab deployment allowlist diagnostic",
       },
     });
 
     const view = await renderSettingsSetupPage();
-    const row = await waitForRowText(view.host, "context-tree", "Coming soon");
+    const row = await waitForRowText(view.host, "context-tree", "Web Context unavailable");
     const manage = [...row.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Manage",
     );
 
     expect(row.textContent).not.toContain("Needs recovery");
-    expect(row.textContent).not.toContain("Private GitLab server diagnostic");
+    expect(row.textContent).not.toContain("GitLab deployment allowlist diagnostic");
     await act(async () => manage?.click());
     const controls = await waitForSelector<HTMLElement>(row, '[data-setup-owner-controls="context-tree"]');
     expect(controls.textContent).toContain("Open Context");
