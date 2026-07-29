@@ -155,13 +155,24 @@ function BrowserShell() {
       <button type="button" onClick={() => navigate("/?review=need-you")}>
         open review
       </button>
+      <button type="button" onClick={() => navigate("/?review=need-you#evidence")}>
+        open review with hash
+      </button>
+      <button type="button" onClick={() => navigate("/?future")}>
+        open future
+      </button>
       {reviewing ? <OwnerProbe /> : <div data-testid="home-surface">home surface</div>}
     </div>
   );
 }
 
 describe("useAskAgentNavGuard with a real BrowserRouter", () => {
-  it("blocks browser Back before the router commits the exit, and resumes after the attempt lifts", async () => {
+  async function renderBrowserShell(): Promise<{
+    container: HTMLElement;
+    root: ReturnType<typeof createRoot>;
+    locationText: () => string | null | undefined;
+    addressBar: () => string;
+  }> {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -173,9 +184,16 @@ describe("useAskAgentNavGuard with a real BrowserRouter", () => {
       );
     });
     await flush();
+    return {
+      container,
+      root,
+      locationText: () => container.querySelector('[data-testid="browser-location"]')?.textContent,
+      addressBar: () => `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    };
+  }
 
-    const locationText = () => container.querySelector('[data-testid="browser-location"]')?.textContent;
-    const addressBar = () => `${window.location.pathname}${window.location.search}`;
+  it("blocks browser Back before the router commits the exit, and resumes after the attempt lifts", async () => {
+    const { container, root, locationText, addressBar } = await renderBrowserShell();
     expect(locationText()).toBe("/");
     expect(container.querySelector('[data-testid="home-surface"]')).not.toBeNull();
 
@@ -184,60 +202,114 @@ describe("useAskAgentNavGuard with a real BrowserRouter", () => {
     // capture interceptor must stop a pop before this witness can see it.
     const bubbleWitness = vi.fn();
     window.addEventListener("popstate", bubbleWitness);
+    try {
+      // Build real history: / → /?review=need-you. The owner mounts and
+      // publishes the attempt lock; the guard captures URL + history index.
+      await click(buttonByText(container, "open review"));
+      expect(locationText()).toBe("/?review=need-you");
+      expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="browser-locked"]')?.textContent).toBe("true");
+      expect(isAskAgentNavLocked()).toBe(true);
 
-    // Build real history: / → /?review=need-you. The owner mounts and
-    // publishes the attempt lock; the guard captures URL + history index.
-    await click(buttonByText(container, "open review"));
-    expect(locationText()).toBe("/?review=need-you");
-    expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="browser-locked"]')?.textContent).toBe("true");
-    expect(isAskAgentNavLocked()).toBe(true);
+      // Real browser Back. Without the capture interceptor, the router's own
+      // bubble-phase listener would process the pop first and commit the exit
+      // (unmounting the owner, whose cleanup removes the lock).
+      await act(async () => {
+        window.history.back();
+      });
+      await flush();
+      expect(bubbleWitness).not.toHaveBeenCalled();
+      expect(locationText()).toBe("/?review=need-you");
+      expect(addressBar()).toBe("/?review=need-you");
+      expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
+      expect(isAskAgentNavLocked()).toBe(true);
 
-    // Real browser Back. Without the capture interceptor, the router's own
-    // bubble-phase listener would process the pop first and commit the exit
-    // (unmounting the owner, whose cleanup removes the lock).
-    await act(async () => {
-      window.history.back();
-    });
-    await flush();
-    expect(bubbleWitness).not.toHaveBeenCalled();
-    expect(locationText()).toBe("/?review=need-you");
-    expect(addressBar()).toBe("/?review=need-you");
-    expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
-    expect(isAskAgentNavLocked()).toBe(true);
+      // A second Back is trapped the same way.
+      await act(async () => {
+        window.history.back();
+      });
+      await flush();
+      expect(bubbleWitness).not.toHaveBeenCalled();
+      expect(locationText()).toBe("/?review=need-you");
+      expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
 
-    // A second Back is trapped the same way; Forward is a dead end (the
-    // locked entry is the history tip).
-    await act(async () => {
-      window.history.back();
-    });
-    await flush();
-    expect(locationText()).toBe("/?review=need-you");
-    await act(async () => {
-      window.history.forward();
-    });
-    await flush();
-    expect(locationText()).toBe("/?review=need-you");
-    expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
+      // The attempt lifts: the same Back now commits normally (the router's
+      // bubble listener sees the pop again).
+      await act(async () => {
+        clearAskAgentNavLocks();
+      });
+      await flush();
+      expect(container.querySelector('[data-testid="browser-locked"]')?.textContent).toBe("false");
+      await act(async () => {
+        window.history.back();
+      });
+      await flush();
+      expect(bubbleWitness).toHaveBeenCalled();
+      expect(locationText()).toBe("/");
+      expect(addressBar()).toBe("/");
+      expect(container.querySelector('[data-testid="home-surface"]')).not.toBeNull();
 
-    // The attempt lifts: the same Back now commits normally (the router's
-    // bubble listener sees the pop again).
-    await act(async () => {
-      clearAskAgentNavLocks();
-    });
-    await flush();
-    expect(container.querySelector('[data-testid="browser-locked"]')?.textContent).toBe("false");
-    await act(async () => {
-      window.history.back();
-    });
-    await flush();
-    expect(bubbleWitness).toHaveBeenCalled();
-    expect(locationText()).toBe("/");
-    expect(addressBar()).toBe("/");
-    expect(container.querySelector('[data-testid="home-surface"]')).not.toBeNull();
-    window.removeEventListener("popstate", bubbleWitness);
+      await act(async () => root.unmount());
+    } finally {
+      window.removeEventListener("popstate", bubbleWitness);
+    }
+  });
 
-    await act(async () => root.unmount());
+  it("blocks browser Forward with an entry ahead of the locked review, preserving the exact hash URL", async () => {
+    const { container, root, locationText, addressBar } = await renderBrowserShell();
+    const bubbleWitness = vi.fn();
+    window.addEventListener("popstate", bubbleWitness);
+    try {
+      // Build real history with an entry AHEAD of the review:
+      // / → /?review=need-you#evidence → /?future. All pushes — no pops yet.
+      await click(buttonByText(container, "open review with hash"));
+      await click(buttonByText(container, "open future"));
+      expect(locationText()).toBe("/?future");
+      expect(container.querySelector('[data-testid="owner-surface"]')).toBeNull();
+
+      // Return to the review while UNLOCKED: the router processes the pop,
+      // the owner mounts and engages the lock with the hash URL captured.
+      await act(async () => {
+        window.history.back();
+      });
+      await flush();
+      expect(locationText()).toBe("/?review=need-you");
+      expect(addressBar()).toBe("/?review=need-you#evidence");
+      expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
+      expect(isAskAgentNavLocked()).toBe(true);
+
+      // Real browser Forward while locked: a genuine popstate with
+      // currentIdx > target.idx — the negative-delta branch. The router side
+      // never sees the pop; the exact hash URL is preserved.
+      bubbleWitness.mockClear();
+      await act(async () => {
+        window.history.forward();
+      });
+      await flush();
+      expect(bubbleWitness).not.toHaveBeenCalled();
+      expect(locationText()).toBe("/?review=need-you");
+      expect(addressBar()).toBe("/?review=need-you#evidence");
+      expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
+      expect(isAskAgentNavLocked()).toBe(true);
+
+      // The attempt lifts: the same Forward now reaches /?future normally.
+      await act(async () => {
+        clearAskAgentNavLocks();
+      });
+      await flush();
+      await act(async () => {
+        window.history.forward();
+      });
+      await flush();
+      expect(bubbleWitness).toHaveBeenCalled();
+      expect(locationText()).toBe("/?future");
+      expect(addressBar()).toBe("/?future");
+      expect(container.querySelector('[data-testid="owner-surface"]')).toBeNull();
+
+      await act(async () => root.unmount());
+    } finally {
+      window.removeEventListener("popstate", bubbleWitness);
+    }
   });
 });
 
