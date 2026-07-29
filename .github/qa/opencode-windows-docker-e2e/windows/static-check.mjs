@@ -67,6 +67,7 @@ includesEvery(
     "node-v24.18.0-win-x64.zip",
     "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821",
     "COPY package.json package-lock.json",
+    "COPY Dockerfile.windows compose.windows.yaml ./",
     "npm.cmd ci",
     "Unexpected OpenCode version",
     "windows\\static-check.mjs",

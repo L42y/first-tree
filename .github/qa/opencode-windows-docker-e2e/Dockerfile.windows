@@ -26,6 +26,7 @@ RUN npm.cmd ci --omit=dev --no-audit --no-fund; `
 COPY qa-provider.mjs ./
 COPY project ./project
 COPY windows ./windows
+COPY Dockerfile.windows compose.windows.yaml ./
 
 RUN node.exe --check C:\ftqa\qa-provider.mjs; `
     node.exe --check C:\ftqa\windows\job-launch-wrapper.mjs; `
