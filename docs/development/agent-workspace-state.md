@@ -47,8 +47,8 @@ known provider roots.
 | `.first-tree-workspace/migrations-applied.json` | Applied one-shot workspace-layout migration ids. |
 
 JSON state and journal writes use file fsync, atomic rename, and a best-effort
-parent-directory fsync. The lock and journal are absent after a settled
-reconcile.
+parent-directory fsync. The journal is absent after a settled reconcile. The
+persistent lock file remains, but no process holds its OS lock.
 
 ### `managed.json` schema v2
 

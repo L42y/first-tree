@@ -1,6 +1,22 @@
 import { constants } from "node:fs";
 import { type FileHandle, lstat, open } from "node:fs/promises";
-import { tryLock, unlock } from "fs-native-extensions";
+import { createRequire } from "node:module";
+
+type NativeFileLockApi = Readonly<{
+  tryLock: (
+    fileDescriptor: number,
+    offset?: number,
+    length?: number,
+    options?: Readonly<{ shared?: boolean }>,
+  ) => boolean;
+  unlock: (fileDescriptor: number, offset?: number, length?: number) => void;
+}>;
+
+// Keep the native addon behind Node's CommonJS loader. The Client sources are
+// inlined into the published ESM CLI, while this dependency and its platform
+// prebuilds are shipped beside that bundle. Bundling the addon's CommonJS
+// loader would make `__filename` unavailable and omit the loadable binary.
+const { tryLock, unlock } = createRequire(import.meta.url)("fs-native-extensions") as NativeFileLockApi;
 
 export type WorkspaceFileLock = Readonly<{
   release: () => Promise<void>;

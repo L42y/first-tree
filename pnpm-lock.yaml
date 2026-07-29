@@ -41,6 +41,9 @@ importers:
       ejs:
         specifier: ^6.0.1
         version: 6.0.1
+      fs-native-extensions:
+        specifier: ^1.5.0
+        version: 1.5.0(bare-url@2.4.0)
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
