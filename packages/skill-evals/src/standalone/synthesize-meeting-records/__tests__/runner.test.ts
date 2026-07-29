@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -146,6 +146,43 @@ describe("standalone synthesize-meeting-records runner cleanup", () => {
       expect(monitors.every((monitor) => monitor.child.exitCode !== null || monitor.child.signalCode !== null)).toBe(
         true,
       );
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not resolve raw sentinel paths after the workspace integrity guard fails", async () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
+    if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-finalizer-source-ancestor-guard-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:03.250Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const initialValidation = validateFixture(paths, sourceRepoPath);
+      const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
+      const monitorExits = monitors.map((monitor) =>
+        monitor.child.exitCode === null ? once(monitor.child, "exit") : Promise.resolve([]),
+      );
+      const retainedSourceRepoPath = join(paths.runRoot, "retained-source-artifacts");
+      const outsideSourceRepoPath = join(paths.runRoot, "outside-source-artifacts");
+      mkdirSync(outsideSourceRepoPath);
+      writeFileSync(join(outsideSourceRepoPath, "minutes.md"), "outside canary\n", "utf8");
+      writeFileSync(join(outsideSourceRepoPath, "appendix.md"), "outside canary\n", "utf8");
+      renameSync(sourceRepoPath, retainedSourceRepoPath);
+      symlinkSync(outsideSourceRepoPath, sourceRepoPath);
+
+      const finalValidation = finalizeFixtureValidationAfterAgent(paths, sourceRepoPath, initialValidation, monitors);
+
+      expect(finalValidation.ok).toBe(false);
+      expect(finalValidation.errors).toEqual(["post-run workspace fixture content changed after setup"]);
+      expect(finalValidation.errors.some((error) => error.includes("raw access sentinel identity changed"))).toBe(
+        false,
+      );
+      expect(monitors.every((monitor) => monitor.child.killed)).toBe(true);
+      await Promise.all(monitorExits);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }

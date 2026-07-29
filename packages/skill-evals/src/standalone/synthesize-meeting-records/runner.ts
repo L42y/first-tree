@@ -92,12 +92,14 @@ export function finalizeFixtureValidationAfterAgent(
         requiredFilesOk: false,
       };
     }
-    try {
-      rawAccessMonitorErrors = validatePartialRawAccessMonitors(paths, rawAccessMonitors);
-    } catch (error) {
-      rawAccessMonitorErrors = [
-        `raw access monitor validation threw: ${error instanceof Error ? error.message : String(error)}`,
-      ];
+    if (postRunFixtureValidation.ok) {
+      try {
+        rawAccessMonitorErrors = validatePartialRawAccessMonitors(paths, rawAccessMonitors);
+      } catch (error) {
+        rawAccessMonitorErrors = [
+          `raw access monitor validation threw: ${error instanceof Error ? error.message : String(error)}`,
+        ];
+      }
     }
   } finally {
     stopPartialRawAccessMonitors(rawAccessMonitors);
