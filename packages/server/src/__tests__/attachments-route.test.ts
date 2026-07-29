@@ -14,10 +14,13 @@ import {
   createAttachment,
   deleteAttachmentIfUnreferenced,
   MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER,
+  ORPHAN_ATTACHMENT_AGE_MS,
+  sweepOrphanAttachments,
 } from "../services/attachment.js";
 import { type AttachmentBlobStore, MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
 import { validateMessageAttachmentRefs } from "../services/doc-snapshots.js";
 import { ensureMembership } from "../services/membership.js";
+import { editMessage, sendMessage, validateFileAttachmentRefs } from "../services/message.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
 
@@ -163,6 +166,59 @@ describe("attachments route — upload + capability download", () => {
     expect(successfulStore.objects.get(attachmentObjectKey(admin.organizationId, id))).toEqual(bytes);
   });
 
+  it("revalidates a preselected sweep candidate after backfill claims it", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `sweep-claim-${crypto.randomUUID().slice(0, 6)}` });
+    const id = crypto.randomUUID();
+    const bytes = Buffer.from("legacy-sweep-race");
+    const sweepNow = new Date();
+    const sweepCutoff = new Date(sweepNow.getTime() - ORPHAN_ATTACHMENT_AGE_MS);
+    await app.db.insert(attachments).values({
+      id,
+      organizationId: admin.organizationId,
+      objectKey: null,
+      lifecycleState: "ready",
+      mimeType: "application/octet-stream",
+      filename: "legacy-sweep-race.bin",
+      sizeBytes: bytes.byteLength,
+      data: bytes,
+      uploadedBy: admin.humanAgentUuid,
+      updatedAt: new Date(sweepCutoff.getTime() - 1_000),
+    });
+
+    let signalPutStarted!: () => void;
+    const putStarted = new Promise<void>((resolve) => {
+      signalPutStarted = resolve;
+    });
+    let releasePut!: () => void;
+    const putReleased = new Promise<void>((resolve) => {
+      releasePut = resolve;
+    });
+    class BlockingBackfillStore extends MemoryAttachmentBlobStore {
+      override async put(key: string, body: Readable): Promise<void> {
+        signalPutStarted();
+        await putReleased;
+        await super.put(key, body);
+      }
+    }
+    const store = new BlockingBackfillStore();
+
+    // The stale id represents the sweeper's candidate read. Backfill claims
+    // that row before cleanup takes its row lock and refreshes updatedAt.
+    const backfill = backfillLegacyAttachments(app.db, store);
+    await putStarted;
+    await expect(deleteAttachmentIfUnreferenced(app.db, store, id, { orphanCutoff: sweepCutoff })).resolves.toBe(false);
+
+    const [claimed] = await app.db.select().from(attachments).where(eq(attachments.id, id));
+    expect(claimed).toMatchObject({ lifecycleState: "uploading", data: bytes });
+    releasePut();
+    await expect(backfill).resolves.toMatchObject({ migrated: 1 });
+
+    const [stored] = await app.db.select().from(attachments).where(eq(attachments.id, id));
+    expect(stored).toMatchObject({ lifecycleState: "ready", data: null });
+    expect(store.objects.get(attachmentObjectKey(admin.organizationId, id))).toEqual(bytes);
+  });
+
   it("bounds simultaneous upload streams for one caller using shared lifecycle rows", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `upload-bound-${crypto.randomUUID().slice(0, 6)}` });
@@ -208,6 +264,43 @@ describe("attachments route — upload + capability download", () => {
     const completed = await Promise.all(active);
     expect(completed).toHaveLength(MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER);
     expect(completed.every((row) => row.lifecycleState === "ready")).toBe(true);
+  });
+
+  it("retains a deleting row when failed-upload object cleanup fails", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `failed-delete-${crypto.randomUUID().slice(0, 6)}` });
+    const id = crypto.randomUUID();
+    const objectKey = attachmentObjectKey(admin.organizationId, id);
+    class RecoveringDeleteStore extends MemoryAttachmentBlobStore {
+      failDelete = true;
+
+      override async delete(key: string): Promise<void> {
+        if (this.failDelete) throw new Error("simulated object deletion failure");
+        await super.delete(key);
+      }
+    }
+    const store = new RecoveringDeleteStore();
+
+    await expect(
+      createAttachment(app.db, store, {
+        id,
+        organizationId: admin.organizationId,
+        mimeType: "application/octet-stream",
+        filename: "failed-delete.bin",
+        body: Buffer.from("three"),
+        contentLength: 3,
+        uploadedBy: admin.humanAgentUuid,
+      }),
+    ).rejects.toThrow("Content-Length does not match");
+
+    expect(store.objects.get(objectKey)).toEqual(Buffer.from("three"));
+    const [retained] = await app.db.select().from(attachments).where(eq(attachments.id, id));
+    expect(retained).toMatchObject({ id, objectKey, lifecycleState: "deleting" });
+
+    store.failDelete = false;
+    await expect(sweepOrphanAttachments(app.db, store)).resolves.toMatchObject({ deleted: 1 });
+    expect(store.objects.has(objectKey)).toBe(false);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, id))).toHaveLength(0);
   });
 
   it("holds attachment reference locks until the message transaction commits", async () => {
@@ -269,6 +362,117 @@ describe("attachments route — upload + capability download", () => {
 
     await expect(deleteAttachmentIfUnreferenced(app.db, app.attachmentBlobStore, stored.id)).resolves.toBe(false);
     expect(await app.db.select().from(attachments).where(eq(attachments.id, stored.id))).toHaveLength(1);
+  });
+
+  it("holds single and batch file-content reference locks until message commit", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `file-ref-lock-${crypto.randomUUID().slice(0, 6)}` });
+    const stored = await createAttachment(app.db, app.attachmentBlobStore, {
+      organizationId: admin.organizationId,
+      mimeType: "image/png",
+      filename: "locked.png",
+      body: Buffer.from("locked-image"),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    const chatId = uuidv7();
+    await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
+    const ref = {
+      imageId: stored.id,
+      mimeType: "image/png" as const,
+      filename: stored.filename,
+      size: stored.sizeBytes,
+    };
+    const contents = [ref, { caption: "batch", attachments: [ref] }];
+
+    for (const content of contents) {
+      await app.db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Database;
+        await validateFileAttachmentRefs(tx, "file", content);
+        const lockError = await app.db
+          .transaction(async (cleanupTx) => {
+            await cleanupTx.execute(sql`SET LOCAL lock_timeout = '100ms'`);
+            await cleanupTx
+              .select({ id: attachments.id })
+              .from(attachments)
+              .where(eq(attachments.id, stored.id))
+              .for("update");
+          })
+          .then(
+            () => null,
+            (error: unknown) => error,
+          );
+        expect(lockError).toBeInstanceOf(Error);
+        const wrapped = lockError as Error & { cause?: unknown };
+        const causeMessage = wrapped.cause instanceof Error ? wrapped.cause.message : String(wrapped.cause ?? "");
+        expect(`${wrapped.message} ${causeMessage}`).toMatch(/lock timeout/);
+        await tx.insert(messages).values({
+          id: uuidv7(),
+          chatId,
+          senderId: admin.humanAgentUuid,
+          format: "file",
+          content,
+          source: "web",
+        });
+      });
+    }
+
+    await expect(deleteAttachmentIfUnreferenced(app.db, app.attachmentBlobStore, stored.id)).resolves.toBe(false);
+  });
+
+  it("validates single and batch file references in send and edit transactions", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `file-ref-send-${crypto.randomUUID().slice(0, 6)}` });
+    const chatId = uuidv7();
+    await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
+    const missingRef = {
+      imageId: crypto.randomUUID(),
+      mimeType: "image/png" as const,
+      filename: "missing.png",
+    };
+
+    await expect(
+      sendMessage(
+        app.db,
+        chatId,
+        admin.humanAgentUuid,
+        { format: "file", content: missingRef, source: "web" },
+        { allowRecipientlessSend: true },
+      ),
+    ).rejects.toThrow("non-existent attachment");
+    await expect(
+      sendMessage(
+        app.db,
+        chatId,
+        admin.humanAgentUuid,
+        { format: "file", content: { attachments: [missingRef] }, source: "web" },
+        { allowRecipientlessSend: true },
+      ),
+    ).rejects.toThrow("non-existent attachment");
+
+    const existingId = uuidv7();
+    await app.db.insert(messages).values({
+      id: existingId,
+      chatId,
+      senderId: admin.humanAgentUuid,
+      format: "text",
+      content: "before edit",
+      source: "web",
+    });
+    await expect(
+      editMessage(app.db, chatId, existingId, admin.humanAgentUuid, {
+        format: "file",
+        content: missingRef,
+      }),
+    ).rejects.toThrow("non-existent attachment");
+    await expect(
+      editMessage(app.db, chatId, existingId, admin.humanAgentUuid, {
+        format: "file",
+        content: { attachments: [missingRef] },
+      }),
+    ).rejects.toThrow("non-existent attachment");
+
+    const [existing] = await app.db.select().from(messages).where(eq(messages.id, existingId));
+    expect(existing).toMatchObject({ format: "text", content: "before edit" });
   });
 
   it("capability model: any authenticated user with the id can download", async () => {

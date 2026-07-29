@@ -105,14 +105,40 @@ export async function createAttachment(
         .where(eq(attachments.id, id));
     });
   } catch (error) {
-    await blobStore.delete(objectKey).catch(() => undefined);
-    await db.delete(attachments).where(eq(attachments.id, id));
+    await retainFailedUploadUntilObjectDeletion(db, blobStore, id, objectKey);
     throw error;
   }
 
   const [row] = await db.select().from(attachments).where(eq(attachments.id, id)).limit(1);
   if (!row) throw new Error("Attachment insert returned no row");
   return row;
+}
+
+/**
+ * Best-effort rollback after the object store accepted an upload but the
+ * attachment could not be published. The lifecycle row is removed only after
+ * object deletion succeeds; otherwise the sweeper can retry the `deleting`
+ * row instead of losing the only durable pointer to the object.
+ */
+async function retainFailedUploadUntilObjectDeletion(
+  db: Database,
+  blobStore: AttachmentBlobStore,
+  id: string,
+  objectKey: string,
+): Promise<void> {
+  try {
+    const [marked] = await db
+      .update(attachments)
+      .set({ lifecycleState: "deleting", updatedAt: new Date() })
+      .where(eq(attachments.id, id))
+      .returning({ id: attachments.id });
+    if (!marked) return;
+
+    await blobStore.delete(objectKey);
+    await db.delete(attachments).where(and(eq(attachments.id, id), eq(attachments.lifecycleState, "deleting")));
+  } catch {
+    // Keep the uploading/deleting lifecycle row for the bounded sweeper.
+  }
 }
 
 function validateCreateInput(input: CreateAttachmentInput): void {
@@ -309,6 +335,7 @@ export async function deleteAttachmentIfUnreferenced(
   db: Database,
   blobStore: AttachmentBlobStore,
   id: string,
+  options: { orphanCutoff?: Date } = {},
 ): Promise<boolean> {
   let objectKey: string | null = null;
   let shouldDelete = false;
@@ -319,12 +346,20 @@ export async function deleteAttachmentIfUnreferenced(
         id: attachments.id,
         objectKey: attachments.objectKey,
         lifecycleState: attachments.lifecycleState,
+        updatedAt: attachments.updatedAt,
       })
       .from(attachments)
       .where(eq(attachments.id, id))
       .for("update")
       .limit(1);
     if (!row) return;
+    if (
+      options.orphanCutoff &&
+      row.lifecycleState !== "deleting" &&
+      !((row.lifecycleState === "uploading" || row.lifecycleState === "ready") && row.updatedAt < options.orphanCutoff)
+    ) {
+      return;
+    }
     if (await isAttachmentReferenced(targetDb, id)) {
       // Move live rows out of the bounded orphan scan window. Without this
       // touch, the same oldest referenced rows could permanently starve later
@@ -371,7 +406,7 @@ export async function sweepOrphanAttachments(
   let deleted = 0;
   for (const candidate of candidates) {
     try {
-      if (await deleteAttachmentIfUnreferenced(db, blobStore, candidate.id)) deleted++;
+      if (await deleteAttachmentIfUnreferenced(db, blobStore, candidate.id, { orphanCutoff: cutoff })) deleted++;
     } catch {
       // Keep the lifecycle row for the next retry.
     }

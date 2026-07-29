@@ -27,6 +27,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
 import { createLogger, messageAttrs, withSpan } from "../observability/index.js";
 import { uuidv7 } from "../uuid.js";
 import { upsertSessionState } from "./activity.js";
+import { type AttachmentReader, loadAttachmentMetaForReference } from "./attachment.js";
 import { applyAfterFanOut, fireChatMessageKick } from "./chat-projection.js";
 import { validateDocumentContext, validateMessageAttachmentRefs } from "./doc-snapshots.js";
 import { hasRemainingLandingCampaignTrialBudget } from "./landing-campaigns/chat-state.js";
@@ -97,6 +98,55 @@ function validateFileContent(content: unknown): void {
     `Invalid file message content: expected an image reference ({imageId, mimeType, filename}) or a batch ` +
       `({caption?, attachments[1..${MAX_BATCH_ATTACHMENTS}]}), with MIME one of png/jpeg/gif/webp.`,
   );
+}
+
+/**
+ * Resolve every attachment referenced by a file message while the message
+ * transaction is open. `FOR KEY SHARE` locks held by the loader prevent the
+ * orphan sweeper from deleting a ready image between validation and insert.
+ */
+export async function validateFileAttachmentRefs(
+  db: AttachmentReader,
+  format: string,
+  content: unknown,
+): Promise<void> {
+  if (format !== "file") return;
+
+  const batch = imageBatchRefContentSchema.safeParse(content);
+  const single = batch.success ? null : imageRefContentSchema.safeParse(content);
+  const refs = batch.success ? batch.data.attachments : single?.success ? [single.data] : [];
+
+  // The synchronous shape guard runs before the transaction; fail closed here
+  // too so this trust boundary remains correct if another write path reuses it.
+  if (refs.length === 0) {
+    throw new BadRequestError("Invalid file message attachment references");
+  }
+
+  const rows = await Promise.all(refs.map((ref) => loadAttachmentMetaForReference(db, ref.imageId)));
+  for (let i = 0; i < refs.length; i += 1) {
+    const ref = refs[i];
+    const row = rows[i];
+    if (!ref) continue;
+    if (!row) {
+      throw new BadRequestError("File message points at a non-existent attachment", {
+        "attachment_ref.id": ref.imageId,
+      });
+    }
+    if (row.mimeType !== ref.mimeType) {
+      throw new BadRequestError("File message mimeType does not match the stored attachment", {
+        "attachment_ref.id": ref.imageId,
+        "attachment_ref.declared_mime": ref.mimeType,
+        "attachment_ref.actual_mime": row.mimeType,
+      });
+    }
+    if (ref.size !== undefined && row.sizeBytes !== ref.size) {
+      throw new BadRequestError("File message size does not match the stored attachment", {
+        "attachment_ref.id": ref.imageId,
+        "attachment_ref.declared_size": ref.size,
+        "attachment_ref.actual_size": row.sizeBytes,
+      });
+    }
+  }
 }
 
 /**
@@ -735,6 +785,7 @@ async function sendMessageInner(
     //     checked client-side at render via `ref.sha256`; uploader != sender by
     //     design (see validateMessageAttachmentRefs).
     await validateMessageAttachmentRefs(tx, metadataToStore);
+    await validateFileAttachmentRefs(tx, data.format, outboundContent);
 
     // 3. Store the message (with merged metadata + normalised content).
     // UUID v7 per the "UUID v7 as Message ID" architecture rule in
@@ -1088,6 +1139,7 @@ export async function editMessage(
 
   const setClause: Record<string, unknown> = {};
   if (data.format !== undefined) setClause.format = data.format;
+  let effectiveContent = msg.content;
   if (data.content !== undefined) {
     // An edit can replace the body of any message — including an already-open
     // `format=request` ask whose format is frozen above. Reuse the send-path
@@ -1096,17 +1148,21 @@ export async function editMessage(
     // agent-authored escaped-newline body.
     const [senderRow] = await db.select({ type: agents.type }).from(agents).where(eq(agents.uuid, senderId)).limit(1);
     if (!senderRow) throw new NotFoundError(`Sender agent "${senderId}" not found`);
-    const effectiveContent = normalizeNonHumanTextContent({
+    effectiveContent = normalizeNonHumanTextContent({
       chatId,
       senderId,
       senderType: senderRow.type,
       content: data.content,
     });
+    setClause.content = effectiveContent;
+  }
+
+  const effectiveFormat = data.format ?? msg.format;
+  if (data.content !== undefined || data.format !== undefined) {
     validateMessageContent(
-      { format: data.format ?? msg.format, content: effectiveContent },
+      { format: effectiveFormat, content: effectiveContent },
       { hasAttachmentRefs: attachmentRefsFromMetadata(msg.metadata ?? undefined).length > 0 },
     );
-    setClause.content = effectiveContent;
   }
 
   // Patch only the edit timestamp in Postgres so concurrent server-owned
@@ -1115,9 +1171,19 @@ export async function editMessage(
     new Date().toISOString(),
   )}::jsonb)`;
 
-  const [updated] = await db.update(messages).set(setClause).where(eq(messages.id, messageId)).returning();
-  if (!updated) throw new Error("Unexpected: UPDATE RETURNING produced no row");
-  return updated;
+  const persistEdit = async (targetDb: Database) => {
+    if (data.content !== undefined || data.format !== undefined) {
+      await validateFileAttachmentRefs(targetDb, effectiveFormat, effectiveContent);
+    }
+    const [updated] = await targetDb.update(messages).set(setClause).where(eq(messages.id, messageId)).returning();
+    if (!updated) throw new Error("Unexpected: UPDATE RETURNING produced no row");
+    return updated;
+  };
+
+  if (effectiveFormat !== "file" || (data.content === undefined && data.format === undefined)) {
+    return persistEdit(db);
+  }
+  return db.transaction((tx) => persistEdit(tx as unknown as Database));
 }
 
 /**
