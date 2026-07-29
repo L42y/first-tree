@@ -545,17 +545,7 @@ export function ConversationList({
                   // avatar corner mark, while the left bar remains the selected
                   // affordance only.
                   return (
-                    <div
-                      key={row.chatId}
-                      className="group flex items-center transition-colors hover:bg-[var(--bg-hover)]"
-                      style={{
-                        background: isSelected ? "var(--brand-bg)" : "transparent",
-                        // Left bar is the SELECTED affordance only (DESIGN.md:
-                        // selected = green left-rail + tint). Attention no longer
-                        // doubles up here; it reads from the avatar corner mark.
-                        borderLeft: `var(--hairline-bold) solid ${isSelected ? "var(--brand)" : "transparent"}`,
-                      }}
-                    >
+                    <div key={row.chatId} className="group relative">
                       <button
                         type="button"
                         onClick={() => onSelectChat(row.chatId)}
@@ -564,17 +554,21 @@ export function ConversationList({
                         // the New-chat button's `aria-current`.
                         aria-current={isSelected ? "page" : undefined}
                         className={cn(
-                          "min-w-0 flex-1 text-left cursor-pointer transition-colors flex items-center",
-                          "active:bg-[var(--bg-active)]",
+                          "w-full text-left transition-colors flex items-center",
+                          "hover:bg-[var(--bg-hover)]",
                         )}
                         style={{
                           // Single-line rows tuned for desktop-inbox density:
                           // tightened vertical padding (--sp-2) now that the
                           // preview subtitle line is gone, so more conversations
                           // fit per screen without reading as a dense wall.
-                          padding: "var(--sp-2) var(--sp-1) var(--sp-2) var(--sp-3)",
+                          padding: "var(--sp-2) var(--sp-3)",
                           gap: "var(--sp-2)",
-                          background: "transparent",
+                          background: isSelected ? "var(--brand-bg)" : "transparent",
+                          // Left bar is the SELECTED affordance only (DESIGN.md:
+                          // selected = green left-rail + tint). Attention no longer
+                          // doubles up here; it reads from the avatar corner mark.
+                          borderLeft: `var(--hairline-bold) solid ${isSelected ? "var(--brand)" : "transparent"}`,
                         }}
                       >
                         <ChatRowAvatar
@@ -622,9 +616,13 @@ export function ConversationList({
                           ) : null}
                         </span>
                       </button>
-                      {/* Keep the row action in its own hit target instead of
-                          absolutely overlaying the chat-selection button. */}
-                      <div className="shrink-0" style={{ padding: "0 var(--sp-3) 0 var(--sp-1)" }}>
+                      <div
+                        className="absolute"
+                        style={{
+                          top: "var(--sp-2)",
+                          right: "var(--sp-3)",
+                        }}
+                      >
                         <RowEngagementMenu
                           chatId={row.chatId}
                           status={row.engagementStatus}

@@ -765,7 +765,7 @@ describe("ConversationList", () => {
     }
   });
 
-  it("separates row selection from its actions and keeps the kebab reachable on touch", async () => {
+  it("preserves the dense row layout while gating the hidden kebab hit target", async () => {
     const onSelectChat = vi.fn();
     const pinnedRow = row({
       chatId: "chat-pinned",
@@ -781,8 +781,9 @@ describe("ConversationList", () => {
     // Row selection is exposed to assistive tech (was tint + left bar only).
     expect(selectedRow.getAttribute("aria-current")).toBe("page");
     expect(rowButton(container, "Broken deploy").getAttribute("aria-current")).toBeNull();
-    expect(selectedRow.className).toContain("cursor-pointer");
-    expect(selectedRow.className).toContain("active:bg-[var(--bg-active)]");
+    expect(selectedRow.className).toContain("w-full");
+    expect(selectedRow.className).toContain("hover:bg-[var(--bg-hover)]");
+    expect(selectedRow.className).not.toContain("active:bg-[var(--bg-active)]");
     await click(selectedRow);
     expect(onSelectChat).toHaveBeenCalledWith("chat-pinned");
     // The row-actions kebab (the only Pin entry point) reveals on coarse (touch)
@@ -792,10 +793,10 @@ describe("ConversationList", () => {
     expect(kebab?.className).toContain("pointer-coarse:opacity-100");
     expect(kebab?.className).toContain("pointer-events-none");
     expect(kebab?.className).toContain("group-hover:pointer-events-auto");
-    // The main selector and action menu are sibling hit regions. The action no
-    // longer sits absolutely over the selector's right edge.
+    // Keep the pre-existing compact overlay layout: only the visible action
+    // trigger owns the trailing hit target.
     expect(kebab?.parentElement?.parentElement?.parentElement).toBe(selectedRow.parentElement);
-    expect(kebab?.parentElement?.parentElement?.className).not.toContain("absolute");
+    expect(kebab?.parentElement?.parentElement?.className).toContain("absolute");
     // ...and the trailing metadata cluster hides on coarse pointers so the
     // always-visible kebab never overlaps the row's time / status (R5).
     expect(container.querySelector('[class~="pointer-coarse:opacity-0"]')).not.toBeNull();
