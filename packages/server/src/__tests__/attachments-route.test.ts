@@ -20,7 +20,7 @@ import {
 import { type AttachmentBlobStore, MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
 import { validateMessageAttachmentRefs } from "../services/doc-snapshots.js";
 import { ensureMembership } from "../services/membership.js";
-import { editMessage, sendMessage, validateFileAttachmentRefs } from "../services/message.js";
+import { editMessage, lockFileAttachmentRefsIfPresent, sendMessage } from "../services/message.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
 
@@ -387,7 +387,7 @@ describe("attachments route — upload + capability download", () => {
     for (const content of contents) {
       await app.db.transaction(async (rawTx) => {
         const tx = rawTx as unknown as Database;
-        await validateFileAttachmentRefs(tx, "file", content);
+        await lockFileAttachmentRefsIfPresent(tx, "file", content);
         const lockError = await app.db
           .transaction(async (cleanupTx) => {
             await cleanupTx.execute(sql`SET LOCAL lock_timeout = '100ms'`);
@@ -419,7 +419,7 @@ describe("attachments route — upload + capability download", () => {
     await expect(deleteAttachmentIfUnreferenced(app.db, app.attachmentBlobStore, stored.id)).resolves.toBe(false);
   });
 
-  it("validates single and batch file references in send and edit transactions", async () => {
+  it("keeps legacy single and batch file references shape-only", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `file-ref-send-${crypto.randomUUID().slice(0, 6)}` });
     const chatId = uuidv7();
@@ -430,24 +430,44 @@ describe("attachments route — upload + capability download", () => {
       filename: "missing.png",
     };
 
-    await expect(
-      sendMessage(
-        app.db,
-        chatId,
-        admin.humanAgentUuid,
-        { format: "file", content: missingRef, source: "web" },
-        { allowRecipientlessSend: true },
-      ),
-    ).rejects.toThrow("non-existent attachment");
-    await expect(
-      sendMessage(
-        app.db,
-        chatId,
-        admin.humanAgentUuid,
-        { format: "file", content: { attachments: [missingRef] }, source: "web" },
-        { allowRecipientlessSend: true },
-      ),
-    ).rejects.toThrow("non-existent attachment");
+    await sendMessage(
+      app.db,
+      chatId,
+      admin.humanAgentUuid,
+      { format: "file", content: missingRef, source: "web" },
+      { allowRecipientlessSend: true },
+    );
+    await sendMessage(
+      app.db,
+      chatId,
+      admin.humanAgentUuid,
+      { format: "file", content: { attachments: [missingRef] }, source: "web" },
+      { allowRecipientlessSend: true },
+    );
+
+    const stored = await createAttachment(app.db, app.attachmentBlobStore, {
+      organizationId: admin.organizationId,
+      mimeType: "image/png",
+      filename: "actual.png",
+      body: Buffer.from("actual"),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    await sendMessage(
+      app.db,
+      chatId,
+      admin.humanAgentUuid,
+      {
+        format: "file",
+        content: {
+          imageId: stored.id,
+          mimeType: "image/jpeg",
+          filename: "declared.jpg",
+          size: stored.sizeBytes + 1,
+        },
+        source: "web",
+      },
+      { allowRecipientlessSend: true },
+    );
 
     const existingId = uuidv7();
     await app.db.insert(messages).values({
@@ -458,21 +478,142 @@ describe("attachments route — upload + capability download", () => {
       content: "before edit",
       source: "web",
     });
-    await expect(
-      editMessage(app.db, chatId, existingId, admin.humanAgentUuid, {
+    await editMessage(
+      app.db,
+      chatId,
+      existingId,
+      admin.humanAgentUuid,
+      {
         format: "file",
         content: missingRef,
-      }),
-    ).rejects.toThrow("non-existent attachment");
-    await expect(
-      editMessage(app.db, chatId, existingId, admin.humanAgentUuid, {
+      },
+      app.attachmentBlobStore,
+    );
+    const edited = await editMessage(
+      app.db,
+      chatId,
+      existingId,
+      admin.humanAgentUuid,
+      {
         format: "file",
         content: { attachments: [missingRef] },
-      }),
-    ).rejects.toThrow("non-existent attachment");
+      },
+      app.attachmentBlobStore,
+    );
 
-    const [existing] = await app.db.select().from(messages).where(eq(messages.id, existingId));
-    expect(existing).toMatchObject({ format: "text", content: "before edit" });
+    expect(edited).toMatchObject({ format: "file", content: { attachments: [missingRef] } });
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(4);
+  });
+
+  it("immediately cleans legacy file refs released by replacement and file-to-text edits", async () => {
+    const app = getApp();
+    const store = app.attachmentBlobStore as MemoryAttachmentBlobStore;
+    const admin = await createTestAdmin(app, { username: `file-ref-edit-${crypto.randomUUID().slice(0, 6)}` });
+    const chatId = uuidv7();
+    await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
+    const previous = await createAttachment(app.db, app.attachmentBlobStore, {
+      organizationId: admin.organizationId,
+      mimeType: "image/png",
+      filename: "previous.png",
+      body: Buffer.from("previous"),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    const replacement = await createAttachment(app.db, app.attachmentBlobStore, {
+      organizationId: admin.organizationId,
+      mimeType: "image/png",
+      filename: "replacement.png",
+      body: Buffer.from("replacement"),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    const messageId = uuidv7();
+    await app.db.insert(messages).values({
+      id: messageId,
+      chatId,
+      senderId: admin.humanAgentUuid,
+      format: "file",
+      content: {
+        imageId: previous.id,
+        mimeType: "image/svg+xml",
+        filename: previous.filename,
+        size: previous.sizeBytes,
+      },
+      source: "web",
+    });
+
+    await editMessage(
+      app.db,
+      chatId,
+      messageId,
+      admin.humanAgentUuid,
+      {
+        content: {
+          caption: "replacement",
+          attachments: [
+            {
+              imageId: replacement.id,
+              mimeType: "image/png",
+              filename: replacement.filename,
+              size: replacement.sizeBytes,
+            },
+          ],
+        },
+      },
+      store,
+    );
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, previous.id))).toHaveLength(0);
+    expect(store.objects.has(attachmentObjectKey(admin.organizationId, previous.id))).toBe(false);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, replacement.id))).toHaveLength(1);
+
+    await editMessage(
+      app.db,
+      chatId,
+      messageId,
+      admin.humanAgentUuid,
+      { format: "text", content: "images removed" },
+      store,
+    );
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, replacement.id))).toHaveLength(0);
+    expect(store.objects.has(attachmentObjectKey(admin.organizationId, replacement.id))).toBe(false);
+
+    const retry = await createAttachment(app.db, store, {
+      organizationId: admin.organizationId,
+      mimeType: "image/png",
+      filename: "retry.png",
+      body: Buffer.from("retry"),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    const retryMessageId = uuidv7();
+    await app.db.insert(messages).values({
+      id: retryMessageId,
+      chatId,
+      senderId: admin.humanAgentUuid,
+      format: "file",
+      content: { imageId: retry.id, mimeType: "image/png", filename: retry.filename },
+      source: "web",
+    });
+    const failingDeleteStore: AttachmentBlobStore = {
+      put: store.put.bind(store),
+      get: store.get.bind(store),
+      async delete() {
+        throw new Error("simulated post-edit deletion failure");
+      },
+    };
+
+    await editMessage(
+      app.db,
+      chatId,
+      retryMessageId,
+      admin.humanAgentUuid,
+      { format: "text", content: "retry later" },
+      failingDeleteStore,
+    );
+    const [retained] = await app.db.select().from(attachments).where(eq(attachments.id, retry.id));
+    expect(retained).toMatchObject({ lifecycleState: "deleting" });
+    expect(store.objects.has(attachmentObjectKey(admin.organizationId, retry.id))).toBe(true);
+
+    await sweepOrphanAttachments(app.db, store);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, retry.id))).toHaveLength(0);
+    expect(store.objects.has(attachmentObjectKey(admin.organizationId, retry.id))).toBe(false);
   });
 
   it("capability model: any authenticated user with the id can download", async () => {
