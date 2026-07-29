@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import type { MeChatRow } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMock = vi.hoisted(() => ({
@@ -38,6 +39,34 @@ function createStorage(): Storage {
   };
 }
 
+function meChatRow(overrides: Partial<MeChatRow> = {}): MeChatRow {
+  return {
+    chatId: overrides.chatId ?? "chat-1",
+    type: overrides.type ?? "group",
+    membershipKind: overrides.membershipKind ?? "participant",
+    createdByMe: overrides.createdByMe ?? false,
+    source: overrides.source ?? "manual",
+    entityType: overrides.entityType ?? null,
+    title: overrides.title ?? "Launch planning",
+    topic: overrides.topic ?? "Launch planning",
+    description: overrides.description ?? null,
+    participants: overrides.participants ?? [],
+    participantCount: overrides.participantCount ?? 1,
+    lastMessageAt: overrides.lastMessageAt ?? "2026-07-09T10:00:00.000Z",
+    lastMessagePreview: overrides.lastMessagePreview ?? "Please review the launch checklist.",
+    unreadMentionCount: overrides.unreadMentionCount ?? 0,
+    openRequestCount: overrides.openRequestCount ?? 0,
+    canReply: overrides.canReply ?? true,
+    engagementStatus: overrides.engagementStatus ?? "active",
+    liveActivity: overrides.liveActivity ?? null,
+    failedAgentIds: overrides.failedAgentIds ?? [],
+    busyAgentIds: overrides.busyAgentIds ?? [],
+    chatHasExplicitMentionToMe: overrides.chatHasExplicitMentionToMe ?? false,
+    pinnedAt: overrides.pinnedAt ?? null,
+    activityAt: overrides.activityAt ?? null,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   apiMock.get.mockResolvedValue({});
@@ -52,6 +81,33 @@ afterEach(() => {
 });
 
 describe("api wrapper paths", () => {
+  it("normalizes a legacy Attention pin without reviving the retired tier", async () => {
+    const meChats = await import("../me-chats.js");
+    const pinnedRequest = meChatRow({
+      chatId: "pinned-request",
+      pinnedAt: "2026-07-09T09:00:00.000Z",
+      openRequestCount: 1,
+    });
+    const unpinnedRequest = meChatRow({
+      chatId: "unpinned-request",
+      openRequestCount: 1,
+    });
+    apiMock.get.mockResolvedValueOnce({
+      priorityRows: {
+        pinned: [],
+        attention: [pinnedRequest, unpinnedRequest],
+      },
+      rows: [pinnedRequest, unpinnedRequest],
+      nextCursor: null,
+    });
+
+    const listed = await meChats.listMeChats();
+
+    expect(listed.priorityRows).toEqual({ pinned: [pinnedRequest] });
+    expect(listed.rows.map((row) => row.chatId)).toEqual(["pinned-request", "unpinned-request"]);
+    expect("attention" in listed.priorityRows).toBe(false);
+  });
+
   it("formats activity, org setting, organization, and overview requests", async () => {
     const activity = await import("../activity.js");
     const contextTree = await import("../context-tree.js");

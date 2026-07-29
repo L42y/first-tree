@@ -364,6 +364,14 @@ export const meChatRowSchema = z.object({
 });
 export type MeChatRow = z.infer<typeof meChatRowSchema>;
 
+function sortMeChatRowsByActivity(rows: readonly MeChatRow[]): MeChatRow[] {
+  return [...rows].sort((a, b) => {
+    const aAt = Date.parse(a.activityAt ?? a.lastMessageAt ?? "") || 0;
+    const bAt = Date.parse(b.activityAt ?? b.lastMessageAt ?? "") || 0;
+    return bAt - aAt || b.chatId.localeCompare(a.chatId);
+  });
+}
+
 /**
  * The viewer's complete pin projection across the full matching set, populated
  * on the first page only and ordered by real-work activity DESC. Ordinary `rows` remain
@@ -372,12 +380,30 @@ export type MeChatRow = z.infer<typeof meChatRowSchema>;
  *
  * Open asks and recovery are row status signals, not list tiers. Open asks have
  * their own request-level Need you queue; recovery never changes chat ordering.
+ *
+ * A web-ahead rolling deploy can still receive the retired `attention` bucket
+ * from an older server. That server made Attention win over Pinned, so a pinned
+ * chat with an open request was absent from `pinned` even though its row still
+ * carried `pinnedAt`. Treat that legacy bucket only as a transport fallback:
+ * recover its pinned rows into the canonical pin projection, then discard the
+ * bucket. Unpinned Attention rows stay in additive `rows` and retain ordinary
+ * activity ordering; the retired tier never reappears in the parsed contract.
  */
 export const meChatPriorityRowsSchema = z
   .object({
-    pinned: z.array(meChatRowSchema),
+    pinned: z.array(meChatRowSchema).default([]),
+    attention: z.array(meChatRowSchema).default([]),
   })
-  .default({ pinned: [] });
+  .default({ pinned: [], attention: [] })
+  .transform(({ pinned, attention }) => {
+    const canonicalByChatId = new Map(pinned.map((row) => [row.chatId, row]));
+    for (const row of attention) {
+      if (row.pinnedAt !== null && !canonicalByChatId.has(row.chatId)) {
+        canonicalByChatId.set(row.chatId, row);
+      }
+    }
+    return { pinned: sortMeChatRowsByActivity([...canonicalByChatId.values()]) };
+  });
 export type MeChatPriorityRows = z.infer<typeof meChatPriorityRowsSchema>;
 
 export const listMeChatsResponseSchema = z.object({
