@@ -796,7 +796,12 @@ describe("ConversationList", () => {
     // Keep the pre-existing compact overlay layout: only the visible action
     // trigger owns the trailing hit target.
     expect(kebab?.parentElement?.parentElement?.parentElement).toBe(selectedRow.parentElement);
-    expect(kebab?.parentElement?.parentElement?.className).toContain("absolute");
+    const actionOverlay = kebab?.parentElement?.parentElement;
+    expect(actionOverlay?.className).toContain("absolute");
+    expect(actionOverlay?.className).toContain("pointer-events-none");
+    if (!kebab) throw new Error("Missing row action trigger");
+    await click(kebab);
+    expect(container.querySelector('[role="menu"]')?.className).toContain("pointer-events-auto");
     // ...and the trailing metadata cluster hides on coarse pointers so the
     // always-visible kebab never overlaps the row's time / status (R5).
     expect(container.querySelector('[class~="pointer-coarse:opacity-0"]')).not.toBeNull();
