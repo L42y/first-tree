@@ -6,6 +6,7 @@ import { createRunPaths } from "../../core/paths.js";
 import { runAgentProvider } from "../../core/provider/index.js";
 import { createEvalReporter } from "../../core/reporter.js";
 import {
+  type PartialRawAccessMonitor,
   setupFixture,
   startPartialRawAccessMonitors,
   stopPartialRawAccessMonitors,
@@ -30,6 +31,51 @@ function runPacketValidator(workspacePath: string) {
   );
 }
 
+export function finalizeFixtureValidationAfterAgent(
+  paths: Parameters<typeof validateFixture>[0],
+  sourceRepoPath: string,
+  initialFixtureValidation: ReturnType<typeof validateFixture>,
+  rawAccessMonitors: readonly PartialRawAccessMonitor[],
+): ReturnType<typeof validateFixture> {
+  let postRunFixtureValidation: ReturnType<typeof validateFixture> = {
+    errors: [],
+    ok: false,
+    requiredFilesOk: false,
+  };
+  let rawAccessMonitorErrors: readonly string[] = [];
+  try {
+    try {
+      postRunFixtureValidation = validateFixture(paths, sourceRepoPath);
+    } catch (error) {
+      postRunFixtureValidation = {
+        errors: [`post-run fixture validation threw: ${error instanceof Error ? error.message : String(error)}`],
+        ok: false,
+        requiredFilesOk: false,
+      };
+    }
+    try {
+      rawAccessMonitorErrors = validatePartialRawAccessMonitors(paths, rawAccessMonitors);
+    } catch (error) {
+      rawAccessMonitorErrors = [
+        `raw access monitor validation threw: ${error instanceof Error ? error.message : String(error)}`,
+      ];
+    }
+  } finally {
+    stopPartialRawAccessMonitors(rawAccessMonitors);
+  }
+
+  const errors = [
+    ...initialFixtureValidation.errors,
+    ...postRunFixtureValidation.errors.map((error) => `post-run ${error}`),
+    ...rawAccessMonitorErrors,
+  ];
+  return {
+    errors,
+    ok: errors.length === 0,
+    requiredFilesOk: initialFixtureValidation.requiredFilesOk && postRunFixtureValidation.requiredFilesOk,
+  };
+}
+
 export async function runSynthesizeMeetingRecordsCase(
   packageRoot: string,
   evalCase: MeetingRecordsEvalCase,
@@ -49,8 +95,7 @@ export async function runSynthesizeMeetingRecordsCase(
   const sourceRepoPath = setupFixture(evalCase, paths, reporter);
   const initialFixtureValidation = validateFixture(paths, sourceRepoPath);
   const rawAccessMonitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
-  let postRunFixtureValidation = initialFixtureValidation;
-  let rawAccessMonitorErrors: readonly string[] = [];
+  let fixtureValidation = initialFixtureValidation;
   const runnerResult = await (async () => {
     try {
       return await runAgentProvider(
@@ -66,21 +111,14 @@ export async function runSynthesizeMeetingRecordsCase(
         { paths, reporter },
       );
     } finally {
-      postRunFixtureValidation = validateFixture(paths, sourceRepoPath);
-      rawAccessMonitorErrors = validatePartialRawAccessMonitors(paths, rawAccessMonitors);
-      stopPartialRawAccessMonitors(rawAccessMonitors);
+      fixtureValidation = finalizeFixtureValidationAfterAgent(
+        paths,
+        sourceRepoPath,
+        initialFixtureValidation,
+        rawAccessMonitors,
+      );
     }
   })();
-  const fixtureErrors = [
-    ...initialFixtureValidation.errors,
-    ...postRunFixtureValidation.errors.map((error) => `post-run ${error}`),
-    ...rawAccessMonitorErrors,
-  ];
-  const fixtureValidation = {
-    errors: fixtureErrors,
-    ok: fixtureErrors.length === 0,
-    requiredFilesOk: initialFixtureValidation.requiredFilesOk && postRunFixtureValidation.requiredFilesOk,
-  };
   const validatorResult = runPacketValidator(paths.workspacePath);
   appendEvent(paths.eventsPath, {
     args: validatorResult.args,

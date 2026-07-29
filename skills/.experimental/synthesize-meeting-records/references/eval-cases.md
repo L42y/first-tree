@@ -46,7 +46,9 @@ no content; the case fails on that event. Fixture validation rejects a missing
 sentinel or any regular/symlinked raw artifact, so no partial prose can become
 model-facing through an unmodelled shell or provider access path. The
 post-agent check also requires every sentinel to retain its initial filesystem
-identity and every monitor to remain healthy until teardown.
+identity and every monitor to remain healthy until teardown. Missing or
+malformed bundle state becomes a failed fixture result, and monitor teardown
+runs unconditionally even if post-agent validation encounters an error.
 
 ## Model-backed cases
 

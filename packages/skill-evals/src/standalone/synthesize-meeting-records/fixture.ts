@@ -290,7 +290,13 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
   ];
   const missingFiles = required.filter((path) => !existsSync(path));
   const errors = missingFiles.map((path) => `missing required file: ${path}`);
-  for (const locator of partialArtifactLocators(sourceRepoPath)) {
+  let partialLocators: readonly string[] = [];
+  try {
+    partialLocators = partialArtifactLocators(sourceRepoPath);
+  } catch (error) {
+    errors.push(`invalid meeting artifact bundle: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (const locator of partialLocators) {
     const path = artifactPath(paths, locator);
     if (!existsSync(path)) {
       errors.push(`partial-source fixture missing raw access sentinel: ${locator}`);
