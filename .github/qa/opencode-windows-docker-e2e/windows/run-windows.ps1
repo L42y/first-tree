@@ -50,6 +50,20 @@ if ($osType -ne "windows") {
   throw "Windows Docker engine required; docker reported '$osType'"
 }
 
+$serviceImageReferences = @(
+  @(
+    & docker compose `
+      -p $ProjectName `
+      -f $composeFile `
+      config `
+      --images
+  ) | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique
+)
+if ($LASTEXITCODE -ne 0 -or $serviceImageReferences.Count -ne 1) {
+  throw "Expected exactly one Compose service image reference"
+}
+$serviceImageReference = [string]$serviceImageReferences[0]
+
 $hostOperatingSystem = Get-CimInstance Win32_OperatingSystem
 $dockerVersion = Invoke-DockerJson `
   -Arguments @("version", "--format", "{{json .}}") `
@@ -88,6 +102,7 @@ $identity = [ordered]@{
     baseReference = $windowsBase
     baseManifestDigest = "sha256:b841bb042e13a079f68fc82461f15abcefe8063fb9a3072120348252f13a6ce3"
     baseImageIDBefore = $baseImageIDBefore
+    serviceImageReference = $serviceImageReference
     serviceImageID = $null
   }
 }
@@ -107,12 +122,12 @@ try {
       throw "Windows harness image build failed"
     }
 
-    $serviceImageID = (& docker compose `
-      -p $ProjectName `
-      -f $composeFile `
-      images `
-      -q `
-      windows-job | Out-String).Trim()
+    $serviceImageID = (
+      & docker image inspect `
+        $serviceImageReference `
+        --format "{{.Id}}" |
+          Out-String
+    ).Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($serviceImageID)) {
       throw "Could not resolve the built Windows harness service image"
     }
@@ -149,11 +164,13 @@ try {
     --filter "label=com.docker.compose.project=$ProjectName")
   $networkReadExit = $LASTEXITCODE
 
-  $serviceImageAlive = $false
+  $serviceImageIDAlive = $false
   if (-not [string]::IsNullOrWhiteSpace($serviceImageID)) {
     & docker image inspect $serviceImageID *> $null
-    $serviceImageAlive = $LASTEXITCODE -eq 0
+    $serviceImageIDAlive = $LASTEXITCODE -eq 0
   }
+  & docker image inspect $serviceImageReference *> $null
+  $serviceImageReferenceAlive = $LASTEXITCODE -eq 0
 
   $baseImageIDAfter = $null
   $baseInspectAfter = & docker image inspect $windowsBase --format "{{.Id}}" 2>$null
@@ -169,7 +186,8 @@ try {
     $networkReadExit -eq 0 -and `
     @($containerResidue | Where-Object { $_ }).Count -eq 0 -and `
     @($networkResidue | Where-Object { $_ }).Count -eq 0 -and `
-    -not $serviceImageAlive -and `
+    -not $serviceImageIDAlive -and `
+    -not $serviceImageReferenceAlive -and `
     $baseCachePreserved
   $cleanup = [ordered]@{
     schema = "first-tree.opencode.windows-docker-cleanup.v1"
@@ -179,8 +197,10 @@ try {
     downExitCode = $downExitCode
     containers = @($containerResidue | Where-Object { $_ })
     networks = @($networkResidue | Where-Object { $_ })
+    serviceImageReference = $serviceImageReference
     serviceImageID = $serviceImageID
-    serviceImageAlive = $serviceImageAlive
+    serviceImageIDAlive = $serviceImageIDAlive
+    serviceImageReferenceAlive = $serviceImageReferenceAlive
     baseImageIDBefore = $baseImageIDBefore
     baseImageIDAfter = $baseImageIDAfter
     baseCachePreserved = $baseCachePreserved

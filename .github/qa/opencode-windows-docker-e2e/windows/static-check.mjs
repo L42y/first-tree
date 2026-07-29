@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -233,9 +233,14 @@ includesEvery(
     "down",
     "--remove-orphans",
     "--rmi local",
+    "config",
+    "--images",
+    "docker image inspect",
     "windows-runner-identity.json",
     "windows-cleanup-result.json",
-    "serviceImageAlive",
+    "serviceImageReference",
+    "serviceImageIDAlive",
+    "serviceImageReferenceAlive",
     "baseCachePreserved",
     "com.docker.compose.project=",
   ],
@@ -246,6 +251,38 @@ assert(
     expectedWindowsBase,
   "runner identity base digest differs from Dockerfile",
 );
+assert(
+  !/^\s*images\s*`\s*$[\s\S]{0,80}^\s*-q\s*`/mu.test(runner),
+  "runner still uses compose images -q before a service container exists",
+);
+
+const workflowPath = path.join(
+  root,
+  "..",
+  "..",
+  "workflows",
+  "opencode-windows-docker-e2e.yml",
+);
+if (existsSync(workflowPath)) {
+  const workflow = readFileSync(workflowPath, "utf8");
+  includesEvery(
+    workflow,
+    [
+      "config `",
+      "--images",
+      "docker image inspect",
+      "serviceImageReference",
+      "serviceImageIDAlive",
+      "serviceImageReferenceAlive",
+      "--rmi local",
+    ],
+    ".github/workflows/opencode-windows-docker-e2e.yml",
+  );
+  assert(
+    !/^\s*images\s*`\s*$[\s\S]{0,80}^\s*-q\s*`/mu.test(workflow),
+    "workflow cleanup still uses compose images -q",
+  );
+}
 
 const redactor = read("windows/redact-evidence.ps1");
 includesEvery(
@@ -295,6 +332,7 @@ const result = {
     "double-zero interval",
     "local provider cleanup receipt",
     "runner and Docker identity receipt",
+    "Compose image-reference resolution and ID/reference cleanup readback",
     "redacted evidence allowlist",
     "fail-closed result",
     "one-command scoped Windows cleanup and readback",

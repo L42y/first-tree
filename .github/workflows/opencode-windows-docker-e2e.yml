@@ -61,16 +61,27 @@ jobs:
             $env:FTQA_EVIDENCE_DIR = Join-Path $env:RUNNER_TEMP "opencode-windows-evidence"
           }
           New-Item -ItemType Directory -Force $env:FTQA_EVIDENCE_DIR | Out-Null
-          $serviceImageID = (
-            docker compose `
-              -p $env:FTQA_PROJECT_NAME `
-              -f "$env:FTQA_ROOT/compose.windows.yaml" `
-              images `
-              -q `
-              windows-job |
-                Out-String
-          ).Trim()
-          $imageReadExit = $LASTEXITCODE
+          $serviceImageReferences = @(
+            @(
+              docker compose `
+                -p $env:FTQA_PROJECT_NAME `
+                -f "$env:FTQA_ROOT/compose.windows.yaml" `
+                config `
+                --images
+            ) | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique
+          )
+          $imageConfigExit = $LASTEXITCODE
+          $serviceImageReference = $null
+          $serviceImageID = $null
+          if ($serviceImageReferences.Count -eq 1) {
+            $serviceImageReference = [string]$serviceImageReferences[0]
+            $serviceImageID = (
+              docker image inspect `
+                $serviceImageReference `
+                --format "{{.Id}}" 2>$null |
+                  Out-String
+            ).Trim()
+          }
           docker compose `
             -p $env:FTQA_PROJECT_NAME `
             -f "$env:FTQA_ROOT/compose.windows.yaml" `
@@ -88,10 +99,15 @@ jobs:
               --filter "label=com.docker.compose.project=$env:FTQA_PROJECT_NAME"
           ) | Where-Object { $_ }
           $networkReadExit = $LASTEXITCODE
-          $serviceImageAlive = $false
+          $serviceImageIDAlive = $false
           if ($serviceImageID) {
             docker image inspect $serviceImageID *> $null
-            $serviceImageAlive = $LASTEXITCODE -eq 0
+            $serviceImageIDAlive = $LASTEXITCODE -eq 0
+          }
+          $serviceImageReferenceAlive = $false
+          if ($serviceImageReference) {
+            docker image inspect $serviceImageReference *> $null
+            $serviceImageReferenceAlive = $LASTEXITCODE -eq 0
           }
           $receipt = [ordered]@{
             schema = "first-tree.opencode.windows-actions-cleanup.v1"
@@ -100,18 +116,22 @@ jobs:
                 $downExit -eq 0 -and
                 $containerReadExit -eq 0 -and
                 $networkReadExit -eq 0 -and
-                $imageReadExit -eq 0 -and
+                $imageConfigExit -eq 0 -and
+                $serviceImageReferences.Count -eq 1 -and
                 @($containers).Count -eq 0 -and
                 @($networks).Count -eq 0 -and
-                -not $serviceImageAlive
+                -not $serviceImageIDAlive -and
+                -not $serviceImageReferenceAlive
               ) { "PASS" } else { "FAIL" }
             )
             projectName = $env:FTQA_PROJECT_NAME
             downExitCode = $downExit
             containers = @($containers)
             networks = @($networks)
+            serviceImageReference = $serviceImageReference
             serviceImageID = $serviceImageID
-            serviceImageAlive = $serviceImageAlive
+            serviceImageIDAlive = $serviceImageIDAlive
+            serviceImageReferenceAlive = $serviceImageReferenceAlive
             completedAt = [DateTime]::UtcNow.ToString("o")
           }
           $receiptPath = Join-Path $env:FTQA_EVIDENCE_DIR "windows-actions-cleanup-result.json"
