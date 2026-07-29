@@ -173,11 +173,11 @@ work needs its own task boundary. After an agent handoff, continue only
 independent work; do not poll solely because that agent has not replied.
 
 **Rich bodies use files or stdin.** Inline `"..."` is parsed by the shell:
-backticks and `$(...)` execute, `$VAR` expands, quotes can end the string,
-and broken heredocs leave `@EOF`. A file/stdin preserves Markdown, code,
-quotes, dollars, and newlines. Pass raw strings, never `JSON.stringify`;
-escaped `\n` rows caused the Issue #389 double-encode failure. Use
-`-f markdown` when you want Markdown rendering.
+backticks and `$(...)` execute, `$VAR` expands, quotes can end the string, and
+broken heredocs leave `@EOF`. A file/stdin preserves Markdown and newlines.
+Pass raw strings, never `JSON.stringify`; Issue #389 showed escaped `\n` rows can
+double-encode. Use `-f markdown`; `-F` supplies only the body. Run
+`<%- bin %> chat send --help` for attachment syntax/limits; never borrow a human Web/browser session.
 
 ## Workspace Collaboration
 

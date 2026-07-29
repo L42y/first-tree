@@ -506,6 +506,9 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
     expect(communication).toContain("@EOF");
     expect(communication).toContain("Issue #389");
     expect(communication).toMatch(/Use\s+`-f markdown`/);
+    expect(communication).toMatch(/`-F` supplies only\s+the body/);
+    expect(communication).toContain("chat send --help");
+    expect(communication).toContain("never borrow a human Web/browser session");
   });
 
   it("uses one channel-resolved binary name across prompt, chat, GitHub, and tree commands", () => {

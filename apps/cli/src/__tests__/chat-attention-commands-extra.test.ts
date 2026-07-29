@@ -133,6 +133,35 @@ afterEach(() => {
 });
 
 describe("chat command behavior", () => {
+  it("keeps outbound attachment capture discoverable in `chat send --help`", async () => {
+    const { registerChatCommands } = await import("../commands/chat/index.js");
+    const program = new Command();
+    registerChatCommands(program);
+    const chat = program.commands.find((command) => command.name() === "chat");
+    const send = chat?.commands.find((command) => command.name() === "send");
+    let output = "";
+    send?.configureOutput({
+      writeOut: (text) => {
+        output += text;
+      },
+      writeErr: (text) => {
+        output += text;
+      },
+    });
+    send?.outputHelp();
+    const help = output.replace(/\s+/gu, " ");
+
+    expect(help).toContain("This reads only the message body; it does not attach <path>");
+    expect(help).toContain("Attachment capture (agent sessions; best-effort and body-reference based)");
+    expect(help).toContain("best-effort and body-reference based");
+    expect(help).toContain("PNG/JPEG/GIF/WebP");
+    expect(help).toContain("sending agent's own workspace");
+    expect(help).toContain("10 MiB each, up to 20 images per message");
+    expect(help).toContain("workspace `.md` path");
+    expect(help).toContain("10 MiB each, up to 10 documents per message");
+    expect(help).toContain("Other outbound file types are not captured");
+  });
+
   it("sends messages with metadata, stdin fallback, document context, and validation errors", async () => {
     docCaptureMock.captureOutboundDocs.mockResolvedValueOnce({
       content: "see docs/plan.md",
