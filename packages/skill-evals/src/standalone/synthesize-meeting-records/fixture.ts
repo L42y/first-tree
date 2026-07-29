@@ -13,6 +13,7 @@ import type { FixtureValidation, MeetingFixtureMode, MeetingRecordsEvalCase } fr
 export const SKILL_NAME = "synthesize-meeting-records";
 export const OUTPUT_NAME = "meeting-analysis-output.json";
 const RAW_ACCESS_MONITOR_PATH = fileURLToPath(new URL("./raw-access-monitor.mjs", import.meta.url));
+const RAW_ACCESS_MONITOR_READY_TIMEOUT_MS = 2_000;
 
 export type PartialRawAccessMonitor = {
   child: ChildProcess;
@@ -203,22 +204,71 @@ function installPartialRawAccessSentinels(paths: RunPaths, sourceRepoPath: strin
   }
 }
 
-export function startPartialRawAccessMonitors(
+function waitForPartialRawAccessMonitor(monitor: PartialRawAccessMonitor): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const cleanup = () => {
+      clearTimeout(timeout);
+      monitor.child.off("error", onError);
+      monitor.child.off("exit", onExit);
+      monitor.child.off("message", onMessage);
+    };
+    const reject = (error: Error) => {
+      cleanup();
+      rejectPromise(error);
+    };
+    const onError = (error: Error) => reject(error);
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+      reject(
+        new Error(
+          `Raw access monitor exited before readiness for ${monitor.locator}: code=${String(code)} signal=${String(signal)}`,
+        ),
+      );
+    const onMessage = (message: unknown) => {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        "type" in message &&
+        message.type === "partial_raw_monitor_ready"
+      ) {
+        cleanup();
+        resolvePromise();
+      }
+    };
+    const timeout = setTimeout(
+      () => reject(new Error(`Raw access monitor did not become ready for ${monitor.locator}`)),
+      RAW_ACCESS_MONITOR_READY_TIMEOUT_MS,
+    );
+    monitor.child.once("error", onError);
+    monitor.child.once("exit", onExit);
+    monitor.child.on("message", onMessage);
+  });
+}
+
+export async function startPartialRawAccessMonitors(
   paths: RunPaths,
   sourceRepoPath: string,
-): readonly PartialRawAccessMonitor[] {
-  return partialArtifactLocators(sourceRepoPath).map((locator) => {
+): Promise<readonly PartialRawAccessMonitor[]> {
+  const pendingMonitors = partialArtifactLocators(sourceRepoPath).map((locator) => {
     const path = artifactPath(paths, locator);
     const identity = lstatSync(path);
-    return {
+    const monitor = {
       child: spawn(process.execPath, [RAW_ACCESS_MONITOR_PATH, path, paths.eventsPath, locator], {
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
       }),
       device: identity.dev,
       inode: identity.ino,
       locator,
     };
+    return { monitor, ready: waitForPartialRawAccessMonitor(monitor) };
   });
+  const monitors = pendingMonitors.map(({ monitor }) => monitor);
+  try {
+    await Promise.all(pendingMonitors.map(({ ready }) => ready));
+    return monitors;
+  } catch (error) {
+    stopPartialRawAccessMonitors(monitors);
+    throw error;
+  }
 }
 
 export function validatePartialRawAccessMonitors(

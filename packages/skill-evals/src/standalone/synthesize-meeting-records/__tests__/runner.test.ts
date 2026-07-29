@@ -39,7 +39,7 @@ describe("standalone synthesize-meeting-records runner cleanup", () => {
     try {
       const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
       const initialValidation = validateFixture(paths, sourceRepoPath);
-      const monitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
+      const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
       const monitorExits = monitors.map((monitor) =>
         monitor.child.exitCode === null ? once(monitor.child, "exit") : Promise.resolve([]),
       );

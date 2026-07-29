@@ -94,7 +94,7 @@ export async function runSynthesizeMeetingRecordsCase(
 
   const sourceRepoPath = setupFixture(evalCase, paths, reporter);
   const initialFixtureValidation = validateFixture(paths, sourceRepoPath);
-  const rawAccessMonitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
+  const rawAccessMonitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
   let fixtureValidation = initialFixtureValidation;
   const runnerResult = await (async () => {
     try {

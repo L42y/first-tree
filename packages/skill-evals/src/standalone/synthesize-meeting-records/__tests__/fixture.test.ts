@@ -1,11 +1,11 @@
 import { once } from "node:events";
-import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { readEvents } from "../../../core/events.js";
+import { isRecord, readEvents } from "../../../core/events.js";
 import { createRunPaths } from "../../../core/paths.js";
 import { createEvalReporter } from "../../../core/reporter.js";
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
@@ -16,6 +16,7 @@ import {
   validateFixture,
   validatePartialRawAccessMonitors,
 } from "../fixture.js";
+import { rawArtifactReadObserved } from "../grader.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
@@ -41,7 +42,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
     }
   });
 
-  it("makes partial-source raw artifacts unavailable before semantic analysis", () => {
+  it("makes partial-source raw artifacts unavailable before semantic analysis", async () => {
     const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
     if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
     const paths = createRunPaths({
@@ -58,7 +59,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
       expect(lstatSync(join(sourceRepoPath, "minutes.md")).isFIFO()).toBe(true);
       expect(lstatSync(join(sourceRepoPath, "appendix.md")).isFIFO()).toBe(true);
       expect(validateFixture(paths, sourceRepoPath).ok).toBe(true);
-      const monitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
+      const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
       try {
         expect(readFileSync(join(sourceRepoPath, "appendix.md"), "utf8")).toBe("");
         expect(readEvents(paths.eventsPath)).toContainEqual(
@@ -90,7 +91,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
       startedAt: "2026-07-29T00:00:02.000Z",
     });
     const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
-    const monitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
+    const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
     try {
       rmSync(join(sourceRepoPath, "appendix.md"));
       expect(validateFixture(paths, sourceRepoPath).errors).toContain(
@@ -108,6 +109,46 @@ describe("standalone synthesize-meeting-records fixture", () => {
       expect(validatePartialRawAccessMonitors(paths, monitors)).toContain(
         "raw access monitor stopped before teardown: source-artifacts/appendix.md",
       );
+    } finally {
+      stopPartialRawAccessMonitors(monitors);
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("records a sentinel move-away and move-back even when the protected path read fails", async () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
+    if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-sentinel-continuity-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:04.000Z",
+    });
+    const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+    const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
+    try {
+      const sentinelPath = join(sourceRepoPath, "appendix.md");
+      const movedPath = join(sourceRepoPath, ".appendix.md.moved");
+      renameSync(sentinelPath, movedPath);
+      try {
+        expect(() => readFileSync(sentinelPath, "utf8")).toThrow();
+      } finally {
+        renameSync(movedPath, sentinelPath);
+      }
+
+      await expect
+        .poll(
+          () =>
+            readEvents(paths.eventsPath).some(
+              (event) =>
+                isRecord(event) &&
+                event.type === "partial_raw_path_mutation" &&
+                event.locator === "source-artifacts/appendix.md",
+            ),
+          { timeout: 1_000 },
+        )
+        .toBe(true);
+      expect(validatePartialRawAccessMonitors(paths, monitors)).toEqual([]);
+      expect(rawArtifactReadObserved(readEvents(paths.eventsPath), evalCase)).toBe(true);
     } finally {
       stopPartialRawAccessMonitors(monitors);
       rmSync(paths.runRoot, { force: true, recursive: true });

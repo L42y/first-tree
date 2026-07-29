@@ -228,12 +228,15 @@ describe("standalone synthesize-meeting-records grader", () => {
     ).toContain("verbatim-canary-six-314159");
   });
 
-  it("rejects a recorded partial raw access attempt before an otherwise clean blocked packet", () => {
+  it.each([
+    "partial_raw_access_attempt",
+    "partial_raw_path_mutation",
+  ])("rejects a recorded %s before an otherwise clean blocked packet", (eventType) => {
     const partialCase = evalCase("partial-source");
     const events = [
       {
         locator: "source-artifacts/appendix.md",
-        type: "partial_raw_access_attempt",
+        type: eventType,
       },
     ];
     expect(rawArtifactReadObserved(events, partialCase)).toBe(true);

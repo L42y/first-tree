@@ -154,7 +154,10 @@ function successfulCommand(event: unknown): string | null {
 
 export function rawArtifactReadObserved(events: readonly unknown[], evalCase: MeetingRecordsEvalCase): boolean {
   if (!evalCase.expected.blockBeforeRawRead) return false;
-  return events.some((event) => isRecord(event) && event.type === "partial_raw_access_attempt");
+  return events.some(
+    (event) =>
+      isRecord(event) && (event.type === "partial_raw_access_attempt" || event.type === "partial_raw_path_mutation"),
+  );
 }
 
 function isAssistantMessage(record: Record<string, unknown>): boolean {
