@@ -191,7 +191,7 @@ function previewFacts(role: PreviewRole, state: PreviewState): SetupFacts {
       },
       repositories: { state: "error" },
       capabilities: { state: "ready", value: MIXED_CAPABILITIES },
-      contextTreeSnapshot: { state: "ready", value: "stale" },
+      contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "stale" } },
     };
   }
 
@@ -209,7 +209,7 @@ function previewFacts(role: PreviewRole, state: PreviewState): SetupFacts {
     },
     repositories: { state: "ready", value: 3 },
     capabilities: { state: "ready", value: PREVIEW_CAPABILITIES },
-    contextTreeSnapshot: { state: "ready", value: "active" },
+    contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "active" } },
   };
 }
 

@@ -1,4 +1,5 @@
 import type {
+  ContextTreeSnapshot,
   SetupActionKind,
   SetupAutomaticReview,
   SetupBlocker,
@@ -38,6 +39,7 @@ import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { cn } from "../../lib/utils.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
 import { ContextEnablement } from "./context-enablement.js";
+import { isPrivateGitlabContextUnavailable } from "./setup-attention.js";
 import { SetupContextTreeControls } from "./setup-context-tree-controls.js";
 import { SetupReviewerControls } from "./setup-reviewer-controls.js";
 
@@ -52,7 +54,10 @@ type Fact<T> =
 type ContextTreeFact = {
   binding: SetupContextTreeBinding;
   availability: "active" | "stale" | "unavailable" | "checking" | "unknown" | null;
+  privateGitlabContextUnavailable: boolean;
 };
+
+type ContextTreeSnapshotFact = Pick<ContextTreeSnapshot, "snapshotStatus" | "provider" | "contentAvailability">;
 
 export type SetupStatusKind =
   | "ready"
@@ -75,7 +80,7 @@ export type SetupFacts = {
   computers: Fact<{ connected: number; saved: number; connectedHostname: string | null }>;
   repositories: Fact<number>;
   capabilities: Fact<TeamSetupCapabilities>;
-  contextTreeSnapshot: Fact<"active" | "stale" | "unavailable" | null>;
+  contextTreeSnapshot: Fact<ContextTreeSnapshotFact | null>;
 };
 
 export type SetupRowModel = {
@@ -103,24 +108,37 @@ function queryFact<T>(query: { data: T | undefined; isPending: boolean; isError:
 
 function contextTreeFact(
   capabilities: Fact<TeamSetupCapabilities>,
-  snapshot: Fact<"active" | "stale" | "unavailable" | null>,
+  snapshot: Fact<ContextTreeSnapshotFact | null>,
 ): Fact<ContextTreeFact> {
   if (capabilities.state === "loading") return { state: "loading" };
   if (capabilities.state === "error") return { state: "error" };
 
   const binding = capabilities.value.contextTree.binding;
   if (binding.state !== "bound") {
-    return { state: "ready", value: { binding, availability: null } };
+    return {
+      state: "ready",
+      value: { binding, availability: null, privateGitlabContextUnavailable: false },
+    };
   }
   if (snapshot.state === "loading") {
-    return { state: "ready", value: { binding, availability: "checking" } };
+    return {
+      state: "ready",
+      value: { binding, availability: "checking", privateGitlabContextUnavailable: false },
+    };
   }
   if (snapshot.state === "error") {
-    return { state: "ready", value: { binding, availability: "unknown" } };
+    return {
+      state: "ready",
+      value: { binding, availability: "unknown", privateGitlabContextUnavailable: false },
+    };
   }
   return {
     state: "ready",
-    value: { binding, availability: snapshot.value ?? "unknown" },
+    value: {
+      binding,
+      availability: snapshot.value?.snapshotStatus ?? "unknown",
+      privateGitlabContextUnavailable: isPrivateGitlabContextUnavailable(snapshot.value),
+    },
   };
 }
 
@@ -337,7 +355,7 @@ function contextTreeStatus(
   if (contextTree.state === "loading") return loadingStatus();
   if (contextTree.state === "error") return unknownStatus();
 
-  const { binding, availability } = contextTree.value;
+  const { binding, availability, privateGitlabContextUnavailable } = contextTree.value;
   if (binding.state === "unbound") {
     return {
       label: "Not set up",
@@ -362,6 +380,13 @@ function contextTreeStatus(
   ].join(" · ");
   const issueDetail = blockerDetail(blockers, isAdmin);
   const detail = [bindingDetail, issueDetail].filter((item): item is string => Boolean(item)).join(" · ");
+  if (privateGitlabContextUnavailable) {
+    return {
+      label: "Coming soon",
+      detail: `${bindingDetail} · First Tree can’t display private GitLab Context Trees in the web app yet. Agents and Context Reviewer with repository access can continue using the tree as usual.`,
+      kind: "neutral",
+    };
+  }
   if (availability === "active") return { label: "Available", detail, kind: "ready" };
   if (availability === "stale") return { label: "Available · update delayed", detail, kind: "pending" };
   if (availability === "unavailable") {
@@ -379,7 +404,7 @@ function contextTreeStatus(
 
 function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean): SetupRowModel["action"] | undefined {
   if (contextTree.state !== "ready") return undefined;
-  const { binding, availability } = contextTree.value;
+  const { binding, availability, privateGitlabContextUnavailable } = contextTree.value;
   if (binding.state === "unbound") {
     return isAdmin
       ? { label: "Set up", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
@@ -388,6 +413,11 @@ function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean)
   if (binding.state === "invalid") {
     return isAdmin
       ? { label: "Repair", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
+      : { label: "View", to: "/context" };
+  }
+  if (privateGitlabContextUnavailable) {
+    return isAdmin
+      ? { label: "Manage", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
       : { label: "View", to: "/context" };
   }
   if (availability === "unavailable") {
@@ -698,7 +728,14 @@ export function SettingsSetupPage() {
       ? { state: "loading" }
       : contextSnapshotQuery.isError || !contextSnapshotQuery.data
         ? { state: "error" }
-        : { state: "ready", value: contextSnapshotQuery.data.snapshotStatus };
+        : {
+            state: "ready",
+            value: {
+              snapshotStatus: contextSnapshotQuery.data.snapshotStatus,
+              provider: contextSnapshotQuery.data.provider,
+              contentAvailability: contextSnapshotQuery.data.contentAvailability,
+            },
+          };
 
   const facts: SetupFacts = {
     role,
@@ -786,6 +823,7 @@ export function SettingsSetupPage() {
                     key={`context-tree-${organizationId}`}
                     binding={contextTree.value.binding}
                     availability={contextTree.value.availability}
+                    privateGitlabContextUnavailable={contextTree.value.privateGitlabContextUnavailable}
                   >
                     {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
                       <SetupReviewerControls

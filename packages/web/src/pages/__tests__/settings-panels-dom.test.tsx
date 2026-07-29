@@ -531,6 +531,36 @@ describe("settings panels", () => {
     await act(async () => admin.root.unmount());
   });
 
+  it("does not mark private GitLab Web Context as admin setup attention", async () => {
+    const { SettingsLayout } = await import("../settings.js");
+    const capabilities = teamSetupCapabilities();
+    capabilities.contextTree.binding = {
+      state: "bound",
+      provider: "gitlab",
+      repo: "https://gitlab.example/acme/context-tree.git",
+      branch: "main",
+    };
+    setupCapabilitiesMocks.getTeamSetupCapabilitiesAt.mockResolvedValueOnce(capabilities);
+    contextApiMocks.getContextTreeSnapshot.mockResolvedValueOnce({
+      snapshotStatus: "unavailable",
+      provider: "gitlab",
+      contentAvailability: {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: "gitlab_authentication_required",
+      },
+    });
+
+    const admin = await renderDom(<SettingsLayout />, "/settings/account");
+    await waitForCondition(
+      () => contextApiMocks.getContextTreeSnapshot.mock.calls.length === 1,
+      "Expected the private GitLab Context Tree snapshot to load",
+    );
+
+    expect(admin.container.querySelector("[data-setup-attention]")).toBeNull();
+    await act(async () => admin.root.unmount());
+  });
+
   it("ignores cached unavailable snapshots when the current owner facts are unbound or failed", async () => {
     const { SettingsLayout } = await import("../settings.js");
     const snapshotKey = ["context-tree-snapshot", "org-1", "7d", false] as const;
