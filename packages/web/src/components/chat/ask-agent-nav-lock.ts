@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useLocation } from "react-router";
 
 /**
  * Ask agent navigation lock.
@@ -82,42 +82,68 @@ export function useAskAgentNavLocked(): boolean {
 /**
  * Mounted once by each navigation shell (desktop Workspace, mobile shell).
  * While an attempt is pending, this remembers the owning surface's URL and
- * reverts any popstate (browser back/forward) that would leave it. The
- * popstate event fires synchronously BEFORE React processes the location
- * change, so the restore lands while the lock is still held — the owning
- * surface never unmounts mid-attempt. In-app exits are fail-closed at their
- * own callbacks instead (rail rows, tab bar, list back). Returns the reactive
- * locked flag so those boundaries can also render a disabled state.
+ * history index, and installs a CAPTURE-phase popstate interceptor. The
+ * capture listener fires before React Router's bubble-phase `popstate`
+ * handler, so on browser Back/Forward it can `stopImmediatePropagation()` —
+ * the router never commits the exit, the owning surface never unmounts, and
+ * the attempt lock (whose cleanup runs on unmount) stays held. The address
+ * bar is then restored to the locked entry: `history.state.idx` arithmetic
+ * gives the exact signed direction with no sentinel entries and no bounce —
+ * the restore hop lands precisely on the locked index, where the follow-up
+ * event is a no-op. `stopImmediatePropagation` also keeps the restore single
+ * if several shells ever listen at once. When the attempt lifts, the
+ * listener is removed and Back/Forward work normally again. In-app exits are
+ * fail-closed at their own callbacks instead (rail rows, tab bar, list back).
+ * Returns the reactive locked flag so those boundaries can also render a
+ * disabled state.
  */
 export function useAskAgentNavGuard(): boolean {
   const locked = useAskAgentNavLocked();
-  const navigate = useNavigate();
   const location = useLocation();
-  const lockedUrlRef = useRef<string | null>(null);
+  const lockedEntryRef = useRef<{ url: string; idx: number | null } | null>(null);
   const wasLockedRef = useRef(false);
 
   useEffect(() => {
     if (locked && !wasLockedRef.current) {
-      lockedUrlRef.current = `${location.pathname}${location.search}`;
+      lockedEntryRef.current = {
+        url: `${location.pathname}${location.search}${location.hash}`,
+        idx: readHistoryIdx(window.history.state),
+      };
     } else if (!locked && wasLockedRef.current) {
-      lockedUrlRef.current = null;
+      lockedEntryRef.current = null;
     }
     wasLockedRef.current = locked;
   }, [locked, location]);
 
   useEffect(() => {
     if (!locked) return;
-    const onPopState = () => {
-      const url = lockedUrlRef.current;
-      // Re-read the store at event time: a lock that lifted between the URL
-      // capture and this pop navigation must not trap the user on a stale
-      // surface.
-      if (!url || !isAskAgentNavLocked()) return;
-      navigate(url, { replace: true });
+    const onPopState = (event: PopStateEvent) => {
+      // Imperative read: the lock may have lifted between URL capture and
+      // this pop — never trap the user on a stale surface.
+      if (!isAskAgentNavLocked()) return;
+      const target = lockedEntryRef.current;
+      if (!target) return;
+      event.stopImmediatePropagation();
+      const currentIdx = readHistoryIdx(event.state);
+      if (target.idx !== null && currentIdx !== null) {
+        const delta = target.idx - currentIdx;
+        if (delta !== 0) window.history.go(delta);
+      } else {
+        // No index bookkeeping (foreign entry): at least pin the address bar
+        // back to the locked URL — the router never processed the exit.
+        window.history.replaceState(window.history.state, "", target.url);
+      }
     };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, [locked, navigate]);
+    window.addEventListener("popstate", onPopState, true);
+    return () => window.removeEventListener("popstate", onPopState, true);
+  }, [locked]);
 
   return locked;
+}
+
+function readHistoryIdx(state: unknown): number | null {
+  if (state && typeof state === "object" && typeof (state as { idx?: unknown }).idx === "number") {
+    return (state as { idx: number }).idx;
+  }
+  return null;
 }

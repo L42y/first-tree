@@ -2,9 +2,9 @@
 
 import type { Message } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type ReactElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation, useNavigate } from "react-router";
+import { act, useEffect } from "react";
+import { createRoot } from "react-dom/client";
+import { BrowserRouter, useLocation, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../../ui/toast.js";
 import {
@@ -79,15 +79,16 @@ async function waitForCondition(predicate: () => boolean, messageText: string, t
   throw new Error(messageText);
 }
 
-async function renderDom(element: ReactElement, route: string): Promise<{ container: HTMLElement; root: Root }> {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
+async function click(element: Element | null): Promise<void> {
+  if (!element) throw new Error("Expected element to click");
   await act(async () => {
-    root.render(<MemoryRouter initialEntries={[route]}>{element}</MemoryRouter>);
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   await flush();
-  return { container, root };
+}
+
+function buttonByText(container: ParentNode, text: string): HTMLButtonElement | null {
+  return [...container.querySelectorAll("button")].find((button) => button.textContent === text) ?? null;
 }
 
 beforeEach(() => {
@@ -128,70 +129,113 @@ describe("ask-agent nav lock store", () => {
   });
 });
 
-function GuardProbe() {
+/**
+ * Simulates the `useAskAgent` owner: publishes the attempt lock while the
+ * review surface is mounted and removes it from the unmount cleanup — the
+ * exact lifecycle that made the real-browser Back lose the waiting state.
+ */
+function OwnerProbe() {
+  useEffect(() => {
+    const lock = { chatId: "chat-1", requestId: "req-1" };
+    addAskAgentNavLock(lock);
+    return () => removeAskAgentNavLock(lock);
+  }, []);
+  return <div data-testid="owner-surface">owner surface</div>;
+}
+
+function BrowserShell() {
   const locked = useAskAgentNavGuard();
   const location = useLocation();
+  const navigate = useNavigate();
+  const reviewing = location.search.includes("review=need-you");
   return (
     <div>
-      <div data-testid="guard-location">{`${location.pathname}${location.search}`}</div>
-      <div data-testid="guard-locked">{String(locked)}</div>
+      <div data-testid="browser-location">{`${location.pathname}${location.search}`}</div>
+      <div data-testid="browser-locked">{String(locked)}</div>
+      <button type="button" onClick={() => navigate("/?review=need-you")}>
+        open review
+      </button>
+      {reviewing ? <OwnerProbe /> : <div data-testid="home-surface">home surface</div>}
     </div>
   );
 }
 
-describe("useAskAgentNavGuard", () => {
-  it("reverts a popstate exit to the locked surface and resumes after unlock", async () => {
-    let navigateAway: ReturnType<typeof useNavigate> | null = null;
-    function CaptureNavigate() {
-      navigateAway = useNavigate();
-      return null;
-    }
-    const { container, root } = await renderDom(
-      <>
-        <GuardProbe />
-        <CaptureNavigate />
-      </>,
-      "/?review=need-you",
-    );
-    const locationText = () => container.querySelector('[data-testid="guard-location"]')?.textContent;
+describe("useAskAgentNavGuard with a real BrowserRouter", () => {
+  it("blocks browser Back before the router commits the exit, and resumes after the attempt lifts", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <BrowserRouter unstable_useTransitions={false}>
+          <BrowserShell />
+        </BrowserRouter>,
+      );
+    });
+    await flush();
+
+    const locationText = () => container.querySelector('[data-testid="browser-location"]')?.textContent;
+    const addressBar = () => `${window.location.pathname}${window.location.search}`;
+    expect(locationText()).toBe("/");
+    expect(container.querySelector('[data-testid="home-surface"]')).not.toBeNull();
+
+    // Bubble-phase witness registered BEFORE the guard can ever engage —
+    // the same position React Router's own popstate listener holds. The
+    // capture interceptor must stop a pop before this witness can see it.
+    const bubbleWitness = vi.fn();
+    window.addEventListener("popstate", bubbleWitness);
+
+    // Build real history: / → /?review=need-you. The owner mounts and
+    // publishes the attempt lock; the guard captures URL + history index.
+    await click(buttonByText(container, "open review"));
     expect(locationText()).toBe("/?review=need-you");
-    expect(container.querySelector('[data-testid="guard-locked"]')?.textContent).toBe("false");
+    expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="browser-locked"]')?.textContent).toBe("true");
+    expect(isAskAgentNavLocked()).toBe(true);
 
-    // The attempt starts on this surface: the guard captures the URL.
+    // Real browser Back. Without the capture interceptor, the router's own
+    // bubble-phase listener would process the pop first and commit the exit
+    // (unmounting the owner, whose cleanup removes the lock).
     await act(async () => {
-      addAskAgentNavLock({ chatId: "chat-1", requestId: "req-1" });
+      window.history.back();
     });
     await flush();
-    expect(container.querySelector('[data-testid="guard-locked"]')?.textContent).toBe("true");
+    expect(bubbleWitness).not.toHaveBeenCalled();
+    expect(locationText()).toBe("/?review=need-you");
+    expect(addressBar()).toBe("/?review=need-you");
+    expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
+    expect(isAskAgentNavLocked()).toBe(true);
 
-    // Simulate a browser back: the location moves first (as the router
-    // processes the pop), then the popstate listener reverts it while the
-    // lock is still held.
+    // A second Back is trapped the same way; Forward is a dead end (the
+    // locked entry is the history tip).
     await act(async () => {
-      navigateAway?.("/?c=other");
-    });
-    await flush();
-    expect(locationText()).toBe("/?c=other");
-    await act(async () => {
-      window.dispatchEvent(new Event("popstate"));
+      window.history.back();
     });
     await flush();
     expect(locationText()).toBe("/?review=need-you");
+    await act(async () => {
+      window.history.forward();
+    });
+    await flush();
+    expect(locationText()).toBe("/?review=need-you");
+    expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
 
-    // After the attempt lifts, the same pop navigation is not reverted.
+    // The attempt lifts: the same Back now commits normally (the router's
+    // bubble listener sees the pop again).
     await act(async () => {
-      removeAskAgentNavLock({ chatId: "chat-1", requestId: "req-1" });
+      clearAskAgentNavLocks();
     });
     await flush();
+    expect(container.querySelector('[data-testid="browser-locked"]')?.textContent).toBe("false");
     await act(async () => {
-      navigateAway?.("/?c=other");
+      window.history.back();
     });
     await flush();
-    await act(async () => {
-      window.dispatchEvent(new Event("popstate"));
-    });
-    await flush();
-    expect(locationText()).toBe("/?c=other");
+    expect(bubbleWitness).toHaveBeenCalled();
+    expect(locationText()).toBe("/");
+    expect(addressBar()).toBe("/");
+    expect(container.querySelector('[data-testid="home-surface"]')).not.toBeNull();
+    window.removeEventListener("popstate", bubbleWitness);
 
     await act(async () => root.unmount());
   });
