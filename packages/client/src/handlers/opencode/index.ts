@@ -1,0 +1,973 @@
+import { randomUUID } from "node:crypto";
+import { isAbsolute, join, resolve } from "node:path";
+import {
+  type AgentRuntimeConfig,
+  type AgentRuntimeConfigPayload,
+  isLandingCampaignTrialAgentMetadata,
+  runtimeProviderSchema,
+  type ToolFileRef,
+} from "@first-tree/shared";
+import { ensureAgentBootstrap } from "../../runtime/agent-bootstrap.js";
+import { buildAgentBriefing } from "../../runtime/agent-briefing.js";
+import type { AgentConfigCache } from "../../runtime/agent-config-cache.js";
+import { type ChatContext, fetchChatContext } from "../../runtime/chat-context.js";
+import { renderChatContextPrompt, renderRuntimeOutputContract } from "../../runtime/chat-context-section.js";
+import { resolveContextTreeRelativePath, toolFileRefsFromShellCommand } from "../../runtime/context-tree-file-refs.js";
+import type {
+  AgentHandler,
+  DeliveryToken,
+  HandlerFactory,
+  SessionContext,
+  SessionMessage,
+} from "../../runtime/handler.js";
+import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
+import {
+  OPENCODE_SUPPORTED_VERSION,
+  parseOpenCodeVersionOutput,
+  resolveOpenCodeRuntimeBinary,
+} from "../../runtime/opencode-binary.js";
+import {
+  createDefaultProviderProcessSupervisor,
+  type ProviderProcessSupervisor,
+} from "../../runtime/provider-process-supervisor.js";
+import { redactErrorPreview } from "../../runtime/redact-error-preview.js";
+import {
+  buildBriefingUpdateNotice,
+  computeBriefingFingerprint,
+  readSessionBriefingFingerprint,
+  writeSessionBriefingFingerprint,
+} from "../../runtime/session-briefing-fingerprint.js";
+import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
+import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
+import { chunkAssistantText } from "../assistant-text.js";
+import { formatAuthHint, isOpenCodeAuthError } from "../auth-error-hint.js";
+import { type OpenCodeStreamEvent, OpenCodeStreamParser, type OpenCodeUsage } from "./parser.js";
+
+export const OPENCODE_MANAGED_AGENT = "first-tree";
+export const OPENCODE_PENDING_SESSION_PREFIX = "opencode-pending-";
+
+const STDERR_TAIL_LIMIT = 8_000;
+const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
+const KILL_GRACE_MS = 5_000;
+const FINAL_CLOSE_WAIT_MS = 2_000;
+const DB_GATE_TIMEOUT_MS = 30_000;
+
+export function isOpenCodePendingSessionId(sessionId: string): boolean {
+  return sessionId.startsWith(OPENCODE_PENDING_SESSION_PREFIX);
+}
+
+type OpenCodeMcpConfig =
+  | { type: "local"; command: string[]; enabled: true }
+  | { type: "remote"; url: string; headers?: Record<string, string>; enabled: true };
+
+export function mapOpenCodeMcpServers(payload: AgentRuntimeConfigPayload): Record<string, OpenCodeMcpConfig> {
+  const out: Record<string, OpenCodeMcpConfig> = {};
+  for (const server of payload.mcpServers) {
+    if (server.transport === "stdio") {
+      out[server.name] = {
+        type: "local",
+        command: [server.command, ...(server.args ?? [])],
+        enabled: true,
+      };
+    } else {
+      out[server.name] = {
+        type: "remote",
+        url: server.url,
+        ...(server.headers ? { headers: server.headers } : {}),
+        enabled: true,
+      };
+    }
+  }
+  return out;
+}
+
+export function buildOpenCodeConfigContent(input: {
+  payload: AgentRuntimeConfigPayload;
+  standingPrompt: string;
+}): string {
+  return JSON.stringify({
+    $schema: "https://opencode.ai/config.json",
+    autoupdate: false,
+    share: "disabled",
+    snapshot: false,
+    agent: {
+      [OPENCODE_MANAGED_AGENT]: {
+        description: "First Tree managed agent",
+        mode: "primary",
+        prompt: input.standingPrompt,
+        ...(input.payload.model ? { model: input.payload.model } : {}),
+        permission: {
+          edit: "allow",
+          bash: "allow",
+          webfetch: "allow",
+          websearch: "allow",
+          task: "allow",
+        },
+      },
+    },
+    permission: {
+      edit: "allow",
+      bash: "allow",
+      webfetch: "allow",
+      websearch: "allow",
+      task: "allow",
+    },
+    mcp: mapOpenCodeMcpServers(input.payload),
+  });
+}
+
+export function buildOpenCodeTurnArgs(input: { cwd: string; model: string; resumeSessionId: string | null }): string[] {
+  const args = [
+    "run",
+    "--format",
+    "json",
+    "--auto",
+    "--agent",
+    OPENCODE_MANAGED_AGENT,
+    "--title",
+    "First Tree managed turn",
+    "--dir",
+    input.cwd,
+    "--print-logs",
+    "--log-level",
+    "ERROR",
+  ];
+  if (input.model) args.push("--model", input.model);
+  if (input.resumeSessionId) args.push("--session", input.resumeSessionId);
+  return args;
+}
+
+type ProcessOutcome = {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdoutTail: string;
+  stderrTail: string;
+  spawnError?: Error;
+};
+
+type TurnState = {
+  parser: OpenCodeStreamParser;
+  sessionIds: Set<string>;
+  terminalReasons: string[];
+  errors: string[];
+  text: string[];
+  usage: OpenCodeUsage | null;
+  sawProviderActivity: boolean;
+  sawUnsafeTool: boolean;
+  unknownCount: number;
+};
+
+const dbGatePromises = new Map<string, Promise<void>>();
+
+export function clearOpenCodeDbGateCacheForTests(): void {
+  dbGatePromises.clear();
+}
+
+export const createOpenCodeHandler: HandlerFactory = (config) => {
+  const workspaceRoot = config.workspaceRoot as string;
+  const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider ?? "opencode");
+  const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
+  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
+  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
+  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const resolveBinary =
+    (config.opencodeBinaryResolver as typeof resolveOpenCodeRuntimeBinary | undefined) ?? resolveOpenCodeRuntimeBinary;
+  const processSupervisor =
+    (config.providerProcessSupervisor as ProviderProcessSupervisor | undefined) ??
+    createDefaultProviderProcessSupervisor();
+  const turnTimeoutMs =
+    typeof config.opencodeTurnTimeoutMs === "number" && config.opencodeTurnTimeoutMs > 0
+      ? config.opencodeTurnTimeoutMs
+      : DEFAULT_TURN_TIMEOUT_MS;
+
+  let cwd: string | null = null;
+  let ctx: SessionContext | null = null;
+  let activeConfig: AgentRuntimeConfig | null = null;
+  let teamSkills: readonly ReconciledTeamSkill[] = [];
+  let binary: string | null = null;
+  let providerSessionId: string | null = null;
+  let pendingSyntheticId: string | null = null;
+  let sessionActive = false;
+  let initialTurnPreparing = false;
+  let currentAbort: AbortController | null = null;
+  let currentTurnPromise: Promise<void> | null = null;
+  let versionReady = false;
+  let generation = 0;
+  let drainScheduled = false;
+  let drainInProgress = false;
+  const queue: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
+
+  function buildEnv(
+    sessionCtx: SessionContext,
+    payload: AgentRuntimeConfigPayload,
+    standingPrompt: string,
+  ): Record<string, string> {
+    const base: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (typeof value === "string") base[key] = value;
+    }
+    for (const entry of payload.env) base[entry.key] = entry.value;
+    const merged = sessionCtx.buildAgentEnv(base);
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(merged)) {
+      if (typeof value === "string") env[key] = value;
+    }
+    env.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent({ payload, standingPrompt });
+    return env;
+  }
+
+  async function fetchChatContextOrLog(sessionCtx: SessionContext): Promise<ChatContext | undefined> {
+    try {
+      return await fetchChatContext(sessionCtx.sdk, sessionCtx.chatId, sessionCtx.agent);
+    } catch (error) {
+      sessionCtx.log(`OpenCode chat-context fetch failed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  function buildBriefing(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload, workspaceCwd: string): string {
+    return buildAgentBriefing({
+      identity: sessionCtx.agent,
+      payload,
+      workspacePath: workspaceCwd,
+      sourceRepos: declaredSourceRepos(workspaceCwd, payload),
+      contextTreePath,
+      contextTreeRepoUrl,
+      contextTreeBranch,
+      teamSkills,
+    });
+  }
+
+  async function refreshProjection(sessionCtx: SessionContext): Promise<{
+    payload: AgentRuntimeConfigPayload;
+    briefing: string;
+    standingPrompt: string;
+  }> {
+    if (!cwd) throw new Error("OpenCode workspace is not prepared");
+    let runtimeConfig = activeConfig;
+    if (agentConfigCache) {
+      runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+    }
+    const payload: AgentRuntimeConfigPayload =
+      runtimeConfig?.payload ??
+      ({
+        kind: "opencode",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      } satisfies AgentRuntimeConfigPayload);
+    if (payload.kind !== "opencode") {
+      throw new Error(`OpenCode handler received ${payload.kind} runtime config`);
+    }
+    teamSkills = (await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log))
+      .teamSkills;
+    const briefing = buildBriefing(sessionCtx, payload, cwd);
+    ensureAgentBootstrap({
+      workspace: cwd,
+      sessionCtx,
+      contextTreePath,
+      briefing,
+      currentSourceRepoNames: currentSourceRepoNamesFromPayload(payload, runtimeConfig !== null),
+    });
+    markWorkspaceInitComplete(cwd);
+    const chatContext = await fetchChatContextOrLog(sessionCtx);
+    const chatPrompt = renderChatContextPrompt(chatContext);
+    const standingPrompt = [renderRuntimeOutputContract(), chatPrompt].filter(Boolean).join("\n\n");
+    activeConfig = runtimeConfig;
+    return { payload, briefing, standingPrompt };
+  }
+
+  function runProcess(input: {
+    command: string;
+    args: string[];
+    prompt?: string;
+    env: Record<string, string>;
+    workspaceCwd: string;
+    state?: TurnState;
+    sessionCtx: SessionContext;
+    abortSignal: AbortSignal;
+    timeoutMs: number;
+    turnGeneration: number;
+    label: string;
+  }): Promise<ProcessOutcome> {
+    return new Promise((resolveOutcome) => {
+      let supervised: ReturnType<ProviderProcessSupervisor["spawn"]>;
+      try {
+        supervised = processSupervisor.spawn({
+          command: input.command,
+          args: input.args,
+          label: input.label,
+          timeoutMs: input.timeoutMs,
+          options: {
+            cwd: input.workspaceCwd,
+            env: input.env,
+            shell: false,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
+            ...(process.platform === "win32" ? {} : { detached: true }),
+          },
+        });
+      } catch (error) {
+        resolveOutcome({
+          exitCode: null,
+          signal: null,
+          stdoutTail: "",
+          stderrTail: "",
+          spawnError: error instanceof Error ? error : new Error(String(error)),
+        });
+        return;
+      }
+      const child = supervised.child;
+      let stdoutTail = "";
+      let stderrTail = "";
+      let closed: { exitCode: number | null; signal: NodeJS.Signals | null } | null = null;
+      let stdoutEnded = false;
+      let settled = false;
+      let spawnError: Error | undefined;
+
+      const finish = (): void => {
+        if (settled || !closed || !stdoutEnded) return;
+        settled = true;
+        resolveOutcome({ ...closed, stdoutTail, stderrTail, spawnError });
+      };
+      const handleEvents = (events: OpenCodeStreamEvent[]): void => {
+        if (!input.state) return;
+        for (const event of events) {
+          try {
+            handleEvent(event, input.state, input.sessionCtx);
+          } catch (error) {
+            input.sessionCtx.log(
+              `OpenCode event handling failed (${event.kind}): ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+      };
+      const terminate = (): void => {
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGTERM");
+          else child.kill("SIGTERM");
+        } catch {
+          // The process may already be gone.
+        }
+        const hardKill = setTimeout(() => {
+          try {
+            if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+            else child.kill("SIGKILL");
+          } catch {
+            // Ignore a completed process.
+          }
+        }, KILL_GRACE_MS);
+        hardKill.unref?.();
+        const finalWait = setTimeout(() => {
+          stdoutEnded = true;
+          closed ??= { exitCode: null, signal: "SIGKILL" };
+          finish();
+        }, KILL_GRACE_MS + FINAL_CLOSE_WAIT_MS);
+        finalWait.unref?.();
+      };
+      input.abortSignal.addEventListener("abort", terminate, { once: true });
+
+      child.on("error", (error) => {
+        spawnError = error;
+        closed ??= { exitCode: null, signal: null };
+        stdoutEnded = true;
+        finish();
+      });
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        stdoutTail = (stdoutTail + chunk).slice(-STDERR_TAIL_LIMIT);
+        if (input.state && !input.abortSignal.aborted && generation === input.turnGeneration) {
+          handleEvents(input.state.parser.push(chunk));
+        }
+      });
+      child.stdout?.on("end", () => {
+        if (input.state && !input.abortSignal.aborted && generation === input.turnGeneration) {
+          handleEvents(input.state.parser.flush());
+        }
+        stdoutEnded = true;
+        finish();
+      });
+      child.stdout?.on("error", () => {
+        stdoutEnded = true;
+        finish();
+      });
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
+      });
+      child.on("close", (exitCode, signal) => {
+        input.abortSignal.removeEventListener("abort", terminate);
+        closed = { exitCode, signal };
+        finish();
+      });
+      child.stdin?.on("error", () => {
+        // EPIPE is classified from close + stderr.
+      });
+      if (input.prompt !== undefined) child.stdin?.write(input.prompt);
+      child.stdin?.end();
+    });
+  }
+
+  function handleEvent(event: OpenCodeStreamEvent, state: TurnState, sessionCtx: SessionContext): void {
+    sessionCtx.recordProviderActivity();
+    state.sawProviderActivity = true;
+    switch (event.kind) {
+      case "session":
+        state.sessionIds.add(event.sessionId);
+        break;
+      case "text":
+        state.text.push(event.text);
+        break;
+      case "tool":
+        if (event.status === "pending" && !isReadOnlyTool(event.name)) state.sawUnsafeTool = true;
+        {
+          const toolFileRefs = event.status === "pending" ? undefined : fileRefsForTool(event.name, event.args);
+          sessionCtx.emitEvent({
+            kind: "tool_call",
+            payload: {
+              toolUseId: event.toolUseId,
+              name: event.name,
+              args: event.args,
+              status: event.status,
+              ...(event.resultPreview ? { resultPreview: event.resultPreview } : {}),
+              ...(toolFileRefs && toolFileRefs.length > 0 ? { toolFileRefs } : {}),
+            },
+          });
+        }
+        break;
+      case "usage":
+        state.usage = event.usage;
+        break;
+      case "terminal":
+        state.terminalReasons.push(event.reason);
+        break;
+      case "error":
+        state.errors.push(event.message);
+        break;
+      case "unknown":
+        if (state.unknownCount < 5) {
+          sessionCtx.log(`OpenCode tolerant-parse diagnostic: ${event.note}: ${event.raw}`);
+        }
+        state.unknownCount++;
+        break;
+    }
+  }
+
+  function fileRefsForTool(name: string, args: unknown): ToolFileRef[] | undefined {
+    if (!cwd) return undefined;
+    const values = asRecord(args);
+    if (name.toLowerCase() === "bash") {
+      const command = typeof values?.command === "string" ? values.command : null;
+      if (!command) return undefined;
+      return toolFileRefsFromShellCommand({
+        command,
+        cwd,
+        contextTreePath,
+        contextTreeRepoUrl,
+        contextTreeBranch,
+      });
+    }
+    const rawPath =
+      typeof values?.path === "string"
+        ? values.path
+        : typeof values?.filePath === "string"
+          ? values.filePath
+          : typeof values?.file_path === "string"
+            ? values.file_path
+            : null;
+    if (!rawPath) return undefined;
+    const absolutePath = isAbsolute(rawPath) ? resolve(rawPath) : resolve(cwd, rawPath);
+    const repoRelativePath = resolveContextTreeRelativePath(absolutePath, {
+      contextTreePath,
+      contextTreeRepoUrl,
+    });
+    const write = /^(edit|write|patch)$/i.test(name);
+    return [
+      {
+        origin: write ? "file_change" : "tool_arg",
+        localPath: rawPath,
+        pathKind: "file",
+        ...(contextTreeRepoUrl && repoRelativePath && repoRelativePath !== "/"
+          ? {
+              repoUrl: contextTreeRepoUrl,
+              ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
+              repoRelativePath,
+            }
+          : {}),
+      },
+    ];
+  }
+
+  async function ensureDbReady(input: {
+    activeBinary: string;
+    env: Record<string, string>;
+    workspaceCwd: string;
+    sessionCtx: SessionContext;
+    abortSignal: AbortSignal;
+    turnGeneration: number;
+  }): Promise<void> {
+    const dataHome = input.env.XDG_DATA_HOME ?? input.env.APPDATA ?? input.env.HOME ?? "";
+    const key = `${input.activeBinary}\0${dataHome}`;
+    let gate = dbGatePromises.get(key);
+    if (!gate) {
+      gate = (async () => {
+        const outcome = await runProcess({
+          command: input.activeBinary,
+          args: ["db", "SELECT 1 AS ready", "--format", "json"],
+          env: input.env,
+          workspaceCwd: input.workspaceCwd,
+          sessionCtx: input.sessionCtx,
+          abortSignal: input.abortSignal,
+          timeoutMs: DB_GATE_TIMEOUT_MS,
+          turnGeneration: input.turnGeneration,
+          label: "opencode database readiness",
+        });
+        if (outcome.spawnError || outcome.exitCode !== 0) {
+          throw (
+            outcome.spawnError ??
+            new Error(`OpenCode database readiness failed (${outcome.exitCode}): ${outcome.stderrTail}`)
+          );
+        }
+      })().catch((error) => {
+        dbGatePromises.delete(key);
+        throw error;
+      });
+      dbGatePromises.set(key, gate);
+    }
+    await gate;
+  }
+
+  async function ensureSupportedVersion(input: {
+    activeBinary: string;
+    env: Record<string, string>;
+    workspaceCwd: string;
+    sessionCtx: SessionContext;
+    abortSignal: AbortSignal;
+    turnGeneration: number;
+  }): Promise<void> {
+    if (versionReady) return;
+    const outcome = await runProcess({
+      command: input.activeBinary,
+      args: ["--version"],
+      env: input.env,
+      workspaceCwd: input.workspaceCwd,
+      sessionCtx: input.sessionCtx,
+      abortSignal: input.abortSignal,
+      timeoutMs: DB_GATE_TIMEOUT_MS,
+      turnGeneration: input.turnGeneration,
+      label: "opencode exact-version gate",
+    });
+    const version = parseOpenCodeVersionOutput(`${outcome.stdoutTail}\n${outcome.stderrTail}`);
+    if (outcome.spawnError || outcome.exitCode !== 0 || version !== OPENCODE_SUPPORTED_VERSION) {
+      const detail = redactErrorPreview(
+        outcome.spawnError?.message || outcome.stderrTail || outcome.stdoutTail || `exit ${outcome.exitCode}`,
+        800,
+      );
+      throw new Error(
+        `Unsupported OpenCode runtime. First Tree requires opencode-ai@${OPENCODE_SUPPORTED_VERSION}; ` +
+          `observed ${version ?? "no parseable version"}. ${detail}`,
+      );
+    }
+    versionReady = true;
+  }
+
+  function adoptSessionId(sessionCtx: SessionContext, id: string): void {
+    if (providerSessionId === id) return;
+    const synthetic = pendingSyntheticId;
+    providerSessionId = id;
+    if (synthetic) {
+      pendingSyntheticId = null;
+      sessionCtx.replaceSessionId?.(id, "opencode_session_id_confirmed");
+      if (cwd) {
+        const baseline = readSessionBriefingFingerprint(cwd, synthetic);
+        if (baseline) writeSessionBriefingFingerprint(cwd, id, baseline);
+      }
+    }
+  }
+
+  async function runTurn(
+    prompt: string,
+    sessionCtx: SessionContext,
+    messages: readonly SessionMessage[],
+    token: DeliveryToken,
+  ): Promise<boolean> {
+    const workspaceCwd = cwd;
+    const activeBinary = binary;
+    if (!workspaceCwd || !activeBinary || !sessionActive) {
+      token.retry(messages, sessionActive ? "opencode_not_prepared" : "opencode_session_inactive");
+      return false;
+    }
+    const turnGeneration = ++generation;
+    const abort = new AbortController();
+    currentAbort = abort;
+    const promise = (async () => {
+      const { payload, standingPrompt } = await refreshProjection(sessionCtx);
+      const env = buildEnv(sessionCtx, payload, standingPrompt);
+      await ensureSupportedVersion({
+        activeBinary,
+        env,
+        workspaceCwd,
+        sessionCtx,
+        abortSignal: abort.signal,
+        turnGeneration,
+      });
+      await ensureDbReady({
+        activeBinary,
+        env,
+        workspaceCwd,
+        sessionCtx,
+        abortSignal: abort.signal,
+        turnGeneration,
+      });
+      if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) return false;
+
+      const expectedSessionId = providerSessionId;
+      const state: TurnState = {
+        parser: new OpenCodeStreamParser(),
+        sessionIds: new Set(),
+        terminalReasons: [],
+        errors: [],
+        text: [],
+        usage: null,
+        sawProviderActivity: false,
+        sawUnsafeTool: false,
+        unknownCount: 0,
+      };
+      token.processingStarted(messages);
+      const timeout = setTimeout(() => abort.abort(), turnTimeoutMs);
+      timeout.unref?.();
+      const outcome = await runProcess({
+        command: activeBinary,
+        args: buildOpenCodeTurnArgs({
+          cwd: workspaceCwd,
+          model: payload.model,
+          resumeSessionId: expectedSessionId,
+        }),
+        prompt: `${prompt}\n`,
+        env,
+        workspaceCwd,
+        state,
+        sessionCtx,
+        abortSignal: abort.signal,
+        timeoutMs: turnTimeoutMs,
+        turnGeneration,
+        label: `opencode turn ${sessionCtx.chatId}`,
+      });
+      clearTimeout(timeout);
+
+      if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) {
+        sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+        token.retry(messages, "opencode_turn_aborted_or_timed_out");
+        return false;
+      }
+
+      const ids = [...state.sessionIds];
+      const protocolErrors: string[] = [];
+      if (ids.length !== 1) protocolErrors.push(`expected one session ID, observed ${ids.length}`);
+      if (expectedSessionId && ids[0] !== expectedSessionId) {
+        protocolErrors.push(`resume session mismatch: expected ${expectedSessionId}, observed ${ids[0] ?? "none"}`);
+      }
+      if (state.terminalReasons.length === 0) protocolErrors.push("missing terminal step_finish event");
+      if (state.errors.length > 0) protocolErrors.push(...state.errors);
+
+      const success = !outcome.spawnError && outcome.exitCode === 0 && protocolErrors.length === 0;
+      if (success) {
+        const id = ids[0];
+        if (!id) throw new Error("OpenCode success without session ID");
+        adoptSessionId(sessionCtx, id);
+        const finalText = state.text.join("");
+        for (const chunk of chunkAssistantText(finalText)) {
+          sessionCtx.emitEvent({ kind: "assistant_text", payload: { text: chunk } });
+        }
+        if (state.usage) {
+          sessionCtx.emitEvent({
+            kind: "token_usage",
+            payload: {
+              provider: "opencode",
+              model: payload.model || "opencode-default",
+              inputTokens: state.usage.inputTokens,
+              cachedInputTokens: state.usage.cachedInputTokens,
+              outputTokens: state.usage.outputTokens,
+            },
+          });
+        }
+        try {
+          await sessionCtx.forwardResult(finalText);
+        } catch (error) {
+          sessionCtx.emitEvent({
+            kind: "error",
+            payload: {
+              source: "runtime",
+              message: `forwardResult failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 2000),
+            },
+          });
+          sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+          await token.complete(messages, { status: "error", completion: "consumed", reason: "forward_failed" });
+          return true;
+        }
+        sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
+        await token.complete(messages, { status: "success" });
+        return true;
+      }
+
+      const rawFailure = [
+        ...protocolErrors,
+        outcome.spawnError?.message,
+        outcome.stderrTail,
+        outcome.exitCode === null ? `signal ${outcome.signal ?? "unknown"}` : `exit ${outcome.exitCode}`,
+      ]
+        .filter((value): value is string => Boolean(value?.trim()))
+        .join("\n")
+        .slice(0, 2000);
+      const failure = redactErrorPreview(rawFailure, 2000);
+      const message = isOpenCodeAuthError(failure) ? formatAuthHint("opencode", failure) : failure;
+      sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message } });
+      sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+
+      const deterministic =
+        isOpenCodeAuthError(failure) ||
+        /invalid model|unknown model|model .* not found|permission denied|configuration/i.test(failure);
+      if (deterministic || state.sawUnsafeTool || state.text.length > 0) {
+        await token.complete(messages, {
+          status: "error",
+          completion: "consumed",
+          reason: deterministic ? "provider_clean_error" : "unsafe_provider_failure_notice_posted",
+        });
+        return true;
+      }
+      token.retry(
+        messages,
+        state.sawProviderActivity ? "opencode_unknown_pre_effect_failure" : "opencode_pre_provider_failure",
+      );
+      sessionCtx.failSessionForRecovery?.("opencode_turn_unknown_custody", providerSessionId ?? undefined);
+      return false;
+    })();
+    currentTurnPromise = promise.then(
+      () => {},
+      () => {},
+    );
+    try {
+      return await promise;
+    } finally {
+      if (generation === turnGeneration) {
+        currentAbort = null;
+        currentTurnPromise = null;
+        scheduleDrain();
+      }
+    }
+  }
+
+  async function prepareSession(sessionCtx: SessionContext): Promise<{
+    briefing: string;
+    workspaceCwd: string;
+  }> {
+    if (isLandingCampaignTrialAgentMetadata(sessionCtx.agent.metadata)) {
+      throw new Error("landing campaign trial agents require the codex app-server runtime");
+    }
+    ctx = sessionCtx;
+    cwd = acquireAgentHome(workspaceRoot);
+    const resolution = resolveBinary(process.env);
+    if (!resolution.ok) {
+      throw new Error(resolution.error);
+    }
+    binary = resolution.binary;
+    sessionCtx.log(`OpenCode binary: ${resolution.binary}`);
+    const { briefing } = await refreshProjection(sessionCtx);
+    sessionActive = true;
+    return { briefing, workspaceCwd: cwd };
+  }
+
+  async function runQueued(
+    drained: Array<{ message: SessionMessage; token: DeliveryToken }>,
+    sessionCtx: SessionContext,
+  ): Promise<void> {
+    const token = drained[0]?.token;
+    if (!token) return;
+    const messages = drained.map((entry) => entry.message);
+    const parts: string[] = [];
+    try {
+      for (const message of messages) parts.push(await sessionCtx.formatInboundContent(message));
+    } catch (error) {
+      sessionCtx.log(`OpenCode queued formatting failed: ${error instanceof Error ? error.message : String(error)}`);
+      for (const entry of drained) entry.token.retry(entry.message, "opencode_queued_format_failed");
+      return;
+    }
+    const sessionKey = providerSessionId ?? pendingSyntheticId;
+    let fingerprint: string | null = null;
+    if (cwd && sessionKey) {
+      const projection = await refreshProjection(sessionCtx);
+      fingerprint = computeBriefingFingerprint(projection.briefing);
+      if (readSessionBriefingFingerprint(cwd, sessionKey) !== fingerprint) {
+        parts.unshift(buildBriefingUpdateNotice(join(cwd, "AGENTS.md")));
+      }
+    }
+    const delivered = await runTurn(parts.join("\n\n"), sessionCtx, messages, token);
+    if (delivered && fingerprint && cwd && sessionKey) {
+      writeSessionBriefingFingerprint(cwd, providerSessionId ?? sessionKey, fingerprint);
+    }
+  }
+
+  function scheduleDrain(): void {
+    if (
+      drainScheduled ||
+      drainInProgress ||
+      queue.length === 0 ||
+      !ctx ||
+      !sessionActive ||
+      currentTurnPromise ||
+      initialTurnPreparing
+    ) {
+      return;
+    }
+    drainScheduled = true;
+    setImmediate(() => {
+      drainScheduled = false;
+      if (
+        drainInProgress ||
+        queue.length === 0 ||
+        !ctx ||
+        !sessionActive ||
+        currentTurnPromise ||
+        initialTurnPreparing
+      ) {
+        scheduleDrain();
+        return;
+      }
+      const drained = queue.splice(0);
+      const sessionCtx = ctx;
+      drainInProgress = true;
+      void runQueued(drained, sessionCtx)
+        .catch((error) => {
+          sessionCtx.log(`OpenCode queued turn failed: ${error instanceof Error ? error.message : String(error)}`);
+          for (const entry of drained) entry.token.retry(entry.message, "opencode_queued_turn_failed");
+        })
+        .finally(() => {
+          drainInProgress = false;
+          scheduleDrain();
+        });
+    });
+  }
+
+  function retryQueue(reason: string): void {
+    for (const entry of queue.splice(0)) entry.token.retry(entry.message, reason);
+  }
+
+  return {
+    async start(message, sessionCtx, token) {
+      const explicit = token !== undefined;
+      const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      initialTurnPreparing = true;
+      let completed = false;
+      let briefing: string;
+      let workspaceCwd: string;
+      try {
+        ({ briefing, workspaceCwd } = await prepareSession(sessionCtx));
+        const prompt = await sessionCtx.formatInboundContent(message);
+        await runTurn(prompt, sessionCtx, [message], deliveryToken);
+        completed = true;
+      } finally {
+        initialTurnPreparing = false;
+        if (completed) scheduleDrain();
+      }
+      if (!providerSessionId) pendingSyntheticId = `${OPENCODE_PENDING_SESSION_PREFIX}${randomUUID()}`;
+      const sessionId = providerSessionId ?? pendingSyntheticId;
+      if (!sessionId) throw new Error("OpenCode session id unresolved");
+      writeSessionBriefingFingerprint(workspaceCwd, sessionId, computeBriefingFingerprint(briefing));
+      return explicit ? { sessionId, route: { kind: "owned", mode: "processing" } } : sessionId;
+    },
+
+    async resume(message, sessionId, sessionCtx, token) {
+      const explicit = token !== undefined;
+      const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      initialTurnPreparing = true;
+      let briefing: string;
+      let workspaceCwd: string;
+      try {
+        ({ briefing, workspaceCwd } = await prepareSession(sessionCtx));
+      } catch (error) {
+        initialTurnPreparing = false;
+        throw error;
+      }
+      if (isOpenCodePendingSessionId(sessionId)) {
+        pendingSyntheticId = sessionId;
+        providerSessionId = null;
+      } else {
+        providerSessionId = sessionId;
+        pendingSyntheticId = null;
+      }
+      const fingerprint = computeBriefingFingerprint(briefing);
+      if (message) {
+        let prompt = await sessionCtx.formatInboundContent(message);
+        if (readSessionBriefingFingerprint(workspaceCwd, sessionId) !== fingerprint) {
+          prompt = `${buildBriefingUpdateNotice(join(workspaceCwd, "AGENTS.md"))}\n\n${prompt}`;
+        }
+        try {
+          const delivered = await runTurn(prompt, sessionCtx, [message], deliveryToken);
+          if (delivered) {
+            writeSessionBriefingFingerprint(workspaceCwd, providerSessionId ?? sessionId, fingerprint);
+          }
+        } finally {
+          initialTurnPreparing = false;
+          scheduleDrain();
+        }
+      } else {
+        initialTurnPreparing = false;
+        scheduleDrain();
+      }
+      const effectiveId = providerSessionId ?? pendingSyntheticId ?? sessionId;
+      return explicit
+        ? { sessionId: effectiveId, route: message ? { kind: "owned", mode: "processing" } : null }
+        : effectiveId;
+    },
+
+    inject(message, token) {
+      if (!ctx) return { kind: "rejected", reason: "no_active_context", retryable: true };
+      queue.push({ message, token: token ?? deliveryTokenFromSessionContext(ctx) });
+      scheduleDrain();
+      return { kind: "owned", mode: "queued" };
+    },
+
+    async suspend(reason) {
+      sessionActive = false;
+      retryQueue(reason ?? "opencode_suspend_before_terminal");
+      generation++;
+      currentAbort?.abort();
+      await currentTurnPromise;
+      currentAbort = null;
+      currentTurnPromise = null;
+      initialTurnPreparing = false;
+    },
+
+    async shutdown(reason) {
+      sessionActive = false;
+      retryQueue(reason ?? "opencode_shutdown_before_terminal");
+      generation++;
+      currentAbort?.abort();
+      await currentTurnPromise;
+      currentAbort = null;
+      currentTurnPromise = null;
+      cwd = null;
+      ctx = null;
+      activeConfig = null;
+      teamSkills = [];
+      binary = null;
+      providerSessionId = null;
+      pendingSyntheticId = null;
+      versionReady = false;
+      initialTurnPreparing = false;
+      queue.length = 0;
+    },
+  } satisfies AgentHandler;
+};
+
+function isReadOnlyTool(name: string): boolean {
+  return /^(read|glob|grep|list|ls|webfetch|websearch)$/i.test(name);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}

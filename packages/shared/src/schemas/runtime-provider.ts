@@ -11,9 +11,17 @@ export const RUNTIME_PROVIDERS = {
   CODEX: "codex",
   CURSOR: "cursor",
   KIMI_CODE: "kimi-code",
+  OPENCODE: "opencode",
 } as const;
 
-export const runtimeProviderSchema = z.enum(["claude-code", "claude-code-tui", "codex", "cursor", "kimi-code"]);
+export const runtimeProviderSchema = z.enum([
+  "claude-code",
+  "claude-code-tui",
+  "codex",
+  "cursor",
+  "kimi-code",
+  "opencode",
+]);
 export type RuntimeProvider = z.infer<typeof runtimeProviderSchema>;
 
 export const DEFAULT_RUNTIME_PROVIDER: RuntimeProvider = "claude-code";

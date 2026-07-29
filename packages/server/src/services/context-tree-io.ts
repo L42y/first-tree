@@ -42,6 +42,8 @@ const CURSOR_READ_TOOLS = new Set(["read"]);
 const CURSOR_WRITE_TOOLS = new Set(["edit", "write"]);
 const KIMI_READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 const KIMI_WRITE_TOOLS = new Set(["Write", "Edit"]);
+const OPENCODE_READ_TOOLS = new Set(["read", "grep", "glob"]);
+const OPENCODE_WRITE_TOOLS = new Set(["edit", "write", "patch"]);
 const CONTEXT_TREE_IO_TOOL_NAMES = [
   "Bash",
   "Edit",
@@ -58,6 +60,8 @@ const CONTEXT_TREE_IO_TOOL_NAMES = [
   "read",
   "shell",
   "write",
+  "bash",
+  "patch",
 ];
 const log = createLogger("ContextTreeIo");
 const GIT_STATUS_DELTA_REF_ORIGIN = "git_status_delta";
@@ -198,6 +202,7 @@ function isShellTool(runtimeProvider: string, toolName: string): boolean {
     (runtimeProvider === "codex" && toolName === "command") ||
     (runtimeProvider === "cursor" && toolName === "shell") ||
     (runtimeProvider === "kimi-code" && toolName === "Bash") ||
+    (runtimeProvider === "opencode" && toolName === "bash") ||
     (isClaudeRuntime(runtimeProvider) && toolName === "Bash")
   );
 }
@@ -236,6 +241,9 @@ function skippedDecisionFastPathForNoRefs(
   if (runtimeProvider === "kimi-code" && (KIMI_READ_TOOLS.has(toolName) || KIMI_WRITE_TOOLS.has(toolName))) {
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
+  if (runtimeProvider === "opencode" && (OPENCODE_READ_TOOLS.has(toolName) || OPENCODE_WRITE_TOOLS.has(toolName))) {
+    return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
+  }
   if (isClaudeRuntime(runtimeProvider) && (CLAUDE_READ_TOOLS.has(toolName) || CLAUDE_WRITE_TOOLS.has(toolName))) {
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
@@ -271,6 +279,12 @@ function deriveEventIo(event: SessionEvent, runtimeProvider: string): EventIoDer
   }
   if (runtimeProvider === "kimi-code" && KIMI_WRITE_TOOLS.has(toolName)) {
     return { action: "write", source: "kimi_write_tool" };
+  }
+  if (runtimeProvider === "opencode" && OPENCODE_READ_TOOLS.has(toolName)) {
+    return { action: "read", source: "opencode_read_tool" };
+  }
+  if (runtimeProvider === "opencode" && OPENCODE_WRITE_TOOLS.has(toolName)) {
+    return { action: "write", source: "opencode_write_tool" };
   }
   if (isClaudeRuntime(runtimeProvider) && CLAUDE_READ_TOOLS.has(toolName)) {
     return { action: "read", source: "claude_read_tool" };

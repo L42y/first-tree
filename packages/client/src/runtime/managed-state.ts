@@ -375,6 +375,7 @@ function isSafePersistedTarget(target: string): boolean {
     root === ".claude/skills" ||
     root === ".cursor/skills" ||
     root === ".kimi-code/skills" ||
+    root === ".opencode/skills" ||
     root === ".first-tree/resources/skills";
   return allowedRoot && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(parts.at(-1) ?? "");
 }

@@ -82,6 +82,7 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, ModelOption[]> = {
   codex: CODEX_MODEL_OPTIONS,
   cursor: [],
   "kimi-code": [],
+  opencode: [],
 };
 
 const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
@@ -92,6 +93,8 @@ const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
     "Options come from this computer's Cursor CLI when reachable. The id is passed through verbatim on the next turn — one your account can't use fails visibly, no silent fallback. Unset uses the Cursor default (auto).",
   "kimi-code":
     "Options come from this computer's ~/.kimi-code config when reachable. Passed to new sessions. Unset uses the model configured in ~/.kimi-code.",
+  opencode:
+    "Enter an exact OpenCode provider/model id. It is passed through verbatim on the next turn; unset inherits the host-local OpenCode configuration.",
 };
 
 /** Extra note when discovery is unsupported / offline / timed out (`null` from the API helper). */
@@ -454,9 +457,11 @@ function FreeFormModelInput({
       placeholder={
         provider === "kimi-code"
           ? "local Kimi default"
-          : provider === "cursor"
-            ? "auto (Cursor default)"
-            : "provider default"
+          : provider === "opencode"
+            ? "local OpenCode default"
+            : provider === "cursor"
+              ? "auto (Cursor default)"
+              : "provider default"
       }
       className="font-mono"
       aria-label="Model"
