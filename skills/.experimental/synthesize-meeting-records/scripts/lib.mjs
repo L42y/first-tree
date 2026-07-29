@@ -155,7 +155,7 @@ export function validateArtifactBundle(input) {
   const topKeys = ["schema", "meeting_scope", "artifacts"];
   requireAllowedKeys(bundle, topKeys, "bundle");
   requireKeys(bundle, topKeys, "bundle");
-  if (bundle.schema !== "analyze-meeting-notes.artifact-bundle.v1") {
+  if (bundle.schema !== "synthesize-meeting-records.artifact-bundle.v1") {
     fail("bundle.schema is unsupported.");
   }
   if (bundle.meeting_scope !== "single-meeting") {
@@ -320,7 +320,7 @@ export function validateMeetingAnalysisPacket(bundleInput, packetInput) {
   const keys = ["schema", "source_revision", "status", "reason", "items"];
   requireAllowedKeys(packet, keys, "packet");
   requireKeys(packet, keys, "packet");
-  if (packet.schema !== "analyze-meeting-notes.meeting-analysis-packet.v1") {
+  if (packet.schema !== "synthesize-meeting-records.meeting-analysis-packet.v1") {
     fail("packet.schema is unsupported.");
   }
   if (packet.source_revision !== prepared.source_revision) {

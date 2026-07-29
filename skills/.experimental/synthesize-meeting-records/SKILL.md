@@ -1,13 +1,13 @@
 ---
-name: analyze-meeting-notes
-description: Analyze meeting notes and related meeting artifacts that the user explicitly supplies, including provider documents, uploaded attachments, local files, pasted text, human minutes, AI notes, transcripts, and decision records. Use to extract decisions, progress, plans, action items, blockers, and risks; preserve chronology and later overrides; distinguish confirmed from uncertain material; and produce a sanitized, destination-neutral meeting analysis. Do not use for calendar discovery, meeting search, provider authorization, scheduled capture, raw archiving, or publishing analysis to downstream systems.
+name: synthesize-meeting-records
+description: Synthesize meeting records and related artifacts that the user explicitly supplies, including provider documents, uploaded attachments, local files, pasted text, human minutes, AI notes, transcripts, and decision records. Use to extract decisions, progress, plans, action items, blockers, and risks; reconcile chronology and later overrides; distinguish confirmed from uncertain material; and produce a sanitized, destination-neutral meeting analysis. Do not use for calendar discovery, meeting search, provider authorization, scheduled capture, raw archiving, or publishing analysis to downstream systems.
 ---
 
-# Analyze Meeting Notes
+# Synthesize Meeting Records
 
-Analyze an exact meeting artifact supplied by the user. Produce a concise,
-sanitized account of what the meeting established without choosing or mutating
-any downstream destination.
+Synthesize exact meeting artifacts supplied by the user into a concise,
+sanitized account of what the meeting established without choosing or
+mutating any downstream destination.
 
 ## Keep reading outside the skill
 
@@ -151,8 +151,8 @@ finishes; that orchestration is outside this skill.
 Run:
 
 ```sh
-node skills/analyze-meeting-notes/scripts/test.mjs
-python3 scripts/quick_validate_skill.py skills/analyze-meeting-notes
+node skills/.experimental/synthesize-meeting-records/scripts/test.mjs
+python3 scripts/quick_validate_skill.py skills/.experimental/synthesize-meeting-records
 ```
 
 Use [eval-cases.md](references/eval-cases.md) as the model-behavior test design.

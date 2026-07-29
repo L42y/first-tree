@@ -13,7 +13,7 @@ const scriptsDir = dirname(fileURLToPath(import.meta.url));
 
 function bundle(overrides = {}) {
   return {
-    schema: "analyze-meeting-notes.artifact-bundle.v1",
+    schema: "synthesize-meeting-records.artifact-bundle.v1",
     meeting_scope: "single-meeting",
     artifacts: [
       {
@@ -53,7 +53,7 @@ function item(overrides = {}) {
 function packet(bundleValue, overrides = {}) {
   const prepared = validateArtifactBundle(bundleValue);
   return {
-    schema: "analyze-meeting-notes.meeting-analysis-packet.v1",
+    schema: "synthesize-meeting-records.meeting-analysis-packet.v1",
     source_revision: prepared.source_revision,
     status: "complete",
     reason: "The supplied minutes establish one confirmed decision.",
@@ -350,7 +350,7 @@ expectReject(() => validateMeetingAnalysisPacket(completeBundle, unsafeAttributi
 const stale = packet(completeBundle, { source_revision: "0".repeat(64) });
 expectReject(() => validateMeetingAnalysisPacket(completeBundle, stale), /does not match/u);
 
-const tempRoot = mkdtempSync(join(tmpdir(), "analyze-meeting-notes-contract-test-"));
+const tempRoot = mkdtempSync(join(tmpdir(), "synthesize-meeting-records-contract-test-"));
 try {
   const bundlePath = join(tempRoot, "bundle.json");
   const packetPath = join(tempRoot, "packet.json");
@@ -361,17 +361,17 @@ try {
     encoding: "utf8",
   });
   assert.equal(prepared.status, 0, prepared.stderr);
-  assert.match(prepared.stdout, /analyze-meeting-notes\.prepared-artifacts\.v1/u);
+  assert.match(prepared.stdout, /synthesize-meeting-records\.prepared-artifacts\.v1/u);
   const validated = spawnSync(
     process.execPath,
     [join(scriptsDir, "validate-output.mjs"), "--bundle", bundlePath, "--output", packetPath],
     { encoding: "utf8" },
   );
   assert.equal(validated.status, 0, validated.stderr);
-  assert.match(validated.stdout, /analyze-meeting-notes\.meeting-analysis-packet\.v1/u);
+  assert.match(validated.stdout, /synthesize-meeting-records\.meeting-analysis-packet\.v1/u);
   assert.deepEqual(readdirSync(tempRoot).sort(), before);
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
 }
 
-process.stdout.write("analyze-meeting-notes deterministic tests passed\n");
+process.stdout.write("synthesize-meeting-records deterministic tests passed\n");

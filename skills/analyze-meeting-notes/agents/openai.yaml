@@ -1,4 +1,0 @@
-interface:
-  display_name: "Analyze Meeting Notes"
-  short_description: "Analyze decisions, actions, progress, and risks"
-  default_prompt: "Use $analyze-meeting-notes to analyze the meeting artifact I supplied."

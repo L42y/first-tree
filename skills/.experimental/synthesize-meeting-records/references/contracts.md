@@ -26,7 +26,7 @@ temporary file. Reference it from the bundle; do not inline it.
 
 ```json
 {
-  "schema": "analyze-meeting-notes.artifact-bundle.v1",
+  "schema": "synthesize-meeting-records.artifact-bundle.v1",
   "meeting_scope": "single-meeting",
   "artifacts": [
     {
@@ -70,7 +70,7 @@ binding without exposing its URL or path.
 
 ```json
 {
-  "schema": "analyze-meeting-notes.meeting-analysis-packet.v1",
+  "schema": "synthesize-meeting-records.meeting-analysis-packet.v1",
   "source_revision": "<64 lowercase hex characters>",
   "status": "complete",
   "reason": "The supplied minutes establish one decision and one action.",

@@ -6,7 +6,7 @@
   "required": ["schema", "source_revision", "status", "reason", "items"],
   "properties": {
     "schema": {
-      "const": "analyze-meeting-notes.meeting-analysis-packet.v1"
+      "const": "synthesize-meeting-records.meeting-analysis-packet.v1"
     },
     "source_revision": {
       "type": "string",
