@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RuntimeProvider, RuntimeResourceSkill } from "@first-tree/shared";
+import { foldPortableTeamSkillPath, type RuntimeProvider, type RuntimeResourceSkill } from "@first-tree/shared";
 import { strToU8, type ZipOptions, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CORE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
@@ -811,6 +811,50 @@ describe("managed Skill reconciler", () => {
     ).toHaveLength(0);
   });
 
+  it("cleans an interrupted quarantine when the next authoritative snapshot revokes the Skill", async () => {
+    const bundle = makeSkillZip({ "scripts/run.sh": strToU8("#!/bin/sh\necho safe\n") });
+    const skill = bundleSkill(bundle);
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    const installed = target(workspace, "codex", "review");
+    writeFileSync(join(installed, "scripts", "run.sh"), "tampered\n");
+
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+      testCrashAt: "quarantine_moved",
+    });
+    expect(existsSync(installed)).toBe(false);
+    expect(
+      readdirSync(join(workspace, ".first-tree-workspace")).filter((name) =>
+        name.startsWith(".managed-skill-quarantine-"),
+      ),
+    ).toHaveLength(1);
+
+    const revoked = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
+      bundledSkillsRoot,
+    });
+    expect(revoked.removed).toContain("resource:resource-review@.agents/skills/review");
+    expect(readManagedState(workspace)?.skills.some((entry) => entry.key === "resource:resource-review")).toBe(false);
+    expect(existsSync(installed)).toBe(false);
+    expect(
+      readdirSync(join(workspace, ".first-tree-workspace")).filter((name) =>
+        name.startsWith(".managed-skill-quarantine-"),
+      ),
+    ).toHaveLength(0);
+  });
+
   it("blocks provider preflight when authoritative removal cannot leave discovery", async () => {
     await reconcileManagedSkills({
       workspace,
@@ -1188,6 +1232,67 @@ describe("managed Skill reconciler", () => {
     expect(readFileSync(join(exact, "SKILL.md"), "utf-8")).toBe("user exact target\n");
     expect(readFileSync(join(caseVariant, "SKILL.md"), "utf-8")).toBe("user case variant\n");
     expect(existsSync(join(caseVariant, ".first-tree-managed.json"))).toBe(false);
+  });
+
+  it("allocates around unmanaged targets that collide under expanded Unicode case-folding", async () => {
+    const unmanaged = target(workspace, "codex", "ſkill");
+    mkdirSync(unmanaged, { recursive: true });
+    writeFileSync(join(unmanaged, "user-owned.txt"), "preserve me\n");
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill({ resourceId: "resource-skill", name: "skill" })]),
+      bundledSkillsRoot,
+    });
+
+    expect(foldPortableTeamSkillPath("ſkill")).toBe(foldPortableTeamSkillPath("skill"));
+    expect(result.teamSkills).toContainEqual(
+      expect.objectContaining({
+        key: "resource:resource-skill",
+        name: "skill-first-tree",
+        target: ".agents/skills/skill-first-tree",
+      }),
+    );
+    expect(readFileSync(join(unmanaged, "user-owned.txt"), "utf-8")).toBe("preserve me\n");
+    expect(existsSync(target(workspace, "codex", "skill-first-tree"))).toBe(true);
+  });
+
+  it("repairs installed-tree drift containing expanded Unicode case-fold collisions", async () => {
+    const skill = teamSkill();
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+    const references = join(installed, "references");
+    mkdirSync(join(references, "ſkill"), { recursive: true });
+    writeFileSync(join(references, "ſkill", "long-s.txt"), "long s\n");
+    mkdirSync(join(references, "skill"), { recursive: true });
+    writeFileSync(join(references, "skill", "ascii-s.txt"), "ascii s\n");
+    const preservedSpellings = readdirSync(references);
+    const logs: string[] = [];
+
+    const repaired = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      log: (message) => logs.push(message),
+    });
+
+    expect(repaired.installed).toContain("resource:resource-review");
+    expect(existsSync(references)).toBe(false);
+    if (preservedSpellings.includes("ſkill") && preservedSpellings.includes("skill")) {
+      expect(logs.some((message) => message.includes("case-insensitive path collision"))).toBe(true);
+    } else {
+      // Case-insensitive APFS merges the spellings before Node can enumerate
+      // both; the shared key still proves the same collision contract used by
+      // the digest path on case-sensitive hosts.
+      expect(foldPortableTeamSkillPath("ſkill")).toBe(foldPortableTeamSkillPath("skill"));
+    }
   });
 
   it("rejects reserved, path-bearing, and Windows-device Team names without removing prior good targets", async () => {

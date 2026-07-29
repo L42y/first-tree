@@ -751,7 +751,7 @@ async function allocateTargets(
   const onDiskSpellings = new Map<string, string>();
   try {
     for (const entry of await readdir(resolveWorkspacePath(workspace, root, "root"), { withFileTypes: true })) {
-      const folded = entry.name.toLocaleLowerCase("en-US");
+      const folded = foldPortableTeamSkillPath(entry.name);
       occupied.set(folded, "unmanaged");
       onDiskSpellings.set(folded, entry.name);
     }
@@ -760,7 +760,7 @@ async function allocateTargets(
   }
   for (const entry of state.skills) {
     if (!entry.target.startsWith(`${root}/`)) continue;
-    occupied.set(entry.effectiveName.toLocaleLowerCase("en-US"), entry.key);
+    occupied.set(foldPortableTeamSkillPath(entry.effectiveName), entry.key);
   }
 
   const allocations = new Map<ManagedSkillEntry["key"], AllocatedManagedSkill>();
@@ -768,7 +768,7 @@ async function allocateTargets(
     if (!skill.requestedSlug || skill.validationError) continue;
     if (skill.kind === "core") {
       const target = `${root}/${skill.requestedSlug}`;
-      const folded = skill.requestedSlug.toLocaleLowerCase("en-US");
+      const folded = foldPortableTeamSkillPath(skill.requestedSlug);
       const owner = occupied.get(folded);
       if (owner === "unmanaged" && onDiskSpellings.get(folded) !== skill.requestedSlug) {
         // Do not create a second spelling that collides on case-insensitive
@@ -784,7 +784,7 @@ async function allocateTargets(
         continue;
       }
       allocations.set(skill.key, { desired: skill, effectiveName: skill.requestedSlug, target });
-      occupied.set(skill.requestedSlug.toLocaleLowerCase("en-US"), skill.key);
+      occupied.set(foldPortableTeamSkillPath(skill.requestedSlug), skill.key);
       continue;
     }
 
@@ -801,7 +801,7 @@ async function allocateTargets(
         effectiveName: reusable.effectiveName,
         target: reusable.target,
       });
-      occupied.set(reusable.effectiveName.toLocaleLowerCase("en-US"), skill.key);
+      occupied.set(foldPortableTeamSkillPath(reusable.effectiveName), skill.key);
       continue;
     }
 
@@ -813,7 +813,7 @@ async function allocateTargets(
             ? suffixSkillName(skill.requestedSlug, "-first-tree")
             : suffixSkillName(skill.requestedSlug, `-first-tree-${suffix}`);
       const target = `${root}/${effectiveName}`;
-      const key = effectiveName.toLocaleLowerCase("en-US");
+      const key = foldPortableTeamSkillPath(effectiveName);
       const owner = occupied.get(key);
       if (owner === undefined || owner === skill.key || (await targetMarkerMatches(workspace, target, skill.key))) {
         allocations.set(skill.key, { desired: skill, effectiveName, target });
@@ -941,11 +941,9 @@ async function quarantineDriftedManagedTarget(
   options: ReconcileManagedSkillsOptions,
   entry: ManagedSkillEntry,
 ): Promise<void> {
-  const quarantineKey = createHash("sha256").update(entry.target).digest("hex").slice(0, 24);
-  const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${quarantineKey}`;
   try {
     const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
-    const quarantinePath = resolveWorkspacePath(options.workspace, quarantine, "quarantine");
+    const quarantinePath = managedTargetQuarantinePath(options.workspace, entry.target);
     if (!(await pathExists(targetPath))) {
       try {
         await rm(quarantinePath, { recursive: true, force: true });
@@ -981,6 +979,16 @@ async function quarantineDriftedManagedTarget(
       { cause: error },
     );
   }
+}
+
+function managedTargetQuarantinePath(workspace: string, target: string): string {
+  const quarantineKey = createHash("sha256").update(target).digest("hex").slice(0, 24);
+  const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${quarantineKey}`;
+  return resolveWorkspacePath(workspace, quarantine, "quarantine");
+}
+
+async function removeManagedTargetQuarantine(workspace: string, target: string): Promise<void> {
+  await rm(managedTargetQuarantinePath(workspace, target), { recursive: true, force: true });
 }
 
 async function verifyPreservedTeamTargets(options: ReconcileManagedSkillsOptions, state: ManagedState): Promise<void> {
@@ -1088,6 +1096,11 @@ async function removeManagedEntry(
   assertManagedTarget(entry.target);
   const afterState = removeEntry(beforeState, entry);
   const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
+  // A previous drift quarantine may have moved the target out of discovery
+  // before the process stopped. Clear that one stable, target-derived slot
+  // while the ledger entry still exists so a failed cleanup is retried rather
+  // than orphaned by authoritative removal.
+  await removeManagedTargetQuarantine(options.workspace, entry.target);
   if (!(await pathExists(targetPath))) {
     return persistStateMonotonic(options.workspace, afterState);
   }
