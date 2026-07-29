@@ -46,7 +46,7 @@ async function runBootstrap(options: {
 describe("browser bootstrap", () => {
   it("keeps index.html free of inline executable scripts", async () => {
     const indexHtml = await readFile(indexHtmlUrl, "utf8");
-    const scripts = Array.from(indexHtml.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gu)).map((match) => ({
+    const scripts = Array.from(indexHtml.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/giu)).map((match) => ({
       attributes: match[1] ?? "",
       body: match[2] ?? "",
     }));
