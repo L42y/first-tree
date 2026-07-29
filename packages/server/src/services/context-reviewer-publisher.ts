@@ -516,7 +516,6 @@ async function assertCurrentAuthority(
   const [client] = await db
     .select({
       id: clients.id,
-      organizationId: clients.organizationId,
       userId: clients.userId,
       retiredAt: clients.retiredAt,
     })
@@ -561,7 +560,6 @@ async function assertCurrentAuthority(
 
   if (
     !client ||
-    client.organizationId !== run.organizationId ||
     client.retiredAt !== null ||
     !client.userId ||
     !manager ||

@@ -10,8 +10,10 @@ import { clients } from "../db/schema/clients.js";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
+import { organizations } from "../db/schema/organizations.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createAgent } from "../services/agent.js";
+import { loadValidContextReviewerAgent } from "../services/context-reviewer-common.js";
 import {
   listContextReviewerCandidates,
   readContextReviewerAgentReadiness,
@@ -21,6 +23,7 @@ import { upsertInstallationFromMetadata } from "../services/github-app-installat
 import { createGitlabConnection } from "../services/gitlab-connections.js";
 import { getOrgSetting } from "../services/org-settings.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
+import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 type AdminContext = Awaited<ReturnType<typeof createAdminContext>>;
@@ -211,6 +214,83 @@ describe("Context Reviewer assignment/readiness contract", () => {
           actionKind: "open_agent_owner_flow",
         },
       ],
+    });
+  });
+
+  it("accepts a Reviewer on its manager's user-owned Computer across Teams", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const organizationId = `org-reviewer-${randomUUID().slice(0, 8)}`;
+    const memberId = uuidv7();
+    await app.db.transaction(async (tx) => {
+      await tx.insert(organizations).values({
+        id: organizationId,
+        name: `reviewer-${randomUUID().slice(0, 8)}`,
+        displayName: "Reviewer Team",
+      });
+      const human = await createAgent(tx as unknown as typeof app.db, {
+        name: `reviewer-owner-${randomUUID().slice(0, 8)}`,
+        type: "human",
+        displayName: "Reviewer Owner",
+        managerId: memberId,
+        organizationId,
+      });
+      await tx.insert(members).values({
+        id: memberId,
+        userId: admin.userId,
+        organizationId,
+        agentId: human.uuid,
+        role: "admin",
+      });
+    });
+    const reviewer = await createAgent(app.db, {
+      name: `cross-team-reviewer-${randomUUID().slice(0, 8)}`,
+      type: "agent",
+      displayName: "Cross-Team Reviewer",
+      managerId: memberId,
+      organizationId,
+      visibility: "organization",
+      clientId: admin.clientId,
+    });
+    await seedHealthyAgentRuntime(app, {
+      agentUuid: reviewer.uuid,
+      clientId: admin.clientId,
+      now: observedAt,
+    });
+
+    await expect(
+      readContextReviewerAgentReadiness(app.db, {
+        organizationId,
+        reviewerAgentUuid: reviewer.uuid,
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      structuralBlockers: [],
+      healthBlockers: [],
+    });
+    await expect(
+      listContextReviewerCandidates(app.db, {
+        organizationId,
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ uuid: reviewer.uuid })],
+      blockers: [],
+    });
+    await expect(
+      loadValidContextReviewerAgent(app.db, {
+        organizationId,
+        reviewerAgentUuid: reviewer.uuid,
+      }),
+    ).resolves.toMatchObject({ uuid: reviewer.uuid });
+    await expect(
+      putContextReviewerAssignment(app.db, organizationId, reviewer.uuid, {
+        updatedBy: admin.userId,
+      }),
+    ).resolves.toMatchObject({
+      contextReviewer: { enabled: false, agentUuid: reviewer.uuid },
     });
   });
 
@@ -627,7 +707,7 @@ describe("Context Reviewer assignment/readiness contract", () => {
     });
   });
 
-  it("requires a processed GitLab System Hook MR before enablement and recovers without reassignment", async () => {
+  it("accepts System Hook MR evidence or matching repository-scoped Project Hook MR evidence", async () => {
     const app = getApp();
     const admin = await createAdminContext(app);
     const reviewer = await createReviewer(app, admin);
@@ -674,7 +754,50 @@ describe("Context Reviewer assignment/readiness contract", () => {
     });
     await app.db
       .update(gitlabConnections)
-      .set({ lastSystemHookMergeRequestInboundAt: observedAt })
+      .set({
+        lastProjectHookContextTreeMergeRequestInboundAt: observedAt,
+        lastProjectHookContextTreeRepository: "gitlab.internal/acme/another-tree",
+        lastProcessingFailureAt: observedAt,
+        lastProcessingFailureCode: "processing_failed",
+      })
+      .where(eq(gitlabConnections.id, connection.connectionId));
+    await expect(
+      putContextReviewerEnablement(app.db, admin.organizationId, true, {
+        updatedBy: admin.userId,
+        staleSeconds: 60,
+        now: () => observedAt,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: { code: "gitlab_processing_failed" },
+    });
+    await app.db
+      .update(gitlabConnections)
+      .set({ lastProjectHookContextTreeRepository: "gitlab.internal/acme/context-tree" })
+      .where(eq(gitlabConnections.id, connection.connectionId));
+    await expect(
+      putContextReviewerEnablement(app.db, admin.organizationId, true, {
+        updatedBy: admin.userId,
+        staleSeconds: 60,
+        now: () => observedAt,
+      }),
+    ).resolves.toMatchObject({
+      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
+    });
+
+    await putContextReviewerEnablement(app.db, admin.organizationId, false, {
+      updatedBy: admin.userId,
+      staleSeconds: 60,
+    });
+    await app.db
+      .update(gitlabConnections)
+      .set({
+        lastProjectHookContextTreeMergeRequestInboundAt: null,
+        lastProjectHookContextTreeRepository: null,
+        lastSystemHookMergeRequestInboundAt: observedAt,
+        lastProcessingFailureAt: null,
+        lastProcessingFailureCode: null,
+      })
       .where(eq(gitlabConnections.id, connection.connectionId));
     await expect(
       putContextReviewerEnablement(app.db, admin.organizationId, true, {

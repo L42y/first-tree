@@ -18,7 +18,7 @@ import {
 import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
 import type { NormalizedGitlabWebhook } from "./gitlab-webhook.js";
 import { type DeferredSendMessagePostCommitEffects, sendMessage } from "./message.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
+import { getOrgContextReviewRuntime, type OrgContextReviewRuntime } from "./org-settings.js";
 import { applyMembershipWrite } from "./participant-mode.js";
 import { formatContextReviewTopic } from "./scm-entity-chat-topic.js";
 
@@ -97,6 +97,30 @@ export function isContextReviewerMrCandidate(normalized: NormalizedGitlabWebhook
   );
 }
 
+/**
+ * Resolve repository-scoped GitLab webhook evidence against the live Context
+ * Tree binding. This does not require Automatic Review to be enabled: a valid
+ * MR may establish readiness before an admin flips the switch.
+ */
+export function resolveBoundGitlabContextTreeWebhookRepository(input: {
+  runtime: OrgContextReviewRuntime;
+  connection: { id: string; organizationId: string; instanceOrigin: string };
+  projectPath: string;
+}): string | null {
+  if (!input.runtime.repo || !input.runtime.branch) return null;
+  if (input.runtime.provider !== "gitlab" || !input.runtime.providerMatchesRepository) return null;
+  if (
+    input.runtime.gitlabConnection?.id !== input.connection.id ||
+    input.runtime.gitlabConnection.instanceOrigin !== input.connection.instanceOrigin
+  ) {
+    return null;
+  }
+  const webhookRepository = canonicalGitRepoUrl(
+    `${input.connection.instanceOrigin.replace(/\/$/u, "")}/${input.projectPath}`,
+  );
+  return webhookRepository && webhookRepository === canonicalGitRepoUrl(input.runtime.repo) ? webhookRepository : null;
+}
+
 export async function handleContextReviewerMrEvent(input: {
   database: Database;
   normalized: NormalizedGitlabWebhook;
@@ -122,10 +146,12 @@ export async function handleContextReviewerMrEvent(input: {
     return { handled: false, reason: "connection_mismatch" };
   }
 
-  const webhookRepo = canonicalGitRepoUrl(
-    `${input.connection.instanceOrigin.replace(/\/$/u, "")}/${entity.projectPath}`,
-  );
-  if (!webhookRepo || webhookRepo !== canonicalGitRepoUrl(runtime.repo)) {
+  const webhookRepo = resolveBoundGitlabContextTreeWebhookRepository({
+    runtime,
+    connection: input.connection,
+    projectPath: entity.projectPath,
+  });
+  if (!webhookRepo) {
     return { handled: false, reason: "repo_mismatch" };
   }
   if (!runtime.contextReviewer.enabled) return { handled: false, reason: "feature_disabled" };

@@ -160,12 +160,7 @@ export async function readContextReviewerAgentReadiness(
   }
 
   const [client] = await db.select().from(clients).where(eq(clients.id, agent.clientId)).limit(1);
-  if (
-    !client ||
-    client.organizationId !== input.organizationId ||
-    client.userId !== agent.managerUserId ||
-    client.retiredAt !== null
-  ) {
+  if (!client || client.userId !== agent.managerUserId || client.retiredAt !== null) {
     return {
       reviewerAgent,
       structuralBlockers: [blocker("context_review_agent_no_runtime", "open_agent_owner_flow")],

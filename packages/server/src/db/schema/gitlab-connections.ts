@@ -26,6 +26,13 @@ export const gitlabConnections = pgTable(
     lastSystemHookMergeRequestInboundAt: timestamp("last_system_hook_merge_request_inbound_at", {
       withTimezone: true,
     }),
+    /** Most recent successfully processed Project Hook MR for the then-bound Context Tree repository. */
+    lastProjectHookContextTreeMergeRequestInboundAt: timestamp(
+      "last_project_hook_context_tree_merge_request_inbound_at",
+      { withTimezone: true },
+    ),
+    /** Canonical repository identity paired with the Project Hook Context Tree readiness evidence. */
+    lastProjectHookContextTreeRepository: text("last_project_hook_context_tree_repository"),
     lastProcessingFailureAt: timestamp("last_processing_failure_at", { withTimezone: true }),
     lastProcessingFailureCode: text("last_processing_failure_code"),
     stableDeliveryObservedAt: timestamp("stable_delivery_observed_at", { withTimezone: true }),

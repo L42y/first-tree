@@ -200,12 +200,7 @@ async function readAssignableAgentForUpdate(
   ) {
     fail(blocker("context_review_agent_no_runtime", "open_agent_owner_flow"));
   }
-  if (
-    !client ||
-    client.organizationId !== input.organizationId ||
-    client.userId !== manager.userId ||
-    client.retiredAt !== null
-  ) {
+  if (!client || client.userId !== manager.userId || client.retiredAt !== null) {
     fail(blocker("context_review_agent_no_runtime", "open_agent_owner_flow"));
   }
   return { uuid: agent.uuid };
