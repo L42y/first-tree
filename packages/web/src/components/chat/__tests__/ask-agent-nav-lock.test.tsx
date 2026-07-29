@@ -10,10 +10,13 @@ import { ToastProvider } from "../../ui/toast.js";
 import {
   addAskAgentNavLock,
   clearAskAgentNavLocks,
+  getAskAgentNavTarget,
+  installAskAgentNavGuard,
   isAskAgentNavLocked,
   removeAskAgentNavLock,
   subscribeAskAgentNavLock,
-  useAskAgentNavGuard,
+  uninstallAskAgentNavGuardForTest,
+  useAskAgentNavLocked,
 } from "../ask-agent-nav-lock.js";
 import { useAskAgent } from "../use-ask-agent.js";
 
@@ -94,11 +97,11 @@ function buttonByText(container: ParentNode, text: string): HTMLButtonElement | 
 beforeEach(() => {
   document.body.innerHTML = "";
   vi.clearAllMocks();
-  clearAskAgentNavLocks();
+  uninstallAskAgentNavGuardForTest();
 });
 
 afterEach(() => {
-  clearAskAgentNavLocks();
+  uninstallAskAgentNavGuardForTest();
   document.body.innerHTML = "";
 });
 
@@ -124,8 +127,67 @@ describe("ask-agent nav lock store", () => {
     expect(notifications).toEqual([true, false]);
 
     addAskAgentNavLock(lock);
-    clearAskAgentNavLocks();
+    uninstallAskAgentNavGuardForTest();
     expect(isAskAgentNavLocked()).toBe(false);
+  });
+
+  it("pins the surface target on the first lock and releases it on the last", () => {
+    const first = { chatId: "chat-1", requestId: "req-1" };
+    const second = { chatId: "chat-2", requestId: "req-2" };
+
+    expect(getAskAgentNavTarget()).toBeNull();
+    addAskAgentNavLock(first);
+    const target = getAskAgentNavTarget();
+    expect(target).not.toBeNull();
+    expect(target?.url).toBe(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+
+    // A second lock does NOT move the pinned target; removing it keeps the
+    // first target pinned; the last removal releases it.
+    addAskAgentNavLock(second);
+    expect(getAskAgentNavTarget()).toBe(target);
+    removeAskAgentNavLock(second);
+    expect(getAskAgentNavTarget()).toBe(target);
+    removeAskAgentNavLock(first);
+    expect(getAskAgentNavTarget()).toBeNull();
+  });
+});
+
+describe("installAskAgentNavGuard", () => {
+  it("registers the singleton listener exactly once (idempotent) and uninstalls cleanly", () => {
+    const addSpy = vi.spyOn(window, "addEventListener");
+    try {
+      installAskAgentNavGuard();
+      installAskAgentNavGuard();
+      const popRegistrations = addSpy.mock.calls.filter(([type]) => type === "popstate");
+      expect(popRegistrations).toHaveLength(1);
+
+      const removeSpy = vi.spyOn(window, "removeEventListener");
+      try {
+        uninstallAskAgentNavGuardForTest();
+        expect(removeSpy.mock.calls.filter(([type]) => type === "popstate")).toHaveLength(1);
+        // A fresh install after teardown registers again.
+        installAskAgentNavGuard();
+        expect(addSpy.mock.calls.filter(([type]) => type === "popstate")).toHaveLength(2);
+      } finally {
+        removeSpy.mockRestore();
+      }
+    } finally {
+      addSpy.mockRestore();
+    }
+  });
+
+  it("is wired in main.tsx before the React root renders", async () => {
+    // Production ordering contract: the singleton's popstate listener must
+    // exist BEFORE BrowserRouter's history listener (at-target listeners run
+    // in registration order). Assert the bootstrap call precedes createRoot.
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const source = readFileSync(resolve(process.cwd(), "src/main.tsx"), "utf8");
+    const installAt = source.indexOf("installAskAgentNavGuard()");
+    const renderAt = source.indexOf("createRoot(");
+    expect(installAt).toBeGreaterThan(-1);
+    expect(renderAt).toBeGreaterThan(-1);
+    expect(installAt).toBeLessThan(renderAt);
   });
 });
 
@@ -144,7 +206,7 @@ function OwnerProbe() {
 }
 
 function BrowserShell() {
-  const locked = useAskAgentNavGuard();
+  const locked = useAskAgentNavLocked();
   const location = useLocation();
   const navigate = useNavigate();
   const reviewing = location.search.includes("review=need-you");
@@ -166,13 +228,17 @@ function BrowserShell() {
   );
 }
 
-describe("useAskAgentNavGuard with a real BrowserRouter", () => {
+describe("bootstrap singleton guard with a real BrowserRouter", () => {
   async function renderBrowserShell(): Promise<{
     container: HTMLElement;
     root: ReturnType<typeof createRoot>;
     locationText: () => string | null | undefined;
     addressBar: () => string;
   }> {
+    // Mirror main.tsx: the singleton guard installs BEFORE the React root
+    // renders, so its popstate listener is registered before BrowserRouter's
+    // history listener — the only ordering that exists at the window target.
+    installAskAgentNavGuard();
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);

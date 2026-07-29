@@ -7,7 +7,7 @@ import { useWorkspaceViewport } from "../hooks/use-viewport.js";
 import { cn } from "../lib/utils.js";
 import { isLandingTrialSurface } from "../pages/quickstart/route.js";
 import { CommandPalette } from "../pages/workspace/palette/command-palette.js";
-import { isAskAgentNavLocked, useAskAgentNavGuard } from "./chat/ask-agent-nav-lock.js";
+import { isAskAgentNavLocked, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 import { DisconnectChip } from "./disconnect-chip.js";
 import { FirstTreeLogo } from "./first-tree-logo.js";
 import { NewVersionChip } from "./new-version-chip.js";
@@ -35,13 +35,12 @@ export function Layout() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { organizationId } = useAuth();
   const location = useLocation();
-  // Desktop navigation guard for pending Ask agent attempts: owns the
-  // popstate revert for every desktop surface and exposes the locked flag so
-  // the top tabs and the Jump-to palette — both rendered HERE, above the
-  // Workspace outlet that owns the attempt's feedback — can fail closed.
-  // (Mobile routes live outside this Layout; MobileShell mounts its own
-  // guard, and the two are never co-mounted.)
-  const askAgentNavLocked = useAskAgentNavGuard();
+  // Desktop navigation lock state for pending Ask agent attempts: the top
+  // tabs, Jump-to palette, and host controls fail closed while set. Browser
+  // Back/Forward is owned by the singleton popstate guard installed at
+  // bootstrap (main.tsx), which keeps the owning surface mounted; this hook
+  // only supplies the reactive flag for the in-app exits.
+  const askAgentNavLocked = useAskAgentNavLocked();
   // Landing-campaign trial surface (`/quickstart`): render a stripped "trial
   // chrome" — brand + one conversion CTA + user menu — with none of the normal
   // workspace escape hatches (nav tabs, team switcher, command palette, rail).
