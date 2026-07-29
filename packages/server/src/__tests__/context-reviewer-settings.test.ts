@@ -21,7 +21,7 @@ import {
 import { putContextReviewerAssignment, putContextReviewerEnablement } from "../services/context-reviewer-settings.js";
 import { upsertInstallationFromMetadata } from "../services/github-app-installations.js";
 import { createGitlabConnection } from "../services/gitlab-connections.js";
-import { getOrgSetting, putOrgSetting } from "../services/org-settings.js";
+import { getOrgSetting } from "../services/org-settings.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
@@ -707,7 +707,7 @@ describe("Context Reviewer assignment/readiness contract", () => {
     });
   });
 
-  it("accepts System Hook MR evidence or matching repository-scoped Project Hook MR evidence", async () => {
+  it("enables GitLab Automatic Review before webhook traffic and independently of provider health", async () => {
     const app = getApp();
     const admin = await createAdminContext(app);
     const reviewer = await createReviewer(app, admin);
@@ -721,6 +721,11 @@ describe("Context Reviewer assignment/readiness contract", () => {
       displayName: "GitLab",
       instanceOrigin: "https://gitlab.internal",
     });
+    await seedHealthyAgentRuntime(app, {
+      agentUuid: reviewer.uuid,
+      clientId: admin.clientId,
+      now: observedAt,
+    });
     await putContextReviewerAssignment(app.db, admin.organizationId, reviewer.uuid, {
       updatedBy: admin.userId,
     });
@@ -731,32 +736,32 @@ describe("Context Reviewer assignment/readiness contract", () => {
         staleSeconds: 60,
         now: () => observedAt,
       }),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_webhook_not_seen" },
+    ).resolves.toMatchObject({
+      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
+    });
+    await expect(
+      getTeamSetupCapabilities(app.db, admin.organizationId, {
+        now: () => observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      repositoryAutomation: {
+        providers: [{}, { provider: "gitlab", health: "pending_verification" }],
+      },
+      contextTree: {
+        automaticReview: { adoption: "enabled", health: "ready", blockers: [] },
+      },
+    });
+
+    await putContextReviewerEnablement(app.db, admin.organizationId, false, {
+      updatedBy: admin.userId,
+      staleSeconds: 60,
     });
     await app.db
       .update(gitlabConnections)
       .set({
         endpointFirstSeenAt: observedAt,
         lastValidInboundAt: observedAt,
-      })
-      .where(eq(gitlabConnections.id, connection.connectionId));
-    await expect(
-      putContextReviewerEnablement(app.db, admin.organizationId, true, {
-        updatedBy: admin.userId,
-        staleSeconds: 60,
-        now: () => observedAt,
-      }),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_merge_request_event_not_seen" },
-    });
-    await app.db
-      .update(gitlabConnections)
-      .set({
-        lastProjectHookContextTreeMergeRequestInboundAt: observedAt,
-        lastProjectHookContextTreeRepository: "gitlab.internal/acme/another-tree",
         lastProcessingFailureAt: observedAt,
         lastProcessingFailureCode: "processing_failed",
       })
@@ -767,118 +772,8 @@ describe("Context Reviewer assignment/readiness contract", () => {
         staleSeconds: 60,
         now: () => observedAt,
       }),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_processing_failed" },
-    });
-    await app.db
-      .update(gitlabConnections)
-      .set({ lastProjectHookContextTreeRepository: "gitlab.internal/acme/context-tree" })
-      .where(eq(gitlabConnections.id, connection.connectionId));
-    await expect(
-      putContextReviewerEnablement(app.db, admin.organizationId, true, {
-        updatedBy: admin.userId,
-        staleSeconds: 60,
-        now: () => observedAt,
-      }),
     ).resolves.toMatchObject({
       contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
-    });
-
-    await putContextReviewerEnablement(app.db, admin.organizationId, false, {
-      updatedBy: admin.userId,
-      staleSeconds: 60,
-    });
-    await app.db
-      .update(gitlabConnections)
-      .set({
-        lastProjectHookContextTreeMergeRequestInboundAt: null,
-        lastProjectHookContextTreeRepository: null,
-        lastSystemHookMergeRequestInboundAt: observedAt,
-        lastProcessingFailureAt: null,
-        lastProcessingFailureCode: null,
-      })
-      .where(eq(gitlabConnections.id, connection.connectionId));
-    await expect(
-      putContextReviewerEnablement(app.db, admin.organizationId, true, {
-        updatedBy: admin.userId,
-        staleSeconds: 60,
-        now: () => observedAt,
-      }),
-    ).resolves.toMatchObject({
-      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
-    });
-  });
-
-  it("does not reuse Project Hook readiness after a Context Tree A → B → A rebind", async () => {
-    const app = getApp();
-    const admin = await createAdminContext(app);
-    const reviewer = await createReviewer(app, admin);
-    const repositoryA = "https://gitlab.internal/acme/context-tree.git";
-    await seedContextTreeBinding(app, admin, {
-      provider: "gitlab",
-      repo: repositoryA,
-    });
-    const connection = await createGitlabConnection(app.db, {
-      organizationId: admin.organizationId,
-      memberId: admin.memberId,
-      displayName: "GitLab",
-      instanceOrigin: "https://gitlab.internal",
-    });
-    await putContextReviewerAssignment(app.db, admin.organizationId, reviewer.uuid, {
-      updatedBy: admin.userId,
-    });
-    await app.db
-      .update(gitlabConnections)
-      .set({
-        endpointFirstSeenAt: observedAt,
-        lastValidInboundAt: observedAt,
-        lastProjectHookContextTreeMergeRequestInboundAt: observedAt,
-        lastProjectHookContextTreeRepository: "gitlab.internal/acme/context-tree",
-      })
-      .where(eq(gitlabConnections.id, connection.connectionId));
-
-    await expect(
-      putContextReviewerEnablement(app.db, admin.organizationId, true, {
-        updatedBy: admin.userId,
-        staleSeconds: 60,
-        now: () => observedAt,
-      }),
-    ).resolves.toMatchObject({
-      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
-    });
-    await putContextReviewerEnablement(app.db, admin.organizationId, false, {
-      updatedBy: admin.userId,
-      staleSeconds: 60,
-    });
-
-    for (const repo of ["https://gitlab.internal/acme/another-tree.git", repositoryA]) {
-      await putOrgSetting(
-        app.db,
-        admin.organizationId,
-        "context_tree",
-        { provider: "gitlab", repo, branch: "main" },
-        { updatedBy: admin.userId, memberId: admin.memberId },
-      );
-    }
-
-    const [connectionAfterRebind] = await app.db
-      .select()
-      .from(gitlabConnections)
-      .where(eq(gitlabConnections.id, connection.connectionId));
-    expect(connectionAfterRebind).toMatchObject({
-      lastProjectHookContextTreeMergeRequestInboundAt: null,
-      lastProjectHookContextTreeRepository: null,
-    });
-    await expect(
-      putContextReviewerEnablement(app.db, admin.organizationId, true, {
-        updatedBy: admin.userId,
-        staleSeconds: 60,
-        now: () => observedAt,
-      }),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_merge_request_event_not_seen" },
     });
   });
 
@@ -947,7 +842,7 @@ describe("Context Reviewer assignment/readiness contract", () => {
     }
   });
 
-  it("rechecks GitLab routing verification after a concurrent readiness reset", async () => {
+  it("keeps GitLab enablement independent of a concurrent provider-health reset", async () => {
     const app = getApp();
     const admin = await createAdminContext(app);
     const reviewer = await createReviewer(app, admin);
@@ -1004,12 +899,11 @@ describe("Context Reviewer assignment/readiness contract", () => {
     releaseReset();
     await reset;
 
-    await expect(enabling).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_merge_request_event_not_seen" },
+    await expect(enabling).resolves.toMatchObject({
+      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
     });
     await expect(getOrgSetting(app.db, admin.organizationId, "context_tree_features")).resolves.toMatchObject({
-      contextReviewer: { enabled: false, agentUuid: reviewer.uuid },
+      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
     });
   });
 

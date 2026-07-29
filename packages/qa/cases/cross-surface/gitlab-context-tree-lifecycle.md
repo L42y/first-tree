@@ -30,10 +30,11 @@ runtime, network, credential, and cross-surface behavior.
   the default payload, and no custom template. Reuse the same one-time URL in a
   trusted Project Hook with Merge Request, Issue, and Note events enabled.
   First Tree must observe a processable System Hook Merge Request before
-  full-instance routing is ready; a processable Project Hook Merge Request from
-  the exact bound Context Tree repository is sufficient only for that Team's
-  Context Reviewer readiness. Connection creation must not depend on Web
-  Context egress policy.
+  full-instance routing is ready. Context Reviewer enablement records Team
+  intent without requiring prior webhook traffic; every delivered MR must
+  still pass the live exact-repository, binding, connection, and Reviewer
+  authority checks. Connection creation must not depend on Web Context egress
+  policy.
   For a Self-Managed origin, the deployment operator—not the Team
   admin—separately authorizes the exact HTTPS origin through
   `FIRST_TREE_GITLAB_ALLOWED_ORIGINS`. Retain evidence of policy shape but no
@@ -78,15 +79,17 @@ runtime, network, credential, and cross-surface behavior.
   warning or Merge Request prompt. When both sources are observed, Project Hook
   activity must remain visible while an incomplete System Hook shows its own
   source-specific completion prompt. A System Hook Merge Request must establish
-  full-instance routing readiness. With only a Project Hook, deliver a Merge
-  Request first from a different project and then from the bound Context Tree:
-  only the exact repository event may make Context Reviewer enablement ready,
-  while repository automation continues to report Project Hook scope rather
-  than full-instance readiness. An unobserved optional hook source must not
-  appear broken or incomplete. Also load a pre-source-health connection with
-  valid historical transport: require a neutral unidentified-source state that
-  asks for an enabled event from the already configured Hook, never a guessed
-  System Hook recovery.
+  full-instance routing readiness. Before any inbound traffic, enable Automatic
+  Review and require the saved enabled state with no red webhook-readiness
+  blocker. With only a Project Hook, deliver a Merge Request first from a
+  different project and then from the bound Context Tree: the wrong repository
+  must not dispatch, while the first exact-repository event must immediately
+  dispatch the configured Reviewer. Repository automation continues to report
+  Project Hook scope rather than full-instance readiness. An unobserved optional
+  hook source must not appear broken or incomplete. Also load a pre-source-health
+  connection with valid historical transport: require a neutral unidentified-
+  source state that asks for an enabled event from the already configured Hook,
+  never a guessed System Hook recovery.
 - On a ready same-project MR, confirm the Reviewer resolves live state with the
   exact-host `glab` identity, fetches a detached exact head, runs
   `tree verify` before semantic reads, and completes Evidence plus Challenge

@@ -1,15 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, NotFoundError } from "../../errors.js";
 import { createLogger } from "../../observability/index.js";
-import {
-  handleContextReviewerMrEvent,
-  resolveBoundGitlabContextTreeWebhookRepository,
-} from "../../services/context-reviewer-mr.js";
+import { handleContextReviewerMrEvent } from "../../services/context-reviewer-mr.js";
 import {
   findActiveGitlabEndpoint,
   markGitlabInboundSeen,
   markGitlabProcessingFailure,
-  markGitlabProjectHookContextTreeMergeRequestProcessed,
   markGitlabReviewerSchemaAnomaly,
   markGitlabStableDeliveryObserved,
   markGitlabSystemHookMergeRequestProcessed,
@@ -37,7 +33,6 @@ import {
 } from "../../services/gitlab-webhook.js";
 import { runDeferredSendMessagePostCommitEffects } from "../../services/message.js";
 import { notifyRecipients } from "../../services/notifier.js";
-import { getOrgContextReviewRuntime } from "../../services/org-settings.js";
 import { runDeferredScmCardPostCommitEffects } from "../../services/scm-card-delivery.js";
 import { processScmWebhookDelivery } from "../../services/scm-webhook-processing.js";
 
@@ -171,16 +166,6 @@ export async function gitlabWebhookRoutes(app: FastifyInstance): Promise<void> {
                 reviewerField: normalized.personnel.reviewerField,
               });
               const applied = applyGitlabPersonnelEvidence(normalized, reviewerMode);
-              const projectHookContextTreeRepository =
-                normalized.hookSource === "project" &&
-                normalized.hookEventKind === "merge_request" &&
-                normalized.entityIdentity
-                  ? resolveBoundGitlabContextTreeWebhookRepository({
-                      runtime: await getOrgContextReviewRuntime(tx, fencedConnection.organizationId),
-                      connection: fencedConnection,
-                      projectPath: normalized.entityIdentity.projectPath,
-                    })
-                  : null;
               let observedFollowers: Awaited<ReturnType<typeof observeGitlabEntityAndResolveFollowers>> = [];
               const processingResult = await processScmWebhookDelivery({
                 db: tx,
@@ -286,19 +271,6 @@ export async function gitlabWebhookRoutes(app: FastifyInstance): Promise<void> {
                     reason: "partial_card_delivery_failure",
                   },
                   "Project Hook delivery partially failed without changing System Hook readiness",
-                );
-              }
-              if (
-                projectHookContextTreeRepository &&
-                processingResult.outcome !== "duplicate" &&
-                (crossHookDuplicate ||
-                  (processingResult.observationOutcome === "applied" && !partialCardDeliveryFailed))
-              ) {
-                await markGitlabProjectHookContextTreeMergeRequestProcessed(
-                  tx,
-                  endpoint.connection.id,
-                  endpoint.connection.tokenHash,
-                  projectHookContextTreeRepository,
                 );
               }
               shouldRememberSuccessfulEvent =

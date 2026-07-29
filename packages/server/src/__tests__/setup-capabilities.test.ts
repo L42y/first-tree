@@ -864,8 +864,8 @@ describe("Team setup capabilities", () => {
       contextTree: {
         binding: { state: "bound", provider: "gitlab" },
         automaticReview: {
-          health: "pending_verification",
-          blockers: [{ code: "gitlab_webhook_not_seen" }],
+          health: "ready",
+          blockers: [],
         },
       },
     });
@@ -929,14 +929,8 @@ describe("Team setup capabilities", () => {
       },
       contextTree: {
         automaticReview: {
-          health: "pending_verification",
-          blockers: [
-            {
-              code: "gitlab_merge_request_event_not_seen",
-              resolutionOwner: "admin",
-              actionKind: "configure_gitlab_webhook",
-            },
-          ],
+          health: "ready",
+          blockers: [],
         },
       },
     });
@@ -1039,8 +1033,8 @@ describe("Team setup capabilities", () => {
       },
       contextTree: {
         automaticReview: {
-          health: "degraded",
-          blockers: [{ code: "gitlab_processing_failed", actionKind: "configure_gitlab_webhook" }],
+          health: "ready",
+          blockers: [],
         },
       },
     });
@@ -1074,14 +1068,8 @@ describe("Team setup capabilities", () => {
       },
       contextTree: {
         automaticReview: {
-          health: "degraded",
-          blockers: [
-            {
-              code: "gitlab_processing_failed",
-              resolutionOwner: "admin",
-              actionKind: "configure_gitlab_webhook",
-            },
-          ],
+          health: "ready",
+          blockers: [],
         },
       },
     });

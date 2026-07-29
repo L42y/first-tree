@@ -156,7 +156,13 @@ export async function linkExternalIdentity(
         .from(authIdentities)
         .where(and(eq(authIdentities.userId, userId), eq(authIdentities.provider, profile.provider)))
         .limit(1);
-      if (byProvider) throw new IdentityConflictError();
+      if (byProvider) {
+        if (byProvider.identifier !== profile.subject) throw new IdentityConflictError();
+        // Under READ COMMITTED, an identical concurrent link can become
+        // visible between the subject and provider lookups.
+        await updateIdentitySnapshot(tx as unknown as Database, userId, profile);
+        return "already-linked";
+      }
       await tx.insert(authIdentities).values(identityValues(userId, profile));
       return "linked";
     });

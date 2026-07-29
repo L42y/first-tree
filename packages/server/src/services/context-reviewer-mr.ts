@@ -98,9 +98,9 @@ export function isContextReviewerMrCandidate(normalized: NormalizedGitlabWebhook
 }
 
 /**
- * Resolve repository-scoped GitLab webhook evidence against the live Context
- * Tree binding. This does not require Automatic Review to be enabled: a valid
- * MR may establish readiness before an admin flips the switch.
+ * Resolve a GitLab webhook repository against the live Context Tree binding.
+ * Automatic Review stores intent before traffic arrives; every MR event still
+ * has to pass this exact repository and connection check before dispatch.
  */
 export function resolveBoundGitlabContextTreeWebhookRepository(input: {
   runtime: OrgContextReviewRuntime;
@@ -126,6 +126,7 @@ export async function handleContextReviewerMrEvent(input: {
   normalized: NormalizedGitlabWebhook;
   connection: { id: string; organizationId: string; instanceOrigin: string; tokenHash: string };
   staleSeconds?: number;
+  beforeAuthorityFenceForTest?: () => Promise<void>;
 }): Promise<ContextReviewerMrResult> {
   if (!isContextReviewerMrCandidate(input.normalized)) {
     return { handled: false, reason: "unsupported_event" };
@@ -187,6 +188,7 @@ export async function handleContextReviewerMrEvent(input: {
     contextReviewRunId,
   };
   const prompt = await renderContextReviewerMrPrompt(templateInput);
+  await input.beforeAuthorityFenceForTest?.();
   const fenced = await withContextReviewerDispatchAuthority(
     input.database,
     {
@@ -200,6 +202,8 @@ export async function handleContextReviewerMrEvent(input: {
         connectionId: input.connection.id,
         instanceOrigin: input.connection.instanceOrigin,
         tokenHash: input.connection.tokenHash,
+        repository: webhookRepo,
+        branch: runtime.branch,
       },
     },
     async (tx, currentReviewer): Promise<Extract<ContextReviewerMrResult, { handled: true }>> => {
