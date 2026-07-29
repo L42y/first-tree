@@ -7,10 +7,21 @@ export function NeedYouEntry({ variant, onOpen }: { variant: "desktop" | "mobile
   const { organizationId } = useAuth();
   const queue = useQuery(needYouQueryOptions(organizationId));
   const count = queue.data?.total ?? 0;
-  const enabled = count > 0;
-  const accessibleLabel = enabled
-    ? `Need you, ${count} ${count === 1 ? "question" : "questions"}`
-    : "Need you, no questions";
+  // Three distinct "no count" states, never collapsed into one:
+  //  - pending: the queue state is UNKNOWN — disabled with loading semantics,
+  //    and never announced as "no questions";
+  //  - error: the queue is UNAVAILABLE — the entry stays reachable so the
+  //    review page's own error + Retry recovery path can be opened;
+  //  - success with total=0: a CONFIRMED zero — the only state that disables
+  //    the entry as "no questions".
+  const enabled = queue.isError || count > 0;
+  const accessibleLabel = queue.isPending
+    ? "Need you, loading"
+    : queue.isError
+      ? "Need you, failed to load, open to retry"
+      : count > 0
+        ? `Need you, ${count} ${count === 1 ? "question" : "questions"}`
+        : "Need you, no questions";
 
   if (variant === "mobile") {
     return (
@@ -34,7 +45,7 @@ export function NeedYouEntry({ variant, onOpen }: { variant: "desktop" | "mobile
       >
         <CircleHelp aria-hidden className="h-5 w-5 shrink-0" />
         <span className="text-mobile-subtitle flex-1">Need you</span>
-        {enabled ? (
+        {count > 0 ? (
           <span
             className="mono text-mobile-caption inline-flex min-w-6 items-center justify-center"
             style={{
@@ -72,7 +83,7 @@ export function NeedYouEntry({ variant, onOpen }: { variant: "desktop" | "mobile
     >
       <CircleHelp aria-hidden size={16} strokeWidth={1.8} />
       <span className="text-subtitle flex-1">Need you</span>
-      {enabled ? (
+      {count > 0 ? (
         <span
           className="mono text-caption inline-flex min-w-5 items-center justify-center"
           style={{

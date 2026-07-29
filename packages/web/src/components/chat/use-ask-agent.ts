@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { chatAgentStatusQueryKey, fetchChatAgentStatuses } from "../../api/agent-status.js";
 import { listRequestThread, sendAskAgentQuestion } from "../../api/chats.js";
 import { useToast } from "../ui/toast.js";
+import { addAskAgentNavLock, removeAskAgentNavLock } from "./ask-agent-nav-lock.js";
 import { type AskAgentExchange, projectAskAgentExchanges } from "./ask-agent-state.js";
 
 const ASK_AGENT_REPLY_TIMEOUT_MS = 45_000;
@@ -153,6 +154,20 @@ export function useAskAgent({
       void queryClient.invalidateQueries({ queryKey: ["need-you"] });
     },
   });
+
+  // Publish the pending attempt to the shared navigation lock. The waiting /
+  // timeout feedback only exists inside this hook, so the navigation
+  // boundaries above this surface (desktop rail, mobile tabs, browser back)
+  // fail closed while the attempt is unresolved and resume when it lifts —
+  // on reply, timeout, failure — or when this surface unmounts for a
+  // permitted reason.
+  const navLockPending = enabled && requestId !== null && (mutation.isPending || pending !== null);
+  useEffect(() => {
+    if (!navLockPending || !requestId) return;
+    const lock = { chatId, requestId };
+    addAskAgentNavLock(lock);
+    return () => removeAskAgentNavLock(lock);
+  }, [navLockPending, chatId, requestId]);
 
   return {
     exchanges,

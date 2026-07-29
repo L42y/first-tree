@@ -2540,6 +2540,79 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the composer fail-closed while the open-requests source is pending in inspect mode", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // The request is past the loaded 50-message window, so ONLY the pending
+    // open-requests query can know about it. Until that query confirms the
+    // chat's state, an empty derivation is unknown — not "no requests".
+    const buriedAsk = message({
+      id: "req-inspect-pending",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/?showAsk=false",
+    );
+
+    // Pending: no ordinary composer, no reopen affordance — fail closed.
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("[data-inspect-ask-composer]")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // The query confirms the still-open request: the reopen affordance
+    // replaces the pending panel; the ordinary composer stays hidden.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "有 1 条待处理的问题");
+    expect(container.querySelector("[data-inspect-ask-composer]")).not.toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows a retryable error instead of the ordinary composer when the open-requests source fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("open requests unavailable"));
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/?showAsk=false",
+    );
+
+    // Failed: no ordinary composer either — an understandable recovery path.
+    await waitForText(container, "Couldn’t check for open questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Retry succeeds with a CONFIRMED zero: only now may the ordinary
+    // composer return.
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+    await click(buttonByText(container, "Retry"));
+    await waitForCondition(
+      () => container.querySelector("textarea") !== null,
+      "ordinary composer after confirmed zero",
+    );
+
+    await act(async () => root.unmount());
+  });
+
   it("Skip resolves the question with a skipped answer (no temporary dismiss)", async () => {
     const { ChatView } = await import("../chat-view.js");
     const dockMessages = messages([

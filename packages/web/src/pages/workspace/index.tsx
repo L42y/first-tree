@@ -2,6 +2,7 @@ import { CHAT_SOURCES, type ChatEngagementView, type ChatSource, chatEngagementV
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, useLocation, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
+import { isAskAgentNavLocked, useAskAgentNavGuard } from "../../components/chat/ask-agent-nav-lock.js";
 import { DocPreviewDrawer } from "../../components/doc-preview-drawer.js";
 import { useAdminWs } from "../../hooks/use-admin-ws.js";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
@@ -175,6 +176,14 @@ export function WorkspaceBody() {
 
   useAdminWs();
 
+  // Fail closed while an Ask agent attempt is pending. The attempt state
+  // lives inside the owning review surface (Need you page / Chat takeover),
+  // so every URL transition that would unmount that surface — a rail row, new
+  // chat, the Need you entry, a filter that drops `?c=`, or browser back —
+  // is blocked until the attempt lifts. Browser back/forward is reverted by
+  // the guard hook; the in-app callbacks below refuse while locked.
+  useAskAgentNavGuard();
+
   // Viewport-driven layout: at `narrow` (<768) the conversation list
   // collapses out of the inline three-pane shell and becomes a summon-able
   // overlay anchored to the workspace's left edge. State is plain React
@@ -234,6 +243,7 @@ export function WorkspaceBody() {
 
   const selectChat = useCallback(
     (chatId: string) => {
+      if (isAskAgentNavLocked()) return;
       // Preserve the current `?engagement=` (and any other) param so
       // switching chats doesn't reset the user's filter context.
       const next = new URLSearchParams(searchParams);
@@ -251,6 +261,7 @@ export function WorkspaceBody() {
   );
 
   const openDraft = useCallback(() => {
+    if (isAskAgentNavLocked()) return;
     const next = new URLSearchParams(searchParams);
     next.set("c", DRAFT_CHAT_ID);
     next.delete("review");
@@ -260,6 +271,7 @@ export function WorkspaceBody() {
   }, [searchParams, setSearchParams]);
 
   const clearSelectedChat = useCallback(() => {
+    if (isAskAgentNavLocked()) return;
     const next = new URLSearchParams(searchParams);
     next.delete("c");
     next.delete("showAsk");
@@ -269,6 +281,7 @@ export function WorkspaceBody() {
   }, [searchParams, setSearchParams]);
 
   const openNeedYou = useCallback(() => {
+    if (isAskAgentNavLocked()) return;
     const next = new URLSearchParams(searchParams);
     next.set("review", "need-you");
     next.delete("c");
@@ -300,6 +313,8 @@ export function WorkspaceBody() {
 
   const setEngagement = useCallback(
     (view: ChatEngagementView) => {
+      // Drops `?c=`, which would unmount a pending Ask agent's owning surface.
+      if (isAskAgentNavLocked()) return;
       setSearchParams(nextParamsForEngagement(searchParams, view), { replace: true });
     },
     [searchParams, setSearchParams],
@@ -317,6 +332,8 @@ export function WorkspaceBody() {
 
   const setOrigin = useCallback(
     (next: ReadonlyArray<ChatSource>) => {
+      // Drops `?c=` — see `setEngagement`.
+      if (isAskAgentNavLocked()) return;
       setSearchParams(nextParamsForOrigin(searchParams, next), { replace: true });
     },
     [searchParams, setSearchParams],
@@ -324,6 +341,8 @@ export function WorkspaceBody() {
 
   const setParticipants = useCallback(
     (next: ReadonlyArray<string>) => {
+      // Drops `?c=` — see `setEngagement`.
+      if (isAskAgentNavLocked()) return;
       setSearchParams(nextParamsForParticipants(searchParams, next), { replace: true });
     },
     [searchParams, setSearchParams],

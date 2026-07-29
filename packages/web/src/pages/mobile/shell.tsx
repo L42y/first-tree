@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
+import { useAskAgentNavGuard } from "../../components/chat/ask-agent-nav-lock.js";
 import { TeamSwitchOverlay } from "../../components/team-switch-overlay.js";
 import { useAdminWs } from "../../hooks/use-admin-ws.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
@@ -42,6 +43,10 @@ export function MobileShell() {
   const selectedChatId = searchParams.get("c");
   const workRoute = location.pathname === "/m/chat";
   const immersiveChat = workRoute && selectedChatId !== null;
+  // While an Ask agent attempt is pending, the bottom tabs (and browser back,
+  // via the guard hook) fail closed so the pending feedback's owning surface
+  // cannot unmount mid-attempt.
+  const askAgentNavLocked = useAskAgentNavGuard();
   const firstWorkPage = tabCountsQuery.data?.pages[0];
   const rows = mobileRowsFromList(firstWorkPage);
   const totalUnread = Object.values(unreadCountsQuery.data?.counts ?? {}).reduce(
@@ -70,7 +75,7 @@ export function MobileShell() {
       <main className="flex-1 min-h-0 overflow-hidden">
         <Outlet />
       </main>
-      {immersiveChat ? null : <MobileBottomTabs chatCount={totalUnread} />}
+      {immersiveChat ? null : <MobileBottomTabs chatCount={totalUnread} locked={askAgentNavLocked} />}
       {installGuide.open && installGuide.mode ? (
         <InstallGuideSheet mode={installGuide.mode} onInstall={installGuide.install} onClose={installGuide.dismiss} />
       ) : null}

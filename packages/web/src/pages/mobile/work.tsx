@@ -4,6 +4,7 @@ import { Filter, Pin, Plus, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
+import { isAskAgentNavLocked } from "../../components/chat/ask-agent-nav-lock.js";
 import { ChatRowAvatar } from "../../components/chat/chat-row-avatar.js";
 import { DocPreviewDrawer } from "../../components/doc-preview-drawer.js";
 import { Button } from "../../components/ui/button.js";
@@ -37,6 +38,8 @@ export function MobileWorkPage() {
 
   const selectChat = useCallback(
     (chatId: string) => {
+      // Unmounts a pending Ask agent's owning surface — refuse while locked.
+      if (isAskAgentNavLocked()) return;
       const next = new URLSearchParams(searchParams);
       next.set("c", chatId);
       next.delete("review");
@@ -47,6 +50,8 @@ export function MobileWorkPage() {
   );
 
   const clearChat = useCallback(() => {
+    // Unmounts a pending Ask agent's owning surface — refuse while locked.
+    if (isAskAgentNavLocked()) return;
     const next = new URLSearchParams(searchParams);
     next.delete("c");
     next.delete("with");
@@ -55,6 +60,8 @@ export function MobileWorkPage() {
   }, [searchParams, setSearchParams]);
 
   const openNeedYou = useCallback(() => {
+    // Unmounts a pending Ask agent's owning surface — refuse while locked.
+    if (isAskAgentNavLocked()) return;
     const next = new URLSearchParams(searchParams);
     next.set("review", "need-you");
     next.delete("c");

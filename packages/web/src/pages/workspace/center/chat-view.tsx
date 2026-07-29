@@ -30,6 +30,7 @@ import {
   Download,
   ExternalLink,
   Eye,
+  LoaderCircle,
   Menu,
   MessageSquare,
   PanelRight,
@@ -1825,7 +1826,10 @@ export function ChatView({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const readOnlyComposerRef = useRef<HTMLDivElement | null>(null);
   const blockedComposerRef = useRef<HTMLDivElement | null>(null);
-  const inspectComposerRef = useRef<HTMLButtonElement | null>(null);
+  // Shared focus target for every inspect-mode composer branch (the reopen
+  // button, the fail-closed pending/error panel) and ComposeStatusBar's
+  // fallback — typed as HTMLElement so both element kinds can attach.
+  const inspectComposerRef = useRef<HTMLElement | null>(null);
   // The composer footer band — wraps BOTH the request dock (with its option
   // radios) and the composer. The Enter-to-resolve backstop binds its keydown
   // listener here, not on `window`, so it only sees keys from inside the
@@ -1934,11 +1938,15 @@ export function ChatView({
   // these into its derivation (`blockingMessages`) so an open ask that has
   // scrolled past the latest page still surfaces. Same 5s poll + WS
   // invalidation as the timeline; the query usually returns 0–1 rows.
-  const { data: openRequestsData } = useQuery({
+  // Inspect mode also gates on this query's STATUS: while it has not
+  // confirmed the open-request state, an empty derivation is unknown, not
+  // "no requests" — see `inspectSourceUnverified` below.
+  const openRequestsQuery = useQuery({
     queryKey: ["chat-open-requests", chatId],
     queryFn: () => listChatOpenRequests(chatId),
     refetchInterval: 5_000,
   });
+  const { data: openRequestsData } = openRequestsQuery;
 
   const {
     data: chatDetail,
@@ -2215,6 +2223,10 @@ export function ChatView({
     // Fail closed at the mutation boundary as well as replacing that composer
     // in the render tree below, so a queued Enter/click cannot bypass takeover.
     if (askOverlayActive) return;
+    // Inspect mode with an unverified open-requests source fails closed too
+    // (`inspectSourceUnverified`): the chat's open-request state is unknown,
+    // so no ordinary send may reach the mutation.
+    if (inspectSourceUnverified) return;
     const text = draft.trim();
     // Images ride `content` as ImageRefContent (unchanged); documents/files ride
     // `metadata.attachments[]` as generic AttachmentRefs. A mixed send carries
@@ -2609,6 +2621,14 @@ export function ChatView({
   const askOverlayActive = dockRequest != null && dockPayload != null && !inspectAskMode;
   const dockRequestId = askOverlayActive ? dockRequest.id : undefined;
   const openRequestCount = Math.max(openRequestsData?.items.length ?? 0, dockRequest ? 1 : 0);
+  // Inspect mode must fail closed while the window-independent open-requests
+  // source has not CONFIRMED the chat's open-request state: a pending or
+  // failed query derives the same empty count as "no open requests", and
+  // treating that as confirmed would restore the ordinary composer and let a
+  // fast send bypass a still-open request — precisely the contract this mode
+  // exists to preserve. Only a successful query, or a blocking request found
+  // in the already-loaded timeline (count > 0 above), lifts this gate.
+  const inspectSourceUnverified = inspectAskMode && openRequestCount === 0 && openRequestsQuery.status !== "success";
   const askAgent = useAskAgent({
     chatId,
     requestId: dockRequest?.id ?? null,
@@ -3573,6 +3593,7 @@ export function ChatView({
   const landingCampaignChatLocked = isLandingCampaignTrialChatLocked(chatDetail?.metadata);
   const sendDisabled =
     askOverlayActive ||
+    inspectSourceUnverified ||
     landingCampaignChatLocked ||
     sendMut.isPending ||
     uploading ||
@@ -4286,7 +4307,9 @@ export function ChatView({
                   </div>
                 ) : inspectAskMode && openRequestCount > 0 ? (
                   <button
-                    ref={inspectComposerRef}
+                    ref={(el) => {
+                      inspectComposerRef.current = el;
+                    }}
                     type="button"
                     data-inspect-ask-composer
                     onClick={reopenAskTakeover}
@@ -4320,6 +4343,59 @@ export function ChatView({
                       Open
                     </span>
                   </button>
+                ) : inspectSourceUnverified ? (
+                  /* Fail-closed inspect state: the window-independent
+                     open-requests source has not confirmed this chat's state,
+                     so the ordinary composer must NOT render — a fast send
+                     would bypass a possibly still-open request. Shares the
+                     inspect composer's focus ref so ComposeStatusBar keeps a
+                     stable fallback target across every inspect branch. */
+                  <div
+                    ref={(el) => {
+                      inspectComposerRef.current = el;
+                    }}
+                    tabIndex={-1}
+                    data-inspect-ask-unverified
+                    className="composer-card flex items-center"
+                    style={{
+                      gap: "var(--sp-3)",
+                      minHeight: composerMobile ? 52 : 46,
+                      padding: "var(--sp-2_5) var(--sp-3)",
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      color: "var(--fg-3)",
+                    }}
+                  >
+                    {openRequestsQuery.isError ? (
+                      <>
+                        <span className="text-body flex-1" style={{ color: "var(--fg-2)" }}>
+                          Couldn’t check for open questions.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void openRequestsQuery.refetch()}
+                          className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-hover)]"
+                          style={{
+                            minHeight: 32,
+                            padding: "0 var(--sp-3)",
+                            border: "var(--hairline) solid var(--border)",
+                            borderRadius: "var(--radius-input)",
+                            background: "var(--bg-raised)",
+                            color: "var(--fg-2)",
+                          }}
+                        >
+                          Retry
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <LoaderCircle aria-hidden className="h-4 w-4 shrink-0 animate-spin" />
+                        <span className="text-body" role="status">
+                          Checking for open questions…
+                        </span>
+                      </>
+                    )}
+                  </div>
                 ) : (
                   <>
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: drop target for image upload */}

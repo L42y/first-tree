@@ -251,7 +251,7 @@ export function MobileSegmentedControl<T extends string>({
   );
 }
 
-export function MobileBottomTabs({ chatCount }: { chatCount: number }) {
+export function MobileBottomTabs({ chatCount, locked = false }: { chatCount: number; locked?: boolean }) {
   const tabs = [
     { to: "/m/chat", label: "Chat", icon: ListTodo, badge: chatCount },
     { to: "/m/team", label: "Team", icon: UsersRound, badge: 0 },
@@ -270,28 +270,47 @@ export function MobileBottomTabs({ chatCount }: { chatCount: number }) {
         background: "var(--bg-raised)",
       }}
     >
-      {tabs.map((tab) => (
-        <NavLink
-          key={tab.to}
-          to={tab.to}
-          className={({ isActive }) =>
-            cn("relative flex min-h-[var(--sp-11)] flex-col items-center justify-center", !isActive && "opacity-70")
-          }
-          style={({ isActive }) => ({
-            gap: "var(--sp-0_5)",
-            color: isActive ? "var(--fg)" : "var(--fg-3)",
-            textDecoration: "none",
-          })}
-        >
-          {({ isActive }) => (
-            <>
-              <tab.icon aria-hidden size={18} strokeWidth={isActive ? 2.2 : 1.8} />
-              <span className="text-mobile-label">{tab.label}</span>
-              {tab.badge > 0 ? <MobileTabBadge count={tab.badge} /> : null}
-            </>
-          )}
-        </NavLink>
-      ))}
+      {tabs.map((tab) =>
+        // A pending Ask agent attempt owns the current surface; every tab —
+        // including the active one — is swapped for an inert disabled button
+        // so tap, keyboard, and programmatic activation all fail closed until
+        // the attempt lifts.
+        locked ? (
+          <button
+            key={tab.to}
+            type="button"
+            disabled
+            aria-label={`${tab.label}, unavailable while waiting for the agent reply`}
+            className="relative flex min-h-[var(--sp-11)] flex-col items-center justify-center opacity-40"
+            style={{ gap: "var(--sp-0_5)", border: 0, background: "transparent", color: "var(--fg-3)" }}
+          >
+            <tab.icon aria-hidden size={18} strokeWidth={1.8} />
+            <span className="text-mobile-label">{tab.label}</span>
+            {tab.badge > 0 ? <MobileTabBadge count={tab.badge} /> : null}
+          </button>
+        ) : (
+          <NavLink
+            key={tab.to}
+            to={tab.to}
+            className={({ isActive }) =>
+              cn("relative flex min-h-[var(--sp-11)] flex-col items-center justify-center", !isActive && "opacity-70")
+            }
+            style={({ isActive }) => ({
+              gap: "var(--sp-0_5)",
+              color: isActive ? "var(--fg)" : "var(--fg-3)",
+              textDecoration: "none",
+            })}
+          >
+            {({ isActive }) => (
+              <>
+                <tab.icon aria-hidden size={18} strokeWidth={isActive ? 2.2 : 1.8} />
+                <span className="text-mobile-label">{tab.label}</span>
+                {tab.badge > 0 ? <MobileTabBadge count={tab.badge} /> : null}
+              </>
+            )}
+          </NavLink>
+        ),
+      )}
     </nav>
   );
 }
