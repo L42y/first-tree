@@ -70,6 +70,10 @@ describe("portable Team Skill contract", () => {
     const unicodeCanonical = new Map<string, string>();
     expect(recordPortableTeamSkillPath(unicodeCanonical, "Café/x.txt")).toBeNull();
     expect(recordPortableTeamSkillPath(unicodeCanonical, "Cafe\u0301/y.txt")).toContain("spelling collision");
+
+    const expandedFoldCanonical = new Map<string, string>();
+    expect(recordPortableTeamSkillPath(expandedFoldCanonical, "Straße/x.txt")).toBeNull();
+    expect(recordPortableTeamSkillPath(expandedFoldCanonical, "STRASSE/y.txt")).toContain("spelling collision");
   });
 
   it("rejects non-portable and overlong path components", () => {

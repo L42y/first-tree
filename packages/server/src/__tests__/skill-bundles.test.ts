@@ -212,6 +212,14 @@ describe("Team Skill bundles", () => {
           "a/y.txt": strToU8("two"),
         }),
     ],
+    [
+      "expanded Unicode case-fold ancestor collision",
+      () =>
+        skillZip("portable", {
+          "Straße/x.txt": strToU8("one"),
+          "STRASSE/y.txt": strToU8("two"),
+        }),
+    ],
     ["overlong path segment", () => skillZip("portable", { [`assets/${"a".repeat(241)}`]: strToU8("bad") })],
     [
       "raw overlong Unicode path segment",

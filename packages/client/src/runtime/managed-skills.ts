@@ -156,6 +156,8 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   testFailureAt?: ManagedSkillsCheckpoint;
   /** Forces the rollback path to preserve its journal and abort reconciliation. */
   testRecoveryFailure?: boolean;
+  /** Mutates test state immediately before the final provider-publication digest gate. */
+  testBeforeTeamRows?: () => void | Promise<void>;
 }>;
 
 type DesiredManagedSkill = Readonly<{
@@ -399,11 +401,27 @@ export async function reconcileManagedSkills(
       }
 
       if (authoritative && options.teamSnapshot.kind === "authoritative") {
-        mutable.teamSkills = await buildReconciledTeamRows(options.workspace, state, desiredSkills, successfulTargets);
+        await options.testBeforeTeamRows?.();
+        const publication = await buildReconciledTeamRows(options, state, desiredSkills, successfulTargets);
+        mutable.teamSkills = publication.rows;
+        for (const invalidated of publication.invalidated) {
+          mutable.installed = mutable.installed.filter((key) => key !== invalidated);
+          mutable.skipped = mutable.skipped.filter((key) => key !== invalidated);
+          mutable.failures.push({
+            key: invalidated,
+            reason: "managed Skill changed during final provider publication verification and was quarantined",
+          });
+        }
       }
       return freezeResult(state.resourceConfigVersion, mutable);
     } catch (error) {
       if (error instanceof ManagedSkillsUnsafeDiscoveryError) throw error;
+      if (error instanceof ManagedSkillsFatalError && (await providerDiscoveryMayContainManagedContent(options))) {
+        throw new ManagedSkillsUnsafeDiscoveryError(
+          "Managed Skill state or transaction authority is unsafe while provider discovery may contain managed content",
+          { cause: error },
+        );
+      }
       const reason = error instanceof Error ? error.message : String(error);
       mutable.failures.push({ key: "workspace", reason });
       options.log?.(`Managed skills reconcile skipped: ${reason.slice(0, 300)}`);
@@ -985,6 +1003,20 @@ async function verifyPreservedTeamTargets(options: ReconcileManagedSkillsOptions
   }
 }
 
+async function providerDiscoveryMayContainManagedContent(options: ReconcileManagedSkillsOptions): Promise<boolean> {
+  try {
+    const providerRoot = resolveWorkspacePath(options.workspace, providerSkillRoot(options.provider), "root");
+    const rootStat = await lstat(providerRoot);
+    if (!rootStat.isDirectory()) return true;
+    return (await readdir(providerRoot)).length > 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // If the discovery root itself cannot be inspected safely, absence of
+    // managed content cannot be proven.
+    return true;
+  }
+}
+
 async function managedTargetExistsAfterFailedRemoval(workspace: string, target: string): Promise<boolean> {
   try {
     return await pathExists(resolveWorkspacePath(workspace, target, "target"));
@@ -1248,12 +1280,13 @@ function maybeFault(options: ReconcileManagedSkillsOptions, checkpoint: ManagedS
 }
 
 async function buildReconciledTeamRows(
-  workspace: string,
+  options: ReconcileManagedSkillsOptions,
   state: ManagedState,
   desired: readonly DesiredManagedSkill[],
   successfulTargets: ReadonlyMap<ManagedSkillEntry["key"], string>,
-): Promise<ReconciledTeamSkill[]> {
+): Promise<Readonly<{ rows: ReconciledTeamSkill[]; invalidated: ManagedSkillEntry["key"][] }>> {
   const rows: ReconciledTeamSkill[] = [];
+  const invalidated: ManagedSkillEntry["key"][] = [];
   for (const skill of desired) {
     if (skill.kind !== "team") continue;
     const target = successfulTargets.get(skill.key);
@@ -1263,8 +1296,21 @@ async function buildReconciledTeamRows(
         candidate.key === skill.key && candidate.target === target && candidate.revision === skill.revision,
     );
     if (!entry) continue;
-    const actualDigest = await digestManagedTarget(workspace, target);
-    if (actualDigest !== entry.installedDigest) continue;
+    let actualDigest: `sha256:${string}` | null = null;
+    try {
+      actualDigest = await digestManagedTarget(options.workspace, target);
+    } catch (error) {
+      options.log?.(
+        `Managed skill final publication target cannot be verified (${entry.key}): ${
+          error instanceof Error ? error.message.slice(0, 300) : String(error)
+        }`,
+      );
+    }
+    if (actualDigest !== entry.installedDigest) {
+      await quarantineDriftedManagedTarget(options, entry);
+      invalidated.push(entry.key);
+      continue;
+    }
     rows.push({
       key: skill.key as `resource:${string}`,
       name: entry.effectiveName,
@@ -1274,7 +1320,7 @@ async function buildReconciledTeamRows(
       installedDigest: entry.installedDigest,
     });
   }
-  return rows;
+  return { rows, invalidated };
 }
 
 async function writeInlineSkillTree(stagingPath: string, allocated: AllocatedManagedSkill): Promise<void> {
@@ -1696,7 +1742,7 @@ async function copySanitizedDirectory(
   );
   const caseInsensitiveNames = new Set<string>();
   for (const entry of entries) {
-    const folded = entry.name.toLocaleLowerCase("en-US");
+    const folded = foldPortableTeamSkillPath(entry.name);
     if (caseInsensitiveNames.has(folded)) {
       throw new Error(`Skill bundle contains a case-insensitive path collision at ${relativeDir || "."}`);
     }
@@ -1817,7 +1863,7 @@ async function hashDirectoryRecursive(
   names.sort((left, right) => left.localeCompare(right));
   const caseInsensitiveNames = new Set<string>();
   for (const name of names) {
-    const folded = name.toLocaleLowerCase("en-US");
+    const folded = foldPortableTeamSkillPath(name);
     if (caseInsensitiveNames.has(folded)) {
       throw new Error(`Skill tree contains a case-insensitive path collision at ${relativeDir || "."}`);
     }
@@ -1867,9 +1913,16 @@ async function hashDirectoryRecursive(
 }
 
 function assertManagedTreeModeSafe(mode: number, kind: "directory" | "file", relativePath: string): void {
-  if ((mode & 0o022) !== 0) {
+  if (hasUnsafeManagedWriteMode(mode)) {
     throw new Error(`Skill tree ${kind} has unsafe group/other write permissions: ${relativePath}`);
   }
+}
+
+export function hasUnsafeManagedWriteMode(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  // Windows reports synthesized POSIX bits (commonly 0666) that do not
+  // represent ACL group/other write authority. Enforce this drift gate only
+  // where Node exposes meaningful POSIX permission bits.
+  return platform !== "win32" && (mode & 0o022) !== 0;
 }
 
 function isSafeSkillName(name: string): boolean {

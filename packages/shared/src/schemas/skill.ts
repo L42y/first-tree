@@ -84,7 +84,12 @@ const WINDOWS_RESERVED_NAMES = new Set<string>([
 ]);
 
 export function foldPortableTeamSkillPath(path: string): string {
-  return path.normalize("NFC").toLocaleLowerCase("en-US");
+  // JavaScript has no native Unicode case-fold primitive. Uppercase followed
+  // by lowercase is a deterministic conservative key that also expands folds
+  // such as ß -> SS -> ss and normalizes final sigma variants. False-positive
+  // collisions are safer than admitting two paths that a supported
+  // case-insensitive filesystem later merges.
+  return path.normalize("NFC").toLocaleUpperCase("en-US").toLocaleLowerCase("en-US").normalize("NFC");
 }
 
 /**
