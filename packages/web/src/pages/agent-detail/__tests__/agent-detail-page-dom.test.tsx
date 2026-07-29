@@ -891,6 +891,45 @@ describe("AgentDetailPage", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows Codex Fast mode and saves the provider-native service tier immediately", async () => {
+    const codexPayload: AgentRuntimeConfig["payload"] = {
+      kind: "codex",
+      prompt: { append: "" },
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      serviceTier: "default",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    agentMocks.getAgent.mockResolvedValue(agent({ runtimeProvider: "codex" }));
+    agentConfigMocks.getAgentConfig.mockResolvedValue(config({ payload: codexPayload }));
+    agentConfigMocks.updateAgentConfig.mockResolvedValue(
+      config({ version: 8, payload: { ...codexPayload, serviceTier: "fast" } }),
+    );
+
+    const { RuntimeTab } = await import("../runtime-tab.js");
+    const { container, root } = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
+    await waitForText(container, "Fast mode");
+
+    const fastMode = container.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="Fast mode"]');
+    expect(fastMode?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Standard");
+
+    await click(fastMode);
+    await waitForCondition(
+      () => agentConfigMocks.updateAgentConfig.mock.calls.length > 0,
+      "Expected Fast mode to save immediately",
+    );
+    expect(agentConfigMocks.updateAgentConfig).toHaveBeenCalledWith("agent-1", {
+      expectedVersion: 7,
+      payload: { serviceTier: "fast" },
+    });
+
+    await act(async () => root.unmount());
+  });
+
   it("leaves immediately after an edit — no unsaved-changes guard", async () => {
     const { RuntimeTab } = await import("../runtime-tab.js");
     const { container, root } = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);

@@ -27,6 +27,8 @@ vi.mock("../core/service-install.js", () => serviceMocks);
 
 let home = "";
 let originalHome: string | undefined;
+let originalServerUrl: string | undefined;
+let originalClientId: string | undefined;
 const children: ChildProcess[] = [];
 
 function writeJson(path: string, value: unknown): void {
@@ -55,8 +57,12 @@ async function waitForChildVisible(): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks();
   originalHome = process.env.FIRST_TREE_HOME;
+  originalServerUrl = process.env.FIRST_TREE_SERVER_URL;
+  originalClientId = process.env.FIRST_TREE_CLIENT_ID;
   home = mkdtempSync(join(tmpdir(), "ft-client-switch-tx-"));
   process.env.FIRST_TREE_HOME = home;
+  delete process.env.FIRST_TREE_SERVER_URL;
+  delete process.env.FIRST_TREE_CLIENT_ID;
   serviceMocks.getClientServiceStatus.mockReturnValue({ state: "inactive", platform: "test" });
   serviceMocks.stopClientService.mockReturnValue({ ok: true });
 });
@@ -74,6 +80,10 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
   if (originalHome === undefined) delete process.env.FIRST_TREE_HOME;
   else process.env.FIRST_TREE_HOME = originalHome;
+  if (originalServerUrl === undefined) delete process.env.FIRST_TREE_SERVER_URL;
+  else process.env.FIRST_TREE_SERVER_URL = originalServerUrl;
+  if (originalClientId === undefined) delete process.env.FIRST_TREE_CLIENT_ID;
+  else process.env.FIRST_TREE_CLIENT_ID = originalClientId;
 });
 
 describe("client switch transaction recovery", () => {
@@ -121,6 +131,7 @@ describe("client switch transaction recovery", () => {
     );
     writeClientYaml("client_aabbccdd", "https://old.example");
     mkdirSync(join(home, "config", "agents", "old-agent"), { recursive: true });
+    writeFileSync(join(home, "config", "context.yaml"), "schemaVersion: 1\nbindings: []\n");
     mkdirSync(join(home, "data", "sessions", "old-session"), { recursive: true });
 
     const config = await switchLocalClientForLogin({
@@ -142,6 +153,7 @@ describe("client switch transaction recovery", () => {
     expect(config.server.url).toBe("https://new.example");
     expect(existsSync(join(home, "parked-clients", "client_aabbccdd", "config", "client.yaml"))).toBe(true);
     expect(existsSync(join(home, "parked-clients", "client_aabbccdd", "config", "agents", "old-agent"))).toBe(true);
+    expect(existsSync(join(home, "parked-clients", "client_aabbccdd", "config", "context.yaml"))).toBe(true);
     expect(readFileSync(join(home, "config", "credentials.json"), "utf8")).toContain("new-refresh");
     expect(existsSync(clientSwitchJournalPath(home))).toBe(false);
     expect(existsSync(clientSwitchLockPath(home))).toBe(false);
@@ -161,6 +173,7 @@ describe("client switch transaction recovery", () => {
     const parkedTarget = join(home, "parked-clients", "client_11223344");
     writeClientYaml("client_11223344", "https://new.example", join(parkedTarget, "config"));
     mkdirSync(join(parkedTarget, "config", "agents", "target-agent"), { recursive: true });
+    writeFileSync(join(parkedTarget, "config", "context.yaml"), "schemaVersion: 1\nbindings: []\n");
     mkdirSync(join(parkedTarget, "data", "sessions", "target-session"), { recursive: true });
     writeJson(join(home, "parked-clients", "index.json"), {
       version: 1,
@@ -197,6 +210,7 @@ describe("client switch transaction recovery", () => {
 
     expect(config.client.id).toBe("client_11223344");
     expect(existsSync(join(home, "config", "agents", "target-agent"))).toBe(true);
+    expect(readFileSync(join(home, "config", "context.yaml"), "utf8")).toContain("schemaVersion: 1");
     expect(existsSync(join(home, "data", "sessions", "target-session"))).toBe(true);
     const index = readJson(join(home, "parked-clients", "index.json")) as {
       activeClientId: string;

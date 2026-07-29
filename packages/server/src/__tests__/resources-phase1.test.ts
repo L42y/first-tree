@@ -5,6 +5,7 @@ import {
   canonicalizeResourceRepoUrl,
   DEFAULT_AGENT_RUNTIME_CONFIG_PAYLOAD,
   PROMPT_APPEND_MAX_LENGTH,
+  type SkillResourcePayload,
 } from "@first-tree/shared";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -17,9 +18,11 @@ import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { resources } from "../db/schema/resources.js";
 import { createAgent } from "../services/agent.js";
+import { createAttachment } from "../services/attachment.js";
 import { LANDING_CAMPAIGN_TRIAL_PROMPT } from "../services/landing-campaigns/trial-prompt.js";
 import { createOrganization } from "../services/organization.js";
 import { backfillResourcesPhase1 } from "../services/resources-migration.js";
+import { buildLegacySkillBundle } from "../services/skill-bundle.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
@@ -1046,21 +1049,12 @@ describe("Resources Phase 1", () => {
     const app = getApp();
     const owner = await createOrgUser(app, "admin");
     const agent = await createRuntimeAgent(app, owner);
-    const skill = await app.resourcesService.createTeamResource(
-      owner.organizationId,
-      {
-        type: "skill",
-        name: "Reviewer skill",
-        defaultEnabled: "recommended",
-        payload: {
-          name: "reviewer",
-          description: "Review changes.",
-          body: "# Reviewer\n\nCheck edge cases.",
-          metadata: { source: "team" },
-        },
-      },
-      owner.memberId,
-    );
+    const skill = await createTeamSkill(app, owner, "recommended", {
+      name: "reviewer",
+      description: "Review changes.",
+      body: "# Reviewer\n\nCheck edge cases.",
+      metadata: { source: "team" },
+    });
 
     const baseConfig = await app.configService.get(agent.uuid);
     const resolved = await app.resourcesService.resolveRuntimeConfig(baseConfig);
@@ -1332,21 +1326,12 @@ describe("Resources Phase 1", () => {
   it("uses Class C paths for team resource detail and usage routes", async () => {
     const app = getApp();
     const owner = await createOrgUser(app, "admin");
-    const resource = await app.resourcesService.createTeamResource(
-      owner.organizationId,
-      {
-        type: "skill",
-        name: "Review skill",
-        defaultEnabled: "available",
-        payload: {
-          name: "review",
-          description: "Review code carefully.",
-          body: "# Review\n\nCheck risks first.",
-          metadata: {},
-        },
-      },
-      owner.memberId,
-    );
+    const resource = await createTeamSkill(app, owner, "available", {
+      name: "review",
+      description: "Review code carefully.",
+      body: "# Review\n\nCheck risks first.",
+      metadata: {},
+    });
 
     const detail = await inject(app, owner.accessToken, "GET", `/api/v1/resources/${resource.id}`);
     expect(detail.statusCode).toBe(200);
@@ -1375,21 +1360,12 @@ describe("Resources Phase 1", () => {
       },
       owner.memberId,
     );
-    const skill = await app.resourcesService.createTeamResource(
-      owner.organizationId,
-      {
-        type: "skill",
-        name: "Beta skill",
-        defaultEnabled: "available",
-        payload: {
-          name: "beta",
-          description: "Beta skill",
-          body: "Use beta.",
-          metadata: {},
-        },
-      },
-      owner.memberId,
-    );
+    const skill = await createTeamSkill(app, owner, "available", {
+      name: "beta",
+      description: "Beta skill",
+      body: "Use beta.",
+      metadata: {},
+    });
     const retired = await app.resourcesService.createTeamResource(
       owner.organizationId,
       {
@@ -1927,16 +1903,12 @@ describe("Resources Phase 1", () => {
     const app = getApp();
     const owner = await createOrgUser(app, "admin");
     const agent = await createRuntimeAgent(app, owner);
-    const skill = await app.resourcesService.createTeamResource(
-      owner.organizationId,
-      {
-        type: "skill",
-        name: "Disable skill",
-        defaultEnabled: "recommended",
-        payload: { name: "disable-skill", description: "Disabled", body: "Disabled", metadata: {} },
-      },
-      owner.memberId,
-    );
+    const skill = await createTeamSkill(app, owner, "recommended", {
+      name: "disable-skill",
+      description: "Disabled",
+      body: "Disabled",
+      metadata: {},
+    });
     const mcp = await app.resourcesService.createTeamResource(
       owner.organizationId,
       {
@@ -2129,6 +2101,32 @@ async function createRuntimeAgent(app: FastifyInstance, owner: OrgUser, opts: { 
       visibility: opts.visibility,
     },
     { force: true },
+  );
+}
+
+async function createTeamSkill(
+  app: FastifyInstance,
+  owner: OrgUser,
+  defaultEnabled: "available" | "recommended",
+  payload: SkillResourcePayload,
+) {
+  const bundle = buildLegacySkillBundle(payload);
+  const attachment = await createAttachment(app.db, {
+    organizationId: owner.organizationId,
+    mimeType: "application/zip",
+    filename: `${payload.name}.zip`,
+    body: bundle,
+    contentLength: bundle.byteLength,
+    uploadedBy: owner.humanAgentUuid,
+  });
+  return app.resourcesService.createTeamResource(
+    owner.organizationId,
+    {
+      type: "skill",
+      defaultEnabled,
+      bundleAttachmentId: attachment.id,
+    },
+    owner.memberId,
   );
 }
 

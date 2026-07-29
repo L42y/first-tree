@@ -1,6 +1,6 @@
 ---
 name: first-tree-seed
-version: 0.5.1
+version: 0.5.2
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: "Bootstrap a team's Context Tree from readable source repos — for an onboarding \"build / set up the Context Tree\" task on a tree that has no domain structure yet: either no tree exists (creates and binds it) or a bound-but-empty tree (fills it). Supports clean explicit-Team invocation without a Workspace manifest, managed briefing, or prior setup-chat transcript, while preserving managed-workspace compatibility. Proposes an initial top-level + second-level domain structure for approval, then drafts initial leaf content — each as a reviewable PR/MR. Refuses unrelated re-seeding once the tree has domain structure and recovers Phase 2 from durable merged Tree state plus the same explicit sources."
@@ -86,6 +86,25 @@ Before authoring Phase 1 or evaluating any populated tree for Phase 2, read
 It owns the exact marker, canonical source-ledger shape, fixed-commit recovery
 algorithm, and fail-closed mismatch outcomes. Do not invent a second progress
 format in this file, chat, or local cache.
+
+### Optional Welcome Reviewer contract
+
+Ordinary Seed keeps Context Review optional. Apply the stronger onboarding
+Reviewer contract only when the current tree-build task explicitly says all of
+the following: open the Structure PR/MR first, preserve an existing Reviewer,
+use the Agent running this tree-build task as the default only when none is
+selected, and do not open the Content PR/MR until a selected Reviewer is
+enabled. Do not infer this contract from a greeting, chat title, or hidden
+provenance.
+
+Write the corresponding exact progress line during Phase 1 so a fresh-process
+Phase 2 recovery preserves the choice:
+
+- `Review gate: automatic-review-required` for that explicit Welcome contract.
+- `Review gate: optional` for every ordinary Seed task.
+
+This line is operational Seed state, not normal Context Tree content. It does
+not authorize the Agent to change the Team Reviewer configuration.
 
 ## Resolve the tree's state (three states; stop on refuse)
 
@@ -338,7 +357,12 @@ first-tree org context-tree review-config --as-member --org "<team-id>" --json
 - Use only the JSON `enabled` and `agentUuid` fields to distinguish three
   durable configuration states. This is not a health or readiness check:
   - `agentUuid` is null: include selecting an eligible managed Review Agent and
-    enabling Automatic Review through **Settings → Setup**.
+    enabling Automatic Review through **Settings → Setup**. Under the explicit
+    Welcome Reviewer contract, during this same Phase 1 process name the Agent
+    that opened the Structure PR/MR as the default choice; do not replace a
+    later human selection. A fresh-process Phase 2 recovery does not know that
+    original Agent from durable progress and must not substitute the recovery
+    Agent.
   - `agentUuid` is present and `enabled` is false: the selection is retained;
     include only enabling Automatic Review through **Settings → Setup**.
   - `agentUuid` is present and `enabled` is true: add no Review setup handoff
@@ -348,12 +372,15 @@ first-tree org context-tree review-config --as-member --org "<team-id>" --json
   coverage action with the applicable Review setup action above. If only one is
   missing, mention only that action. If neither is missing, add no setup
   guidance. Setup owns provider prerequisites and the Team mutation.
-- A failed or ambiguous read creates no inferred debt and does not block Seed.
-  Context Review remains optional for Team, Chat, basic Tree use and Seed
-  completion. For a newly created GitHub tree, mention baseline approval rules
-  only when this run verified that ruleset setup succeeded. For an existing
-  tree or failed ruleset setup, report the governance actually observed instead
-  of implying that baseline approval rules exist.
+- A failed or ambiguous read creates no inferred debt. It does not block
+  ordinary Seed. Context Review remains optional for Team, Chat, basic Tree use,
+  and ordinary Seed completion. Under the explicit Welcome Reviewer contract,
+  the later pre-Content-PR/MR check below must obtain an unambiguous selected
+  and enabled result before that remote mutation. For a newly created GitHub
+  tree, mention baseline approval rules only when this run verified that
+  ruleset setup succeeded. For an existing tree or failed ruleset setup, report
+  the governance actually observed instead of implying that baseline approval
+  rules exist.
 
 Use this response matrix after the milestone:
 
@@ -410,6 +437,24 @@ Use one ordered source-resolution rule and call its result
    matching host CLI (`gh` or `glab`) or `git` can access; materialize a
    task-local read checkout under the workspace `worktrees/` directory. These
    reads do not register team resources or mutate the source repo.
+
+In a clean explicit-Team setup, source discovery stays read-only until the
+Admin explicitly confirms the exact `resolvedSources`. After that confirmation
+and before Phase 1, register the whole set with one optimistic batch:
+
+```bash
+first-tree tree seed --team <team-id> \
+  --expected-source-key <each-active-key-observed-before-confirmation> \
+  --confirm-source <each-confirmed-repository-url>
+```
+
+Repeat both flags as needed. For a new Team with no active repositories, omit
+`--expected-source-key`. A `409` means another Admin changed Settings →
+Repositories after confirmation; refresh the current set and ask the Admin to
+confirm the resulting selection again. Never fall back to individual resource
+creates, and never retire repositories omitted from this batch. A managed
+workspace whose declared sources were already registered by the Web setup
+continuation does not repeat this mutation.
 
 For every resolved source, determine `sourceForge` from the supplied URL or,
 for a local repository, `git remote get-url origin` before choosing host tools.
@@ -673,8 +718,9 @@ After the user confirms, create on the seed branch:
   placeholder `.md` file, again with `title`, `owners`, and a
   one-paragraph charter — no leaf content yet.
 - `<tree>/.first-tree/progress.md` — the exact Phase 1 marker, checked Phase 1
-  line, Team id, canonical source ledger, and approved top-level list from
-  `references/durable-progress.md`. Do not add an unchecked Phase 2 item.
+  line, Review gate line, Team id, canonical source ledger, and approved
+  top-level list from `references/durable-progress.md`. Do not add an unchecked
+  Phase 2 item.
 
 ### Frontmatter shape
 
@@ -1036,13 +1082,32 @@ After all sub-agents return:
 - In portable mode, repeat the Seed preflight immediately before push and
   before PR/MR creation; require the same Team and binding, and reuse an
   existing deterministic branch or PR/MR by head.
+- When the durable progress line is
+  `Review gate: automatic-review-required`, re-run the exact selected-Team
+  `review-config --as-member` read immediately before PR/MR creation. Require
+  unambiguous JSON with a non-null `agentUuid` and `enabled: true`. Otherwise,
+  do not open the Content PR/MR and handle only the observed state:
+  - `agentUuid` is null: guide the Admin to **Settings → Setup** to select and
+    enable a Reviewer. Repeat the Structure-PR Agent as the default only when
+    this is still the same Phase 1 process and its identity remains explicit in
+    working context; a fresh-process recovery asks the Admin to choose without
+    naming the recovery Agent as that default.
+  - `agentUuid` is present and `enabled` is false: preserve the selection and
+    guide the Admin only to enable Automatic Review in **Settings → Setup**.
+  - the read fails or is ambiguous: say that Reviewer configuration could not
+    be confirmed and retry the read; infer no selection or enablement action.
+  This gate delays only the Content PR/MR remote mutation, not Structure
+  review, Context reads, or content drafting.
 - After creating or resolving/reusing the task's GitLab MR, run `first-tree
   gitlab follow <mr-url>`. A returned pending or active state is success; a
   follow failure does not invalidate the MR.
 
 After PR/MR 2 opens, the seed skill is done. Do not repeat the Review Agent
-handoff from Phase 1. Subsequent writes are owned by `first-tree-write`;
-subsequent maintenance uses focused tasks with explicit scope.
+handoff from Phase 1. Under the explicit Welcome Reviewer contract, say only
+that this Content PR/MR is the concrete Automatic Review verification
+milestone; do not poll for, simulate, or claim a Reviewer verdict. Subsequent
+writes are owned by `first-tree-write`; subsequent maintenance uses focused
+tasks with explicit scope.
 
 ### Recovery path: PR/MR 1 merged, Phase 2 abandoned
 

@@ -1,0 +1,2 @@
+ALTER TABLE "gitlab_connections" ADD COLUMN "last_system_hook_inbound_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "gitlab_connections" ADD COLUMN "last_project_hook_inbound_at" timestamp with time zone;

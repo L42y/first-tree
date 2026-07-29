@@ -1,4 +1,6 @@
 import type {
+  ConfirmTeamRepositories,
+  ConfirmTeamRepositoriesOutput,
   CreateTeamResource,
   ResourceImpactPreview,
   ResourceImpactPreviewOutput,
@@ -22,6 +24,13 @@ export function createTeamResource(body: CreateTeamResource): Promise<ResourceRo
 
 export function createTeamResourceForOrg(orgId: string, body: CreateTeamResource): Promise<ResourceRow> {
   return api.post<ResourceRow>(withOrgAt(orgId, "/resources"), body);
+}
+
+export function confirmTeamRepositoriesForOrg(
+  orgId: string,
+  body: ConfirmTeamRepositories,
+): Promise<ConfirmTeamRepositoriesOutput> {
+  return api.post<ConfirmTeamRepositoriesOutput>(withOrgAt(orgId, "/resources/repositories/confirm"), body);
 }
 
 export function previewOrgResourceImpact(body: ResourceImpactPreview): Promise<ResourceImpactPreviewOutput> {

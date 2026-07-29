@@ -83,7 +83,7 @@ export const skillResourcePayloadSchema = z.object({
   name: z.string().min(1).max(100),
   namespace: z.string().min(1).max(100).optional(),
   description: z.string().min(1).max(1000),
-  body: z.string().max(64 * 1024),
+  body: z.string().max(256 * 1024),
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
 export type SkillResourcePayload = z.infer<typeof skillResourcePayloadSchema>;
@@ -140,11 +140,13 @@ export const createTeamResourceSchema = z.discriminatedUnion("type", [
     ...namedResourceInputShape,
     payload: promptResourcePayloadSchema,
   }),
-  z.object({
-    type: z.literal("skill"),
-    ...namedResourceInputShape,
-    payload: skillResourcePayloadSchema,
-  }),
+  z
+    .object({
+      type: z.literal("skill"),
+      defaultEnabled: resourceDefaultEnabledSchema.default("available"),
+      bundleAttachmentId: z.string().uuid(),
+    })
+    .strict(),
   z.object({
     type: z.literal("mcp"),
     ...namedResourceInputShape,
@@ -153,11 +155,66 @@ export const createTeamResourceSchema = z.discriminatedUnion("type", [
 ]);
 export type CreateTeamResource = z.infer<typeof createTeamResourceSchema>;
 
+const confirmTeamRepositorySchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    url: repoUrlSchema,
+    defaultBranch: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const confirmTeamRepositoriesSchema = z
+  .object({
+    expectedActiveRepositoryKeys: z.array(z.string().min(3).max(2048)).max(500),
+    repositories: z.array(confirmTeamRepositorySchema).min(1).max(500),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    const expected = new Set<string>();
+    for (const [index, key] of input.expectedActiveRepositoryKeys.entries()) {
+      let canonical: string;
+      try {
+        canonical = canonicalizeResourceRepoUrl(`https://${key}`);
+      } catch {
+        canonical = "";
+      }
+      if (canonical !== key) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["expectedActiveRepositoryKeys", index],
+          message: "Expected repository keys must be canonical.",
+        });
+      } else if (expected.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["expectedActiveRepositoryKeys", index],
+          message: "Expected repository keys must be unique.",
+        });
+      }
+      expected.add(key);
+    }
+
+    const requested = new Set<string>();
+    for (const [index, repository] of input.repositories.entries()) {
+      const key = canonicalizeResourceRepoUrl(repository.url);
+      if (requested.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["repositories", index, "url"],
+          message: "Repositories must be unique by canonical identity.",
+        });
+      }
+      requested.add(key);
+    }
+  });
+export type ConfirmTeamRepositories = z.infer<typeof confirmTeamRepositoriesSchema>;
+
 export const updateTeamResourceSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   defaultEnabled: resourceDefaultEnabledSchema.optional(),
   status: resourceStatusSchema.optional(),
   payload: z.unknown().optional(),
+  bundleAttachmentId: z.string().uuid().optional(),
 });
 export type UpdateTeamResource = z.infer<typeof updateTeamResourceSchema>;
 
@@ -295,6 +352,7 @@ export const resourceRowSchema = z.object({
   ownerAgentId: z.string().nullable(),
   name: z.string(),
   repoCanonicalKey: z.string().nullable(),
+  bundleAttachmentId: z.string().nullable(),
   defaultEnabled: resourceDefaultEnabledSchema.nullable(),
   status: resourceStatusSchema,
   payload: z.unknown(),
@@ -304,6 +362,13 @@ export const resourceRowSchema = z.object({
   updatedAt: z.string(),
 });
 export type ResourceRow = z.infer<typeof resourceRowSchema>;
+
+export const confirmTeamRepositoriesOutputSchema = z
+  .object({
+    repositories: z.array(resourceRowSchema),
+  })
+  .strict();
+export type ConfirmTeamRepositoriesOutput = z.infer<typeof confirmTeamRepositoriesOutputSchema>;
 
 export const effectiveResourceRowSchema = z.object({
   id: z.string(),

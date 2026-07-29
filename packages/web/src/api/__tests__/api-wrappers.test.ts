@@ -111,6 +111,7 @@ describe("api wrapper paths", () => {
   it("formats activity, org setting, organization, and overview requests", async () => {
     const activity = await import("../activity.js");
     const contextTree = await import("../context-tree.js");
+    const contextEnablement = await import("../context-enablement.js");
     const orgSettings = await import("../org-settings.js");
     const organizations = await import("../organizations.js");
     const overview = await import("../overview.js");
@@ -129,6 +130,7 @@ describe("api wrapper paths", () => {
 
     await contextTree.getContextTreeSnapshot("org/id", "7d");
     await contextTree.initializeContextTree("org/id");
+    await contextEnablement.getContextEnablementHandoff("org/id", "codex");
     await orgSettings.getContextTreeSetting("org/id");
     await orgSettings.getRawContextTreeSetting("org/id");
     await orgSettings.putContextTreeSetting("org/id", { repo: "https://github.com/acme/tree", branch: "main" });
@@ -157,6 +159,10 @@ describe("api wrapper paths", () => {
       defaultEnabled: "recommended",
       payload: { url: "https://github.com/acme/api.git" },
     });
+    await resources.confirmTeamRepositoriesForOrg("org/id", {
+      expectedActiveRepositoryKeys: [],
+      repositories: [{ name: "API", url: "https://github.com/acme/api.git" }],
+    });
     await resources.previewOrgResourceImpact({ type: "repo", defaultEnabled: "recommended" });
     await resources.getResource("res/id");
     await resources.updateResource("res/id", { name: "New" });
@@ -177,6 +183,11 @@ describe("api wrapper paths", () => {
     expect(apiMock.post).toHaveBeenCalledWith("/me/connect-tokens");
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/context-tree/snapshot?window=7d");
     expect(apiMock.post).toHaveBeenCalledWith("/orgs/org%2Fid/context-tree/initialize", {});
+    expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/context-enablement/handoff?provider=codex");
+    expect(apiMock.post).toHaveBeenCalledWith("/orgs/org%2Fid/resources/repositories/confirm", {
+      expectedActiveRepositoryKeys: [],
+      repositories: [{ name: "API", url: "https://github.com/acme/api.git" }],
+    });
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/settings/context_tree");
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/settings/context_tree/raw");
     expect(apiMock.put).toHaveBeenCalledWith("/orgs/org%2Fid/settings/context_tree", {

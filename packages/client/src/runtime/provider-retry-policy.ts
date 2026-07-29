@@ -94,7 +94,7 @@ export function classifyProviderFailure(
   if (isConfiguration(text, base, context.provider)) {
     return {
       category: "configuration",
-      reasonCode: configurationReason(base),
+      reasonCode: configurationReason(text, base, context.provider),
       message: base.message,
       retryAfterMs,
       sourceKind: base.kind,
@@ -448,6 +448,7 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
   ) {
     return true;
   }
+  if (provider === "codex" && isCodexServiceTierConfiguration(text)) return true;
   if (provider === "kimi-code" && /model\.not_configured|model\.config_invalid/.test(text)) return true;
   // Cursor CLI literal invalid-model / explicit-deny / trust-wall phrasings
   // (captured in Phase 0). Gated to the cursor provider: this classifier is
@@ -459,8 +460,16 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
   );
 }
 
-function configurationReason(base: Classification): string {
+function configurationReason(text: string, base: Classification, provider: RuntimeProvider): string {
+  if (provider === "codex" && isCodexServiceTierConfiguration(text)) return "codex_service_tier_unsupported";
   return base.reasonCode === "unknown" ? "provider_configuration_error" : base.reasonCode;
+}
+
+function isCodexServiceTierConfiguration(text: string): boolean {
+  return (
+    /configured service tier .* is not advertised as supported .* will be omitted from requests/.test(text) ||
+    /configured service tier .* was not activated by codex .* will not be used for requests/.test(text)
+  );
 }
 
 function isDeterministicInput(text: string, base: Classification): boolean {

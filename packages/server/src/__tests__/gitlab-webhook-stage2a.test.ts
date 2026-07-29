@@ -195,6 +195,8 @@ describe("GitLab Stage 2A backend", () => {
       stableDeliveryObserved: true,
       health: {
         lastValidInboundAt: expect.any(String),
+        lastSystemHookInboundAt: expect.any(String),
+        lastProjectHookInboundAt: expect.any(String),
         lastSystemHookMergeRequestInboundAt: expect.any(String),
         lastProcessingFailureAt: null,
         lastProcessingFailureCode: null,
@@ -209,6 +211,8 @@ describe("GitLab Stage 2A backend", () => {
       stableDeliveryObserved: false,
       health: {
         lastValidInboundAt: null,
+        lastSystemHookInboundAt: null,
+        lastProjectHookInboundAt: null,
         lastSystemHookMergeRequestInboundAt: null,
         lastProcessingFailureAt: null,
         lastProcessingFailureCode: null,
@@ -221,6 +225,8 @@ describe("GitLab Stage 2A backend", () => {
       stableDeliveryObserved: false,
       health: {
         lastValidInboundAt: expect.any(String),
+        lastSystemHookInboundAt: expect.any(String),
+        lastProjectHookInboundAt: null,
         lastSystemHookMergeRequestInboundAt: null,
         lastProcessingFailureAt: null,
       },
@@ -745,6 +751,11 @@ describe("GitLab Stage 2A backend", () => {
     const projectNote = await postWebhook(app, first.bearer, mergeRequestNotePayload(), { event: "Note Hook" });
     expect(projectNote.statusCode).toBe(200);
     expect(projectNote.json()).toMatchObject({ outcome: "audience_empty" });
+    expect((await getGitlabConnectionSummary(app.db, first.connectionId)).health).toMatchObject({
+      lastProjectHookInboundAt: expect.any(String),
+      lastSystemHookInboundAt: null,
+      lastSystemHookMergeRequestInboundAt: null,
+    });
 
     for (const body of [
       { event_name: "push" },
@@ -768,6 +779,8 @@ describe("GitLab Stage 2A backend", () => {
       health: {
         readiness: "transport_received",
         lastValidInboundAt: expect.any(String),
+        lastSystemHookInboundAt: expect.any(String),
+        lastProjectHookInboundAt: expect.any(String),
         lastSystemHookMergeRequestInboundAt: null,
         lastProcessingFailureAt: null,
         lastProcessingFailureCode: null,
@@ -812,6 +825,8 @@ describe("GitLab Stage 2A backend", () => {
     expect(terminalMr.json()).toMatchObject({ outcome: "provider_only" });
     expect((await getGitlabConnectionSummary(app.db, first.connectionId)).health).toMatchObject({
       readiness: "routing_verified",
+      lastSystemHookInboundAt: expect.any(String),
+      lastProjectHookInboundAt: expect.any(String),
       lastSystemHookMergeRequestInboundAt: expect.any(String),
       lastProcessingFailureAt: null,
       lastProcessingFailureCode: null,
@@ -1091,7 +1106,7 @@ describe("GitLab Stage 2A backend", () => {
     const inFlight = withGitlabIngressFence(app.db, first.connectionId, endpoint.connection.tokenHash, async (tx) => {
       enterFence();
       await release;
-      await markGitlabInboundSeen(tx, first.connectionId, endpoint.connection.tokenHash);
+      await markGitlabInboundSeen(tx, first.connectionId, endpoint.connection.tokenHash, "system");
     });
     await entered;
     let replaced = false;

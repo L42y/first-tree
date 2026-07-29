@@ -70,7 +70,7 @@ describe("database schema exports", () => {
     expect(buildExtraConfig(invitations)).toHaveLength(2);
     expect(buildExtraConfig(invitationRedemptions)).toHaveLength(2);
     expect(buildExtraConfig(organizationSettings)).toHaveLength(2);
-    expect(buildExtraConfig(resources)).toHaveLength(5);
+    expect(buildExtraConfig(resources)).toHaveLength(6);
   });
 
   it("resolves inline foreign key references for schema tables", () => {

@@ -294,7 +294,8 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
   }, [activeIndex, activeStep, activeStepIsVisible, path, reportStepEvent, sequence]);
 
   // The computer poll only needs to run on the two steps that depend on it.
-  const computerEnabled = activeStep === "connect-computer" || activeStep === "create-agent";
+  const computerEnabled =
+    activeStep === "connect-computer" || activeStep === "create-agent" || activeStep === "start-chat";
   const computer = useComputerConnection(computerEnabled, {
     onTokenMintFailed: () => reportStepFailure("connect_token_mint_failed", { step: "connect-computer" }),
   });

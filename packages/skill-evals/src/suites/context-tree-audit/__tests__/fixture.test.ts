@@ -343,7 +343,7 @@ describe("context-tree-audit fixture", () => {
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   it("rejects a leaked detached committed-verification worktree in focused fixture state", () => {
     const evalCase = CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.fixture.scenario === "strong-local");

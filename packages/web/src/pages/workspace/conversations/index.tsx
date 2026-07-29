@@ -605,7 +605,7 @@ export function ConversationList({
                         </span>
                       </button>
                       <div
-                        className="absolute"
+                        className="absolute pointer-events-none"
                         style={{
                           top: "var(--sp-2)",
                           right: "var(--sp-3)",

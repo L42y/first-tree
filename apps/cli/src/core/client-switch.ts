@@ -27,6 +27,10 @@ import { confirm } from "@inquirer/prompts";
 import { fail } from "../cli/output.js";
 import { saveCredentials } from "./bootstrap.js";
 import { channelConfig } from "./channel.js";
+import {
+  assertClientSwitchCanStart,
+  withAccountStateMutationLockAsync,
+} from "./context-integration/account-state-guard.js";
 import { print } from "./output.js";
 import { getClientServiceStatus, stopClientService } from "./service-install.js";
 
@@ -64,10 +68,12 @@ type SwitchMoveGroup = "park" | "restore";
 
 type SwitchMoveKind =
   | "park-client-yaml"
+  | "park-context-yaml"
   | "park-agents"
   | "park-sessions"
   | "park-workspaces"
   | "restore-client-yaml"
+  | "restore-context-yaml"
   | "restore-agents"
   | "restore-sessions"
   | "restore-workspaces";
@@ -373,7 +379,17 @@ export async function switchLocalClientForLogin(opts: {
   targetTokens: StoredCredentials;
   targetOwnerSub: string;
 }): Promise<ClientConfig> {
+  return withAccountStateMutationLockAsync(() => switchLocalClientForLoginLocked(opts));
+}
+
+async function switchLocalClientForLoginLocked(opts: {
+  existingCredentials?: StoredCredentials;
+  previousOwnerSub?: string;
+  targetTokens: StoredCredentials;
+  targetOwnerSub: string;
+}): Promise<ClientConfig> {
   const home = defaultHome();
+  assertClientSwitchCanStart(home);
   const configDir = defaultConfigDir();
   const dataDir = defaultDataDir();
   const pendingJournal = readJournal(home);
@@ -597,9 +613,9 @@ function collectMarkedProviderProcesses(home: string, clientId: string): DrainSn
 }
 
 function collectDarwinMarkedProviders(home: string, clientId: string): DrainSnapshot {
-  let output: string;
+  let environmentOutput: string;
   try {
-    output = execFileSync("ps", ["-Eww", "-axo", "pid=,command="], {
+    environmentOutput = execFileSync("ps", ["-Eww", "-axo", "pid=,command="], {
       encoding: "utf8",
       timeout: 10_000,
       maxBuffer: 8 * 1024 * 1024,
@@ -611,18 +627,61 @@ function collectDarwinMarkedProviders(home: string, clientId: string): DrainSnap
       reason: `Unable to inspect process environment for switch drain: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  let commandOutput: string;
+  try {
+    // Darwin's `ps -E` appends every environment variable to the command
+    // column. Provider-looking text in PATH/NODE_PATH is therefore not argv
+    // and must not classify an unrelated process as Codex or Claude. Read the
+    // real argv in a second snapshot and use the `-E` output only for marker
+    // extraction.
+    commandOutput = execFileSync("ps", ["-ww", "-axo", "pid=,command="], {
+      encoding: "utf8",
+      timeout: 10_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      code: "CLIENT_SWITCH_DRAIN_UNSUPPORTED",
+      reason: `Unable to inspect process commands for switch drain: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const environmentByPid = parseDarwinProcessRows(environmentOutput);
+  const commandByPid = parseDarwinProcessRows(commandOutput);
   const providers: MarkedProviderProcess[] = [];
   const issues: ProviderMarkerIssue[] = [];
-  for (const line of output.split("\n")) {
-    const match = line.match(/^\s*(\d+)\s+(.*)$/);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    const command = match[2] ?? "";
-    collectSwitchDrainProcessFromEnvText({ pid, command, envText: command, home, clientId, providers, issues });
-    collectDaemonFromEnvText({ pid, command, envText: command, home, clientId, issues });
+  for (const [pid, command] of commandByPid) {
+    const envText = environmentByPid.get(pid);
+    if (envText === undefined) {
+      // The process appeared after the environment snapshot. Unknown commands
+      // carry no provider signal, but a newly observed provider/daemon cannot
+      // authorize root-state movement without readable attribution.
+      if (isSwitchDrainEnvRequired(command)) {
+        issues.push({
+          pid,
+          command,
+          reason: "process appeared during switch drain snapshot without readable environment",
+        });
+      }
+      continue;
+    }
+    collectSwitchDrainProcessFromEnvText({ pid, command, envText, home, clientId, providers, issues });
+    collectDaemonFromEnvText({ pid, command, envText, home, clientId, issues });
   }
   if (issues.length > 0) return untrustedProviderSnapshot(issues);
   return { ok: true, providers };
+}
+
+function parseDarwinProcessRows(output: string): Map<number, string> {
+  const rows = new Map<number, string>();
+  for (const line of output.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s+(.*)$/);
+    if (!match) continue;
+    rows.set(Number(match[1]), match[2] ?? "");
+  }
+  return rows;
 }
 
 function collectLinuxMarkedProviders(home: string, clientId: string): DrainSnapshot {
@@ -931,6 +990,13 @@ function buildSwitchMoves(opts: {
       true,
     ),
     move("park-agents", "park", join(opts.configDir, "agents"), join(fromParkedRoot, "config", "agents"), false),
+    move(
+      "park-context-yaml",
+      "park",
+      join(opts.configDir, "context.yaml"),
+      join(fromParkedRoot, "config", "context.yaml"),
+      false,
+    ),
     move("park-sessions", "park", join(opts.dataDir, "sessions"), join(fromParkedRoot, "data", "sessions"), false),
     move(
       "park-workspaces",
@@ -964,6 +1030,13 @@ function buildSwitchMoves(opts: {
       true,
     ),
     move("restore-agents", "restore", join(toParkedRoot, "config", "agents"), join(opts.configDir, "agents"), false),
+    move(
+      "restore-context-yaml",
+      "restore",
+      join(toParkedRoot, "config", "context.yaml"),
+      join(opts.configDir, "context.yaml"),
+      false,
+    ),
     move("restore-sessions", "restore", join(toParkedRoot, "data", "sessions"), join(opts.dataDir, "sessions"), false),
     move(
       "restore-workspaces",

@@ -96,6 +96,21 @@ export function parsePlatform(platform) {
   return { os, arch };
 }
 
+export function assertNativeWorkspaceLockPrebuild(appDir, platform) {
+  parsePlatform(platform);
+  const prebuild = join(
+    appDir,
+    "node_modules",
+    "fs-native-extensions",
+    "prebuilds",
+    platform,
+    "fs-native-extensions.node",
+  );
+  if (!existsSync(prebuild)) {
+    fail(`portable app is missing native workspace-lock prebuild for ${platform}`);
+  }
+}
+
 export function artifactFileName(options) {
   return `${options.packageName}-${options.version}-${options.platform}.tar.gz`;
 }
@@ -627,6 +642,12 @@ async function prepareAppTemplate({ channel, channelConfig, version }) {
   const dependencies = resolvePinnedAppDependencies(sourcePackage);
   const packageManager = readWorkspacePackageManager();
   cpSync(join(CLI_ROOT, "dist"), appDir, { recursive: true });
+  const { buildContextIntegrationBundle } = await import("../build-context-integration-bundle.mjs");
+  const contextIntegration = buildContextIntegrationBundle({
+    outDir: join(appDir, "context-integration"),
+    version,
+    channel,
+  });
   await rewriteBundleChannel(appDir, channel);
   cpSync(join(REPO_ROOT, "skills"), join(appDir, "skills"), { recursive: true });
   cpSync(join(CLI_ROOT, "README.md"), join(appDir, "README.md"));
@@ -655,7 +676,7 @@ async function prepareAppTemplate({ channel, channelConfig, version }) {
   const buildRoots = portableBuildRoots(appDir);
   sanitizePortableBinShims(appDir, buildRoots);
   assertNoBuildRootReferences(appDir, buildRoots);
-  return { root, appDir };
+  return { root, appDir, contextIntegrationManifest: contextIntegration.manifest };
 }
 
 export function normalizeNodeVersion(version) {
@@ -734,7 +755,15 @@ exec "$root/node/bin/node" "$root/${appEntry}" "$@"
   );
 }
 
-function buildMetadata({ channel, channelConfig, version, gitSha, nodeVersion, generatedAt }) {
+function buildMetadata({
+  channel,
+  channelConfig,
+  version,
+  gitSha,
+  nodeVersion,
+  generatedAt,
+  contextIntegrationManifest,
+}) {
   return {
     schemaVersion: 1,
     channel,
@@ -745,6 +774,17 @@ function buildMetadata({ channel, channelConfig, version, gitSha, nodeVersion, g
     binName: channelConfig.binName,
     aliasName: channelConfig.aliasName,
     generatedAt,
+    ...(contextIntegrationManifest
+      ? {
+          contextIntegration: {
+            policyDigest: contextIntegrationManifest.policyDigest,
+            providers: {
+              "claude-code": contextIntegrationManifest.providers["claude-code"].adapterDigest,
+              codex: contextIntegrationManifest.providers.codex.adapterDigest,
+            },
+          },
+        }
+      : {}),
   };
 }
 
@@ -766,6 +806,7 @@ async function buildPlatformArtifact(options) {
   try {
     const appEntry = "app/cli/index.mjs";
     copyPortableAppTemplate(options.appTemplateDir, join(artifactRoot, "app"));
+    assertNativeWorkspaceLockPrebuild(join(artifactRoot, "app"), options.platform);
     await downloadNodeRuntime({
       nodeVersion: options.nodeVersion,
       platform: options.platform,
@@ -873,6 +914,7 @@ export async function buildPortableDistribution(rawOptions) {
           versionDir,
           baseUrl: options.downloadBaseUrl,
           nodeCacheDir,
+          contextIntegrationManifest: appTemplate.contextIntegrationManifest,
         }),
       );
     }
@@ -886,6 +928,7 @@ export async function buildPortableDistribution(rawOptions) {
       generatedAt,
       downloadBaseUrl: options.downloadBaseUrl,
       assets,
+      contextIntegrationManifest: appTemplate.contextIntegrationManifest,
     });
     writeJson(join(versionDir, "manifest.json"), manifest);
     writeJson(join(channelDir, "latest.json"), latest);

@@ -13,6 +13,7 @@ import {
   type TokenUsage,
 } from "@botiverse/kimi-code-sdk";
 import {
+  type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
   classifyShellCommandIo,
   DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD,
@@ -44,9 +45,9 @@ import type {
   SessionMessage,
 } from "../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../runtime/handler.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../runtime/provider-retry-policy.js";
-import { materializeResourceSkills } from "../runtime/resource-skills.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../runtime/source-repos.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../runtime/workspace.js";
 import { chunkAssistantText } from "./assistant-text.js";
@@ -58,6 +59,37 @@ const KIMI_IDENTITY_VERSION = "0.1.2";
 type KimiHarnessLike = Pick<KimiHarness, "createSession" | "resumeSession" | "close">;
 type KimiHarnessFactory = (options: KimiHarnessOptions) => KimiHarnessLike;
 type KimiKaosFactory = () => Promise<LocalKaos>;
+
+type KimiManagedMcpServer =
+  | { transport: "stdio"; command: string; args?: string[] }
+  | { transport: "http" | "sse"; url: string; headers?: Record<string, string> };
+
+type KimiManagedMcpSessionOptions = {
+  readonly mcpServers?: Readonly<Record<string, KimiManagedMcpServer>>;
+};
+
+type KimiCreateSessionOptions = CreateSessionOptions & KimiManagedMcpSessionOptions;
+type KimiResumeSessionInput = ResumeSessionInput & KimiManagedMcpSessionOptions;
+
+export function mapKimiMcpServers(payload: AgentRuntimeConfigPayload): Record<string, KimiManagedMcpServer> {
+  const servers: Record<string, KimiManagedMcpServer> = {};
+  for (const server of payload.mcpServers) {
+    if (server.transport === "stdio") {
+      servers[server.name] = {
+        transport: "stdio",
+        command: server.command,
+        ...(server.args === undefined ? {} : { args: server.args }),
+      };
+    } else {
+      servers[server.name] = {
+        transport: server.transport,
+        url: server.url,
+        ...(server.headers === undefined ? {} : { headers: server.headers }),
+      };
+    }
+  }
+  return servers;
+}
 
 type ActiveTool = {
   name: string;
@@ -174,13 +206,13 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
   let session: Session | null = null;
   let sessionId: string | null = null;
   let activePayload: AgentRuntimeConfigPayload | null = null;
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   let sourceReposForPrompt: PredeclaredSourceRepo[] = [];
   let sessionActive = false;
   let initialTurnPreparing = false;
   let currentTurnPromise: Promise<boolean> | null = null;
   let drainScheduled = false;
   let drainInProgress = false;
-  let mcpDiagnosticEmitted = false;
   const queuedMessages: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
   const activeTools = new Map<string, ActiveTool>();
   const gitWriteTracker: ContextTreeGitWriteTracker = createContextTreeGitWriteTracker({
@@ -220,6 +252,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -230,21 +263,6 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       sessionCtx.log(`fetchChatContext failed: ${error instanceof Error ? error.message : String(error)}`);
       return renderChatContextPrompt(undefined);
     }
-  }
-
-  function emitMcpUnsupportedDiagnosticOnce(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): void {
-    if (mcpDiagnosticEmitted || payload.mcpServers.length === 0) return;
-    mcpDiagnosticEmitted = true;
-    sessionCtx.emitEvent({
-      kind: "error",
-      payload: {
-        source: "runtime",
-        message:
-          `kimi-code provider does not materialize First Tree-managed MCP servers in v1; ` +
-          `${payload.mcpServers.length} configured MCP server(s) are not loaded. ` +
-          "The operator's own Kimi MCP configuration still applies.",
-      },
-    });
   }
 
   function nativeToolRefs(name: string, args: unknown, workspaceCwd: string): ToolFileRef[] {
@@ -639,8 +657,12 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     const workspaceCwd = acquireAgentHome(workspaceRoot);
     cwd = workspaceCwd;
 
+    let runtimeConfig: AgentRuntimeConfig | null = null;
     let payload: AgentRuntimeConfigPayload | null = null;
-    if (agentConfigCache) payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+    if (agentConfigCache) {
+      runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+      payload = runtimeConfig.payload;
+    }
     const payloadResolved = payload !== null;
     payload ??= { ...DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD };
     if (payload.kind !== "kimi-code") {
@@ -648,7 +670,9 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     }
 
     sourceReposForPrompt = declaredSourceRepos(workspaceCwd, payload);
-    await materializeResourceSkills(workspaceCwd, payload, sessionCtx);
+    reconciledTeamSkills = (
+      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+    ).teamSkills;
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);
     ensureAgentBootstrap({
       workspace: workspaceCwd,
@@ -658,7 +682,6 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       currentSourceRepoNames: currentSourceRepoNamesFromPayload(payload, payloadResolved),
     });
     markWorkspaceInitComplete(workspaceCwd);
-    emitMcpUnsupportedDiagnosticOnce(sessionCtx, payload);
 
     const chatContext = await fetchChatContextOrLog(sessionCtx);
     const roleAdditional = [renderRuntimeOutputContract(), chatContext].filter(Boolean).join("\n\n");
@@ -733,13 +756,17 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       const explicitToken = token !== undefined;
       const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
       const prepared = await prepareSession(sessionCtx);
-      const options: CreateSessionOptions = {
+      const mcpServers = mapKimiMcpServers(prepared.payload);
+      // The pinned SDK runtime accepts caller-scoped MCP servers here even
+      // though its exported CreateSessionOptions interface omits the field.
+      const options: KimiCreateSessionOptions = {
         workDir: prepared.workspaceCwd,
         permission: "yolo",
         kaos: prepared.kaos,
         additionalDirs: prepared.additionalDirs,
         roleAdditional: prepared.roleAdditional,
         ...(prepared.payload.model ? { model: prepared.payload.model } : {}),
+        ...(prepared.payload.mcpServers.length > 0 ? { mcpServers } : {}),
       };
       const kimiHome = prepared.payload.env.find((entry) => entry.key === "KIMI_CODE_HOME")?.value.trim() ?? null;
       const effectiveHomeDir = kimiHome !== null && kimiHome.length === 0 ? null : kimiHome;
@@ -765,11 +792,14 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       const explicitToken = token !== undefined;
       const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
       const prepared = await prepareSession(sessionCtx);
-      const input: ResumeSessionInput = {
+      const mcpServers = mapKimiMcpServers(prepared.payload);
+      // ResumeSessionInput has the same declaration gap as create options.
+      const input: KimiResumeSessionInput = {
         id,
         kaos: prepared.kaos,
         additionalDirs: prepared.additionalDirs,
         roleAdditional: prepared.roleAdditional,
+        ...(prepared.payload.mcpServers.length > 0 ? { mcpServers } : {}),
       };
       const kimiHome = prepared.payload.env.find((entry) => entry.key === "KIMI_CODE_HOME")?.value.trim() ?? null;
       const effectiveHomeDir = kimiHome !== null && kimiHome.length === 0 ? null : kimiHome;

@@ -34,6 +34,11 @@ export const INIT_COMPLETE_SENTINEL_REL = join(FIRST_TREE_RUNTIME_DIR, "init-com
  */
 export function acquireAgentHome(agentHome: string): string {
   mkdirSync(agentHome, { recursive: true });
+  // Reconciliation writes its lock and journal below `.first-tree-workspace/`.
+  // Converge the supported file-marker / `.agent/` layouts before any handler
+  // can invoke the reconciler; legacy per-chat Claude resumes deliberately do
+  // not call acquireAgentHome and therefore keep their narrower compatibility
+  // path.
   ensureWorkspaceRuntimeDir(agentHome);
   return agentHome;
 }

@@ -29,9 +29,12 @@ runtime, network, credential, and cross-surface behavior.
   the derived `/admin/hooks` page, with Push and Merge Request events enabled,
   the default payload, and no custom template. Reuse the same one-time URL in a
   trusted Project Hook with Merge Request, Issue, and Note events enabled.
-  First Tree must observe a processable System Hook Merge Request event before
-  routing or Context Review is treated as ready. Connection creation must not
-  depend on Web Context egress policy.
+  First Tree must observe a processable System Hook Merge Request before
+  full-instance routing is ready. Context Reviewer enablement records Team
+  intent without requiring prior webhook traffic; every delivered MR must
+  still pass the live exact-repository, binding, connection, and Reviewer
+  authority checks. Connection creation must not depend on Web Context egress
+  policy.
   For a Self-Managed origin, the deployment operator—not the Team
   admin—separately authorizes the exact HTTPS origin through
   `FIRST_TREE_GITLAB_ALLOWED_ORIGINS`. Retain evidence of policy shape but no
@@ -69,6 +72,24 @@ runtime, network, credential, and cross-surface behavior.
   and confirm the documented fail-open duplicate risk rather than false
   suppression.
   Generic GitLab entity attention remains independently observable.
+- Observe connection health in Web Settings and Setup with only a Project Hook,
+  only a System Hook, and both hooks. Require each observed source to appear
+  independently. A Project-only Issue or Note must show the Project Hook as
+  observed without claiming untested event types, and without a System Hook
+  warning or Merge Request prompt. When both sources are observed, Project Hook
+  activity must remain visible while an incomplete System Hook shows its own
+  source-specific completion prompt. A System Hook Merge Request must establish
+  full-instance routing readiness. Before any inbound traffic, enable Automatic
+  Review and require the saved enabled state with no red webhook-readiness
+  blocker. With only a Project Hook, deliver a Merge Request first from a
+  different project and then from the bound Context Tree: the wrong repository
+  must not dispatch, while the first exact-repository event must immediately
+  dispatch the configured Reviewer. Repository automation continues to report
+  Project Hook scope rather than full-instance readiness. An unobserved optional
+  hook source must not appear broken or incomplete. Also load a pre-source-health
+  connection with valid historical transport: require a neutral unidentified-
+  source state that asks for an enabled event from the already configured Hook,
+  never a guessed System Hook recovery.
 - On a ready same-project MR, confirm the Reviewer resolves live state with the
   exact-host `glab` identity, fetches a detached exact head, runs
   `tree verify` before semantic reads, and completes Evidence plus Challenge

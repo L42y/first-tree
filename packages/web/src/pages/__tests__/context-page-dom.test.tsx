@@ -20,6 +20,7 @@ const agentApiMocks = vi.hoisted(() => ({
 }));
 
 const resourceApiMocks = vi.hoisted(() => ({
+  confirmTeamRepositoriesForOrg: vi.fn(),
   createTeamResourceForOrg: vi.fn(),
   listTeamResourcesForOrg: vi.fn(),
 }));
@@ -202,6 +203,7 @@ beforeEach(() => {
   contextApiMocks.initializeContextTree.mockReset();
   agentApiMocks.listManagedAgents.mockReset();
   resourceApiMocks.listTeamResourcesForOrg.mockReset();
+  resourceApiMocks.confirmTeamRepositoriesForOrg.mockReset();
   resourceApiMocks.createTeamResourceForOrg.mockReset();
   onboardingEventMocks.getTreeSetupStatus.mockReset();
   onboardingEventMocks.postOnboardingStartChat.mockReset();
@@ -210,6 +212,7 @@ beforeEach(() => {
   orgSettingsMocks.getContextTreeSetting.mockReset();
   agentApiMocks.listManagedAgents.mockResolvedValue([]);
   resourceApiMocks.listTeamResourcesForOrg.mockResolvedValue([]);
+  resourceApiMocks.confirmTeamRepositoriesForOrg.mockResolvedValue({ repositories: [] });
   resourceApiMocks.createTeamResourceForOrg.mockResolvedValue({
     id: "repo-1",
     type: "repo",
@@ -429,39 +432,77 @@ describe("ContextPage DOM behavior", () => {
     await act(async () => disconnected.root.unmount());
   });
 
-  it("explains the anonymous-only Cloud boundary for private GitLab without degrading review automation", async () => {
-    const { ContextPage } = await import("../context.js");
-    const privateGitlab = snapshot({
+  it.each([
+    "gitlab_authentication_required",
+    "gitlab_origin_not_authorized",
+    "gitlab_dns_unavailable",
+    "gitlab_address_not_authorized",
+    "gitlab_egress_denied",
+  ] as const)("shows the same neutral GitLab Web Context state for %s", async (reason) => {
+    agentApiMocks.listManagedAgents.mockResolvedValue([treeAgent]);
+    const serverDetail = `Provider-specific diagnostic for ${reason}`;
+    const unavailableGitlab = snapshot({
       provider: "gitlab",
       contentAvailability: {
         status: "unavailable",
         accessMode: "anonymous",
-        reason: "gitlab_authentication_required",
+        reason,
       },
-      repo: "https://gitlab.example/acme/private-context.git",
+      repo: "https://oauth2:secret@gitlab.example/acme/private-context.git",
       branch: "main",
       snapshotStatus: "unavailable",
       contextStatus: {
         label: "Team context unavailable",
-        detail:
-          "Private GitLab Context Tree content is unavailable in First Tree Cloud. Cloud only performs anonymous GitLab reads.",
+        detail: serverDetail,
         severity: "error",
       },
     });
+    contextApiMocks.getContextTreeSnapshot.mockResolvedValue(unavailableGitlab);
 
-    const { container, root } = await renderDom(<ContextPage previewSnapshot={privateGitlab} />);
-    expect(container.textContent).toContain("Private GitLab content is unavailable in Cloud");
-    expect(container.textContent).toContain("local git/glab access");
-    expect(container.textContent).toContain("Webhook review automation can remain active");
-    expect(container.textContent).not.toMatch(/GitLab token|credential input|upload snapshot/iu);
+    const { ContextPage } = await import("../context.js");
+    for (const role of ["member", "admin"] as const) {
+      authMock.value = { organizationId: "org-1", role };
+      const { container, root } = await renderDom(<ContextPage />);
+
+      await waitForText(container, "Web preview isn’t available for this repository");
+      expect(container.textContent).toContain("Agent access and Automatic Review are unaffected.");
+      expect(container.textContent).not.toContain(serverDetail);
+      expect(container.querySelector('[data-context-availability-tone="neutral"]')).not.toBeNull();
+      expect(container.querySelector(".lucide-info")).not.toBeNull();
+      expect(container.querySelector(".lucide-triangle-alert")).toBeNull();
+      expect(container.textContent).toContain(
+        "Repo: https://[redacted]@gitlab.example/acme/private-context.git · Branch: main",
+      );
+      expect(buttonByText(container, "Work on this in chat")).toBeNull();
+      expect(buttonByText(container, "Create an agent")).toBeNull();
+      expect(container.querySelector('[aria-label="Agent for the Context Tree chat"]')).toBeNull();
+      await act(async () => root.unmount());
+    }
+    expect(agentApiMocks.listManagedAgents).not.toHaveBeenCalled();
+  });
+
+  it("keeps public GitLab snapshots on the live Context page", async () => {
+    const { ContextPage } = await import("../context.js");
+    const publicGitlab = snapshot({
+      provider: "gitlab",
+      contentAvailability: {
+        status: "available",
+        accessMode: "anonymous",
+      },
+      repo: "https://gitlab.com/acme/public-context.git",
+      branch: "main",
+      snapshotStatus: "active",
+      contextStatus: { label: "Live", detail: null, severity: "ok" },
+    });
+
+    const { container, root } = await renderDom(<ContextPage previewSnapshot={publicGitlab} />);
+    expect(container.textContent).toContain("LIVE");
+    expect(container.textContent).not.toContain("coming soon");
     await act(async () => root.unmount());
   });
 
   it.each([
-    ["gitlab_origin_not_authorized", "GitLab Web Context needs deployment authorization", "ALLOWED_ORIGINS"],
-    ["gitlab_dns_unavailable", "First Tree cannot resolve this GitLab address", "check DNS and network access"],
-    ["gitlab_address_not_authorized", "GitLab resolved to an unauthorized address", "trusted private CIDRs"],
-    ["gitlab_egress_denied", "GitLab Web Context failed a network safety check", "verify the origin and DNS"],
+    ["gitlab_redirect_forbidden", "GitLab repository redirect is not allowed", "never follows"],
     ["gitlab_repository_unavailable", "GitLab repository or branch is unavailable", "allow anonymous reads"],
   ] as const)("shows actionable GitLab recovery copy for %s", async (reason, title, recovery) => {
     const { ContextPage } = await import("../context.js");
@@ -486,6 +527,38 @@ describe("ContextPage DOM behavior", () => {
     expect(container.textContent).toContain(title);
     expect(container.textContent).toContain(recovery);
     expect(container.textContent).toContain("Webhook");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps recoverable GitLab unavailable states chat-first for admins", async () => {
+    authMock.value = { organizationId: "org-1", role: "admin" };
+    agentApiMocks.listManagedAgents.mockResolvedValue([treeAgent]);
+    contextApiMocks.getContextTreeSnapshot.mockResolvedValue(
+      snapshot({
+        provider: "gitlab",
+        contentAvailability: {
+          status: "unavailable",
+          accessMode: "anonymous",
+          reason: "gitlab_repository_unavailable",
+        },
+        repo: "https://gitlab.example/acme/context-tree.git",
+        branch: "main",
+        snapshotStatus: "unavailable",
+        contextStatus: {
+          label: "Team context unavailable",
+          detail: "Provider-specific diagnostic",
+          severity: "error",
+        },
+      }),
+    );
+
+    const { ContextPage } = await import("../context.js");
+    const { container, root } = await renderDom(<ContextPage />);
+
+    await waitForText(container, "Work on this in chat");
+    expect(container.textContent).toContain("GitLab repository or branch is unavailable");
+    expect(container.textContent).toContain("Provider-specific diagnostic");
+    expect(agentApiMocks.listManagedAgents).toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 

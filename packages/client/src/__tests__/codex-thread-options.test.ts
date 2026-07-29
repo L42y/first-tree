@@ -1,6 +1,6 @@
 import type { AgentRuntimeConfigPayload } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
-import { buildCodexThreadOptions } from "../handlers/codex/index.js";
+import { buildCodexConfig, buildCodexThreadOptions, codexServiceTiersEquivalent } from "../handlers/codex/index.js";
 
 /**
  * Codex CLI's two auth modes accept different model slugs:
@@ -24,9 +24,44 @@ function basePayload(
     gitRepos: [],
     resourceSkills: [],
     reasoningEffort: "high",
+    serviceTier: "default",
     ...overrides,
   };
 }
+
+describe("buildCodexConfig", () => {
+  it("enables the Fast-mode feature and forwards the configured service tier unchanged", () => {
+    expect(buildCodexConfig(basePayload({ serviceTier: "fast" }))).toMatchObject({
+      features: { fast_mode: true },
+      service_tier: "fast",
+    });
+    expect(buildCodexConfig(basePayload({ serviceTier: "priority-preview" }))).toMatchObject({
+      features: { fast_mode: true },
+      service_tier: "priority-preview",
+    });
+  });
+
+  it("pins Standard explicitly without overriding provider-managed Fast-mode policy", () => {
+    const config = buildCodexConfig(basePayload());
+    expect(config.service_tier).toBe("default");
+    expect(config).not.toHaveProperty("features");
+  });
+
+  it("backfills Standard when a newer Client receives a legacy payload without serviceTier", () => {
+    const legacyPayload = { ...basePayload() } as AgentRuntimeConfigPayload & { serviceTier?: string };
+    delete legacyPayload.serviceTier;
+
+    const config = buildCodexConfig(legacyPayload);
+    expect(config.service_tier).toBe("default");
+    expect(config).not.toHaveProperty("features");
+  });
+
+  it("recognizes Codex's canonical priority response for the product-facing fast alias", () => {
+    expect(codexServiceTiersEquivalent("fast", "priority")).toBe(true);
+    expect(codexServiceTiersEquivalent("priority", "fast")).toBe(true);
+    expect(codexServiceTiersEquivalent("flex", "priority")).toBe(false);
+  });
+});
 
 describe("buildCodexThreadOptions", () => {
   it("omits `model` when payload.model is empty (auth-mode-agnostic default)", () => {

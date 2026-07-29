@@ -215,6 +215,8 @@ export async function regenerateGitlabConnectionBearer(
         tokenHash: hashGitlabUrlBearer(bearer),
         endpointFirstSeenAt: null,
         lastValidInboundAt: null,
+        lastSystemHookInboundAt: null,
+        lastProjectHookInboundAt: null,
         lastSystemHookMergeRequestInboundAt: null,
         lastProcessingFailureAt: null,
         lastProcessingFailureCode: null,
@@ -313,13 +315,19 @@ export async function withGitlabConnectionMaintenanceFence<T>(
   });
 }
 
-export async function markGitlabInboundSeen(db: Database, connectionId: string, tokenHash: string): Promise<void> {
+export async function markGitlabInboundSeen(
+  db: Database,
+  connectionId: string,
+  tokenHash: string,
+  hookSource: "system" | "project",
+): Promise<void> {
   const now = new Date();
   await db
     .update(gitlabConnections)
     .set({
       endpointFirstSeenAt: sql`coalesce(${gitlabConnections.endpointFirstSeenAt}, now())`,
       lastValidInboundAt: now,
+      ...(hookSource === "system" ? { lastSystemHookInboundAt: now } : { lastProjectHookInboundAt: now }),
       updatedAt: now,
     })
     .where(and(eq(gitlabConnections.id, connectionId), eq(gitlabConnections.tokenHash, tokenHash)));
@@ -427,6 +435,11 @@ export async function getGitlabConnectionSummary(db: Database, connectionId: str
     health: {
       readiness: projectGitlabConnectionReadiness(connection),
       lastValidInboundAt: connection.lastValidInboundAt?.toISOString() ?? null,
+      lastSystemHookInboundAt:
+        connection.lastSystemHookInboundAt?.toISOString() ??
+        connection.lastSystemHookMergeRequestInboundAt?.toISOString() ??
+        null,
+      lastProjectHookInboundAt: connection.lastProjectHookInboundAt?.toISOString() ?? null,
       lastSystemHookMergeRequestInboundAt: connection.lastSystemHookMergeRequestInboundAt?.toISOString() ?? null,
       lastProcessingFailureAt: connection.lastProcessingFailureAt?.toISOString() ?? null,
       lastProcessingFailureCode: connection.lastProcessingFailureCode,

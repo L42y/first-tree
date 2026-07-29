@@ -102,6 +102,7 @@ describe("CLI command registration", () => {
       "install-codex",
       "probe",
       "refresh-unit",
+      "repair-ownership",
       "restart",
       "start",
       "status",

@@ -5,10 +5,9 @@
 // workspaces accumulate stale top-level dirs (`.first-tree/` state dir,
 // UUID-named chat snapshots, retired source-repo clones like
 // `first-tree-hub/`, a `WHITEPAPER.md` symlink that used to point at a
-// repo-local skill payload). The state-based delete-on-removal in
-// `managed-state` only catches resources THIS CLI installed and later
-// dropped; legacy residue predates the state file entirely and has to
-// be cleaned with a one-shot sweep.
+// repo-local skill payload). Managed Skill cleanup is deliberately NOT part
+// of this registry: `managed-skills.ts` owns it with ledger/marker/digest
+// proofs so a name-only migration never deletes user content.
 //
 // Design:
 //
@@ -49,7 +48,7 @@ const RUNTIME_DIR = ".first-tree-workspace";
 /**
  * Path inside the agent home where {@link applyPendingMigrations} persists
  * the set of already-applied migration ids. Same runtime-dir convention as
- * `identity.json`, `cli-version`, and `managed.json`.
+ * `identity.json` and `managed.json`.
  */
 export const MIGRATIONS_APPLIED_REL = join(RUNTIME_DIR, "migrations-applied.json");
 
@@ -170,12 +169,9 @@ function hasLegacySnapshotSignature(dir: string): boolean {
  * unrecorded; the next resolved session re-runs the migration.
  *
  * The trade-off: a workspace whose cache is **permanently** broken never
- * runs the one-shot sweep. That's acceptable because such a workspace
- * cannot reach the resolved-payload codepath that materialises
- * `.first-tree-workspace/managed.json` in the first place — its config-dependent state
- * is already inconsistent, and accumulating a few legacy directories on
- * disk is a strictly smaller cost than risking deletion of a currently-
- * configured source repo.
+ * runs the one-shot sweep. Accumulating a few legacy directories is a
+ * strictly smaller cost than risking deletion of a currently configured
+ * source repo.
  *
  * History: round-3 added a deferral that ONLY fired when both ctx and
  * persisted state were empty; round-4 spread it to all config-dependent
@@ -269,67 +265,6 @@ export const MIGRATIONS_REGISTRY: readonly Migration[] = [
       const target = join(workspacePath, "WHITEPAPER.md");
       if (unlinkSymlinkIfExists(target)) {
         log("workspace-migrations: v1-whitepaper-symlink removed WHITEPAPER.md");
-      }
-    },
-  },
-  {
-    id: "v1-orphan-skills",
-    description:
-      "Remove `.agents/skills/<name>/` payloads (and matching `.claude/skills/<name>` symlinks) for a hardcoded list of historical skill names that the CLI used to ship but has since retired. PR #869's state-based `reconcileTreeSkillState` only removes skills it previously recorded in `managed.json::skills`; legacy residue installed before state tracking existed sits on disk forever without an explicit sweep. Because the marker is one-shot per workspace, even if a future bundle re-introduces one of these names, the migration cannot redelete it on a workspace that already applied this id. PR #898 follow-up.",
-    apply: (workspacePath, log) => {
-      // Historical skill names — once shipped with the CLI, since retired.
-      // Each gets its `.agents/skills/<name>/` payload removed AND its
-      // `.claude/skills/<name>` companion symlink removed when present.
-      // Add new names to the end of this list when retiring a bundled
-      // skill; never remove or reorder existing entries (marker is by id,
-      // not by list contents).
-      const historicalNames = [
-        "attention",
-        "first-tree-cloud",
-        "first-tree-github-scan",
-        "first-tree-onboarding",
-        "github-scan",
-        "first-tree",
-        "first-tree-context",
-        "first-tree-sync",
-        "first-tree-github",
-        "first-tree-kickoff",
-      ];
-      let removed = 0;
-      for (const name of historicalNames) {
-        const agentsPath = join(workspacePath, ".agents", "skills", name);
-        const claudePath = join(workspacePath, ".claude", "skills", name);
-        let removedAny = false;
-        if (existsSync(agentsPath) && isDirectory(agentsPath)) {
-          rmSync(agentsPath, { recursive: true, force: true });
-          removedAny = true;
-        }
-        // Only unlink the `.claude/skills/<name>` entry when it really is a
-        // symlink — a user-authored regular directory there would NOT be
-        // touched (defensive, mirrors the `v1-whitepaper-symlink` shape
-        // check). The companion symlink is always how the installer wires
-        // these up, so a real-FT install will match.
-        let claudeStat: ReturnType<typeof lstatSync> | null = null;
-        try {
-          claudeStat = lstatSync(claudePath);
-        } catch {
-          // missing — nothing to do
-        }
-        if (claudeStat?.isSymbolicLink()) {
-          try {
-            unlinkSync(claudePath);
-            removedAny = true;
-          } catch {
-            // best-effort; the payload removal above is the main goal
-          }
-        }
-        if (removedAny) {
-          log(`workspace-migrations: v1-orphan-skills removed legacy skill ${name}/`);
-          removed += 1;
-        }
-      }
-      if (removed > 0) {
-        log(`workspace-migrations: v1-orphan-skills removed ${removed} legacy skill(s)`);
       }
     },
   },

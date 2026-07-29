@@ -1,5 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import {
+  type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
   deriveRepoLocalPath,
   encodeProviderRetryEventMessage,
@@ -53,9 +54,9 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../runtime/provider-attempt.js";
 import { classifyProviderFailure, maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
-import { materializeResourceSkills } from "../../runtime/resource-skills.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -84,10 +85,87 @@ import {
  * minimal shape we need (`mcp_servers.<name>.{...}`, `project_root_markers`).
  * Mirrors the recursive structure from the SDK's `dist/index.d.ts`.
  */
-type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
-type CodexConfigObject = { [key: string]: CodexConfigValue };
+export type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
+export type CodexConfigObject = { [key: string]: CodexConfigValue };
 
 const RESULT_PREVIEW_LIMIT = 400;
+
+/**
+ * Build the provider-native Codex config shared by both handler engines.
+ *
+ * `service_tier` selects Standard (`default`), Fast (`fast`), or another
+ * provider-advertised tier. Non-default tiers explicitly enable the stable
+ * Fast-mode capability; Standard leaves the feature unset so provider-managed
+ * policy remains authoritative. First Tree forwards the configured tier
+ * unchanged and treats Codex's unsupported-tier warning as a configuration
+ * failure instead of accepting a silently downgraded turn.
+ */
+export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
+  const cfg: CodexConfigObject = {
+    // Gap-2: anchor codex's project-root walk-up at the workspace marker
+    // we wrote in bootstrap, so `AGENTS.md` is read from this workspace
+    // instead of leaking up to the operator's repo or HOME.
+    project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
+  };
+  if (payload.kind === "codex") {
+    const serviceTier = configuredCodexServiceTier(payload);
+    cfg.service_tier = serviceTier;
+    if (serviceTier !== "default") {
+      cfg.features = { fast_mode: true };
+    }
+  }
+  if (payload.mcpServers.length === 0) return cfg;
+
+  const mcpServers: CodexConfigObject = {};
+  for (const m of payload.mcpServers) {
+    if (m.transport === "stdio") {
+      mcpServers[m.name] = { command: m.command, args: m.args ?? [] };
+    } else {
+      // http / sse — codex's TOML schema accepts url + optional headers.
+      const entry: CodexConfigObject = { url: m.url };
+      if (m.headers) entry.headers = m.headers;
+      mcpServers[m.name] = entry;
+    }
+  }
+  cfg.mcp_servers = mcpServers;
+  return cfg;
+}
+
+/**
+ * A newer Client can briefly talk to a Server that predates `serviceTier`
+ * during a rolling upgrade. Treat that missing wire field like every legacy
+ * Codex config row: explicit Standard mode.
+ */
+export function configuredCodexServiceTier(payload: AgentRuntimeConfigPayload): string {
+  if (payload.kind !== "codex") return "default";
+  const serviceTier: unknown = payload.serviceTier;
+  return typeof serviceTier === "string" && serviceTier.length > 0 ? serviceTier : "default";
+}
+
+function canonicalCodexServiceTier(serviceTier: string): string {
+  // Codex accepts `fast` as the product-facing request alias, then reports the
+  // provider-canonical `priority` id in app-server ThreadStart/ResumeResponse.
+  // This is response validation only: First Tree still forwards the configured
+  // value unchanged and does not maintain model/account compatibility data.
+  return serviceTier === "fast" ? "priority" : serviceTier;
+}
+
+export function codexServiceTiersEquivalent(configured: string, effective: string): boolean {
+  return canonicalCodexServiceTier(configured) === canonicalCodexServiceTier(effective);
+}
+
+const UNSUPPORTED_CODEX_SERVICE_TIER_WARNING =
+  /^Configured service tier `[^`]+` is not advertised as supported for model `[^`]+` and will be omitted from requests\.$/;
+
+/**
+ * Codex 0.144.1 reports an unsupported provider-native service tier as a
+ * warning and then proceeds without that tier. Both handler engines use this
+ * predicate to turn that otherwise-silent downgrade into a terminal
+ * configuration error.
+ */
+export function isUnsupportedCodexServiceTierWarning(message: string): boolean {
+  return UNSUPPORTED_CODEX_SERVICE_TIER_WARNING.test(message.trim());
+}
 
 async function emitTurnEnd(
   sessionCtx: SessionContext,
@@ -426,6 +504,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider ?? "codex");
   const providerTurnMaxRetries = maxProviderTurnRetryAttempts();
   let activePayload: AgentRuntimeConfigPayload | null = null;
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
@@ -510,30 +589,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     return out;
   }
 
-  function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
-    const cfg: CodexConfigObject = {
-      // Gap-2: anchor codex's project-root walk-up at the workspace marker
-      // we wrote in bootstrap, so `AGENTS.md` is read from this workspace
-      // instead of leaking up to the operator's repo or HOME.
-      project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
-    };
-    if (payload.mcpServers.length === 0) return cfg;
-
-    const mcpServers: CodexConfigObject = {};
-    for (const m of payload.mcpServers) {
-      if (m.transport === "stdio") {
-        mcpServers[m.name] = { command: m.command, args: m.args ?? [] };
-      } else {
-        // http / sse — codex's TOML schema accepts url + optional headers.
-        const entry: CodexConfigObject = { url: m.url };
-        if (m.headers) entry.headers = m.headers;
-        mcpServers[m.name] = entry;
-      }
-    }
-    cfg.mcp_servers = mcpServers;
-    return cfg;
-  }
-
   function createCodexClient(options: CodexOptions, sessionCtx: SessionContext): Codex {
     const resolved = createCodexClientWithBinaryFallback<CodexOptions, Codex>(
       options,
@@ -558,6 +613,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -908,6 +964,15 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
               } else if (event.type === "turn.started") {
                 // No-op — runtime state already "working".
               } else if (event.type === "item.completed") {
+                if (event.item.type === "error" && isUnsupportedCodexServiceTierWarning(event.item.message)) {
+                  providerAttempt.recordSignal({
+                    kind: "provider_error",
+                    error: new Error(`Codex service tier configuration failed: ${event.item.message}`),
+                  });
+                  const settlement = providerAttempt.settle({ attempt: attempt + 1 });
+                  if (settlement) stopCodexFailure(settlement);
+                  break;
+                }
                 const text = processItem(event.item, sessionCtx);
                 if (text) finalResponse = text;
                 if (isUserVisibleItem(event.item)) {
@@ -1361,10 +1426,13 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
    * hot-switch reads). If it changed, rewrite AGENTS.md on disk and report the
    * change so the caller prepends the one-time re-read notice — the agent then
    * re-reads the now-current AGENTS.md before acting. Synchronous + `.get()` so
-   * it adds no await/race on the drain path. Model / MCP hot-switch (which would
-   * need a thread restart) stays out of scope; this targets the prompt.
+   * It awaits the managed Skill settlement before rewriting the briefing.
+   * Model / MCP hot-switch (which would need a thread restart) stays out of
+   * scope; this targets Skills plus the prompt.
    */
-  function refreshBriefingForActiveTurn(sessionCtx: SessionContext): { fingerprint: string; changed: boolean } | null {
+  async function refreshBriefingForActiveTurn(
+    sessionCtx: SessionContext,
+  ): Promise<{ fingerprint: string; changed: boolean } | null> {
     if (!agentConfigCache || !cwd || !threadId || !activeProviderEnv) return null;
     // Never throw: this runs on the inject drain path AFTER the batch has been
     // dequeued, so a thrown briefing rewrite would strand the message (no
@@ -1372,8 +1440,12 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     // turn — the message still delivers under the prior briefing, and the next
     // injected turn retries the refresh.
     try {
-      const payload = agentConfigCache.get(sessionCtx.agent.agentId)?.payload;
-      if (!payload) return null;
+      const runtimeConfig = agentConfigCache.get(sessionCtx.agent.agentId);
+      if (!runtimeConfig) return null;
+      const payload = runtimeConfig.payload;
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
       if (readSessionBriefingFingerprint(cwd, threadId) === fingerprint) return { fingerprint, changed: false };
@@ -1413,7 +1485,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     }
     // Active-session hot-switch: pick up a mid-session briefing change before
     // this injected turn and surface the re-read notice.
-    const refreshed = refreshBriefingForActiveTurn(sessionCtx);
+    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
     if (refreshed?.changed && cwd) {
       const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
       pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
@@ -1477,9 +1549,11 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       // by every chat session for this agent.
       cwd = acquireAgentHome(workspaceRoot);
 
+      let runtimeConfig: AgentRuntimeConfig | null = null;
       let payload: AgentRuntimeConfigPayload | null = null;
       if (agentConfigCache) {
-        payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+        runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+        payload = runtimeConfig.payload;
       }
       // Track whether the payload reflects a real config — used by the source-
       // repo state reconcile to distinguish "config has zero repos" from "we
@@ -1496,6 +1570,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           gitRepos: [],
           resourceSkills: [],
           reasoningEffort: "high",
+          serviceTier: "default",
         };
       }
 
@@ -1505,7 +1580,9 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       // gitRepos first so the shared briefing can list the predeclared
       // source-repo paths the agent should know about.
       declareSourceRepos(payload, cwd);
-      await materializeResourceSkills(cwd, payload, sessionCtx);
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
       const briefing = buildBriefing(sessionCtx, payload, cwd);
@@ -1558,9 +1635,11 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       ctx = sessionCtx;
       cwd = acquireAgentHome(workspaceRoot);
 
+      let runtimeConfig: AgentRuntimeConfig | null = null;
       let payload: AgentRuntimeConfigPayload | null = null;
       if (agentConfigCache) {
-        payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+        runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+        payload = runtimeConfig.payload;
       }
       const resumePayloadResolved = payload !== null;
       if (!payload) {
@@ -1573,6 +1652,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           gitRepos: [],
           resourceSkills: [],
           reasoningEffort: "high",
+          serviceTier: "default",
         };
       }
 
@@ -1582,7 +1662,9 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       pendingChatContextPrompt = renderChatContextPrompt(chatContext);
 
       declareSourceRepos(payload, cwd);
-      await materializeResourceSkills(cwd, payload, sessionCtx);
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
       const briefing = buildBriefing(sessionCtx, payload, cwd);

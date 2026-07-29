@@ -571,6 +571,7 @@ describe("codex app-server handler extra branches", () => {
       prompt: { append: "Use the current runbook." },
       model: "gpt-5-codex",
       reasoningEffort: "medium",
+      serviceTier: "default",
       mcpServers: [
         { name: "stdio-docs", transport: "stdio", command: "node", args: ["server.js"] },
         { name: "http-docs", transport: "http", url: "https://mcp.example/http", headers: { "x-api": "1" } },
@@ -646,6 +647,7 @@ describe("codex app-server handler extra branches", () => {
       prompt: { append: "" },
       model: "gpt-5.6-sol",
       reasoningEffort,
+      serviceTier: "default",
       mcpServers: [],
       env: [],
       gitRepos: [],

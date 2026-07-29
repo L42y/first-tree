@@ -16,7 +16,9 @@ export const setupBlockerCodeSchema = z.enum([
   "github_webhook_events_missing",
   "github_pull_requests_permission_required",
   "github_tree_repo_not_covered",
+  "github_app_slug_missing",
   "gitlab_webhook_not_seen",
+  "gitlab_hook_source_not_identified",
   "gitlab_merge_request_event_not_seen",
   "gitlab_processing_failed",
   "context_tree_binding_invalid",
@@ -32,6 +34,7 @@ export const setupBlockerCodeSchema = z.enum([
   "context_review_agent_no_runtime",
   "context_review_agent_runtime_unavailable",
   "context_review_state_changed",
+  "team_agent_conflicts_context_reviewer",
 ]);
 
 export const setupResolutionOwnerSchema = z.enum(["admin", "operator"]);
@@ -47,6 +50,8 @@ export const setupActionKindSchema = z.enum([
   "replace_review_agent",
   "open_agent_owner_flow",
   "manage_review_agent",
+  "configure_github_app",
+  "select_team_agent",
 ]);
 
 export const setupBlockerSchema = z
@@ -64,8 +69,25 @@ export const setupRepositoryAutomationProviderSchema = z
     health: setupCapabilityHealthSchema,
     blockers: z.array(setupBlockerSchema),
     observedAt: z.string().datetime(),
+    gitlabHookSources: z
+      .object({
+        legacyTransportObserved: z.boolean(),
+        system: z.enum(["unobserved", "transport_received", "routing_verified", "needs_attention"]),
+        project: z.enum(["unobserved", "observed"]),
+      })
+      .strict()
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((provider, ctx) => {
+    if (provider.provider !== "gitlab" && provider.gitlabHookSources !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["gitlabHookSources"],
+        message: "GitLab Hook source health is only valid for the GitLab provider",
+      });
+    }
+  });
 
 export const setupContextTreeBindingSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("unbound") }).strict(),

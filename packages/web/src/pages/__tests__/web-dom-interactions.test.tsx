@@ -77,6 +77,7 @@ const orgSettingsMocks = vi.hoisted(() => ({
 }));
 
 const resourceMocks = vi.hoisted(() => ({
+  confirmTeamRepositoriesForOrg: vi.fn(),
   createTeamResourceForOrg: vi.fn(),
   listTeamResourcesForOrg: vi.fn(),
 }));
@@ -107,6 +108,10 @@ const clientApiMocks = vi.hoisted(() => ({
 
 const contextTreeMocks = vi.hoisted(() => ({
   initializeContextTree: vi.fn(),
+}));
+
+const contextEnablementMocks = vi.hoisted(() => ({
+  getContextEnablementHandoff: vi.fn(),
 }));
 
 const authMock = vi.hoisted(() => {
@@ -163,6 +168,7 @@ vi.mock("../../api/chats.js", async (importOriginal) => ({
   ...chatApiMocks,
 }));
 vi.mock("../../api/context-tree.js", () => contextTreeMocks);
+vi.mock("../../api/context-enablement.js", () => contextEnablementMocks);
 vi.mock("../../api/github.js", () => githubMocks);
 vi.mock("../../api/github-app.js", () => githubAppMocks);
 vi.mock("../../api/image-store.js", () => imageStoreMocks);
@@ -754,6 +760,14 @@ beforeEach(() => {
     htmlUrl: "https://github.com/acme/context-tree",
     defaultBranch: "main",
   });
+  contextEnablementMocks.getContextEnablementHandoff.mockResolvedValue({
+    organizationId: "org-1",
+    teamDisplayName: "Acme",
+    role: "member",
+    provider: "claude-code",
+    command: "first-tree-dev context enable --provider 'claude-code' --team 'org-1'",
+    workingDirectoryInstruction: "Run this from the target code repository.",
+  });
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({
     repo: "https://github.com/acme/context-tree",
     branch: "main",
@@ -785,6 +799,16 @@ beforeEach(() => {
     createdAt: NOW,
     updatedAt: NOW,
   });
+  resourceMocks.confirmTeamRepositoriesForOrg.mockImplementation(
+    async (_organizationId: string, input: { repositories: Array<{ name: string; url: string }> }) => ({
+      repositories: input.repositories.map((repository) => ({
+        repoCanonicalKey: repository.url
+          .replace(/^git@github\.com:/u, "github.com/")
+          .replace(/^https?:\/\//u, "")
+          .replace(/\.git$/u, ""),
+      })),
+    }),
+  );
   resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
     {
       id: "resource-web",
@@ -2173,11 +2197,9 @@ describe("web DOM interaction coverage", () => {
       }),
     );
     expect(onboardingEventMocks.startOnboardingChat.mock.calls.every(([body]) => !("kind" in body))).toBe(true);
-    expect(resourceMocks.createTeamResourceForOrg).toHaveBeenCalledWith("org-1", {
-      type: "repo",
-      name: "acme/web",
-      defaultEnabled: "recommended",
-      payload: { url: "https://github.com/acme/web.git" },
+    expect(resourceMocks.confirmTeamRepositoriesForOrg).toHaveBeenCalledWith("org-1", {
+      expectedActiveRepositoryKeys: ["github.com/acme/api", "github.com/acme/web"],
+      repositories: [{ name: "acme/web", url: "https://github.com/acme/web.git" }],
     });
     expect(adminExisting.flow.completeAndEnterChat).toHaveBeenCalledWith("chat-onboarding");
     await unmountRoot(adminExisting.root);
@@ -2211,22 +2233,60 @@ describe("web DOM interaction coverage", () => {
 
     // Invitee · not-ready via no team tree → the first chat lands in a real
     // chat (runStartChat → completeAndEnterChat), not finishLater.
+    contextEnablementMocks.getContextEnablementHandoff.mockClear();
     orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({ repo: "", branch: null });
     const inviteeNoTree = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
     await waitForText("Start working with your agent", inviteeNoTree.container);
+    expect(inviteeNoTree.container.textContent).not.toContain("Use Team Context in your coding agent");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     await click(findButton(inviteeNoTree.container, "Start chat"));
     await waitForText("Starting your agent", inviteeNoTree.container);
     expect(inviteeNoTree.flow.completeAndEnterChat).toHaveBeenCalled();
     await unmountRoot(inviteeNoTree.root);
 
-    // Invitee · not-ready via no installation (tree set, GitHub not connected) →
-    // the same single not-ready screen + "meet your agent" bailout.
+    // Invitee · bound Tree but no active Team code repository → the exact
+    // Team handoff remains unavailable until an Admin completes repo scope.
+    contextEnablementMocks.getContextEnablementHandoff.mockClear();
+    orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({
+      repo: "https://gitlab.example.com/acme/context-tree.git",
+      branch: "main",
+      provider: "gitlab",
+    });
+    resourceMocks.listTeamResourcesForOrg.mockResolvedValueOnce([]);
+    githubAppMocks.getGithubAppInstallationExists.mockResolvedValueOnce(false);
+    const inviteeNoRepo = await renderOnboardingDom(<StepStartChat />, {
+      path: "invitee",
+      activeStep: "start-chat",
+    });
+    await waitForText("Start working with your agent", inviteeNoRepo.container);
+    expect(inviteeNoRepo.container.textContent).not.toContain("Use Team Context in your coding agent");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
+    await unmountRoot(inviteeNoRepo.root);
+
+    // Invitee · GitLab-bound Tree + active repo + no GitHub App → the legacy
+    // managed first chat stays not-ready, but provider-neutral BYO Context
+    // still receives the exact invite Team handoff.
+    contextEnablementMocks.getContextEnablementHandoff.mockClear();
+    orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({
+      repo: "https://gitlab.example.com/acme/context-tree.git",
+      branch: "main",
+      provider: "gitlab",
+    });
     githubAppMocks.getGithubAppInstallationExists.mockResolvedValueOnce(false);
     const inviteeNoInstall = await renderOnboardingDom(<StepStartChat />, {
       path: "invitee",
       activeStep: "start-chat",
     });
     await waitForText("Start working with your agent", inviteeNoInstall.container);
+    await waitForText("Use Team Context in your coding agent", inviteeNoInstall.container);
+    expect(inviteeNoInstall.container.textContent).not.toContain("--team 'org-1'");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
+    await click(findButton(inviteeNoInstall.container, "Copy setup prompt"));
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("context enable --provider 'claude-code' --team 'org-1'"),
+    );
+    expect(findButton(inviteeNoInstall.container, "Start working with your agent")).toBeNull();
     await click(findButton(inviteeNoInstall.container, "Start chat"));
     expect(inviteeNoInstall.flow.completeAndEnterChat).toHaveBeenCalled();
     await unmountRoot(inviteeNoInstall.root);
@@ -2248,6 +2308,12 @@ describe("web DOM interaction coverage", () => {
     // agent already inherits the team's recommended repos.
     const inviteeReady = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
     await waitForText("Start working with your agent", inviteeReady.container);
+    await waitForText("Use Team Context in your coding agent", inviteeReady.container);
+    expect(inviteeReady.container.textContent).not.toContain("--team 'org-1'");
+    const callsBeforeCopy = contextEnablementMocks.getContextEnablementHandoff.mock.calls.length;
+    await click(findButton(inviteeReady.container, "Copy setup prompt"));
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(callsBeforeCopy + 1);
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenLastCalledWith("org-1", "claude-code");
     await click(findButton(inviteeReady.container, "Start chat"));
     // Ready invitee also lands in a value-first work chat, not the tree setup
     // chat. The inherited team tree is context for orientation.
@@ -2313,6 +2379,7 @@ describe("web DOM interaction coverage", () => {
 
     expect(contextTreeMocks.initializeContextTree).not.toHaveBeenCalled();
     expect(resourceMocks.listTeamResourcesForOrg).not.toHaveBeenCalled();
+    expect(resourceMocks.confirmTeamRepositoriesForOrg).not.toHaveBeenCalled();
     expect(resourceMocks.createTeamResourceForOrg).not.toHaveBeenCalled();
     expect(githubAppMocks.getGithubAppInstallation).not.toHaveBeenCalled();
     expect(githubMocks.listOrgGithubRepos).not.toHaveBeenCalled();
@@ -2348,13 +2415,11 @@ describe("web DOM interaction coverage", () => {
     );
     await waitForText("Starting your agent", view.container);
     // web is still granted → written; the stale repo is pruned → never written.
-    expect(resourceMocks.createTeamResourceForOrg).toHaveBeenCalledWith(
+    expect(resourceMocks.confirmTeamRepositoriesForOrg).toHaveBeenCalledWith(
       "org-1",
-      expect.objectContaining({ payload: { url: "https://github.com/acme/web.git" } }),
-    );
-    expect(resourceMocks.createTeamResourceForOrg).not.toHaveBeenCalledWith(
-      "org-1",
-      expect.objectContaining({ payload: { url: "https://github.com/acme/gone.git" } }),
+      expect.objectContaining({
+        repositories: [{ name: "acme/web", url: "https://github.com/acme/web.git" }],
+      }),
     );
     await unmountRoot(view.root);
   });
@@ -2378,6 +2443,7 @@ describe("web DOM interaction coverage", () => {
         null) as HTMLButtonElement | null,
     );
     await waitForText("Couldn't check your repositories", view.container);
+    expect(resourceMocks.confirmTeamRepositoriesForOrg).not.toHaveBeenCalled();
     expect(resourceMocks.createTeamResourceForOrg).not.toHaveBeenCalled();
     expect(chatApiMocks.createAgentChat).not.toHaveBeenCalled();
     expect(view.flow.completeAndEnterChat).not.toHaveBeenCalled();
@@ -2435,13 +2501,11 @@ describe("web DOM interaction coverage", () => {
     await waitForText("Starting your agent", view.container);
     // Live read returned web + api → `gone` is pruned despite being in the cache.
     expect(githubMocks.listOrgGithubRepos).toHaveBeenCalled();
-    expect(resourceMocks.createTeamResourceForOrg).toHaveBeenCalledWith(
+    expect(resourceMocks.confirmTeamRepositoriesForOrg).toHaveBeenCalledWith(
       "org-1",
-      expect.objectContaining({ payload: { url: "https://github.com/acme/web.git" } }),
-    );
-    expect(resourceMocks.createTeamResourceForOrg).not.toHaveBeenCalledWith(
-      "org-1",
-      expect.objectContaining({ payload: { url: "https://github.com/acme/gone.git" } }),
+      expect.objectContaining({
+        repositories: [{ name: "acme/web", url: "https://github.com/acme/web.git" }],
+      }),
     );
     await unmountRoot(view.root);
   });

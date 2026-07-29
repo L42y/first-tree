@@ -28,6 +28,8 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
 import { createLogger, messageAttrs, withSpan } from "../observability/index.js";
 import { uuidv7 } from "../uuid.js";
 import { upsertSessionState } from "./activity.js";
+import { type AttachmentReader, deleteAttachmentIfUnreferenced, loadAttachmentMetaForReference } from "./attachment.js";
+import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 import { applyAfterFanOut, fireChatMessageKick } from "./chat-projection.js";
 import { validateDocumentContext, validateMessageAttachmentRefs } from "./doc-snapshots.js";
 import { hasRemainingLandingCampaignTrialBudget } from "./landing-campaigns/chat-state.js";
@@ -106,6 +108,39 @@ function validateFileContent(content: unknown): void {
     `Invalid file message content: expected an image reference ({imageId, mimeType, filename}) or a batch ` +
       `({caption?, attachments[1..${MAX_BATCH_ATTACHMENTS}]}), with MIME one of png/jpeg/gif/webp.`,
   );
+}
+
+/**
+ * Hold cleanup-conflicting locks for legacy file refs that currently resolve
+ * to ready attachment rows. Missing rows and stored metadata mismatches remain
+ * valid: the decision-locked legacy contract is shape-only.
+ */
+export async function lockFileAttachmentRefsIfPresent(
+  db: AttachmentReader,
+  format: string,
+  content: unknown,
+): Promise<void> {
+  if (format !== "file") return;
+
+  const batch = imageBatchRefContentSchema.safeParse(content);
+  const single = batch.success ? null : imageRefContentSchema.safeParse(content);
+  const refs = batch.success ? batch.data.attachments : single?.success ? [single.data] : [];
+  await Promise.all(refs.map((ref) => loadAttachmentMetaForReference(db, ref.imageId)));
+}
+
+function legacyFileAttachmentIds(format: string, content: unknown): string[] {
+  if (format !== "file" || !content || typeof content !== "object") return [];
+  const record = content as Record<string, unknown>;
+  const ids: string[] = [];
+  if (typeof record.imageId === "string") ids.push(record.imageId);
+  if (Array.isArray(record.attachments)) {
+    for (const item of record.attachments) {
+      if (!item || typeof item !== "object") continue;
+      const imageId = (item as Record<string, unknown>).imageId;
+      if (typeof imageId === "string") ids.push(imageId);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -814,6 +849,7 @@ async function sendMessageInner(
     //     checked client-side at render via `ref.sha256`; uploader != sender by
     //     design (see validateMessageAttachmentRefs).
     await validateMessageAttachmentRefs(tx, metadataToStore);
+    await lockFileAttachmentRefsIfPresent(tx, data.format, outboundContent);
 
     // 3. Store the message (with merged metadata + normalised content).
     // UUID v7 per the "UUID v7 as Message ID" architecture rule in
@@ -1139,63 +1175,89 @@ export async function editMessage(
   messageId: string,
   senderId: string,
   data: { format?: string; content?: unknown },
+  blobStore: AttachmentBlobStore,
 ) {
-  const [msg] = await db.select().from(messages).where(eq(messages.id, messageId)).limit(1);
-  if (!msg) throw new NotFoundError(`Message "${messageId}" not found`);
-  if (msg.chatId !== chatId) throw new NotFoundError(`Message "${messageId}" not found in this chat`);
-  if (msg.senderId !== senderId) throw new ForbiddenError("Only the sender can edit a message");
-  const protectedContextReviewKey = Object.keys(msg.metadata).find(
-    (key) => key === "contextTreeReviewer" || key.startsWith("contextReview"),
-  );
-  if (protectedContextReviewKey) {
-    throw new ForbiddenError("Context Reviewer run history cannot be edited");
-  }
-
-  // The open-question counter (`open_request_count`) is maintained only on the
-  // send path, keyed off `format=request`. Allowing an edit to flip a message
-  // into or out of `request` would desync that counter (a request edited to
-  // text leaves a stuck +1; text edited to request renders an open card with
-  // no count). Forbid format changes that touch `request`; content edits and
-  // other format changes are unaffected. See proposals/group-chat-unified-send §D1.
-  if (
-    data.format !== undefined &&
-    data.format !== msg.format &&
-    (data.format === MESSAGE_FORMATS.REQUEST || msg.format === MESSAGE_FORMATS.REQUEST)
-  ) {
-    throw new BadRequestError("Cannot change a message's format to or from 'request'.");
-  }
-
-  const setClause: Record<string, unknown> = {};
-  if (data.format !== undefined) setClause.format = data.format;
-  if (data.content !== undefined) {
-    // An edit can replace the body of any message — including an already-open
-    // `format=request` ask whose format is frozen above. Reuse the send-path
-    // guards against the effective post-edit `{ format, content }` so an edit
-    // can't turn a live message into an empty / placeholder blocking card or an
-    // agent-authored escaped-newline body.
-    const [senderRow] = await db.select({ type: agents.type }).from(agents).where(eq(agents.uuid, senderId)).limit(1);
-    if (!senderRow) throw new NotFoundError(`Sender agent "${senderId}" not found`);
-    const effectiveContent = normalizeNonHumanTextContent({
-      chatId,
-      senderId,
-      senderType: senderRow.type,
-      content: data.content,
-    });
-    validateMessageContent(
-      { format: data.format ?? msg.format, content: effectiveContent },
-      { hasAttachmentRefs: attachmentRefsFromMetadata(msg.metadata ?? undefined).length > 0 },
+  const { updated, releasedAttachmentIds } = await db.transaction(async (rawTx) => {
+    const tx = rawTx as unknown as Database;
+    const [msg] = await tx.select().from(messages).where(eq(messages.id, messageId)).for("update").limit(1);
+    if (!msg) throw new NotFoundError(`Message "${messageId}" not found`);
+    if (msg.chatId !== chatId) throw new NotFoundError(`Message "${messageId}" not found in this chat`);
+    if (msg.senderId !== senderId) throw new ForbiddenError("Only the sender can edit a message");
+    const protectedContextReviewKey = Object.keys(msg.metadata).find(
+      (key) => key === "contextTreeReviewer" || key.startsWith("contextReview"),
     );
-    setClause.content = effectiveContent;
-  }
+    if (protectedContextReviewKey) {
+      throw new ForbiddenError("Context Reviewer run history cannot be edited");
+    }
+    const previousAttachmentIds = legacyFileAttachmentIds(msg.format, msg.content);
 
-  // Patch only the edit timestamp in Postgres so concurrent server-owned
-  // metadata transitions cannot be overwritten by a stale read of the row.
-  setClause.metadata = sql`jsonb_set(${messages.metadata}, '{editedAt}', ${JSON.stringify(
-    new Date().toISOString(),
-  )}::jsonb)`;
+    // The open-question counter (`open_request_count`) is maintained only on the
+    // send path, keyed off `format=request`. Allowing an edit to flip a message
+    // into or out of `request` would desync that counter (a request edited to
+    // text leaves a stuck +1; text edited to request renders an open card with
+    // no count). Forbid format changes that touch `request`; content edits and
+    // other format changes are unaffected. See proposals/group-chat-unified-send §D1.
+    if (
+      data.format !== undefined &&
+      data.format !== msg.format &&
+      (data.format === MESSAGE_FORMATS.REQUEST || msg.format === MESSAGE_FORMATS.REQUEST)
+    ) {
+      throw new BadRequestError("Cannot change a message's format to or from 'request'.");
+    }
 
-  const [updated] = await db.update(messages).set(setClause).where(eq(messages.id, messageId)).returning();
-  if (!updated) throw new Error("Unexpected: UPDATE RETURNING produced no row");
+    const setClause: Record<string, unknown> = {};
+    if (data.format !== undefined) setClause.format = data.format;
+    let effectiveContent = msg.content;
+    if (data.content !== undefined) {
+      // An edit can replace the body of any message — including an already-open
+      // `format=request` ask whose format is frozen above. Reuse the send-path
+      // guards against the effective post-edit `{ format, content }` so an edit
+      // can't turn a live message into an empty / placeholder blocking card or an
+      // agent-authored escaped-newline body.
+      const [senderRow] = await tx.select({ type: agents.type }).from(agents).where(eq(agents.uuid, senderId)).limit(1);
+      if (!senderRow) throw new NotFoundError(`Sender agent "${senderId}" not found`);
+      effectiveContent = normalizeNonHumanTextContent({
+        chatId,
+        senderId,
+        senderType: senderRow.type,
+        content: data.content,
+      });
+      setClause.content = effectiveContent;
+    }
+
+    const effectiveFormat = data.format ?? msg.format;
+    if (data.content !== undefined || data.format !== undefined) {
+      validateMessageContent(
+        { format: effectiveFormat, content: effectiveContent },
+        { hasAttachmentRefs: attachmentRefsFromMetadata(msg.metadata ?? undefined).length > 0 },
+      );
+      await lockFileAttachmentRefsIfPresent(tx, effectiveFormat, effectiveContent);
+    }
+
+    // Patch only the edit timestamp in Postgres so concurrent server-owned
+    // metadata transitions cannot be overwritten by a stale read of the row.
+    setClause.metadata = sql`jsonb_set(${messages.metadata}, '{editedAt}', ${JSON.stringify(
+      new Date().toISOString(),
+    )}::jsonb)`;
+
+    const [updated] = await tx.update(messages).set(setClause).where(eq(messages.id, messageId)).returning();
+    if (!updated) throw new Error("Unexpected: UPDATE RETURNING produced no row");
+    const nextAttachmentIds = new Set(legacyFileAttachmentIds(updated.format, updated.content));
+    return {
+      updated,
+      releasedAttachmentIds: [...new Set(previousAttachmentIds)].filter((id) => !nextAttachmentIds.has(id)),
+    };
+  });
+
+  await Promise.all(
+    releasedAttachmentIds.map(async (id) => {
+      try {
+        await deleteAttachmentIfUnreferenced(db, blobStore, id);
+      } catch (error) {
+        log.warn({ err: error, attachmentId: id, messageId }, "post-edit attachment cleanup will retry");
+      }
+    }),
+  );
   return updated;
 }
 

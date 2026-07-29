@@ -1,8 +1,8 @@
 import type {
+  ContextTreeSnapshot,
   SetupActionKind,
   SetupAutomaticReview,
   SetupBlocker,
-  SetupBlockerCode,
   SetupCapabilityHealth,
   SetupContextTreeBinding,
   SetupRepositoryAutomationProvider,
@@ -36,9 +36,13 @@ import { getTeamSetupCapabilitiesAt, setupCapabilitiesQueryKey } from "../../api
 import { useAuth } from "../../auth/auth-context.js";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { cn } from "../../lib/utils.js";
+import { isTeamNonActionableGitlabWebContext } from "../context-tree-availability.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
+import { ContextPersonalAccess } from "./context-enablement.js";
+import { setupBlockerCopy } from "./setup-blocker-copy.js";
 import { SetupContextTreeControls } from "./setup-context-tree-controls.js";
 import { SetupReviewerControls } from "./setup-reviewer-controls.js";
+import { SetupTeamAgentControls } from "./setup-team-agent-controls.js";
 
 type Fact<T> =
   | { state: "loading" }
@@ -51,7 +55,10 @@ type Fact<T> =
 type ContextTreeFact = {
   binding: SetupContextTreeBinding;
   availability: "active" | "stale" | "unavailable" | "checking" | "unknown" | null;
+  teamNonActionableGitlabWebContext: boolean;
 };
+
+type ContextTreeSnapshotFact = Pick<ContextTreeSnapshot, "snapshotStatus" | "provider" | "contentAvailability">;
 
 export type SetupStatusKind =
   | "ready"
@@ -74,11 +81,11 @@ export type SetupFacts = {
   computers: Fact<{ connected: number; saved: number; connectedHostname: string | null }>;
   repositories: Fact<number>;
   capabilities: Fact<TeamSetupCapabilities>;
-  contextTreeSnapshot: Fact<"active" | "stale" | "unavailable" | null>;
+  contextTreeSnapshot: Fact<ContextTreeSnapshotFact | null>;
 };
 
 export type SetupRowModel = {
-  key: "work-access" | "computer" | "agent" | "repositories" | "repository-automation" | "context-tree";
+  key: "work-access" | "computer" | "agent" | "repositories" | "repository-automation" | "team-agent" | "context-tree";
   title: string;
   description: string;
   icon: LucideIcon;
@@ -90,7 +97,7 @@ export type SetupRowModel = {
   action?: {
     label: string;
     to: string;
-    intent?: "resume-onboarding" | "open-context-tree-controls";
+    intent?: "resume-onboarding" | "open-context-tree-controls" | "open-team-agent-controls";
   };
 };
 
@@ -102,24 +109,37 @@ function queryFact<T>(query: { data: T | undefined; isPending: boolean; isError:
 
 function contextTreeFact(
   capabilities: Fact<TeamSetupCapabilities>,
-  snapshot: Fact<"active" | "stale" | "unavailable" | null>,
+  snapshot: Fact<ContextTreeSnapshotFact | null>,
 ): Fact<ContextTreeFact> {
   if (capabilities.state === "loading") return { state: "loading" };
   if (capabilities.state === "error") return { state: "error" };
 
   const binding = capabilities.value.contextTree.binding;
   if (binding.state !== "bound") {
-    return { state: "ready", value: { binding, availability: null } };
+    return {
+      state: "ready",
+      value: { binding, availability: null, teamNonActionableGitlabWebContext: false },
+    };
   }
   if (snapshot.state === "loading") {
-    return { state: "ready", value: { binding, availability: "checking" } };
+    return {
+      state: "ready",
+      value: { binding, availability: "checking", teamNonActionableGitlabWebContext: false },
+    };
   }
   if (snapshot.state === "error") {
-    return { state: "ready", value: { binding, availability: "unknown" } };
+    return {
+      state: "ready",
+      value: { binding, availability: "unknown", teamNonActionableGitlabWebContext: false },
+    };
   }
   return {
     state: "ready",
-    value: { binding, availability: snapshot.value ?? "unknown" },
+    value: {
+      binding,
+      availability: snapshot.value?.snapshotStatus ?? "unknown",
+      teamNonActionableGitlabWebContext: isTeamNonActionableGitlabWebContext(snapshot.value),
+    },
   };
 }
 
@@ -151,31 +171,6 @@ const PROVIDER_LABELS = {
   gitlab: "GitLab",
 } as const;
 
-const BLOCKER_COPY = {
-  provider_probe_failed: "First Tree could not verify provider readiness.",
-  github_app_not_configured: "GitHub automation is not configured for this First Tree deployment.",
-  github_app_suspended: "The GitHub App installation is suspended.",
-  github_webhook_events_missing: "Required GitHub App webhook events are missing.",
-  github_pull_requests_permission_required: "GitHub pull-request write access is required.",
-  github_tree_repo_not_covered: "The GitHub App cannot access this Context Tree repository.",
-  gitlab_webhook_not_seen: "Waiting for the first valid GitLab webhook.",
-  gitlab_merge_request_event_not_seen: "Waiting for the first valid GitLab merge request event.",
-  gitlab_processing_failed: "Recent GitLab webhook processing failed.",
-  context_tree_binding_invalid: "The Context Tree binding is invalid.",
-  context_tree_provider_unresolved: "The Context Tree provider could not be resolved.",
-  context_tree_connection_mismatch: "The Context Tree repository does not match the current GitLab connection.",
-  context_review_provider_prerequisite_missing: "The repository provider must be connected before review can run.",
-  context_review_assignment_required: "Choose a reviewer before enabling Automatic Review.",
-  context_review_no_eligible_agent: "No eligible organization-visible managed Agent is available.",
-  context_review_agent_missing: "The configured reviewer is missing.",
-  context_review_agent_inactive: "The configured reviewer is inactive.",
-  context_review_agent_manager_inactive: "The configured reviewer's manager is inactive.",
-  context_review_agent_private: "The configured reviewer is private and cannot run Automatic Review.",
-  context_review_agent_no_runtime: "The configured reviewer does not support Context Review.",
-  context_review_agent_runtime_unavailable: "The configured reviewer's runtime is currently unavailable.",
-  context_review_state_changed: "Reviewer settings changed while this request was in progress.",
-} satisfies Record<SetupBlockerCode, string>;
-
 const ACTION_DESTINATIONS = {
   connect_github: "/settings/integrations/github",
   manage_github_installation: "/settings/integrations/github",
@@ -187,6 +182,8 @@ const ACTION_DESTINATIONS = {
   replace_review_agent: "/settings/setup#context-tree",
   open_agent_owner_flow: "/team",
   manage_review_agent: "/settings/setup#context-tree",
+  configure_github_app: "/settings/integrations/github",
+  select_team_agent: "/settings/setup#team-agent",
 } satisfies Record<SetupActionKind, string>;
 
 const ACTION_LABELS = {
@@ -200,13 +197,15 @@ const ACTION_LABELS = {
   replace_review_agent: "Replace reviewer",
   open_agent_owner_flow: "Manage agents",
   manage_review_agent: "Manage reviewer",
+  configure_github_app: "Configure GitHub App",
+  select_team_agent: "Choose Team Agent",
 } satisfies Record<SetupActionKind, string>;
 
 function blockerDetail(blockers: SetupBlocker[], isAdmin: boolean): string | undefined {
   const details = blockers.map((item) =>
     !isAdmin && item.resolutionOwner === "admin"
-      ? `Ask an admin to resolve this: ${BLOCKER_COPY[item.code]}`
-      : BLOCKER_COPY[item.code],
+      ? `Ask an admin to resolve this: ${setupBlockerCopy(item.code)}`
+      : setupBlockerCopy(item.code),
   );
   const unique = [...new Set(details)];
   return unique.length > 0 ? unique.join(" · ") : undefined;
@@ -254,7 +253,24 @@ function providerSummary(providers: SetupRepositoryAutomationProvider[], isAdmin
 
   const ready = configured.filter((provider) => provider.health === "ready");
   const providerDetail = providers
-    .map((provider) => `${PROVIDER_LABELS[provider.provider]} ${providerHealthLabel(provider)}`)
+    .flatMap((provider) => {
+      const details = [`${PROVIDER_LABELS[provider.provider]} ${providerHealthLabel(provider)}`];
+      if (!provider.gitlabHookSources) return details;
+      if (provider.gitlabHookSources.legacyTransportObserved) {
+        details.push("GitLab webhook received · Hook source not yet identified");
+      }
+      if (provider.gitlabHookSources.project === "observed") {
+        details.push("GitLab Project Hook active");
+      }
+      if (provider.gitlabHookSources.system === "transport_received") {
+        details.push("GitLab System Hook waiting for an MR event");
+      } else if (provider.gitlabHookSources.system === "routing_verified") {
+        details.push("GitLab System Hook MR routing verified");
+      } else if (provider.gitlabHookSources.system === "needs_attention") {
+        details.push("GitLab System Hook needs attention");
+      }
+      return details;
+    })
     .join(" · ");
   const blockers = configured.flatMap((provider) => provider.blockers);
   const issues = blockerDetail(blockers, isAdmin);
@@ -317,7 +333,7 @@ function contextTreeStatus(
   if (contextTree.state === "loading") return loadingStatus();
   if (contextTree.state === "error") return unknownStatus();
 
-  const { binding, availability } = contextTree.value;
+  const { binding, availability, teamNonActionableGitlabWebContext } = contextTree.value;
   if (binding.state === "unbound") {
     return {
       label: "Not set up",
@@ -342,6 +358,13 @@ function contextTreeStatus(
   ].join(" · ");
   const issueDetail = blockerDetail(blockers, isAdmin);
   const detail = [bindingDetail, issueDetail].filter((item): item is string => Boolean(item)).join(" · ");
+  if (teamNonActionableGitlabWebContext) {
+    return {
+      label: "Connected",
+      detail: bindingDetail,
+      kind: "ready",
+    };
+  }
   if (availability === "active") return { label: "Available", detail, kind: "ready" };
   if (availability === "stale") return { label: "Available · update delayed", detail, kind: "pending" };
   if (availability === "unavailable") {
@@ -357,9 +380,13 @@ function contextTreeStatus(
   return { label: "Status unknown", detail, kind: "unknown" };
 }
 
-function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean): SetupRowModel["action"] | undefined {
+function contextTreeAction(
+  contextTree: Fact<ContextTreeFact>,
+  isAdmin: boolean,
+  personalContextAccessReady: boolean,
+): SetupRowModel["action"] | undefined {
   if (contextTree.state !== "ready") return undefined;
-  const { binding, availability } = contextTree.value;
+  const { binding, availability, teamNonActionableGitlabWebContext } = contextTree.value;
   if (binding.state === "unbound") {
     return isAdmin
       ? { label: "Set up", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
@@ -368,6 +395,14 @@ function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean)
   if (binding.state === "invalid") {
     return isAdmin
       ? { label: "Repair", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
+      : { label: "View", to: "/context" };
+  }
+  if (!isAdmin && personalContextAccessReady) {
+    return { label: "Access", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" };
+  }
+  if (teamNonActionableGitlabWebContext) {
+    return isAdmin
+      ? { label: "Manage", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
       : { label: "View", to: "/context" };
   }
   if (availability === "unavailable") {
@@ -520,6 +555,12 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
 
   const capabilities = facts.capabilities.state === "ready" ? facts.capabilities.value : null;
   const contextTree = contextTreeFact(facts.capabilities, facts.contextTreeSnapshot);
+  const personalContextAccessReady =
+    (facts.role === "admin" || facts.role === "member") &&
+    facts.repositories.state === "ready" &&
+    facts.repositories.value > 0 &&
+    contextTree.state === "ready" &&
+    contextTree.value.binding.state === "bound";
   const repositoryAutomationStatus =
     facts.capabilities.state === "loading"
       ? loadingStatus()
@@ -609,6 +650,20 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
       action: capabilities ? providerAction(capabilities.repositoryAutomation.providers, isAdmin) : undefined,
     },
     {
+      key: "team-agent",
+      title: "Team Agent",
+      description: "Handles GitHub App requests outside the Context Tree repository.",
+      icon: Bot,
+      status: {
+        label: "Optional",
+        detail: "Configured independently from Context Review",
+        kind: "optional",
+      },
+      action: isAdmin
+        ? { label: "Manage", to: "/settings/setup#team-agent", intent: "open-team-agent-controls" }
+        : undefined,
+    },
+    {
       key: "context-tree",
       title: "Context Tree",
       description: "Shared decisions and constraints available to agents.",
@@ -618,7 +673,7 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
         automaticReviewStatus,
         capabilities ? reviewDiagnosticDetail(capabilities.contextTree.automaticReview, isAdmin) : undefined,
       ),
-      action: contextTreeAction(contextTree, isAdmin),
+      action: contextTreeAction(contextTree, isAdmin, personalContextAccessReady),
     },
   ];
 }
@@ -678,7 +733,14 @@ export function SettingsSetupPage() {
       ? { state: "loading" }
       : contextSnapshotQuery.isError || !contextSnapshotQuery.data
         ? { state: "error" }
-        : { state: "ready", value: contextSnapshotQuery.data.snapshotStatus };
+        : {
+            state: "ready",
+            value: {
+              snapshotStatus: contextSnapshotQuery.data.snapshotStatus,
+              provider: contextSnapshotQuery.data.provider,
+              contentAvailability: contextSnapshotQuery.data.contentAvailability,
+            },
+          };
 
   const facts: SetupFacts = {
     role,
@@ -724,6 +786,12 @@ export function SettingsSetupPage() {
   };
 
   const contextTree = contextTreeFact(capabilities, contextTreeSnapshot);
+  const personalContextAccessReady =
+    (role === "admin" || role === "member") &&
+    facts.repositories.state === "ready" &&
+    facts.repositories.value > 0 &&
+    contextTree.state === "ready" &&
+    contextTree.value.binding.state === "bound";
   const expandedOwnerControlKey =
     expandedOwnerControl?.organizationId === organizationId ? expandedOwnerControl.key : null;
 
@@ -736,46 +804,108 @@ export function SettingsSetupPage() {
   }, [organizationId]);
 
   useEffect(() => {
-    const key = location.hash === "#context-tree" || location.hash === "#automatic-review" ? "context-tree" : null;
+    const key =
+      location.hash === "#context-tree" || location.hash === "#automatic-review"
+        ? "context-tree"
+        : location.hash === "#team-agent"
+          ? "team-agent"
+          : null;
     if (!key || !organizationId || facts.capabilities.state !== "ready") return;
 
     const hashKey = `${organizationId}:${location.hash}`;
     if (handledOwnerHash.current === hashKey) return;
+    const canOpenForHash = role === "admin" || (location.hash === "#context-tree" && personalContextAccessReady);
+    if (!canOpenForHash) return;
     handledOwnerHash.current = hashKey;
-    if (role === "admin") setExpandedOwnerControl({ organizationId, key });
-  }, [facts.capabilities.state, location.hash, organizationId, role]);
+    setExpandedOwnerControl({ organizationId, key });
+  }, [facts.capabilities.state, location.hash, organizationId, personalContextAccessReady, role]);
 
   useEffect(() => {
-    const key = location.hash === "#context-tree" || location.hash === "#automatic-review" ? "context-tree" : null;
+    const key =
+      location.hash === "#context-tree" || location.hash === "#automatic-review"
+        ? "context-tree"
+        : location.hash === "#team-agent"
+          ? "team-agent"
+          : null;
     if (!key || facts.capabilities.state !== "ready") return;
-    if (role === "admin" && expandedOwnerControlKey !== key) return;
+    const canOpenForHash = role === "admin" || (location.hash === "#context-tree" && personalContextAccessReady);
+    if (canOpenForHash && expandedOwnerControlKey !== key) return;
 
     const row = document.getElementById(key);
     row?.scrollIntoView?.({ block: "start" });
     row?.focus();
-  }, [expandedOwnerControlKey, facts.capabilities.state, location.hash, role]);
+  }, [expandedOwnerControlKey, facts.capabilities.state, location.hash, personalContextAccessReady, role]);
 
   const ownerControls: Partial<Record<SetupRowModel["key"], ReactNode>> =
-    role !== "admin" || facts.capabilities.state !== "ready"
+    facts.capabilities.state !== "ready"
       ? {}
       : {
+          ...(expandedOwnerControlKey === "team-agent"
+            ? {
+                "team-agent": <SetupTeamAgentControls key={`team-agent-${organizationId}`} />,
+              }
+            : {}),
           ...(expandedOwnerControlKey === "context-tree" && contextTree.state === "ready"
             ? {
-                "context-tree": (
-                  <SetupContextTreeControls
-                    key={`context-tree-${organizationId}`}
-                    binding={contextTree.value.binding}
-                    availability={contextTree.value.availability}
-                  >
-                    {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
-                      <SetupReviewerControls
-                        key={`automatic-review-${organizationId}`}
-                        review={facts.capabilities.value.contextTree.automaticReview}
-                        embedded
-                      />
-                    ) : null}
-                  </SetupContextTreeControls>
-                ),
+                "context-tree":
+                  role === "admin" ? (
+                    <SetupContextTreeControls
+                      key={`context-tree-${organizationId}`}
+                      binding={contextTree.value.binding}
+                      availability={contextTree.value.availability}
+                      teamNonActionableGitlabWebContext={contextTree.value.teamNonActionableGitlabWebContext}
+                    >
+                      {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ||
+                      personalContextAccessReady ? (
+                        <div className="flex flex-col">
+                          {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
+                            <SetupReviewerControls
+                              key={`automatic-review-${organizationId}`}
+                              review={facts.capabilities.value.contextTree.automaticReview}
+                              embedded
+                            />
+                          ) : null}
+                          {personalContextAccessReady && organizationId ? (
+                            <div
+                              style={{
+                                marginTop:
+                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                    ? "var(--sp-4)"
+                                    : undefined,
+                                paddingTop:
+                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                    ? "var(--sp-4)"
+                                    : undefined,
+                                borderTop:
+                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                    ? "var(--hairline) solid var(--border-faint)"
+                                    : undefined,
+                              }}
+                            >
+                              <ContextPersonalAccess organizationId={organizationId} />
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </SetupContextTreeControls>
+                  ) : role === "member" && personalContextAccessReady && organizationId ? (
+                    <div
+                      data-setup-owner-controls="context-tree"
+                      style={{
+                        padding: "var(--sp-4)",
+                        border: "var(--hairline) solid var(--border)",
+                        borderRadius: "var(--radius-panel)",
+                        background: "var(--bg-sunken)",
+                      }}
+                    >
+                      <div className="flex justify-end" style={{ marginBottom: "var(--sp-3)" }}>
+                        <Link className="text-label font-medium text-primary hover:underline" to="/context">
+                          Open Context →
+                        </Link>
+                      </div>
+                      <ContextPersonalAccess organizationId={organizationId} />
+                    </div>
+                  ) : null,
               }
             : {}),
         };
@@ -937,7 +1067,8 @@ function SetupRow({
         className={cn("flex", !narrow && "justify-end")}
         style={narrow ? { paddingLeft: "var(--sp-11)" } : undefined}
       >
-        {row.action?.intent === "open-context-tree-controls" && onToggleOwnerControl ? (
+        {(row.action?.intent === "open-context-tree-controls" || row.action?.intent === "open-team-agent-controls") &&
+        onToggleOwnerControl ? (
           <button
             type="button"
             aria-expanded={Boolean(ownerControl)}

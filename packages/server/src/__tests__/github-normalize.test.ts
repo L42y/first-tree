@@ -85,6 +85,233 @@ describe("normalizeGithubWebhook", () => {
   });
 });
 
+describe("normalizeGithubEvent — requester authority", () => {
+  it.each([
+    [
+      "pull_request",
+      {
+        action: "opened",
+        pull_request: {
+          number: 1,
+          title: "PR",
+          html_url: "https://github.com/owner/repo/pull/1",
+          body: "@first-tree-test",
+          author_association: "MEMBER",
+        },
+      },
+    ],
+    [
+      "pull_request_review",
+      {
+        action: "submitted",
+        pull_request: { number: 1, title: "PR", html_url: "https://github.com/owner/repo/pull/1" },
+        review: {
+          body: "@first-tree-test",
+          html_url: "https://github.com/owner/repo/pull/1#review",
+          author_association: "OWNER",
+        },
+      },
+    ],
+    [
+      "pull_request_review_comment",
+      {
+        action: "created",
+        pull_request: { number: 1, title: "PR", html_url: "https://github.com/owner/repo/pull/1" },
+        comment: {
+          body: "@first-tree-test",
+          html_url: "https://github.com/owner/repo/pull/1#discussion",
+          author_association: "COLLABORATOR",
+        },
+      },
+    ],
+    [
+      "issue_comment",
+      {
+        action: "created",
+        issue: { number: 2, title: "Issue", html_url: "https://github.com/owner/repo/issues/2" },
+        comment: {
+          body: "@first-tree-test",
+          html_url: "https://github.com/owner/repo/issues/2#comment",
+          author_association: "MEMBER",
+        },
+      },
+    ],
+    [
+      "issues",
+      {
+        action: "opened",
+        issue: {
+          number: 2,
+          title: "Issue",
+          html_url: "https://github.com/owner/repo/issues/2",
+          body: "@first-tree-test",
+          author_association: "OWNER",
+        },
+      },
+    ],
+    [
+      "discussion",
+      {
+        action: "created",
+        discussion: {
+          number: 3,
+          title: "Discussion",
+          html_url: "https://github.com/owner/repo/discussions/3",
+          body: "@first-tree-test",
+          author_association: "MEMBER",
+        },
+      },
+    ],
+    [
+      "discussion_comment",
+      {
+        action: "created",
+        discussion: {
+          number: 3,
+          title: "Discussion",
+          html_url: "https://github.com/owner/repo/discussions/3",
+        },
+        comment: {
+          body: "@first-tree-test",
+          html_url: "https://github.com/owner/repo/discussions/3#comment",
+          author_association: "COLLABORATOR",
+        },
+      },
+    ],
+    [
+      "commit_comment",
+      {
+        action: "created",
+        comment: {
+          body: "@first-tree-test",
+          html_url: "https://github.com/owner/repo/commit/abc#comment",
+          commit_id: "abc123",
+          author_association: "MEMBER",
+        },
+      },
+    ],
+  ] as const)("preserves author_association for %s text surfaces", (eventType, payload) => {
+    const event = normalize(eventType, {
+      ...payload,
+      sender: senderUser,
+      repository,
+    });
+    expect(event).not.toBeNull();
+    expect(event?.actor.authorAssociation).toMatch(/^(OWNER|MEMBER|COLLABORATOR)$/u);
+  });
+});
+
+describe("normalizeGithubEvent — edited mention deltas", () => {
+  const editedSurfaces = [
+    {
+      label: "pull_request",
+      eventType: "pull_request",
+      payload: (body: string) => ({
+        pull_request: { number: 101, title: "PR", html_url: "https://github.com/owner/repo/pull/101", body },
+      }),
+    },
+    {
+      label: "pull_request_review",
+      eventType: "pull_request_review",
+      payload: (body: string) => ({
+        pull_request: { number: 102, title: "PR", html_url: "https://github.com/owner/repo/pull/102" },
+        review: { body, html_url: "https://github.com/owner/repo/pull/102#review" },
+      }),
+    },
+    {
+      label: "pull_request_review_comment",
+      eventType: "pull_request_review_comment",
+      payload: (body: string) => ({
+        pull_request: { number: 103, title: "PR", html_url: "https://github.com/owner/repo/pull/103" },
+        comment: { body, html_url: "https://github.com/owner/repo/pull/103#discussion" },
+      }),
+    },
+    {
+      label: "issue_comment",
+      eventType: "issue_comment",
+      payload: (body: string) => ({
+        issue: { number: 104, title: "Issue", html_url: "https://github.com/owner/repo/issues/104" },
+        comment: { body, html_url: "https://github.com/owner/repo/issues/104#comment" },
+      }),
+    },
+    {
+      label: "issues",
+      eventType: "issues",
+      payload: (body: string) => ({
+        issue: { number: 105, title: "Issue", html_url: "https://github.com/owner/repo/issues/105", body },
+      }),
+    },
+    {
+      label: "discussion",
+      eventType: "discussion",
+      payload: (body: string) => ({
+        discussion: {
+          number: 106,
+          title: "Discussion",
+          html_url: "https://github.com/owner/repo/discussions/106",
+          body,
+        },
+      }),
+    },
+    {
+      label: "discussion_comment",
+      eventType: "discussion_comment",
+      payload: (body: string) => ({
+        discussion: {
+          number: 107,
+          title: "Discussion",
+          html_url: "https://github.com/owner/repo/discussions/107",
+        },
+        comment: { body, html_url: "https://github.com/owner/repo/discussions/107#comment" },
+      }),
+    },
+  ] as const;
+
+  it.each(editedSurfaces)("$label only targets mentions introduced by this body edit", (surface) => {
+    const edit = (body: string, changes: Record<string, unknown> | undefined) =>
+      normalize(surface.eventType, {
+        action: "edited",
+        sender: senderUser,
+        repository,
+        ...surface.payload(body),
+        ...(changes ? { changes } : {}),
+      });
+
+    expect(edit("still assigned to @first-tree-test", { title: { from: "Old title" } })?.targets).toEqual([]);
+    expect(edit("still assigned to @first-tree-test", { body: { from: 42 } })?.targets).toEqual([]);
+    expect(
+      edit("updated wording for @first-tree-test", {
+        body: { from: "old wording for @first-tree-test" },
+      })?.targets,
+    ).toEqual([]);
+    expect(
+      edit("updated wording for @first-tree-test", {
+        body: { from: "old wording without the App mention" },
+      })?.targets,
+    ).toEqual([{ externalUsername: "first-tree-test", reason: "mentioned" }]);
+    expect(edit("@first-tree-test do it", { body: { from: "" } })?.targets).toEqual([
+      { externalUsername: "first-tree-test", reason: "mentioned" },
+    ]);
+  });
+
+  it("never promotes a dismissed review's retained body mention", () => {
+    const event = normalize("pull_request_review", {
+      action: "dismissed",
+      sender: senderUser,
+      repository,
+      pull_request: { number: 108, title: "PR", html_url: "https://github.com/owner/repo/pull/108" },
+      review: {
+        body: "retained @first-tree-test",
+        html_url: "https://github.com/owner/repo/pull/108#review",
+      },
+      changes: { body: { from: "before dismissal" } },
+    });
+
+    expect(event?.kind).toBe("reviewed");
+    expect(event?.targets).toEqual([]);
+  });
+});
+
 describe("normalizeGithubEvent — pull_request", () => {
   it("opened: kind=opened with mentions + assignees + relatedRefs (reviewers deliberately excluded; see review_requested)", () => {
     const event = normalize("pull_request", {
@@ -118,7 +345,7 @@ describe("normalizeGithubEvent — pull_request", () => {
       { externalUsername: "bob", reason: "mentioned" },
     ]);
     expect(event.relatedRefs).toEqual([{ type: "issue", key: "owner/repo#42" }]);
-    expect(event.actor).toEqual({ externalUsername: "alice", isBot: false });
+    expect(event.actor).toEqual({ externalUsername: "alice", isBot: false, authorAssociation: null });
     expect(event.eventType).toBe("pull_request");
     expect(event.action).toBe("opened");
     expect(event).toMatchObject({
@@ -190,6 +417,7 @@ describe("normalizeGithubEvent — pull_request", () => {
         number: 11,
         body: "Updated notes for @Bob and @bob.",
       },
+      changes: { body: { from: "Original notes." } },
     });
 
     expect(event?.kind).toBe("edited");
@@ -411,6 +639,7 @@ describe("normalizeGithubEvent — pull_request_review / review_comment", () => 
       repository,
       pull_request: { number: 10 },
       comment: { body: "follow-up @Erin" },
+      changes: { body: { from: "follow-up" } },
     });
 
     expect(event?.kind).toBe("review_comment");
@@ -505,6 +734,7 @@ describe("normalizeGithubEvent — issue_comment (Bug 3 core fix)", () => {
       repository,
       issue: { number: 43 },
       comment: { body: "updated @Carol" },
+      changes: { body: { from: "updated" } },
     });
 
     expect(event?.kind).toBe("commented");
@@ -597,6 +827,7 @@ describe("normalizeGithubEvent — issues", () => {
         html_url: "https://github.com/owner/repo/issues/42",
         body: "new details @Bob",
       },
+      changes: { body: { from: "old details" } },
     });
     expect(edited?.kind).toBe("edited");
     expect(edited?.surface.title).toBe("Issue #42");
@@ -674,6 +905,7 @@ describe("normalizeGithubEvent — discussion / discussion_comment / commit_comm
       sender: senderUser,
       repository,
       discussion: { number: 9, body: "updated @Carol" },
+      changes: { body: { from: "original" } },
     });
     expect(edited?.kind).toBe("edited");
     expect(edited?.surface.title).toBe("Discussion #9");
@@ -746,6 +978,7 @@ describe("normalizeGithubEvent — discussion / discussion_comment / commit_comm
       repository,
       discussion: { number: 9 },
       comment: { body: "edit @Dave" },
+      changes: { body: { from: "edit" } },
     });
 
     expect(event?.kind).toBe("commented");
@@ -944,7 +1177,11 @@ describe("normalizeGithubEvent — out-of-scope event types & malformed payloads
       },
     });
     expect(event).not.toBeNull();
-    expect(event?.actor).toEqual({ externalUsername: "dependabot[bot]", isBot: true });
+    expect(event?.actor).toEqual({
+      externalUsername: "dependabot[bot]",
+      isBot: true,
+      authorAssociation: null,
+    });
     expect(event?.targets).toEqual([]);
   });
 });

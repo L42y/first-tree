@@ -14,7 +14,7 @@ vi.mock("../cli/output.js", () => ({
 }));
 
 describe("agent config CLI registration (Step 8)", () => {
-  it("registers all 9 subcommands under `config`", () => {
+  it("registers all 10 subcommands under `config`", () => {
     const root = new Command();
     const agent = root.command("agent");
     registerAgentConfigCommands(agent);
@@ -31,6 +31,7 @@ describe("agent config CLI registration (Step 8)", () => {
       "set-env",
       "set-model",
       "set-reasoning-effort",
+      "set-service-tier",
       "show",
     ]);
   });
@@ -73,6 +74,19 @@ describe("agent config CLI registration (Step 8)", () => {
 
     expect(reasoningEffort?.description()).toContain("xhigh | max | ultra");
     expect(reasoningEffort?.description()).toContain("model-dependent");
+  });
+
+  it("documents the Codex Fast service tier", () => {
+    const root = new Command();
+    const agent = root.command("agent");
+    registerAgentConfigCommands(agent);
+    const serviceTier = agent.commands
+      .find((c) => c.name() === "config")
+      ?.commands.find((c) => c.name() === "set-service-tier");
+
+    expect(serviceTier?.description()).toContain("default = Standard");
+    expect(serviceTier?.description()).toContain("fast = Fast");
+    expect(serviceTier?.description()).toContain("provider-advertised");
   });
 
   it("add-mcp accepts --transport / --command / --url / --args", () => {

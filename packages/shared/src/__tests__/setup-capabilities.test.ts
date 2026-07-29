@@ -31,6 +31,11 @@ function validCapabilities(): TeamSetupCapabilities {
           health: "not_observed",
           blockers: [],
           observedAt,
+          gitlabHookSources: {
+            legacyTransportObserved: false,
+            system: "unobserved",
+            project: "unobserved",
+          },
         },
       ],
     },
@@ -71,6 +76,7 @@ describe("TeamSetupCapabilities public contract", () => {
     expect(setupBlockerCodeSchema.parse("gitlab_merge_request_event_not_seen")).toBe(
       "gitlab_merge_request_event_not_seen",
     );
+    expect(setupBlockerCodeSchema.parse("gitlab_hook_source_not_identified")).toBe("gitlab_hook_source_not_identified");
     expect(gitlabConnectionReadinessSchema.parse(GITLAB_CONNECTION_READINESS.routingVerified)).toBe(
       GITLAB_CONNECTION_READINESS.routingVerified,
     );
@@ -118,6 +124,12 @@ describe("TeamSetupCapabilities public contract", () => {
       setupRepositoryAutomationProviderSchema.safeParse({
         ...value.repositoryAutomation.providers[0],
         observedAt: "yesterday",
+      }).success,
+    ).toBe(false);
+    expect(
+      setupRepositoryAutomationProviderSchema.safeParse({
+        ...value.repositoryAutomation.providers[0],
+        gitlabHookSources: value.repositoryAutomation.providers[1]?.gitlabHookSources,
       }).success,
     ).toBe(false);
   });

@@ -6,14 +6,17 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../../api/client.js";
 import { buildSetupRows, SettingsSetupPage, type SetupFacts, SetupOverview } from "../setup.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-const activityMocks = vi.hoisted(() => ({ listClients: vi.fn() }));
+const activityMocks = vi.hoisted(() => ({ generateConnectToken: vi.fn(), listClients: vi.fn() }));
 const contextTreeMocks = vi.hoisted(() => ({ getContextTreeSnapshot: vi.fn() }));
+const contextEnablementMocks = vi.hoisted(() => ({ getContextEnablementHandoff: vi.fn() }));
 const onboardingEventMocks = vi.hoisted(() => ({ reportOnboardingEvent: vi.fn() }));
 const orgSettingsMocks = vi.hoisted(() => ({
+  getGithubFeaturesSetting: vi.fn(),
   getRawContextTreeSetting: vi.fn(),
   putContextTreeSetting: vi.fn(),
 }));
@@ -22,6 +25,10 @@ const reviewerMocks = vi.hoisted(() => ({
   getContextReviewerCandidates: vi.fn(),
   putContextReviewerAssignment: vi.fn(),
   putContextReviewerEnablement: vi.fn(),
+}));
+const teamAgentMocks = vi.hoisted(() => ({
+  getTeamAgentCandidates: vi.fn(),
+  putTeamAgentAssignment: vi.fn(),
 }));
 const setupCapabilityMocks = vi.hoisted(() => ({ getTeamSetupCapabilitiesAt: vi.fn() }));
 const authMock = vi.hoisted(() => ({
@@ -41,10 +48,12 @@ const authMock = vi.hoisted(() => ({
 
 vi.mock("../../../api/activity.js", () => activityMocks);
 vi.mock("../../../api/context-tree.js", () => contextTreeMocks);
+vi.mock("../../../api/context-enablement.js", () => contextEnablementMocks);
 vi.mock("../../../api/context-reviewer-settings.js", () => reviewerMocks);
 vi.mock("../../../api/onboarding-events.js", () => onboardingEventMocks);
 vi.mock("../../../api/org-settings.js", () => orgSettingsMocks);
 vi.mock("../../../api/resources.js", () => resourceMocks);
+vi.mock("../../../api/team-agent-settings.js", () => teamAgentMocks);
 vi.mock("../../../api/setup-capabilities.js", () => ({
   ...setupCapabilityMocks,
   setupCapabilitiesQueryKey: (organizationId: string | null) => ["setup-capabilities", organizationId],
@@ -127,7 +136,7 @@ function facts(overrides: Partial<SetupFacts> = {}): SetupFacts {
     },
     repositories: { state: "ready", value: 2 },
     capabilities: { state: "ready", value: capabilityFixture() },
-    contextTreeSnapshot: { state: "ready", value: "active" },
+    contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "active" } },
     ...overrides,
   };
 }
@@ -211,6 +220,15 @@ async function waitForSelector<T extends Element>(host: ParentNode, selector: st
   throw new Error(`Expected selector "${selector}"`);
 }
 
+async function waitForText(host: ParentNode, expected: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (host.textContent?.includes(expected)) return;
+    await flush();
+  }
+  throw new Error(`Expected content to include "${expected}"`);
+}
+
 async function openContextTreeControls(view: Awaited<ReturnType<typeof renderSettingsSetupPage>>) {
   const tree = await waitForRowText(view.host, "context-tree", "Available");
   const manage = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -225,9 +243,28 @@ async function openContextTreeControls(view: Awaited<ReturnType<typeof renderSet
   return { tree, manage, controls, reviewerControls };
 }
 
+async function openTeamAgentControls(view: Awaited<ReturnType<typeof renderSettingsSetupPage>>) {
+  const row = await waitForRowText(view.host, "team-agent", "Optional");
+  const manage = [...row.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Manage",
+  );
+  await act(async () => manage?.click());
+  const controls = await waitForSelector<HTMLElement>(row, '[data-setup-owner-controls="team-agent"]');
+  return { row, manage, controls };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   activityMocks.listClients.mockResolvedValue([]);
+  activityMocks.generateConnectToken.mockResolvedValue({
+    bootstrapCommand: "first-tree-dev login short-lived-code",
+    installerUrl: null,
+    binName: "first-tree-dev",
+  });
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn(async () => undefined) },
+  });
   resourceMocks.listTeamResourcesForOrg.mockResolvedValue([]);
   orgSettingsMocks.getRawContextTreeSetting.mockResolvedValue({
     repo: "https://github.com/acme/context-tree.git",
@@ -238,6 +275,12 @@ beforeEach(() => {
     repo: "https://github.com/acme/context-tree.git",
     branch: "release",
     provider: "github",
+  });
+  orgSettingsMocks.getGithubFeaturesSetting.mockResolvedValue({
+    teamAgent: {
+      agentUuid: "team-agent-1",
+      agent: { uuid: "team-agent-1", name: "team-agent", displayName: "Team Agent One" },
+    },
   });
   reviewerMocks.getContextReviewerCandidates.mockResolvedValue({
     items: [
@@ -265,10 +308,36 @@ beforeEach(() => {
       reviewerAgent: { uuid: "reviewer-1", name: "context-reviewer", displayName: "Context Reviewer" },
     },
   });
+  teamAgentMocks.getTeamAgentCandidates.mockResolvedValue({
+    items: [
+      {
+        uuid: "team-agent-1",
+        name: "team-agent",
+        displayName: "Team Agent One",
+        visibility: "organization",
+        runtime: { health: "ready", blockers: [] },
+      },
+    ],
+    blockers: [],
+  });
+  teamAgentMocks.putTeamAgentAssignment.mockResolvedValue({
+    teamAgent: {
+      agentUuid: "team-agent-1",
+      agent: { uuid: "team-agent-1", name: "team-agent", displayName: "Team Agent One" },
+    },
+  });
   setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(capabilityFixture());
   contextTreeMocks.getContextTreeSnapshot.mockResolvedValue({
     snapshotStatus: "active",
     contextStatus: { severity: "ok", label: "Available", detail: null },
+  });
+  contextEnablementMocks.getContextEnablementHandoff.mockResolvedValue({
+    organizationId: "org-1",
+    teamDisplayName: "Acme",
+    role: "admin",
+    provider: "claude-code",
+    command: "first-tree-dev context enable --provider claude-code --team org-1",
+    workingDirectoryInstruction: "Run this from the target repository.",
   });
   authMock.value = {
     role: "admin",
@@ -299,6 +368,7 @@ describe("Settings Setup overview", () => {
       "Your agent",
       "Code repositories",
       "Repository automation",
+      "Team Agent",
       "Context Tree",
     ]);
     expect(view.host.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
@@ -337,7 +407,7 @@ describe("Settings Setup overview", () => {
         computers: { state: "ready", value: { connected: 0, saved: 0, connectedHostname: null } },
         repositories: { state: "error" },
         capabilities: { state: "ready", value: mixed },
-        contextTreeSnapshot: { state: "ready", value: "stale" },
+        contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "stale" } },
       }),
     );
     const expectation = [
@@ -483,6 +553,11 @@ describe("Settings Setup overview", () => {
       gitlab: {
         adoption: "configuring",
         health: "pending_verification",
+        gitlabHookSources: {
+          legacyTransportObserved: false,
+          system: "transport_received",
+          project: "observed",
+        },
         blockers: [
           {
             code: "gitlab_merge_request_event_not_seen",
@@ -502,11 +577,44 @@ describe("Settings Setup overview", () => {
     );
 
     expect(admin.status).toMatchObject({ label: "Verification pending", kind: "attention" });
-    expect(admin.status.detail).toContain("Waiting for the first valid GitLab merge request event.");
+    expect(admin.status.detail).toContain("GitLab Project Hook active");
+    expect(admin.status.detail).toContain("GitLab System Hook waiting for an MR event");
+    expect(admin.status.detail).toContain("Waiting for a valid Merge Request event from the System Hook.");
     expect(admin.action).toEqual({ label: "Set up GitLab", to: "/settings/integrations/gitlab" });
     expect(member.status).toMatchObject({ label: "Verification pending", kind: "pending" });
     expect(member.status.detail).toContain("Ask an admin");
     expect(member.action).toBeUndefined();
+  });
+
+  it("keeps historical GitLab transport neutral until a configured Hook identifies its source", () => {
+    const capabilities = capabilityFixture({
+      github: { adoption: "available", health: "not_observed" },
+      gitlab: {
+        adoption: "configuring",
+        health: "pending_verification",
+        gitlabHookSources: {
+          legacyTransportObserved: true,
+          system: "unobserved",
+          project: "unobserved",
+        },
+        blockers: [
+          {
+            code: "gitlab_hook_source_not_identified",
+            resolutionOwner: "admin",
+            actionKind: "configure_gitlab_webhook",
+          },
+        ],
+      },
+    });
+    const admin = rowFor(
+      "repository-automation",
+      facts({ role: "admin", capabilities: { state: "ready", value: capabilities } }),
+    );
+
+    expect(admin.status).toMatchObject({ label: "Verification pending", kind: "attention" });
+    expect(admin.status.detail).toContain("GitLab webhook received · Hook source not yet identified");
+    expect(admin.status.detail).toContain("Trigger an enabled event from the configured Hook.");
+    expect(admin.status.detail).not.toContain("System Hook waiting");
   });
 
   it("routes GitLab processing recovery for both adopted capabilities to the owner surface", () => {
@@ -547,7 +655,11 @@ describe("Settings Setup overview", () => {
       kind: "attention",
     });
     expect(rowFor("repository-automation", memberFacts).action).toBeUndefined();
-    expect(rowFor("context-tree", memberFacts).action).toEqual({ label: "View", to: "/context" });
+    expect(rowFor("context-tree", memberFacts).action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("turns the same Team blocker into admin attention and member read-only explanation", () => {
@@ -600,11 +712,69 @@ describe("Settings Setup overview", () => {
     ["stale", "Available · update delayed", "pending", "Manage", "acme/context-tree · Review on"],
     ["unavailable", "Needs recovery", "attention", "Recover", "acme/context-tree · main branch · GitHub"],
   ] as const)("maps bound Context Tree snapshot %s without equating binding to health", (value, label, kind, action, detail) => {
-    const row = rowFor("context-tree", facts({ contextTreeSnapshot: { state: "ready", value } }));
+    const row = rowFor(
+      "context-tree",
+      facts({ contextTreeSnapshot: { state: "ready", value: { snapshotStatus: value } } }),
+    );
 
     expect(row.status).toMatchObject({ label, kind });
     expect(row.status.detail).toBe(detail);
     expect(row.action?.label).toBe(action);
+  });
+
+  it.each([
+    "gitlab_authentication_required",
+    "gitlab_origin_not_authorized",
+    "gitlab_dns_unavailable",
+    "gitlab_address_not_authorized",
+    "gitlab_egress_denied",
+  ] as const)("keeps non-actionable GitLab preview status out of Setup for %s", (reason) => {
+    const capabilities = capabilityFixture({
+      binding: {
+        state: "bound",
+        provider: "gitlab",
+        repo: "https://gitlab.example/acme/context-tree.git",
+        branch: "main",
+      },
+    });
+    const privateGitlabSnapshot = {
+      snapshotStatus: "unavailable",
+      provider: "gitlab",
+      contentAvailability: {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason,
+      },
+    } as const;
+    const admin = rowFor(
+      "context-tree",
+      facts({
+        capabilities: { state: "ready", value: capabilities },
+        contextTreeSnapshot: { state: "ready", value: privateGitlabSnapshot },
+      }),
+    );
+    const member = rowFor(
+      "context-tree",
+      facts({
+        role: "member",
+        capabilities: { state: "ready", value: capabilities },
+        contextTreeSnapshot: { state: "ready", value: privateGitlabSnapshot },
+      }),
+    );
+
+    for (const row of [admin, member]) {
+      expect(row.status).toEqual({
+        label: "Connected",
+        kind: "ready",
+        detail: "acme/context-tree · Review on",
+      });
+    }
+    expect(admin.action?.label).toBe("Manage");
+    expect(member.action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("keeps unbound optional and invalid role-aware", () => {
@@ -674,18 +844,22 @@ describe("Settings Setup overview", () => {
     expect(invalidMember.action).toEqual({ label: "View", to: "/context" });
   });
 
-  it("keeps bound Context Tree recovery read-only and explicit for a member", () => {
+  it("keeps Team recovery read-only while preserving Member personal Context access", () => {
     const row = rowFor(
       "context-tree",
       facts({
         role: "member",
-        contextTreeSnapshot: { state: "ready", value: "unavailable" },
+        contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "unavailable" } },
       }),
     );
 
     expect(row.status).toMatchObject({ label: "Unavailable", kind: "blocked" });
     expect(row.status.detail).toContain("Ask an admin to recover");
-    expect(row.action).toEqual({ label: "View", to: "/context" });
+    expect(row.action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("keeps snapshot lookup failure unknown rather than claiming recovery is needed", () => {
@@ -794,7 +968,11 @@ describe("Settings Setup overview", () => {
     expect(member.status).toMatchObject({ label: "Review service unavailable", kind: "blocked" });
     expect(member.status.detail).toContain("Ask an admin to resolve this: The configured reviewer is missing.");
     expect(member.status.detail).toContain("Context Tree available");
-    expect(member.action).toEqual({ label: "View", to: "/context" });
+    expect(member.action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("uses the Team projection and only asks the snapshot owner endpoint for a bound tree", async () => {
@@ -829,6 +1007,128 @@ describe("Settings Setup overview", () => {
     await act(async () => manage?.click());
     expect(manage?.getAttribute("aria-expanded")).toBe("false");
     expect(view.host.querySelector('[data-setup-owner-controls="context-tree"]')).toBeNull();
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("nests optional personal coding-agent access under a bound Context Tree without assuming this browser's Computer", async () => {
+    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
+      {
+        type: "repo",
+        status: "active",
+      },
+    ]);
+    contextEnablementMocks.getContextEnablementHandoff.mockImplementation(
+      async (_organizationId: string, provider: "claude-code" | "codex") => ({
+        organizationId: "org-1",
+        teamDisplayName: "Acme",
+        role: "admin",
+        provider,
+        command: `first-tree-dev context enable --provider ${provider} --team org-1`,
+        workingDirectoryInstruction: "Run this from the target repository.",
+      }),
+    );
+
+    const view = await renderSettingsSetupPage();
+    expect(view.host.querySelector("#context-access")).toBeNull();
+    const { controls } = await openContextTreeControls(view);
+    const personalAccess = await waitForSelector<HTMLElement>(controls, "[data-setup-personal-access]");
+
+    expect(personalAccess.textContent).toContain("Use Team Context in Claude Code or Codex");
+    expect(personalAccess.textContent).toContain("Open the project you want to use with Team Context");
+    expect(personalAccess.textContent).toContain("Copy setup prompt");
+    expect(personalAccess.textContent).toContain("Preview prompt");
+    expect(personalAccess.textContent).not.toContain("context enable --provider");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
+
+    const preview = [...personalAccess.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Preview prompt",
+    );
+    await act(async () => preview?.click());
+    await flush();
+
+    expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(document.body.querySelector<HTMLTextAreaElement>("[data-byo-setup-prompt-preview]")?.value).toContain(
+      "first-tree-dev login short-lived-code",
+    );
+
+    const copy = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Copy prompt",
+    );
+    await act(async () => copy?.click());
+    await flush();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("first-tree-dev login short-lived-code"),
+    );
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("lets a Member expand personal Context access without loading Admin Tree or Reviewer controls", async () => {
+    authMock.value = { ...authMock.value, role: "member" };
+    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
+      {
+        type: "repo",
+        status: "active",
+      },
+    ]);
+    contextEnablementMocks.getContextEnablementHandoff.mockImplementation(
+      async (_organizationId: string, provider: "claude-code" | "codex") => ({
+        organizationId: "org-1",
+        teamDisplayName: "Acme",
+        role: "member",
+        provider,
+        command: `first-tree-dev context enable --provider ${provider} --team org-1`,
+        workingDirectoryInstruction: "Run this from the target repository.",
+      }),
+    );
+
+    const view = await renderSettingsSetupPage();
+    const tree = await waitForRowText(view.host, "context-tree", "Available");
+    const access = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Access",
+    );
+    expect(access?.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => access?.click());
+    const controls = await waitForSelector<HTMLElement>(tree, '[data-setup-owner-controls="context-tree"]');
+    const personalAccess = await waitForSelector<HTMLElement>(controls, "[data-setup-personal-access]");
+    const openContext = [...controls.querySelectorAll<HTMLAnchorElement>("a")].find(
+      (link) => link.textContent === "Open Context →",
+    );
+    expect(personalAccess.textContent).toContain("Use Team Context in Claude Code or Codex");
+    expect(personalAccess.textContent).toContain("Copy setup prompt");
+    expect(personalAccess.textContent).toContain("Preview prompt");
+    expect(openContext?.getAttribute("href")).toBe("/context");
+    expect(controls.querySelector('[data-setup-owner-controls="automatic-review"]')).toBeNull();
+    expect(controls.querySelector('[role="switch"]')).toBeNull();
+    expect(reviewerMocks.getContextReviewerCandidates).not.toHaveBeenCalled();
+    expect(orgSettingsMocks.getRawContextTreeSetting).not.toHaveBeenCalled();
+
+    const copy = [...personalAccess.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Copy setup prompt",
+    );
+    await act(async () => copy?.click());
+    await flush();
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("first-tree-dev login short-lived-code"),
+    );
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("does not render a Personal access blocker when its prerequisites are incomplete", async () => {
+    const view = await renderSettingsSetupPage();
+    const { controls } = await openContextTreeControls(view);
+
+    expect(controls.querySelector("[data-setup-personal-access]")).toBeNull();
+    expect(controls.textContent).not.toContain("Personal access");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
 
     await act(async () => view.root.unmount());
   });
@@ -981,6 +1281,7 @@ describe("Settings Setup overview", () => {
     expect([...reviewerControls.querySelectorAll("a")].some((link) => link.textContent === "Manage Team Agents")).toBe(
       true,
     );
+    expect(reviewerControls.textContent).toContain("The configured reviewer's runtime is currently unavailable.");
     await act(async () => view.root.unmount());
   });
 
@@ -999,13 +1300,54 @@ describe("Settings Setup overview", () => {
     const enablement = reviewerControls.querySelector<HTMLButtonElement>('[role="switch"]');
     expect(enablement?.getAttribute("aria-checked")).toBe("false");
     await waitForSelector(reviewerControls, '[aria-label="Automatic review Agent"]');
-    expect(reviewerControls.textContent).toContain("Reviewer selection retained while Automatic review is off");
+    expect(reviewerControls.textContent).toContain("Reviewer selection retained while Automatic review is off.");
 
     await act(async () => enablement?.click());
     await flush();
 
     expect(reviewerMocks.putContextReviewerEnablement).toHaveBeenCalledWith("org-1", true);
     expect(reviewerMocks.putContextReviewerAssignment).not.toHaveBeenCalled();
+    expect(reviewerControls.textContent).toContain(
+      "Reviews eligible Context Tree pull requests and merge requests as webhook events arrive.",
+    );
+    expect(reviewerControls.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => view.root.unmount());
+  });
+
+  it("preserves precise mutation details for state changes and unknown blocker codes", async () => {
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
+      capabilityFixture({
+        review: {
+          adoption: "disabled",
+          health: "ready",
+          reviewerAgent: { uuid: "reviewer-1", displayName: "Context Reviewer" },
+        },
+      }),
+    );
+    reviewerMocks.putContextReviewerEnablement
+      .mockRejectedValueOnce(
+        new ApiError(
+          409,
+          "Reviewer ownership or Computer binding changed; retry with current Team state",
+          undefined,
+          "context_review_state_changed",
+        ),
+      )
+      .mockRejectedValueOnce(new ApiError(409, "Precise future blocker detail", undefined, "future_blocker_code"));
+    const view = await renderSettingsSetupPage();
+    const { reviewerControls } = await openContextTreeControls(view);
+    const enablement = reviewerControls.querySelector<HTMLButtonElement>('[role="switch"]');
+
+    await act(async () => enablement?.click());
+    await waitForSelector(reviewerControls, '[role="alert"]');
+    expect(reviewerControls.textContent).toContain(
+      "Reviewer ownership or Computer binding changed; retry with current Team state",
+    );
+
+    await act(async () => enablement?.click());
+    await flush();
+    expect(reviewerControls.textContent).toContain("Precise future blocker detail");
+    expect(reviewerControls.textContent).not.toContain("Provider or Agent recovery is still required");
     await act(async () => view.root.unmount());
   });
 
@@ -1068,7 +1410,7 @@ describe("Settings Setup overview", () => {
     expect(reviewerMocks.putContextReviewerAssignment).toHaveBeenCalledWith("org-1", "reviewer-2");
     expect(reviewerMocks.putContextReviewerEnablement).not.toHaveBeenCalled();
     expect(reviewerControls.textContent).toContain("Offline Reviewer");
-    expect(reviewerControls.textContent).toContain("Reviewer selection retained while Automatic review is off");
+    expect(reviewerControls.textContent).toContain("Reviewer selection retained while Automatic review is off.");
     expect(reviewerControls.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
     await act(async () => view.root.unmount());
   });
@@ -1131,18 +1473,61 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("does not request a tree snapshot when the Team projection says it is unbound", async () => {
+  it("keeps Team Agent configuration available without a bound Context Tree", async () => {
     setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
       capabilityFixture({
         binding: { state: "unbound" },
         review: { adoption: "unavailable", health: "not_observed", reviewerAgent: null },
       }),
     );
+    orgSettingsMocks.getGithubFeaturesSetting.mockResolvedValue({
+      teamAgent: { agentUuid: null, agent: null },
+    });
 
     const view = await renderSettingsSetupPage();
     await waitForRowText(view.host, "context-tree", "Not set up");
+    const { controls } = await openTeamAgentControls(view);
+    const agentSelect = await waitForSelector<HTMLButtonElement>(controls, '[aria-label="Team Agent"]');
+    await act(async () => agentSelect.click());
+    const option = [...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((candidate) =>
+      candidate.textContent?.includes("Team Agent One"),
+    );
+    await act(async () => option?.click());
+    await flush();
 
     expect(contextTreeMocks.getContextTreeSnapshot).not.toHaveBeenCalled();
+    expect(reviewerMocks.getContextReviewerCandidates).not.toHaveBeenCalled();
+    expect(teamAgentMocks.getTeamAgentCandidates).toHaveBeenCalledWith("org-1");
+    expect(teamAgentMocks.putTeamAgentAssignment).toHaveBeenCalledWith("org-1", "team-agent-1");
+    expect(controls.textContent).toContain("Automatic Review does not control this delegation.");
+    await act(async () => view.root.unmount());
+  });
+
+  it("shows a deployment-operator blocker without an admin GitHub recovery link when the App slug is missing", async () => {
+    orgSettingsMocks.getGithubFeaturesSetting.mockResolvedValue({
+      teamAgent: { agentUuid: null, agent: null },
+    });
+    teamAgentMocks.getTeamAgentCandidates.mockResolvedValue({
+      items: [],
+      blockers: [
+        {
+          code: "github_app_slug_missing",
+          resolutionOwner: "operator",
+          actionKind: null,
+        },
+      ],
+    });
+
+    const view = await renderSettingsSetupPage();
+    const { controls } = await openTeamAgentControls(view);
+
+    await waitForText(
+      controls,
+      "A deployment operator must configure the GitHub App login before App-target delegation can run.",
+    );
+    expect(controls.querySelector('a[href="/settings/integrations/github"]')).toBeNull();
+    expect(controls.textContent).not.toContain("Manage GitHub");
+    expect(controls.textContent).not.toContain("Manage Team Agents");
     await act(async () => view.root.unmount());
   });
 
@@ -1190,6 +1575,49 @@ describe("Settings Setup overview", () => {
     const view = await renderSettingsSetupPage();
     const row = await waitForRowText(view.host, "context-tree", expected);
     expect(row.textContent).toContain(expected);
+    await act(async () => view.root.unmount());
+  });
+
+  it("suppresses non-actionable GitLab recovery chat while keeping independent review controls", async () => {
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
+      capabilityFixture({
+        binding: {
+          state: "bound",
+          provider: "gitlab",
+          repo: "https://gitlab.example/acme/context-tree.git",
+          branch: "main",
+        },
+      }),
+    );
+    contextTreeMocks.getContextTreeSnapshot.mockResolvedValue({
+      snapshotStatus: "unavailable",
+      provider: "gitlab",
+      contentAvailability: {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: "gitlab_origin_not_authorized",
+      },
+      contextStatus: {
+        severity: "error",
+        label: "Team context unavailable",
+        detail: "GitLab deployment allowlist diagnostic",
+      },
+    });
+
+    const view = await renderSettingsSetupPage();
+    const row = await waitForRowText(view.host, "context-tree", "Connected");
+    const manage = [...row.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Manage",
+    );
+
+    expect(row.textContent).not.toContain("Needs recovery");
+    expect(row.textContent).not.toContain("Web Context unavailable");
+    expect(row.textContent).not.toContain("GitLab deployment allowlist diagnostic");
+    await act(async () => manage?.click());
+    const controls = await waitForSelector<HTMLElement>(row, '[data-setup-owner-controls="context-tree"]');
+    expect(controls.textContent).not.toContain("Open Context");
+    expect(controls.textContent).toContain("Automatic review");
+    expect(controls.textContent).not.toContain("Work on this in chat");
     await act(async () => view.root.unmount());
   });
 

@@ -13,6 +13,7 @@ import { members } from "../db/schema/members.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agent.js";
+import { MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
 import { signTokensForUser } from "../services/auth.js";
 import { resolveDefaultOrgId } from "../services/organization.js";
 import { uuidv7 } from "../uuid.js";
@@ -241,7 +242,7 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
   // test scaffolding bypasses it and builds the Config object manually, so
   // we set the singleton ourselves here.
   setConfig(config);
-  const app = await buildApp(config);
+  const app = await buildApp(config, { attachmentBlobStore: new MemoryAttachmentBlobStore() });
   await app.ready();
   return app;
 }

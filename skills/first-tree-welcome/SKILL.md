@@ -1,6 +1,6 @@
 ---
 name: first-tree-welcome
-version: 1.2.3
+version: 1.2.4
 description: Use for a First Tree onboarding first chat, especially natural opening messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree." Also covers the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for dedicated tree setup chats, ordinary chats, PR/MR reviews, repo scans, tree writes, or maintenance.
 ---
 
@@ -385,10 +385,17 @@ Key mechanics — read these carefully, they are easy to get wrong:
 - **For "Build your Context Tree"**: the brief is user-visible, so write it in
   plain product language and **name no skill in it** — e.g. "Build our team's
   Context Tree from the connected code — propose an initial structure for me to
-  review, then fill it in." When you are woken in that chat, recognize the
-  tree-build task and load `first-tree-seed` from the task itself; it resolves the
-  tree's state and owns creating + binding + seeding — this launcher does none of
-  that.
+  review, then fill it in. Open the Structure PR/MR first. After that milestone,
+  preserve any existing Reviewer; if none is selected, guide me to use this same
+  Agent as the default and enable Automatic Review in Settings → Setup. Draft
+  the initial content, but do not open its PR/MR until a selected Reviewer is
+  enabled so that PR/MR can exercise Automatic Review." This explicit
+  Reviewer-handoff sentence is part of the brief only for the admin tree-build
+  path launched here; it lets the dedicated task preserve the contract across
+  Phase 1 and Phase 2 without guessing from chat provenance. When you are woken
+  in that chat, recognize the tree-build task and load `first-tree-seed` from
+  the task itself; it resolves the tree's state and owns creating + binding +
+  seeding — this launcher does none of that.
 - Give each chat a clear, stable topic.
 
 Then, back in THIS launcher chat, post a short line naming the chats you opened

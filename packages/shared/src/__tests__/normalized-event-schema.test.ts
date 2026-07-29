@@ -179,13 +179,22 @@ describe("githubEventCardSchema", () => {
     expect(githubEventCardSchema.safeParse(baseCard).success).toBe(true);
   });
 
-  it("accepts an involves-driven card carrying mentionedUser", () => {
+  it("accepts an involves-driven card carrying a recipient-scoped task marker", () => {
     const res = githubEventCardSchema.safeParse({
       ...baseCard,
       reason: "mentioned" as const,
       mentionedUser: "bob",
+      teamAgentTask: { agentUuid: "agent-uuid" },
     });
     expect(res.success).toBe(true);
+  });
+
+  it("keeps historical boolean task cards parseable", () => {
+    expect(githubEventCardSchema.safeParse({ ...baseCard, teamAgentTask: true }).success).toBe(true);
+  });
+
+  it("rejects a false team-agent task marker", () => {
+    expect(githubEventCardSchema.safeParse({ ...baseCard, teamAgentTask: false }).success).toBe(false);
   });
 
   it("accepts a null entity.url (missing canonical url)", () => {

@@ -27,6 +27,7 @@
   },
   "files": [
     "dist",
+    "context-integration",
     "skills",
     "scripts/prune-codex-runtime-binary.mjs",
     "scripts/prune-claude-runtime-binary.mjs",
@@ -39,12 +40,12 @@
   },
   "scripts": {
     "dev": "tsx src/cli/index.ts",
-    "build": "tsdown src/cli/index.ts src/index.ts --format esm --no-dts --external @anthropic-ai/claude-agent-sdk --external @botiverse/kimi-code-sdk --external @openai/codex-sdk && node ../../scripts/copy-client-runtime-templates.mjs apps/cli && node ../../scripts/copy-cli-tree-templates.mjs",
+    "build": "tsdown src/cli/index.ts src/index.ts --format esm --no-dts --external @anthropic-ai/claude-agent-sdk --external @botiverse/kimi-code-sdk --external @openai/codex-sdk --external fs-native-extensions && node ../../scripts/copy-client-runtime-templates.mjs apps/cli && node ../../scripts/copy-cli-tree-templates.mjs && node ../../scripts/build-context-integration-bundle.mjs --out-dir context-integration",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-vitest-batches.mjs",
     "coverage": "pnpm run build && vitest run --coverage --passWithNoTests",
     "prepack": "rm -rf skills && cp -R ../../skills .",
-    "postpack": "rm -rf skills",
+    "postpack": "rm -rf skills context-integration",
     "postinstall": "node scripts/prune-codex-runtime-binary.mjs && node scripts/prune-claude-runtime-binary.mjs && node scripts/prune-claude-sdk-deps.mjs"
   },
   "license": "Apache-2.0",
@@ -63,6 +64,7 @@
     "@openai/codex-sdk": "^0.144.1",
     "commander": "^13.1.0",
     "ejs": "^6.0.1",
+    "fs-native-extensions": "^1.5.0",
     "gray-matter": "^4.0.3",
     "jose": "^6.0.0",
     "mdast-util-from-markdown": "^2.0.3",

@@ -52,6 +52,8 @@ import { orgAgentRoutes } from "./api/orgs/agents.js";
 import { orgAttachmentRoutes } from "./api/orgs/attachments.js";
 import { orgChatRoutes } from "./api/orgs/chats.js";
 import { orgClientRoutes } from "./api/orgs/clients.js";
+import { orgContextActivationRoutes } from "./api/orgs/context-activation.js";
+import { orgContextEnablementRoutes } from "./api/orgs/context-enablement.js";
 import { orgContextReviewerRoutes } from "./api/orgs/context-reviewer.js";
 import { orgContextTreeRoutes } from "./api/orgs/context-tree.js";
 import { orgContextTreeSnapshotRoutes } from "./api/orgs/context-tree-snapshot.js";
@@ -67,6 +69,7 @@ import { orgResourceRoutes } from "./api/orgs/resources.js";
 import { orgSessionRoutes } from "./api/orgs/sessions.js";
 import { orgSettingsRoutes } from "./api/orgs/settings.js";
 import { orgSetupCapabilitiesRoutes } from "./api/orgs/setup-capabilities.js";
+import { orgTeamAgentRoutes } from "./api/orgs/team-agent.js";
 import { orgUsageRoutes } from "./api/orgs/usage.js";
 import { orgWsRoutes } from "./api/orgs/ws.js";
 import { readyzRoutes } from "./api/readyz.js";
@@ -93,6 +96,12 @@ import {
   rootLogger,
 } from "./observability/index.js";
 import { broadcastToAdmins } from "./services/admin-broadcast.js";
+import { backfillExternalAttachmentsToPostgres } from "./services/attachment.js";
+import {
+  type AttachmentBlobStore,
+  createS3AttachmentBlobStore,
+  createUnavailableAttachmentBlobStore,
+} from "./services/attachment-blob-store.js";
 import { expiryToSeconds } from "./services/auth.js";
 import { type BackgroundTasks, createBackgroundTasks } from "./services/background-tasks.js";
 import { invalidateChatAudienceLocal, registerChatAudienceDispatcher } from "./services/chat-audience-cache.js";
@@ -106,6 +115,7 @@ import { ensureDefaultOrganization } from "./services/organization.js";
 import { createPulseAggregator } from "./services/pulse-aggregator.js";
 import { createResourcesService } from "./services/resources.js";
 import { backfillResourcesPhase1 } from "./services/resources-migration.js";
+import { backfillSkillResourceBundles } from "./services/skill-bundle.js";
 
 // Fastify type augmentation
 import "./types.js";
@@ -156,7 +166,11 @@ function namePlugin<T extends FastifyPluginAsync>(name: string, fn: T): T {
   return fn;
 }
 
-export async function buildApp(config: Config) {
+export type BuildAppOptions = {
+  attachmentBlobStore?: AttachmentBlobStore;
+};
+
+export async function buildApp(config: Config, options: BuildAppOptions = {}) {
   // Validate token-lifetime config eagerly so a typo in
   // `FIRST_TREE_AUTH_*_EXPIRY` fails the boot, not the first
   // /connect-tokens call hours later.
@@ -297,6 +311,10 @@ export async function buildApp(config: Config) {
   const db = connectDatabase(config.database.url);
   app.decorate("db", db);
   app.decorate("config", config);
+  const attachmentBlobStore =
+    options.attachmentBlobStore ??
+    (config.objectStorage ? createS3AttachmentBlobStore(config.objectStorage) : createUnavailableAttachmentBlobStore());
+  app.decorate("attachmentBlobStore", attachmentBlobStore);
 
   // Advisory Command-package version broadcast to every Client via the
   // `server:welcome` WS frame. The poller refreshes the advertised value
@@ -342,7 +360,7 @@ export async function buildApp(config: Config) {
     encryptionKey: config.secrets.encryptionKey,
   });
   app.decorate("configService", configService);
-  const resourcesService = createResourcesService({ db, notifier });
+  const resourcesService = createResourcesService({ db, notifier, attachmentBlobStore });
   app.decorate("resourcesService", resourcesService);
 
   // WebSocket plugin. `maxPayload` caps a single inbound frame so a hostile
@@ -358,7 +376,7 @@ export async function buildApp(config: Config) {
   // POST and the route would 415. Registered globally because Fastify only
   // supports global content-type parsers; the route still owns its own
   // `bodyLimit` so the byte cap is route-local.
-  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => {
+  app.addContentTypeParser("application/octet-stream", (_req, body, done) => {
     done(null, body);
   });
 
@@ -565,6 +583,8 @@ export async function buildApp(config: Config) {
           await scope.register(orgUsageRoutes, { prefix: "/usage" });
           await scope.register(orgSessionRoutes, { prefix: "/sessions" });
           await scope.register(orgClientRoutes, { prefix: "/clients" });
+          await scope.register(orgContextActivationRoutes, { prefix: "/context-activation" });
+          await scope.register(orgContextEnablementRoutes, { prefix: "/context-enablement" });
           await scope.register(orgInvitationRoutes, { prefix: "/invitations" });
           await scope.register(orgMemberRoutes, { prefix: "/members" });
           await scope.register(orgSettingsRoutes, { prefix: "/settings" });
@@ -573,6 +593,7 @@ export async function buildApp(config: Config) {
           await scope.register(orgGitlabConnectionRoutes, { prefix: "/gitlab-connections" });
           await scope.register(orgGitlabIdentityLinkRoutes, { prefix: "/gitlab-identity-links" });
           await scope.register(orgContextReviewerRoutes, { prefix: "/context-reviewer" });
+          await scope.register(orgTeamAgentRoutes, { prefix: "/team-agent" });
           await scope.register(orgContextTreeRoutes, { prefix: "/context-tree" });
           await scope.register(orgContextTreeSnapshotRoutes, { prefix: "/context-tree" });
           await scope.register(orgSetupCapabilitiesRoutes, { prefix: "/setup-capabilities" });
@@ -706,6 +727,12 @@ export async function buildApp(config: Config) {
     }
     await backfillResourcesPhase1(db).catch((err) => {
       app.log.warn({ err }, "resources phase1 backfill failed");
+    });
+    await backfillExternalAttachmentsToPostgres(db, attachmentBlobStore).catch((err) => {
+      app.log.warn({ err }, "legacy S3 attachment reverse backfill failed");
+    });
+    await backfillSkillResourceBundles(db, attachmentBlobStore).catch((err) => {
+      app.log.warn({ err }, "legacy Skill bundle backfill failed");
     });
     const gitlabAttentionBackfill = await backfillGitlabAttentionPairs(db);
     if (gitlabAttentionBackfill.paired > 0 || gitlabAttentionBackfill.legacyRouteOnly > 0) {

@@ -445,6 +445,37 @@ export const orgContextTreeFeaturesOutputSchema = z.object({
     }),
 });
 
+// -- github_features --
+
+const orgTeamAgentSchema = z.object({
+  agentUuid: z.string().min(1).nullable().default(null),
+});
+
+const orgTeamAgentSummarySchema = z.object({
+  uuid: z.string().min(1),
+  name: z.string().nullable(),
+  displayName: z.string().min(1),
+});
+
+export const orgGithubFeaturesStorageSchema = z.object({
+  teamAgent: orgTeamAgentSchema.default({ agentUuid: null }),
+});
+
+export const orgGithubFeaturesInputSchema = z.object({
+  teamAgent: orgTeamAgentSchema,
+});
+
+export const orgGithubFeaturesOutputSchema = z.object({
+  teamAgent: orgTeamAgentSchema
+    .extend({
+      agent: orgTeamAgentSummarySchema.nullable().default(null),
+    })
+    .default({
+      agentUuid: null,
+      agent: null,
+    }),
+});
+
 // -- registry --
 
 /**
@@ -481,6 +512,12 @@ export const ORG_SETTINGS_NAMESPACES = {
     output: orgContextTreeFeaturesOutputSchema,
     readPolicy: "member",
   },
+  github_features: {
+    storage: orgGithubFeaturesStorageSchema,
+    input: orgGithubFeaturesInputSchema,
+    output: orgGithubFeaturesOutputSchema,
+    readPolicy: "member",
+  },
 } as const satisfies Record<
   string,
   {
@@ -513,6 +550,10 @@ export type OrgSourceReposOutput = OrgSettingOutput<"source_repos">;
 export type OrgContextTreeFeaturesStorage = OrgSettingStorage<"context_tree_features">;
 export type OrgContextTreeFeaturesInput = OrgSettingInput<"context_tree_features">;
 export type OrgContextTreeFeaturesOutput = OrgSettingOutput<"context_tree_features">;
+
+export type OrgGithubFeaturesStorage = OrgSettingStorage<"github_features">;
+export type OrgGithubFeaturesInput = OrgSettingInput<"github_features">;
+export type OrgGithubFeaturesOutput = OrgSettingOutput<"github_features">;
 
 export const orgSettingNamespaceSchema = z.enum(
   ORG_SETTINGS_NAMESPACE_KEYS as [OrgSettingNamespace, ...OrgSettingNamespace[]],

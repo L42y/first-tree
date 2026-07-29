@@ -7,7 +7,7 @@ import type {
 } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
 import { stratify, tree } from "d3-hierarchy";
-import { AlertTriangle, Network, RefreshCw } from "lucide-react";
+import { AlertTriangle, Info, Network, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { getContextTreeSnapshot } from "../api/context-tree.js";
@@ -16,6 +16,11 @@ import { resolveAvatarHue } from "../components/chat/chat-row-avatar.js";
 import { Identicon } from "../components/identicon.js";
 import { PageHeader } from "../components/ui/page-header.js";
 import { Panel, PanelBody } from "../components/ui/panel.js";
+import {
+  GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL,
+  GITLAB_WEB_CONTEXT_UNAVAILABLE_TITLE,
+  isTeamNonActionableGitlabWebContext,
+} from "./context-tree-availability.js";
 import { ContextTreeBuildEntry } from "./context-tree-build-entry.js";
 import { ContextSectionTabs } from "./docs/context-section-tabs.js";
 
@@ -646,7 +651,15 @@ function UnavailableState({
       : null;
   const unavailableGitlabContent = gitlabContentAvailability !== null;
   const gitlabUnavailableReason = gitlabContentAvailability?.reason ?? null;
-  const gitlabCopy = gitlabUnavailableReason ? gitlabUnavailableCopy(gitlabUnavailableReason) : null;
+  const teamNonActionableGitlabWebContext = isTeamNonActionableGitlabWebContext(snapshot);
+  const gitlabCopy = teamNonActionableGitlabWebContext
+    ? {
+        title: GITLAB_WEB_CONTEXT_UNAVAILABLE_TITLE,
+        detail: GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL,
+      }
+    : gitlabUnavailableReason
+      ? gitlabUnavailableCopy(gitlabUnavailableReason)
+      : null;
   const title = snapshot.repo
     ? unavailableGitlabContent
       ? (gitlabCopy?.title ?? "GitLab content is unavailable in Cloud")
@@ -664,13 +677,22 @@ function UnavailableState({
     : isAdmin
       ? "Your agent can build it with you in a chat. Share a local project folder or GitHub repository URL there."
       : "Ask an admin to set up your team's Context Tree.";
-  const syncDetail = snapshot.contextStatus.detail;
+  const syncDetail = teamNonActionableGitlabWebContext ? null : snapshot.contextStatus.detail;
   const repoLabel = snapshot.repo ? redactRepoForDisplay(snapshot.repo) : null;
+  const AvailabilityIcon = teamNonActionableGitlabWebContext ? Info : AlertTriangle;
   return (
     <Panel>
       <PanelBody>
-        <div className="flex items-start text-body" style={{ color: "var(--fg-2)", gap: "var(--sp-2)" }}>
-          <AlertTriangle size={18} style={{ color: "var(--warning)" }} />
+        <div
+          className="flex items-start text-body"
+          data-context-availability-tone={teamNonActionableGitlabWebContext ? "neutral" : "warning"}
+          style={{ color: "var(--fg-2)", gap: "var(--sp-2)" }}
+        >
+          <AvailabilityIcon
+            aria-hidden
+            size={18}
+            style={{ color: teamNonActionableGitlabWebContext ? "var(--fg-3)" : "var(--warning)" }}
+          />
           <div>
             <div className="font-semibold" style={{ color: "var(--fg)" }}>
               {title}
@@ -681,10 +703,10 @@ function UnavailableState({
                 {syncDetail}
               </div>
             ) : null}
-            {/* Every admin-facing unavailable state continues in the same
-                chat-first setup flow. The tab never diagnoses or mutates source
-                access itself; the agent inspects the real workspace and tree. */}
-            {canOpenChat ? (
+            {/* Recoverable admin-facing unavailable states continue in the
+                chat-first setup flow. GitLab auth and operator-owned egress
+                failures are not Team setup debt. */}
+            {canOpenChat && !teamNonActionableGitlabWebContext ? (
               <div style={{ marginTop: "var(--sp-3)" }}>
                 <ContextTreeBuildEntry intent={snapshot.repo ? "recover" : "build"} />
               </div>
@@ -705,36 +727,6 @@ function UnavailableState({
 
 function gitlabUnavailableCopy(reason: string): { title: string; detail: string } {
   switch (reason) {
-    case "gitlab_authentication_required":
-      return {
-        title: "Private GitLab content is unavailable in Cloud",
-        detail:
-          "First Tree Cloud only reads GitLab repositories anonymously. Make the Context Tree repository anonymously readable, or use an Agent on a host with local git/glab access. Webhook review automation can remain active.",
-      };
-    case "gitlab_origin_not_authorized":
-      return {
-        title: "GitLab Web Context needs deployment authorization",
-        detail:
-          "This GitLab origin is not enabled for Web Context. Ask the deployment administrator to add its exact public origin, or its private origin with trusted CIDRs, to FIRST_TREE_GITLAB_ALLOWED_ORIGINS. Your GitLab Webhook connection remains active.",
-      };
-    case "gitlab_dns_unavailable":
-      return {
-        title: "First Tree cannot resolve this GitLab address",
-        detail:
-          "The Server could not resolve the GitLab hostname. Ask the deployment administrator to check DNS and network access from First Tree. Your GitLab Webhook connection remains active.",
-      };
-    case "gitlab_address_not_authorized":
-      return {
-        title: "GitLab resolved to an unauthorized address",
-        detail:
-          "The hostname resolved outside its authorized public or CIDR policy. Ask the deployment administrator to verify DNS and add trusted private CIDRs when needed. Your GitLab Webhook connection remains active.",
-      };
-    case "gitlab_egress_denied":
-      return {
-        title: "GitLab Web Context failed a network safety check",
-        detail:
-          "First Tree stopped the anonymous read because the destination changed or failed its egress policy. Ask the deployment administrator to verify the origin and DNS. Webhook automation remains independent.",
-      };
     case "gitlab_redirect_forbidden":
       return {
         title: "GitLab repository redirect is not allowed",

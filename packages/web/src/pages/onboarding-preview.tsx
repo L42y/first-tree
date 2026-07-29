@@ -286,6 +286,10 @@ type NetProfile = {
   orgAgents?: "pending" | "error" | Array<{ uuid: string; name: string; displayName: string; managerId: string }>;
   /** GET /orgs/:id/members — owner names for the picker's "Run by X" tag. */
   orgMembers?: boolean;
+  /** Member-readable Team resources used to establish personal Context readiness. */
+  activeTeamRepo?: boolean;
+  /** Fresh login bootstrap and exact-Team provider handoff used by the copy action. */
+  personalContextHandoff?: boolean;
 };
 
 // The active scenario's net profile, read by the shim. Set during render of the
@@ -312,9 +316,18 @@ function handleNet(rawUrl: string): Promise<Response> | Response | null {
   const idx = rawUrl.indexOf("/api/v1");
   if (idx < 0) return null;
   const p = rawUrl.slice(idx + "/api/v1".length).split("?")[0];
+  const provider = new URL(rawUrl, window.location.origin).searchParams.get("provider");
 
   if (p === "/me/organizations") {
     return jsonResponse([{ id: ORG_ID, name: "acme", displayName: TEAM_NAME, role: "admin" }]);
+  }
+  if (p === "/bootstrap/config") {
+    return jsonResponse({
+      channel: "prod",
+      connectBootstrapCommandTemplate: null,
+      growthLandingPagesEnabled: false,
+      authProviders: { google: true, github: true },
+    });
   }
   // Get-started fork picker: roster + owner names. Matched for ANY org id
   // because these requests carry the app-level selected org, not the fixture
@@ -378,6 +391,44 @@ function handleNet(rawUrl: string): Promise<Response> | Response | null {
   if (p === `/orgs/${ORG_ID}/settings/context_tree`) {
     if (activeNet.contextTree === "pending") return new Promise<Response>(() => {});
     return jsonResponse({ repo: activeNet.contextTree ?? null });
+  }
+  if (activeNet.activeTeamRepo && p === `/orgs/${ORG_ID}/resources`) {
+    return jsonResponse([
+      {
+        id: "resource-web",
+        organizationId: ORG_ID,
+        type: "repo",
+        scope: "team",
+        ownerAgentId: null,
+        name: "acme/web",
+        repoCanonicalKey: "github.com/acme/web",
+        defaultEnabled: "recommended",
+        status: "active",
+        payload: { url: REPO_WEB },
+        createdBy: "member-preview",
+        updatedBy: "member-preview",
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+      },
+    ]);
+  }
+  if (activeNet.personalContextHandoff && p === "/me/connect-tokens") {
+    return jsonResponse({
+      bootstrapCommand: SAMPLE_CLI,
+      installerUrl: "https://download.first-tree.ai/releases/prod/install.sh",
+      binName: "first-tree",
+    });
+  }
+  if (activeNet.personalContextHandoff && p === `/orgs/${ORG_ID}/context-enablement/handoff`) {
+    const selectedProvider = provider === "codex" ? "codex" : "claude-code";
+    return jsonResponse({
+      organizationId: ORG_ID,
+      teamDisplayName: TEAM_NAME,
+      role: "member",
+      provider: selectedProvider,
+      command: `'first-tree' context enable --provider '${selectedProvider}' --team '${ORG_ID}'`,
+      workingDirectoryInstruction: "Run this once from the repository root.",
+    });
   }
   // Managed agents used by start-chat and setup preview branches.
   if (p === "/me/managed-agents") {
@@ -897,7 +948,15 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     group: "Invitee flow",
     role: "invitee",
     view: "flow",
-    wizard: { step: "start-chat", net: { contextTree: TREE_URL, installExists: true } },
+    wizard: {
+      step: "start-chat",
+      net: {
+        contextTree: TREE_URL,
+        installExists: true,
+        activeTeamRepo: true,
+        personalContextHandoff: true,
+      },
+    },
   },
   {
     id: "inv-ko-starting",

@@ -144,6 +144,8 @@ async function seedGitlabConnection(
     origin?: string;
     firstSeenAt?: Date | null;
     lastValidInboundAt?: Date | null;
+    lastSystemHookInboundAt?: Date | null;
+    lastProjectHookInboundAt?: Date | null;
     lastSystemHookMergeRequestInboundAt?: Date | null;
     lastProcessingFailureAt?: Date | null;
   } = {},
@@ -157,6 +159,8 @@ async function seedGitlabConnection(
     tokenHash: `setup-${randomUUID()}`,
     endpointFirstSeenAt: options.firstSeenAt ?? null,
     lastValidInboundAt: options.lastValidInboundAt ?? null,
+    lastSystemHookInboundAt: options.lastSystemHookInboundAt ?? null,
+    lastProjectHookInboundAt: options.lastProjectHookInboundAt ?? null,
     lastSystemHookMergeRequestInboundAt: options.lastSystemHookMergeRequestInboundAt ?? null,
     lastProcessingFailureAt: options.lastProcessingFailureAt ?? null,
     createdByMemberId: scenario.memberId,
@@ -235,6 +239,8 @@ async function seedGitlabReview(
     repoOrigin?: string;
     firstSeenAt?: Date | null;
     lastValidInboundAt?: Date | null;
+    lastSystemHookInboundAt?: Date | null;
+    lastProjectHookInboundAt?: Date | null;
     lastSystemHookMergeRequestInboundAt?: Date | null;
     lastProcessingFailureAt?: Date | null;
     reviewer: { uuid: string };
@@ -244,6 +250,8 @@ async function seedGitlabReview(
     origin: options.connectionOrigin,
     firstSeenAt: options.firstSeenAt,
     lastValidInboundAt: options.lastValidInboundAt,
+    lastSystemHookInboundAt: options.lastSystemHookInboundAt,
+    lastProjectHookInboundAt: options.lastProjectHookInboundAt,
     lastSystemHookMergeRequestInboundAt: options.lastSystemHookMergeRequestInboundAt,
     lastProcessingFailureAt: options.lastProcessingFailureAt,
   });
@@ -662,14 +670,25 @@ describe("Team setup capabilities", () => {
         githubFetch: missingSlugFetch,
       }),
     ).resolves.toMatchObject({
+      repositoryAutomation: {
+        providers: [
+          {
+            provider: "github",
+            adoption: "enabled",
+            health: "ready",
+            blockers: [],
+          },
+          expect.any(Object),
+        ],
+      },
       contextTree: {
         automaticReview: {
-          health: "pending_verification",
-          blockers: [{ code: "provider_probe_failed", resolutionOwner: "operator", actionKind: null }],
+          health: "ready",
+          blockers: [],
         },
       },
     });
-    expect(missingSlugFetch).not.toHaveBeenCalled();
+    expect(missingSlugFetch).toHaveBeenCalledTimes(1);
 
     const permission = await createScenario(app);
     const permissionReviewer = await createReviewer(app, permission);
@@ -856,9 +875,35 @@ describe("Team setup capabilities", () => {
       contextTree: {
         binding: { state: "bound", provider: "gitlab" },
         automaticReview: {
-          health: "pending_verification",
-          blockers: [{ code: "gitlab_webhook_not_seen" }],
+          health: "ready",
+          blockers: [],
         },
+      },
+    });
+
+    const legacyTransport = await createScenario(app);
+    const legacyTransportReviewer = await createReviewer(app, legacyTransport);
+    await seedGitlabReview(app, legacyTransport, {
+      reviewer: legacyTransportReviewer,
+      firstSeenAt: new Date("2026-07-22T08:00:00.000Z"),
+      lastValidInboundAt: new Date("2026-07-22T09:00:00.000Z"),
+    });
+    await expect(project(app, legacyTransport)).resolves.toMatchObject({
+      repositoryAutomation: {
+        providers: [
+          {},
+          {
+            provider: "gitlab",
+            adoption: "configuring",
+            health: "pending_verification",
+            blockers: [{ code: "gitlab_hook_source_not_identified" }],
+            gitlabHookSources: {
+              legacyTransportObserved: true,
+              system: "unobserved",
+              project: "unobserved",
+            },
+          },
+        ],
       },
     });
 
@@ -868,6 +913,7 @@ describe("Team setup capabilities", () => {
       reviewer: transportOnlyReviewer,
       firstSeenAt: new Date("2026-07-22T08:00:00.000Z"),
       lastValidInboundAt: new Date("2026-07-22T09:00:00.000Z"),
+      lastSystemHookInboundAt: new Date("2026-07-22T09:00:00.000Z"),
     });
     await expect(project(app, transportOnly)).resolves.toMatchObject({
       repositoryAutomation: {
@@ -884,20 +930,74 @@ describe("Team setup capabilities", () => {
                 actionKind: "configure_gitlab_webhook",
               },
             ],
+            gitlabHookSources: {
+              legacyTransportObserved: false,
+              system: "transport_received",
+              project: "unobserved",
+            },
           },
         ],
       },
       contextTree: {
         automaticReview: {
-          health: "pending_verification",
-          blockers: [
-            {
-              code: "gitlab_merge_request_event_not_seen",
-              resolutionOwner: "admin",
-              actionKind: "configure_gitlab_webhook",
-            },
-          ],
+          health: "ready",
+          blockers: [],
         },
+      },
+    });
+
+    const projectOnly = await createScenario(app);
+    const projectOnlyReviewer = await createReviewer(app, projectOnly);
+    await seedGitlabReview(app, projectOnly, {
+      reviewer: projectOnlyReviewer,
+      firstSeenAt: new Date("2026-07-22T08:00:00.000Z"),
+      lastValidInboundAt: new Date("2026-07-22T09:00:00.000Z"),
+      lastProjectHookInboundAt: new Date("2026-07-22T09:00:00.000Z"),
+    });
+    await expect(project(app, projectOnly)).resolves.toMatchObject({
+      repositoryAutomation: {
+        providers: [
+          {},
+          {
+            provider: "gitlab",
+            adoption: "enabled",
+            health: "ready",
+            blockers: [],
+            gitlabHookSources: {
+              legacyTransportObserved: false,
+              system: "unobserved",
+              project: "observed",
+            },
+          },
+        ],
+      },
+    });
+
+    const bothWithoutSystemMr = await createScenario(app);
+    const bothWithoutSystemMrReviewer = await createReviewer(app, bothWithoutSystemMr);
+    await seedGitlabReview(app, bothWithoutSystemMr, {
+      reviewer: bothWithoutSystemMrReviewer,
+      firstSeenAt: new Date("2026-07-22T08:00:00.000Z"),
+      lastValidInboundAt: new Date("2026-07-22T09:00:00.000Z"),
+      lastSystemHookInboundAt: new Date("2026-07-22T08:30:00.000Z"),
+      lastProjectHookInboundAt: new Date("2026-07-22T09:00:00.000Z"),
+    });
+    await expect(project(app, bothWithoutSystemMr)).resolves.toMatchObject({
+      repositoryAutomation: {
+        providers: [
+          {},
+          {
+            provider: "gitlab",
+            adoption: "configuring",
+            health: "pending_verification",
+            blockers: [{ code: "gitlab_merge_request_event_not_seen" }],
+            gitlabHookSources: {
+              legacyTransportObserved: false,
+              system: "transport_received",
+              project: "observed",
+            },
+          },
+        ],
       },
     });
 
@@ -944,8 +1044,8 @@ describe("Team setup capabilities", () => {
       },
       contextTree: {
         automaticReview: {
-          health: "degraded",
-          blockers: [{ code: "gitlab_processing_failed", actionKind: "configure_gitlab_webhook" }],
+          health: "ready",
+          blockers: [],
         },
       },
     });
@@ -979,14 +1079,8 @@ describe("Team setup capabilities", () => {
       },
       contextTree: {
         automaticReview: {
-          health: "degraded",
-          blockers: [
-            {
-              code: "gitlab_processing_failed",
-              resolutionOwner: "admin",
-              actionKind: "configure_gitlab_webhook",
-            },
-          ],
+          health: "ready",
+          blockers: [],
         },
       },
     });

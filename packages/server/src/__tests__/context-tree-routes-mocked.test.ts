@@ -140,6 +140,7 @@ async function setupRoute() {
     config: {
       oauth: { githubApp: {} },
       secrets: { encryptionKey: "test-key" },
+      runtime: { presenceCleanupSeconds: 60 },
     },
   });
   let writePreflightDeclaresInheritedRateLimit = false;
@@ -219,6 +220,7 @@ describe("org context tree routes with mocked service edges", () => {
         humanAgentUuid: ctx.scope.humanAgentId,
       },
       requesterGithubLogin: "writer",
+      reviewerStaleSeconds: 60,
     });
     expect(res.json()).toEqual({
       organizationId: ctx.scope.organizationId,

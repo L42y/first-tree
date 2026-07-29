@@ -3,13 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   initializeContextTree: vi.fn(),
   getContextTreeSetting: vi.fn(),
-  createTeamResourceForOrg: vi.fn(),
+  confirmTeamRepositoriesForOrg: vi.fn(),
   listTeamResourcesForOrg: vi.fn(),
 }));
 vi.mock("../../../api/context-tree.js", () => ({ initializeContextTree: mocks.initializeContextTree }));
 vi.mock("../../../api/org-settings.js", () => ({ getContextTreeSetting: mocks.getContextTreeSetting }));
 vi.mock("../../../api/resources.js", () => ({
-  createTeamResourceForOrg: mocks.createTeamResourceForOrg,
+  confirmTeamRepositoriesForOrg: mocks.confirmTeamRepositoriesForOrg,
   listTeamResourcesForOrg: mocks.listTeamResourcesForOrg,
 }));
 
@@ -23,12 +23,18 @@ const CREATED = {
   nodePath: "NODE.md",
 };
 
-const recommendedRepo = (url: string) => ({ type: "repo", defaultEnabled: "recommended", payload: { url } });
+const recommendedRepo = (url: string, key: string) => ({
+  type: "repo",
+  status: "active",
+  defaultEnabled: "recommended",
+  repoCanonicalKey: key,
+  payload: { url },
+});
 
 beforeEach(() => {
   mocks.initializeContextTree.mockReset();
   mocks.getContextTreeSetting.mockReset();
-  mocks.createTeamResourceForOrg.mockReset();
+  mocks.confirmTeamRepositoriesForOrg.mockReset();
   mocks.listTeamResourcesForOrg.mockReset();
 });
 
@@ -69,60 +75,42 @@ describe("provisionNewTree", () => {
 describe("ensureSourceReposRegistered", () => {
   it("is a no-op for an empty repo list", async () => {
     await ensureSourceReposRegistered("org-1", []);
-    expect(mocks.createTeamResourceForOrg).not.toHaveBeenCalled();
+    expect(mocks.confirmTeamRepositoriesForOrg).not.toHaveBeenCalled();
     expect(mocks.listTeamResourcesForOrg).not.toHaveBeenCalled();
   });
 
-  it("creates each repo resource and resolves when all are registered", async () => {
-    mocks.createTeamResourceForOrg.mockResolvedValue({});
-    mocks.listTeamResourcesForOrg.mockResolvedValue([
-      recommendedRepo("https://github.com/acme/app"),
-      recommendedRepo("https://github.com/acme/api"),
-    ]);
+  it("confirms the exact source set in one optimistic batch", async () => {
+    mocks.listTeamResourcesForOrg.mockResolvedValue([]);
+    mocks.confirmTeamRepositoriesForOrg.mockResolvedValue({
+      repositories: [
+        recommendedRepo("https://github.com/acme/app", "github.com/acme/app"),
+        recommendedRepo("https://github.com/acme/api", "github.com/acme/api"),
+      ],
+    });
     await ensureSourceReposRegistered("org-1", ["https://github.com/acme/app", "https://github.com/acme/api"]);
-    expect(mocks.createTeamResourceForOrg).toHaveBeenCalledTimes(2);
+    expect(mocks.confirmTeamRepositoriesForOrg).toHaveBeenCalledWith("org-1", {
+      expectedActiveRepositoryKeys: [],
+      repositories: [
+        { name: "acme/app", url: "https://github.com/acme/app" },
+        { name: "acme/api", url: "https://github.com/acme/api" },
+      ],
+    });
   });
 
-  it("resolves when creation fails as a duplicate but the resource exists (re-run)", async () => {
-    mocks.createTeamResourceForOrg.mockRejectedValue(new ApiError(409, "A matching resource already exists"));
-    mocks.listTeamResourcesForOrg.mockResolvedValue([recommendedRepo("https://github.com/acme/app")]);
-    await expect(ensureSourceReposRegistered("org-1", ["https://github.com/acme/app"])).resolves.toBeUndefined();
-  });
-
-  it("throws when a selected repo is NOT registered after creation (genuine write failure)", async () => {
-    mocks.createTeamResourceForOrg.mockRejectedValue(new ApiError(500, "server error"));
-    mocks.listTeamResourcesForOrg.mockResolvedValue([]); // nothing registered
-    await expect(ensureSourceReposRegistered("org-1", ["https://github.com/acme/app"])).rejects.toThrow(
-      /couldn't register/i,
-    );
-  });
-
-  it("matches registered repos canonically (protocol / case / .git insensitive)", async () => {
-    mocks.createTeamResourceForOrg.mockResolvedValue({});
-    mocks.listTeamResourcesForOrg.mockResolvedValue([recommendedRepo("https://github.com/Acme/App.git")]);
-    await expect(ensureSourceReposRegistered("org-1", ["https://github.com/acme/app"])).resolves.toBeUndefined();
-  });
-
-  it("matches an existing ssh:// resource against a selected HTTPS clone URL", async () => {
-    // The duplicate create 409s (server canonicalizes ssh/https to the same
-    // key); the verify must use that same canonicalization, not a weaker label.
-    mocks.createTeamResourceForOrg.mockRejectedValue(new ApiError(409, "A matching resource already exists"));
-    mocks.listTeamResourcesForOrg.mockResolvedValue([recommendedRepo("ssh://git@github.com/acme/app.git")]);
-    await expect(ensureSourceReposRegistered("org-1", ["https://github.com/acme/app"])).resolves.toBeUndefined();
-  });
-
-  it("matches an existing scp-form resource against a selected HTTPS clone URL", async () => {
-    mocks.createTeamResourceForOrg.mockRejectedValue(new ApiError(409, "A matching resource already exists"));
-    mocks.listTeamResourcesForOrg.mockResolvedValue([recommendedRepo("git@github.com:acme/app.git")]);
-    await expect(ensureSourceReposRegistered("org-1", ["https://github.com/acme/app"])).resolves.toBeUndefined();
-  });
-
-  it("throws listing all repos still missing", async () => {
-    mocks.createTeamResourceForOrg.mockResolvedValue({});
-    mocks.listTeamResourcesForOrg.mockResolvedValue([recommendedRepo("https://github.com/acme/app")]);
+  it("passes the observed active set and throws when the batch response is incomplete", async () => {
+    mocks.listTeamResourcesForOrg.mockResolvedValue([
+      recommendedRepo("https://github.com/acme/existing", "github.com/acme/existing"),
+    ]);
+    mocks.confirmTeamRepositoriesForOrg.mockResolvedValue({
+      repositories: [recommendedRepo("https://github.com/acme/app", "github.com/acme/app")],
+    });
     await expect(
       ensureSourceReposRegistered("org-1", ["https://github.com/acme/app", "https://github.com/acme/api"]),
     ).rejects.toThrow(/acme\/api/);
+    expect(mocks.confirmTeamRepositoriesForOrg).toHaveBeenCalledWith(
+      "org-1",
+      expect.objectContaining({ expectedActiveRepositoryKeys: ["github.com/acme/existing"] }),
+    );
   });
 });
 

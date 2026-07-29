@@ -14,6 +14,10 @@ import {
   type ChatGitlabEntityListResponse,
   type ChatParticipantDetail,
   type ClientCapabilities,
+  type ConfirmTeamRepositories,
+  type ConfirmTeamRepositoriesOutput,
+  type ContextActivationRequest,
+  type ContextActivationResponse,
   type ContextReviewSubmitRequest,
   type ContextReviewSubmitResponse,
   type ContextTreeSeedPreflightRequest,
@@ -26,6 +30,10 @@ import {
   type CronJob,
   type CronPreviewRequest,
   type CronPreviewResponse,
+  confirmTeamRepositoriesOutputSchema,
+  confirmTeamRepositoriesSchema,
+  contextActivationRequestSchema,
+  contextActivationResponseSchema,
   contextTreeSeedPreflightRequestSchema,
   contextTreeSeedPreflightResponseSchema,
   contextTreeWritePreflightRequestSchema,
@@ -71,7 +79,7 @@ import { createLogger } from "./observability/logger.js";
  * proactive-refresh path would reuse a cached token that is about to expire
  * and immediately get kicked off with `auth:expired`.
  */
-export type AccessTokenProvider = (opts?: { minValidityMs?: number }) => string | Promise<string>;
+export type AccessTokenProvider = (opts?: { minValidityMs?: number; signal?: AbortSignal }) => string | Promise<string>;
 export type RuntimeSessionTokenProvider = () => string | undefined;
 
 export type SdkConfig = {
@@ -440,6 +448,51 @@ export class FirstTreeHubSDK {
       { retry: options.retry ?? true },
     );
     return contextTreeSeedPreflightResponseSchema.parse(response);
+  }
+
+  /**
+   * Validate one handoff-selected Team against the current source repository.
+   * The Server does not search other memberships or mint durable authority.
+   */
+  async validateMemberContextActivation(
+    organizationId: string,
+    data: ContextActivationRequest,
+    options: { retry?: boolean; timeoutMs?: number } = {},
+  ): Promise<ContextActivationResponse> {
+    const body = contextActivationRequestSchema.parse(data);
+    const response = await this.requestJson<unknown>(
+      `/api/v1/orgs/${encodeURIComponent(organizationId)}/context-activation/validate`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      {
+        retry: options.retry ?? false,
+        timeoutMs: options.timeoutMs,
+      },
+    );
+    return contextActivationResponseSchema.parse(response);
+  }
+
+  /**
+   * Atomically register the Admin-confirmed source repository set for one
+   * explicit Team. The expected keys prevent a stale setup chat from silently
+   * overwriting repository changes made by another Admin.
+   */
+  async confirmMemberTeamRepositories(
+    organizationId: string,
+    data: ConfirmTeamRepositories,
+  ): Promise<ConfirmTeamRepositoriesOutput> {
+    const body = confirmTeamRepositoriesSchema.parse(data);
+    const response = await this.requestJson<unknown>(
+      `/api/v1/orgs/${encodeURIComponent(organizationId)}/resources/repositories/confirm`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+      { retry: false },
+    );
+    return confirmTeamRepositoriesOutputSchema.parse(response);
   }
 
   /** Read the signed-in member's Team memberships for explicit org selection. */
@@ -985,7 +1038,11 @@ export class FirstTreeHubSDK {
 
   private async doFetchOnce(path: string, init?: RequestInit, opts?: SdkCallOptions): Promise<Response> {
     const url = `${this._baseUrl}${path}`;
-    const token = await this.getAccessToken();
+    const timeout = AbortSignal.timeout(opts?.timeoutMs ?? FETCH_TIMEOUT_MS);
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    signal.throwIfAborted();
+    const token = await this.getAccessToken({ signal });
+    signal.throwIfAborted();
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
     };
@@ -1010,8 +1067,6 @@ export class FirstTreeHubSDK {
     if (init?.headers) {
       Object.assign(headers, init.headers as Record<string, string>);
     }
-    const timeout = AbortSignal.timeout(opts?.timeoutMs ?? FETCH_TIMEOUT_MS);
-    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
     return fetch(url, { ...init, headers, signal });
   }
 

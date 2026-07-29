@@ -379,6 +379,56 @@ describe("codex handler startup inject queue", () => {
     await handler.shutdown();
   });
 
+  it("fails an unsupported service tier instead of accepting the SDK's downgraded turn", async () => {
+    const events: SessionEvent[] = [];
+    const completedCounts: Array<number | undefined> = [];
+    const warning =
+      "Configured service tier `fast` is not advertised as supported for model `gpt-test` and will be omitted from requests.";
+    state.itemsByTurn.set(1, [
+      { type: "error", message: warning },
+      { type: "agent_message", text: "silently downgraded answer" },
+    ]);
+    const handler = createCodexHandler({ workspaceRoot });
+    const ctx = makeContext(
+      (count) => {
+        completedCounts.push(count);
+      },
+      { emitEvent: (event) => events.push(event) },
+    );
+    state.resolveChatContext?.({
+      chatId: "chat-startup-race",
+      title: "startup race",
+      topic: null,
+      description: null,
+      participants: [],
+    });
+
+    await handler.start(makeMessage("m1", "first"), ctx);
+
+    expect(events).toContainEqual({
+      kind: "error",
+      payload: {
+        source: "sdk",
+        message: `Codex service tier configuration failed: ${warning}`,
+      },
+    });
+    const providerFailure = events
+      .filter((event): event is Extract<SessionEvent, { kind: "error" }> => event.kind === "error")
+      .map((event) => parseProviderRetryEventMessage(event.payload.message))
+      .find((payload) => payload?.event === "provider_failure_terminal");
+    expect(providerFailure).toMatchObject({
+      provider: "codex",
+      scope: "provider_turn",
+      category: "configuration",
+      reasonCode: "codex_service_tier_unsupported",
+    });
+    expect(events).toContainEqual({ kind: "turn_end", payload: { status: "error" } });
+    expect(events.some((event) => event.kind === "assistant_text")).toBe(false);
+    expect(completedCounts).toEqual([1]);
+
+    await handler.shutdown();
+  });
+
   it("queues injects received before the Codex thread exists so their inbox entries stay aligned with acks", async () => {
     const completedCounts: Array<number | undefined> = [];
     const handler = createCodexHandler({ workspaceRoot });

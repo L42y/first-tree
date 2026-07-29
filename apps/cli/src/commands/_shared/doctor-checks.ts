@@ -6,6 +6,7 @@ import {
   checkAgentConfigs,
   checkBackgroundService,
   checkClientConfig,
+  checkDaemonRuntimeOwnership,
   checkNodeVersion,
   checkServerReachable,
   checkWebSocket,
@@ -70,6 +71,7 @@ export async function runDaemonChecks(): Promise<CheckResult[]> {
     agentCheck,
     await checkWebSocket(),
     checkBackgroundService(),
+    checkDaemonRuntimeOwnership(),
     ...(await checkRuntimeProviders()),
   ];
 }

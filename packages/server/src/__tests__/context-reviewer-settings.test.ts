@@ -10,8 +10,10 @@ import { clients } from "../db/schema/clients.js";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
+import { organizations } from "../db/schema/organizations.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createAgent } from "../services/agent.js";
+import { loadValidContextReviewerAgent } from "../services/context-reviewer-common.js";
 import {
   listContextReviewerCandidates,
   readContextReviewerAgentReadiness,
@@ -21,6 +23,8 @@ import { upsertInstallationFromMetadata } from "../services/github-app-installat
 import { createGitlabConnection } from "../services/gitlab-connections.js";
 import { getOrgSetting } from "../services/org-settings.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
+import { listTeamAgentCandidates, putTeamAgentAssignment } from "../services/team-agent-settings.js";
+import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 type AdminContext = Awaited<ReturnType<typeof createAdminContext>>;
@@ -211,6 +215,83 @@ describe("Context Reviewer assignment/readiness contract", () => {
           actionKind: "open_agent_owner_flow",
         },
       ],
+    });
+  });
+
+  it("accepts a Reviewer on its manager's user-owned Computer across Teams", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const organizationId = `org-reviewer-${randomUUID().slice(0, 8)}`;
+    const memberId = uuidv7();
+    await app.db.transaction(async (tx) => {
+      await tx.insert(organizations).values({
+        id: organizationId,
+        name: `reviewer-${randomUUID().slice(0, 8)}`,
+        displayName: "Reviewer Team",
+      });
+      const human = await createAgent(tx as unknown as typeof app.db, {
+        name: `reviewer-owner-${randomUUID().slice(0, 8)}`,
+        type: "human",
+        displayName: "Reviewer Owner",
+        managerId: memberId,
+        organizationId,
+      });
+      await tx.insert(members).values({
+        id: memberId,
+        userId: admin.userId,
+        organizationId,
+        agentId: human.uuid,
+        role: "admin",
+      });
+    });
+    const reviewer = await createAgent(app.db, {
+      name: `cross-team-reviewer-${randomUUID().slice(0, 8)}`,
+      type: "agent",
+      displayName: "Cross-Team Reviewer",
+      managerId: memberId,
+      organizationId,
+      visibility: "organization",
+      clientId: admin.clientId,
+    });
+    await seedHealthyAgentRuntime(app, {
+      agentUuid: reviewer.uuid,
+      clientId: admin.clientId,
+      now: observedAt,
+    });
+
+    await expect(
+      readContextReviewerAgentReadiness(app.db, {
+        organizationId,
+        reviewerAgentUuid: reviewer.uuid,
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      structuralBlockers: [],
+      healthBlockers: [],
+    });
+    await expect(
+      listContextReviewerCandidates(app.db, {
+        organizationId,
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ uuid: reviewer.uuid })],
+      blockers: [],
+    });
+    await expect(
+      loadValidContextReviewerAgent(app.db, {
+        organizationId,
+        reviewerAgentUuid: reviewer.uuid,
+      }),
+    ).resolves.toMatchObject({ uuid: reviewer.uuid });
+    await expect(
+      putContextReviewerAssignment(app.db, organizationId, reviewer.uuid, {
+        updatedBy: admin.userId,
+      }),
+    ).resolves.toMatchObject({
+      contextReviewer: { enabled: false, agentUuid: reviewer.uuid },
     });
   });
 
@@ -627,7 +708,7 @@ describe("Context Reviewer assignment/readiness contract", () => {
     });
   });
 
-  it("requires a processed GitLab System Hook MR before enablement and recovers without reassignment", async () => {
+  it("enables GitLab Automatic Review before webhook traffic and independently of provider health", async () => {
     const app = getApp();
     const admin = await createAdminContext(app);
     const reviewer = await createReviewer(app, admin);
@@ -641,6 +722,11 @@ describe("Context Reviewer assignment/readiness contract", () => {
       displayName: "GitLab",
       instanceOrigin: "https://gitlab.internal",
     });
+    await seedHealthyAgentRuntime(app, {
+      agentUuid: reviewer.uuid,
+      clientId: admin.clientId,
+      now: observedAt,
+    });
     await putContextReviewerAssignment(app.db, admin.organizationId, reviewer.uuid, {
       updatedBy: admin.userId,
     });
@@ -651,30 +737,35 @@ describe("Context Reviewer assignment/readiness contract", () => {
         staleSeconds: 60,
         now: () => observedAt,
       }),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_webhook_not_seen" },
+    ).resolves.toMatchObject({
+      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
+    });
+    await expect(
+      getTeamSetupCapabilities(app.db, admin.organizationId, {
+        now: () => observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      repositoryAutomation: {
+        providers: [{}, { provider: "gitlab", health: "pending_verification" }],
+      },
+      contextTree: {
+        automaticReview: { adoption: "enabled", health: "ready", blockers: [] },
+      },
+    });
+
+    await putContextReviewerEnablement(app.db, admin.organizationId, false, {
+      updatedBy: admin.userId,
+      staleSeconds: 60,
     });
     await app.db
       .update(gitlabConnections)
       .set({
         endpointFirstSeenAt: observedAt,
         lastValidInboundAt: observedAt,
+        lastProcessingFailureAt: observedAt,
+        lastProcessingFailureCode: "processing_failed",
       })
-      .where(eq(gitlabConnections.id, connection.connectionId));
-    await expect(
-      putContextReviewerEnablement(app.db, admin.organizationId, true, {
-        updatedBy: admin.userId,
-        staleSeconds: 60,
-        now: () => observedAt,
-      }),
-    ).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_merge_request_event_not_seen" },
-    });
-    await app.db
-      .update(gitlabConnections)
-      .set({ lastSystemHookMergeRequestInboundAt: observedAt })
       .where(eq(gitlabConnections.id, connection.connectionId));
     await expect(
       putContextReviewerEnablement(app.db, admin.organizationId, true, {
@@ -752,7 +843,7 @@ describe("Context Reviewer assignment/readiness contract", () => {
     }
   });
 
-  it("rechecks GitLab routing verification after a concurrent readiness reset", async () => {
+  it("keeps GitLab enablement independent of a concurrent provider-health reset", async () => {
     const app = getApp();
     const admin = await createAdminContext(app);
     const reviewer = await createReviewer(app, admin);
@@ -809,12 +900,11 @@ describe("Context Reviewer assignment/readiness contract", () => {
     releaseReset();
     await reset;
 
-    await expect(enabling).rejects.toMatchObject({
-      statusCode: 409,
-      blocker: { code: "gitlab_merge_request_event_not_seen" },
+    await expect(enabling).resolves.toMatchObject({
+      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
     });
     await expect(getOrgSetting(app.db, admin.organizationId, "context_tree_features")).resolves.toMatchObject({
-      contextReviewer: { enabled: false, agentUuid: reviewer.uuid },
+      contextReviewer: { enabled: true, agentUuid: reviewer.uuid },
     });
   });
 
@@ -861,6 +951,128 @@ describe("Context Reviewer assignment/readiness contract", () => {
     expect(privateAssignment.statusCode).toBe(409);
     expect(privateAssignment.json()).toMatchObject({
       code: "context_review_agent_private",
+    });
+  });
+});
+
+describe("Team Agent assignment contract", () => {
+  const getApp = useTestApp();
+
+  it("is configurable without a Context Tree and requires a verified App login", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const teamAgent = await createReviewer(app, admin, { displayName: "Team Agent" });
+
+    await expect(
+      listTeamAgentCandidates(app.db, {
+        organizationId: admin.organizationId,
+        appSlug: "test-app-slug",
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ uuid: teamAgent.uuid, displayName: "Team Agent" })],
+      blockers: [],
+    });
+    await expect(
+      listTeamAgentCandidates(app.db, {
+        organizationId: admin.organizationId,
+        appSlug: null,
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      items: [],
+      blockers: [
+        {
+          code: "github_app_slug_missing",
+          resolutionOwner: "operator",
+          actionKind: null,
+        },
+      ],
+    });
+    await expect(
+      putTeamAgentAssignment(app.db, admin.organizationId, teamAgent.uuid, {
+        updatedBy: admin.userId,
+        appSlug: null,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: {
+        code: "github_app_slug_missing",
+        resolutionOwner: "operator",
+        actionKind: null,
+      },
+    });
+    await expect(
+      putTeamAgentAssignment(app.db, admin.organizationId, teamAgent.uuid, {
+        updatedBy: admin.userId,
+        appSlug: "test-app-slug",
+      }),
+    ).resolves.toMatchObject({
+      teamAgent: { agentUuid: teamAgent.uuid, agent: { uuid: teamAgent.uuid } },
+    });
+  });
+
+  it("rejects the same Agent UUID in both roles regardless of assignment order", async () => {
+    const app = getApp();
+
+    const reviewerFirst = await createAdminContext(app);
+    const firstAgent = await createReviewer(app, reviewerFirst);
+    await putContextReviewerAssignment(app.db, reviewerFirst.organizationId, firstAgent.uuid, {
+      updatedBy: reviewerFirst.userId,
+    });
+    await expect(
+      putTeamAgentAssignment(app.db, reviewerFirst.organizationId, firstAgent.uuid, {
+        updatedBy: reviewerFirst.userId,
+        appSlug: "test-app-slug",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: { code: "team_agent_conflicts_context_reviewer" },
+    });
+
+    const teamFirst = await createAdminContext(app);
+    const secondAgent = await createReviewer(app, teamFirst);
+    await putTeamAgentAssignment(app.db, teamFirst.organizationId, secondAgent.uuid, {
+      updatedBy: teamFirst.userId,
+      appSlug: "test-app-slug",
+    });
+    await expect(
+      putContextReviewerAssignment(app.db, teamFirst.organizationId, secondAgent.uuid, {
+        updatedBy: teamFirst.userId,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: { code: "team_agent_conflicts_context_reviewer" },
+    });
+  });
+
+  it("exposes dedicated Team Agent endpoints to Team admins", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const teamAgent = await createReviewer(app, admin, { displayName: "Team Agent" });
+    const baseUrl = `/api/v1/orgs/${admin.organizationId}/team-agent`;
+
+    const candidates = await app.inject({
+      method: "GET",
+      url: `${baseUrl}/candidates`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+    });
+    expect(candidates.statusCode).toBe(200);
+    expect(candidates.json()).toMatchObject({
+      items: [expect.objectContaining({ uuid: teamAgent.uuid })],
+    });
+
+    const assignment = await app.inject({
+      method: "PUT",
+      url: `${baseUrl}/assignment`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { agentUuid: teamAgent.uuid },
+    });
+    expect(assignment.statusCode).toBe(200);
+    expect(assignment.json()).toMatchObject({
+      teamAgent: { agentUuid: teamAgent.uuid },
     });
   });
 });

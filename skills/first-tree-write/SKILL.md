@@ -1,9 +1,9 @@
 ---
 name: first-tree-write
-version: 0.13.0
+version: 0.14.0
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
-description: Source-driven Context Tree write workflow for managed workspaces and clean BYO invocations against GitHub- or GitLab-bound Context Trees. Use when a concrete source artifact such as a PR/MR, forge Issue, design doc, meeting note, review thread, or pasted source material should be reflected into the Context Tree. A clean BYO write also requires an explicit Team, an exact tree-read snapshot, current source/target context, and write intent. If no source artifact is available, there is no write task; ask the user for one.
+description: Source-driven Context Tree write workflow for managed workspaces and clean BYO invocations against GitHub- or GitLab-bound Context Trees. Use when an explicit Tree-write request or an always-visible standing route classifies a concrete source artifact — for example, a PR/MR, forge Issue, design doc, meeting or decision note, commit discussion or review thread, or pasted source material — as durable Tree work. A clean BYO write also requires an explicit Team, an exact tree-read snapshot, current source/target context, and user write intent. If no source artifact is available, there is no write task; ask the user for one.
 ---
 
 # First Tree Write
@@ -31,6 +31,13 @@ Writing is source-driven. Acceptable sources include:
   placement, and risk, and comes from an Audit request that explicitly granted
   Maintenance mutation authority.
 
+The always-visible generic route uses non-exhaustive examples from the Skill's
+discovery surface. It does not promote a source repo change you just completed
+or an Audit finding to generic routing: the former still requires an explicit
+Tree-write request or a later concrete routed artifact, and the latter enters
+only through the `context-tree-audit` Maintenance handoff. This Source Gate
+remains intentionally broader than the generic automatic route.
+
 If no concrete source artifact exists, stop and ask for one. Do not invent
 ad-hoc tree edits from memory or from a broad request like "update the tree".
 When the source repo or issue lives on GitHub or GitLab, use its matching CLI
@@ -56,6 +63,12 @@ function signatures, API shapes, request/response examples, build config,
 fixtures, and one-off bug fixes stay in source repos unless the source also
 establishes a durable decision, constraint, ownership change, or cross-domain
 relationship.
+
+Routing classification and mutation authority are separate. An always-visible
+runtime contract may classify a concrete artifact as a Tree-write task before
+this Skill loads; that standing classification selects this workflow but never
+bypasses its live write preflight. Authorization to publish a source PR/MR is
+not, by itself, a separate or transitive Tree write-intent rule.
 
 ## Invocation Modes
 

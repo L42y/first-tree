@@ -6,10 +6,12 @@ import { listOrgGithubRepos } from "../../../api/github.js";
 import { getGithubAppInstallationExists } from "../../../api/github-app.js";
 import type { OnboardingFailureReason } from "../../../api/onboarding-events.js";
 import { getContextTreeSetting } from "../../../api/org-settings.js";
+import { listTeamResourcesForOrg } from "../../../api/resources.js";
 import { CommunityChannels } from "../../../components/community-channels.js";
 import { Button } from "../../../components/ui/button.js";
 import { readCampaignActionHandoffFlag, writeCampaignActionHandoffFlag } from "../../../utils/onboarding-flags.js";
 import { getCampaign } from "../../quickstart/campaigns.js";
+import { OnboardingContextPersonalAccess } from "../../settings/context-enablement.js";
 import {
   buildCampaignActionBootstrap,
   buildInviteeReadyBootstrap,
@@ -292,10 +294,10 @@ function AdminStartChat() {
 
 function InviteeStartChat() {
   const { organizationId } = useOnboardingFlow();
-  // The team is "ready" only with BOTH a Context Tree and a GitHub connection;
-  // either missing → "not-ready". The install bit matters because a tree without
-  // an installation would 403 the agent's first git op, so we hold rather than
-  // launch into a broken state.
+  // BYO Context readiness and managed first-chat readiness are deliberately
+  // separate. External Read needs only a bound Context Tree plus an active
+  // Team code-repository resource; the legacy managed first chat may still
+  // need its GitHub installation before its first git operation.
   //
   // We use the dedicated /github-app-installation/exists endpoint here (returns
   // `{ exists: boolean }`, member-readable) rather than the full installation
@@ -308,15 +310,19 @@ function InviteeStartChat() {
   const teamQuery = useQuery({
     queryKey: ["onboarding", "team-config", organizationId],
     queryFn: async () => {
-      const [tree, installResult] = await Promise.all([
+      const [tree, installResult, resources] = await Promise.all([
         getContextTreeSetting(organizationId ?? ""),
         getGithubAppInstallationExists(organizationId ?? "").catch<null>((err) => {
           console.warn("onboarding: installation-exists probe failed", err);
           return null;
         }),
+        listTeamResourcesForOrg(organizationId ?? ""),
       ]);
       return {
         treeUrl: tree.repo ?? "",
+        hasCodeRepository: resources.some(
+          (resource) => resource.type === "repo" && resource.scope === "team" && resource.status === "active",
+        ),
         // Optimistic on uncertainty: a probe failure (null) counts as installed
         // so a blip doesn't bounce a ready team into not-ready. `installationKnown`
         // gates the polling so we keep checking until the answer is authoritative.
@@ -325,16 +331,14 @@ function InviteeStartChat() {
       };
     },
     enabled: !!organizationId,
-    // Poll until the team is genuinely ready: a tree URL AND an authoritative
-    // (non-null) probe that came back installed. While either is missing or
-    // unknown, keep polling — so the moment the admin finishes whichever half
-    // was missing, this flips to "ready" on its own (the old code stopped
-    // polling once the tree appeared, stranding the no-install case).
+    // Poll while either surface is incomplete. A GitLab-backed Team can expose
+    // its provider-neutral BYO handoff while this legacy GitHub probe remains
+    // false; the probe only controls the managed first-chat branch below.
     refetchInterval: (query) => {
       const d = query.state.data;
       if (!d) return 5000;
       if (!d.installationKnown) return 5000;
-      if (!d.treeUrl || !d.hasInstallation) return 5000;
+      if (!d.treeUrl || !d.hasInstallation || !d.hasCodeRepository) return 5000;
       return false;
     },
   });
@@ -346,10 +350,11 @@ function InviteeStartChat() {
   // Read failure → not-ready; the query keeps polling so a transient blip
   // resolves on its own.
   if (teamQuery.isError || !teamQuery.data) {
-    return <InviteeNotReady />;
+    return <InviteeNotReady contextReady={false} />;
   }
 
-  const { treeUrl, hasInstallation, installationKnown } = teamQuery.data;
+  const { treeUrl, hasInstallation, installationKnown, hasCodeRepository } = teamQuery.data;
+  const contextReady = Boolean(treeUrl) && hasCodeRepository;
   // "ready" requires an AUTHORITATIVE install=true. `hasInstallation` is optimistic
   // on a failed probe (null → true) so the query keeps polling instead of flapping
   // — but we must NOT render the ready launch (which reads the tree and would 403
@@ -357,16 +362,17 @@ function InviteeStartChat() {
   // not-ready holds: it offers a simple first chat (no git op, no 403) and keeps
   // polling, so it advances to ready on its own once install is confirmed.
   const installed = installationKnown && hasInstallation;
-  return resolveInviteeStartChatState({ treeUrl, hasInstallation: installed }) === "ready" ? (
+  return resolveInviteeStartChatState({ treeUrl, hasInstallation: installed }) === "ready" && hasCodeRepository ? (
     <InviteeReady />
   ) : (
-    <InviteeNotReady />
+    <InviteeNotReady contextReady={contextReady} />
   );
 }
 
 /**
- * Invitee · ready to launch. The team has a Context Tree and a GitHub
- * connection, so there's nothing left to set up — and nothing to pick: the
+ * Invitee · ready to launch. The team has a Context Tree and the provider
+ * capability needed by the managed first chat, so there's nothing left to
+ * set up — and nothing to pick: the
  * agent already inherits the team's `recommended` repo resources automatically
  * (they're enabled for every org agent). This mirrors the admin finale as a
  * pure launch into a real chat. An invitee never mutates team config.
@@ -415,6 +421,7 @@ function InviteeReady() {
             {error}
           </FlowHint>
         )}
+        {organizationId && <OnboardingContextPersonalAccess organizationId={organizationId} ready />}
         <div className="flex">
           <Button type="button" variant="cta" onClick={() => void handleStart()}>
             <span>{COPY.startChat.startWorking}</span>
@@ -428,17 +435,16 @@ function InviteeReady() {
 }
 
 /**
- * Invitee · the team's workspace isn't ready yet — either no Context Tree or no
- * GitHub connection. We don't split those: in both cases the invitee is blocked
- * on the admin and can't act on it, so one screen covers both. The start-chat query
- * keeps polling, so this advances to `ready` on its own the moment the admin
- * finishes whichever half was missing.
+ * Invitee · the managed first chat isn't ready yet. This can be an Admin-owned
+ * Context/Team-repository gap or only the legacy GitHub capability gap. BYO
+ * Context is rendered independently: a GitLab Team with a bound Tree and code
+ * repository can enable its external provider even while this branch remains.
  *
  * The primary action starts a real first chat with the agent. Routing it through
  * `completeAndEnterChat` — not `finishLater` — means the button lands the user
  * in a real chat WITH the agent, instead of dropping them into an empty workspace.
  */
-function InviteeNotReady() {
+function InviteeNotReady({ contextReady }: { contextReady: boolean }) {
   const { organizationId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
   const [phase, setPhase] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -479,6 +485,7 @@ function InviteeNotReady() {
             {error}
           </FlowHint>
         )}
+        {organizationId && <OnboardingContextPersonalAccess organizationId={organizationId} ready={contextReady} />}
         {/* The primary action is not an escape hatch: the common not-ready case
             (admin finished without a tree) never resolves, so the real path
             forward is to start now. If the team does finish, the page still

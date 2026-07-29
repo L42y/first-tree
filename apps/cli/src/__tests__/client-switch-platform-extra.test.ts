@@ -36,6 +36,9 @@ const execState = vi.hoisted(() => ({
     | "daemon-untrusted"
     | "daemon-active"
     | "many-daemon-untrusted"
+    | "provider-name-in-env-only"
+    | "provider-missing-env-snapshot"
+    | "command-throw"
     | "pid-throw",
   home: "",
 }));
@@ -174,7 +177,29 @@ vi.mock("node:child_process", async (importOriginal) => {
         if (execState.mode === "daemon-untrusted") {
           return `  200 first-tree daemon start --foreground FIRST_TREE_HOME=${execState.home}\n`;
         }
+        if (execState.mode === "provider-name-in-env-only") {
+          return `  200 node vitest-worker.js FIRST_TREE_HOME=${execState.home} PATH=/opt/tools/@openai/codex/bin\n`;
+        }
+        if (execState.mode === "provider-missing-env-snapshot") {
+          return "";
+        }
         return `  200 codex exec FIRST_TREE_HOME=${execState.home} FIRST_TREE_PROVIDER=codex FIRST_TREE_CLIENT_ID=client_aabbccdd FIRST_TREE_SWITCH_DRAIN_VERSION=1\n`;
+      }
+      if (program === "ps" && args.includes("-ww") && args.includes("-axo")) {
+        if (execState.mode === "command-throw") throw new Error("command ps denied");
+        if (execState.mode === "many-daemon-untrusted") {
+          return Array.from(
+            { length: 9 },
+            (_value, index) => `  ${200 + index} first-tree daemon start --foreground`,
+          ).join("\n");
+        }
+        if (execState.mode === "daemon-active" || execState.mode === "daemon-untrusted") {
+          return "  200 first-tree daemon start --foreground\n";
+        }
+        if (execState.mode === "provider-name-in-env-only") {
+          return "  200 node vitest-worker.js\n";
+        }
+        return "  200 codex exec\n";
       }
       if (program === "ps" && args.includes("-p")) {
         if (execState.mode === "pid-throw") throw new Error("pid command denied");
@@ -349,6 +374,20 @@ describe("client switch platform drain scanning", () => {
     });
   });
 
+  it("classifies Darwin providers from argv instead of appended environment text", async () => {
+    setPlatform("darwin");
+    execState.mode = "provider-name-in-env-only";
+
+    await expect(runSwitch()).resolves.toBeUndefined();
+
+    writeClientYaml();
+    execState.mode = "provider-missing-env-snapshot";
+    await expect(runSwitch()).rejects.toMatchObject({
+      code: "CLIENT_SWITCH_DRAIN_UNSUPPORTED",
+      message: expect.stringContaining("without readable environment"),
+    });
+  });
+
   it("fails closed when Darwin ps inspection fails or platform is unsupported", async () => {
     setPlatform("darwin");
     execState.mode = "throw";
@@ -359,6 +398,13 @@ describe("client switch platform drain scanning", () => {
     await expect(runSwitch()).rejects.toMatchObject({
       code: "CLIENT_SWITCH_DRAIN_UNSUPPORTED",
       message: expect.stringContaining("ps denied as string"),
+    });
+
+    writeClientYaml();
+    execState.mode = "command-throw";
+    await expect(runSwitch()).rejects.toMatchObject({
+      code: "CLIENT_SWITCH_DRAIN_UNSUPPORTED",
+      message: expect.stringContaining("process commands"),
     });
 
     writeClientYaml();

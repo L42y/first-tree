@@ -1,6 +1,11 @@
 import type { Command } from "commander";
 import { print } from "../../core/output.js";
-import { renderAuthBlock, renderHubBlock, renderServiceBlock } from "../_shared/status-blocks.js";
+import {
+  renderAuthBlock,
+  renderDaemonRuntimeOwnerBlock,
+  renderHubBlock,
+  renderServiceBlock,
+} from "../_shared/status-blocks.js";
 
 /**
  * `daemon status` — local daemon-only view (service state + server binding +
@@ -15,6 +20,7 @@ export function registerDaemonStatusCommand(daemon: Command): void {
     .action(() => {
       print.line("\n");
       renderServiceBlock();
+      renderDaemonRuntimeOwnerBlock();
       renderHubBlock();
       renderAuthBlock();
       print.line("\n");

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   AGENT_VISIBILITY,
   canonicalGitRepoIdentity,
+  canonicalGitRepoUrl,
   isRuntimeProviderEnabled,
   runtimeProviderSchema,
 } from "@first-tree/shared";
@@ -39,6 +40,8 @@ export type ContextReviewerDispatchAuthority =
       connectionId: string;
       instanceOrigin: string;
       tokenHash: string;
+      repository: string;
+      branch: string;
     };
 
 export function contextReviewerChatReservationKey(organizationId: string, entityKey: string): string {
@@ -57,7 +60,6 @@ export async function loadValidContextReviewerAgent(
       managerId: agents.managerId,
       runtimeProvider: agents.runtimeProvider,
       clientId: clients.id,
-      clientOrganizationId: clients.organizationId,
       clientUserId: clients.userId,
       clientRetiredAt: clients.retiredAt,
       managerUserId: members.userId,
@@ -86,7 +88,6 @@ export async function loadValidContextReviewerAgent(
     !runtimeProviderSchema.safeParse(agent.runtimeProvider).success ||
     !isRuntimeProviderEnabled(agent.runtimeProvider) ||
     !agent.clientId ||
-    agent.clientOrganizationId !== input.organizationId ||
     agent.clientUserId !== agent.managerUserId ||
     agent.clientRetiredAt !== null
   ) {
@@ -236,11 +237,17 @@ export async function withContextReviewerDispatchAuthority<T>(
       if (identity?.host !== "github.com" || identity.path !== input.authority.repository.trim().toLowerCase()) {
         return { authorized: false };
       }
-    } else if (
-      runtime.gitlabConnection?.id !== input.authority.connectionId ||
-      runtime.gitlabConnection.instanceOrigin !== input.authority.instanceOrigin
-    ) {
-      return { authorized: false };
+    } else {
+      const repository = canonicalGitRepoUrl(runtime.repo);
+      if (
+        runtime.gitlabConnection?.id !== input.authority.connectionId ||
+        runtime.gitlabConnection.instanceOrigin !== input.authority.instanceOrigin ||
+        !repository ||
+        repository !== input.authority.repository ||
+        runtime.branch !== input.authority.branch
+      ) {
+        return { authorized: false };
+      }
     }
 
     const readiness = await readContextReviewerAgentReadiness(tx, {

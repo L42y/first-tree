@@ -106,6 +106,34 @@ describe("status block renderers", () => {
     expect(output()).toContain("unknown (systemd, denied)");
   });
 
+  it("renders authoritative daemon owner lock states", async () => {
+    const { renderDaemonRuntimeOwnerBlock } = await import("../commands/_shared/status-blocks.js");
+    const { acquireDaemonRuntimeOwnership, daemonRuntimeOwnershipPath } = await import(
+      "../core/daemon-runtime-ownership.js"
+    );
+
+    renderDaemonRuntimeOwnerBlock();
+    expect(output()).toContain("Owner:    not held");
+
+    stderrSpy.mockClear();
+    const lease = acquireDaemonRuntimeOwnership({
+      channel: "dev",
+      home,
+      mode: "foreground",
+      version: "0.0.0-test",
+    });
+    renderDaemonRuntimeOwnerBlock();
+    expect(output()).toContain(`Owner:    ✓ pid ${process.pid}, dev/foreground`);
+    lease.release();
+
+    stderrSpy.mockClear();
+    const lockPath = daemonRuntimeOwnershipPath(home);
+    mkdirSync(join(home, "state"), { recursive: true });
+    writeFileSync(lockPath, "{broken", "utf8");
+    renderDaemonRuntimeOwnerBlock();
+    expect(output()).toContain("Owner:    ✗ untrusted lock");
+  });
+
   it("renders server configuration states", async () => {
     const { renderHubBlock } = await import("../commands/_shared/status-blocks.js");
 

@@ -6,11 +6,13 @@ import { registerAgentConfigAppendPromptCommand, registerAgentConfigPromptComman
 import { registerAgentConfigSetEnvCommand } from "./set-env.js";
 import { registerAgentConfigSetModelCommand } from "./set-model.js";
 import { registerAgentConfigSetReasoningEffortCommand } from "./set-reasoning-effort.js";
+import { registerAgentConfigSetServiceTierCommand } from "./set-service-tier.js";
 import { registerAgentConfigShowCommand } from "./show.js";
 
 /**
  * `<binName> agent config ...` — admin-API-backed runtime configuration
- * (model / prompt / MCP / env / repos / dry-run). Mounted under the parent
+ * (model / reasoning / Codex service tier / prompt / MCP / env / repos /
+ * dry-run). Mounted under the parent
  * `agent` namespace so the surface stays `<binName> agent config <verb>`.
  */
 export function registerAgentConfigCommands(parent: Command): void {
@@ -18,6 +20,7 @@ export function registerAgentConfigCommands(parent: Command): void {
   registerAgentConfigShowCommand(config);
   registerAgentConfigSetModelCommand(config);
   registerAgentConfigSetReasoningEffortCommand(config);
+  registerAgentConfigSetServiceTierCommand(config);
   registerAgentConfigPromptCommands(config);
   registerAgentConfigAppendPromptCommand(config);
   registerAgentConfigAddMcpCommand(config);

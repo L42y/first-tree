@@ -2,7 +2,7 @@ import { canonicalizeResourceRepoUrl } from "@first-tree/shared";
 import { ApiError } from "../../api/client.js";
 import { initializeContextTree } from "../../api/context-tree.js";
 import { getContextTreeSetting } from "../../api/org-settings.js";
-import { createTeamResourceForOrg, listTeamResourcesForOrg } from "../../api/resources.js";
+import { confirmTeamRepositoriesForOrg, listTeamResourcesForOrg } from "../../api/resources.js";
 import { COPY } from "./copy.js";
 
 /**
@@ -83,35 +83,23 @@ export async function provisionNewTree(organizationId: string): Promise<void> {
  * chat: it is the path by which selected repos reach the agent's runtime
  * `gitRepos`, on-disk sources, and `workspace.json.sources`.
  *
- * Creates each resource (tolerating "already exists" conflicts from a re-run —
- * the canonical-key unique index makes a duplicate create throw 409), then
- * **verifies** every selected repo is actually registered and throws if any is
- * missing, so the caller surfaces an actionable error and the user retries
- * rather than seeding an empty/incomplete source set.
+ * The mutation is one optimistic, atomic batch: a stale setup chat cannot
+ * silently merge its selection over repositories changed by another Admin.
  */
 export async function ensureSourceReposRegistered(organizationId: string, repoUrls: readonly string[]): Promise<void> {
   if (repoUrls.length === 0) return;
 
-  // Best-effort create; duplicates (and transient failures) are reconciled by
-  // the authoritative verify below.
-  await Promise.allSettled(
-    repoUrls.map((url) =>
-      createTeamResourceForOrg(organizationId, {
-        type: "repo",
-        name: repoLabel(url),
-        defaultEnabled: "recommended",
-        payload: { url },
-      }),
-    ),
-  );
-
+  const current = await listTeamResourcesForOrg(organizationId);
+  const expectedActiveRepositoryKeys = current
+    .filter((resource) => resource.type === "repo" && resource.status === "active")
+    .flatMap((resource) => (resource.repoCanonicalKey ? [resource.repoCanonicalKey] : []))
+    .sort();
+  const confirmed = await confirmTeamRepositoriesForOrg(organizationId, {
+    expectedActiveRepositoryKeys,
+    repositories: repoUrls.map((url) => ({ name: repoLabel(url), url })),
+  });
   const registered = new Set(
-    (await listTeamResourcesForOrg(organizationId))
-      .filter((resource) => resource.type === "repo" && resource.defaultEnabled === "recommended")
-      .map((resource) => {
-        const url = (resource.payload as { url?: unknown }).url;
-        return typeof url === "string" ? repoKey(url) : "";
-      }),
+    confirmed.repositories.flatMap((resource) => (resource.repoCanonicalKey ? [resource.repoCanonicalKey] : [])),
   );
 
   const missing = repoUrls.filter((url) => !registered.has(repoKey(url)));

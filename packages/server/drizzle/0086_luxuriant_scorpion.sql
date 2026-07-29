@@ -1,0 +1,2 @@
+ALTER TABLE "gitlab_connections" DROP COLUMN "last_project_hook_context_tree_merge_request_inbound_at";--> statement-breakpoint
+ALTER TABLE "gitlab_connections" DROP COLUMN "last_project_hook_context_tree_repository";

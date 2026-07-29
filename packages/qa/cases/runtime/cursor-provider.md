@@ -1,6 +1,6 @@
 ---
 id: cursor-provider
-description: Validate the Cursor Agent CLI runtime provider end to end — external binary, in-product login, real turns, free-form model, and Context Tree I/O evidence.
+description: Validate the Cursor Agent CLI runtime provider end to end — external binary, managed MCP, real turns, free-form model, and Context Tree I/O evidence.
 areas: [runtime]
 surfaces: [web, cli, server, client]
 ---
@@ -11,7 +11,7 @@ surfaces: [web, cli, server, client]
 
 Confirm that an agent bound to the `cursor` provider runs real turns through the external Cursor Agent CLI with the
 canonical runtime posture, that credential and configuration failures surface through the existing recovery paths, and
-that cross-surface behavior (capability cards, model input, client switch, Context Tree I/O) matches the shipped
+that cross-surface behavior (capability cards, managed MCP, model input, client switch, Context Tree I/O) matches the shipped
 contract. Deterministic parser/handler behavior is covered by product tests; this case validates the live judgment
 slices those tests cannot prove.
 
@@ -43,8 +43,24 @@ that case and the run-local plan, not this one.
   capability entry, and after success a fresh turn completes. First Tree must never see or store the token.
 - Real turn posture: during an authenticated turn, verify the spawned process runs from the agent workspace root with
   the canonical arguments (`-p --output-format stream-json --sandbox disabled --force`, plus `--model` only when the
-  operator set one and `--resume` only with a stream-confirmed session id) — no `--trust`, `--workspace`,
-  `--approve-mcps`, or prompt text in argv. A follow-up message in the same chat must resume the same Cursor session id.
+  operator set one and `--resume` only with a stream-confirmed session id) — no `--approve-mcps`, `--trust`,
+  `--workspace`, or prompt text in argv. A follow-up message in the same chat must resume the same Cursor session id.
+- Managed MCP: configure a disposable local MCP server through First Tree, then verify the client atomically projects
+  it into `<agent workspace>/.cursor/mcp.json`, keeps that file private to the OS user, invokes the provider-native
+  `<binary> mcp enable <managed-name>` command for that entry only, and the authenticated Cursor turn calls one of its
+  tools without an approval prompt. The broad `--approve-mcps` flag must remain absent so unrelated operator-owned MCP
+  servers retain their approval boundary. Exercise stdio plus the remote HTTP/SSE mapping when suitable disposable
+  endpoints are available. On one active handler, add a managed server for the next turn and then remove all managed
+  servers for the following turn; the latter must replace stale projected entries with an empty `mcpServers` object
+  and issue no managed approval command. Concurrent chats with the same projection fingerprint — including the empty
+  projection — must keep the agent's configured parallelism; a different fingerprint waits for live users of the old
+  projection to drain before one exclusive transition, so neither turn observes the other's file. The fingerprint
+  includes the effective Cursor approval-store selector: changing `CURSOR_DATA_DIR`, or the process home used when it
+  is blank, must rerun targeted approval even when the managed MCP list is unchanged. Abort leaves the delivery
+  recoverable. A bounded setup timeout/transport failure follows the provider-turn retry budget, while an unsupported
+  approval command, permission/configuration failure, or retry exhaustion emits the standard terminal provider event
+  and durable runtime notice before the delivery is consumed. Do not inspect or archive literal secret headers or
+  approval-store paths.
 - Free-form model: set an exact model id through Web (free-form input with the `auto` hint — no reasoning-effort
   control for Cursor), confirm it round-trips and reaches the next turn's spawn; an id the provider rejects must fail
   visibly as a configuration failure with no silent fallback, and recover after an explicit config change.
@@ -58,12 +74,17 @@ that case and the run-local plan, not this one.
 
 `PASS` means the live branches above were exercised with real product evidence: an authenticated Cursor turn completed
 end to end under the canonical posture, credential failure surfaced the durable notice + login action and recovered
-in-product, model config round-tripped (including the visible rejection branch when available), and Context Tree I/O
-evidence appeared for both edit and shell-read paths.
+in-product, a First Tree-managed MCP tool was projected and called without widening the other CLI flags, model config
+round-tripped (including the visible rejection branch when available), and Context Tree I/O evidence appeared for both
+edit and shell-read paths.
 
 `FAIL` means a reproducible product issue: e.g. prompt in argv, a synthetic session id sent to `--resume`, a terminal
 failure acked without a durable chat notice, silent model fallback, missing Context Tree I/O evidence, or a drain that
-misses a live Cursor process.
+misses a live Cursor process. It also includes stale managed MCP surviving an empty config, approval enabled without
+managed MCP, broad `--approve-mcps` use, a per-server approval aimed at the wrong identifier, cross-chat projection
+interleaving, matching/empty projections being serialized for a full provider turn, unbounded redelivery after a
+deterministic setup failure, reuse of a matching projection after its approval-store root changes, or a configured MCP
+tool unavailable to the turn.
 
 `BLOCKED` means the CLI, account, entitlement, network, or run-cell topology (e.g. no desktop browser for OAuth)
 prevented a live branch — never a product `FAIL`. `INCONCLUSIVE` means turns ran but the evidence cannot distinguish
@@ -73,5 +94,7 @@ the claimed behavior (e.g. cannot observe the spawned argv in the run cell).
 
 Keep the capability snapshots (before/after install and login), the spawned process argv/cwd observation, the failing
 turn's runtime notice and the login action, the session id continuity across two turns, the model config write/readback
-and rejection surface, Context tab I/O rows, and the drain classification result. Redact tokens, account identifiers,
-and private chat content; never copy Cursor credential files into artifacts.
+and rejection surface, sanitized projected MCP shape/file mode, targeted approval command names, add/remove and
+same-workspace matching/different-fingerprint ordering, sanitized setup retry/terminal events, plus the MCP tool-call
+event, Context tab I/O rows, and the drain classification result. Redact tokens, headers, account identifiers, and
+private chat content; never copy Cursor credential files into artifacts.

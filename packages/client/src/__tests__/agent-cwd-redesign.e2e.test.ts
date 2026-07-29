@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
@@ -33,6 +33,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
  */
 
 const capturedSdkOptions: Array<{ options?: Record<string, unknown> }> = [];
+
+// This suite owns the real workspace/bootstrap boundary, including managed
+// Skill placement. Opt out of the handler-unit default in vitest.setup.ts.
+vi.unmock("../runtime/managed-skills.js");
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   const fakeQuery = {
@@ -93,6 +97,7 @@ function buildCache(gitRepos: AgentRuntimeConfig["payload"]["gitRepos"]) {
           mcpServers: [],
           env: [],
           gitRepos,
+          resourceSkills: [],
         },
         updatedAt: new Date().toISOString(),
         updatedBy: "test",
@@ -144,6 +149,31 @@ function makeMessage(chatId: string, id: string) {
 }
 
 describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
+  it("converges the legacy file marker before the first managed Skill reconcile", async () => {
+    capturedSdkOptions.length = 0;
+    const dataDir = mkdtempSync(join(tmpdir(), "ftt-legacy-marker-"));
+    const workspaceRoot = join(dataDir, "workspaces", "agent-1");
+    mkdirSync(workspaceRoot, { recursive: true });
+    writeFileSync(join(workspaceRoot, ".first-tree-workspace"), "legacy boundary marker\n");
+
+    const cache = buildCache([]);
+    await cache.refresh(AGENT_ID);
+    const handler = createClaudeCodeHandler({ workspaceRoot, agentConfigCache: cache });
+    try {
+      await handler.start(
+        makeMessage("chat-legacy-marker", "msg-legacy-marker"),
+        buildSessionCtx("chat-legacy-marker"),
+      );
+
+      expect(lstatSync(join(workspaceRoot, ".first-tree-workspace")).isDirectory()).toBe(true);
+      expect(existsSync(join(workspaceRoot, ".claude", "skills", "first-tree-read", "SKILL.md"))).toBe(true);
+      expect(capturedSdkOptions.at(-1)?.options?.cwd).toBe(workspaceRoot);
+    } finally {
+      await handler.shutdown();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("E2: worktrees/ subdir is NOT pre-created by start()", async () => {
     capturedSdkOptions.length = 0;
     const dataDir = mkdtempSync(join(tmpdir(), "ftt-e2-"));
@@ -422,6 +452,11 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
       expect(refreshedClaudeMd).toContain("# Working in First Tree");
       expect(refreshedClaudeMd).toContain("## Working Directory");
       expect(readFileSync(join(legacyCwd, "AGENTS.md"), "utf-8")).toBe(refreshedClaudeMd);
+      expect(existsSync(join(legacyCwd, ".claude", "skills", "first-tree-read", "SKILL.md"))).toBe(true);
+      expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed.json"))).toBe(true);
+      expect(lstatSync(join(legacyCwd, ".first-tree-workspace", "managed-skills.lock")).isFile()).toBe(true);
+      expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed-skills-journal.json"))).toBe(false);
+      expect(existsSync(join(legacyCwd, ".first-tree", "workspace.json"))).toBe(false);
 
       await handler.shutdown();
     } finally {

@@ -68,5 +68,8 @@ export const messages = pgTable(
      * containment query `metadata -> 'mentions' @> '["<uuid>"]'`.
      */
     index("idx_messages_mentions").using("gin", sql`((${table.metadata} -> 'mentions')) jsonb_path_ops`),
+    index("idx_messages_attachment_image_id").on(sql`(${table.content} ->> 'imageId')`),
+    index("idx_messages_content_attachments").using("gin", sql`((${table.content} -> 'attachments')) jsonb_path_ops`),
+    index("idx_messages_metadata_attachments").using("gin", sql`((${table.metadata} -> 'attachments')) jsonb_path_ops`),
   ],
 );

@@ -1,6 +1,6 @@
 ---
 id: kimi-code-provider
-description: Validate the bundled Kimi Code SDK provider end to end — host login reuse, real turns and resume, model override, failure recovery, and Context Tree I/O.
+description: Validate the bundled Kimi Code SDK provider end to end — host login reuse, managed MCP, real turns and resume, failure recovery, and Context Tree I/O.
 areas: [runtime]
 surfaces: [web, cli, server, client]
 ---
@@ -10,8 +10,8 @@ surfaces: [web, cli, server, client]
 ## Goal
 
 Confirm that an agent bound to `kimi-code` runs real turns through the pinned bundled SDK, reuses the host operator's
-Kimi Code configuration without exposing credentials, and preserves First Tree's provider-neutral delivery, retry,
-resume, event, and Context Tree contracts.
+Kimi Code configuration without exposing credentials, injects First Tree-managed MCP at the session boundary, and
+preserves First Tree's provider-neutral delivery, retry, resume, event, and Context Tree contracts.
 
 Use this case when the Kimi handler, SDK version, capability probe, provider selection, model control, failure
 classification, or Context Tree Kimi-tool derivation changes.
@@ -48,25 +48,29 @@ classification, or Context Tree Kimi-tool derivation changes.
 - Resume: suspend the chat, send a follow-up, and confirm First Tree calls SDK resume with the persisted Kimi session id,
   reapplies `roleAdditional`, cwd/env, validated external roots, and yolo permission, then completes the second turn in
   context. A permission/model initialization failure after SDK resume must close both the resumed session and harness.
+- Managed MCP: configure a disposable First Tree-managed stdio MCP server and confirm it reaches both SDK
+  `createSession` and `resumeSession` as caller-scoped `mcpServers`, the real Kimi turn calls one of its tools, and no
+  unsupported diagnostic is emitted. Verify the stdio/http/SSE projection shapes without retaining secret headers.
+  An empty managed list must omit the caller field so operator-global and project Kimi configuration keep their normal
+  behavior.
 - Failure and replay: prove a transient connection/rate error retries only before visible/unsafe output. After `Write`,
   `Edit`, or an unproven `Bash`, a failure must stop as unsafe replay rather than repeat the side effect; a later
   read-only tool must not downgrade that unsafe state.
 - Context Tree I/O: a Kimi `Read`/`Grep`/`Glob` under the bound tree records `kimi_read_tool`; `Write`/`Edit` records
   `kimi_write_tool`; a proven read-only `Bash` records `shell_command`; repo/path evidence is qualified and writes may
   carry `git_status_delta` evidence.
-- MCP boundary: if the agent config contains First Tree-managed MCP servers, the runtime emits one explicit unsupported
-  diagnostic and continues. Operator-global Kimi MCP config may still load; do not claim First Tree injected it.
 - Shutdown: suspend cancels and closes the active session while preserving its id; daemon shutdown also closes the
   harness and leaves queued delivery recoverable.
 
 ## Expected Result
 
 `PASS` requires a real authenticated First Tree/Kimi two-turn run, persisted session-id continuity, deterministic
-disposable file evidence, normalized events and Context Tree rows, and verified auth/failure boundaries.
+disposable file evidence, a First Tree-managed MCP tool call on the create/resume lifecycle, normalized events and
+Context Tree rows, and verified auth/failure boundaries.
 
 `FAIL` means a reproducible product violation such as device OAuth launched by First Tree, credentials exposed, model
 silently changed, missing standing role contract on resume, unsafe side effects replayed, terminal failure ACKed without
-the durable notice, or absent Context Tree evidence.
+the durable notice, configured caller MCP absent after create/resume, or absent Context Tree evidence.
 
 `BLOCKED` means the Kimi account, credential, provider entitlement/network, or isolated run-cell topology prevented a
 live branch. Mocked SDK unit tests do not turn a blocked live branch into PASS. `INCONCLUSIVE` means the turn ran but
@@ -75,6 +79,6 @@ the retained evidence cannot distinguish the claimed behavior.
 ## Evidence
 
 Keep sanitized capability snapshots, agent config readback, session id before/after resume, event-kind sequence and
-token totals, disposable input/output hashes, Context Tree I/O rows, failure/retry events, and relevant client logs.
-Never keep tokens, credential files, account identifiers, private prompt bodies, or raw provider payloads containing
-secrets.
+token totals, disposable input/output hashes, sanitized caller MCP shape and tool-call event, Context Tree I/O rows,
+failure/retry events, and relevant client logs. Never keep tokens, headers, credential files, account identifiers,
+private prompt bodies, or raw provider payloads containing secrets.

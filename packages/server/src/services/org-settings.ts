@@ -138,6 +138,15 @@ function applyInputDelta<K extends OrgSettingNamespace>(
     };
     return next as OrgSettingStorage<K>;
   }
+  if (namespace === "github_features") {
+    const inp = input as OrgSettingInput<"github_features">;
+    const next: OrgSettingStorage<"github_features"> = {
+      teamAgent: {
+        agentUuid: inp.teamAgent.agentUuid,
+      },
+    };
+    return next as OrgSettingStorage<K>;
+  }
   // Exhaustiveness — adding a new namespace forces a compile error here.
   const _exhaustive: never = namespace;
   return _exhaustive;
@@ -180,6 +189,17 @@ async function toOutput<K extends OrgSettingNamespace>(
         // opaque identity is not a Team-wide fact.
         agentUuid: reviewerAgent?.uuid ?? null,
         reviewerAgent,
+      },
+    };
+    return out as OrgSettingOutput<K>;
+  }
+  if (namespace === "github_features") {
+    const s = storage as OrgSettingStorage<"github_features">;
+    const agent = await resolveContextReviewerAgentSummary(db, orgId, s.teamAgent.agentUuid);
+    const out: OrgSettingOutput<"github_features"> = {
+      teamAgent: {
+        agentUuid: agent?.uuid ?? null,
+        agent,
       },
     };
     return out as OrgSettingOutput<K>;

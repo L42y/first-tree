@@ -14,6 +14,7 @@ const statusBlockMocks = vi.hoisted(() => ({
   renderAgentsBlock: vi.fn(),
   renderAuthBlock: vi.fn(),
   renderCliVersionBlock: vi.fn(),
+  renderDaemonRuntimeOwnerBlock: vi.fn(),
   renderHubBlock: vi.fn(),
   renderServiceBlock: vi.fn(),
 }));
@@ -49,12 +50,14 @@ describe("CLI command action coverage", () => {
     await command(root, "status").parseAsync([], { from: "user" });
     expect(statusBlockMocks.renderCliVersionBlock).toHaveBeenCalled();
     expect(statusBlockMocks.renderServiceBlock).toHaveBeenCalledTimes(1);
+    expect(statusBlockMocks.renderDaemonRuntimeOwnerBlock).toHaveBeenCalledTimes(1);
     expect(statusBlockMocks.renderHubBlock).toHaveBeenCalledTimes(1);
     expect(statusBlockMocks.renderAuthBlock).toHaveBeenCalledTimes(1);
     expect(statusBlockMocks.renderAgentsBlock).toHaveBeenCalled();
 
     await command(daemon, "status").parseAsync([], { from: "user" });
     expect(statusBlockMocks.renderServiceBlock).toHaveBeenCalledTimes(2);
+    expect(statusBlockMocks.renderDaemonRuntimeOwnerBlock).toHaveBeenCalledTimes(2);
     expect(printMocks.line.mock.calls.map((call) => String(call[0])).join("")).toContain("\n");
 
     const results = [{ label: "Node", ok: true, detail: "v24" }];

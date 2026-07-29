@@ -4,7 +4,7 @@ import type { runtimeProviderSchema } from "./runtime-provider.js";
 /**
  * Agent runtime configuration.
  *
- * Defines the 5 user-tunable field groups that First Tree centrally manages
+ * Defines the shared user-tunable field groups that First Tree centrally manages
  * and pushes down to the client runtime: prompt append, model, MCP servers,
  * env vars, and Git repos. Tagged by `kind` (a runtime provider) so future
  * provider-specific fields can land on a dedicated variant.
@@ -214,7 +214,7 @@ export const gitRepoSchema = z.object({
 export type GitRepo = z.infer<typeof gitRepoSchema>;
 
 /**
- * Untagged base shape — 5 user-tunable fields, no `kind` discriminator.
+ * Untagged base shape — shared user-tunable fields, no `kind` discriminator.
  * Used for `.partial()` derivations on the PATCH side, where `kind` is
  * pinned to `agents.runtime_provider` and never changes via config PATCH.
  * Zod 4 forbids `.partial()` on a refined object, so we keep refinements
@@ -269,6 +269,12 @@ const codexRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
   // intentionally excluded — it is incompatible with the default tool set and
   // breaks tool calls (see the codex handler's footgun notes).
   reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).default("high"),
+  // Provider-native service tier id forwarded to Codex unchanged. "default"
+  // is Standard mode; "fast" selects Fast mode. Keep this open to future
+  // provider-advertised tier ids instead of maintaining a local compatibility
+  // matrix — an unsupported model/account combination fails visibly at the
+  // provider boundary.
+  serviceTier: z.string().min(1).default("default"),
 });
 
 const cursorRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
@@ -379,7 +385,8 @@ export const DEFAULT_AGENT_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload = {
 };
 
 /**
- * Default payload for a fresh codex agent. Same 5 fields as claude-code.
+ * Default payload for a fresh codex agent. It carries the shared fields plus
+ * Codex-native reasoning-effort and service-tier controls.
  * `model` is left empty by default so the Codex CLI picks one matching the
  * user's auth mode — `gpt-5-codex` is rejected by ChatGPT-account auth, while
  * an empty string lets the SDK fall through to its built-in default.
@@ -393,6 +400,7 @@ export const DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload = {
   gitRepos: [],
   resourceSkills: [],
   reasoningEffort: "high",
+  serviceTier: "default",
 };
 
 /**
@@ -501,6 +509,9 @@ const agentRuntimeConfigPatchShape = z
     // re-parsed against the tagged union in `commitWrite` — an out-of-range
     // value (e.g. "" for codex, "xhigh" for claude) is rejected there.
     reasoningEffort: z.string(),
+    // Codex-only provider-native service tier. The service layer rejects this
+    // field for other runtime providers; Codex validates model/account support.
+    serviceTier: z.string().min(1),
   })
   .partial();
 
@@ -518,10 +529,10 @@ export type UpdateAgentRuntimeConfig = z.infer<typeof updateAgentRuntimeConfigSc
 
 /**
  * The patch half of an update — every payload field optional, and
- * `reasoningEffort` typed as a loose `string` (not the per-provider enum). Use
- * this for merge helpers instead of `Partial<AgentRuntimeConfigPayload>`: the
- * latter is a partial of the tagged union, so its `reasoningEffort` narrows to
- * each variant's enum and a flat patch string fails to assign.
+ * provider-specific scalar fields typed loosely enough for the flat PATCH
+ * surface. Use this for merge helpers instead of
+ * `Partial<AgentRuntimeConfigPayload>`: the latter is a partial of the tagged
+ * union, so provider-only fields do not form one assignable patch shape.
  */
 export type AgentRuntimeConfigPatch = UpdateAgentRuntimeConfig["payload"];
 

@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import {
   ATTACHMENT_FILENAME_HEADER,
   ATTACHMENT_MIME_HEADER,
@@ -55,8 +56,8 @@ export async function orgAttachmentRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const body = request.body;
-      if (!Buffer.isBuffer(body)) {
-        throw new BadRequestError("Request body must be raw bytes");
+      if (!(body instanceof Readable)) {
+        throw new BadRequestError("Request body must be a byte stream");
       }
 
       const mimeHeader = request.headers[ATTACHMENT_MIME_HEADER];
@@ -66,12 +67,20 @@ export async function orgAttachmentRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const filenameHeader = request.headers[ATTACHMENT_FILENAME_HEADER];
-      const filename = (Array.isArray(filenameHeader) ? filenameHeader[0] : filenameHeader)?.trim() || "blob";
+      const encodedFilename = (Array.isArray(filenameHeader) ? filenameHeader[0] : filenameHeader)?.trim() || "blob";
+      const filename = decodeFilename(encodedFilename);
+      const contentLengthHeader = request.headers["content-length"];
+      const parsedContentLength =
+        typeof contentLengthHeader === "string" && /^\d+$/.test(contentLengthHeader)
+          ? Number(contentLengthHeader)
+          : undefined;
 
       const row = await createAttachment(app.db, {
+        organizationId: scope.organizationId,
         mimeType,
         filename,
-        data: body,
+        body,
+        ...(parsedContentLength !== undefined ? { contentLength: parsedContentLength } : {}),
         uploadedBy: scope.humanAgentId,
       });
 
@@ -86,4 +95,12 @@ export async function orgAttachmentRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(201).send(response);
     },
   );
+}
+
+function decodeFilename(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

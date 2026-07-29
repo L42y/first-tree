@@ -97,12 +97,26 @@ class FakeAppServerClient {
     this.requests.push({ method, params });
     if (method === "thread/start") {
       if (this.threadStartDeferred) return this.threadStartDeferred.promise;
-      return { thread: { id: "thread-app-server" } };
+      const config = (params as { config?: { service_tier?: unknown } } | undefined)?.config;
+      const requestedServiceTier = config?.service_tier;
+      return {
+        thread: { id: "thread-app-server" },
+        ...(typeof requestedServiceTier === "string"
+          ? { serviceTier: requestedServiceTier === "fast" ? "priority" : requestedServiceTier }
+          : {}),
+      };
     }
     if (method === "thread/resume") {
       this.beforeThreadResumeReturn?.();
       if (this.threadResumeError) throw this.threadResumeError;
-      return { thread: { id: "thread-app-server" } };
+      const config = (params as { config?: { service_tier?: unknown } } | undefined)?.config;
+      const requestedServiceTier = config?.service_tier;
+      return {
+        thread: { id: "thread-app-server" },
+        ...(typeof requestedServiceTier === "string"
+          ? { serviceTier: requestedServiceTier === "fast" ? "priority" : requestedServiceTier }
+          : {}),
+      };
     }
     if (method === "turn/start") {
       if (this.turnStartError) {
@@ -282,8 +296,8 @@ function makeHandler(fake: FakeAppServerClient, extraConfig: Record<string, unkn
  * payload whose prompt body the test can flip mid-session to simulate an admin
  * prompt change. Only the methods the handler actually calls are real.
  */
-function makeMutableConfigCache(initialAppend: string) {
-  const state = { append: initialAppend };
+function makeMutableConfigCache(initialAppend: string, serviceTier = "default") {
+  const state = { append: initialAppend, serviceTier };
   const config = () => ({
     agentId: AGENT_ID,
     version: 1,
@@ -296,6 +310,7 @@ function makeMutableConfigCache(initialAppend: string) {
       gitRepos: [],
       resourceSkills: [],
       reasoningEffort: "high" as const,
+      serviceTier: state.serviceTier,
     },
     updatedAt: "",
     updatedBy: "",
@@ -619,6 +634,126 @@ describe("codex app-server handler", () => {
 
     completeTurn(fake, "turn-1", "final answer");
     await startPromise;
+    await handler.shutdown();
+  });
+
+  it("accepts Codex's canonical priority response for the shipped Fast alias", async () => {
+    const fake = new FakeAppServerClient();
+    const mutable = makeMutableConfigCache("", "fast");
+    const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    expect(threadStart?.params).toMatchObject({
+      config: {
+        features: { fast_mode: true },
+        service_tier: "fast",
+      },
+    });
+    expect(fake.requests.some((request) => request.method === "turn/start")).toBe(true);
+
+    completeTurn(fake, "turn-1", "final answer");
+    await startPromise;
+    await handler.shutdown();
+  });
+
+  it("treats a legacy missing serviceTier as Standard in app-server", async () => {
+    const fake = new FakeAppServerClient();
+    const mutable = makeMutableConfigCache("", "default");
+    const legacyConfig = await (
+      mutable.cache as unknown as { refresh: () => Promise<{ payload: Record<string, unknown> }> }
+    ).refresh();
+    delete legacyConfig.payload.serviceTier;
+    const cache = {
+      ...(mutable.cache as Record<string, unknown>),
+      get: () => legacyConfig,
+      refresh: async () => legacyConfig,
+    };
+    const handler = makeHandler(fake, { agentConfigCache: cache });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const config = (threadStart?.params as { config?: Record<string, unknown> } | undefined)?.config;
+    expect(config?.service_tier).toBe("default");
+    expect(config).not.toHaveProperty("features");
+
+    completeTurn(fake, "turn-1", "final answer");
+    await startPromise;
+    await handler.shutdown();
+  });
+
+  it("keeps Standard compatible with provider-managed Fast-mode policy", async () => {
+    const fake = new FakeAppServerClient();
+    const mutable = makeMutableConfigCache("", "default");
+    const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    const config = (threadStart?.params as { config?: Record<string, unknown> } | undefined)?.config;
+    expect(config?.service_tier).toBe("default");
+    expect(config).not.toHaveProperty("features");
+
+    completeTurn(fake, "turn-1", "final answer");
+    await startPromise;
+    await handler.shutdown();
+  });
+
+  it("fails an unsupported service tier before app-server starts a turn", async () => {
+    const fake = new FakeAppServerClient();
+    fake.deferThreadStart();
+    const mutable = makeMutableConfigCache("", "fast");
+    const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
+    const token = makeDeliveryToken();
+    const emitEvent = vi.fn<SessionContext["emitEvent"]>();
+    const ctx = makeContext({ emitEvent });
+    const message = makeMessage("m1", "first");
+    const warning =
+      "Configured service tier `fast` is not advertised as supported for model `gpt-test` and will be omitted from requests.";
+
+    const startPromise = handler.start(message, ctx, token);
+    await waitFor(() => fake.requests.some((request) => request.method === "thread/start"));
+    fake.emit("warning", { threadId: "thread-app-server", message: warning });
+    fake.resolveThreadStart();
+
+    await expect(startPromise).resolves.toMatchObject({
+      sessionId: "thread-app-server",
+      route: { kind: "owned", mode: "processing" },
+    });
+    expect(fake.requests.some((request) => request.method === "turn/start")).toBe(false);
+    expect(token.processingStarted).toHaveBeenCalledWith([message]);
+    expect(token.complete).toHaveBeenCalledWith([message], {
+      status: "error",
+      terminal: true,
+      completion: "consumed",
+      reason: "codex_service_tier_unsupported",
+    });
+    expect(emitEvent).toHaveBeenCalledWith({
+      kind: "error",
+      payload: {
+        source: "runtime",
+        message: `Codex service tier configuration failed: ${warning}`,
+      },
+    });
+    const providerFailure = emitEvent.mock.calls
+      .map(([event]) => (event.kind === "error" ? parseProviderRetryEventMessage(event.payload.message) : null))
+      .find((payload) => payload?.event === "provider_failure_terminal");
+    expect(providerFailure).toMatchObject({
+      provider: "codex",
+      scope: "provider_turn",
+      category: "configuration",
+      reasonCode: "codex_service_tier_unsupported",
+    });
+    expect(emitEvent).toHaveBeenCalledWith({ kind: "turn_end", payload: { status: "error" } });
+
     await handler.shutdown();
   });
 

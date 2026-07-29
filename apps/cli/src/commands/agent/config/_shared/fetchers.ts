@@ -102,6 +102,9 @@ export function printConfig(cfg: AgentRuntimeConfig): void {
       `Reasoning effort: ${cfg.payload.reasoningEffort || "(unset — inherits local effortLevel)"}\n`,
     );
   }
+  if ("serviceTier" in cfg.payload) {
+    process.stdout.write(`Service tier: ${cfg.payload.serviceTier}\n`);
+  }
   const promptSections = cfg.payload.prompt.sections ?? [];
   if (promptSections.length > 0) {
     process.stdout.write(`Effective prompt stack (${promptSections.length} section(s); resolved team + agent):\n`);

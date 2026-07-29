@@ -64,6 +64,10 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/preview/onboarding");
   localStorage.clear();
   sessionStorage.clear();
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn(async () => undefined) },
+  });
 });
 
 afterEach(() => {
@@ -158,6 +162,30 @@ describe("onboarding preview review surface", () => {
         (scenario) => scenario.view === "experiments",
       ),
     ).toBe(true);
+  });
+
+  it("renders and copies the production personal Context handoff in the ready invitee preview", async () => {
+    authMock.memberships = [{}];
+    window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=flow&scenario=inv-ko-ready");
+
+    const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
+    const { container, root } = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+
+    await waitForText(container, "Use Team Context in your coding agent");
+    expect(container.textContent).not.toContain("context enable --provider");
+    await clickByText(container, "Copy setup prompt");
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("'first-tree' context enable --provider 'claude-code' --team 'org-acme'"),
+    );
+    const copiedPrompt = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0];
+    expect(copiedPrompt).not.toContain("--provider 'codex'");
+
+    await act(async () => root.unmount());
   });
 
   it("keeps GitHub preview states visually distinct", async () => {

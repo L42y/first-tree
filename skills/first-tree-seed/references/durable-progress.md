@@ -31,6 +31,8 @@ unrelated existing content, but add exactly one Seed section in this shape:
 
 - [x] Seed Phase 1 structure
 
+Review gate: optional
+
 ## Seed identity
 
 <!-- first-tree-seed-ledger:v1 -->
@@ -60,6 +62,15 @@ The JSON block is canonical:
   without slashes; and
 - never store credentials, access tokens, source checkout paths for remote
   repositories, PR/MR identifiers, chat identifiers, or transcript text.
+
+The `Review gate` line is also canonical operational state:
+
+- Write `Review gate: automatic-review-required` only when the explicit
+  tree-build task carries the Welcome Reviewer contract defined in `SKILL.md`.
+- Write `Review gate: optional` for ordinary Seed.
+- Require exactly one of those values. A legacy v1 record without the line
+  remains recoverable and is treated as `optional`; never infer the stronger
+  gate from chat history or provenance.
 
 Use these canonical source identities:
 
@@ -119,7 +130,11 @@ Perform these checks in order from a new process or agent:
 3. Inspect `.first-tree/progress.md` from a detached checkout of that exact
    commit. Require exactly one progress marker and one ledger marker, valid
    canonical JSON, the exact Team id, the checked Phase 1 line, and no checked
-   Phase 2 line.
+   Phase 2 line. Count every line whose trimmed text begins with
+   `Review gate:`: no such line is a legacy record treated as `optional`;
+   exactly one must equal
+   `Review gate: automatic-review-required` or `Review gate: optional`;
+   duplicate lines or any other value fail closed.
 4. Confirm every ledger `approvedTopLevels` directory exists at that exact Tree
    commit.
 5. Re-resolve all explicit source inputs without reading source content.
@@ -134,10 +149,14 @@ Perform these checks in order from a new process or agent:
    that exact commit, preserves the ledger byte-for-byte, and contains only
    Phase 2 scope; otherwise stop without resetting, overwriting, or
    force-pushing it. Add initial leaves and the checked Phase 2 line, preserve
-   the ledger, run `first-tree tree verify`, and inspect the complete diff.
+   the ledger and Review gate line, run `first-tree tree verify`, and inspect
+   the complete diff.
 8. Repeat Seed preflight immediately before push and immediately before PR/MR
-   creation. Require the same Team, canonical binding repo, and branch. Query
-   the forge by deterministic head branch first and reuse existing state.
+   creation. Require the same Team, canonical binding repo, and branch. When
+   the Review gate is `automatic-review-required`, require the exact
+   selected-Team Review configuration to have a non-null selected Agent and
+   `enabled: true` before PR/MR creation. Query the forge by deterministic head
+   branch first and reuse existing state.
 
 The prior chat, its title, a current-message claim, private cache files, and a
 familiar domain layout are never inputs to this algorithm.
@@ -147,10 +166,10 @@ familiar domain layout are never inputs to this algorithm.
 - No marker on a populated tree: refuse unrelated re-seeding and route future
   source-backed work to `first-tree-write`.
 - Checked Phase 2 line: report Seed complete and do not reopen either phase.
-- Malformed/duplicate marker or ledger, Team mismatch, source identity
-  mismatch, unreadable exact commit, missing approved domain, binding change,
-  or lost Admin role: stop and name the mismatched stage without starting a new
-  Seed.
+- Malformed/duplicate marker, ledger, or Review gate; an unsupported Review
+  gate value; Team mismatch; source identity mismatch; unreadable exact commit;
+  missing approved domain; binding change; or lost Admin role: stop and name
+  the mismatched stage without starting a new Seed.
 - Failure before push or PR/MR creation: report that no such remote mutation
   was attempted by this run.
 - Failure after a repository, branch, binding, or PR/MR may exist: inspect and

@@ -129,10 +129,32 @@ describe("Setup navigation attention", () => {
   });
 
   it("uses the owner snapshot only for admin-recoverable unavailable Tree attention", () => {
-    expect(contextTreeSnapshotNeedsAttention("unavailable", "admin")).toBe(true);
-    expect(contextTreeSnapshotNeedsAttention("unavailable", "member")).toBe(false);
-    expect(contextTreeSnapshotNeedsAttention("stale", "admin")).toBe(false);
-    expect(contextTreeSnapshotNeedsAttention("active", "admin")).toBe(false);
+    expect(contextTreeSnapshotNeedsAttention({ snapshotStatus: "unavailable" }, "admin")).toBe(true);
+    expect(contextTreeSnapshotNeedsAttention({ snapshotStatus: "unavailable" }, "member")).toBe(false);
+    expect(contextTreeSnapshotNeedsAttention({ snapshotStatus: "stale" }, "admin")).toBe(false);
+    expect(contextTreeSnapshotNeedsAttention({ snapshotStatus: "active" }, "admin")).toBe(false);
+    for (const reason of [
+      "gitlab_authentication_required",
+      "gitlab_origin_not_authorized",
+      "gitlab_dns_unavailable",
+      "gitlab_address_not_authorized",
+      "gitlab_egress_denied",
+    ] as const) {
+      expect(
+        contextTreeSnapshotNeedsAttention(
+          {
+            snapshotStatus: "unavailable",
+            provider: "gitlab",
+            contentAvailability: {
+              status: "unavailable",
+              accessMode: "anonymous",
+              reason,
+            },
+          },
+          "admin",
+        ),
+      ).toBe(false);
+    }
     expect(contextTreeSnapshotNeedsAttention(undefined, "admin")).toBe(false);
   });
 

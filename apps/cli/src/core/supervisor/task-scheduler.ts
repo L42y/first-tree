@@ -80,6 +80,7 @@ function windowsInfo(state: ServiceState, pid?: number, detail?: string): Servic
     unitPath: windowsTaskXmlPath(),
     logDir: join(defaultHome(), "logs"),
     state,
+    configuredHome: defaultHome(),
     pid,
     detail,
   };

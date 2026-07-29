@@ -15,6 +15,7 @@ type ContextTreeAvailability = "active" | "stale" | "unavailable" | "checking" |
 export function SetupContextTreeControls({
   binding,
   availability,
+  teamNonActionableGitlabWebContext = false,
   loadSetting = getRawContextTreeSetting,
   saveSetting = putContextTreeSetting,
   refreshFacts,
@@ -22,6 +23,7 @@ export function SetupContextTreeControls({
 }: {
   binding: SetupContextTreeBinding;
   availability: ContextTreeAvailability;
+  teamNonActionableGitlabWebContext?: boolean;
   loadSetting?: (organizationId: string) => Promise<OrgContextTreeOutput>;
   saveSetting?: (organizationId: string, input: OrgContextTreeInput) => Promise<OrgContextTreeOutput>;
   refreshFacts?: (organizationId: string) => Promise<void>;
@@ -85,7 +87,9 @@ export function SetupContextTreeControls({
 
   const hasBoundTree = binding.state === "bound";
   const chatIntent = hasBoundTree ? "recover" : "build";
-  const shouldOfferChat = binding.state === "unbound" || (hasBoundTree && availability === "unavailable");
+  const shouldOfferChat =
+    binding.state === "unbound" ||
+    (hasBoundTree && availability === "unavailable" && !teamNonActionableGitlabWebContext);
   const bindingSummary = savedBinding?.repo
     ? `${repositoryLabel(savedBinding.repo)} · ${savedBinding.branch ?? "main"} branch · ${
         savedBinding.provider ?? "provider pending"
@@ -116,10 +120,12 @@ export function SetupContextTreeControls({
           <span className="text-label min-w-0" style={{ color: "var(--fg-3)", overflowWrap: "anywhere" }}>
             {bindingSummary}
           </span>
-          <Button type="button" variant="link" className="h-auto shrink-0 p-0" onClick={() => navigate("/context")}>
-            <span>Open Context</span>
-            <ArrowRight className="h-4 w-4" />
-          </Button>
+          {!teamNonActionableGitlabWebContext ? (
+            <Button type="button" variant="link" className="h-auto shrink-0 p-0" onClick={() => navigate("/context")}>
+              <span>Open Context</span>
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

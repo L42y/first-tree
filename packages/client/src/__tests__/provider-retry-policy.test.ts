@@ -136,6 +136,31 @@ describe("classifyProviderFailure", () => {
     }
   });
 
+  it("maps Codex service-tier omission to a terminal configuration failure", () => {
+    const classification = classifyProviderFailure(
+      new Error(
+        "Configured service tier `fast` is not advertised as supported for model `gpt-test` and will be omitted from requests.",
+      ),
+      { provider: "codex", scope: "provider_turn", source: "sdk" },
+    );
+    expect(classification).toMatchObject({
+      category: "configuration",
+      reasonCode: "codex_service_tier_unsupported",
+    });
+    expect(
+      decideProviderRetry({
+        classification,
+        scope: "provider_turn",
+        attempt: 1,
+        replaySafety: "pre_provider",
+      }),
+    ).toMatchObject({
+      action: "stop",
+      reasonCode: "codex_service_tier_unsupported",
+      terminalKind: "needs_operator",
+    });
+  });
+
   it("classifies Kimi's stable SDK error codes without depending on prose", () => {
     const classifyKimi = (code: string) =>
       classifyProviderFailure(Object.assign(new Error("provider stopped"), { code }), {

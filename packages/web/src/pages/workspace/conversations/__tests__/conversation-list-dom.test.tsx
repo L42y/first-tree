@@ -761,15 +761,43 @@ describe("ConversationList", () => {
     }
   });
 
-  it("marks the selected row with aria-current and reveals the row-actions kebab on touch", async () => {
-    const container = await renderDom(<StatefulList selectedChatId="chat-manual" />);
+  it("preserves the dense row layout while gating the hidden kebab hit target", async () => {
+    const onSelectChat = vi.fn();
+    const pinnedRow = row({
+      chatId: "chat-pinned",
+      title: "Pinned planning",
+      pinnedAt: "2026-05-28T11:30:00.000Z",
+    });
+    const client = createClient([...BASE_ROWS, pinnedRow], null);
+    const container = await renderDom(
+      <StatefulList selectedChatId="chat-pinned" onSelectChat={onSelectChat} />,
+      client,
+    );
+    const selectedRow = rowButton(container, "Pinned planning");
     // Row selection is exposed to assistive tech (was tint + left bar only).
-    expect(rowButton(container, "Manual planning").getAttribute("aria-current")).toBe("page");
+    expect(selectedRow.getAttribute("aria-current")).toBe("page");
     expect(rowButton(container, "Broken deploy").getAttribute("aria-current")).toBeNull();
+    expect(selectedRow.className).toContain("w-full");
+    expect(selectedRow.className).toContain("hover:bg-[var(--bg-hover)]");
+    expect(selectedRow.className).not.toContain("active:bg-[var(--bg-active)]");
+    await click(selectedRow);
+    expect(onSelectChat).toHaveBeenCalledWith("chat-pinned");
     // The row-actions kebab (the only Pin entry point) reveals on coarse (touch)
     // pointers, not hover-only, so Pin is reachable on phones / the narrow overlay.
-    const kebab = container.querySelector('button[aria-label="Manage chat"]');
+    const kebab = selectedRow.parentElement?.querySelector<HTMLButtonElement>('button[aria-label="Manage chat"]');
+    expect(kebab).not.toBeNull();
     expect(kebab?.className).toContain("pointer-coarse:opacity-100");
+    expect(kebab?.className).toContain("pointer-events-none");
+    expect(kebab?.className).toContain("group-hover:pointer-events-auto");
+    // Keep the pre-existing compact overlay layout: only the visible action
+    // trigger owns the trailing hit target.
+    expect(kebab?.parentElement?.parentElement?.parentElement).toBe(selectedRow.parentElement);
+    const actionOverlay = kebab?.parentElement?.parentElement;
+    expect(actionOverlay?.className).toContain("absolute");
+    expect(actionOverlay?.className).toContain("pointer-events-none");
+    if (!kebab) throw new Error("Missing row action trigger");
+    await click(kebab);
+    expect(container.querySelector('[role="menu"]')?.className).toContain("pointer-events-auto");
     // ...and the trailing metadata cluster hides on coarse pointers so the
     // always-visible kebab never overlaps the row's time / status (R5).
     expect(container.querySelector('[class~="pointer-coarse:opacity-0"]')).not.toBeNull();

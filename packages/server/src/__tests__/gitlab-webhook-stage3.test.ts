@@ -14,6 +14,8 @@ import { messages } from "../db/schema/messages.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
+import { handleContextReviewerMrEvent } from "../services/context-reviewer-mr.js";
+import { putContextReviewerAssignment, putContextReviewerEnablement } from "../services/context-reviewer-settings.js";
 import {
   createGitlabConnection,
   deleteGitlabConnection,
@@ -122,7 +124,7 @@ describe("GitLab Stage 3 personnel routing", () => {
     return { admin, clientId, delegate, connection, link };
   }
 
-  it("dispatches one reserved Context Reviewer run for an old-GitLab MR without personnel routing", async () => {
+  it("enables before traffic and dispatches the first Project Hook MR without personnel routing", async () => {
     const app = getApp();
     const { admin, delegate, connection } = await setupTarget(app);
     await putOrgSetting(
@@ -139,13 +141,17 @@ describe("GitLab Stage 3 personnel routing", () => {
         memberId: admin.memberId,
       },
     );
-    await putOrgSetting(
-      app.db,
-      admin.organizationId,
-      "context_tree_features",
-      { contextReviewer: { enabled: true, agentUuid: delegate.uuid } },
-      { updatedBy: admin.userId, memberId: admin.memberId },
-    );
+    await putContextReviewerAssignment(app.db, admin.organizationId, delegate.uuid, {
+      updatedBy: admin.userId,
+    });
+    await expect(
+      putContextReviewerEnablement(app.db, admin.organizationId, true, {
+        updatedBy: admin.userId,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      contextReviewer: { enabled: true, agentUuid: delegate.uuid },
+    });
 
     const payload = mergeRequestPayload({ projectPath: "Acme/Reviews" });
     const projectHook = await app.inject({
@@ -200,6 +206,88 @@ describe("GitLab Stage 3 personnel routing", () => {
     expect(
       reviewerChat ? await app.db.select().from(messages).where(eq(messages.chatId, reviewerChat.id)) : [],
     ).toHaveLength(1);
+  });
+
+  it("rejects an MR when the Context Tree binding changes after repository resolution", async () => {
+    const app = getApp();
+    const { admin, delegate, connection } = await setupTarget(app);
+    await putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      {
+        provider: "gitlab",
+        repo: "git@gitlab.internal:Acme/Reviews.git",
+        branch: "main",
+      },
+      {
+        updatedBy: admin.userId,
+        memberId: admin.memberId,
+      },
+    );
+    await putContextReviewerAssignment(app.db, admin.organizationId, delegate.uuid, {
+      updatedBy: admin.userId,
+    });
+    await putContextReviewerEnablement(app.db, admin.organizationId, true, {
+      updatedBy: admin.userId,
+      staleSeconds: 60,
+    });
+    const [connectionRow] = await app.db
+      .select()
+      .from(gitlabConnections)
+      .where(eq(gitlabConnections.id, connection.connectionId));
+    if (!connectionRow) throw new Error("GitLab connection fixture is missing");
+
+    let releaseFence = () => {};
+    const waitForRelease = new Promise<void>((resolve) => {
+      releaseFence = resolve;
+    });
+    let markResolved = () => {};
+    const repositoryResolved = new Promise<void>((resolve) => {
+      markResolved = resolve;
+    });
+    const handling = handleContextReviewerMrEvent({
+      database: app.db,
+      normalized: normalizeGitlabWebhook({
+        organizationId: admin.organizationId,
+        connectionId: connection.connectionId,
+        instanceOrigin: connectionRow.instanceOrigin,
+        stableDeliveryId: "binding-rebind-race",
+        eventHeader: "Merge Request Hook",
+        body: mergeRequestPayload({ projectPath: "Acme/Reviews", iid: 18 }),
+      }),
+      connection: connectionRow,
+      staleSeconds: 60,
+      beforeAuthorityFenceForTest: async () => {
+        markResolved();
+        await waitForRelease;
+      },
+    });
+    await repositoryResolved;
+
+    await putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      {
+        provider: "gitlab",
+        repo: "git@gitlab.internal:Acme/Another-Tree.git",
+        branch: "main",
+      },
+      {
+        updatedBy: admin.userId,
+        memberId: admin.memberId,
+      },
+    );
+    releaseFence();
+
+    await expect(handling).resolves.toMatchObject({ handled: false });
+    expect(
+      (await app.db.select().from(chats)).filter((chat) => chat.metadata.contextTreeReviewer === true),
+    ).toHaveLength(0);
+    expect(
+      (await app.db.select().from(messages)).filter((message) => message.metadata.contextTreeReviewer === true),
+    ).toHaveLength(0);
   });
 
   it("fails closed for wrong repo, disabled or invalid Reviewer, handles draft-to-ready update, and ignores Notes", async () => {
