@@ -5,6 +5,7 @@ import { createLogger } from "../observability/index.js";
 import type { AudienceTarget } from "./github-audience.js";
 import { findReuseChatForInvolved, refreshGithubChatTopic, resolveTargetChat } from "./github-entity-chat.js";
 import { type EntityStateSeed, setEntityTitle } from "./github-entity-state.js";
+import { applyMembershipWrite } from "./participant-mode.js";
 import { sendScmSystemCard } from "./scm-card-delivery.js";
 import {
   compareScmDeliveryEntries,
@@ -87,7 +88,11 @@ export async function deliverGithubEvent(
               },
               directedContext:
                 target.involveReason && target.involveLogin
-                  ? { reason: target.involveReason, externalUsername: target.involveLogin }
+                  ? {
+                      reason: target.involveReason,
+                      externalUsername: target.involveLogin,
+                      ...(target.teamAgentTask ? { teamAgentTask: target.teamAgentTask } : {}),
+                    }
                   : null,
             }
           : {
@@ -98,6 +103,13 @@ export async function deliverGithubEvent(
                 wakeAgentId: target.delegateAgentId,
                 externalUsername: target.involveLogin as string,
               },
+              directedContext: target.teamAgentTask
+                ? {
+                    reason: target.involveReason as InvolveReason,
+                    externalUsername: target.involveLogin as string,
+                    teamAgentTask: target.teamAgentTask,
+                  }
+                : null,
             },
     ),
     actorHumanId,
@@ -180,7 +192,7 @@ export async function deliverGithubEvent(
       const entries = [...delivery.entries.values()].sort(compareScmDeliveryEntries);
       const senderId = selectScmSenderId(entries);
       const cardContext = selectScmCardContext(entries);
-      const card = buildCard(event, cardContext.involveReason, cardContext.involveLogin);
+      const card = buildCard(event, cardContext.involveReason, cardContext.involveLogin, cardContext.teamAgentTask);
       const mentionedUser = card.mentionedUser ?? undefined;
       // Native wake-set (S8): the delegates are passed as `metadata.mentions`,
       // so the generic fan-out wakes them — no GitHub-specific addressing
@@ -188,6 +200,9 @@ export async function deliverGithubEvent(
       // out by the message service (the card still lands as a silent row via
       // `allowRecipientlessSend`). The unread-mention red dot stays off because
       // delegates are non-human mention targets.
+      // The task marker scopes who may execute an App-directed request; it
+      // does not replace independent subscription / explicit wake lines that
+      // survived into this chat delivery.
       const mentions = scmWakeAgentIds(entries);
       await sendScmSystemCard(app, {
         chatId: delivery.chatId,
@@ -208,6 +223,7 @@ export async function deliverGithubEvent(
           // visual attribution shifts. Scoped to GitHub cards so an arbitrary
           // client cannot impersonate other sources.
           ...(mentionedUser ? { mentionedUser } : {}),
+          ...(card.teamAgentTask ? { teamAgentTask: card.teamAgentTask } : {}),
         },
       });
       stats.delivered += 1;
@@ -317,6 +333,9 @@ async function resolveChatFor(
     isMentionMatched: true,
   });
   if (!resolved) return null;
+  if (target.directedContext?.teamAgentTask && target.directedContext.teamAgentTask.agentUuid === wakeAgentId) {
+    await applyMembershipWrite(app.db, resolved.chatId, [{ agentId: wakeAgentId }], { upgradeWatcherToSpeaker: true });
+  }
   return { chatId: resolved.chatId, created: resolved.created };
 }
 
@@ -330,6 +349,7 @@ function buildCard(
   event: NormalizedScmEvent,
   involveReason: InvolveReason | null,
   involveLogin: string | null,
+  teamAgentTask: { agentUuid: string } | null,
 ): GithubEventCard {
   const reason: GithubEventCard["reason"] = involveReason ?? "subscribed";
   const card: GithubEventCard = {
@@ -350,5 +370,6 @@ function buildCard(
     },
   };
   if (involveLogin) card.mentionedUser = involveLogin;
+  if (teamAgentTask) card.teamAgentTask = teamAgentTask;
   return card;
 }

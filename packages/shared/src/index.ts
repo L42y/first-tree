@@ -902,9 +902,11 @@ export {
 } from "./schemas/message.js";
 export {
   GITHUB_EVENT_CARD_REASONS,
+  type GithubAgentTask,
   type GithubEventCard,
   type GithubEventCardReason,
   type GitlabEventCard,
+  githubAgentTaskSchema,
   githubEventCardReasonSchema,
   githubEventCardSchema,
   gitlabEventCardSchema,
@@ -979,6 +981,9 @@ export {
   type OrgContextTreeInput,
   type OrgContextTreeOutput,
   type OrgContextTreeStorage,
+  type OrgGithubFeaturesInput,
+  type OrgGithubFeaturesOutput,
+  type OrgGithubFeaturesStorage,
   type OrgSettingInput,
   type OrgSettingNamespace,
   type OrgSettingOutput,
@@ -994,6 +999,9 @@ export {
   orgContextTreeInputSchema,
   orgContextTreeOutputSchema,
   orgContextTreeStorageSchema,
+  orgGithubFeaturesInputSchema,
+  orgGithubFeaturesOutputSchema,
+  orgGithubFeaturesStorageSchema,
   orgSettingNamespaceSchema,
   orgSourceReposInputSchema,
   orgSourceReposOutputSchema,
@@ -1282,6 +1290,16 @@ export {
   type Stats,
   statsSchema,
 } from "./schemas/stats.js";
+export {
+  type TeamAgentAssignmentInput,
+  type TeamAgentCandidate,
+  type TeamAgentCandidateRuntime,
+  type TeamAgentCandidatesOutput,
+  teamAgentAssignmentInputSchema,
+  teamAgentCandidateRuntimeSchema,
+  teamAgentCandidateSchema,
+  teamAgentCandidatesOutputSchema,
+} from "./schemas/team-agent-settings.js";
 export {
   isGithubEventCardContent,
   isGithubSystemSenderMetadata,

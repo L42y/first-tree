@@ -75,7 +75,7 @@ async function defaultGithubReviewProbe(
       ...init,
       signal,
     });
-  if (!credentials?.slug) return "failed";
+  if (!credentials) return "failed";
   const identity = canonicalGitRepoIdentity(repo);
   const parts = identity?.host === "github.com" ? identity.path.split("/") : [];
   if (parts.length !== 2 || !parts[0] || !parts[1]) return "failed";

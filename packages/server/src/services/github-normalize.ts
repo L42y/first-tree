@@ -27,12 +27,40 @@ export function extractMentions(text: string | null | undefined): string[] {
   return [...names];
 }
 
+function extractNewMentionsFromBodyEdit(payload: Record<string, unknown>, currentBody: string): string[] {
+  const changes = isRecord(payload.changes) ? payload.changes : null;
+  const bodyChange = isRecord(changes?.body) ? changes.body : null;
+  if (!bodyChange || typeof bodyChange.from !== "string") return [];
+  const previousMentions = new Set(extractMentions(bodyChange.from));
+  return extractMentions(currentBody).filter((login) => !previousMentions.has(login));
+}
+
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readGithubAuthorAssociation(eventType: string, payload: Record<string, unknown>): string | null {
+  const source =
+    eventType === "pull_request"
+      ? payload.pull_request
+      : eventType === "pull_request_review"
+        ? payload.review
+        : eventType === "pull_request_review_comment" ||
+            eventType === "issue_comment" ||
+            eventType === "discussion_comment" ||
+            eventType === "commit_comment"
+          ? payload.comment
+          : eventType === "issues"
+            ? payload.issue
+            : eventType === "discussion"
+              ? payload.discussion
+              : null;
+  if (!isRecord(source)) return null;
+  return readString(source.author_association)?.toUpperCase() ?? null;
 }
 
 function pullRequestStateFromPayload(pr: Record<string, unknown>, action: string): EntityStateSeed["state"] {
@@ -262,7 +290,11 @@ export function normalizeGithubEvent(
       title: rule.entity.title,
       url: rule.entity.url,
     },
-    actor: { externalUsername: senderLogin, isBot: senderIsBot },
+    actor: {
+      externalUsername: senderLogin,
+      isBot: senderIsBot,
+      authorAssociation: readGithubAuthorAssociation(eventType, payload),
+    },
     kind: rule.kind,
     targets: rule.involves,
     surface: rule.surface,
@@ -335,7 +367,7 @@ function buildPullRequestRule(
       };
     }
     case "edited": {
-      const mentionLogins = extractMentions(body);
+      const mentionLogins = extractNewMentionsFromBodyEdit(payload, body);
       return {
         entity,
         kind: "edited",
@@ -432,10 +464,16 @@ function buildPullRequestReviewRule(action: string | null, payload: Record<strin
   if (!entity) return null;
   const number = readNumber(pr.number);
   const body = readString(review.body) ?? "";
+  const mentionLogins =
+    action === "submitted"
+      ? extractMentions(body)
+      : action === "edited"
+        ? extractNewMentionsFromBodyEdit(payload, body)
+        : [];
   return {
     entity,
     kind: "reviewed",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,
@@ -457,10 +495,11 @@ function buildPullRequestReviewCommentRule(
   if (!entity) return null;
   const number = readNumber(pr.number);
   const body = readString(comment.body) ?? "";
+  const mentionLogins = action === "edited" ? extractNewMentionsFromBodyEdit(payload, body) : extractMentions(body);
   return {
     entity,
     kind: "review_comment",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,
@@ -484,10 +523,11 @@ function buildIssueCommentRule(action: string | null, payload: Record<string, un
   if (!entity) return null;
   const number = readNumber(issue.number);
   const body = readString(comment.body) ?? "";
+  const mentionLogins = action === "edited" ? extractNewMentionsFromBodyEdit(payload, body) : extractMentions(body);
   return {
     entity,
     kind: "commented",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,
@@ -523,7 +563,7 @@ function buildIssuesRule(action: string | null, payload: Record<string, unknown>
       };
     }
     case "edited": {
-      const mentionLogins = extractMentions(body);
+      const mentionLogins = extractNewMentionsFromBodyEdit(payload, body);
       return {
         entity,
         kind: "edited",
@@ -598,7 +638,7 @@ function buildDiscussionRule(action: string | null, payload: Record<string, unkn
       return {
         entity,
         kind: "edited",
-        involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+        involves: buildInvolves([{ logins: extractNewMentionsFromBodyEdit(payload, body), reason: "mentioned" }]),
         surface: { title, body, url },
         relatedRefs: [],
       };
@@ -641,10 +681,11 @@ function buildDiscussionCommentRule(action: string | null, payload: Record<strin
   if (!entity) return null;
   const number = readNumber(disc.number);
   const body = readString(comment.body) ?? "";
+  const mentionLogins = action === "edited" ? extractNewMentionsFromBodyEdit(payload, body) : extractMentions(body);
   return {
     entity,
     kind: "commented",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,

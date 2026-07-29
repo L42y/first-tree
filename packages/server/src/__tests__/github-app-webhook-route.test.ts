@@ -2,6 +2,7 @@ import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agents } from "../db/schema/agents.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
 import { githubAppInstallations } from "../db/schema/github-app-installations.js";
@@ -10,10 +11,12 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
+import { createChat } from "../services/chat.js";
 import * as eventDedupService from "../services/event-dedup.js";
 import * as githubAudienceService from "../services/github-audience.js";
 import * as githubEntityStateService from "../services/github-entity-state.js";
 import { putOrgSetting } from "../services/org-settings.js";
+import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
@@ -173,6 +176,25 @@ async function configureContextReviewer(app: App, admin: Awaited<ReturnType<type
     { updatedBy: admin.userId, memberId: admin.memberId },
   );
   return reviewer;
+}
+
+async function configureTeamAgent(app: App, admin: Awaited<ReturnType<typeof createTestAdmin>>) {
+  const teamAgent = await seedAgent(app, {
+    orgId: admin.organizationId,
+    memberId: admin.memberId,
+    name: `team-agent-${randomUUID().slice(0, 6)}`,
+  });
+  const clientId = await seedClient(app, admin.userId, admin.organizationId);
+  await app.db.update(agents).set({ clientId, runtimeProvider: "claude-code" }).where(eq(agents.uuid, teamAgent));
+  await seedHealthyAgentRuntime(app, {
+    agentUuid: teamAgent,
+    clientId,
+  });
+  await putTeamAgentAssignment(app.db, admin.organizationId, teamAgent, {
+    updatedBy: admin.userId,
+    appSlug: "test-app-slug",
+  });
+  return teamAgent;
 }
 
 function contextPullRequestPayload(installationId: number, repoFullName = "owner/context-tree") {
@@ -1681,6 +1703,290 @@ describe("POST /webhooks/github-app", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ ok: true, audience: 0, reason: "audience_empty_with_involves" });
+  });
+
+  it.each([
+    {
+      label: "mention",
+      action: "opened",
+      body: "@test-app-slug please investigate this issue.",
+      assignees: [] as Array<{ login: string; type: string }>,
+      assignee: undefined,
+      expectedReason: "mentioned",
+      expectedLogin: "test-app-slug",
+    },
+    {
+      label: "assignment",
+      action: "assigned",
+      body: "Please investigate this issue.",
+      assignees: [{ login: "test-app-slug[bot]", type: "Bot" }],
+      assignee: { login: "test-app-slug[bot]", type: "Bot" },
+      expectedReason: "assigned",
+      expectedLogin: "test-app-slug[bot]",
+    },
+  ])("delegates an App $label to the selected Team Agent and wakes it", async (scenario) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = scenario.action === "opened" ? 100032 : 100033;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const teamAgent = await configureTeamAgent(app, admin);
+    const [managerHuman] = await app.db
+      .select({ name: agents.name })
+      .from(agents)
+      .where(eq(agents.uuid, admin.humanAgentUuid))
+      .limit(1);
+    if (!managerHuman?.name) throw new Error("Team Agent manager human is missing a GitHub-compatible name");
+
+    const payload = {
+      action: scenario.action,
+      issue: {
+        number: scenario.action === "opened" ? 12 : 13,
+        title: `App ${scenario.label}`,
+        html_url: `https://github.com/owner/repo/issues/${scenario.action === "opened" ? 12 : 13}`,
+        body: scenario.body,
+        assignees: scenario.assignees,
+        author_association: scenario.expectedReason === "mentioned" ? "MEMBER" : "NONE",
+      },
+      ...(scenario.assignee ? { assignee: scenario.assignee } : {}),
+      repository: { full_name: "owner/repo" },
+      // The manager is also the GitHub actor. The directed App target must
+      // survive actor-echo pruning even when this attention line already
+      // belongs to that manager.
+      sender: { login: managerHuman.name, type: "User" },
+      installation: { id: installationId },
+    };
+    const res = await postWebhook(app, "issues", payload);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, delivered: 1, newChats: 1, failed: 0 });
+
+    const [mapping] = await app.db.select().from(githubEntityChatMappings).limit(1);
+    expect(mapping).toMatchObject({
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: teamAgent,
+      entityType: "issue",
+      boundVia: "direct",
+    });
+
+    const [message] = await app.db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, mapping?.chatId ?? ""))
+      .limit(1);
+    expect(message?.content).toMatchObject({
+      type: "github_event",
+      reason: scenario.expectedReason,
+      mentionedUser: scenario.expectedLogin,
+      teamAgentTask: { agentUuid: teamAgent },
+    });
+    expect(message?.metadata).toMatchObject({
+      mentions: [teamAgent],
+      teamAgentTask: { agentUuid: teamAgent },
+    });
+
+    const [entry] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, message?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${teamAgent}`)))
+      .limit(1);
+    expect(entry?.notify).toBe(true);
+
+    const repeated = await postWebhook(app, "issues", payload);
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toMatchObject({ ok: true, delivered: 1, newChats: 0, failed: 0 });
+    const mappingRows = await app.db.select().from(githubEntityChatMappings);
+    expect(mappingRows).toHaveLength(1);
+    const messageRows = await app.db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, mapping?.chatId ?? ""));
+    expect(messageRows).toHaveLength(2);
+    expect(
+      messageRows.every(
+        (row) =>
+          typeof row.metadata.teamAgentTask === "object" &&
+          row.metadata.teamAgentTask !== null &&
+          "agentUuid" in row.metadata.teamAgentTask &&
+          row.metadata.teamAgentTask.agentUuid === teamAgent,
+      ),
+    ).toBe(true);
+  });
+
+  it("reuses an existing human mapping, adds the Team Agent, and preserves the surviving followed wake", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100034;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const teamAgent = await configureTeamAgent(app, admin);
+    const otherDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `other-delegate-${randomUUID().slice(0, 6)}`,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [otherDelegate],
+    });
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: otherDelegate,
+      entityType: "issue",
+      entityKey: "owner/repo#14",
+      chatId: chat.id,
+      boundVia: "human_declared",
+    });
+
+    const response = await postWebhook(app, "issues", {
+      action: "assigned",
+      issue: {
+        number: 14,
+        title: "Existing mapping",
+        html_url: "https://github.com/owner/repo/issues/14",
+        body: "",
+        assignees: [{ login: "test-app-slug[bot]", type: "Bot" }],
+        author_association: "NONE",
+      },
+      assignee: { login: "test-app-slug[bot]", type: "Bot" },
+      repository: { full_name: "owner/repo" },
+      sender: { login: "external", type: "User" },
+      installation: { id: installationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ delivered: 1, newChats: 0, failed: 0 });
+    const mappings = await app.db
+      .select()
+      .from(githubEntityChatMappings)
+      .where(eq(githubEntityChatMappings.chatId, chat.id));
+    expect(mappings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ delegateAgentId: otherDelegate }),
+        expect.objectContaining({ delegateAgentId: teamAgent, boundVia: "human_fallback" }),
+      ]),
+    );
+    const [membership] = await app.db
+      .select()
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, teamAgent)))
+      .limit(1);
+    expect(membership).toMatchObject({ accessMode: "speaker" });
+    const [message] = await app.db.select().from(messages).where(eq(messages.chatId, chat.id)).limit(1);
+    expect(message?.metadata).toMatchObject({
+      teamAgentTask: { agentUuid: teamAgent },
+    });
+    expect(message?.metadata.mentions).toEqual(expect.arrayContaining([teamAgent, otherDelegate]));
+    expect(message?.metadata.mentions).toHaveLength(2);
+    const notified = await app.db
+      .select({ inboxId: inboxEntries.inboxId, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(eq(inboxEntries.messageId, message?.id ?? ""));
+    expect(notified).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ inboxId: `inbox_${teamAgent}`, notify: true }),
+        expect.objectContaining({ inboxId: `inbox_${otherDelegate}`, notify: true }),
+      ]),
+    );
+  });
+
+  it("unions an App task wake with an independent subscription in the same chat", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100035;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const teamAgent = await configureTeamAgent(app, admin);
+    const [managerHuman] = await app.db
+      .select({ name: agents.name })
+      .from(agents)
+      .where(eq(agents.uuid, admin.humanAgentUuid))
+      .limit(1);
+    if (!managerHuman?.name) throw new Error("Team Agent manager human is missing a GitHub-compatible name");
+
+    const historicalDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `historical-delegate-${randomUUID().slice(0, 6)}`,
+    });
+    const subscribedDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `subscribed-delegate-${randomUUID().slice(0, 6)}`,
+    });
+    const subscribedHuman = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `subscribed-human-${randomUUID().slice(0, 6)}`,
+      delegateMention: subscribedDelegate,
+      type: "human",
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [historicalDelegate, subscribedHuman, subscribedDelegate],
+    });
+    await app.db.insert(githubEntityChatMappings).values([
+      {
+        organizationId: admin.organizationId,
+        humanAgentId: admin.humanAgentUuid,
+        delegateAgentId: historicalDelegate,
+        entityType: "issue",
+        entityKey: "owner/repo#15",
+        chatId: chat.id,
+        boundVia: "human_declared",
+      },
+      {
+        organizationId: admin.organizationId,
+        humanAgentId: subscribedHuman,
+        delegateAgentId: subscribedDelegate,
+        entityType: "issue",
+        entityKey: "owner/repo#15",
+        chatId: chat.id,
+        boundVia: "agent_declared",
+      },
+    ]);
+
+    const response = await postWebhook(app, "issues", {
+      action: "assigned",
+      issue: {
+        number: 15,
+        title: "Mixed App task and subscription",
+        html_url: "https://github.com/owner/repo/issues/15",
+        body: "",
+        assignees: [{ login: "test-app-slug[bot]", type: "Bot" }],
+        author_association: "NONE",
+      },
+      assignee: { login: "test-app-slug[bot]", type: "Bot" },
+      repository: { full_name: "owner/repo" },
+      // Prune only the manager's historical line. The fresh directed task
+      // remains eligible, as does the other human's explicit subscription.
+      sender: { login: managerHuman.name, type: "User" },
+      installation: { id: installationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ delivered: 1, newChats: 0, failed: 0 });
+    const messageRows = await app.db.select().from(messages).where(eq(messages.chatId, chat.id));
+    expect(messageRows).toHaveLength(1);
+    const [message] = messageRows;
+    expect(message?.metadata).toMatchObject({
+      teamAgentTask: { agentUuid: teamAgent },
+    });
+    expect(message?.metadata.mentions).toEqual(expect.arrayContaining([teamAgent, subscribedDelegate]));
+    expect(message?.metadata.mentions).toHaveLength(2);
+    expect(message?.metadata.mentions).not.toContain(historicalDelegate);
+
+    const notified = await app.db
+      .select({ inboxId: inboxEntries.inboxId, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(eq(inboxEntries.messageId, message?.id ?? ""));
+    expect(notified).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ inboxId: `inbox_${teamAgent}`, notify: true }),
+        expect.objectContaining({ inboxId: `inbox_${subscribedDelegate}`, notify: true }),
+      ]),
+    );
+    expect(notified).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ inboxId: `inbox_${historicalDelegate}`, notify: true })]),
+    );
   });
 
   it("pull_request.opened on the bound context repo creates a Context Reviewer task message", async () => {
