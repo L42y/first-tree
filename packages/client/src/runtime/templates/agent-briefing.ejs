@@ -179,6 +179,13 @@ quotes, dollars, and newlines. Pass raw strings, never `JSON.stringify`;
 escaped `\n` rows caused the Issue #389 double-encode failure. Use
 `-f markdown` when you want Markdown rendering.
 
+**Attachments are body references, not `-F` uploads.** `-F` reads the message body; it does not attach that file.
+To attach an image, put an explicit embed such as `![result](artifacts/result.png)` in a text/markdown body:
+`chat send` best-effort captures PNG, JPEG, GIF, or WebP files only from this agent's own workspace
+(10 MiB each, up to 20 per message) and preserves this agent's sender identity and CLI provenance. A referenced workspace `.md` path is likewise captured
+as a document attachment (10 MiB each). Other outbound file types are not captured by agent `chat send`; never use a
+human's Web/browser session as a workaround. Report the limitation or share a supported artifact/link.
+
 ## Workspace Collaboration
 
 Communication matrix: `chat send` / `chat ask` / `chat update --description`; agent
