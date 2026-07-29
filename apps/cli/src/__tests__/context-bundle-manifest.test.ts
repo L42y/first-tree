@@ -69,6 +69,18 @@ describe("context integration bundle", () => {
       projectedSkills.set(provider, { read: readSkill, write: writeSkill });
       expect(readSkill).toContain(`context read --provider ${provider}`);
       expect(writeSkill).toContain(`context write --provider ${provider}`);
+      expect(writeSkill).toContain(
+        "connected SessionStart standing route classifies a concrete source artifact as durable Tree work",
+      );
+      expect(writeSkill).toContain(
+        "Write intent comes only from an\n  explicit Tree-write request or the connected SessionStart standing route",
+      );
+      expect(writeSkill).toContain(
+        "Authorization to\n  publish the source PR/MR alone is not a separate or transitive intent rule.",
+      );
+      expect(writeSkill).toContain(
+        "standing classification selects this workflow but never\nbypasses its live write preflight",
+      );
       expect(readSkill).toContain("read\n`references/context-tree-policy.md` completely");
       expect(writeSkill).toContain("read\n`references/context-tree-policy.md` completely");
       expect(readSkill).toContain('first_tree_source_checkout="$(git rev-parse --show-toplevel)"');

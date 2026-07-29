@@ -1,9 +1,9 @@
 ---
 name: first-tree-write
-version: 0.13.0
+version: 0.14.0
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
-description: Source-driven Context Tree write workflow for managed workspaces and clean BYO invocations against GitHub- or GitLab-bound Context Trees. Use when a concrete source artifact such as a PR/MR, forge Issue, design doc, meeting note, review thread, or pasted source material should be reflected into the Context Tree. A clean BYO write also requires an explicit Team, an exact tree-read snapshot, current source/target context, and write intent. If no source artifact is available, there is no write task; ask the user for one.
+description: Source-driven Context Tree write workflow for managed workspaces and clean BYO invocations against GitHub- or GitLab-bound Context Trees. Use when an explicit Tree-write request or an always-visible standing route classifies a concrete source artifact such as a PR/MR, forge Issue, design doc, meeting note, review thread, or pasted source material as durable Tree work. A clean BYO write also requires an explicit Team, an exact tree-read snapshot, current source/target context, and user write intent. If no source artifact is available, there is no write task; ask the user for one.
 ---
 
 # First Tree Write
@@ -56,6 +56,12 @@ function signatures, API shapes, request/response examples, build config,
 fixtures, and one-off bug fixes stay in source repos unless the source also
 establishes a durable decision, constraint, ownership change, or cross-domain
 relationship.
+
+Routing classification and mutation authority are separate. An always-visible
+runtime contract may classify a concrete artifact as a Tree-write task before
+this Skill loads; that standing classification selects this workflow but never
+bypasses its live write preflight. Authorization to publish a source PR/MR is
+not, by itself, a separate or transitive Tree write-intent rule.
 
 ## Invocation Modes
 

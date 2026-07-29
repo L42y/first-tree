@@ -7,8 +7,10 @@ import {
   buildAgentBriefing,
   FIRST_TREE_FAMILY_SKILL_NAMES,
   readCanonicalContextTreePolicy,
+  readCanonicalContextTreeWriteRouting,
   resolveAgentBriefingTemplatePath,
   resolveCanonicalContextTreePolicyPath,
+  resolveCanonicalContextTreeWriteRoutingPath,
 } from "../runtime/agent-briefing.js";
 import type { PredeclaredSourceRepo } from "../runtime/bootstrap.js";
 import { setCliBinding } from "../runtime/cli-binding.js";
@@ -781,6 +783,12 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).toContain("## Core Model");
     expect(tree).toContain("decisions,\nconstraints, ownership, and cross-domain relationships");
     expect(tree).toContain("## Context Tree Policy");
+    const writeRouting = readCanonicalContextTreeWriteRouting();
+    expect(tree).toContain(writeRouting);
+    expect(tree.split(writeRouting)).toHaveLength(2);
+    expect(resolveCanonicalContextTreeWriteRoutingPath()).toBe(
+      resolve(dirname(fileURLToPath(import.meta.url)), "..", "runtime", "assets", "context-tree-write-routing.md"),
+    );
     expect(tree).toContain("load `first-tree-write`");
     expect(tree).toContain("load `first-tree-read`");
     expect(tree).toContain("Load `context-tree-review` only for GitHub PRs");
@@ -800,19 +808,15 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).toMatch(/If the root also contains an\s+`AGENTS\.md`, read it too/);
     expect(tree).toContain("the tree wins");
 
-    expect(tree).toContain("fresh context");
-    expect(tree).toContain("persistent context");
-    expect(tree).toContain("specific PR/MR, design doc");
-    expect(tree).toMatch(/request explicitly includes\s+creating and updating the needed tree-node\s+files/);
-    expect(tree).toContain("`NODE.md` and other `*.md` nodes");
-    expect(tree).toMatch(/Implementation-only changes skip\s+the tree write/);
-    expect(tree).toContain("If there is no specific source artifact");
+    expect(tree).toContain("concrete source artifact (PR/MR, design");
+    expect(tree).toContain("standing route makes the required\nTree node files part of the task");
+    expect(tree).toMatch(/Implementation-only changes skip the Tree\s+write/);
+    expect(tree).toContain("Without a concrete source artifact");
     expect(tree).toContain("first-tree tree verify");
-    expect(tree).toContain("open them together");
-    expect(tree).toContain("cross-link");
-    expect(tree).toContain("open the tree PR/MR as a draft");
-    expect(tree).toContain("merge the code PR/MR first");
-    expect(tree).toContain("final merged code");
+    expect(tree).toContain("create and cross-link both");
+    expect(tree).toContain("keep the\nTree change draft");
+    expect(tree).toContain("merge source first");
+    expect(tree).toContain("merged source truth");
     expect(tree).not.toContain("need not merge first");
     expect(tree).not.toContain("`first-tree-context`");
     expect(tree).not.toContain("`first-tree-sync`");

@@ -36,6 +36,16 @@ manifest also records both adapter digests and the canonical Policy digest.
 - SessionStart handles startup, resume, clear, and compact, but only activates
   an exact local binding that still passes live membership, Team repository,
   and Tree binding checks.
+- A connected SessionStart always carries the same source-artifact routing
+  contract as the Managed briefing. When a concrete PR/MR, design document,
+  meeting note, review thread, or pasted source changes a durable decision,
+  constraint, owner, or cross-domain relationship, the provider loads
+  `first-tree-write`. Implementation-only artifacts do not produce a Tree
+  write, and no Tree write task exists before a concrete source artifact does.
+- External write intent comes only from an explicit Tree-write request or that
+  connected SessionStart standing route classifying a concrete artifact as
+  durable Tree work. Permission to publish a source PR/MR is not a separate
+  transitive Tree-write intent rule.
 - External Read and Write never accept a Team argument. Their provider-specific
   hidden routes derive Team from the current provider + checkout binding and
   repeat the same live activation before every Read, initial Write authoring,
@@ -45,6 +55,11 @@ manifest also records both adapter digests and the canonical Policy digest.
 - Read does not depend on Reviewer readiness. A new official Write fails before
   remote mutation when Automatic Review is absent, disabled, structurally
   incomplete, or offline.
+- When source and Tree PRs/MRs are both required, create and cross-link both,
+  keep the Tree change draft, merge source first, reconcile the Tree change
+  against merged source truth, and only then mark it ready. SessionStart
+  classification never replaces the existing live preflight, Reviewer, forge
+  identity, or exact-binding authority gates.
 
 ## Codex Hook consent and verification
 
@@ -128,15 +143,16 @@ enforces the provider minimum version. Any manifest, source, or provider-cache
 drift reports `repair` and prevents Context activation without blocking ordinary
 provider work.
 
-The canonical Context Tree Policy has one source file. Managed workspaces
-receive its bytes in the generated briefing; External Claude and Codex bundles
-receive the same Policy bytes under each projected Read/Write Skill. The
-generated External Skills also share one canonical source template; their
-reproducible provider projections may differ only in the fixed adapter routing
-needed to resolve the exact `provider + checkout` binding. The External
-projection adds the mandatory lazy-load reference, while Managed Skills
-continue to rely on the always-present briefing and never depend on a
-Plugin-only relative file.
+The canonical Context Tree Policy and source-artifact Write routing contract
+each have one source file. Managed workspaces receive both in the generated
+briefing; connected External sessions receive the routing contract at
+SessionStart, while External Claude and Codex bundles receive the same Policy
+bytes under each projected Read/Write Skill. The generated External Skills also
+share one canonical source template; their reproducible provider projections
+may differ only in the fixed adapter routing needed to resolve the exact
+`provider + checkout` binding. The External projection adds the mandatory
+lazy-load reference, while Managed Skills continue to rely on the
+always-present briefing and never depend on a Plugin-only relative file.
 
 ## Release qualification
 
