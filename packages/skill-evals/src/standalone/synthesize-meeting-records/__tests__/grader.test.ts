@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
-import { assistantVisibleText, casePassed, evaluatePacket, skillFileReadObserved } from "../grader.js";
+import {
+  assistantVisibleText,
+  casePassed,
+  evaluatePacket,
+  rawArtifactReadObserved,
+  skillFileReadObserved,
+} from "../grader.js";
 import type { EvalMetrics, MeetingRecordsEvalCase } from "../types.js";
 
 function evalCase(mode: MeetingRecordsEvalCase["fixture"]["mode"]): MeetingRecordsEvalCase {
@@ -129,6 +135,7 @@ function passingMetrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     itemCountObserved: true,
     packetExists: true,
     packetText: "{}",
+    rawArtifactReadObserved: false,
     rawCanaries: [],
     requiredTermsObserved: true,
     runnerExitCode: 0,
@@ -219,6 +226,26 @@ describe("standalone synthesize-meeting-records grader", () => {
     expect(
       evaluatePacket(sixCategoryPacket(), currentCase, JSON.stringify(sixCategoryPacket()), visibleText).rawCanaries,
     ).toContain("verbatim-canary-six-314159");
+  });
+
+  it("rejects a recorded partial raw access attempt before an otherwise clean blocked packet", () => {
+    const partialCase = evalCase("partial-source");
+    const events = [
+      {
+        locator: "source-artifacts/appendix.md",
+        type: "partial_raw_access_attempt",
+      },
+    ];
+    expect(rawArtifactReadObserved(events, partialCase)).toBe(true);
+    expect(rawArtifactReadObserved(events, evalCase("six-categories"))).toBe(false);
+    expect(
+      casePassed(
+        { errors: [], ok: true, requiredFilesOk: true },
+        passingMetrics({
+          rawArtifactReadObserved: true,
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("fails when the skill is not read or a raw canary leaks", () => {

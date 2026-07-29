@@ -5,7 +5,12 @@ import { appendEvent, readEvents } from "../../core/events.js";
 import { createRunPaths } from "../../core/paths.js";
 import { runAgentProvider } from "../../core/provider/index.js";
 import { createEvalReporter } from "../../core/reporter.js";
-import { setupFixture, validateFixture } from "./fixture.js";
+import {
+  setupFixture,
+  startPartialRawAccessMonitors,
+  stopPartialRawAccessMonitors,
+  validateFixture,
+} from "./fixture.js";
 import { casePassed, deriveMetrics } from "./grader.js";
 import { writeCaseSummaries } from "./summary.js";
 import type { CaseRunSummary, CliOptions, MeetingRecordsEvalCase } from "./types.js";
@@ -42,18 +47,25 @@ export async function runSynthesizeMeetingRecordsCase(
 
   const sourceRepoPath = setupFixture(evalCase, paths, reporter);
   const fixtureValidation = validateFixture(paths, sourceRepoPath);
-  const runnerResult = await runAgentProvider(
-    {
-      caseId: evalCase.id,
-      claudeBin: options.claudeBin,
-      codexBin: options.codexBin,
-      model: options.model,
-      prompt: evalCase.prompt,
-      provider: options.provider,
-      verbose: options.verbose,
-    },
-    { paths, reporter },
-  );
+  const rawAccessMonitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
+  const runnerResult = await (async () => {
+    try {
+      return await runAgentProvider(
+        {
+          caseId: evalCase.id,
+          claudeBin: options.claudeBin,
+          codexBin: options.codexBin,
+          model: options.model,
+          prompt: evalCase.prompt,
+          provider: options.provider,
+          verbose: options.verbose,
+        },
+        { paths, reporter },
+      );
+    } finally {
+      stopPartialRawAccessMonitors(rawAccessMonitors);
+    }
+  })();
   const validatorResult = runPacketValidator(paths.workspacePath);
   appendEvent(paths.eventsPath, {
     args: validatorResult.args,

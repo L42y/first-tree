@@ -7,6 +7,7 @@ export type MeetingSettlementExpectation = "confirmed" | "uncertain" | "none";
 
 export type MeetingRecordsEvalCase = {
   expected: {
+    blockBeforeRawRead: boolean;
     categories: readonly string[];
     forbiddenTerms: readonly string[];
     itemCount: number;
@@ -54,6 +55,7 @@ export type EvalMetrics = PacketEvaluation & {
   finalResponse: string;
   packetExists: boolean;
   packetText: string;
+  rawArtifactReadObserved: boolean;
   runnerExitCode: number;
   skillFileReadObserved: boolean;
   sourceRepoChanged: boolean;

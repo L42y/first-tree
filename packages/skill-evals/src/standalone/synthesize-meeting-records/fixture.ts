@@ -1,5 +1,7 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { type ChildProcess, spawn } from "node:child_process";
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { assertCommandOk, runCommand, writeText } from "../../core/commands.js";
 import { appendEvent } from "../../core/events.js";
@@ -10,6 +12,7 @@ import type { FixtureValidation, MeetingFixtureMode, MeetingRecordsEvalCase } fr
 
 export const SKILL_NAME = "synthesize-meeting-records";
 export const OUTPUT_NAME = "meeting-analysis-output.json";
+const RAW_ACCESS_MONITOR_PATH = fileURLToPath(new URL("./raw-access-monitor.mjs", import.meta.url));
 
 function installStandaloneSkill(repoRoot: string, workspacePath: string): string {
   const sourceDir = join(repoRoot, "skills", ".experimental", SKILL_NAME);
@@ -160,6 +163,53 @@ function initSourceRepo(sourceRepoPath: string): string {
   return runCommand("git", ["rev-parse", "HEAD"], sourceRepoPath).stdout.trim();
 }
 
+function partialArtifactLocators(sourceRepoPath: string): readonly string[] {
+  const bundle = JSON.parse(readFileSync(join(sourceRepoPath, "bundle.json"), "utf8")) as {
+    artifacts?: Array<{ completeness?: unknown; content_ref?: { locator?: unknown } }>;
+  };
+  if (!bundle.artifacts?.some((artifact) => artifact.completeness !== "complete")) return [];
+  return bundle.artifacts.flatMap((artifact) => {
+    const locator = artifact.content_ref?.locator;
+    return typeof locator === "string" ? [locator] : [];
+  });
+}
+
+function artifactPath(paths: RunPaths, locator: string): string {
+  const sourceRoot = resolve(paths.workspacePath, "source-artifacts");
+  const candidate = resolve(paths.workspacePath, locator);
+  if (candidate !== sourceRoot && !candidate.startsWith(`${sourceRoot}${sep}`)) {
+    throw new Error(`Partial artifact locator escapes source-artifacts: ${locator}`);
+  }
+  return candidate;
+}
+
+function installPartialRawAccessSentinels(paths: RunPaths, sourceRepoPath: string): void {
+  const locators = partialArtifactLocators(sourceRepoPath);
+  if (locators.length === 0) return;
+  appendFileSync(
+    join(sourceRepoPath, ".git", "info", "exclude"),
+    locators.map((locator) => `/${relative(sourceRepoPath, artifactPath(paths, locator))}\n`).join(""),
+    "utf8",
+  );
+  for (const locator of locators) {
+    assertCommandOk(runCommand("mkfifo", [artifactPath(paths, locator)], paths.workspacePath));
+  }
+}
+
+export function startPartialRawAccessMonitors(paths: RunPaths, sourceRepoPath: string): readonly ChildProcess[] {
+  return partialArtifactLocators(sourceRepoPath).map((locator) =>
+    spawn(process.execPath, [RAW_ACCESS_MONITOR_PATH, artifactPath(paths, locator), paths.eventsPath, locator], {
+      stdio: "ignore",
+    }),
+  );
+}
+
+export function stopPartialRawAccessMonitors(monitors: readonly ChildProcess[]): void {
+  for (const monitor of monitors) {
+    if (monitor.exitCode === null) monitor.kill("SIGTERM");
+  }
+}
+
 export function setupFixture(evalCase: MeetingRecordsEvalCase, paths: RunPaths, reporter: EvalReporter): string {
   appendEvent(paths.eventsPath, {
     caseId: evalCase.id,
@@ -179,6 +229,7 @@ export function setupFixture(evalCase: MeetingRecordsEvalCase, paths: RunPaths, 
     writeText(join(sourceRepoPath, name), content);
   }
   const sourceRepoHead = initSourceRepo(sourceRepoPath);
+  installPartialRawAccessSentinels(paths, sourceRepoPath);
 
   appendEvent(paths.eventsPath, {
     caseId: evalCase.id,
@@ -200,15 +251,12 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
   ];
   const missingFiles = required.filter((path) => !existsSync(path));
   const errors = missingFiles.map((path) => `missing required file: ${path}`);
-  const bundle = JSON.parse(readFileSync(join(sourceRepoPath, "bundle.json"), "utf8")) as {
-    artifacts?: Array<{ completeness?: unknown; content_ref?: { locator?: unknown } }>;
-  };
-  if (bundle.artifacts?.some((artifact) => artifact.completeness !== "complete")) {
-    for (const artifact of bundle.artifacts) {
-      const locator = artifact.content_ref?.locator;
-      if (typeof locator === "string" && existsSync(join(paths.workspacePath, locator))) {
-        errors.push(`partial-source fixture exposed raw artifact: ${locator}`);
-      }
+  for (const locator of partialArtifactLocators(sourceRepoPath)) {
+    const path = artifactPath(paths, locator);
+    if (!existsSync(path)) {
+      errors.push(`partial-source fixture missing raw access sentinel: ${locator}`);
+    } else if (!lstatSync(path).isFIFO()) {
+      errors.push(`partial-source fixture exposed non-sentinel raw artifact: ${locator}`);
     }
   }
   const status = runCommand("git", ["status", "--porcelain"], sourceRepoPath);
