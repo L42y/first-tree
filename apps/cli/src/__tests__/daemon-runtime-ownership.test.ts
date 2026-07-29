@@ -68,6 +68,10 @@ function recoveryGuardPath(home: string): string {
   return `${daemonRuntimeOwnershipPath(home)}.recovery`;
 }
 
+function recoveryFencePath(home: string): string {
+  return `${daemonRuntimeOwnershipPath(home)}.recovery-fence`;
+}
+
 function writeRecoveryGuard(
   home: string,
   guard: {
@@ -98,7 +102,7 @@ function waitForChildMessage(child: ChildProcessWithoutNullStreams): () => Promi
     const message = queued.shift();
     if (message) return Promise.resolve(message);
     return new Promise<ChildMessage>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("timed out waiting for daemon owner child")), 10_000);
+      const timeout = setTimeout(() => reject(new Error("timed out waiting for daemon owner child")), 30_000);
       waiting.push((next) => {
         clearTimeout(timeout);
         resolve(next);
@@ -116,7 +120,7 @@ function waitForExit(child: ChildProcessWithoutNullStreams): Promise<number | nu
 }
 
 async function waitForFile(path: string): Promise<void> {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 30_000;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -337,6 +341,29 @@ describe("daemon runtime ownership", () => {
     });
   });
 
+  it("never auto-recovers an abandoned main-mutation fence", () => {
+    const home = join(root, "abandoned-recovery-fence");
+    const fencePath = recoveryFencePath(home);
+    const fence = {
+      lockVersion: 1,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:recovery-fence",
+      startedAt: new Date().toISOString(),
+    };
+    mkdirSync(dirname(fencePath), { recursive: true });
+    writeFileSync(fencePath, `${JSON.stringify(fence, null, 2)}\n`, "utf8");
+
+    expect(() => acquireDaemonRuntimeOwnership({ channel: "dev", mode: "foreground", version: "test", home })).toThrow(
+      /recovery fence .* requires manual remediation/u,
+    );
+    expect(JSON.parse(readFileSync(fencePath, "utf8"))).toEqual(fence);
+    expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
+      state: "untrusted",
+      reason: expect.stringContaining("requires manual remediation"),
+    });
+  });
+
   it("treats a live reused pid with a different start identity as stale", () => {
     const home = join(root, "pid-reuse");
     const original = acquire(home);
@@ -496,20 +523,18 @@ describe("daemon runtime ownership", () => {
       await waitForFile(join(barrierDir, "p1.guard-before-rename.ready"));
 
       const p2 = await spawnContender("p2");
-      await waitForFile(join(barrierDir, "p2.owner-before-rename.ready"));
-
       releaseBarrier(barrierDir, "p1", "guard-before-rename");
       await waitForFile(join(barrierDir, "p1.guard-after-rename.ready"));
 
       const p3 = await spawnContender("p3");
-      await waitForFile(join(barrierDir, "p3.owner-before-rename.ready"));
+      const p3Result = await p3.next();
+      expect(p3Result.event).toBe("rejected");
 
       releaseBarrier(barrierDir, "p1", "guard-after-rename");
       const p1Result = await p1.next();
+      await waitForFile(join(barrierDir, "p2.owner-before-rename.ready"));
       releaseBarrier(barrierDir, "p2", "owner-before-rename");
       const p2Result = await p2.next();
-      releaseBarrier(barrierDir, "p3", "owner-before-rename");
-      const p3Result = await p3.next();
       const results = [p1Result, p2Result, p3Result];
       const winners = results.filter((result) => result.event === "acquired");
 
@@ -522,10 +547,93 @@ describe("daemon runtime ownership", () => {
       expect(exits.filter((code) => code === 0)).toHaveLength(1);
       expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({ state: "absent" });
       expect(existsSync(recoveryGuardPath(home))).toBe(false);
+      expect(existsSync(recoveryFencePath(home))).toBe(false);
+      expect(readdirSync(dirname(original.lockPath)).some((name) => name.includes(".entrant."))).toBe(false);
     } finally {
       for (const child of children) {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }
     }
-  });
+  }, 45_000);
+
+  it("fences the five-role handoff before a returned lease can be displaced", async () => {
+    const home = join(root, "five-role-recovery");
+    const barrierDir = join(root, "five-role-barriers");
+    mkdirSync(barrierDir, { recursive: true });
+    const original = acquire(home);
+    const staleOwner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:five-role-owner",
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, staleOwner);
+    writeRecoveryGuard(home, {
+      lockVersion: 1,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:five-role-guard",
+      startedAt: new Date().toISOString(),
+    });
+
+    const fixture = fileURLToPath(new URL("./fixtures/daemon-runtime-owner-race-child.ts", import.meta.url));
+    const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const children: ChildProcessWithoutNullStreams[] = [];
+    const spawnRole = async (role: "s" | "r" | "a" | "t" | "n") => {
+      const child = spawn(process.execPath, ["--import", "tsx", fixture, home, role, barrierDir], {
+        cwd: cliRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(child);
+      const next = waitForChildMessage(child);
+      expect((await next()).event).toBe("ready");
+      child.stdin.write("go\n");
+      return { child, next };
+    };
+
+    try {
+      const s = await spawnRole("s");
+      await waitForFile(join(barrierDir, "s.guard-before-rename.ready"));
+
+      const r = await spawnRole("r");
+      releaseBarrier(barrierDir, "s", "guard-before-rename");
+      await waitForFile(join(barrierDir, "s.guard-after-rename.ready"));
+
+      const a = await spawnRole("a");
+      const aResult = await a.next();
+      expect(aResult.event).toBe("rejected");
+
+      releaseBarrier(barrierDir, "s", "guard-after-rename");
+      expect((await s.next()).event).toBe("rejected");
+      await waitForFile(join(barrierDir, "r.owner-before-rename.ready"));
+
+      const t = await spawnRole("t");
+      expect((await t.next()).event).toBe("rejected");
+
+      const n = await spawnRole("n");
+      const nResult = await n.next();
+      expect(nResult.event).toBe("rejected");
+
+      releaseBarrier(barrierDir, "r", "owner-before-rename");
+      await waitForFile(join(barrierDir, "r.owner-after-rename.ready"));
+      releaseBarrier(barrierDir, "r", "owner-after-rename");
+      const rResult = await r.next();
+      expect(rResult.event).toBe("acquired");
+      expect(r.child.exitCode).toBeNull();
+      expect([aResult, rResult, nResult].filter((result) => result.event === "acquired")).toHaveLength(1);
+
+      r.child.stdin.write("release\n");
+      const exits = await Promise.all(children.map((child) => waitForExit(child)));
+      expect(exits.filter((code) => code === 0)).toHaveLength(1);
+      expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({ state: "absent" });
+      expect(existsSync(recoveryGuardPath(home))).toBe(false);
+      expect(existsSync(recoveryFencePath(home))).toBe(false);
+      expect(readdirSync(dirname(original.lockPath)).some((name) => name.includes(".entrant."))).toBe(false);
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }
+    }
+  }, 45_000);
 });

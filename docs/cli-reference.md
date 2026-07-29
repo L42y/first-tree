@@ -1020,6 +1020,14 @@ unreadable, or unverifiable locks and recovery guards fail closed and are never
 deleted automatically. Normal cleanup removes the lock or guard only when its
 `instanceId` still belongs to the exiting process.
 
+Before changing the main lock, recovery also publishes a
+`.recovery-fence` and drains startup attempts that began before that fence.
+The fence stays authoritative across quarantine and restore, so no process can
+return a new lease through a temporarily empty main-lock path. An interrupted
+or unresolved fenced mutation is deliberately not auto-recovered: `status` and
+`doctor` report the home as untrusted and require manual remediation rather
+than risk admitting a second runtime.
+
 Files under `<home>/state/client-runtimes/` remain runtime markers for
 diagnostics, account-switch drain checks, and Windows supervisor lifecycle
 reporting. They are not daemon ownership or mutual-exclusion authority.

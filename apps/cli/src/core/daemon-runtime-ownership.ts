@@ -7,19 +7,21 @@ import {
   linkSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ChannelName } from "@first-tree/shared/channel";
 
 const LOCK_FORMAT_VERSION = 1;
 const PROCESS_QUERY_TIMEOUT_MS = 5_000;
 const RECOVERY_GUARD_CLEANUP_RETRIES = 50;
 const RECOVERY_GUARD_CLEANUP_RETRY_MS = 10;
+const RECOVERY_FENCE_DRAIN_RETRIES = 3_000;
 const INSTANCE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export type DaemonRuntimeMode = "foreground" | "service";
@@ -109,6 +111,14 @@ export function daemonRuntimeHomesEqual(left: string, right: string): boolean {
 
 function recoveryGuardPath(lockPath: string): string {
   return `${lockPath}.recovery`;
+}
+
+function recoveryMutationFencePath(lockPath: string): string {
+  return `${lockPath}.recovery-fence`;
+}
+
+function ownershipEntrantPath(lockPath: string, instanceId: string): string {
+  return `${lockPath}.entrant.${instanceId}`;
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -413,6 +423,17 @@ export function inspectDaemonRuntimeOwnership(home: string): DaemonRuntimeOwners
     throw error;
   }
   const lockPath = join(resolvedHome, "state", "daemon-runtime.lock");
+  const mutationFenceInspection = readRecoveryGuardInspection(recoveryMutationFencePath(lockPath));
+  if (mutationFenceInspection.state !== "absent") {
+    return {
+      state: "untrusted",
+      lockPath,
+      reason:
+        mutationFenceInspection.state === "live"
+          ? `main-lock recovery is fenced at ${mutationFenceInspection.recoveryPath} by pid ${mutationFenceInspection.guard.pid}`
+          : `daemon ownership recovery fence at ${mutationFenceInspection.recoveryPath} requires manual remediation`,
+    };
+  }
   const recoveryInspection = readRecoveryGuardInspection(recoveryGuardPath(lockPath));
   if (recoveryInspection.state === "live") {
     return {
@@ -502,6 +523,17 @@ function restoreQuarantinedFileIfAbsent(quarantinePath: string, path: string): b
   return true;
 }
 
+function restoreQuarantinedFileWithRetries(quarantinePath: string, path: string): boolean {
+  for (let attempt = 0; attempt < RECOVERY_GUARD_CLEANUP_RETRIES; attempt += 1) {
+    if (restoreQuarantinedFileIfAbsent(quarantinePath, path)) return true;
+    if (!existsSync(quarantinePath)) return false;
+    if (attempt + 1 < RECOVERY_GUARD_CLEANUP_RETRIES) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RECOVERY_GUARD_CLEANUP_RETRY_MS);
+    }
+  }
+  return false;
+}
+
 function removeOwnedJson(path: string, instanceId: string): boolean {
   if (readInstanceId(path) !== instanceId) return false;
   const cleanupPath = `${path}.cleanup.${instanceId}.${randomUUID()}`;
@@ -581,6 +613,76 @@ function assertOwnedRecoveryGuard(recoveryPath: string, recovery: RecoveryGuard,
   throw new DaemonRuntimeOwnershipError(
     DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
     `Recovery guard ${recoveryPath} is no longer held by exact instance ${recovery.instanceId}; refusing daemon startup`,
+    lockPath,
+  );
+}
+
+function mutationFenceError(
+  inspection: Exclude<RecoveryGuardInspection, { state: "absent" }>,
+  lockPath: string,
+): DaemonRuntimeOwnershipError {
+  if (inspection.state === "live") {
+    return new DaemonRuntimeOwnershipError(
+      DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
+      `Refusing daemon startup because pid ${inspection.guard.pid} is mutating ${lockPath} under fence ${inspection.recoveryPath}`,
+      lockPath,
+    );
+  }
+  return new DaemonRuntimeOwnershipError(
+    DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
+    `Refusing daemon startup because ownership recovery fence ${inspection.recoveryPath} is present; the home requires manual remediation`,
+    lockPath,
+  );
+}
+
+function assertNoRecoveryMutationFence(fencePath: string, lockPath: string): void {
+  const inspection = readRecoveryGuardInspection(fencePath);
+  if (inspection.state !== "absent") throw mutationFenceError(inspection, lockPath);
+}
+
+function assertOwnedRecoveryMutationFence(fencePath: string, recovery: RecoveryGuard, lockPath: string): void {
+  const inspection = readRecoveryGuardInspection(fencePath);
+  if (inspection.state === "live" && inspection.guard.instanceId === recovery.instanceId) return;
+  if (inspection.state !== "absent") throw mutationFenceError(inspection, lockPath);
+  throw new DaemonRuntimeOwnershipError(
+    DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
+    `Ownership recovery fence ${fencePath} disappeared during main-lock mutation; refusing daemon startup`,
+    lockPath,
+  );
+}
+
+function drainOwnershipEntrants(lockPath: string, ownEntrantPath: string): void {
+  const directory = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.entrant.`;
+  for (let attempt = 0; attempt < RECOVERY_FENCE_DRAIN_RETRIES; attempt += 1) {
+    let blocked = false;
+    for (const name of readdirSync(directory)) {
+      if (!name.startsWith(prefix)) continue;
+      const entrantPath = join(directory, name);
+      if (entrantPath === ownEntrantPath) continue;
+      const inspection = readRecoveryGuardInspection(entrantPath);
+      if (inspection.state === "absent") continue;
+      if (inspection.state === "stale") {
+        removeOwnedJson(entrantPath, inspection.guard.instanceId);
+        continue;
+      }
+      if (inspection.state === "untrusted") {
+        throw new DaemonRuntimeOwnershipError(
+          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
+          `Refusing daemon startup because ownership entrant ${entrantPath} cannot be trusted: ${inspection.reason}`,
+          lockPath,
+        );
+      }
+      blocked = true;
+    }
+    if (!blocked) return;
+    if (attempt + 1 < RECOVERY_FENCE_DRAIN_RETRIES) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RECOVERY_GUARD_CLEANUP_RETRY_MS);
+    }
+  }
+  throw new DaemonRuntimeOwnershipError(
+    DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
+    `Timed out draining in-flight daemon ownership entrants before recovering ${lockPath}`,
     lockPath,
   );
 }
@@ -704,116 +806,197 @@ export function acquireDaemonRuntimeOwnership(opts: {
     home,
   };
 
-  let quarantinedRecoveryGuardPath = quarantineStaleRecoveryGuard(recoveryPath, lockPath);
-
-  const firstAttempt = tryWriteExclusiveJson(lockPath, owner);
-  if (firstAttempt === "created") {
-    const racedRecovery = readRecoveryGuardInspection(recoveryPath);
-    if (racedRecovery.state !== "absent") {
-      removeOwnedJson(lockPath, owner.instanceId);
-      if (racedRecovery.state === "live" || racedRecovery.state === "untrusted") {
-        throw recoveryGuardErrorFromInspection(racedRecovery, lockPath);
-      }
-      throw new DaemonRuntimeOwnershipError(
-        DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
-        `Refusing daemon startup because abandoned stale-lock recovery raced this owner at ${recoveryPath}`,
-        lockPath,
-      );
-    }
-    return makeLease(lockPath, owner, undefined, quarantinedRecoveryGuardPath);
-  }
-
-  const firstInspection = readOwnerInspection(lockPath, home);
-  if (firstInspection.state === "live" || firstInspection.state === "untrusted") {
-    throw ownershipErrorFromInspection(firstInspection);
-  }
-
-  const recovery: RecoveryGuard = {
+  const entrant: RecoveryGuard = {
     lockVersion: LOCK_FORMAT_VERSION,
-    instanceId: randomUUID(),
+    instanceId: owner.instanceId,
     pid: process.pid,
     processStartIdentity: processStart.identity,
     startedAt: new Date().toISOString(),
   };
-  quarantinedRecoveryGuardPath = quarantineStaleRecoveryGuard(recoveryPath, lockPath) ?? quarantinedRecoveryGuardPath;
-  if (tryWriteExclusiveJson(recoveryPath, recovery) === "exists") {
-    const inspection = readRecoveryGuardInspection(recoveryPath);
-    if (inspection.state === "live" || inspection.state === "untrusted") {
-      throw recoveryGuardErrorFromInspection(inspection, lockPath);
-    }
+  const entrantPath = ownershipEntrantPath(lockPath, entrant.instanceId);
+  const fencePath = recoveryMutationFencePath(lockPath);
+  if (tryWriteExclusiveJson(entrantPath, entrant) === "exists") {
     throw new DaemonRuntimeOwnershipError(
-      DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
-      `Refusing daemon startup because recovery ownership for ${lockPath} changed concurrently`,
+      DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.io,
+      `Unable to create unique daemon ownership entrant ${entrantPath}`,
       lockPath,
     );
   }
 
-  let quarantinedLockPath: string | undefined;
-  let ownerCreated = false;
   try {
-    const guardedInspection = readOwnerInspection(lockPath, home);
-    if (guardedInspection.state === "live" || guardedInspection.state === "untrusted") {
-      throw ownershipErrorFromInspection(guardedInspection);
-    }
-    if (guardedInspection.state === "stale") {
-      quarantinedLockPath = `${lockPath}.stale.${Date.now()}.${guardedInspection.owner.instanceId}.${recovery.instanceId}`;
-      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
-      try {
-        renameSync(lockPath, quarantinedLockPath);
-      } catch (error) {
+    assertNoRecoveryMutationFence(fencePath, lockPath);
+    let quarantinedRecoveryGuardPath = quarantineStaleRecoveryGuard(recoveryPath, lockPath);
+    assertNoRecoveryMutationFence(fencePath, lockPath);
+
+    const firstAttempt = tryWriteExclusiveJson(lockPath, owner);
+    if (firstAttempt === "created") {
+      const racedRecovery = readRecoveryGuardInspection(recoveryPath);
+      const racedFence = readRecoveryGuardInspection(fencePath);
+      if (racedRecovery.state !== "absent" || racedFence.state !== "absent") {
+        removeOwnedJson(lockPath, owner.instanceId);
+        if (racedFence.state !== "absent") throw mutationFenceError(racedFence, lockPath);
+        if (racedRecovery.state === "live" || racedRecovery.state === "untrusted") {
+          throw recoveryGuardErrorFromInspection(racedRecovery, lockPath);
+        }
         throw new DaemonRuntimeOwnershipError(
-          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.io,
-          `Unable to quarantine stale daemon ownership file ${lockPath}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          lockPath,
-          guardedInspection.owner,
-        );
-      }
-      const movedOwner = readInstanceId(quarantinedLockPath);
-      if (movedOwner !== guardedInspection.owner.instanceId) {
-        restoreQuarantinedFileIfAbsent(quarantinedLockPath, lockPath);
-        throw new DaemonRuntimeOwnershipError(
-          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
-          `Daemon ownership ${lockPath} changed while being quarantined; refusing daemon startup`,
+          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
+          `Refusing daemon startup because abandoned stale-lock recovery raced this owner at ${recoveryPath}`,
           lockPath,
         );
       }
-      try {
-        assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
-      } catch (error) {
-        restoreQuarantinedFileIfAbsent(quarantinedLockPath, lockPath);
-        throw error;
-      }
+      return makeLease(lockPath, owner, undefined, quarantinedRecoveryGuardPath);
     }
 
-    // Exactly one retry is allowed after the stale owner has been isolated (or
-    // after a colliding owner released between the first read and the guard).
-    assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
-    if (tryWriteExclusiveJson(lockPath, owner) === "exists") {
-      const retryInspection = readOwnerInspection(lockPath, home);
-      if (retryInspection.state === "absent") {
+    const firstInspection = readOwnerInspection(lockPath, home);
+    if (firstInspection.state === "live" || firstInspection.state === "untrusted") {
+      throw ownershipErrorFromInspection(firstInspection);
+    }
+
+    const recovery: RecoveryGuard = {
+      lockVersion: LOCK_FORMAT_VERSION,
+      instanceId: randomUUID(),
+      pid: process.pid,
+      processStartIdentity: processStart.identity,
+      startedAt: new Date().toISOString(),
+    };
+    quarantinedRecoveryGuardPath = quarantineStaleRecoveryGuard(recoveryPath, lockPath) ?? quarantinedRecoveryGuardPath;
+    assertNoRecoveryMutationFence(fencePath, lockPath);
+    if (tryWriteExclusiveJson(recoveryPath, recovery) === "exists") {
+      const inspection = readRecoveryGuardInspection(recoveryPath);
+      if (inspection.state === "live" || inspection.state === "untrusted") {
+        throw recoveryGuardErrorFromInspection(inspection, lockPath);
+      }
+      throw new DaemonRuntimeOwnershipError(
+        DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
+        `Refusing daemon startup because recovery ownership for ${lockPath} changed concurrently`,
+        lockPath,
+      );
+    }
+
+    let quarantinedLockPath: string | undefined;
+    let quarantinedOwnerInstanceId: string | undefined;
+    let ownerCreated = false;
+    let fenceOwned = false;
+    let safeToRemoveFence = false;
+    try {
+      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+      if (tryWriteExclusiveJson(fencePath, recovery) === "exists") {
+        const inspection = readRecoveryGuardInspection(fencePath);
+        if (inspection.state !== "absent") throw mutationFenceError(inspection, lockPath);
         throw new DaemonRuntimeOwnershipError(
-          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.io,
-          `Daemon ownership changed again while retrying ${lockPath}; refusing a second retry`,
+          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy,
+          `Ownership recovery fence ${fencePath} changed while being acquired`,
           lockPath,
         );
       }
-      throw ownershipErrorFromInspection(retryInspection);
+      fenceOwned = true;
+      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+      assertOwnedRecoveryMutationFence(fencePath, recovery, lockPath);
+
+      // Every acquisition publishes an entrant before checking the fence.
+      // Once the fence exists, draining all older entrants closes the gap
+      // between their last fence check and a possible main-lock write.
+      drainOwnershipEntrants(lockPath, entrantPath);
+      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+      assertOwnedRecoveryMutationFence(fencePath, recovery, lockPath);
+
+      const guardedInspection = readOwnerInspection(lockPath, home);
+      if (guardedInspection.state === "live" || guardedInspection.state === "untrusted") {
+        safeToRemoveFence = true;
+        throw ownershipErrorFromInspection(guardedInspection);
+      }
+      if (guardedInspection.state === "stale") {
+        quarantinedOwnerInstanceId = guardedInspection.owner.instanceId;
+        quarantinedLockPath = `${lockPath}.stale.${Date.now()}.${guardedInspection.owner.instanceId}.${recovery.instanceId}`;
+        assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+        assertOwnedRecoveryMutationFence(fencePath, recovery, lockPath);
+        try {
+          renameSync(lockPath, quarantinedLockPath);
+        } catch (error) {
+          safeToRemoveFence = errorCode(error) === "ENOENT";
+          throw new DaemonRuntimeOwnershipError(
+            DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.io,
+            `Unable to quarantine stale daemon ownership file ${lockPath}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            lockPath,
+            guardedInspection.owner,
+          );
+        }
+        const movedOwner = readInstanceId(quarantinedLockPath);
+        if (movedOwner !== guardedInspection.owner.instanceId) {
+          safeToRemoveFence = restoreQuarantinedFileWithRetries(quarantinedLockPath, lockPath);
+          throw new DaemonRuntimeOwnershipError(
+            DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
+            `Daemon ownership ${lockPath} changed while being quarantined; refusing daemon startup`,
+            lockPath,
+          );
+        }
+        try {
+          assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+          assertOwnedRecoveryMutationFence(fencePath, recovery, lockPath);
+        } catch (error) {
+          safeToRemoveFence = restoreQuarantinedFileWithRetries(quarantinedLockPath, lockPath);
+          throw error;
+        }
+      } else {
+        safeToRemoveFence = true;
+      }
+
+      // Exactly one retry is allowed after the stale owner has been isolated
+      // (or after a colliding owner released while entrants were drained).
+      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+      assertOwnedRecoveryMutationFence(fencePath, recovery, lockPath);
+      if (tryWriteExclusiveJson(lockPath, owner) === "exists") {
+        const retryInspection = readOwnerInspection(lockPath, home);
+        if (retryInspection.state === "absent") {
+          throw new DaemonRuntimeOwnershipError(
+            DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.io,
+            `Daemon ownership changed again while retrying ${lockPath}; refusing a second retry`,
+            lockPath,
+          );
+        }
+        throw ownershipErrorFromInspection(retryInspection);
+      }
+      ownerCreated = true;
+      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+      assertOwnedRecoveryMutationFence(fencePath, recovery, lockPath);
+      assertOwnedMainLock(lockPath, home, owner);
+      safeToRemoveFence = true;
+      if (!removeOwnedRecoveryGuard(fencePath, recovery.instanceId)) {
+        throw new DaemonRuntimeOwnershipError(
+          DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.untrustedLock,
+          `Unable to release exact ownership recovery fence ${fencePath}; refusing daemon startup`,
+          lockPath,
+        );
+      }
+      fenceOwned = false;
+      assertOwnedMainLock(lockPath, home, owner);
+      assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
+      return makeLease(lockPath, owner, quarantinedLockPath, quarantinedRecoveryGuardPath);
+    } catch (error) {
+      if (ownerCreated) removeOwnedJson(lockPath, owner.instanceId);
+      if (quarantinedLockPath && existsSync(quarantinedLockPath)) {
+        safeToRemoveFence =
+          restoreQuarantinedFileWithRetries(quarantinedLockPath, lockPath) &&
+          readInstanceId(lockPath) === quarantinedOwnerInstanceId;
+      }
+      if (fenceOwned && safeToRemoveFence && removeOwnedRecoveryGuard(fencePath, recovery.instanceId)) {
+        fenceOwned = false;
+      }
+      throw error;
+    } finally {
+      // A concurrent stale-guard inspector may have atomically moved this guard
+      // aside just before discovering the instance mismatch. Give that process
+      // a bounded window to restore our live guard, then remove only our instance.
+      removeOwnedRecoveryGuard(recoveryPath, recovery.instanceId);
+      // An unresolved main-lock mutation deliberately leaves this fence in
+      // place. It is never auto-recovered: manual remediation is safer than
+      // admitting a second lease after an interrupted quarantine/restore.
+      if (fenceOwned && safeToRemoveFence) removeOwnedRecoveryGuard(fencePath, recovery.instanceId);
     }
-    ownerCreated = true;
-    assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
-    assertOwnedMainLock(lockPath, home, owner);
-    assertOwnedRecoveryGuard(recoveryPath, recovery, lockPath);
-    return makeLease(lockPath, owner, quarantinedLockPath, quarantinedRecoveryGuardPath);
-  } catch (error) {
-    if (ownerCreated) removeOwnedJson(lockPath, owner.instanceId);
-    throw error;
   } finally {
-    // A concurrent stale-guard inspector may have atomically moved this guard
-    // aside just before discovering the instance mismatch. Give that process a
-    // bounded window to restore our live guard, then remove only our instance.
-    removeOwnedRecoveryGuard(recoveryPath, recovery.instanceId);
+    removeOwnedJson(entrantPath, entrant.instanceId);
   }
 }
 

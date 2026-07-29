@@ -12,7 +12,10 @@ if (!home || !role || !barrierDir) {
 const require = createRequire(import.meta.url);
 const fs = require("node:fs") as typeof import("node:fs");
 const originalExistsSync = fs.existsSync.bind(fs);
+const originalFsyncSync = fs.fsyncSync.bind(fs);
+const originalLinkSync = fs.linkSync.bind(fs);
 const originalMkdirSync = fs.mkdirSync.bind(fs);
+const originalOpenSync = fs.openSync.bind(fs);
 const originalRealpathSync = fs.realpathSync.bind(fs);
 const originalRenameSync = fs.renameSync.bind(fs);
 const originalWriteFileSync = fs.writeFileSync.bind(fs);
@@ -24,28 +27,82 @@ const recoveryPath = `${lockPath}.recovery`;
 function waitAtBarrier(name: string): void {
   originalWriteFileSync(join(barrierDir, `${role}.${name}.ready`), `${process.pid}\n`, "utf8");
   const releasePath = join(barrierDir, `${role}.${name}.go`);
-  const deadline = Date.now() + 15_000;
+  const deadline = Date.now() + 45_000;
   while (!originalExistsSync(releasePath)) {
     if (Date.now() >= deadline) throw new Error(`timed out at ${role}.${name}`);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
   }
 }
 
+let ownerFd: number | undefined;
+let pausedAfterOwnerFsync = false;
+let pausedAfterRestoreCollision = false;
+
+Object.defineProperty(fs, "openSync", {
+  configurable: true,
+  value: (
+    path: import("node:fs").PathLike,
+    flags: import("node:fs").OpenMode,
+    mode?: import("node:fs").Mode,
+  ): number => {
+    const fd = originalOpenSync(path, flags, mode);
+    if (role === "t" && String(path) === lockPath && flags === "wx") ownerFd = fd;
+    return fd;
+  },
+});
+
+Object.defineProperty(fs, "fsyncSync", {
+  configurable: true,
+  value: (fd: number): void => {
+    originalFsyncSync(fd);
+    if (role === "t" && fd === ownerFd && !pausedAfterOwnerFsync) {
+      pausedAfterOwnerFsync = true;
+      waitAtBarrier("owner-after-fsync");
+    }
+  },
+});
+
 Object.defineProperty(fs, "renameSync", {
   configurable: true,
   value: (oldPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike): void => {
     const oldName = String(oldPath);
     const newName = String(newPath);
-    if (role === "p1" && oldName === recoveryPath && newName.includes(".recovery.stale.")) {
+    if ((role === "p1" || role === "s") && oldName === recoveryPath && newName.includes(".recovery.stale.")) {
       waitAtBarrier("guard-before-rename");
       originalRenameSync(oldPath, newPath);
       waitAtBarrier("guard-after-rename");
       return;
     }
-    if ((role === "p2" || role === "p3") && oldName === lockPath && newName.includes(".lock.stale.")) {
+    if ((role === "p2" || role === "p3" || role === "r") && oldName === lockPath && newName.includes(".lock.stale.")) {
       waitAtBarrier("owner-before-rename");
+      originalRenameSync(oldPath, newPath);
+      if (role === "r") waitAtBarrier("owner-after-rename");
+      return;
+    }
+    if (role === "t" && oldName === lockPath && newName.includes(".lock.cleanup.")) {
+      waitAtBarrier("cleanup-before-rename");
     }
     originalRenameSync(oldPath, newPath);
+  },
+});
+
+Object.defineProperty(fs, "linkSync", {
+  configurable: true,
+  value: (existingPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike): void => {
+    try {
+      originalLinkSync(existingPath, newPath);
+    } catch (error) {
+      if (
+        role === "r" &&
+        !pausedAfterRestoreCollision &&
+        String(existingPath).includes(".lock.stale.") &&
+        String(newPath) === lockPath
+      ) {
+        pausedAfterRestoreCollision = true;
+        waitAtBarrier("restore-after-link-failure");
+      }
+      throw error;
+    }
   },
 });
 syncBuiltinESMExports();
