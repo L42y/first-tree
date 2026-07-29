@@ -51,9 +51,9 @@ export type StartOnboardingChatArgs = {
   complete?: boolean;
   /**
    * How the membership's onboarding state is stamped once the chat exists.
-   * Supersedes `complete` server-side. `"invitee_skip"` is the team-agent
-   * start: suppress onboarding auto-open without stamping completion, so the
-   * member's own connect-computer → create-agent journey stays resumable.
+   * Supersedes `complete` server-side. Current terminal onboarding paths use
+   * `"completed"`; `"invitee_skip"` remains for older clients that only
+   * suppressed auto-open and kept personal-agent setup pending.
    */
   stamp?: "completed" | "invitee_skip" | "none";
   /** Campaign + repo pair used by both action entry paths for dedup. */
@@ -96,15 +96,12 @@ export async function reportOnboardingEvent(
  *
  * Distinct from `dismissOnboarding()`, which only hides the stepper UI
  * and stays reversible. Idempotent on the server (only writes when the
- * column is still NULL). Errors are swallowed because the user has already
- * finished the wizard.
+ * column is still NULL). Failures propagate so the caller can choose whether
+ * an already-created chat makes navigation safe or a no-chat terminal path
+ * (BYO) must remain retryable until the durable stamp succeeds.
  */
 export async function markOnboardingCompleted(organizationId?: string): Promise<void> {
-  try {
-    await api.post<{ ok: true }>("/me/onboarding-completed", organizationId ? { organizationId } : {});
-  } catch {
-    // intentionally swallowed — see jsdoc
-  }
+  await api.post<{ ok: true }>("/me/onboarding-completed", organizationId ? { organizationId } : {});
 }
 
 /**

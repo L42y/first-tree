@@ -89,6 +89,21 @@ describe("first-tree-seed floor invariants", () => {
     expect(openAiMetadata).not.toContain("in this chat");
   });
 
+  it("keeps the Admin work-mode handoff role- and readiness-scoped", () => {
+    const handoff = skillMarkdown.match(/### Admin work-mode handoff[\s\S]*?After PR\/MR 2 opens/u)?.[0] ?? "";
+
+    expect(handoff).toContain("Keep this completion handoff Admin-specific");
+    expect(handoff).toContain("never");
+    expect(handoff).toContain("Member onboarding");
+    expect(handoff).toContain("PR/MR 2 opening is not proof");
+    expect(handoff).toContain("do not claim it is ready yet");
+    expect(handoff).toContain("First Tree agents will use the Team Context in Workspace");
+    expect(handoff).toContain("Settings → Setup");
+    expect(handoff).toContain("Provider conversations remain outside First Tree Chat");
+    expect(handoff).toContain('"Your Team Context is ready."');
+    expect(handoff).toContain("Do not\npoll for merge");
+  });
+
   it("configures PR-only GitHub branch rules after creating a GitHub Context Repo", () => {
     expect(skillMarkdown).toContain("only after `tree init` succeeds");
     expect(skillMarkdown).toMatch(/only when the\s+new Context Repo is a GitHub repository/);

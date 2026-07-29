@@ -30,14 +30,13 @@ describe("resolveStepProgress", () => {
     expect(resolveStepProgress("admin", "create-agent")).toEqual({ index: 2, total: 3 });
     expect(resolveStepProgress("admin", "start-chat")).toBeNull();
   });
-  it("tracks the 3-step invitee setup progress and treats start-chat as the payoff", () => {
-    expect(resolveStepProgress("invitee", "join-team")).toEqual({ index: 0, total: 3 });
-    expect(resolveStepProgress("invitee", "connect-computer")).toEqual({ index: 1, total: 3 });
-    expect(resolveStepProgress("invitee", "create-agent")).toEqual({ index: 2, total: 3 });
+  it("shows two setup steps only on the invitee personal-agent branch", () => {
+    expect(resolveStepProgress("invitee", "connect-computer")).toEqual({ index: 0, total: 2 });
+    expect(resolveStepProgress("invitee", "create-agent")).toEqual({ index: 1, total: 2 });
     expect(resolveStepProgress("invitee", "start-chat")).toBeNull();
   });
   it("get-started is a decision screen, not a progress milestone", () => {
-    // The fork must not change the three-milestone journey contract.
+    // The choice and the two fast paths do not invent setup milestones.
     expect(resolveStepProgress("invitee", "get-started")).toBeNull();
   });
 });
@@ -47,13 +46,13 @@ describe("getStepSequence", () => {
     expect(getStepSequence("admin")).toEqual(ADMIN_STEPS);
     expect(ADMIN_STEPS).toEqual(["create-team", "connect-computer", "create-agent", "start-chat"]);
   });
-  it("invitee sequence shows the full join-team to start-chat path with the get-started fork", () => {
+  it("invitee sequence starts at the work-mode choice after invite acceptance", () => {
     expect(getStepSequence("invitee")).toEqual(INVITEE_STEPS);
-    expect(INVITEE_STEPS).toEqual(["join-team", "get-started", "connect-computer", "create-agent", "start-chat"]);
+    expect(INVITEE_STEPS).toEqual(["get-started", "connect-computer", "create-agent", "start-chat"]);
   });
   it("the get-started fork is invitee-only (admins never see it)", () => {
     expect(ADMIN_STEPS).not.toContain("get-started" as never);
-    expect(INVITEE_STEPS.indexOf("get-started")).toBe(INVITEE_STEPS.indexOf("join-team") + 1);
+    expect(INVITEE_STEPS[0]).toBe("get-started");
   });
   it("connect-computer precedes create-agent in both paths (agent needs a computer)", () => {
     for (const seq of [ADMIN_STEPS, INVITEE_STEPS]) {
@@ -87,10 +86,10 @@ describe("inferInitialStepIndex", () => {
       ADMIN_STEPS.indexOf("create-team"),
     );
     expect(inferInitialStepIndex("invitee", { onboardingStep: "completed", teamSettled: true })).toBe(
-      INVITEE_STEPS.indexOf("join-team"),
+      INVITEE_STEPS.indexOf("get-started"),
     );
   });
-  it("invitee always starts at join-team when no computer exists", () => {
+  it("invitee always starts at the work-mode choice when no computer exists", () => {
     expect(inferInitialStepIndex("invitee", { onboardingStep: "connect", teamSettled: true })).toBe(0);
     expect(inferInitialStepIndex("invitee", { onboardingStep: null, teamSettled: false })).toBe(0);
   });
@@ -215,13 +214,23 @@ describe("shouldLeaveOnboarding", () => {
     expect(shouldLeaveOnboarding(base)).toBe(false);
     expect(shouldLeaveOnboarding({ ...base, currentOrgHasPersonalAgent: true })).toBe(false);
   });
-  it("stays for a connected user whose current org still has no personal agent", () => {
+  it("stays for a connected user without a personal agent until a valid path stamps completion", () => {
     expect(shouldLeaveOnboarding({ ...base, onboardingStep: "create_agent", currentOrgHasPersonalAgent: false })).toBe(
       false,
     );
     expect(shouldLeaveOnboarding({ ...base, onboardingStep: "completed", currentOrgHasPersonalAgent: false })).toBe(
       false,
     );
+  });
+  it("leaves after BYO completion even though no personal First Tree agent exists", () => {
+    expect(
+      shouldLeaveOnboarding({
+        ...base,
+        onboardingStep: "create_agent",
+        currentOrgHasPersonalAgent: false,
+        onboardingCompletedAt: "2026-05-31T00:00:00Z",
+      }),
+    ).toBe(true);
   });
   it("does not strand a merely-dismissed user who returned via Resume into an unready org", () => {
     expect(

@@ -1,5 +1,5 @@
 import type { ContextIntegrationProvider } from "@first-tree/shared";
-import { Check, Clipboard, RefreshCw, Terminal } from "lucide-react";
+import { Check, Clipboard, FileText, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { generateConnectToken } from "../../api/activity.js";
 import { getContextEnablementHandoff } from "../../api/context-enablement.js";
@@ -51,7 +51,7 @@ export function OnboardingContextPersonalAccess({ organizationId, ready }: { org
       }}
     >
       <div className="flex items-start" style={{ gap: "var(--sp-3)" }}>
-        <Terminal className="h-4 w-4 shrink-0" aria-hidden style={{ marginTop: "var(--sp-1)", color: "var(--fg-3)" }} />
+        <FileText className="h-4 w-4 shrink-0" aria-hidden style={{ marginTop: "var(--sp-1)", color: "var(--fg-3)" }} />
         <div className="min-w-0 flex-1">
           <h2 id="context-access-title" className="text-body font-medium" style={{ margin: 0 }}>
             Use Team Context in your coding agent

@@ -10,9 +10,8 @@
  * Two paths:
  *   - "admin"   — the team creator (org admin). Creates/confirms the team,
  *                 connects a computer, creates the agent, and starts chat.
- *   - "invitee" — joining an existing team. Skips team-wide GitHub / Context
- *                 Tree setup, connects a computer, creates their teammate, and
- *                 starts chat.
+ *   - "invitee" — joining an existing team. Chooses a personal First Tree
+ *                 agent, a Team agent, or BYO Claude Code/Codex.
  *
  * Step ids are deliberately product-facing, jargon-free concepts — never
  * "tree" / "binding" / "runtime" / "installation". The user-facing strings
@@ -28,25 +27,25 @@
 // flow populates `selectedRepoUrls`, so the repo-aware branches downstream
 // (e.g. the `hasRepos` path in step-start-chat.tsx) stay dormant by design.
 export const ADMIN_STEPS = ["create-team", "connect-computer", "create-agent", "start-chat"] as const;
-// `get-started` is the invitee fork: after joining, a member of a team that
-// already runs org-visible agents chooses between the standard setup (connect
-// a computer, create their own agent) and an install-free quick start in a
-// team agent's chat. The step self-skips when `canOfferTeamAgentStart` is
-// false, so a member of a team with no shareable agent never sees it and the
-// admin sequence is untouched.
-export const INVITEE_STEPS = ["join-team", "get-started", "connect-computer", "create-agent", "start-chat"] as const;
+// Invite acceptance already creates the membership and selects the joined
+// Team. Repeating "Join team" inside onboarding adds no decision or work, so
+// invited members land directly on the work-mode choice. Workspace starts with
+// a Team agent when available or continues to personal-agent setup; BYO
+// completes inline from one coding-agent prompt.
+export const INVITEE_STEPS = ["get-started", "connect-computer", "create-agent", "start-chat"] as const;
 
 /**
  * Prominent setup progress intentionally stops at agent readiness. `start-chat`
  * remains a real flow state because it creates the first chat and stamps
  * completion, but it is the payoff screen after setup rather than a fourth
  * configuration chore in the progress bar. `get-started` is likewise excluded:
- * it is a decision screen (own agent vs team-agent quick start), not a
- * configuration chore, so the three-milestone journey stays identical for both
- * paths.
+ * it is a decision screen, not a configuration chore. Invitee progress then
+ * appears only on the recommended personal-agent branch, where the two real
+ * setup tasks are connecting a computer and creating an agent. Team-agent and
+ * BYO branches do not invent a fixed "Step 3".
  */
 export const ADMIN_PROGRESS_STEPS = ["create-team", "connect-computer", "create-agent"] as const;
-export const INVITEE_PROGRESS_STEPS = ["join-team", "connect-computer", "create-agent"] as const;
+export const INVITEE_PROGRESS_STEPS = ["connect-computer", "create-agent"] as const;
 export const ADMIN_CONFIG_STEPS = ["connect-computer", "create-agent"] as const;
 export const INVITEE_CONFIG_STEPS = ["connect-computer", "create-agent"] as const;
 
@@ -91,7 +90,7 @@ export type InitialStepFacts = {
  * mid-flow). Fresh entries always start at the opening product step:
  *
  *   - admin   → create-team
- *   - invitee → join-team
+ *   - invitee → get-started
  *
  * Server facts still decide whether `/` enters onboarding at all, but once the
  * user is in the standalone flow the prominent setup journey should begin at
@@ -100,7 +99,7 @@ export type InitialStepFacts = {
  */
 export function inferInitialStepIndex(path: OnboardingPath, facts: InitialStepFacts): number {
   void facts;
-  return path === "admin" ? ADMIN_STEPS.indexOf("create-team") : INVITEE_STEPS.indexOf("join-team");
+  return path === "admin" ? ADMIN_STEPS.indexOf("create-team") : INVITEE_STEPS.indexOf("get-started");
 }
 
 /** Clamp an arbitrary index into the path's valid range. */
@@ -206,11 +205,12 @@ export function shouldEnterOnboarding(facts: OnboardingGateFacts): boolean {
  * Should the `/onboarding` route bounce the user back to the workspace?
  *
  * Only once the selected org's onboarding is terminally done: the user is
- * connected, the org has a personal agent, AND this membership carries its
- * completion stamp (`onboardingCompletedAt`). The stamp is the load-bearing
- * gate. Creating the agent flips `currentOrgHasPersonalAgent` true and makes
- * the server infer `onboardingStep="completed"` the instant the agent comes
- * online, but both paths still have start-chat ahead.
+ * connected and this membership carries its completion stamp
+ * (`onboardingCompletedAt`). A personal agent is intentionally not required:
+ * Team-agent chat and BYO Team Context are both complete member paths.
+ * The stamp is the load-bearing gate. Creating an agent can flip server
+ * readiness before start-chat, but without the stamp that intermediate state
+ * must remain in onboarding.
  * The in-page leave decision is frozen in a ref so an active session isn't
  * ejected mid-flow, yet a full page reload builds a fresh component that
  * recomputes from `/me`; without the completion gate that reload bounces the
@@ -218,24 +218,20 @@ export function shouldEnterOnboarding(facts: OnboardingGateFacts): boolean {
  * the stamp, so gating on it keeps a reloaded user in the flow until setup is
  * genuinely finished.
  *
- * A user still on `connect`, in an org without a personal agent, or in an org
- * whose membership has not been stamped complete is allowed to stay and work
- * through the wizard (including a "finish later"-dismissed user who returned
- * via "Resume"). They leave via the explicit completion / finish-later
- * navigate, never an entry-time bounce.
+ * A user still on `connect`, or whose membership has not been stamped complete,
+ * is allowed to stay and work through the wizard. They leave via the explicit
+ * completion / finish-later navigate, never an entry-time bounce.
  */
 export function shouldLeaveOnboarding(facts: OnboardingGateFacts): boolean {
   if (!facts.meLoaded) return false;
   if (facts.onboardingStep === "connect" || facts.onboardingStep === null) return false;
-  if (!facts.currentOrgHasPersonalAgent) return false;
   return facts.onboardingCompletedAt !== null;
 }
 
 /**
- * Whether the invitee `get-started` fork appears: choose between the standard
- * setup and an install-free team-agent start — begin working in a teammate's
- * org-visible agent chat now, and finish the standard connect-computer →
- * create-agent setup later (Settings → Setup keeps the Resume path).
+ * Whether Workspace can start through an existing Team agent. The member
+ * work-mode choice itself always appears because BYO is independent of this
+ * fact.
  *
  * Offered only while BOTH hold:
  *   - the selected org has a usable agent this member did not create
@@ -256,7 +252,7 @@ export function canOfferTeamAgentStart(facts: {
 }
 
 /**
- * Which invitee start-chat state to show, given what the team has set up. Just two:
+ * Which invitee managed-agent start-chat state to show, given what the team has set up. Just two:
  *   - "ready"     → the team has BOTH a Context Tree and a GitHub connection;
  *                   the agent can do real work, so launch.
  *   - "not-ready" → either is missing. We don't distinguish "no tree" from "no

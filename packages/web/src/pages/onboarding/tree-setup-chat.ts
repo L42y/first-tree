@@ -37,8 +37,9 @@ export async function startOnboardingChat(args: {
   complete?: boolean;
   /**
    * Onboarding stamp written once the chat exists — supersedes `complete`
-   * server-side. The team-agent quick start passes `"invitee_skip"`: suppress
-   * auto-open only, never completion.
+   * server-side. Current terminal onboarding paths, including Team-agent start,
+   * pass `"completed"`. `"invitee_skip"` remains a legacy-compatible value for
+   * older clients that only suppressed the personal-agent journey.
    */
   stamp?: "completed" | "invitee_skip" | "none";
   /** Funnel-event label override; defaults to the joinPath-derived type. */

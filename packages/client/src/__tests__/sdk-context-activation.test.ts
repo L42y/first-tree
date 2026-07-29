@@ -107,6 +107,68 @@ describe("SDK Context activation", () => {
     ).rejects.toThrow();
   });
 
+  it("finishes one explicit membership without transport retry", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://first-tree.example/api/v1/me/onboarding-completed");
+      expect(init).toMatchObject({ method: "POST" });
+      expect(JSON.parse(String(init?.body))).toEqual({ organizationId: "org_acme" });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: "https://first-tree.example",
+      getAccessToken: () => "member-token",
+    });
+
+    await expect(sdk.completeMemberOnboarding("org_acme")).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads and validates the caller-owned Computer's live status", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ status: "connected" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: "https://first-tree.example",
+      getAccessToken: () => "member-token",
+    });
+
+    await expect(sdk.getOwnedClientStatus("client/one")).resolves.toEqual({ status: "connected" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://first-tree.example/api/v1/clients/client%2Fone",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer member-token" }),
+      }),
+    );
+  });
+
+  it("rejects an unknown Computer status instead of guessing readiness", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ status: "sleeping" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: "https://first-tree.example",
+      getAccessToken: () => "member-token",
+    });
+
+    await expect(sdk.getOwnedClientStatus("client-1")).rejects.toThrow("invalid Computer status");
+  });
+
   it("sends the Admin-confirmed repository batch without transport retry", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toContain("/api/v1/orgs/org_acme/resources/repositories/confirm");

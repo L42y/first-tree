@@ -74,6 +74,16 @@ describe("api wrapper paths", () => {
 
     await contextTree.getContextTreeSnapshot("org/id", "7d");
     await contextTree.initializeContextTree("org/id");
+    apiMock.get.mockResolvedValueOnce({
+      protocolVersion: 1,
+      organizationId: "org/id",
+      teamDisplayName: "Acme",
+      role: "member",
+      provider: "codex",
+      intent: "settings",
+      command: "'first-tree' context enable --provider 'codex' --team 'org/id'",
+      workingDirectoryInstruction: "Run this from the target checkout.",
+    });
     await contextEnablement.getContextEnablementHandoff("org/id", "codex");
     await orgSettings.getContextTreeSetting("org/id");
     await orgSettings.getRawContextTreeSetting("org/id");
@@ -127,7 +137,9 @@ describe("api wrapper paths", () => {
     expect(apiMock.post).toHaveBeenCalledWith("/me/connect-tokens");
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/context-tree/snapshot?window=7d");
     expect(apiMock.post).toHaveBeenCalledWith("/orgs/org%2Fid/context-tree/initialize", {});
-    expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/context-enablement/handoff?provider=codex");
+    expect(apiMock.get).toHaveBeenCalledWith(
+      "/orgs/org%2Fid/context-enablement/handoff?provider=codex&intent=settings",
+    );
     expect(apiMock.post).toHaveBeenCalledWith("/orgs/org%2Fid/resources/repositories/confirm", {
       expectedActiveRepositoryKeys: [],
       repositories: [{ name: "API", url: "https://github.com/acme/api.git" }],
@@ -420,7 +432,7 @@ describe("api wrapper paths", () => {
       onboarding.reportOnboardingEvent("agent_created", { runtimeProvider: "codex" }),
     ).resolves.toBeUndefined();
     apiMock.post.mockRejectedValueOnce(new Error("offline"));
-    await expect(onboarding.markOnboardingCompleted()).resolves.toBeUndefined();
+    await expect(onboarding.markOnboardingCompleted()).rejects.toThrow("offline");
   });
 
   it("uploads agent avatars with optional auth and maps avatar upload errors", async () => {

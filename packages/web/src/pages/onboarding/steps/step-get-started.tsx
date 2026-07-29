@@ -1,11 +1,16 @@
-import type { Agent } from "@first-tree/shared";
+import type { Agent, ContextIntegrationProvider } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronDown, Copy as CopyIcon, FileText } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import { listAgents } from "../../../api/agents.js";
+import { getContextEnablementHandoff } from "../../../api/context-enablement.js";
 import { listMembers } from "../../../api/members.js";
+import { getContextTreeSetting } from "../../../api/org-settings.js";
+import { listTeamResourcesForOrg } from "../../../api/resources.js";
 import { Avatar } from "../../../components/avatar.js";
 import { Button } from "../../../components/ui/button.js";
+import { buildByoSetupPrompt } from "../../../lib/byo-setup-prompt.js";
 import { buildTeamAgentStartBootstrap } from "../../workspace/center/onboarding/bootstrap-prose.js";
 import { COPY } from "../copy.js";
 import { FlowHint, StatusRow, StepHeading, WorkingState } from "../flow-ui.js";
@@ -39,59 +44,156 @@ async function listAllNonHumanAddressableAgents(): Promise<Agent[]> {
 }
 
 /**
- * Invitee fork (`get-started`): after joining a team that already runs
- * org-visible agents, choose between the standard setup (connect a computer,
- * create your own agent — the primary choice) and an install-free quick start
- * in a team agent's chat.
+ * Member work-mode choice. The personal First Tree agent is the recommended
+ * path, while two lower-emphasis alternatives remain independently complete:
+ * - an existing Team agent opens an install-free First Tree Chat;
+ * - BYO gives Claude Code or Codex one self-contained setup prompt that
+ *   connects the computer and enables Team Context without creating a First
+ *   Tree agent.
  *
- * The quick start reuses the ordinary kickoff pipeline (`startOnboardingChat`
- * → POST /me/onboarding/kickoff): same per-(human, agent) idempotency key,
- * same dual-reader bootstrap that wakes the agent. The only differences are
- * the target (a teammate's org-visible agent instead of one the member
- * created) and the stamp (`invitee_skip` — suppress onboarding auto-open,
- * never completion, so the standard journey stays resumable from Settings →
- * Setup).
- *
- * Self-skipping: when `canOfferTeamAgentStart` is false (no shareable team
- * agent, or the member already has their own) the step advances immediately,
- * so the standard invitee journey is unchanged and the admin path never
- * contains this step at all.
+ * The Team-agent path reuses the ordinary kickoff pipeline and stamps completion
+ * because a personal First Tree agent is optional. BYO completes only after the exact
+ * provider/Team handoff is prepared. Team readiness stays read-only here:
+ * members never receive Admin setup chores.
  */
-export function StepGetStarted({ defaultMode = "choose" }: { defaultMode?: "choose" | "pick" } = {}) {
-  const { goNext, offerTeamAgentStart: offer } = useOnboardingFlow();
-  // `defaultMode` exists for the DEV preview gallery only, so it can render
-  // the pick sub-state directly; the live flow always starts at the choice.
-  const [mode, setMode] = useState<"choose" | "pick">(defaultMode);
+type GetStartedMode = "choose" | "pick" | "byo-setup";
+type ByoContextState = "checking" | "error" | "ready" | "unavailable";
 
-  // Self-skip when the fork has nothing to offer. `goNext` is a RELATIVE
-  // increment, and React StrictMode double-invokes mount effects in dev — two
-  // increments would skip past connect-computer onto create-agent. A one-shot
-  // ref makes the advance idempotent so it fires exactly once regardless.
-  const skipped = useRef(false);
-  useEffect(() => {
-    if (offer || skipped.current) return;
-    skipped.current = true;
-    goNext();
-  }, [offer, goNext]);
-  if (!offer) return null;
+export function StepGetStarted({ defaultMode = "choose" }: { defaultMode?: GetStartedMode } = {}) {
+  const { organizationId, sequence, goNext, goTo, offerTeamAgentStart: offer, computer } = useOnboardingFlow();
+  const [mode, setMode] = useState<GetStartedMode>(defaultMode);
+  const contextQuery = useQuery({
+    queryKey: ["onboarding", "member-byo-readiness", organizationId],
+    queryFn: async () => {
+      const [tree, resources] = await Promise.all([
+        getContextTreeSetting(organizationId ?? ""),
+        listTeamResourcesForOrg(organizationId ?? ""),
+      ]);
+      return (
+        Boolean(tree.repo) &&
+        resources.some(
+          (resource) => resource.type === "repo" && resource.scope === "team" && resource.status === "active",
+        )
+      );
+    },
+    enabled: !!organizationId && (mode === "choose" || mode === "byo-setup"),
+    // The enable screen is a live authority boundary. Keep checking while it
+    // is open so a Team switch or an Admin-side repository/Tree change
+    // disables the setup artifact instead of leaving stale handoff data live.
+    refetchInterval: (query) => (mode === "byo-setup" || !query.state.data ? 5000 : false),
+  });
+  const contextReady = contextQuery.data === true;
+  const managedComputerReady = Boolean(computer.connectedClient) && computer.okRuntimes.length > 0;
+  const contextState: ByoContextState = contextQuery.isPending
+    ? "checking"
+    : contextQuery.isError
+      ? "error"
+      : contextReady
+        ? "ready"
+        : "unavailable";
 
-  return mode === "choose" ? (
-    <ChooseStart onOwnAgent={goNext} onQuickStart={() => setMode("pick")} />
-  ) : (
-    <PickTeamAgent onBack={() => setMode("choose")} onContinueSetup={goNext} />
+  if (mode === "pick") {
+    return <PickTeamAgent onBack={() => setMode("choose")} />;
+  }
+  if (mode === "byo-setup") {
+    return <ByoSetup onBack={() => setMode("choose")} contextState={contextState} />;
+  }
+  return (
+    <ChooseStart
+      hasTeamAgent={offer}
+      computerReady={managedComputerReady}
+      contextState={contextState}
+      onOwnAgent={() => {
+        if (managedComputerReady) {
+          goTo(sequence.indexOf("create-agent"));
+          return;
+        }
+        goNext();
+      }}
+      onTeamAgent={() => setMode("pick")}
+      onByo={() => {
+        if (contextQuery.isError) {
+          void contextQuery.refetch();
+          return;
+        }
+        setMode("byo-setup");
+      }}
+    />
   );
 }
 
-// ── choose: own agent vs quick start ────────────────────────────────────
+// ── choose: recommended personal agent + two alternative paths ─────────
 
-function ChooseStart({ onOwnAgent, onQuickStart }: { onOwnAgent: () => void; onQuickStart: () => void }) {
+function ChooseStart({
+  hasTeamAgent,
+  computerReady,
+  contextState,
+  onOwnAgent,
+  onTeamAgent,
+  onByo,
+}: {
+  hasTeamAgent: boolean;
+  computerReady: boolean;
+  contextState: ByoContextState;
+  onOwnAgent: () => void;
+  onTeamAgent: () => void;
+  onByo: () => void;
+}) {
   const g = COPY.getStarted;
+  const byoEnabled = contextState === "ready" || contextState === "error";
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-6)" }}>
       <StepHeading title={g.chooseTitle} why={g.chooseWhy} />
       <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
-        <ChoiceCard primary title={g.own.title} description={g.own.description} cta={g.own.cta} onSelect={onOwnAgent} />
-        <ChoiceCard title={g.quick.title} description={g.quick.description} cta={g.quick.cta} onSelect={onQuickStart} />
+        <ChoiceCard
+          primary
+          eyebrow={g.recommended}
+          title={g.personal.title}
+          description={g.personal.description}
+          detail={computerReady ? g.personal.readyDetail : g.personal.detail}
+          cta={computerReady ? g.personal.readyCta : g.personal.cta}
+          onSelect={onOwnAgent}
+        />
+        <div className="flex flex-col" style={{ gap: "var(--sp-2_5)", paddingTop: "var(--sp-1)" }}>
+          <p className="text-caption font-medium" style={{ margin: 0, color: "var(--fg-4)" }}>
+            {g.otherWays}
+          </p>
+          {hasTeamAgent ? (
+            <ChoiceCard
+              compact
+              title={g.team.title}
+              description={g.team.description}
+              detail={g.team.detail}
+              cta={g.team.cta}
+              onSelect={onTeamAgent}
+            />
+          ) : null}
+          <ChoiceCard
+            compact
+            title={g.byo.title}
+            description={
+              contextState === "checking"
+                ? g.byo.checking
+                : contextState === "error"
+                  ? g.byo.error
+                  : contextState === "unavailable"
+                    ? g.byo.unavailable
+                    : g.byo.description
+            }
+            detail={contextState === "ready" ? g.byo.detail : undefined}
+            cta={
+              contextState === "checking"
+                ? g.byo.checkingCta
+                : contextState === "error"
+                  ? g.byo.retry
+                  : contextState === "unavailable"
+                    ? g.byo.unavailableCta
+                    : g.byo.cta
+            }
+            onSelect={onByo}
+            disabled={!byoEnabled}
+          />
+        </div>
       </div>
     </div>
   );
@@ -104,40 +206,60 @@ function ChooseStart({ onOwnAgent, onQuickStart }: { onOwnAgent: () => void; onQ
  * not an escape hatch.
  */
 function ChoiceCard({
+  eyebrow,
   title,
   description,
+  detail,
   cta,
   onSelect,
   primary = false,
+  compact = false,
+  disabled = false,
 }: {
+  eyebrow?: string;
   title: string;
   description: string;
+  detail?: string;
   cta: string;
   onSelect: () => void;
   primary?: boolean;
+  compact?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onSelect}
-      className="text-left transition-colors hover:bg-accent/50"
+      disabled={disabled}
+      className="text-left transition-colors enabled:hover:bg-accent/50"
       style={{
         display: "flex",
         flexDirection: "column",
         gap: "var(--sp-1)",
-        padding: "var(--sp-4) var(--sp-5)",
+        padding: compact ? "var(--sp-3) var(--sp-4)" : "var(--sp-5)",
         borderRadius: "var(--radius-input)",
         border: primary ? "var(--hairline) solid var(--fg)" : "var(--hairline) solid var(--border)",
-        background: "transparent",
-        cursor: "pointer",
+        background: primary ? "var(--bg-raised)" : "transparent",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.6 : 1,
       }}
     >
+      {eyebrow ? (
+        <span className="text-eyebrow uppercase" style={{ color: "var(--fg-3)" }}>
+          {eyebrow}
+        </span>
+      ) : null}
       <span className="text-body font-semibold" style={{ color: "var(--fg)" }}>
         {title}
       </span>
       <span className="text-label" style={{ color: "var(--fg-3)" }}>
         {description}
       </span>
+      {detail ? (
+        <span className="text-caption" style={{ color: "var(--fg-4)", marginTop: "var(--sp-0_5)" }}>
+          {detail}
+        </span>
+      ) : null}
       <span
         className="text-label font-medium inline-flex items-center"
         style={{ gap: "var(--sp-1)", color: "var(--fg)", marginTop: "var(--sp-2)" }}
@@ -149,11 +271,289 @@ function ChoiceCard({
   );
 }
 
-// ── pick: choose a team agent and start the kickoff chat ────────────────
+// ── BYO: one paste in the member's existing coding agent ───────────────
 
-function PickTeamAgent({ onBack, onContinueSetup }: { onBack: () => void; onContinueSetup: () => void }) {
+const BYO_PROVIDERS: Array<{ id: ContextIntegrationProvider; label: string }> = [
+  { id: "claude-code", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+];
+
+function providerLabel(provider: ContextIntegrationProvider): string {
+  return BYO_PROVIDERS.find((item) => item.id === provider)?.label ?? provider;
+}
+
+function ByoSetup({ onBack, contextState }: { onBack: () => void; contextState: ByoContextState }) {
   const g = COPY.getStarted;
-  const { organizationId, memberId, skipAndEnterChat, reportStepFailure } = useOnboardingFlow();
+  const navigate = useNavigate();
+  const { organizationId, teamDisplayName, onboardingCompletedAt, refreshOnboarding, computer } = useOnboardingFlow();
+  const { cliCommand, tokenError, retry } = computer;
+  const [provider, setProvider] = useState<ContextIntegrationProvider>("claude-code");
+
+  const handoff = useQuery({
+    queryKey: ["onboarding", "member-byo-handoff", organizationId, provider, "onboarding"],
+    queryFn: () => getContextEnablementHandoff(organizationId ?? "", provider, "onboarding"),
+    enabled: Boolean(organizationId) && contextState === "ready",
+  });
+  const handoffReady = !handoff.isFetching && !handoff.isError && Boolean(handoff.data);
+  const setupPrompt =
+    contextState === "ready" && handoff.data && cliCommand && organizationId
+      ? buildByoSetupPrompt({
+          organizationId,
+          bootstrapCommand: cliCommand,
+          handoffs: [handoff.data],
+          intent: "onboarding",
+        })
+      : null;
+
+  useEffect(() => {
+    if (!setupPrompt || onboardingCompletedAt) return;
+    let active = true;
+    const refresh = (): void => {
+      void refreshOnboarding().catch(() => undefined);
+    };
+    refresh();
+    const handle = window.setInterval(() => {
+      if (active) refresh();
+    }, 2500);
+    return () => {
+      active = false;
+      window.clearInterval(handle);
+    };
+  }, [onboardingCompletedAt, refreshOnboarding, setupPrompt]);
+
+  if (onboardingCompletedAt) {
+    return <ByoCompletion onContinue={() => navigate("/")} />;
+  }
+
+  const preparingPrompt = handoffReady && !tokenError && !setupPrompt;
+
+  return (
+    <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
+      <BackToChoices onBack={onBack} />
+      <StepHeading title={g.byoSetupTitle} why={g.byoSetupWhy} />
+      <FlowHint>{g.byoBoundary}</FlowHint>
+      {contextState === "checking" ? (
+        <StatusRow state="waiting" label="Checking Team Context…" />
+      ) : contextState === "error" ? (
+        <FlowHint tone="error" role="alert">
+          Couldn't check Team Context just now. Go back and try again.
+        </FlowHint>
+      ) : contextState === "unavailable" ? (
+        <FlowHint role="status">{g.byoUnavailable}</FlowHint>
+      ) : tokenError ? (
+        <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
+          <FlowHint tone="error" role="alert">
+            {COPY.connectComputer.tokenErrorTitle}
+          </FlowHint>
+          <div className="flex">
+            <Button type="button" variant="outline" onClick={retry}>
+              {COPY.connectComputer.retry}
+            </Button>
+          </div>
+        </div>
+      ) : organizationId ? (
+        <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
+          <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
+            <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
+              {g.byoProviderLabel}
+            </p>
+            <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
+              {BYO_PROVIDERS.map((item) => (
+                <Button
+                  key={item.id}
+                  type="button"
+                  size="sm"
+                  variant={provider === item.id ? "default" : "outline"}
+                  aria-pressed={provider === item.id}
+                  onClick={() => setProvider(item.id)}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          {handoff.isError ? (
+            <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
+              <FlowHint tone="error" role="alert">
+                {g.byoHandoffError}
+              </FlowHint>
+              <div className="flex">
+                <Button type="button" variant="outline" onClick={() => void handoff.refetch()}>
+                  {g.byoRetryPrompt}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <ByoSetupPromptCard
+              key={`${provider}:${setupPrompt ?? "preparing"}`}
+              provider={providerLabel(provider)}
+              team={handoff.data?.teamDisplayName ?? teamDisplayName ?? "Your team"}
+              prompt={setupPrompt}
+            />
+          )}
+          {provider === "codex" ? <FlowHint role="status">{g.byoCodexTrust}</FlowHint> : null}
+          {preparingPrompt ? <StatusRow state="waiting" label={g.byoPreparingPrompt} /> : null}
+        </div>
+      ) : (
+        <StatusRow state="waiting" label="Preparing your Team Context…" />
+      )}
+    </div>
+  );
+}
+
+/**
+ * A human-readable task artifact for the member's existing coding agent.
+ * The default view explains the outcome; the generated prompt remains fully
+ * inspectable on demand and is copied byte-for-byte without making plumbing
+ * look like a Terminal step.
+ */
+function ByoSetupPromptCard({ provider, team, prompt }: { provider: string; team: string; prompt: string | null }) {
+  const g = COPY.getStarted;
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copied = copyState === "copied";
+
+  const handleCopy = async (): Promise<void> => {
+    if (!prompt) return;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
+
+  return (
+    <div className="surface-raised flex flex-col" style={{ gap: "var(--sp-3)", padding: "var(--sp-4)" }}>
+      <div className="flex flex-wrap items-start justify-between" style={{ gap: "var(--sp-3)" }}>
+        <div className="flex items-center" style={{ gap: "var(--sp-3)", minWidth: 0 }}>
+          <span
+            className="inline-flex items-center justify-center"
+            aria-hidden="true"
+            style={{
+              width: "var(--sp-8)",
+              height: "var(--sp-8)",
+              flexShrink: 0,
+              borderRadius: "var(--radius-input)",
+              background: "var(--bg-sunken)",
+              color: "var(--fg-2)",
+            }}
+          >
+            <FileText className="h-4 w-4" />
+          </span>
+          <div className="flex flex-col" style={{ gap: "var(--sp-0_5)", minWidth: 0 }}>
+            <p className="text-subtitle font-semibold" style={{ margin: 0, color: "var(--fg)" }}>
+              {g.byoPromptTitle}
+            </p>
+            <p className="text-caption" style={{ margin: 0, color: "var(--fg-3)" }}>
+              {g.byoPromptMeta(provider, team)}
+            </p>
+          </div>
+        </div>
+        <Button type="button" size="sm" onClick={() => void handleCopy()} disabled={!prompt}>
+          {copied ? <Check className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+          {copied ? "Copied" : prompt ? g.byoCopyPrompt : g.byoPreparingPrompt}
+        </Button>
+      </div>
+
+      <p className="text-label" style={{ margin: 0, color: "var(--fg-3)" }}>
+        {g.byoPromptSummary}
+      </p>
+
+      {prompt ? (
+        <details
+          className="group"
+          style={{
+            borderTop: "var(--hairline) solid var(--border-faint)",
+            paddingTop: "var(--sp-3)",
+          }}
+        >
+          <summary
+            className="text-caption font-medium cursor-pointer list-none flex items-center justify-between"
+            style={{ color: "var(--fg-3)" }}
+          >
+            <span>{g.byoViewPrompt}</span>
+            <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          <pre
+            className="mono text-label surface-sunken"
+            style={{
+              margin: "var(--sp-3) 0 0",
+              padding: "var(--sp-3)",
+              maxHeight: "var(--sp-75)",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              color: "var(--fg-2)",
+            }}
+          >
+            {prompt}
+          </pre>
+        </details>
+      ) : null}
+
+      {copied ? (
+        <p className="text-label" role="status" aria-live="polite" style={{ margin: 0, color: "var(--fg-3)" }}>
+          {g.byoPasteToContinue(provider)}
+        </p>
+      ) : copyState === "failed" ? (
+        <p className="text-label" role="alert" style={{ margin: 0, color: "var(--state-needs-you)" }}>
+          {g.byoCopyFailed}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Completed BYO state. Kept as a small reusable production component so the
+ * DEV onboarding gallery can show the real completion page directly instead
+ * of requiring reviewers to run the handoff command and mutate preview state.
+ */
+export function ByoCompletion({ onContinue = () => undefined }: { onContinue?: () => void } = {}) {
+  const g = COPY.getStarted;
+  return (
+    <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
+      <div
+        className="inline-flex items-center justify-center"
+        aria-hidden="true"
+        style={{
+          width: "var(--sp-10)",
+          height: "var(--sp-10)",
+          borderRadius: "var(--radius-full)",
+          background: "var(--color-success-soft)",
+          color: "var(--success)",
+        }}
+      >
+        <Check className="h-5 w-5" />
+      </div>
+      <StepHeading title={g.byoCompleteTitle} why={g.byoCompleteWhy} />
+      <FlowHint role="status">{g.byoCompleteNote}</FlowHint>
+      <div className="flex">
+        <Button type="button" onClick={onContinue}>
+          {g.byoGoToFirstTree}
+          <ArrowRight className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function BackToChoices({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="flex">
+      <Button type="button" variant="link" className="h-auto p-0 text-label" onClick={onBack}>
+        <ArrowLeft className="h-3.5 w-3.5" />
+        <span>{COPY.getStarted.pickBack}</span>
+      </Button>
+    </div>
+  );
+}
+
+// ── Workspace: choose a Team agent and start the kickoff chat ──────────
+
+function PickTeamAgent({ onBack }: { onBack: () => void }) {
+  const g = COPY.getStarted;
+  const { organizationId, memberId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
   const [phase, setPhase] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -175,7 +575,11 @@ function PickTeamAgent({ onBack, onContinueSetup }: { onBack: () => void; onCont
   }, [agentsQuery.isError, reportStepFailure]);
   // Owner names for the "Run by X" tag. Member-readable route; cheap and
   // rarely-changing, so no polling.
-  const membersQuery = useQuery({ queryKey: ["members"], queryFn: listMembers, staleTime: 60_000 });
+  const membersQuery = useQuery({
+    queryKey: ["members", "team-agent-picker", organizationId],
+    queryFn: listMembers,
+    staleTime: 60_000,
+  });
 
   const ownerById = new Map((membersQuery.data ?? []).map((m) => [m.id, m.displayName]));
   // Exclude anything the member manages themselves (defensive — the fork
@@ -194,12 +598,12 @@ function PickTeamAgent({ onBack, onContinueSetup }: { onBack: () => void; onCont
         topic: "Get settled on First Tree",
         treeBindingPlan: "none",
         joinPath: "invite",
-        // Suppress onboarding auto-open only — never completion. The member's
-        // own connect-computer → create-agent journey stays pending.
-        stamp: "invitee_skip",
+        // Choosing an existing Team agent is a complete First Tree path. A
+        // personal First Tree agent remains optional.
+        stamp: "completed",
         startChatType: "team-agent-quick-start",
       });
-      await skipAndEnterChat(chatId);
+      await completeAndEnterChat(chatId, "get-started");
     } catch (err) {
       setError(startChatErrorMessage(err, COPY.errors.chatFailed));
       setPhase("idle");
@@ -211,12 +615,7 @@ function PickTeamAgent({ onBack, onContinueSetup }: { onBack: () => void; onCont
 
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
-      <div className="flex">
-        <Button type="button" variant="link" className="h-auto p-0 text-label" onClick={onBack}>
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span>{COPY.back}</span>
-        </Button>
-      </div>
+      <BackToChoices onBack={onBack} />
       <StepHeading title={g.pickTitle} why={g.pickWhy} />
       {error && (
         <FlowHint tone="error" role="alert">
@@ -243,9 +642,9 @@ function PickTeamAgent({ onBack, onContinueSetup }: { onBack: () => void; onCont
         <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
           <FlowHint>{g.pickEmpty}</FlowHint>
           <div className="flex">
-            <Button type="button" onClick={onContinueSetup}>
-              <span>{COPY.getStarted.own.cta}</span>
-              <ArrowRight className="h-4 w-4" />
+            <Button type="button" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+              <span>{g.pickBack}</span>
             </Button>
           </div>
         </div>
@@ -262,9 +661,6 @@ function PickTeamAgent({ onBack, onContinueSetup }: { onBack: () => void; onCont
           ))}
         </div>
       )}
-      <p className="text-caption" style={{ margin: 0, color: "var(--fg-4)" }}>
-        {g.pickFootnote}
-      </p>
     </div>
   );
 }

@@ -32,10 +32,12 @@ describe("personal Context access", () => {
       binName: "first-tree-staging",
     });
     apiMocks.getContextEnablementHandoff.mockResolvedValue({
+      protocolVersion: 1,
       organizationId: "org-1",
       teamDisplayName: "Acme",
       role: "member",
       provider: "claude-code",
+      intent: "settings",
       command: "'first-tree-staging' context enable --provider 'claude-code' --team 'org-1'",
       workingDirectoryInstruction: "Run this once from the repository root.",
     });
@@ -82,8 +84,7 @@ describe("personal Context access", () => {
     const copiedPrompt = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0];
     expect(copiedPrompt).toContain("'first-tree-staging' login 'short-lived-code'");
     expect(copiedPrompt).toContain("context enable --provider 'claude-code' --team 'org-1'");
-    expect(copiedPrompt).toContain("First Tree Web owns onboarding completion separately.");
-    expect(copiedPrompt).not.toContain("onboarding completion has been recorded");
+    expect(copiedPrompt).toContain("confirms that onboarding is complete");
   });
 
   it("stays absent until Team Context prerequisites are ready", async () => {
@@ -257,18 +258,22 @@ describe("personal Context access", () => {
         bootstrapCommand: "bootstrap-command",
         handoffs: [
           {
+            protocolVersion: 1,
             organizationId: "org-1",
             teamDisplayName: "Acme",
             role: "admin",
             provider: "claude-code",
+            intent: "settings",
             command: "claude-command",
             workingDirectoryInstruction: "Run from the repository root.",
           },
           {
+            protocolVersion: 1,
             organizationId: "org-2",
             teamDisplayName: "Other",
             role: "admin",
             provider: "codex",
+            intent: "settings",
             command: "codex-command",
             workingDirectoryInstruction: "Run from the repository root.",
           },
@@ -284,10 +289,12 @@ describe("personal Context access", () => {
       bootstrapCommand: "bootstrap-command",
       handoffs: [
         {
+          protocolVersion: 1,
           organizationId: "org-1",
           teamDisplayName: "Acme",
           role: "member",
           provider: "claude-code",
+          intent: "onboarding",
           command: "claude-command",
           workingDirectoryInstruction: "Run from the repository root.",
         },
@@ -298,8 +305,7 @@ describe("personal Context access", () => {
     expect(prompt).toContain("bootstrap-command");
     expect(prompt).toContain("claude-command");
     expect(prompt).not.toContain("Codex");
-    expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
-    expect(prompt).not.toContain("onboarding completion has been recorded");
+    expect(prompt).toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");
   });
 

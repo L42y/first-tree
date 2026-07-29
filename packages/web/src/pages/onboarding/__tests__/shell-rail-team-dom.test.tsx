@@ -209,7 +209,7 @@ describe("onboarding shell and team step", () => {
     expect(authMock.logout).toHaveBeenCalled();
   });
 
-  it("hides finish-later when no agent exists and counts invitee config steps", async () => {
+  it("hides finish-later when no agent exists and shows personal-agent progress only", async () => {
     flowMock.value = {
       ...flowMock.value,
       activeStep: "connect-computer",
@@ -221,8 +221,9 @@ describe("onboarding shell and team step", () => {
     const container = await renderDom(<OnboardingShell>Body</OnboardingShell>);
 
     expect(container.textContent).not.toContain("I'll finish later");
-    // Invitee path also shows only the 3 setup milestones.
-    expect(container.textContent).toContain("Step 2 of 3");
+    // Invite acceptance and the work-mode choice are not setup chores. Once
+    // the member chooses a personal agent, only two real tasks remain.
+    expect(container.textContent).toContain("Step 1 of 2");
   });
 
   it("keeps finish-later for a quick-start member (no personal agent, usable team agent)", async () => {

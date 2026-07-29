@@ -170,6 +170,23 @@ describe("GitHub API wrappers", () => {
   });
 });
 
+describe("Context enablement API", () => {
+  it("rejects a handoff from an incompatible Server protocol", async () => {
+    apiMock.get.mockResolvedValueOnce({
+      organizationId: "org-1",
+      teamDisplayName: "Acme",
+      role: "member",
+      provider: "claude-code",
+      intent: "onboarding",
+      command: "first-tree context enable",
+      workingDirectoryInstruction: "Run this in the target checkout.",
+    });
+    const { getContextEnablementHandoff } = await import("../context-enablement.js");
+
+    await expect(getContextEnablementHandoff("org-1", "claude-code", "onboarding")).rejects.toThrow();
+  });
+});
+
 describe("onboarding and campaign API wrappers", () => {
   it("swallows best-effort onboarding telemetry failures and posts required kickoff calls", async () => {
     apiMock.post
@@ -190,7 +207,7 @@ describe("onboarding and campaign API wrappers", () => {
         chatId: "chat-1",
       }),
     ).resolves.toBeUndefined();
-    await expect(onboarding.markOnboardingCompleted("org/id")).resolves.toBeUndefined();
+    await expect(onboarding.markOnboardingCompleted("org/id")).rejects.toThrow("completion down");
     await expect(
       onboarding.postOnboardingStartChat({ agentUuid: "agent-1", bootstrap: "start", complete: true }),
     ).resolves.toEqual({ chatId: "chat-1" });

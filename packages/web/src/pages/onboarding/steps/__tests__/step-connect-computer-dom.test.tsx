@@ -66,7 +66,8 @@ function flow(overrides: Partial<OnboardingFlowValue> = {}): OnboardingFlowValue
     markTreeAutoDetectDone: vi.fn(),
     offerTeamAgentStart: false,
     completeAndEnterChat: vi.fn(),
-    skipAndEnterChat: vi.fn(),
+    onboardingCompletedAt: null,
+    refreshOnboarding: vi.fn(async () => undefined),
     finishLater: vi.fn(),
     ...overrides,
   };

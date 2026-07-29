@@ -3,7 +3,7 @@ import { MEMBER_ROLES } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link2, Plus, Search } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { listClients } from "../../api/activity.js";
 import {
   deleteAgent,
@@ -99,11 +99,16 @@ export function TeamPage() {
   const { role, memberId, refreshMe } = useAuth();
   const isAdmin = role === "admin";
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const resolveMember = useMemberNameMap();
 
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
+  // Settings → Setup links completed Team-agent/BYO members directly to the
+  // real personal-agent creation surface instead of routing them back through
+  // terminal onboarding. The hash keeps this deep link bookmarkable without
+  // making modal state part of the server contract.
+  const [createOpen, setCreateOpen] = useState(() => location.hash === "#new-agent");
   const [editTarget, setEditTarget] = useState<MemberEditTarget | null>(null);
   const [agentFilter, setAgentFilter] = useState<AgentFilter>(() => readAgentFilterPreference());
   const [suspendTarget, setSuspendTarget] = useState<AgentLifecycleTarget | null>(null);

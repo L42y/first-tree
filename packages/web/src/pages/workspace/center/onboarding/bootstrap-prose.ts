@@ -51,8 +51,9 @@ export function buildInviteeReadyBootstrap(agentDisplayName: string): string {
 }
 
 /**
- * Team-agent start: a joining member begins in a teammate's org-visible agent
- * chat without connecting a computer or creating their own agent. The agent is
+ * Team-agent start: a joining member deliberately chose an existing Team agent
+ * and begins in that agent's org-visible chat without connecting a
+ * computer or creating their own agent. The agent is
  * an established teammate (not being onboarded itself, and its manager is not
  * the sender), so there is no "welcome aboard" — the human is the newcomer
  * asking to get settled. Dual-reader like every kickoff bootstrap: clean
@@ -63,8 +64,8 @@ export function buildTeamAgentStartBootstrap(agentDisplayName: string): string {
   return [
     `${agentDisplayName}, hi — I just joined the team.`,
     "",
-    "I don't have my own agent set up yet, so I'm starting here with you. " +
-      "Please help me get settled into this team on First Tree: introduce what the team is working on, " +
+    "I chose to start with a Team agent. " +
+      "Please help me get settled into this team: introduce what the team is working on, " +
       "and suggest a few ways you can help me right away.",
   ].join("\n");
 }

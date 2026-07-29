@@ -75,12 +75,7 @@ export type OnboardingFlowValue = {
    * "I'll finish later" escape.
    */
   hasAgent: boolean;
-  /**
-   * Whether the invitee `get-started` fork offers the install-free team-agent
-   * quick start (`canOfferTeamAgentStart` over the selected membership's
-   * readiness bits). Computed here so the step, the shell, tests, and the DEV
-   * preview all read one flow-owned fact instead of each consulting auth.
-   */
+  /** Whether this member can enter Workspace through an existing Team agent. */
   offerTeamAgentStart: boolean;
 
   selectedRepoUrls: string[];
@@ -107,16 +102,11 @@ export type OnboardingFlowValue = {
   markTreeAutoDetectDone: () => void;
 
   /** Mark setup finished and drop the user into their first chat. */
-  completeAndEnterChat: (chatId: string) => Promise<void>;
-  /**
-   * Enter the team-agent quick-start chat WITHOUT stamping completion. The
-   * kickoff call already wrote the membership's `invitee_skip` suppressor
-   * server-side; this only refreshes `/me` (so the workspace gate sees the
-   * suppressor instead of bouncing straight back here) and navigates. The
-   * member's own connect-computer → create-agent journey stays pending and
-   * resumable from Settings → Setup.
-   */
-  skipAndEnterChat: (chatId: string) => Promise<void>;
+  completeAndEnterChat: (chatId: string, sourceStep?: "start-chat" | "get-started") => Promise<void>;
+  /** Live membership completion stamped by Chat kickoff or verified BYO CLI setup. */
+  onboardingCompletedAt: string | null;
+  /** Refresh membership facts while an external coding agent completes BYO. */
+  refreshOnboarding: () => Promise<void>;
   /** Hide setup and go to the normal workspace (resumable via Settings). */
   finishLater: () => Promise<void>;
 };
@@ -193,6 +183,7 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
     teamDisplayName,
     orgHasOtherMembers,
     onboardingStep,
+    onboardingCompletedAt,
     currentOrgHasPersonalAgent,
     currentOrgHasUsableAgent,
     refreshMe,
@@ -240,9 +231,7 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
   const offerTeamAgentStart = canOfferTeamAgentStart({ currentOrgHasUsableAgent, currentOrgHasPersonalAgent });
   // Two steps can mount only long enough to redirect themselves. Do not count
   // those implementation-only states as pages the user actually saw.
-  const activeStepIsVisible =
-    !(activeStep === "get-started" && !offerTeamAgentStart) &&
-    !(activeStep === "create-agent" && currentOrgHasPersonalAgent);
+  const activeStepIsVisible = !(activeStep === "create-agent" && currentOrgHasPersonalAgent);
 
   const reportStepEvent = useCallback(
     (
@@ -293,11 +282,16 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
     setActiveIndex(nextIndex);
   }, [activeIndex, activeStep, activeStepIsVisible, path, reportStepEvent, sequence]);
 
-  // The computer poll only needs to run on the two steps that depend on it.
+  // The member choice step also owns the independent BYO connection flow, so
+  // it needs the same live computer state as the managed-agent steps.
   const computerEnabled =
-    activeStep === "connect-computer" || activeStep === "create-agent" || activeStep === "start-chat";
+    activeStep === "get-started" ||
+    activeStep === "connect-computer" ||
+    activeStep === "create-agent" ||
+    activeStep === "start-chat";
   const computer = useComputerConnection(computerEnabled, {
     onTokenMintFailed: () => reportStepFailure("connect_token_mint_failed", { step: "connect-computer" }),
+    prepareBootstrapWhenConnected: activeStep === "get-started",
   });
 
   // A connected computer with a completed capability report but no usable
@@ -386,7 +380,7 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
   const markTreeAutoDetectDone = useCallback(() => setTreeAutoDetectDone(true), []);
 
   const completeAndEnterChat = useCallback(
-    async (chatId: string) => {
+    async (chatId: string, sourceStep: "start-chat" | "get-started" = "start-chat") => {
       // Single-chat start-chat paths may already have stamped completion inside
       // POST /me/onboarding/kickoff. Support/background paths deliberately defer
       // that stamp until every required side effect succeeds, then call this
@@ -417,29 +411,10 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
         // keep the always-navigate invariant local to this flow rather than
         // depending on a callee's error handling.
       }
-      reportStepEvent("step_completed", "start-chat", { outcome: "chat_started" });
+      reportStepEvent("step_completed", sourceStep, { outcome: "chat_started" });
       navigate(`/?c=${encodeURIComponent(chatId)}`);
     },
     [path, organizationId, markOnboardingCompleted, navigate, reportStepEvent],
-  );
-
-  const skipAndEnterChat = useCallback(
-    async (chatId: string) => {
-      clearPersistedStep(path, organizationId);
-      // Same per-tab hygiene as completion: the stash was never consumed on
-      // this path (the quick-start chat uses a teammate's agent), but clearing
-      // it keeps a later same-tab onboarding in another org from reading a
-      // stale value.
-      writeOnboardingAgentUuid(null);
-      // The kickoff already stamped `invitee_skip` server-side. Refresh /me so
-      // the auth context carries the suppressor BEFORE navigating — the
-      // workspace gate reads it, and navigating with stale state would bounce
-      // the user straight back into onboarding.
-      await refreshMe();
-      reportStepEvent("step_completed", "get-started", { outcome: "team_agent_quick_start" });
-      navigate(`/?c=${encodeURIComponent(chatId)}`);
-    },
-    [path, organizationId, refreshMe, navigate, reportStepEvent],
   );
 
   const finishLater = useCallback(async () => {
@@ -485,7 +460,8 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       treeAutoDetectDone,
       markTreeAutoDetectDone,
       completeAndEnterChat,
-      skipAndEnterChat,
+      onboardingCompletedAt,
+      refreshOnboarding: refreshMe,
       finishLater,
     }),
     [
@@ -520,7 +496,8 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       treeAutoDetectDone,
       markTreeAutoDetectDone,
       completeAndEnterChat,
-      skipAndEnterChat,
+      onboardingCompletedAt,
+      refreshMe,
       finishLater,
     ],
   );

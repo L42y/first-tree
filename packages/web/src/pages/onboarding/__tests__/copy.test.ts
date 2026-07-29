@@ -4,15 +4,13 @@ import { COPY, STEP_COPY } from "../copy.js";
 describe("STEP_COPY", () => {
   it("uses canonical setup step titles for user-facing pages", () => {
     expect(STEP_COPY["create-team"].title).toBe("Create a First Tree team");
-    expect(STEP_COPY["join-team"].title).toBe("Join the team");
     expect(STEP_COPY["connect-computer"].title).toBe("Connect this computer");
-    expect(STEP_COPY["create-agent"].title).toBe("Create your first agent");
+    expect(STEP_COPY["create-agent"].title).toBe("Create your First Tree agent");
   });
 
   it("explains the First Tree team concept on the opening step", () => {
     const teamConcept = "A First Tree team is where you, your teammates, and your agents work together.";
     expect(STEP_COPY["create-team"].why).toBe(teamConcept);
-    expect(STEP_COPY["join-team"].why).toBe(teamConcept);
   });
 
   it("no step has 'outcomes' (footer removed; merged into why)", () => {
@@ -32,19 +30,40 @@ describe("STEP_COPY", () => {
   });
 });
 
-describe("get-started fork copy", () => {
-  it("frames two parallel choices, not a fallback for people without a computer", () => {
+describe("get-started choice copy", () => {
+  it("recommends a personal First Tree agent without hiding the two alternate paths", () => {
     const g = COPY.getStarted;
-    // The quick start is a peer choice; banned framings would demote it to an
-    // escape hatch ("no computer?") or coin a new product noun.
-    for (const s of [g.chooseTitle, g.chooseWhy, g.own.title, g.own.description, g.quick.title, g.quick.description]) {
+    for (const s of [
+      g.chooseTitle,
+      g.chooseWhy,
+      g.personal.title,
+      g.personal.description,
+      g.personal.detail,
+      g.team.title,
+      g.team.description,
+      g.team.detail,
+      g.byo.title,
+      g.byo.description,
+      g.byo.detail,
+    ]) {
       expect(s.toLowerCase()).not.toContain("no computer");
       expect(s.toLowerCase()).not.toContain("runtime");
     }
-    // Descriptive ownership tag, not a new concept name.
     expect(g.runBy("Zhang Wei")).toBe("Run by Zhang Wei");
-    // Quick start must not claim setup is finished.
-    expect(g.pickFootnote).toContain("won't finish your setup");
+    expect(g.recommended).toBe("Recommended");
+    expect(g.personal.title).toBe("Set up my First Tree agent");
+    expect(g.personal.description).toContain("delegate work");
+    expect(g.team.title).toBe("Start with a Team agent");
+    expect(g.team.detail).toBe("No setup on this computer.");
+    expect(g.byo.title).toBe("Keep using Claude Code or Codex");
+    expect(g.byo.detail).toContain("not in First Tree Chat");
+    expect(g.byoBoundary).toContain("does not create a First Tree agent");
+    expect(g.byoBoundary).toContain("outside First Tree Chat");
+    expect(g.byoSetupWhy).toContain("paste one prompt");
+    expect(g.byoPromptTitle).toBe("Setup prompt");
+    expect(g.byoPromptMeta("Codex", "Acme")).toBe("Codex for Acme");
+    expect(g.byoPromptSummary).toContain("enables Team Context");
+    expect(g.byoPasteToContinue("Codex")).toContain("Paste into Codex");
   });
 });
 
@@ -77,20 +96,24 @@ describe("onboarding vocabulary (connect-agent reframe)", () => {
     }
   });
 
-  it("names the coding agent directly once detected", () => {
-    expect(COPY.connectComputer.whyWaiting).toContain("Claude Code");
-    // create-agent's subtitle intentionally uses the category word ("local
-    // coding agent"), not the tool names — the concrete tool is named in the
-    // field's pills (PROVIDER_LABEL) instead.
+  it("keeps the computer bridge provider-neutral and names the managed agent", () => {
+    expect(COPY.connectComputer.whyWaiting).toContain("local coding agent");
+    expect(COPY.connectComputer.whyWaiting).not.toContain("Claude Code");
+    expect(COPY.connectComputer.whyWaiting).not.toContain("Codex");
+    expect(COPY.connectComputer.detectedBridge).toBe("Next, create your First Tree agent.");
+    expect(STEP_COPY["create-agent"].title).toContain("First Tree agent");
+    // The subtitle keeps the First Tree teammate distinct from the local
+    // provider selected in the field below.
+    expect(COPY.createAgent.subtitle).toContain("First Tree teammate");
     expect(COPY.createAgent.subtitle).toContain("local coding agent");
   });
 
   it("keeps the start-chat finale action-oriented and consistent", () => {
-    expect(COPY.startChat.newTitle).toBe("Start working with your agent");
-    expect(COPY.startChat.existingTitle).toBe("Start working with your agent");
-    expect(COPY.startChat.noProjectTitle).toBe("Start working with your agent");
-    expect(COPY.startChat.inviteeReadyTitle).toBe("Start working with your agent");
-    expect(COPY.invitee.notReadyTitle).toBe("Start working with your agent");
+    expect(COPY.startChat.newTitle).toBe("Start your first Agent Chat");
+    expect(COPY.startChat.existingTitle).toBe("Start your first Agent Chat");
+    expect(COPY.startChat.noProjectTitle).toBe("Start your first Agent Chat");
+    expect(COPY.startChat.inviteeReadyTitle).toBe("Start your first Agent Chat");
+    expect(COPY.invitee.notReadyTitle).toBe("Start your first Agent Chat");
 
     expect(COPY.startChat.startBuilding).toBe("Start chat");
     expect(COPY.startChat.startExisting).toBe("Start chat");
@@ -103,7 +126,7 @@ describe("onboarding vocabulary (connect-agent reframe)", () => {
     // The finale intentionally reads the same regardless of role or team/tree
     // state: that state is invisible to the user (Context Tree is introduced
     // later, in chat), so the subtitle stays a single plain launch line.
-    const launch = "Your agent's ready. Start a chat and it'll help you get going.";
+    const launch = "Your agent is ready. Delegate work, follow progress, and review results with your team.";
     expect(COPY.startChat.noProjectBody).toBe(launch);
     expect(COPY.startChat.inviteeReadyBody).toBe(launch);
     expect(COPY.invitee.notReadyBody).toBe(launch);

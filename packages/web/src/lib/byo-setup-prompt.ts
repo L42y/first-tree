@@ -74,7 +74,7 @@ export function buildByoSetupPrompt({
         ];
   const completion =
     intent === "onboarding"
-      ? "Only tell me setup is ready after First Tree verifies the provider integration, the exact-checkout Team binding, and live Team Context activation. First Tree Web owns onboarding completion separately."
+      ? "Only tell me setup is ready after First Tree verifies the provider integration, the exact-checkout Team binding, and live Team Context activation, and confirms that onboarding is complete."
       : "After First Tree verifies the provider integration, the exact-checkout Team binding, and live Team Context activation, tell me the exact next step for starting a fresh coding-agent session. Do not mark onboarding complete.";
 
   return [

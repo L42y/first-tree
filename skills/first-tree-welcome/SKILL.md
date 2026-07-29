@@ -104,7 +104,8 @@ before deciding whether to offer any admin-only setup:
   the onboarding greeting** ("welcome aboard" + the scan-fix ask) is likewise the
   owner onboarding their own project → treat as admin for setup-gating.
 - **Invitee / member** — "Please help me get settled into this team on First
-  Tree" (joining a team someone else owns).
+  Tree" (joining a team someone else owns). Choosing an existing Team agent is
+  also explicitly a member path: "I chose to start with a Team agent."
 - **Unclear** — anything else: do not assume admin; treat admin-only setup as
   owned by an organization admin. This includes a **greeting-free** production-scan
   fix handoff (the direct quickstart fix path, which an already-onboarded
@@ -467,15 +468,40 @@ was not picked up front. Offer it **once**, after value, on these conditions:
 - On "yes", spawn the dedicated tree chat as in **Spawning Task Chats** — never
   create, bind, or seed inline in this launcher.
 
-## After a pre-existing Context Tree milestone: guide Review setup once
+## After a pre-existing Context Tree milestone: guide work modes and Review setup once
 
-Automatic Context Review is a Team capability, not an onboarding gate. After
-the user has seen value, check it here only when a populated tree was already
-readable and no dedicated tree task produced the milestone in this onboarding
-run. The dedicated tree task owns its own post-PR/MR handoff through
-`first-tree-seed`; consume that result and never repeat it in this launcher.
+Team Context work modes and Automatic Context Review are Team capabilities,
+not onboarding gates. Guide them only after the user has seen verified value,
+when a populated tree was already readable and no dedicated tree task produced
+the milestone in this onboarding run. The dedicated tree task owns its own
+post-PR/MR handoff through `first-tree-seed`; consume that result and never
+repeat it in this launcher.
 
-- For a confirmed **admin**, read the current managed Agent's Team with
+- Before presenting external BYO as executable, confirm that at least one
+  **active Team code-repository resource** exists. A readable local path,
+  ad-hoc URL, or populated Tree is not evidence of that Team resource. If the
+  resource is missing or unconfirmed, do not claim BYO is ready.
+- For a confirmed **admin**, give this compact work-mode handoff once:
+  **"Your Team Context is ready for Agent Chat, where delegated work, progress,
+  and review stay visible."** Keep Agent Chat as the primary
+  continuation. If an active Team code-repository resource is confirmed, add:
+  **"If you prefer your own Claude Code or Codex, use Settings → Setup. If this
+  computer is not connected yet, Setup guides that one-time connection; then
+  enable Team Context for a checkout. Provider conversations remain outside
+  First Tree Chat; only Team Context is shared."** If the Team repository
+  prerequisite is missing or unconfirmed, mention the personal path only as a
+  future option once Settings shows an active Team code repo and connected
+  Computer; never present it as ready. Never make either path an onboarding
+  gate.
+- Never give this Admin handoff to a member or a user whose role is unclear.
+  Member work-mode guidance is owned by the onboarding choice and
+  Settings; do not replay it here.
+- The explicit **Team-agent choice** opening confirms the member already
+  chose an existing Team agent after seeing BYO as another onboarding path. Help them get
+  value from that choice; do not pitch Claude Code/Codex again in Chat, do not
+  ask them to create a personal First Tree agent later, and do not turn their
+  welcome into Team repository, Tree, GitHub App, or Review configuration.
+- For a confirmed **admin**, also read the current managed Agent's Team with
   `first-tree org context-tree review-config --json`. Do not switch to
   `--as-member`: its default Team can differ from this Agent/chat's Team.
   Read only the JSON `enabled` and `agentUuid` fields. If `agentUuid` is null,
@@ -487,16 +513,21 @@ run. The dedicated tree task owns its own post-PR/MR handoff through
   Reviewer health, or infer debt when the read is invalid, fails, or is
   ambiguous. None of these states blocks onboarding.
 - Setup owns provider prerequisites, Reviewer selection and health; this
-  launcher performs no Team mutation.
+  launcher performs no Team mutation. When both handoffs apply, combine them
+  into one compact Settings → Setup paragraph instead of repeating the
+  destination.
 
 The ownership matrix is intentionally small:
 
 | Observed milestone | State | This launcher's action |
 | --- | --- | --- |
 | GitHub value PR | Task chat reported missing App coverage | Summarize the blocked live updates; do not repeat its Setup handoff |
-| Pre-existing populated tree after value | Confirmed admin; no selected Agent | Hand off once to select and enable Automatic Review in Settings → Setup |
-| Pre-existing populated tree after value | Confirmed admin; Agent selected but Review off | Hand off once to enable Automatic Review in Settings → Setup |
-| Pre-existing populated tree after value | Review enabled, read failed/ambiguous, member, or unclear role | No Review setup handoff |
+| Pre-existing populated tree after value | Confirmed admin; no selected Agent | Give the work-mode handoff once; also offer Review Agent selection and enablement in Settings → Setup |
+| Pre-existing populated tree after value | Confirmed admin; Agent selected but Review off | Give the work-mode handoff once; also offer Automatic Review enablement in Settings → Setup |
+| Pre-existing populated tree after value | Confirmed admin; Review enabled | Give only the work-mode handoff once |
+| Pre-existing populated tree after value | Confirmed admin; Review read failed/ambiguous | Give only the work-mode handoff once |
+| Pre-existing populated tree after value | Explicit Team-agent-choice member | Do not replay the work-mode choice; no Team mutation or Review setup |
+| Pre-existing populated tree after value | Member or unclear role | No Admin Setup handoff |
 | Dedicated tree task's first PR/MR | Any | Seed owns the handoff; consume its result and do not repeat |
 
 ## Doing the Work & Talking to the User
@@ -634,15 +665,24 @@ admin-only surface; involve the responsible admin.
   guidance. This does not replace
   the tree offer; if both apply, keep each to a short sentence and do not repeat
   either later.
-- After value against a pre-existing populated tree, check Context Review
-  configuration and give a confirmed admin at most one **Settings → Setup**
-  handoff when no eligible Reviewer is selected or the retained selection is
-  disabled. Distinguish those states: do not tell an admin to select another
-  Agent when one is already retained. A dedicated tree task owns this handoff
-  for its own PR/MR; never repeat it in the launcher. Never make it an
-  onboarding gate, treat configuration as a health check, infer debt from an
-  ambiguous state, prompt a member to configure it, or perform the Team mutation
-  from this launcher.
+- After value against a pre-existing populated tree, give a confirmed admin one
+  compact work-mode handoff: Agent Chat is the primary Team Context path.
+  Present personal Claude Code or Codex as executable only after confirming an
+  active Team code-repository resource; otherwise keep it conditional on
+  Settings prerequisites. Never treat a readable local path or ad-hoc URL as
+  that Team resource. In the same read, check Context Review configuration and
+  add Reviewer selection or enablement only when that exact action is needed.
+  Distinguish those states: do not tell an admin to select another Agent when
+  one is already retained. A dedicated tree task owns these handoffs for its
+  own PR/MR; never repeat them in the launcher. Never make them an onboarding
+  gate, treat configuration as a health check, infer debt from an ambiguous
+  state, prompt a member to configure them, or perform the Team mutation from
+  this launcher.
+- For the explicit Team-agent-choice member opening, do not replay the
+  work-mode choice after value. They already chose between a Team agent,
+  a personal First Tree agent, and BYO during onboarding. A personal First Tree agent remains optional, but
+  even that reminder is unnecessary unless the member asks. Keep the welcome
+  focused on Team orientation and useful work.
 - Present choices as a multi-select ask with **2–4 options** — the value tasks
   bundled with the tree-build option when tree build is offered, otherwise the
   value tasks listed individually; never a one-option ask; no "Skip for now"

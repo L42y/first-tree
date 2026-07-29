@@ -38,6 +38,12 @@ export type ComputerConnection = {
 export type UseComputerConnectionOptions = {
   /** Called once after the final automatic connect-token mint attempt fails. */
   onTokenMintFailed?: () => void;
+  /**
+   * Prepare a portable login fallback even when another Client is already
+   * connected. BYO onboarding cannot assume the coding-agent conversation is
+   * running on the same computer represented by the Web's global signal.
+   */
+  prepareBootstrapWhenConnected?: boolean;
 };
 
 /** Silent auto-retries before surfacing a token-mint failure to the user. */
@@ -131,7 +137,7 @@ export function useComputerConnection(
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberate trigger dep
   useEffect(() => {
     if (!enabled) return;
-    if (connectedClient) return;
+    if (connectedClient && !options.prepareBootstrapWhenConnected) return;
     if (connectToken && connectTokenExpiresAt && connectTokenExpiresAt > Date.now()) {
       const refreshAt = Math.max(connectTokenExpiresAt - Date.now(), 0);
       const handle = window.setTimeout(() => {
@@ -177,7 +183,14 @@ export function useComputerConnection(
     return () => {
       cancelled = true;
     };
-  }, [enabled, connectedClient, connectToken, connectTokenExpiresAt, retryNonce]);
+  }, [
+    enabled,
+    connectedClient,
+    connectToken,
+    connectTokenExpiresAt,
+    options.prepareBootstrapWhenConnected,
+    retryNonce,
+  ]);
 
   // Manual retry from the error UI: clear the error + token so the mint effect
   // re-runs from scratch.

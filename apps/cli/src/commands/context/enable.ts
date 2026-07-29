@@ -12,6 +12,7 @@ import { enableContextIntegrationOperation } from "../../core/context-integratio
 import type { ProviderHookProbe } from "../../core/context-integration/provider-driver.js";
 import { inspectContextIntegrationStatus } from "../../core/context-integration/status.js";
 import { print } from "../../core/output.js";
+import { getClientServiceStatus, isServiceSupported } from "../../core/service-install.js";
 import { createMemberSdk } from "../_shared/member.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
 import { createContextIntegrationDriver, parseContextProvider } from "./shared.js";
@@ -21,13 +22,18 @@ type EnableOptions = {
   provider?: string;
   team?: string;
   yes?: boolean;
+  completeOnboarding?: boolean;
 };
 
 function configure(command: Command): void {
   command
     .requiredOption("--provider <provider>", "claude-code or codex")
     .requiredOption("--team <team-id>", "Team from the server-authored Setup or invite handoff")
-    .option("--yes", "accept the displayed local Plugin/binding change plan");
+    .option("--yes", "accept the displayed local Plugin/binding change plan")
+    .option(
+      "--complete-onboarding",
+      "finish this Team membership's onboarding after local and live Context verification",
+    );
 }
 
 export async function runContextEnable(context: CommandContext): Promise<void> {
@@ -90,6 +96,26 @@ export async function runContextEnable(context: CommandContext): Promise<void> {
 
   const verification = await inspectContextIntegrationStatus(driver, sdk, preflight.checkoutRoot);
   const nextActions = buildContextEnableNextActions(provider, verification.hook);
+  let onboardingCompleted = false;
+  if (options.completeOnboarding) {
+    const completionIssues = await contextOnboardingCompletionIssues({
+      teamId,
+      repositoryKey: preflight.repositoryKey,
+      clientId: expectedAccountClientId,
+      verification,
+      getClientStatus: (clientId) => sdk.getOwnedClientStatus(clientId),
+    });
+    if (completionIssues.length > 0) {
+      print.fail(
+        "CONTEXT_ONBOARDING_VERIFICATION_PENDING",
+        `First Tree Context was enabled, but onboarding is still waiting for: ${completionIssues.join(" ")}`,
+        1,
+      );
+    }
+    await sdk.completeMemberOnboarding(teamId);
+    onboardingCompleted = true;
+  }
+
   const result = {
     provider,
     team: activation.team,
@@ -98,6 +124,7 @@ export async function runContextEnable(context: CommandContext): Promise<void> {
     plugin: installPlan.operation,
     verification,
     nextActions,
+    onboardingCompleted,
   };
   if (context.options.json) print.result(result);
   else {
@@ -121,7 +148,56 @@ export async function runContextEnable(context: CommandContext): Promise<void> {
     nextActions.forEach((action, index) => {
       print.status(`Next ${index + 1}`, action);
     });
+    if (onboardingCompleted) print.status("Onboarding", "Complete");
   }
+}
+
+type OnboardingVerification = Awaited<ReturnType<typeof inspectContextIntegrationStatus>>;
+
+export async function contextOnboardingCompletionIssues(input: {
+  teamId: string;
+  repositoryKey: string;
+  clientId: string;
+  verification: OnboardingVerification;
+  getClientStatus: (clientId: string) => Promise<{ status: "connected" | "disconnected" }>;
+}): Promise<string[]> {
+  const issues: string[] = [];
+  const { verification } = input;
+
+  if (!verification.provider.compatible || !verification.plugin.installed || !verification.plugin.enabled) {
+    issues.push("a compatible, installed, and enabled First Tree Context Plugin.");
+  }
+  if (!verification.runtime.healthy) {
+    issues.push("a healthy local Context Plugin payload.");
+  }
+  const hookReady =
+    verification.hook.enabled === true &&
+    (verification.hook.trust === "trusted" || verification.hook.trust === "provider_managed");
+  if (!hookReady) {
+    issues.push("the provider Hook to be enabled and trusted.");
+  }
+  if (
+    verification.binding.state !== "exact" ||
+    verification.binding.organizationId !== input.teamId ||
+    verification.binding.repositoryKey !== input.repositoryKey
+  ) {
+    issues.push("the exact checkout-to-Team binding.");
+  }
+  if (verification.activation.state !== "connected" || verification.activation.team.organizationId !== input.teamId) {
+    issues.push("live Team Context activation.");
+  }
+  if (isServiceSupported() && getClientServiceStatus().state !== "active") {
+    issues.push("the First Tree background service to be running.");
+  }
+  try {
+    const client = await input.getClientStatus(input.clientId);
+    if (client.status !== "connected") {
+      issues.push("this Computer to be connected to First Tree.");
+    }
+  } catch {
+    issues.push("this Computer's live connection to be verified.");
+  }
+  return issues;
 }
 
 export function buildContextEnableNextActions(

@@ -5,17 +5,15 @@
  * vocabulary is deliberately small: "team", "a computer", "agent", "Context
  * Tree".
  *
- * Core framing: the user's coding agent (Claude Code, Codex, …) ALREADY
- * exists on their computer — onboarding *connects* it to the team, it does
- * not conjure a new abstract entity. So the tool names are first-class
- * vocabulary: we say "coding agent" as the category word and name the
- * concrete tool ("Claude Code") directly once it's detected. The verb chain
- * is Connect (link the tool) → Add (give it a team identity). "runtime" is NO
- * LONGER used in UI copy — it was once a sanctioned exception in
- * connect-computer, but "coding agent" / the tool's own name reads truer to
- * how the user already thinks about it. "repo" stays (GitHub access / start-chat
- * can still involve repos, and "project" is ambiguous next to GitHub's own
- * "Projects"). "binding" and other deep internals still never leak.
+ * Core framing: an invited member chooses between three independently complete
+ * paths: a personal First Tree agent, a Team agent, or their existing Claude
+ * Code / Codex. BYO gives the coding agent one self-contained prompt that connects the
+ * computer and enables Team Context without creating a First Tree agent. A local coding agent is a provider,
+ * never something silently added to First Tree Chat. Provider names are
+ * first-class vocabulary while "runtime" stays out of user-facing copy.
+ * "repo" stays (GitHub access / start-chat can still involve repos, and
+ * "project" is ambiguous next to GitHub's own "Projects"). "binding" and
+ * other deep internals still never leak.
  * We distinguish people from AI: human members are
  * "teammates", the AI workers are "agents" (matching the rest of the product;
  * "AI agent" on first mention, then just "agent"). "Context Tree" is the one
@@ -52,9 +50,9 @@ export const STEP_COPY: Record<StepId, StepCopy> = {
     why: "",
   },
   "create-agent": {
-    // The title keeps the user's first team agent as the object they are
-    // creating; the subtitle carries the local coding-agent relationship.
-    title: "Create your first agent",
+    // Name the product-owned teammate explicitly so it cannot be confused
+    // with the Claude Code / Codex process selected inside the form.
+    title: "Create your First Tree agent",
     why: "",
   },
   "start-chat": {
@@ -62,10 +60,6 @@ export const STEP_COPY: Record<StepId, StepCopy> = {
     // project / invitee sub-states); the shell skips them while empty.
     title: "",
     why: "",
-  },
-  "join-team": {
-    title: "Join the team",
-    why: "A First Tree team is where you, your teammates, and your agents work together.",
   },
   "get-started": {
     // title/why are rendered per-sub-state by StepGetStarted (choose vs pick a
@@ -76,12 +70,10 @@ export const STEP_COPY: Record<StepId, StepCopy> = {
 };
 
 /** One plain launch line for every start-chat finale — admin or invitee, team
- *  ready or not. The team/tree state behind these variants is invisible to the
- *  user (the Context Tree is introduced later, in chat), so a per-state subtitle
- *  would only surface backend readiness they can't act on — and would name
- *  "context" before the user has met the concept. So every finale shows this one
- *  line. Title stays "Start working with your agent"; this is the subtitle. */
-const START_CHAT_LAUNCH_WHY = "Your agent's ready. Start a chat and it'll help you get going.";
+ *  ready or not. It teaches the Workspace value without leaking Team/Tree
+ *  readiness or implying that a personal Claude Code / Codex conversation is
+ *  joining First Tree Chat. */
+const START_CHAT_LAUNCH_WHY = "Your agent is ready. Delegate work, follow progress, and review results with your team.";
 
 /** Shared phrases reused across steps so wording stays consistent. */
 export const COPY = {
@@ -184,13 +176,11 @@ export const COPY = {
     // command-pointing line only holds while waiting; once connected we swap
     // to a neutral confirmation so it doesn't tell the user to "run the
     // command below" when no command is shown.
-    // whyWaiting names the tools (Claude Code / Codex) and points the command
-    // at the machine where they're installed — the user's coding agent already
-    // lives there, so running the command connects it. The "— that connects it
-    // to your team" tail gives the bare command its purpose.
-    whyWaiting: "A background app that connects your local coding agents (Claude Code, Codex) to your First Tree team.",
-    whyConnected:
-      "A background app that connects your local coding agents (Claude Code, Codex) to your First Tree team.",
+    // The Client connects the computer and lets a managed First Tree agent run
+    // there. It does not itself enable Team Context inside a personal provider
+    // session, so keep that separate in the user-facing mental model.
+    whyWaiting: "A background app that lets First Tree agents run here using a local coding agent.",
+    whyConnected: "A background app that lets First Tree agents run here using a local coding agent.",
     // Two install paths (waiting state): run the bare command in a terminal, or
     // paste a ready prompt to the coding agent the user already has — the prompt
     // wraps the command in a "please run this" line so the agent executes it
@@ -205,7 +195,7 @@ export const COPY = {
     detectedLabel: (count: number) =>
       count === 1 ? "Coding agent on this computer" : "Coding agents on this computer",
     // Bridge below the detected-agents list → the next step (create-agent).
-    detectedBridge: "Next, create your first agent.",
+    detectedBridge: "Next, create your First Tree agent.",
     waiting: "Waiting for your computer…",
     connected: "connected",
     // One line: the "✓ <host> connected" row above already says the computer is
@@ -222,22 +212,18 @@ export const COPY = {
   },
   /** create-agent states */
   createAgent: {
-    // Subtitle = relationship + a smooth, generic lead-in to the setup. The
-    // SUBJECT carries the relationship ("your local coding agent" — the category
-    // word, NOT the tool names, which live in the field's pills +
-    // `codingAgentHint`); "ready to join your First Tree team" says what's
-    // happening, and "let's set it up" invites the configuration below WITHOUT
-    // enumerating / echoing the field labels (the robotic "Choose which one,
-    // name it, and set who can use it" list was the redundancy we cut). No
-    // two-layer "powered by / runtime" framing.
-    subtitle: "Your local coding agent is ready to join your First Tree team — let's set it up.",
+    // A First Tree agent is the managed teammate; the local coding
+    // agent is the provider it uses on this computer. Keep both nouns visible
+    // so onboarding never implies that a personal provider conversation joins
+    // First Tree Chat.
+    subtitle: "A First Tree teammate you can delegate work to. It runs here using your local coding agent.",
     // Coding-agent picker (moved here from connect-computer): always a list, even
     // for one, default-selected to Claude Code when present. Verb-leading to
     // match the imperative `nameLabel` ("Name your agent") below; "local" keeps
     // the subtitle's vocabulary and frames the pick as the user's own
     // machine-side tool — connect-computer already showed which machine, so no
     // "Detected on <host>" sub-label is repeated here.
-    codingAgentLabel: "Choose your local coding agent",
+    codingAgentLabel: "Choose which local coding agent it uses",
     // Amber "not ready" badge beside the label when the computer dropped — so the
     // disabled picker reads AS unavailable (action needed: reconnect) at a glance,
     // not just a quietly greyed pill.
@@ -282,24 +268,24 @@ export const COPY = {
     // admin · new tree (the default — the team has none yet). `newWhy`/`existingWhy`
     // are only read by the dormant repo-aware branch (StepConnectCode is out of the
     // live sequence); kept as functions so that call site's shape is unchanged.
-    newTitle: "Start working with your agent",
+    newTitle: "Start your first Agent Chat",
     newWhy: (_repoCount: number): string => START_CHAT_LAUNCH_WHY,
     startBuilding: "Start chat",
 
     // admin · the team already has a Context Tree (re-run / second admin /
     // CLI-bound). Detected silently; also part of the dormant repo-aware branch.
-    existingTitle: "Start working with your agent",
+    existingTitle: "Start your first Agent Chat",
     existingWhy: (_repoCount: number): string => START_CHAT_LAUNCH_WHY,
     startExisting: "Start chat",
 
     // admin · no repo connected (the live default path).
-    noProjectTitle: "Start working with your agent",
+    noProjectTitle: "Start your first Agent Chat",
     noProjectBody: START_CHAT_LAUNCH_WHY,
     startChatting: "Start chat",
 
     // invitee · ready (team has a tree + a GitHub connection). The agent inherits
     // the team's recommended repos automatically, so there is nothing to select.
-    inviteeReadyTitle: "Start working with your agent",
+    inviteeReadyTitle: "Start your first Agent Chat",
     inviteeReadyBody: START_CHAT_LAUNCH_WHY,
     startWorking: "Start chat",
 
@@ -314,48 +300,85 @@ export const COPY = {
       title: "Stay connected",
     },
   },
-  /** invitee · join-team confirmation + the one not-ready (blocked-on-admin) state.
-   *  The not-ready screen covers both "no Context Tree" and "no GitHub
-   *  connection" — the invitee can't act on either, and it advances on its own
-   *  once the admin finishes. */
+  /** Invitee not-ready (blocked-on-admin) state. The not-ready screen covers
+   *  both "no Context Tree" and "no GitHub connection" — the invitee can't act
+   *  on either, and it advances on its own once the admin finishes. */
   invitee: {
-    welcomeBody: {
-      pre: "You're joining ",
-      post: ".",
-    },
-    notReadyTitle: "Start working with your agent",
+    notReadyTitle: "Start your first Agent Chat",
     notReadyBody: START_CHAT_LAUNCH_WHY,
     // The primary action on the not-ready screen — start a simple first chat now
     // instead of waiting on the team.
     startAnyway: "Start chat",
   },
-  /** get-started fork (invitee only): own agent vs team-agent quick start. */
+  /** Member choice: recommend a personal First Tree agent while preserving
+   *  install-free Team-agent and external coding-agent paths. */
   getStarted: {
-    chooseTitle: "You're in. How do you want to start?",
-    chooseWhy: "Both paths land you in the team — pick what fits right now.",
-    own: {
-      title: "Set up my own agent",
-      description: "Connect your computer and create your personal agent — the full First Tree experience.",
-      cta: "Continue setup",
+    chooseTitle: "How do you want to get started?",
+    chooseWhy: "Choose a starting point. You can add another way later.",
+    recommended: "Recommended",
+    otherWays: "Other ways to start",
+    personal: {
+      title: "Set up my First Tree agent",
+      description: "Get your own agent to delegate work, follow progress, and review results.",
+      detail: "Uses the coding tools on this computer.",
+      readyDetail: "This computer is ready.",
+      cta: "Set up my agent",
+      readyCta: "Create my agent",
     },
-    quick: {
-      title: "Take a quick look with a team agent",
-      description:
-        "Jump in now and chat with an agent your teammates already run — nothing to install. You can set up your own agent any time later.",
-      cta: "Quick start",
+    team: {
+      title: "Start with a Team agent",
+      description: "Start immediately with an agent your team already runs.",
+      detail: "No setup on this computer.",
+      cta: "Choose a Team agent",
+    },
+    byo: {
+      title: "Keep using Claude Code or Codex",
+      description: "Bring your team's First Tree context into your current coding agent.",
+      detail: "You'll keep working there, not in First Tree Chat.",
+      cta: "Set up in my coding agent",
+      checking: "Checking whether this option is available…",
+      checkingCta: "Checking…",
+      error: "Couldn't check this option just now.",
+      retry: "Try again",
+      unavailable: "Your team's context isn't ready for this option yet.",
+      unavailableCta: "Not available yet",
     },
     pickTitle: "Pick a team agent",
-    pickWhy: "Start chatting now. You can set up your own agent any time later.",
+    pickWhy: "Choose an agent your team already runs. You'll start an Agent Chat together.",
     /** Ownership tag on each row — descriptive wording, not a new product concept. */
     runBy: (owner: string) => `Run by ${owner}`,
     startChat: "Start chat",
-    pickEmpty: "No team agent is available right now — set up your own instead.",
+    pickEmpty: "No Team agent is available right now.",
     /** Roster read failed — distinct from empty, so a network blip never
      *  becomes a false "no agent available" claim. */
     pickError: "Couldn't load your team's agents just now.",
     pickRetry: "Try again",
-    /** Footnote under the list: quick start does not finish setup. */
-    pickFootnote: "Starting here won't finish your setup — you can complete it any time from Settings.",
+    pickBack: "Back to choices",
+    byoSetupTitle: "Set up in your coding agent",
+    byoSetupWhy:
+      "Open Claude Code or Codex in the code project you want to work on, then paste one prompt. Setup applies only to that local copy, which must come from a repository shared by your team.",
+    byoBoundary:
+      "This does not create a First Tree agent. Your coding-agent conversation stays outside First Tree Chat.",
+    byoProviderLabel: "Which coding agent are you using?",
+    byoPreparingPrompt: "Preparing your setup prompt…",
+    byoPromptTitle: "Setup prompt",
+    byoPromptMeta: (provider: string, team: string) => `${provider} for ${team}`,
+    byoPromptSummary:
+      "Connects this computer if needed, enables Team Context for this local project, and verifies setup automatically.",
+    byoCopyPrompt: "Copy setup prompt",
+    byoViewPrompt: "View full prompt",
+    byoPasteToContinue: (provider: string) =>
+      `Paste into ${provider} to continue. This page will finish automatically after setup is verified.`,
+    byoCopyFailed: "Couldn't copy automatically. Open the full prompt and copy it manually.",
+    byoCodexTrust: "Codex may ask you to approve the First Tree hook in /hooks. Continue in Codex after approval.",
+    byoUnavailable: "Needs Admin: your Team's repository or Context Tree setup is not ready yet.",
+    byoHandoffError: "Couldn't prepare the setup prompt just now. Try again.",
+    byoRetryPrompt: "Try again",
+    byoCompleteTitle: "You're ready to keep working in your coding agent",
+    byoCompleteWhy: "First Tree Team Context is enabled for this local project.",
+    byoCompleteNote:
+      "Start a new Claude Code or Codex session here to load Team Context. You can review or repeat setup later in Settings → Setup.",
+    byoGoToFirstTree: "Go to First Tree",
   },
   /** failure recovery, shared */
   errors: {

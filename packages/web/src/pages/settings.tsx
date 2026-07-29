@@ -110,6 +110,7 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
       currentOrgHasUsableAgent,
       onboardingDismissedAt,
       onboardingCompletedAt,
+      role,
     }) ||
     teamSetupNeedsAttention(currentCapabilities, role) ||
     contextTreeSnapshotNeedsAttention(currentContextTreeSnapshot, role);
@@ -131,14 +132,8 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
     [...ITEMS].sort((a, b) => b.to.length - a.to.length).find((it) => pathname.startsWith(it.to)) ?? ITEMS[0];
 
   if (viewport === "narrow") {
-    // Mobile Settings is outside this desktop IA change. Preserve its existing
-    // one-shot Setup visibility while pointing incomplete users at the new
-    // canonical route.
-    const visibleNarrowGroups = NARROW_GROUPS.map((group) => ({
-      ...group,
-      items: group.items.filter((item) => item !== SETUP_ITEM || onboardingCompletedAt === null),
-    })).filter((group) => group.items.length > 0);
-
+    // Setup is permanent on mobile too: BYO users return here to repeat or
+    // change the provider/checkout handoff after onboarding is complete.
     return (
       <div className="flex flex-col" style={{ minHeight: "100%" }}>
         <nav
@@ -159,7 +154,7 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
             overflowX: "auto",
           }}
         >
-          {visibleNarrowGroups.map((group) => (
+          {NARROW_GROUPS.map((group) => (
             <div key={group.label} className="flex shrink-0 items-center" style={{ gap: "var(--sp-1)" }}>
               <span className="text-eyebrow shrink-0" style={{ color: "var(--fg-4)", padding: "0 var(--sp-1)" }}>
                 {group.label.toUpperCase()}

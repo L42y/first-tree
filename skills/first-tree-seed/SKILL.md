@@ -1102,6 +1102,36 @@ After all sub-agents return:
   gitlab follow <mr-url>`. A returned pending or active state is success; a
   follow failure does not invalidate the MR.
 
+### Admin work-mode handoff
+
+Seed's live admission check established that the human is an Admin creating or
+finishing a Team capability. Keep this completion handoff Admin-specific; never
+reuse it as Member onboarding or send a Member into Team setup.
+
+PR/MR 2 opening is not proof that the new leaves are on the bound default
+branch. In the PR/MR 2 response, say that the Team Context will be ready after
+that change merges; do not claim it is ready yet. Then explain the two
+non-exclusive work modes in one compact paragraph:
+
+- First Tree agents will use the Team Context in Workspace, where delegated
+  work, progress, and review stay visible.
+- The Admin may also use the same Team Context in Claude Code or Codex by
+  opening **Settings → Setup** after the merge and enabling it for each
+  checkout. Provider conversations remain outside First Tree Chat; only Team
+  Context is shared.
+
+Keep Workspace as the primary continuation and BYO Context as an optional
+personal setup. Do not print a guessed `context enable` command, infer provider
+health from Computer Connected, add an invite-members step, or repeat the
+Phase 1 Review/App handoff.
+
+If a later exact provider event in this same task Chat verifies that PR/MR 2
+merged, the completion line may become **"Your Team Context is ready."** Restate
+the two work modes once, using the same boundary above, and link to the Web
+console's `/settings/setup` route when the deployment origin is known. Do not
+poll for merge, block Seed completion on that later event, or repeat the
+handoff after it has been delivered.
+
 After PR/MR 2 opens, the seed skill is done. Do not repeat the Review Agent
 handoff from Phase 1. Under the explicit Welcome Reviewer contract, say only
 that this Content PR/MR is the concrete Automatic Review verification

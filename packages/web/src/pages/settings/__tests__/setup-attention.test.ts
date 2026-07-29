@@ -164,6 +164,7 @@ describe("Setup navigation attention", () => {
         currentOrgHasUsableAgent: false,
         onboardingDismissedAt: null,
         onboardingCompletedAt: null,
+        role: "member",
       }),
     ).toBe(true);
     expect(
@@ -171,6 +172,7 @@ describe("Setup navigation attention", () => {
         currentOrgHasUsableAgent: true,
         onboardingDismissedAt: OBSERVED_AT,
         onboardingCompletedAt: null,
+        role: "member",
       }),
     ).toBe(true);
     expect(
@@ -178,7 +180,24 @@ describe("Setup navigation attention", () => {
         currentOrgHasUsableAgent: true,
         onboardingDismissedAt: null,
         onboardingCompletedAt: OBSERVED_AT,
+        role: "member",
       }),
     ).toBe(false);
+    expect(
+      personalSetupNeedsAttention({
+        currentOrgHasUsableAgent: false,
+        onboardingDismissedAt: OBSERVED_AT,
+        onboardingCompletedAt: OBSERVED_AT,
+        role: "member",
+      }),
+    ).toBe(false);
+    expect(
+      personalSetupNeedsAttention({
+        currentOrgHasUsableAgent: false,
+        onboardingDismissedAt: null,
+        onboardingCompletedAt: OBSERVED_AT,
+        role: "admin",
+      }),
+    ).toBe(true);
   });
 });

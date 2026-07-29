@@ -398,6 +398,7 @@ async function flush(): Promise<void> {
 
 async function renderDom(
   element: ReactElement,
+  initialEntry = "/team",
 ): Promise<{ container: HTMLElement; queryClient: QueryClient; root: Root }> {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -406,7 +407,7 @@ async function renderDom(
   queryClient.setQueryData(["chat-detail", "chat-1"], { id: "chat-1", participants: [] });
   await act(async () => {
     root.render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <QueryClientProvider client={queryClient}>{element}</QueryClientProvider>
       </MemoryRouter>,
     );
@@ -510,6 +511,15 @@ afterEach(() => {
 });
 
 describe("TeamPage", () => {
+  it("opens the real new-agent surface from the Settings deep link", async () => {
+    const { TeamPage } = await import("../index.js");
+    const { root } = await renderDom(<TeamPage />, "/team#new-agent");
+
+    await waitForText(document.body, "Mock New Agent");
+
+    await act(async () => root.unmount());
+  });
+
   it("renders admin data source and wires create, invite, filtering, usage, navigation, delegate, and agent actions", async () => {
     const { TeamPage } = await import("../index.js");
     const { container, root } = await renderDom(<TeamPage />);

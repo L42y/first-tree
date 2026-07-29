@@ -283,10 +283,12 @@ beforeEach(() => {
     contextStatus: { severity: "ok", label: "Available", detail: null },
   });
   contextEnablementMocks.getContextEnablementHandoff.mockResolvedValue({
+    protocolVersion: 1,
     organizationId: "org-1",
     teamDisplayName: "Acme",
     role: "admin",
     provider: "claude-code",
+    intent: "settings",
     command: "first-tree-dev context enable --provider claude-code --team org-1",
     workingDirectoryInstruction: "Run this from the target repository.",
   });
@@ -363,7 +365,7 @@ describe("Settings Setup overview", () => {
     const expectation = [
       ["work-access", "ready", "circle-check", "--success"],
       ["computer", "optional", "circle-minus", "--fg-4"],
-      ["agent", "attention", "circle-alert", "--state-needs-you"],
+      ["agent", "optional", "circle-minus", "--fg-4"],
       ["repositories", "unknown", "circle-question-mark", "--fg-3"],
       ["repository-automation", "pending", "clock-3", "--state-idle"],
       ["context-tree", "neutral", "circle-alert", "--fg-3"],
@@ -427,6 +429,56 @@ describe("Settings Setup overview", () => {
     expect(view.host.textContent).not.toContain("Manage");
     expect(rowFor("context-tree", input).action).toBeUndefined();
     expect(view.host.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps a completed no-agent member neutral without guessing their chosen work mode", async () => {
+    const input = facts({
+      role: "member",
+      hasUsableAgent: false,
+      hasPersonalAgent: false,
+      onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
+      repositories: { state: "ready", value: 1 },
+    });
+    const view = await renderSetup(input);
+
+    expect(rowFor("work-access", input).status).toEqual({
+      label: "No First Tree agent available",
+      detail: "Review Team Context or set up your own agent",
+      kind: "optional",
+    });
+    expect(rowFor("work-access", input).action).toEqual({
+      label: "Review options",
+      to: "/settings/setup#context-access",
+    });
+    expect(rowFor("agent", input).status).toEqual({
+      label: "Not set up",
+      detail: "Optional — add one for your own workflows",
+      kind: "optional",
+    });
+    expect(rowFor("agent", input).action).toEqual({ label: "Set up my agent", to: "/team#new-agent" });
+    expect(view.host.textContent).not.toContain("Resume to create your agent");
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps a completed admin without an agent in team-readiness setup", async () => {
+    const input = facts({
+      role: "admin",
+      hasUsableAgent: false,
+      hasPersonalAgent: false,
+      onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
+    });
+    const view = await renderSetup(input);
+
+    expect(rowFor("work-access", input).status).toEqual({
+      label: "Agent needed",
+      detail: "Set up an agent before starting work",
+      kind: "attention",
+    });
+    expect(rowFor("work-access", input).action).toEqual({ label: "Set up", to: "/onboarding" });
+    expect(rowFor("agent", input).status.kind).toBe("attention");
 
     await act(async () => view.root.unmount());
   });

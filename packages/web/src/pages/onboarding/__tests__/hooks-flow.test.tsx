@@ -544,7 +544,7 @@ describe("onboarding hooks and flow", () => {
     expect(expectHookValue(latest.current).activeStep).toBe("create-team");
   });
 
-  it("lands on the opening join-team step for a returning invitee without a personal agent", async () => {
+  it("lands on the work-mode choice for a returning invitee without a personal agent", async () => {
     const latest = { current: null as OnboardingFlowValue | null };
 
     function Probe() {
@@ -568,11 +568,9 @@ describe("onboarding hooks and flow", () => {
       currentOrgHasPersonalAgent: false,
     };
     await renderProbe(<Probe />);
-    // Redesign: fresh onboarding entry always starts at the opening step
-    // (`inferInitialStepIndex` ignores server readiness), so this invitee — who
-    // has no personal agent yet — starts at join-team and walks forward to
-    // create-agent, rather than being dropped straight onto create-agent.
-    expect(expectHookValue(latest.current).activeStep).toBe("join-team");
+    // Invite redemption already created the membership and selected the Team,
+    // so repeating a Join-team confirmation would add no decision or work.
+    expect(expectHookValue(latest.current).activeStep).toBe("get-started");
   });
 
   it("re-derives the step when the org changes on a still-mounted provider", async () => {
