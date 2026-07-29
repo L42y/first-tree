@@ -1,4 +1,0 @@
-interface:
-  display_name: "Synthesize Meeting Records"
-  short_description: "Synthesize decisions, actions, progress, and risks"
-  default_prompt: "Use $synthesize-meeting-records to synthesize the meeting records I supplied."

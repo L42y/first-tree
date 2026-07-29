@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Meeting Records to Tree"
+  short_description: "Confirm meeting context and sync it to the Tree"
+  default_prompt: "Use $sync-meeting-records-to-tree to confirm the meeting records I supplied and sync durable context into the team's Context Tree."
