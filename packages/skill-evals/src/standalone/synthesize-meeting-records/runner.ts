@@ -64,7 +64,7 @@ export async function runSynthesizeMeetingRecordsCase(
   });
   const events = readEvents(paths.eventsPath);
   const metrics = deriveMetrics(events, evalCase, runnerResult.exitCode, validatorResult, paths);
-  const passed = casePassed(evalCase, fixtureValidation, metrics);
+  const passed = casePassed(fixtureValidation, metrics);
   const summary: CaseRunSummary = {
     caseId: evalCase.id,
     fixtureValidation,

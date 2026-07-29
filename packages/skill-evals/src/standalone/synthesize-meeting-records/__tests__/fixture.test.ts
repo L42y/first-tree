@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +33,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
     }
   });
 
-  it("makes the partial fixture blockable before its raw artifact is read", () => {
+  it("makes partial-source raw artifacts unavailable before semantic analysis", () => {
     const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
     if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
     const paths = createRunPaths({
@@ -47,7 +47,13 @@ describe("standalone synthesize-meeting-records fixture", () => {
         artifacts: Array<{ completeness: string }>;
       };
       expect(bundle.artifacts.some((artifact) => artifact.completeness === "partial")).toBe(true);
+      expect(existsSync(join(sourceRepoPath, "minutes.md"))).toBe(false);
+      expect(existsSync(join(sourceRepoPath, "appendix.md"))).toBe(false);
       expect(validateFixture(paths, sourceRepoPath).ok).toBe(true);
+      writeFileSync(join(sourceRepoPath, "appendix.md"), "raw content must remain unavailable\n", "utf8");
+      expect(validateFixture(paths, sourceRepoPath).errors).toContain(
+        "partial-source fixture exposed raw artifact: source-artifacts/appendix.md",
+      );
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }

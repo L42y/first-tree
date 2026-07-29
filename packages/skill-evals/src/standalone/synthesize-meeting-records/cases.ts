@@ -6,7 +6,6 @@ const NATURAL_PROMPT =
 export const SYNTHESIZE_MEETING_RECORDS_CASES: readonly MeetingRecordsEvalCase[] = [
   {
     expected: {
-      blockBeforeRawRead: false,
       categories: ["action", "blocker", "decision", "plan", "progress", "risk"],
       forbiddenTerms: [],
       itemCount: 6,
@@ -21,7 +20,6 @@ export const SYNTHESIZE_MEETING_RECORDS_CASES: readonly MeetingRecordsEvalCase[]
   },
   {
     expected: {
-      blockBeforeRawRead: false,
       categories: ["decision"],
       forbiddenTerms: ["option alpha", "verbatim-canary-alpha-271828"],
       itemCount: 1,
@@ -36,7 +34,6 @@ export const SYNTHESIZE_MEETING_RECORDS_CASES: readonly MeetingRecordsEvalCase[]
   },
   {
     expected: {
-      blockBeforeRawRead: false,
       categories: ["action", "decision", "risk"],
       forbiddenTerms: [],
       itemCount: 3,
@@ -51,11 +48,10 @@ export const SYNTHESIZE_MEETING_RECORDS_CASES: readonly MeetingRecordsEvalCase[]
   },
   {
     expected: {
-      blockBeforeRawRead: true,
       categories: [],
       forbiddenTerms: [],
       itemCount: 0,
-      rawCanaries: ["verbatim-canary-partial-173205"],
+      rawCanaries: [],
       requiredTerms: [],
       settlement: "none",
       status: "blocked-source",

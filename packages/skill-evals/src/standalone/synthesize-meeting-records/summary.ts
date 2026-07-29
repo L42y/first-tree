@@ -15,7 +15,6 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
     `- statusObserved: ${String(summary.metrics.statusObserved)}`,
     `- skillFileReadObserved: ${String(summary.metrics.skillFileReadObserved)}`,
     `- validatorSucceeded: ${String(summary.metrics.validatorSucceeded)}`,
-    `- rawArtifactReadObserved: ${String(summary.metrics.rawArtifactReadObserved)}`,
     `- sourceRepoChanged: ${String(summary.metrics.sourceRepoChanged)}`,
     `- contextTreeCreated: ${String(summary.metrics.contextTreeCreated)}`,
     `- runnerExitCode: ${String(summary.metrics.runnerExitCode)}`,
@@ -52,13 +51,12 @@ function pad(value: string, width: number): string {
 }
 
 export function formatSummaryTable(batch: BatchSummary): string {
-  const header = ["case_id", "status", "skill_read", "validator", "raw_read", "passed"];
+  const header = ["case_id", "status", "skill_read", "validator", "passed"];
   const rows = batch.cases.map((summary) => [
     summary.caseId,
     summary.metrics.statusObserved ? "expected" : "unexpected",
     String(summary.metrics.skillFileReadObserved),
     String(summary.metrics.validatorSucceeded),
-    String(summary.metrics.rawArtifactReadObserved),
     String(summary.passed),
   ]);
   const widths = header.map((label, index) => Math.max(label.length, ...rows.map((row) => row[index]?.length ?? 0)));

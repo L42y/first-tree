@@ -133,17 +133,7 @@ VERBATIM-CANARY-AI-141421
     };
   }
   if (mode === "partial-source") {
-    return {
-      "minutes.md": `# Minutes
-
-The readable portion mentions a possible source policy.
-`,
-      "appendix.md": `# Partial export
-
-VERBATIM-CANARY-PARTIAL-173205
-The final decision page is missing from this export.
-`,
-    };
+    return {};
   }
   return {
     "minutes.md": `# Human-confirmed minutes
@@ -158,10 +148,6 @@ VERBATIM-CANARY-SIX-314159
 - Risk: OCR may omit table structure.
 `,
   };
-}
-
-export function rawArtifactNames(mode: MeetingFixtureMode): readonly string[] {
-  return Object.keys(sourceFiles(mode));
 }
 
 function initSourceRepo(sourceRepoPath: string): string {
@@ -214,6 +200,17 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
   ];
   const missingFiles = required.filter((path) => !existsSync(path));
   const errors = missingFiles.map((path) => `missing required file: ${path}`);
+  const bundle = JSON.parse(readFileSync(join(sourceRepoPath, "bundle.json"), "utf8")) as {
+    artifacts?: Array<{ completeness?: unknown; content_ref?: { locator?: unknown } }>;
+  };
+  if (bundle.artifacts?.some((artifact) => artifact.completeness !== "complete")) {
+    for (const artifact of bundle.artifacts) {
+      const locator = artifact.content_ref?.locator;
+      if (typeof locator === "string" && existsSync(join(paths.workspacePath, locator))) {
+        errors.push(`partial-source fixture exposed raw artifact: ${locator}`);
+      }
+    }
+  }
   const status = runCommand("git", ["status", "--porcelain"], sourceRepoPath);
   if (status.exitCode !== 0 || status.stdout.trim().length > 0) {
     errors.push("source artifact fixture is not clean after setup");

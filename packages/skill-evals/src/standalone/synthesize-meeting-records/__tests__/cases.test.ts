@@ -23,7 +23,6 @@ describe("standalone synthesize-meeting-records cases", () => {
       SYNTHESIZE_MEETING_RECORDS_CASES.find((evalCase) => evalCase.fixture.mode === "partial-source"),
     ).toMatchObject({
       expected: {
-        blockBeforeRawRead: true,
         itemCount: 0,
         status: "blocked-source",
       },

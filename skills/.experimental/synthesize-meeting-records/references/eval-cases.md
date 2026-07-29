@@ -38,8 +38,11 @@ The harness uses natural prompts that do not name the Skill. Deterministic
 oracles verify that the agent reads the installed Skill, produces a packet
 accepted by the real validator, preserves the six-category contract, removes
 superseded material, keeps AI-only material uncertain, blocks partial input
-before reading its raw artifact, does not copy synthetic raw canaries, leaves
-the supplied source repository unchanged, and creates no Context Tree.
+from bundle metadata alone, does not copy synthetic raw canaries, leaves the
+supplied source repository unchanged, and creates no Context Tree. The partial
+fixture deliberately does not materialize any referenced raw artifact; fixture
+validation fails if one appears, so the model cannot receive partial raw
+content through an unmodelled shell or provider access path.
 
 ## Model-backed cases
 

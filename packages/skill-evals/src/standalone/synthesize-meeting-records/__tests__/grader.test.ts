@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
-import {
-  assistantVisibleText,
-  casePassed,
-  evaluatePacket,
-  rawArtifactReadObserved,
-  skillFileReadObserved,
-} from "../grader.js";
+import { assistantVisibleText, casePassed, evaluatePacket, skillFileReadObserved } from "../grader.js";
 import type { EvalMetrics, MeetingRecordsEvalCase } from "../types.js";
 
 function evalCase(mode: MeetingRecordsEvalCase["fixture"]["mode"]): MeetingRecordsEvalCase {
@@ -135,7 +129,6 @@ function passingMetrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
     itemCountObserved: true,
     packetExists: true,
     packetText: "{}",
-    rawArtifactReadObserved: false,
     rawCanaries: [],
     requiredTermsObserved: true,
     runnerExitCode: 0,
@@ -180,97 +173,6 @@ describe("standalone synthesize-meeting-records grader", () => {
     expect(evaluation.forbiddenTerms).toContain("option alpha");
     expect(evaluation.categoriesObserved).toBe(true);
     expect(evaluation.requiredTermsObserved).toBe(true);
-  });
-
-  it("detects direct, cwd/glob, directory, and structured raw artifact reads", () => {
-    const currentCase = evalCase("partial-source");
-    expect(rawArtifactReadObserved([commandEvent("sed -n '1,80p' source-artifacts/appendix.md")], currentCase)).toBe(
-      true,
-    );
-    expect(rawArtifactReadObserved([commandEvent("cd source-artifacts && cat *.md")], currentCase)).toBe(true);
-    expect(rawArtifactReadObserved([commandEvent("rg decision source-artifacts")], currentCase)).toBe(true);
-    expect(rawArtifactReadObserved([commandEvent('echo "$(cat source-artifacts/appendix.md)"')], currentCase)).toBe(
-      true,
-    );
-    expect(
-      rawArtifactReadObserved([commandEvent('test "$(cat source-artifacts/appendix.md)" = expected')], currentCase),
-    ).toBe(true);
-    expect(
-      rawArtifactReadObserved([commandEvent("printf '%s' \"$(cat source-artifacts/appendix.md)\"")], currentCase),
-    ).toBe(true);
-    expect(rawArtifactReadObserved([commandEvent("echo `cat source-artifacts/appendix.md`")], currentCase)).toBe(true);
-    expect(
-      rawArtifactReadObserved([commandEvent('cat "$(dirname source-artifacts/bundle.json)"/*.md')], currentCase),
-    ).toBe(true);
-    expect(
-      rawArtifactReadObserved([commandEvent('cd "$(dirname source-artifacts/bundle.json)" && cat *.md')], currentCase),
-    ).toBe(true);
-    expect(rawArtifactReadObserved([commandEvent("echo source-artifacts/appendix.md")], currentCase)).toBe(false);
-    expect(rawArtifactReadObserved([commandEvent("test -f source-artifacts/appendix.md")], currentCase)).toBe(false);
-    expect(rawArtifactReadObserved([commandEvent("printf '%s' 'source-artifacts/appendix.md'")], currentCase)).toBe(
-      false,
-    );
-    expect(rawArtifactReadObserved([commandEvent('echo "$(dirname source-artifacts/bundle.json)"')], currentCase)).toBe(
-      false,
-    );
-    expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/appendix.md")], currentCase)).toBe(true);
-    expect(
-      rawArtifactReadObserved(
-        [
-          claudeToolUseEvent("raw-read", "Read", { file_path: "source-artifacts/appendix.md" }),
-          claudeToolResultEvent("raw-read"),
-        ],
-        currentCase,
-      ),
-    ).toBe(true);
-    expect(
-      rawArtifactReadObserved(
-        [
-          claudeToolUseEvent("raw-bash", "Bash", { command: "cd source-artifacts && cat *.md" }),
-          claudeToolResultEvent("raw-bash"),
-        ],
-        currentCase,
-      ),
-    ).toBe(true);
-    expect(rawArtifactReadObserved([commandEvent("sed -n '1,80p' source-artifacts/bundle.json")], currentCase)).toBe(
-      false,
-    );
-    expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/bundle.json")], currentCase)).toBe(false);
-    expect(rawArtifactReadObserved([commandEvent("jq . source-artifacts/bundle.json")], currentCase)).toBe(false);
-    expect(
-      rawArtifactReadObserved([commandEvent("jq '.artifacts | length' source-artifacts/bundle.json")], currentCase),
-    ).toBe(false);
-    expect(rawArtifactReadObserved([commandEvent("cat source-artifacts/bundle.json | jq .")], currentCase)).toBe(false);
-    expect(
-      rawArtifactReadObserved(
-        [commandEvent("cat source-artifacts/bundle.json | jq '.artifacts | length'")],
-        currentCase,
-      ),
-    ).toBe(false);
-    expect(
-      rawArtifactReadObserved(
-        [commandEvent("/bin/zsh -lc 'jq . /tmp/eval/source-artifacts/bundle.json'")],
-        currentCase,
-      ),
-    ).toBe(false);
-    expect(
-      rawArtifactReadObserved(
-        [
-          claudeToolUseEvent("bundle-read", "Read", { file_path: "source-artifacts/bundle.json" }),
-          claudeToolResultEvent("bundle-read"),
-        ],
-        currentCase,
-      ),
-    ).toBe(false);
-    expect(
-      rawArtifactReadObserved(
-        [
-          claudeToolUseEvent("bundle-bash", "Bash", { command: "cat source-artifacts/bundle.json | jq ." }),
-          claudeToolResultEvent("bundle-bash"),
-        ],
-        currentCase,
-      ),
-    ).toBe(false);
   });
 
   it("credits only actual Skill content reads", () => {
@@ -319,37 +221,9 @@ describe("standalone synthesize-meeting-records grader", () => {
     ).toContain("verbatim-canary-six-314159");
   });
 
-  it("fails partial-source runs that read raw content before blocking", () => {
-    const currentCase = evalCase("partial-source");
-    expect(
-      casePassed(
-        currentCase,
-        { errors: [], ok: true, requiredFilesOk: true },
-        passingMetrics({
-          rawArtifactReadObserved: true,
-        }),
-      ),
-    ).toBe(false);
-  });
-
-  it("allows complete-source runs to read the supplied record while keeping raw prose out of output", () => {
-    const currentCase = evalCase("six-categories");
-    expect(
-      casePassed(
-        currentCase,
-        { errors: [], ok: true, requiredFilesOk: true },
-        passingMetrics({
-          rawArtifactReadObserved: true,
-        }),
-      ),
-    ).toBe(true);
-  });
-
   it("fails when the skill is not read or a raw canary leaks", () => {
-    const currentCase = evalCase("six-categories");
     expect(
       casePassed(
-        currentCase,
         { errors: [], ok: true, requiredFilesOk: true },
         passingMetrics({
           skillFileReadObserved: false,
@@ -358,7 +232,6 @@ describe("standalone synthesize-meeting-records grader", () => {
     ).toBe(false);
     expect(
       casePassed(
-        currentCase,
         { errors: [], ok: true, requiredFilesOk: true },
         passingMetrics({
           rawCanaries: ["verbatim-canary-six-314159"],

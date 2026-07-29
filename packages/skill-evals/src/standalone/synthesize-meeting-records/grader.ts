@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { classifyShellCommandIo, stripShellCommandDisplayWrapper } from "@first-tree/shared";
+import { classifyShellCommandIo } from "@first-tree/shared";
 
 import { runCommand } from "../../core/commands.js";
 import { isRecord } from "../../core/events.js";
@@ -11,11 +11,6 @@ import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEval
 
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 const CONTENT_READ_COMMANDS = new Set(["cat", "grep", "head", "nl", "rg", "sed", "tail"]);
-const NON_CONTENT_COMMANDS = new Set(["[", "echo", "printf", "test"]);
-const SUBSTITUTION_PATH_CONSUMERS = new Set([...CONTENT_READ_COMMANDS, "cd", "find", "jq", "ls", "source", "wc"]);
-const SOURCE_ROOT = "source-artifacts";
-const BUNDLE_PATH = `${SOURCE_ROOT}/bundle.json`;
-const SUBSTITUTION_PLACEHOLDER = "__command_substitution__";
 
 type ClaudeToolUse = {
   id: string;
@@ -109,13 +104,6 @@ function pathMatches(value: string, expected: string): boolean {
   return normalized === expected || normalized.endsWith(`/${expected}`);
 }
 
-function pathWithin(value: string, expectedRoot: string): boolean {
-  const normalized = normalizedPath(value);
-  return (
-    normalized === expectedRoot || normalized.startsWith(`${expectedRoot}/`) || normalized.includes(`/${expectedRoot}/`)
-  );
-}
-
 function commandReadPaths(command: string): readonly string[] {
   const classification = classifyShellCommandIo(command);
   if (!classification.supported || !CONTENT_READ_COMMANDS.has(classification.commandName)) return [];
@@ -153,174 +141,6 @@ function successfulClaudeReadPaths(events: readonly unknown[]): readonly string[
     .filter((path): path is string => path !== null);
 }
 
-type ParsedShellExecution = {
-  segments: string[];
-  substitutions: string[];
-};
-
-function unwrapShellDisplayCommand(command: string): string {
-  let current = command;
-  for (let depth = 0; depth < 2; depth++) {
-    const unwrapped = stripShellCommandDisplayWrapper(current);
-    if (unwrapped === current) break;
-    current = unwrapped;
-  }
-  return current;
-}
-
-function findDollarSubstitutionEnd(command: string, contentStart: number): number | null {
-  let depth = 1;
-  let quote: "'" | '"' | null = null;
-
-  for (let index = contentStart; index < command.length; index++) {
-    const character = command[index];
-    if (character === undefined) break;
-    if (character === "\\") {
-      index++;
-      continue;
-    }
-    if (quote === "'") {
-      if (character === "'") quote = null;
-      continue;
-    }
-    if (quote === '"') {
-      if (character === '"') {
-        quote = null;
-        continue;
-      }
-      if (character === "$" && command[index + 1] === "(") return null;
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      continue;
-    }
-    if (character === "$" && command[index + 1] === "(") {
-      depth++;
-      index++;
-      continue;
-    }
-    if (character === ")") {
-      depth--;
-      if (depth === 0) return index;
-    }
-  }
-
-  return null;
-}
-
-function findBacktickEnd(command: string, contentStart: number): number | null {
-  for (let index = contentStart; index < command.length; index++) {
-    const character = command[index];
-    if (character === undefined) break;
-    if (character === "\\") {
-      index++;
-      continue;
-    }
-    if (character === "`") return index;
-  }
-  return null;
-}
-
-function parseShellExecution(command: string): ParsedShellExecution | null {
-  const input = unwrapShellDisplayCommand(command);
-  const segments: string[] = [];
-  const substitutions: string[] = [];
-  let segment = "";
-  let quote: "'" | '"' | null = null;
-
-  const flushSegment = (): void => {
-    const trimmed = segment.trim();
-    if (trimmed.length > 0) segments.push(trimmed);
-    segment = "";
-  };
-
-  for (let index = 0; index < input.length; index++) {
-    const character = input[index];
-    if (character === undefined) break;
-    if (character === "\\") {
-      const next = input[index + 1];
-      if (next === undefined) return null;
-      segment += `${character}${next}`;
-      index++;
-      continue;
-    }
-    if (quote === "'") {
-      segment += character;
-      if (character === "'") quote = null;
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      segment += character;
-      if (quote === character) quote = null;
-      else if (quote === null) quote = character;
-      continue;
-    }
-    if (character === "$" && input[index + 1] === "(") {
-      const end = findDollarSubstitutionEnd(input, index + 2);
-      if (end === null) return null;
-      substitutions.push(input.slice(index + 2, end));
-      segment += SUBSTITUTION_PLACEHOLDER;
-      index = end;
-      continue;
-    }
-    if (character === "`") {
-      const end = findBacktickEnd(input, index + 1);
-      if (end === null) return null;
-      substitutions.push(input.slice(index + 1, end));
-      segment += SUBSTITUTION_PLACEHOLDER;
-      index = end;
-      continue;
-    }
-    if (quote === null && (character === "|" || character === "&" || character === ";" || character === "\n")) {
-      flushSegment();
-      if (input[index + 1] === character) index++;
-      continue;
-    }
-    segment += character;
-  }
-
-  if (quote !== null) return null;
-  flushSegment();
-  return { segments, substitutions };
-}
-
-function onlyExactBundleReference(command: string): boolean {
-  return command.includes(BUNDLE_PATH) && !command.replaceAll(BUNDLE_PATH, "").includes(SOURCE_ROOT);
-}
-
-function shellSegmentReadsRawSource(segment: string): boolean {
-  if (!normalizedPath(segment).includes(SOURCE_ROOT)) return false;
-  const classification = classifyShellCommandIo(segment);
-  if (classification.supported) {
-    return classification.pathArgs.some(
-      (path) => pathWithin(path.raw, SOURCE_ROOT) && !pathMatches(path.raw, BUNDLE_PATH),
-    );
-  }
-  if (NON_CONTENT_COMMANDS.has(classification.commandName ?? "")) return false;
-  return !onlyExactBundleReference(segment);
-}
-
-function sourceDerivedSubstitutionFeedsPath(execution: ParsedShellExecution): boolean {
-  if (!execution.substitutions.some((substitution) => normalizedPath(substitution).includes(SOURCE_ROOT))) return false;
-  return execution.segments.some((segment) => {
-    if (!segment.includes(SUBSTITUTION_PLACEHOLDER)) return false;
-    const classification = classifyShellCommandIo(segment);
-    return SUBSTITUTION_PATH_CONSUMERS.has(classification.commandName ?? "");
-  });
-}
-
-function commandReadsRawSource(command: string): boolean {
-  if (!normalizedPath(command).includes(SOURCE_ROOT)) return false;
-  const execution = parseShellExecution(command);
-  if (execution === null) return true;
-  return (
-    execution.substitutions.some(commandReadsRawSource) ||
-    sourceDerivedSubstitutionFeedsPath(execution) ||
-    execution.segments.some((segment) => shellSegmentReadsRawSource(segment))
-  );
-}
-
 function successfulCommand(event: unknown): string | null {
   const payload = codexEventPayload(event);
   if (payload === null) return null;
@@ -330,15 +150,6 @@ function successfulCommand(event: unknown): string | null {
     typeof item.exit_code === "number" ? item.exit_code : typeof item.exitCode === "number" ? item.exitCode : null;
   if (item.status !== "completed" || (exitCode !== null && exitCode !== 0)) return null;
   return item.command;
-}
-
-export function rawArtifactReadObserved(events: readonly unknown[], evalCase: MeetingRecordsEvalCase): boolean {
-  if (!evalCase.expected.blockBeforeRawRead) return false;
-  const nativeOrClaudeRawRead = [...events.flatMap(nativeFileReadPaths), ...successfulClaudeReadPaths(events)].some(
-    (path) => pathWithin(path, SOURCE_ROOT) && !pathMatches(path, BUNDLE_PATH),
-  );
-  if (nativeOrClaudeRawRead) return true;
-  return [...successfulCodexCommands(events), ...successfulClaudeCommands(events)].some(commandReadsRawSource);
 }
 
 function isAssistantMessage(record: Record<string, unknown>): boolean {
@@ -491,7 +302,6 @@ export function deriveMetrics(
     finalResponse,
     packetExists: packet !== null,
     packetText,
-    rawArtifactReadObserved: rawArtifactReadObserved(events, evalCase),
     runnerExitCode,
     skillFileReadObserved: skillFileReadObserved(events),
     sourceRepoChanged: sourceRepoChanged(events, paths),
@@ -500,11 +310,7 @@ export function deriveMetrics(
   };
 }
 
-export function casePassed(
-  evalCase: MeetingRecordsEvalCase,
-  fixtureValidation: FixtureValidation,
-  metrics: EvalMetrics,
-): boolean {
+export function casePassed(fixtureValidation: FixtureValidation, metrics: EvalMetrics): boolean {
   const processPass =
     fixtureValidation.ok && metrics.runnerExitCode === 0 && metrics.packetExists && metrics.validatorSucceeded;
   const outcomePass =
@@ -515,10 +321,6 @@ export function casePassed(
     metrics.chronologyObserved &&
     metrics.requiredTermsObserved &&
     metrics.forbiddenTerms.length === 0;
-  const riskPass =
-    !metrics.sourceRepoChanged &&
-    !metrics.contextTreeCreated &&
-    metrics.rawCanaries.length === 0 &&
-    (!evalCase.expected.blockBeforeRawRead || !metrics.rawArtifactReadObserved);
+  const riskPass = !metrics.sourceRepoChanged && !metrics.contextTreeCreated && metrics.rawCanaries.length === 0;
   return processPass && outcomePass && riskPass && metrics.skillFileReadObserved;
 }
