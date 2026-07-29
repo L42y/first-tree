@@ -41,6 +41,7 @@ import { clampRetryAttempt } from "./error-taxonomy.js";
 import type {
   AgentHandler,
   AgentIdentity,
+  DeliveryCompletionDisposition,
   DeliveryToken,
   HandlerConfig,
   HandlerFactory,
@@ -1297,29 +1298,30 @@ export class SessionManager {
     messages: SessionMessage | readonly SessionMessage[],
     outcome: TurnOutcome,
     deliveryLeaseValid: (() => boolean) | null = null,
-  ): Promise<void> {
-    if (deliveryLeaseValid && !deliveryLeaseValid()) return;
+  ): Promise<DeliveryCompletionDisposition> {
+    if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
     const retryReason = this.errorCompletionRetryReason(outcome);
     if (retryReason) {
       this.warnRejectedErrorCompletion(chatId, outcome, retryReason);
       this.retryDeliveryTurn(chatId, messages, retryReason);
       this.projectSessionRuntime(chatId);
-      return;
+      return "retry";
     }
     if (outcome.status === "success") {
       this.clearPendingRuntimeFailureNotice(chatId);
     } else if (outcome.completion === "consumed") {
       const noticePosted = await this.postPendingRuntimeFailureNotice(chatId, deliveryLeaseValid);
-      if (deliveryLeaseValid && !deliveryLeaseValid()) return;
+      if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
       if (!noticePosted) {
         this.retryDeliveryTurn(chatId, messages, "runtime_failure_notice_delivery_failed");
         this.projectSessionRuntime(chatId);
-        return;
+        return "retry";
       }
     }
-    if (deliveryLeaseValid && !deliveryLeaseValid()) return;
+    if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
     await this.inboxDelivery.finishTurn(chatId, messages, outcome);
     this.projectSessionRuntime(chatId);
+    return "settled";
   }
 
   private createDeliveryToken(chatId: string, routeLeaseValid: (() => boolean) | null = null): DeliveryToken {
@@ -1344,8 +1346,8 @@ export class SessionManager {
         this.projectSessionRuntime(chatId);
       },
       complete: async (messages, outcome) => {
-        if (!claimTerminal("complete")) return;
-        await this.completeDeliveryTurn(chatId, messages, outcome, isValid);
+        if (!claimTerminal("complete")) return "retry";
+        return await this.completeDeliveryTurn(chatId, messages, outcome, isValid);
       },
       retry: (messages, reason) => {
         if (!claimTerminal("retry")) return;

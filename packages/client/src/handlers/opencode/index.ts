@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   type AgentRuntimeConfig,
@@ -60,6 +59,7 @@ const FINAL_CLOSE_WAIT_MS = 2_000;
 const DB_GATE_TIMEOUT_MS = 30_000;
 const CONFIG_CONTENT_ENV_MAX_BYTES = 16 * 1024;
 const WINDOWS_ENV_BLOCK_MAX_CHARS = 30_000;
+const OPENCODE_CONFIG_RUNTIME_DIR = join(".first-tree-workspace", "opencode-config");
 
 export function isOpenCodePendingSessionId(sessionId: string): boolean {
   return sessionId.startsWith(OPENCODE_PENDING_SESSION_PREFIX);
@@ -133,13 +133,6 @@ export function buildOpenCodeConfigContent(input: {
         },
       },
     },
-    permission: {
-      edit: "allow",
-      bash: "allow",
-      webfetch: "allow",
-      websearch: "allow",
-      task: "allow",
-    },
     mcp: mcp.servers,
   });
 }
@@ -184,13 +177,13 @@ export function projectOpenCodeConfig(
     maxWindowsEnvChars?: number;
     makeTempDir?: () => string;
     platform?: NodeJS.Platform;
+    runtimeRoot?: string;
   } = {},
 ): OpenCodeConfigProjection {
   const maxEnvBytes = deps.maxEnvBytes ?? CONFIG_CONTENT_ENV_MAX_BYTES;
   const platform = deps.platform ?? process.platform;
   const maxWindowsEnvChars = deps.maxWindowsEnvChars ?? WINDOWS_ENV_BLOCK_MAX_CHARS;
   const privateEnv = { ...env };
-  delete privateEnv.OPENCODE_CONFIG;
   delete privateEnv.OPENCODE_CONFIG_CONTENT;
   const contentEnv = { ...privateEnv, OPENCODE_CONFIG_CONTENT: configContent };
   if (
@@ -204,7 +197,22 @@ export function projectOpenCodeConfig(
     };
   }
 
-  const configDir = deps.makeTempDir?.() ?? mkdtempSync(join(tmpdir(), "first-tree-opencode-config-"));
+  if (privateEnv.OPENCODE_CONFIG) {
+    throw new Error(
+      "OpenCode private projection is too large for the child environment and cannot replace the host OPENCODE_CONFIG",
+    );
+  }
+  let configDir: string;
+  if (deps.makeTempDir) {
+    configDir = deps.makeTempDir();
+  } else {
+    if (!deps.runtimeRoot) {
+      throw new Error("OpenCode file-backed projection requires a runtime-owned workspace directory");
+    }
+    mkdirSync(deps.runtimeRoot, { recursive: true, mode: 0o700 });
+    chmodSync(deps.runtimeRoot, 0o700);
+    configDir = mkdtempSync(join(deps.runtimeRoot, "turn-"));
+  }
   const configPath = join(configDir, "opencode.json");
   try {
     writeFileSync(configPath, configContent, { encoding: "utf8", mode: 0o600, flag: "wx" });
@@ -257,9 +265,11 @@ type TurnState = {
 };
 
 const dbGatePromises = new Map<string, Promise<void>>();
+const providerTurnFailureAttempts = new Map<string, number>();
 
 export function clearOpenCodeDbGateCacheForTests(): void {
   dbGatePromises.clear();
+  providerTurnFailureAttempts.clear();
 }
 
 export const createOpenCodeHandler: HandlerFactory = (config) => {
@@ -278,9 +288,11 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     typeof config.opencodeTurnTimeoutMs === "number" && config.opencodeTurnTimeoutMs > 0
       ? config.opencodeTurnTimeoutMs
       : DEFAULT_TURN_TIMEOUT_MS;
-  const projectionScope = randomUUID().replaceAll("-", "").slice(0, 12);
-  const managedAgentName = `first-tree-${projectionScope}`;
-
+  const retrySleep =
+    (config.opencodeRetrySleep as ((delayMs: number) => Promise<void>) | undefined) ??
+    ((delayMs: number) => new Promise<void>((resolveDelay) => setTimeout(resolveDelay, delayMs)));
+  const configProjector =
+    (config.opencodeConfigProjector as typeof projectOpenCodeConfig | undefined) ?? projectOpenCodeConfig;
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
   let activeConfig: AgentRuntimeConfig | null = null;
@@ -297,8 +309,14 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   let drainScheduled = false;
   let drainInProgress = false;
   let pendingChatContextPrompt: string | null = null;
-  let providerTurnFailureAttempt = 0;
+  let projectionScope: string | null = null;
+  let managedAgentName: string | null = null;
+  let privateConfigRuntimeRoot: string | null = null;
   const queue: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
+
+  function deliveryAttemptKey(sessionCtx: SessionContext, messages: readonly SessionMessage[]): string {
+    return `${sessionCtx.agent.agentId}\0${sessionCtx.chatId}\0${messages.map((message) => message.id).join("\0")}`;
+  }
 
   function buildEnv(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): Record<string, string> {
     const base: NodeJS.ProcessEnv = {};
@@ -311,7 +329,6 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     for (const [key, value] of Object.entries(merged)) {
       if (typeof value === "string") env[key] = value;
     }
-    delete env.OPENCODE_CONFIG;
     delete env.OPENCODE_CONFIG_CONTENT;
     return env;
   }
@@ -712,6 +729,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     messages: readonly SessionMessage[];
     token: DeliveryToken;
   }): Promise<boolean> {
+    const attemptKey = deliveryAttemptKey(input.sessionCtx, input.messages);
     const replaySafety = input.state.sawUnsafeTool
       ? "unsafe"
       : input.state.text.length > 0
@@ -733,7 +751,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       error: input.spawnError ?? input.failure,
       messagePreview: displayMessage,
     });
-    const settlement = attempt.settle({ attempt: ++providerTurnFailureAttempt });
+    const attemptNumber = (providerTurnFailureAttempts.get(attemptKey) ?? 0) + 1;
+    providerTurnFailureAttempts.set(attemptKey, attemptNumber);
+    const settlement = attempt.settle({ attempt: attemptNumber });
     if (!settlement) {
       input.token.retry(input.messages, "opencode_unclassified_failure");
       return false;
@@ -746,14 +766,19 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     });
     input.sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
     if (settlement.decision.action === "retry") {
+      await retrySleep(settlement.decision.delayMs);
       input.token.retry(input.messages, settlement.decision.reasonCode);
       if (input.state.sawProviderActivity) {
         input.sessionCtx.failSessionForRecovery?.("opencode_turn_retryable_failure", providerSessionId ?? undefined);
       }
       return false;
     }
-    await input.token.complete(input.messages, consumedErrorOutcome(consumedReasonForProviderSettlement(settlement)));
-    providerTurnFailureAttempt = 0;
+    const completion = await input.token.complete(
+      input.messages,
+      consumedErrorOutcome(consumedReasonForProviderSettlement(settlement)),
+    );
+    if (completion === "retry") return false;
+    providerTurnFailureAttempts.delete(attemptKey);
     pendingChatContextPrompt = null;
     return true;
   }
@@ -766,13 +791,24 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   ): Promise<boolean> {
     const workspaceCwd = cwd;
     const activeBinary = binary;
-    if (!workspaceCwd || !activeBinary || !sessionActive) {
+    const activeProjectionScope = projectionScope;
+    const activeManagedAgentName = managedAgentName;
+    const activePrivateConfigRuntimeRoot = privateConfigRuntimeRoot;
+    if (
+      !workspaceCwd ||
+      !activeBinary ||
+      !activeProjectionScope ||
+      !activeManagedAgentName ||
+      !activePrivateConfigRuntimeRoot ||
+      !sessionActive
+    ) {
       token.retry(messages, sessionActive ? "opencode_not_prepared" : "opencode_session_inactive");
       return false;
     }
     const turnGeneration = ++generation;
     const abort = new AbortController();
     currentAbort = abort;
+    let observedState: TurnState | null = null;
     const promise = (async () => {
       const { payload } = await refreshProjection(sessionCtx);
       const env = buildEnv(sessionCtx, payload);
@@ -808,14 +844,20 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         sawUnsafeTool: false,
         protocolDiagnostics: [],
       };
+      observedState = state;
       token.processingStarted(messages);
       const timeout = setTimeout(() => abort.abort(), turnTimeoutMs);
       timeout.unref?.();
       let outcome: ProcessOutcome;
       try {
-        const configProjection = projectOpenCodeConfig(
+        const configProjection = configProjector(
           env,
-          buildOpenCodeConfigContent({ payload, managedAgentName, scope: projectionScope }),
+          buildOpenCodeConfigContent({
+            payload,
+            managedAgentName: activeManagedAgentName,
+            scope: activeProjectionScope,
+          }),
+          { runtimeRoot: activePrivateConfigRuntimeRoot },
         );
         try {
           outcome = await runProcess({
@@ -824,7 +866,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
               cwd: workspaceCwd,
               model: payload.model,
               resumeSessionId: expectedSessionId,
-              managedAgentName,
+              managedAgentName: activeManagedAgentName,
             }),
             prompt: `${providerPrompt}\n`,
             env: configProjection.env,
@@ -844,9 +886,14 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       }
 
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) {
-        sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-        token.retry(messages, "opencode_turn_aborted_or_timed_out");
-        return false;
+        return settleFailure({
+          failure: "OpenCode turn aborted or timed out before a safe terminal event",
+          spawnError: new Error("OpenCode turn aborted or timed out"),
+          state,
+          sessionCtx,
+          messages,
+          token,
+        });
       }
 
       const ids = [...state.sessionIds];
@@ -902,14 +949,20 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
             },
           });
           sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-          await token.complete(messages, { status: "error", completion: "consumed", reason: "forward_failed" });
-          providerTurnFailureAttempt = 0;
+          const completion = await token.complete(messages, {
+            status: "error",
+            completion: "consumed",
+            reason: "forward_failed",
+          });
+          if (completion === "retry") return false;
+          providerTurnFailureAttempts.delete(deliveryAttemptKey(sessionCtx, messages));
           pendingChatContextPrompt = null;
           return true;
         }
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
-        await token.complete(messages, { status: "success" });
-        providerTurnFailureAttempt = 0;
+        const completion = await token.complete(messages, { status: "success" });
+        if (completion === "retry") return false;
+        providerTurnFailureAttempts.delete(deliveryAttemptKey(sessionCtx, messages));
         if (pendingChatContextPrompt === oneShotPrompt) pendingChatContextPrompt = null;
         return true;
       }
@@ -944,7 +997,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       return await settleFailure({
         failure,
         spawnError: error instanceof Error ? error : new Error(String(error)),
-        state: { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
+        state: observedState ?? { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
         sessionCtx,
         messages,
         token,
@@ -967,6 +1020,16 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     }
     ctx = sessionCtx;
     cwd = acquireAgentHome(workspaceRoot);
+    projectionScope = stableOpenCodeScope(sessionCtx.agent.agentId);
+    managedAgentName = `first-tree-${projectionScope}`;
+    privateConfigRuntimeRoot = join(
+      cwd,
+      OPENCODE_CONFIG_RUNTIME_DIR,
+      stableOpenCodeScope(`${sessionCtx.agent.agentId}\0${sessionCtx.chatId}`),
+    );
+    rmSync(privateConfigRuntimeRoot, { recursive: true, force: true });
+    mkdirSync(privateConfigRuntimeRoot, { recursive: true, mode: 0o700 });
+    chmodSync(privateConfigRuntimeRoot, 0o700);
     const resolution = resolveBinary(process.env);
     if (!resolution.ok) {
       throw new Error(resolution.error);
@@ -1063,13 +1126,14 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
       initialTurnPreparing = true;
       let completed = false;
+      let delivered = false;
       let briefing: string;
       let workspaceCwd: string;
       try {
         ({ briefing, workspaceCwd } = await prepareSession(sessionCtx));
         const prompt = await sessionCtx.formatInboundContent(message);
-        await runTurn(prompt, sessionCtx, [message], deliveryToken);
-        completed = true;
+        delivered = await runTurn(prompt, sessionCtx, [message], deliveryToken);
+        completed = delivered;
       } finally {
         initialTurnPreparing = false;
         if (completed) scheduleDrain();
@@ -1077,7 +1141,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       if (!providerSessionId) pendingSyntheticId = `${OPENCODE_PENDING_SESSION_PREFIX}${randomUUID()}`;
       const sessionId = providerSessionId ?? pendingSyntheticId;
       if (!sessionId) throw new Error("OpenCode session id unresolved");
-      writeSessionBriefingFingerprint(workspaceCwd, sessionId, computeBriefingFingerprint(briefing));
+      if (delivered) {
+        writeSessionBriefingFingerprint(workspaceCwd, sessionId, computeBriefingFingerprint(briefing));
+      }
       return explicit ? { sessionId, route: { kind: "owned", mode: "processing" } } : sessionId;
     },
 
@@ -1159,7 +1225,12 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       providerSessionId = null;
       pendingSyntheticId = null;
       versionReady = false;
-      providerTurnFailureAttempt = 0;
+      if (privateConfigRuntimeRoot) {
+        rmSync(privateConfigRuntimeRoot, { recursive: true, force: true });
+      }
+      projectionScope = null;
+      managedAgentName = null;
+      privateConfigRuntimeRoot = null;
       initialTurnPreparing = false;
       pendingChatContextPrompt = null;
       queue.length = 0;
@@ -1169,6 +1240,10 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
 
 function isReadOnlyTool(name: string): boolean {
   return /^(read|glob|grep|list|ls|webfetch|websearch)$/i.test(name);
+}
+
+export function stableOpenCodeScope(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

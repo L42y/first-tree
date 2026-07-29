@@ -106,7 +106,7 @@ export type ResumeResult = ResumeReceipt | string;
 
 export type DeliveryToken = {
   processingStarted(messages: SessionMessage | readonly SessionMessage[]): void;
-  complete(messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome): Promise<void>;
+  complete(messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome): Promise<unknown>;
   retry(messages: SessionMessage | readonly SessionMessage[], reason: string): void;
   terminalRejected(
     messages: SessionMessage | readonly SessionMessage[],
@@ -114,6 +114,17 @@ export type DeliveryToken = {
     evidence: TerminalRejectionEvidence,
   ): Promise<void>;
 };
+
+/**
+ * Observable completion custody for handlers whose one-shot provider payload
+ * may only advance after the inbox delivery really settles. `retry` means the
+ * completion path deliberately retained server custody (for example because a
+ * required durable runtime-failure notice could not be posted).
+ *
+ * `void` remains accepted on DeliveryToken.complete for legacy/test tokens;
+ * production SessionManager tokens always return an explicit disposition.
+ */
+export type DeliveryCompletionDisposition = "settled" | "retry";
 
 export function noopDeliveryToken(): DeliveryToken {
   return {
@@ -167,7 +178,7 @@ export type SessionContext = HandlerContext & {
    * The coordinator sends one ACK-through for the last message's
    * `inboxEntryId` and settles local ledger only after server confirmation.
    */
-  finishTurn: (messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome) => Promise<void>;
+  finishTurn: (messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome) => Promise<unknown>;
 
   /**
    * Mark a concrete message or batch as abandoned by a retryable path

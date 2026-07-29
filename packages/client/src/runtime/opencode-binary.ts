@@ -1,6 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { prerelease, satisfies, valid } from "semver";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
@@ -63,12 +64,13 @@ export function findOpenCodeExecutableOnPath(
 
   const pathValue = env.PATH ?? env.Path ?? env.path ?? "";
   const pathDirs = pathValue ? pathValue.split(pathDelimiter) : [];
-  return (
-    search(pathDirs) ??
-    search([join(home, ".opencode", "bin")]) ??
-    search(wellKnownDirs()) ??
-    search(loginShellPathDirs())
-  );
+  const providerInstallDirs = [
+    join(home, ".opencode", "bin"),
+    ...(platform === "win32"
+      ? [...(env.APPDATA ? [join(env.APPDATA, "npm")] : []), join(home, "AppData", "Roaming", "npm")]
+      : []),
+  ];
+  return search(pathDirs) ?? search(providerInstallDirs) ?? search(wellKnownDirs()) ?? search(loginShellPathDirs());
 }
 
 export type OpenCodeRuntimeBinaryResolution =
@@ -115,63 +117,34 @@ function openCodeExecutableCandidates(base: string, platform: NodeJS.Platform): 
 }
 
 export function parseOpenCodeVersionOutput(output: string): string | null {
-  for (let start = 0; start < output.length; start++) {
-    if (!isAsciiDigit(output.charCodeAt(start))) continue;
-    if (start > 0 && isVersionTokenCode(output.charCodeAt(start - 1))) continue;
-    const firstDot = scanNumericPart(output, start);
-    if (firstDot < 0 || output.charCodeAt(firstDot) !== 46) continue;
-    const secondStart = firstDot + 1;
-    const secondDot = scanNumericPart(output, secondStart);
-    if (secondDot < 0 || output.charCodeAt(secondDot) !== 46) continue;
-    const patchStart = secondDot + 1;
-    const end = scanNumericPart(output, patchStart);
-    if (end < 0) continue;
-    if (end < output.length && isVersionTokenCode(output.charCodeAt(end))) {
-      start = end;
-      continue;
-    }
-    const parts = [output.slice(start, firstDot), output.slice(secondStart, secondDot), output.slice(patchStart, end)];
-    if (parts.every(isBoundedNumericVersionPart)) return parts.join(".");
-    start = end;
+  for (const token of whitespaceTokens(output)) {
+    if (token.length > 64) continue;
+    const normalized = valid(token);
+    if (!normalized || normalized !== token || prerelease(normalized) !== null) continue;
+    return normalized;
   }
   return null;
 }
 
 export function isSupportedOpenCodeVersion(version: string | null): boolean {
-  if (!version) return false;
-  const parts = version.split(".");
-  if (parts.length !== 3 || !parts.every(isBoundedNumericVersionPart)) return false;
-  const major = Number(parts[0]);
-  const minor = Number(parts[1]);
-  const patch = Number(parts[2]);
-  if (major !== 1) return false;
-  return minor > 18 || (minor === 18 && patch >= 7);
+  if (!version || valid(version) !== version || prerelease(version) !== null) return false;
+  return satisfies(version, OPENCODE_SUPPORTED_VERSION_RANGE, { includePrerelease: false });
 }
 
-function scanNumericPart(value: string, start: number): number {
-  let end = start;
-  while (end < value.length && isAsciiDigit(value.charCodeAt(end))) end++;
-  return end === start ? -1 : end;
-}
-
-function isVersionTokenCode(code: number): boolean {
-  return isAsciiDigit(code) || code === 46 || code === 45 || code === 43 || isAsciiLetter(code);
-}
-
-function isAsciiDigit(code: number): boolean {
-  return code >= 48 && code <= 57;
-}
-
-function isAsciiLetter(code: number): boolean {
-  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
-}
-
-function isBoundedNumericVersionPart(part: string): boolean {
-  if (part.length < 1 || part.length > 6) return false;
-  for (let index = 0; index < part.length; index++) {
-    if (!isAsciiDigit(part.charCodeAt(index))) return false;
+function whitespaceTokens(value: string): string[] {
+  const tokens: string[] = [];
+  let start = -1;
+  for (let index = 0; index <= value.length; index++) {
+    const code = index < value.length ? value.charCodeAt(index) : 32;
+    const whitespace = code === 9 || code === 10 || code === 11 || code === 12 || code === 13 || code === 32;
+    if (!whitespace && start < 0) {
+      start = index;
+    } else if (whitespace && start >= 0) {
+      tokens.push(value.slice(start, index));
+      start = -1;
+    }
   }
-  return true;
+  return tokens;
 }
 
 function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean {
