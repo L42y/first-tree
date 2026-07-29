@@ -22,13 +22,14 @@ import {
   getPortableTeamSkillRelativePathError,
   getPortableTeamSkillSegmentError,
   normalizeTeamSkillTargetSlug,
+  parseStrictTeamSkillMarkdown,
   type RuntimeProvider,
   type RuntimeResourceSkill,
   type RuntimeSkillBundle,
   TEAM_SKILL_BUNDLE_LIMITS,
   TEAM_SKILL_OWNERSHIP_MARKER,
 } from "@first-tree/shared";
-import { parseDocument, parse as parseYaml } from "yaml";
+import { parseDocument } from "yaml";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
 import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
 import {
@@ -54,6 +55,7 @@ const MAX_SKILL_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_DEPTH = 16;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
+const MANAGED_SKILLS_QUARANTINE_PREFIX = ".managed-skill-quarantine-";
 
 const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = {
   "claude-code": ".claude/skills",
@@ -298,28 +300,39 @@ export async function reconcileManagedSkills(
         }
         try {
           state = await ensureTargetOwnership(options.workspace, state, allocated);
-          const existing = state.skills.find(
-            (entry) =>
-              entry.key === allocated.desired.key &&
-              entry.target === allocated.target &&
-              entry.revision === allocated.desired.revision,
+          const current = state.skills.find(
+            (entry) => entry.key === allocated.desired.key && entry.target === allocated.target,
           );
-          if (existing) {
-            const actualDigest = await digestManagedTarget(options.workspace, existing.target);
-            const expectedDigest =
-              allocated.desired.source.kind === "bundled-directory"
-                ? await digestBundledFinalTree(
-                    allocated.desired.source.path,
-                    allocated.desired.key,
-                    allocated.desired.revision,
-                  )
-                : allocated.desired.source.kind === "inline-skill"
-                  ? existing.installedDigest
-                  : actualDigest;
-            if (actualDigest === existing.installedDigest && expectedDigest === existing.installedDigest) {
-              mutable.skipped.push(existing.key);
-              successfulTargets.set(existing.key, existing.target);
-              continue;
+          const existing = current?.revision === allocated.desired.revision ? current : undefined;
+          if (current) {
+            let actualDigest: `sha256:${string}` | null = null;
+            try {
+              actualDigest = await digestManagedTarget(options.workspace, current.target);
+            } catch (error) {
+              options.log?.(
+                `Managed skill target cannot be verified (${current.key}): ${
+                  error instanceof Error ? error.message.slice(0, 300) : String(error)
+                }`,
+              );
+            }
+            if (actualDigest !== current.installedDigest) {
+              await quarantineDriftedManagedTarget(options.workspace, current, options.log);
+            } else if (existing) {
+              const expectedDigest =
+                allocated.desired.source.kind === "bundled-directory"
+                  ? await digestBundledFinalTree(
+                      allocated.desired.source.path,
+                      allocated.desired.key,
+                      allocated.desired.revision,
+                    )
+                  : allocated.desired.source.kind === "inline-skill"
+                    ? existing.installedDigest
+                    : actualDigest;
+              if (expectedDigest === existing.installedDigest) {
+                mutable.skipped.push(existing.key);
+                successfulTargets.set(existing.key, existing.target);
+                continue;
+              }
             }
           }
           const staged = await stageManagedSkill(options, allocated);
@@ -882,6 +895,19 @@ async function stageManagedSkill(
   }
 }
 
+async function quarantineDriftedManagedTarget(
+  workspace: string,
+  entry: ManagedSkillEntry,
+  log?: (message: string) => void,
+): Promise<void> {
+  const targetPath = resolveWorkspacePath(workspace, entry.target, "target");
+  if (!(await pathExists(targetPath))) return;
+  const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${basename(entry.target)}-${randomBytes(12).toString("hex")}`;
+  const quarantinePath = resolveWorkspacePath(workspace, quarantine, "quarantine");
+  await rename(targetPath, quarantinePath);
+  log?.(`Managed skill quarantined unverified target ${entry.target}`);
+}
+
 async function installStagedSkill(
   options: ReconcileManagedSkillsOptions,
   beforeState: ManagedState,
@@ -1238,14 +1264,7 @@ async function validateSkillManifest(
   } catch {
     throw new Error("SKILL.md must be valid UTF-8");
   }
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
-  if (!match?.[1]) throw new Error("SKILL.md must contain YAML frontmatter");
-  let parsed: unknown;
-  try {
-    parsed = parseYaml(match[1]);
-  } catch (error) {
-    throw new Error(`SKILL.md frontmatter is invalid: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  const parsed = parseStrictTeamSkillMarkdown(markdown).frontmatter;
   if (!isRecord(parsed) || typeof parsed.name !== "string" || typeof parsed.description !== "string") {
     throw new Error("SKILL.md frontmatter requires string name and description");
   }
@@ -1463,7 +1482,9 @@ function safeZipMode(entry: Entry, kind: "directory" | "file"): number {
   const mode = (entry.externalFileAttributes >>> 16) & 0o777;
   // Keep safe read/execute intent while ensuring the owning Client can finish
   // staging and never accepting group/other write bits from an uploaded ZIP.
-  return kind === "directory" ? 0o700 | (mode & 0o055) : 0o600 | (mode & 0o155);
+  if (kind === "directory") return 0o700 | (mode & 0o055);
+  const ownerExecute = (mode & 0o111) !== 0 ? 0o100 : 0;
+  return 0o600 | ownerExecute | (mode & 0o055);
 }
 
 function openZipBuffer(bytes: Buffer): Promise<ZipFile> {
@@ -1880,9 +1901,19 @@ function assertManagedWorkspaceRootsSafe(workspace: string): void {
 function resolveWorkspacePath(
   workspace: string,
   portablePath: string,
-  kind: "target" | "temporary" | "lock" | "root" | "legacy-resource-file",
+  kind: "target" | "temporary" | "lock" | "root" | "legacy-resource-file" | "quarantine",
 ): string {
   if (kind === "target") assertManagedTarget(portablePath);
+  if (kind === "quarantine") {
+    const parts = portablePath.split("/");
+    if (
+      parts.length !== 2 ||
+      parts[0] !== ".first-tree-workspace" ||
+      !parts[1]?.startsWith(MANAGED_SKILLS_QUARANTINE_PREFIX)
+    ) {
+      throw new ManagedSkillsFatalError(`unsafe managed Skill quarantine path: ${portablePath}`);
+    }
+  }
   if (kind === "temporary") {
     if (portablePath.endsWith(".staging")) assertTemporaryTarget(portablePath, ".staging");
     else assertTemporaryTarget(portablePath, ".backup");
@@ -1898,7 +1929,7 @@ function resolveWorkspacePath(
   assertExistingPathChainIsDirectory(
     workspaceRoot,
     absolute,
-    kind === "root" || kind === "temporary",
+    kind === "root" || kind === "temporary" || kind === "quarantine",
     kind,
     portablePath,
   );

@@ -4,6 +4,7 @@ import {
   getPortableTeamSkillRelativePathError,
   getPortableTeamSkillSegmentError,
   normalizeTeamSkillTargetSlug,
+  parseStrictTeamSkillMarkdown,
   skillDescriptorSchema,
   TEAM_SKILL_BUNDLE_LIMITS,
 } from "../schemas/skill.js";
@@ -61,7 +62,16 @@ describe("portable Team Skill contract", () => {
   });
 
   it("rejects non-portable and overlong path components", () => {
-    for (const segment of ["CON", "trailing.", "trailing ", "bad:name", "a".repeat(241)]) {
+    for (const segment of [
+      "CON",
+      "COM¹.txt",
+      "LPT³",
+      "trailing.",
+      "trailing ",
+      "bad:name",
+      "a".repeat(241),
+      "e\u0301".repeat(100),
+    ]) {
       expect(getPortableTeamSkillSegmentError(segment)).not.toBeNull();
     }
     expect(getPortableTeamSkillSegmentError("guide.md")).toBeNull();
@@ -70,8 +80,23 @@ describe("portable Team Skill contract", () => {
   it("bounds normalized relative path depth and length", () => {
     const tooDeep = `${Array.from({ length: TEAM_SKILL_BUNDLE_LIMITS.maxDepth + 1 }, () => "d").join("/")}/x`;
     const tooLong = `${Array.from({ length: 4 }, () => "a".repeat(200)).join("/")}/x`;
+    const rawTooLong = Array.from({ length: 4 }, () => "e\u0301".repeat(80)).join("/");
     expect(getPortableTeamSkillRelativePathError(tooDeep)).toContain("depth");
     expect(getPortableTeamSkillRelativePathError(tooLong)).toContain("length");
+    expect(getPortableTeamSkillRelativePathError(rawTooLong)).toContain("length");
     expect(getPortableTeamSkillRelativePathError("references/guide.md")).toBeNull();
+  });
+
+  it("uses one strict manifest envelope without trimming the declared name", () => {
+    expect(parseStrictTeamSkillMarkdown("---\nname: review\ndescription: Review\n---\n\nBody")).toMatchObject({
+      frontmatter: { name: "review", description: "Review" },
+      body: "\nBody",
+    });
+    expect(() => parseStrictTeamSkillMarkdown("---\nname: review\ndescription: Review\n---junk\nBody")).toThrow(
+      "YAML frontmatter",
+    );
+    expect(parseStrictTeamSkillMarkdown('---\nname: " review "\ndescription: Review\n---\n').frontmatter.name).toBe(
+      " review ",
+    );
   });
 });

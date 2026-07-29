@@ -376,6 +376,7 @@ describe("managed Skill reconciler", () => {
     const bundle = makeSkillZip({
       "locked/": [new Uint8Array(), { os: 3, attrs: 0o040000 << 16 }],
       "locked/run.sh": [strToU8("echo safe\n"), { os: 3, attrs: 0o100000 << 16 }],
+      "group-exec.sh": [strToU8("echo executable\n"), { os: 3, attrs: 0o100010 << 16 }],
     });
     const result = await reconcileManagedSkills({
       workspace,
@@ -389,6 +390,7 @@ describe("managed Skill reconciler", () => {
     const installed = target(workspace, "codex", "review");
     expect(lstatSync(join(installed, "locked")).mode & 0o777).toBe(0o700);
     expect(lstatSync(join(installed, "locked", "run.sh")).mode & 0o777).toBe(0o600);
+    expect(lstatSync(join(installed, "group-exec.sh")).mode & 0o777).toBe(0o710);
     expect(readFileSync(join(installed, "locked", "run.sh"), "utf-8")).toBe("echo safe\n");
   });
 
@@ -489,6 +491,38 @@ describe("managed Skill reconciler", () => {
       bundleResolver: resolver,
     });
     expect(updated.installed).toContain("resource:resource-review");
+    expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("two\n");
+
+    const runtimeEntries = (): string[] =>
+      readdirSync(join(workspace, ".first-tree-workspace")).filter((name) =>
+        name.startsWith(".managed-skill-quarantine-"),
+      );
+    const quarantinesBeforeFailedRepair = runtimeEntries().length;
+    writeFileSync(join(installed, "assets", "version.txt"), "tampered\n");
+    resolveError = new Error("temporary attachment download failure");
+    const failedRepair = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(failedRepair.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: "temporary attachment download failure",
+    });
+    expect(existsSync(installed)).toBe(false);
+    expect(runtimeEntries()).toHaveLength(quarantinesBeforeFailedRepair + 1);
+
+    resolveError = null;
+    const repaired = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(repaired.installed).toContain("resource:resource-review");
     expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("two\n");
   });
 
@@ -612,6 +646,14 @@ describe("managed Skill reconciler", () => {
       "Windows-reserved",
     ],
     [
+      "Windows superscript-device segment",
+      () =>
+        makeSkillZip({
+          "references/LPT².log": strToU8("unsafe"),
+        }),
+      "Windows-reserved",
+    ],
+    [
       "overlong segment",
       () =>
         makeSkillZip({
@@ -620,10 +662,26 @@ describe("managed Skill reconciler", () => {
       "portable length",
     ],
     [
+      "raw overlong Unicode segment",
+      () =>
+        makeSkillZip({
+          [`assets/${"e\u0301".repeat(100)}`]: strToU8("unsafe"),
+        }),
+      "portable length",
+    ],
+    [
       "overlong relative path",
       () =>
         makeSkillZip({
           [`${Array.from({ length: 4 }, () => "a".repeat(200)).join("/")}/file.txt`]: strToU8("unsafe"),
+        }),
+      "relative path exceeds portable length",
+    ],
+    [
+      "raw overlong Unicode relative path",
+      () =>
+        makeSkillZip({
+          [Array.from({ length: 4 }, () => "e\u0301".repeat(80)).join("/")]: strToU8("unsafe"),
         }),
       "relative path exceeds portable length",
     ],
@@ -670,6 +728,26 @@ describe("managed Skill reconciler", () => {
           }),
         ),
       "root or inside one top-level directory",
+    ],
+    [
+      "non-exact frontmatter closing delimiter",
+      () =>
+        Buffer.from(
+          zipSync({
+            "SKILL.md": strToU8("---\nname: review\ndescription: review\n---junk\nBody"),
+          }),
+        ),
+      "YAML frontmatter",
+    ],
+    [
+      "trim-dependent manifest name",
+      () =>
+        Buffer.from(
+          zipSync({
+            "SKILL.md": strToU8('---\nname: " review "\ndescription: review\n---\nBody'),
+          }),
+        ),
+      "does not match effective name",
     ],
     [
       "oversized expansion",

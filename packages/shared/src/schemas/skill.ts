@@ -1,3 +1,4 @@
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 export const SKILL_SOURCES = {
@@ -97,12 +98,14 @@ export function getPortableTeamSkillSegmentError(segment: string): string | null
   }
   const normalized = segment.normalize("NFC");
   if (
+    new TextEncoder().encode(segment).byteLength > TEAM_SKILL_BUNDLE_LIMITS.maxSegmentUtf8Bytes ||
+    segment.length > TEAM_SKILL_BUNDLE_LIMITS.maxSegmentUtf16CodeUnits ||
     new TextEncoder().encode(normalized).byteLength > TEAM_SKILL_BUNDLE_LIMITS.maxSegmentUtf8Bytes ||
     normalized.length > TEAM_SKILL_BUNDLE_LIMITS.maxSegmentUtf16CodeUnits
   ) {
     return `path segment exceeds portable length limits: ${segment}`;
   }
-  const windowsBase = normalized.split(".", 1)[0]?.toLocaleLowerCase("en-US") ?? "";
+  const windowsBase = normalized.normalize("NFKC").split(".", 1)[0]?.toLocaleLowerCase("en-US") ?? "";
   if (WINDOWS_RESERVED_NAMES.has(windowsBase)) {
     return `Windows-reserved path segment: ${segment}`;
   }
@@ -112,6 +115,8 @@ export function getPortableTeamSkillSegmentError(segment: string): string | null
 export function getPortableTeamSkillRelativePathError(path: string): string | null {
   const normalized = path.normalize("NFC");
   if (
+    new TextEncoder().encode(path).byteLength > TEAM_SKILL_BUNDLE_LIMITS.maxRelativePathUtf8Bytes ||
+    path.length > TEAM_SKILL_BUNDLE_LIMITS.maxRelativePathUtf16CodeUnits ||
     new TextEncoder().encode(normalized).byteLength > TEAM_SKILL_BUNDLE_LIMITS.maxRelativePathUtf8Bytes ||
     normalized.length > TEAM_SKILL_BUNDLE_LIMITS.maxRelativePathUtf16CodeUnits
   ) {
@@ -151,6 +156,35 @@ export function normalizeTeamSkillTargetSlug(input: string): string {
     throw new Error(`Skill name "${input}" is reserved by First Tree`);
   }
   return slug;
+}
+
+export type StrictTeamSkillMarkdown = Readonly<{
+  frontmatter: Record<string, unknown>;
+  body: string;
+}>;
+
+/**
+ * Parse the exact frontmatter envelope accepted by both Server admission and
+ * Client materialization. YAML libraries intentionally accept broader
+ * delimiter syntax, which would let configuration succeed for a manifest the
+ * provider-side installer cannot discover.
+ */
+export function parseStrictTeamSkillMarkdown(markdown: string): StrictTeamSkillMarkdown {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
+  if (!match?.[1]) throw new Error("SKILL.md must contain YAML frontmatter");
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(match[1]);
+  } catch (error) {
+    throw new Error(`SKILL.md frontmatter is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("SKILL.md frontmatter must be a YAML mapping");
+  }
+  return {
+    frontmatter: parsed as Record<string, unknown>,
+    body: markdown.slice(match[0].length),
+  };
 }
 
 function containsControlCharacter(value: string): boolean {

@@ -165,6 +165,7 @@ describe("Team Skill bundles", () => {
         }),
     ],
     ["Windows-reserved segment", () => skillZip("portable", { "references/CON/file.txt": strToU8("bad") })],
+    ["Windows superscript-device segment", () => skillZip("portable", { "references/COM¹.txt": strToU8("bad") })],
     ["trailing-dot segment", () => skillZip("portable", { "references/bad./file.txt": strToU8("bad") })],
     [
       "reserved ownership marker tree",
@@ -195,10 +196,21 @@ describe("Team Skill bundles", () => {
     ],
     ["overlong path segment", () => skillZip("portable", { [`assets/${"a".repeat(241)}`]: strToU8("bad") })],
     [
+      "raw overlong Unicode path segment",
+      () => skillZip("portable", { [`assets/${"e\u0301".repeat(100)}`]: strToU8("bad") }),
+    ],
+    [
       "overlong relative path",
       () =>
         skillZip("portable", {
           [`${Array.from({ length: 4 }, () => "a".repeat(200)).join("/")}/file.txt`]: strToU8("bad"),
+        }),
+    ],
+    [
+      "raw overlong Unicode relative path",
+      () =>
+        skillZip("portable", {
+          [Array.from({ length: 4 }, () => "e\u0301".repeat(80)).join("/")]: strToU8("bad"),
         }),
     ],
     [
@@ -232,6 +244,16 @@ describe("Team Skill bundles", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const bundleId = await upload(app, admin, build());
+    expect((await createSkill(app, admin, bundleId)).statusCode).toBe(400);
+  });
+
+  it.each([
+    ["non-exact closing delimiter", "---\nname: review\ndescription: Review\n---junk\nBody"],
+    ["trim-dependent manifest name", '---\nname: " review "\ndescription: Review\n---\nBody'],
+  ])("rejects a %s before Resource configuration", async (_label, manifest) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const bundleId = await upload(app, admin, rawZip({ "SKILL.md": strToU8(manifest) }));
     expect((await createSkill(app, admin, bundleId)).statusCode).toBe(400);
   });
 

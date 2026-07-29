@@ -8,6 +8,7 @@ import {
   getPortableTeamSkillRelativePathError,
   getPortableTeamSkillSegmentError,
   normalizeTeamSkillTargetSlug,
+  parseStrictTeamSkillMarkdown,
   SKILL_NAME_REGEX,
   type SkillResourcePayload,
   skillResourcePayloadSchema,
@@ -16,7 +17,6 @@ import {
 } from "@first-tree/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import { strToU8, zipSync } from "fflate";
-import matter from "gray-matter";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
 import type { Database } from "../db/connection.js";
 import { members } from "../db/schema/members.js";
@@ -173,15 +173,15 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   } catch {
     throw new BadRequestError("SKILL.md must be valid UTF-8");
   }
-  let parsed: matter.GrayMatterFile<string>;
+  let parsed: ReturnType<typeof parseStrictTeamSkillMarkdown>;
   try {
-    parsed = matter(markdown);
+    parsed = parseStrictTeamSkillMarkdown(markdown);
   } catch (error) {
     throw new BadRequestError(`SKILL.md frontmatter is invalid: ${error instanceof Error ? error.message : error}`);
   }
-  const name = typeof parsed.data.name === "string" ? parsed.data.name.trim() : "";
-  const description = typeof parsed.data.description === "string" ? parsed.data.description.trim() : "";
-  const namespace = typeof parsed.data.namespace === "string" ? parsed.data.namespace.trim() : undefined;
+  const name = typeof parsed.frontmatter.name === "string" ? parsed.frontmatter.name : "";
+  const description = typeof parsed.frontmatter.description === "string" ? parsed.frontmatter.description.trim() : "";
+  const namespace = typeof parsed.frontmatter.namespace === "string" ? parsed.frontmatter.namespace.trim() : undefined;
   if (!name || name.length > 100 || !SKILL_NAME_REGEX.test(name)) {
     throw new BadRequestError("SKILL.md name must start with an alphanumeric and contain only letters, digits, _ or -");
   }
@@ -196,7 +196,7 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   if (namespace && (namespace.length > 100 || !SKILL_NAME_REGEX.test(namespace))) {
     throw new BadRequestError("SKILL.md namespace must contain only letters, digits, _ or -");
   }
-  const rawMetadata = parsed.data.metadata;
+  const rawMetadata = parsed.frontmatter.metadata;
   const metadata =
     rawMetadata && typeof rawMetadata === "object" && !Array.isArray(rawMetadata)
       ? (rawMetadata as Record<string, unknown>)
@@ -205,7 +205,7 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
     name,
     ...(namespace ? { namespace } : {}),
     description,
-    body: parsed.content.trim(),
+    body: parsed.body.trim(),
     metadata,
   });
   return { name, payload };
