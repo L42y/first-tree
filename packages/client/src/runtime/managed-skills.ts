@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { lstatSync, realpathSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -131,6 +132,12 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   lockStaleMs?: number;
   /** Fault-injection seam used by deterministic crash-recovery tests. */
   testCrashAt?: ManagedSkillsCheckpoint;
+  /** Ordinary failure seam used to exercise in-process rollback paths. */
+  testFailureAt?: ManagedSkillsCheckpoint;
+  /** Forces the rollback path to preserve its journal and abort reconciliation. */
+  testRecoveryFailure?: boolean;
+  /** Runs after the held lock is atomically detached, before it is removed. */
+  testAfterLockReleaseQuarantine?: (lockPath: string) => Promise<void>;
 }>;
 
 type DesiredManagedSkill = Readonly<{
@@ -165,9 +172,13 @@ type LockOwner = Readonly<{
 }>;
 
 type WorkspaceLock = Readonly<{
-  token: string;
   release: () => Promise<void>;
 }>;
+
+type LockRecoveryDecision =
+  | Readonly<{ kind: "wait" }>
+  | Readonly<{ kind: "retry" }>
+  | Readonly<{ kind: "reclaim"; owner: LockOwner }>;
 
 type MutableReconcileResult = {
   installed: string[];
@@ -233,6 +244,7 @@ export async function reconcileManagedSkills(
     };
     let lock: WorkspaceLock | null = null;
     try {
+      assertManagedWorkspaceRootsSafe(options.workspace);
       lock = await acquireWorkspaceLock(options);
       await recoverPendingJournal(options.workspace, options.log);
       let state = await loadOrMigrateManagedState(options);
@@ -310,7 +322,7 @@ export async function reconcileManagedSkills(
           mutable.installed.push(staged.entry.key);
           successfulTargets.set(staged.entry.key, staged.entry.target);
         } catch (error) {
-          if (error instanceof ManagedSkillsSimulatedCrash) throw error;
+          if (error instanceof ManagedSkillsSimulatedCrash || error instanceof ManagedSkillsFatalError) throw error;
           const reason = error instanceof Error ? error.message : String(error);
           mutable.failures.push({ key: desired.key, reason });
           options.log?.(`Managed skill reconcile failed (${desired.key}): ${reason.slice(0, 300)}`);
@@ -334,7 +346,7 @@ export async function reconcileManagedSkills(
           state = await removeManagedEntry(options, state, entry);
           mutable.removed.push(`${entry.key}@${entry.target}`);
         } catch (error) {
-          if (error instanceof ManagedSkillsSimulatedCrash) throw error;
+          if (error instanceof ManagedSkillsSimulatedCrash || error instanceof ManagedSkillsFatalError) throw error;
           const reason = error instanceof Error ? error.message : String(error);
           mutable.failures.push({ key: entry.key, reason: `cleanup ${entry.target}: ${reason}` });
           options.log?.(`Managed skill cleanup failed (${entry.key} at ${entry.target}): ${reason.slice(0, 300)}`);
@@ -349,16 +361,23 @@ export async function reconcileManagedSkills(
       const reason = error instanceof Error ? error.message : String(error);
       mutable.failures.push({ key: "workspace", reason });
       options.log?.(`Managed skills reconcile skipped: ${reason.slice(0, 300)}`);
-      const stateResult = readManagedStateResult(options.workspace);
-      const resourceConfigVersion = stateResult.kind === "current" ? stateResult.state.resourceConfigVersion : 0;
+      let resourceConfigVersion = 0;
+      try {
+        assertManagedWorkspaceRootsSafe(options.workspace);
+        const stateResult = readManagedStateResult(options.workspace);
+        if (stateResult.kind === "current") resourceConfigVersion = stateResult.state.resourceConfigVersion;
+      } catch {
+        // The original failure may itself be an unsafe managed root. Do not
+        // follow that root merely to enrich a best-effort result field.
+      }
       return freezeResult(resourceConfigVersion, mutable);
     } finally {
       try {
         await lock?.release();
       } catch (error) {
         // A cleanup failure must not turn a settled provider preflight into a
-        // rejected handler start. The token check prevents deleting a
-        // successor's lock; a leftover lock is recovered conservatively.
+        // rejected handler start. Atomic detachment plus the token check keeps
+        // a successor's lock untouched; any quarantine residue fails closed.
         options.log?.(
           `Managed skills lock cleanup failed: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`,
         );
@@ -407,49 +426,50 @@ async function acquireWorkspaceLock(options: ReconcileManagedSkillsOptions): Pro
   const staleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
   const startedAt = Date.now();
   await mkdir(dirname(lockPath), { recursive: true });
+  const candidatePath = lockSiblingPath(lockPath, token, "candidate");
+  const owner: LockOwner = {
+    schemaVersion: 1,
+    pid: process.pid,
+    token,
+    createdAt: new Date().toISOString(),
+  };
+  await mkdir(candidatePath, { mode: 0o700 });
+  try {
+    await writeFile(join(candidatePath, LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, {
+      encoding: "utf-8",
+      flag: "wx",
+      mode: 0o600,
+    });
+  } catch (error) {
+    await rm(candidatePath, { recursive: true, force: true });
+    throw error;
+  }
 
-  while (true) {
-    try {
-      await mkdir(lockPath);
-      const owner: LockOwner = {
-        schemaVersion: 1,
-        pid: process.pid,
-        token,
-        createdAt: new Date().toISOString(),
-      };
-      await writeFile(join(lockPath, LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, {
-        encoding: "utf-8",
-        flag: "wx",
-        mode: 0o600,
-      });
-      return {
-        token,
-        release: async () => {
-          const currentOwner = await readLockOwner(lockPath);
-          if (currentOwner?.token !== token) return;
-          await rm(lockPath, { recursive: true, force: true });
-        },
-      };
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") {
-        try {
-          await rm(lockPath, { recursive: true, force: true });
-        } catch {
-          // Preserve the original lock acquisition failure.
-        }
-        throw error;
+  try {
+    while (true) {
+      // Re-run the boundary check on every attempt so a replaced lock path is
+      // never inspected through a symlink.
+      resolveWorkspacePath(options.workspace, lockRel, "lock");
+      try {
+        await rename(candidatePath, lockPath);
+        return {
+          release: () => releaseWorkspaceLock(lockPath, token, options.testAfterLockReleaseQuarantine),
+        };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        const targetExists =
+          code === "EEXIST" || code === "ENOTEMPTY" || code === "EPERM" ? await pathExists(lockPath) : false;
+        if (!targetExists) throw error;
       }
-    }
 
-    if (await mayRecoverLock(lockPath, staleMs)) {
-      await rm(lockPath, { recursive: true, force: true });
-      continue;
+      if (await recoverWorkspaceLock(lockPath, staleMs)) continue;
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw new Error(`timed out waiting for managed skills workspace lock after ${timeoutMs}ms`);
+      }
+      await delay(Math.min(250, 25 + Math.floor((Date.now() - startedAt) / 10)));
     }
-    if (Date.now() - startedAt >= timeoutMs) {
-      throw new Error(`timed out waiting for managed skills workspace lock after ${timeoutMs}ms`);
-    }
-    await delay(Math.min(250, 25 + Math.floor((Date.now() - startedAt) / 10)));
+  } finally {
+    await rm(candidatePath, { recursive: true, force: true });
   }
 }
 
@@ -480,26 +500,103 @@ async function readLockOwner(lockPath: string): Promise<LockOwner | null> {
   }
 }
 
-async function mayRecoverLock(lockPath: string, staleMs: number): Promise<boolean> {
+async function inspectLockRecovery(lockPath: string, staleMs: number): Promise<LockRecoveryDecision> {
+  try {
+    const lockStats = await lstat(lockPath);
+    if (lockStats.isSymbolicLink()) {
+      throw new ManagedSkillsFatalError("managed skills workspace lock is a symlink; refusing recovery");
+    }
+    if (!lockStats.isDirectory()) {
+      throw new ManagedSkillsFatalError("managed skills workspace lock is not a directory; refusing recovery");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "retry" };
+    throw error;
+  }
+
   const owner = await readLockOwner(lockPath);
   if (!owner) {
-    try {
-      const lockStat = await stat(lockPath);
-      // A contender can observe the directory between mkdir and owner.json.
-      // Never reclaim that initialization window earlier than the configured
-      // stale threshold; tests can pass a shorter threshold explicitly.
-      return Date.now() - lockStat.mtimeMs > staleMs;
-    } catch {
-      return true;
+    const lockStat = await stat(lockPath);
+    if (Date.now() - lockStat.mtimeMs > staleMs) {
+      throw new ManagedSkillsFatalError("managed skills workspace lock has no valid owner; refusing age-only recovery");
     }
+    return { kind: "wait" };
   }
-  const age = Date.now() - Date.parse(owner.createdAt);
-  if (Number.isFinite(age) && age > staleMs) return true;
+  return processIsAlive(owner.pid) ? { kind: "wait" } : { kind: "reclaim", owner };
+}
+
+async function recoverWorkspaceLock(lockPath: string, staleMs: number): Promise<boolean> {
+  const decision = await inspectLockRecovery(lockPath, staleMs);
+  if (decision.kind === "retry") return true;
+  if (decision.kind === "wait") return false;
+
+  const quarantinePath = lockSiblingPath(lockPath, randomBytes(16).toString("hex"), "reclaim");
   try {
-    process.kill(owner.pid, 0);
-    return false;
+    await rename(lockPath, quarantinePath);
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ESRCH";
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+
+  const quarantinedOwner = await readLockOwner(quarantinePath);
+  if (
+    quarantinedOwner?.token !== decision.owner.token ||
+    quarantinedOwner.pid !== decision.owner.pid ||
+    processIsAlive(decision.owner.pid)
+  ) {
+    await restoreQuarantinedLock(quarantinePath, lockPath);
+    throw new ManagedSkillsFatalError("managed skills lock owner changed during recovery; refusing reclamation");
+  }
+  await rm(quarantinePath, { recursive: true, force: true });
+  return true;
+}
+
+async function releaseWorkspaceLock(
+  lockPath: string,
+  token: string,
+  afterQuarantine?: (lockPath: string) => Promise<void>,
+): Promise<void> {
+  const quarantinePath = lockSiblingPath(lockPath, token, "release");
+  try {
+    await rename(lockPath, quarantinePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+
+  await afterQuarantine?.(lockPath);
+  const quarantinedOwner = await readLockOwner(quarantinePath);
+  if (quarantinedOwner?.token !== token) {
+    await restoreQuarantinedLock(quarantinePath, lockPath);
+    throw new ManagedSkillsFatalError("managed skills lock token changed before release; lock was preserved");
+  }
+  await rm(quarantinePath, { recursive: true, force: true });
+}
+
+async function restoreQuarantinedLock(quarantinePath: string, lockPath: string): Promise<void> {
+  try {
+    await rename(quarantinePath, lockPath);
+  } catch (error) {
+    throw new ManagedSkillsFatalError(
+      `cannot restore quarantined managed skills lock ${basename(quarantinePath)}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function lockSiblingPath(lockPath: string, token: string, phase: "candidate" | "reclaim" | "release"): string {
+  return join(dirname(lockPath), `.${basename(lockPath)}.${token}.${phase}`);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but this user cannot signal it. Any
+    // result other than an explicit ESRCH therefore fails closed as live.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
@@ -943,16 +1040,16 @@ async function installStagedSkill(
     afterState,
   };
   writeManagedSkillsJournal(options.workspace, journal);
-  maybeCrash(options, "prepared");
+  maybeFault(options, "prepared");
   try {
     if (targetExists) {
       await rename(targetPath, backupPath);
       journal = writeJournalPhase(options.workspace, journal, "target_backed_up");
-      maybeCrash(options, "target_backed_up");
+      maybeFault(options, "target_backed_up");
     }
     await rename(stagingPath, targetPath);
     journal = writeJournalPhase(options.workspace, journal, "target_installed");
-    maybeCrash(options, "target_installed");
+    maybeFault(options, "target_installed");
     const persisted = persistStateMonotonic(options.workspace, afterState);
     journal = {
       ...journal,
@@ -960,18 +1057,14 @@ async function installStagedSkill(
       phase: "state_committed",
     };
     writeManagedSkillsJournal(options.workspace, journal);
-    maybeCrash(options, "state_committed");
+    maybeFault(options, "state_committed");
     if (targetExists) await rm(backupPath, { recursive: true, force: true });
-    maybeCrash(options, "backup_cleaned");
+    maybeFault(options, "backup_cleaned");
     clearManagedSkillsJournal(options.workspace);
     return persisted;
   } catch (error) {
     if (error instanceof ManagedSkillsSimulatedCrash) throw error;
-    await recoverPendingJournal(options.workspace, options.log);
-    const recovered = readManagedStateResult(options.workspace);
-    if (recovered.kind !== "current") {
-      throw new ManagedSkillsFatalError("managed state unavailable after failed install recovery");
-    }
+    await recoverFailedTransaction(options, "install");
     throw error;
   }
 }
@@ -1002,11 +1095,11 @@ async function removeManagedEntry(
     afterState,
   };
   writeManagedSkillsJournal(options.workspace, journal);
-  maybeCrash(options, "prepared");
+  maybeFault(options, "prepared");
   try {
     await rename(targetPath, backupPath);
     journal = writeJournalPhase(options.workspace, journal, "target_backed_up");
-    maybeCrash(options, "target_backed_up");
+    maybeFault(options, "target_backed_up");
     const persisted = persistStateMonotonic(options.workspace, afterState);
     journal = {
       ...journal,
@@ -1014,19 +1107,37 @@ async function removeManagedEntry(
       phase: "state_committed",
     };
     writeManagedSkillsJournal(options.workspace, journal);
-    maybeCrash(options, "state_committed");
+    maybeFault(options, "state_committed");
     await rm(backupPath, { recursive: true, force: true });
-    maybeCrash(options, "backup_cleaned");
+    maybeFault(options, "backup_cleaned");
     clearManagedSkillsJournal(options.workspace);
     return persisted;
   } catch (error) {
     if (error instanceof ManagedSkillsSimulatedCrash) throw error;
+    await recoverFailedTransaction(options, "removal");
+    throw error;
+  }
+}
+
+async function recoverFailedTransaction(
+  options: ReconcileManagedSkillsOptions,
+  operation: "install" | "removal",
+): Promise<void> {
+  try {
+    if (options.testRecoveryFailure) {
+      throw new Error("simulated managed skills recovery failure");
+    }
     await recoverPendingJournal(options.workspace, options.log);
     const recovered = readManagedStateResult(options.workspace);
     if (recovered.kind !== "current") {
-      throw new ManagedSkillsFatalError("managed state unavailable after failed removal recovery");
+      throw new Error("managed state unavailable after transaction recovery");
     }
-    throw error;
+  } catch (error) {
+    throw new ManagedSkillsFatalError(
+      `managed skills ${operation} recovery failed; reconciliation aborted with journal preserved: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 
@@ -1147,9 +1258,12 @@ function writeJournalPhase(
   return next;
 }
 
-function maybeCrash(options: ReconcileManagedSkillsOptions, checkpoint: ManagedSkillsCheckpoint): void {
+function maybeFault(options: ReconcileManagedSkillsOptions, checkpoint: ManagedSkillsCheckpoint): void {
   if (options.testCrashAt === checkpoint) {
     throw new ManagedSkillsSimulatedCrash(`simulated managed skills crash at ${checkpoint}`);
+  }
+  if (options.testFailureAt === checkpoint) {
+    throw new Error(`simulated managed skills failure at ${checkpoint}`);
   }
 }
 
@@ -1606,6 +1720,13 @@ function assertTemporaryTarget(target: string, suffix: ".staging" | ".backup"): 
   }
 }
 
+function assertManagedWorkspaceRootsSafe(workspace: string): void {
+  resolveWorkspacePath(workspace, toPortablePath(MANAGED_SKILLS_LOCK_REL), "lock");
+  for (const root of ALLOWED_TARGET_ROOTS) {
+    resolveWorkspacePath(workspace, root, "root");
+  }
+}
+
 function resolveWorkspacePath(
   workspace: string,
   portablePath: string,
@@ -1616,17 +1737,57 @@ function resolveWorkspacePath(
     if (portablePath.endsWith(".staging")) assertTemporaryTarget(portablePath, ".staging");
     else assertTemporaryTarget(portablePath, ".backup");
   }
-  const workspaceRoot = resolve(workspace);
+  const workspaceRoot = realpathSync(resolve(workspace));
+  if (!lstatSync(workspaceRoot).isDirectory()) {
+    throw new ManagedSkillsFatalError(`managed skills workspace is not a directory: ${workspace}`);
+  }
   const absolute = resolve(workspaceRoot, ...portablePath.split("/"));
   if (absolute !== workspaceRoot && !absolute.startsWith(`${workspaceRoot}${sep}`)) {
     throw new ManagedSkillsFatalError(`${kind} path escapes workspace: ${portablePath}`);
   }
+  assertExistingPathChainIsDirectory(
+    workspaceRoot,
+    absolute,
+    kind === "root" || kind === "lock" || kind === "temporary",
+    kind,
+    portablePath,
+  );
   return absolute;
 }
 
+function assertExistingPathChainIsDirectory(
+  workspaceRoot: string,
+  absolutePath: string,
+  includeLeaf: boolean,
+  kind: string,
+  portablePath: string,
+): void {
+  const relativePath = relative(workspaceRoot, absolutePath);
+  const segments = relativePath.split(sep).filter(Boolean);
+  const checkedSegments = includeLeaf ? segments : segments.slice(0, -1);
+  let current = workspaceRoot;
+  for (const segment of checkedSegments) {
+    current = join(current, segment);
+    let currentStats: ReturnType<typeof lstatSync>;
+    try {
+      currentStats = lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (currentStats.isSymbolicLink()) {
+      throw new ManagedSkillsFatalError(`${kind} path has a symlinked managed ancestor: ${portablePath}`);
+    }
+    if (!currentStats.isDirectory()) {
+      throw new ManagedSkillsFatalError(`${kind} path has a non-directory managed ancestor: ${portablePath}`);
+    }
+  }
+}
+
 function portableRelative(workspace: string, absolutePath: string): string {
-  const rel = relative(resolve(workspace), resolve(absolutePath));
-  if (!rel || rel.startsWith("..") || resolve(workspace, rel) === resolve(workspace)) {
+  const workspaceRoot = realpathSync(resolve(workspace));
+  const rel = relative(workspaceRoot, resolve(absolutePath));
+  if (!rel || rel.startsWith("..") || resolve(workspaceRoot, rel) === workspaceRoot) {
     throw new ManagedSkillsFatalError(`transaction path escapes workspace: ${absolutePath}`);
   }
   return toPortablePath(rel);

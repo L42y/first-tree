@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
@@ -149,6 +149,31 @@ function makeMessage(chatId: string, id: string) {
 }
 
 describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
+  it("converges the legacy file marker before the first managed Skill reconcile", async () => {
+    capturedSdkOptions.length = 0;
+    const dataDir = mkdtempSync(join(tmpdir(), "ftt-legacy-marker-"));
+    const workspaceRoot = join(dataDir, "workspaces", "agent-1");
+    mkdirSync(workspaceRoot, { recursive: true });
+    writeFileSync(join(workspaceRoot, ".first-tree-workspace"), "legacy boundary marker\n");
+
+    const cache = buildCache([]);
+    await cache.refresh(AGENT_ID);
+    const handler = createClaudeCodeHandler({ workspaceRoot, agentConfigCache: cache });
+    try {
+      await handler.start(
+        makeMessage("chat-legacy-marker", "msg-legacy-marker"),
+        buildSessionCtx("chat-legacy-marker"),
+      );
+
+      expect(lstatSync(join(workspaceRoot, ".first-tree-workspace")).isDirectory()).toBe(true);
+      expect(existsSync(join(workspaceRoot, ".claude", "skills", "first-tree-read", "SKILL.md"))).toBe(true);
+      expect(capturedSdkOptions.at(-1)?.options?.cwd).toBe(workspaceRoot);
+    } finally {
+      await handler.shutdown();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("E2: worktrees/ subdir is NOT pre-created by start()", async () => {
     capturedSdkOptions.length = 0;
     const dataDir = mkdtempSync(join(tmpdir(), "ftt-e2-"));

@@ -1,4 +1,14 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeProvider, RuntimeResourceSkill } from "@first-tree/shared";
@@ -379,6 +389,36 @@ describe("managed Skill reconciler", () => {
     expect(existsSync(linkedTarget)).toBe(true);
   });
 
+  it.each([
+    ["provider discovery root", ".agents/skills"],
+    ["managed runtime root", ".first-tree-workspace"],
+  ] as const)("fails closed before mutation when the %s is a symlink", async (_label, linkedRoot) => {
+    const outside = join(sandbox, `outside-${linkedRoot.replaceAll("/", "-")}`);
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "user-owned.txt"), "preserve\n");
+    if (linkedRoot === ".agents/skills") {
+      mkdirSync(join(workspace, ".agents"), { recursive: true });
+    }
+    symlinkSync(outside, join(workspace, linkedRoot));
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        key: "workspace",
+        reason: expect.stringContaining("symlinked managed ancestor"),
+      }),
+    ]);
+    expect(readdirSync(outside)).toEqual(["user-owned.txt"]);
+    expect(readFileSync(join(outside, "user-owned.txt"), "utf-8")).toBe("preserve\n");
+  });
+
   it("adopts an exact legacy Team materialization before moving it to the provider root", async () => {
     const skill = teamSkill({ resourceId: "Resource_ABC" });
     const legacyRoot = join(workspace, ".first-tree", "resources", "skills", skill.resourceId);
@@ -503,6 +543,41 @@ describe("managed Skill reconciler", () => {
     expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(false);
   });
 
+  it("aborts the workspace reconcile and preserves the journal when transaction recovery fails", async () => {
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+      testFailureAt: "target_installed",
+      testRecoveryFailure: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        key: "workspace",
+        reason: expect.stringContaining("reconciliation aborted with journal preserved"),
+      }),
+    ]);
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(true);
+    expect(existsSync(target(workspace, "codex", CORE_SKILL_NAMES[0]))).toBe(true);
+    expect(existsSync(target(workspace, "codex", CORE_SKILL_NAMES[1]))).toBe(false);
+
+    const journal = JSON.parse(readFileSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL), "utf-8"));
+    expect(journal.target).toBe(`.agents/skills/${CORE_SKILL_NAMES[0]}`);
+
+    const recovered = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+    expect(recovered.ok, JSON.stringify(recovered.failures)).toBe(true);
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(false);
+    expect(existsSync(target(workspace, "codex", CORE_SKILL_NAMES[1]))).toBe(true);
+  });
+
   it("installs the new provider projection before retiring the previous provider targets", async () => {
     await reconcileManagedSkills({
       workspace,
@@ -596,5 +671,74 @@ describe("managed Skill reconciler", () => {
 
     expect(result.ok, JSON.stringify(result.failures)).toBe(true);
     expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("never reclaims an old lock while its owner process is alive", async () => {
+    const lockPath = join(workspace, MANAGED_SKILLS_LOCK_REL);
+    mkdirSync(lockPath, { recursive: true });
+    writeFileSync(
+      join(lockPath, "owner.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        pid: process.pid,
+        token: "live-owner",
+        createdAt: new Date(0).toISOString(),
+      }),
+    );
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+      lockTimeoutMs: 30,
+      lockStaleMs: 0,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        key: "workspace",
+        reason: expect.stringContaining("timed out waiting for managed skills workspace lock"),
+      }),
+    ]);
+    expect(JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf-8"))).toMatchObject({
+      token: "live-owner",
+      pid: process.pid,
+    });
+  });
+
+  it("atomically detaches its lock before release and leaves a successor lock untouched", async () => {
+    const lockPath = join(workspace, MANAGED_SKILLS_LOCK_REL);
+    let releaseHookCalls = 0;
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+      testAfterLockReleaseQuarantine: async (detachedLockPath) => {
+        releaseHookCalls++;
+        mkdirSync(detachedLockPath);
+        writeFileSync(
+          join(detachedLockPath, "owner.json"),
+          JSON.stringify({
+            schemaVersion: 1,
+            pid: process.pid,
+            token: "successor-owner",
+            createdAt: new Date().toISOString(),
+          }),
+        );
+      },
+    });
+
+    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+    expect(releaseHookCalls).toBe(1);
+    expect(
+      existsSync(lockPath),
+      `runtime entries: ${readdirSync(join(workspace, ".first-tree-workspace")).join(", ")}`,
+    ).toBe(true);
+    expect(JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf-8"))).toMatchObject({
+      token: "successor-owner",
+    });
   });
 });
