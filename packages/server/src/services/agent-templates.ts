@@ -4,8 +4,8 @@ import {
   type AgentTemplateCatalogOutput,
   type AgentTemplateDefinition,
   type AgentTemplatesForAgentOutput,
+  agentTemplateMcpServerSchema,
   type CreateAgentTemplate,
-  noSecretMcpServerSchema,
   PROMPT_APPEND_MAX_LENGTH,
   promptResourcePayloadSchema,
   skillResourcePayloadSchema,
@@ -311,7 +311,7 @@ async function lockAndValidateTemplateResources(
     ) {
       throw new BadRequestError(`Resource "${resourceId}" is not an active official Team Skill or MCP Resource`);
     }
-    if (resource.type === "mcp" && !noSecretMcpServerSchema.safeParse(resource.payload).success) {
+    if (resource.type === "mcp" && !agentTemplateMcpServerSchema.safeParse(resource.payload).success) {
       throw new BadRequestError(`MCP Resource "${resourceId}" is invalid or contains unsupported secret configuration`);
     }
     if (resource.type === "skill" && !skillResourcePayloadSchema.safeParse(resource.payload).success) {
@@ -356,7 +356,7 @@ async function lockAndValidateTemplateResources(
 
 function mcpName(resource: ResourceDbRow): string | null {
   if (resource.type !== "mcp") return null;
-  const parsed = noSecretMcpServerSchema.safeParse(resource.payload);
+  const parsed = agentTemplateMcpServerSchema.safeParse(resource.payload);
   return parsed.success ? parsed.data.name.toLowerCase() : null;
 }
 
@@ -422,6 +422,11 @@ export async function assertAgentTemplateMcpResourceUpdateComposable(
     )
     .limit(1);
   if (!referencing) return;
+  if (!agentTemplateMcpServerSchema.safeParse(candidate.payload).success) {
+    throw new BadRequestError(
+      `MCP Resource "${candidate.id}" cannot carry URL data or command arguments while referenced by an Agent Template`,
+    );
+  }
   await assertMcpNamesComposable(targetDb, publisherOrganizationId, [candidate as ResourceDbRow], "");
 }
 
@@ -462,7 +467,7 @@ async function catalogItemsForRows(targetDb: Database, rows: readonly AgentTempl
           skills.push({ name: parsed.data.name, description: parsed.data.description });
         }
       } else if (resource.type === "mcp") {
-        const parsed = noSecretMcpServerSchema.safeParse(resource.payload);
+        const parsed = agentTemplateMcpServerSchema.safeParse(resource.payload);
         if (parsed.success) {
           mcp.push({ name: parsed.data.name, transport: parsed.data.transport });
         }

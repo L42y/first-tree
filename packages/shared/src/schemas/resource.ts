@@ -94,7 +94,7 @@ const mcpHttpNoSecretServerSchema = z
   .object({
     name: z.string().min(1),
     transport: z.literal("http"),
-    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credential-bearing values."),
+    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credentials."),
   })
   .strict();
 
@@ -102,28 +102,54 @@ const mcpSseNoSecretServerSchema = z
   .object({
     name: z.string().min(1),
     transport: z.literal("sse"),
-    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credential-bearing values."),
-  })
-  .strict();
-
-const mcpStdioNoSecretServerSchema = mcpStdioServerSchema
-  .extend({
-    args: z
-      .array(z.string())
-      .refine(
-        hasNoCredentialBearingArguments,
-        "No-secret MCP resources must not include credential-bearing command arguments.",
-      )
-      .optional(),
+    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credentials."),
   })
   .strict();
 
 export const noSecretMcpServerSchema = z.discriminatedUnion("transport", [
-  mcpStdioNoSecretServerSchema,
+  mcpStdioServerSchema.strict(),
   mcpHttpNoSecretServerSchema,
   mcpSseNoSecretServerSchema,
 ]);
 export type NoSecretMcpServer = z.infer<typeof noSecretMcpServerSchema>;
+
+const agentTemplateMcpHttpServerSchema = z
+  .object({
+    name: z.string().min(1),
+    transport: z.literal("http"),
+    url: z
+      .string()
+      .url()
+      .refine(hasNoAgentTemplateUrlCredentials, "Agent Template MCP URLs must not include credentials or URL data."),
+  })
+  .strict();
+
+const agentTemplateMcpSseServerSchema = z
+  .object({
+    name: z.string().min(1),
+    transport: z.literal("sse"),
+    url: z
+      .string()
+      .url()
+      .refine(hasNoAgentTemplateUrlCredentials, "Agent Template MCP URLs must not include credentials or URL data."),
+  })
+  .strict();
+
+const agentTemplateMcpStdioServerSchema = mcpStdioServerSchema
+  .extend({
+    args: z
+      .array(z.string())
+      .max(0, "Agent Template MCP stdio definitions must not include command arguments.")
+      .optional(),
+  })
+  .strict();
+
+export const agentTemplateMcpServerSchema = z.discriminatedUnion("transport", [
+  agentTemplateMcpStdioServerSchema,
+  agentTemplateMcpHttpServerSchema,
+  agentTemplateMcpSseServerSchema,
+]);
+export type AgentTemplateMcpServer = z.infer<typeof agentTemplateMcpServerSchema>;
 
 export const resourcePayloadSchema = z.union([
   repoResourcePayloadSchema,
@@ -135,13 +161,12 @@ export type ResourcePayload = z.infer<typeof resourcePayloadSchema>;
 
 function hasNoUrlCredentials(value: string): boolean {
   const parsed = new URL(value);
-  return parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "";
+  return parsed.username === "" && parsed.password === "";
 }
 
-function hasNoCredentialBearingArguments(args: readonly string[]): boolean {
-  const credentialMarker =
-    /(?:^|[^a-z0-9])(?:api[-_]?key|access[-_]?token|authorization|bearer|credential|password|passwd|secret)(?:$|[^a-z0-9])/i;
-  return args.every((argument) => !credentialMarker.test(argument));
+function hasNoAgentTemplateUrlCredentials(value: string): boolean {
+  const parsed = new URL(value);
+  return parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "";
 }
 
 const namedResourceInputShape = {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROMPT_APPEND_MAX_LENGTH } from "../schemas/agent-runtime-config.js";
 import {
   agentResourceBindingInputSchema,
+  agentTemplateMcpServerSchema,
   canonicalizeResourceRepoUrl,
   createTeamResourceSchema,
   validateEffectivePromptLength,
@@ -232,7 +233,7 @@ describe("resource schemas", () => {
     }
   });
 
-  it("rejects secret-bearing HTTP MCP resources", () => {
+  it("preserves Team MCP URL query and stdio args while rejecting structural secret fields", () => {
     expect(
       createTeamResourceSchema.safeParse({
         type: "mcp",
@@ -266,7 +267,7 @@ describe("resource schemas", () => {
           url: "https://docs.example/mcp?credential=fixture",
         },
       }).success,
-    ).toBe(false);
+    ).toBe(true);
     expect(
       createTeamResourceSchema.safeParse({
         type: "mcp",
@@ -278,7 +279,45 @@ describe("resource schemas", () => {
           args: ["--credential=fixture"],
         },
       }).success,
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("uses a strict no-data MCP contract for cross-Team Agent Templates", () => {
+    expect(
+      agentTemplateMcpServerSchema.safeParse({
+        name: "docs",
+        transport: "http",
+        url: "https://docs.example/mcp",
+      }).success,
+    ).toBe(true);
+    expect(
+      agentTemplateMcpServerSchema.safeParse({
+        name: "docs",
+        transport: "stdio",
+        command: "docs-mcp",
+        args: [],
+      }).success,
+    ).toBe(true);
+    for (const payload of [
+      {
+        name: "docs",
+        transport: "http",
+        url: "https://docs.example/mcp?mode=readonly",
+      },
+      {
+        name: "docs",
+        transport: "sse",
+        url: "https://docs.example/mcp#session",
+      },
+      {
+        name: "docs",
+        transport: "stdio",
+        command: "docs-mcp",
+        args: ["--mode=readonly"],
+      },
+    ]) {
+      expect(agentTemplateMcpServerSchema.safeParse(payload).success).toBe(false);
+    }
   });
 
   it("keeps the runtime prompt budget pinned to 32,000 characters", () => {

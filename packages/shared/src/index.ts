@@ -1147,6 +1147,8 @@ export {
   type AgentResourceBindingInput,
   type AgentResourceBindingMode,
   type AgentResourcesOutput,
+  type AgentTemplateMcpServer,
+  agentTemplateMcpServerSchema,
   type ConfirmTeamRepositories,
   type ConfirmTeamRepositoriesOutput,
   type CreateTeamResource,

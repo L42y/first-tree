@@ -9,6 +9,7 @@ import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
+import { agentTemplates } from "../db/schema/agent-templates.js";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
@@ -152,6 +153,7 @@ describe("Agent Templates", () => {
     });
     const consumer = await createConsumerAdmin(app, publisher);
     const mcpName = `docs_${crypto.randomUUID().slice(0, 8)}`;
+    const queryMcpName = `search_${crypto.randomUUID().slice(0, 8)}`;
     const officialMcp = await app.resourcesService.createTeamResource(
       publisher.organizationId,
       {
@@ -162,13 +164,42 @@ describe("Agent Templates", () => {
       },
       publisher.memberId,
     );
+    const officialQueryMcp = await app.resourcesService.createTeamResource(
+      publisher.organizationId,
+      {
+        type: "mcp",
+        name: "Official search",
+        defaultEnabled: "available",
+        payload: { name: queryMcpName, transport: "http", url: "https://official.example/mcp" },
+      },
+      publisher.memberId,
+    );
     const consumerMcp = await app.resourcesService.createTeamResource(
       consumer.organizationId,
       {
         type: "mcp",
         name: "Team docs",
         defaultEnabled: "recommended",
-        payload: { name: mcpName, transport: "stdio", command: "team-docs" },
+        payload: {
+          name: mcpName,
+          transport: "stdio",
+          command: "team-docs",
+          args: ["--mode=readonly"],
+        },
+      },
+      consumer.memberId,
+    );
+    const consumerQueryMcp = await app.resourcesService.createTeamResource(
+      consumer.organizationId,
+      {
+        type: "mcp",
+        name: "Team search",
+        defaultEnabled: "recommended",
+        payload: {
+          name: queryMcpName,
+          transport: "http",
+          url: "https://consumer.example/mcp?mode=readonly",
+        },
       },
       consumer.memberId,
     );
@@ -182,7 +213,7 @@ describe("Agent Templates", () => {
         summary: "First ordered behavior.",
         outcomes: [],
         customInstructions: "FIRST TEMPLATE INSTRUCTION",
-        resourceIds: [officialMcp.id],
+        resourceIds: [officialMcp.id, officialQueryMcp.id],
         sortOrder: 1,
       },
       publisher.memberId,
@@ -222,14 +253,23 @@ describe("Agent Templates", () => {
     expect(initialRuntime.payload.prompt.append.indexOf("SECOND TEMPLATE INSTRUCTION")).toBeLessThan(
       initialRuntime.payload.prompt.append.indexOf("FIRST TEMPLATE INSTRUCTION"),
     );
-    expect(initialRuntime.payload.mcpServers).toEqual([
-      expect.objectContaining({ name: mcpName, command: "team-docs" }),
-    ]);
+    expect(initialRuntime.payload.mcpServers).toHaveLength(2);
+    expect(initialRuntime.payload.mcpServers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: mcpName, command: "team-docs", args: ["--mode=readonly"] }),
+        expect.objectContaining({
+          name: queryMcpName,
+          url: "https://consumer.example/mcp?mode=readonly",
+        }),
+      ]),
+    );
     const effective = await app.resourcesService.resolveEffectiveResources(agentId);
     expect(effective.mcp).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ resourceId: consumerMcp.id, mode: "enabled" }),
         expect.objectContaining({ resourceId: officialMcp.id, source: "agent_template", mode: "replaced" }),
+        expect.objectContaining({ resourceId: consumerQueryMcp.id, mode: "enabled" }),
+        expect.objectContaining({ resourceId: officialQueryMcp.id, source: "agent_template", mode: "replaced" }),
       ]),
     );
 
@@ -647,27 +687,59 @@ describe("Agent Templates", () => {
     ).resolves.toMatchObject({ version: 3, templateIds: [legacyOnceId] });
   });
 
-  it("rejects credential-bearing official MCP create and update payloads with 400", async () => {
+  it("keeps permissive MCP Resources local and strictly guards cross-Team Template projection", async () => {
     const app = getApp();
     const publisher = await createTestAdmin(app, {
       username: `template-mcp-guard-${crypto.randomUUID().slice(0, 8)}`,
     });
-    const rejectedCreate = await inject(
-      app,
-      publisher.accessToken,
-      "POST",
-      `/api/v1/orgs/${publisher.organizationId}/resources`,
+    const consumer = await createConsumerAdmin(app, publisher);
+    const queryResource = await app.resourcesService.createTeamResource(
+      publisher.organizationId,
       {
         type: "mcp",
-        name: "Rejected endpoint",
+        name: "Query endpoint",
+        defaultEnabled: "available",
         payload: {
-          name: "rejected_endpoint",
+          name: "query_endpoint",
           transport: "http",
-          url: "https://mcp.example/service?credential=fixture",
+          url: "https://mcp.example/service?mode=readonly",
         },
       },
+      publisher.memberId,
     );
-    expect(rejectedCreate.statusCode).toBe(400);
+    const argsResource = await app.resourcesService.createTeamResource(
+      publisher.organizationId,
+      {
+        type: "mcp",
+        name: "Args endpoint",
+        defaultEnabled: "available",
+        payload: {
+          name: "args_endpoint",
+          transport: "stdio",
+          command: "args-endpoint",
+          args: ["--mode=readonly"],
+        },
+      },
+      publisher.memberId,
+    );
+    for (const [index, resource] of [queryResource, argsResource].entries()) {
+      const rejectedAttach = await inject(
+        app,
+        publisher.accessToken,
+        "POST",
+        `/api/v1/orgs/${publisher.organizationId}/agent-templates`,
+        {
+          id: `strict-rejected-${index}-${crypto.randomUUID().slice(0, 8)}`,
+          title: `Strict rejected ${index}`,
+          summary: "Must not project URL data or command arguments across Teams.",
+          outcomes: [],
+          customInstructions: "Safe instructions.",
+          resourceIds: [resource.id],
+          sortOrder: index,
+        },
+      );
+      expect(rejectedAttach.statusCode).toBe(400);
+    }
 
     const safe = await app.resourcesService.createTeamResource(
       publisher.organizationId,
@@ -679,15 +751,105 @@ describe("Agent Templates", () => {
       },
       publisher.memberId,
     );
-    const rejectedUpdate = await inject(app, publisher.accessToken, "PATCH", `/api/v1/resources/${safe.id}`, {
-      payload: {
+    const safeTemplateId = `strict-safe-${crypto.randomUUID().slice(0, 8)}`;
+    await app.agentTemplatesService.createTemplate(
+      publisher.organizationId,
+      {
+        id: safeTemplateId,
+        title: "Strict safe",
+        summary: "Uses a cross-Team safe MCP definition.",
+        outcomes: [],
+        customInstructions: "Use the safe endpoint.",
+        resourceIds: [safe.id],
+        sortOrder: 10,
+      },
+      publisher.memberId,
+    );
+    const createdAgent = await inject(
+      app,
+      consumer.accessToken,
+      "POST",
+      `/api/v1/orgs/${consumer.organizationId}/agents/from-agent-templates`,
+      {
+        name: `strict-safe-agent-${crypto.randomUUID().slice(0, 8)}`,
+        type: "agent",
+        clientId: consumer.clientId,
+        templateIds: [safeTemplateId],
+      },
+    );
+    expect(createdAgent.statusCode).toBe(201);
+    const agentId = createdAgent.json<{ uuid: string }>().uuid;
+
+    for (const payload of [
+      {
+        name: "safe_endpoint",
+        transport: "http",
+        url: "https://mcp.example/service?mode=readonly",
+      },
+      {
         name: "safe_endpoint",
         transport: "stdio",
         command: "safe-endpoint",
-        args: ["--credential=fixture"],
+        args: ["--mode=readonly"],
       },
+    ]) {
+      const rejectedUpdate = await inject(app, publisher.accessToken, "PATCH", `/api/v1/resources/${safe.id}`, {
+        payload,
+      });
+      expect(rejectedUpdate.statusCode).toBe(400);
+    }
+    expect((await app.resourcesService.getResource(safe.id)).payload).toEqual({
+      name: "safe_endpoint",
+      transport: "stdio",
+      command: "safe-endpoint",
     });
-    expect(rejectedUpdate.statusCode).toBe(400);
+    const safeRuntime = await app.resourcesService.resolveRuntimeConfig(await app.configService.get(agentId));
+    expect(safeRuntime.payload.mcpServers).toContainEqual(
+      expect.objectContaining({ name: "safe_endpoint", command: "safe-endpoint" }),
+    );
+
+    const legacyResource = await app.resourcesService.createTeamResource(
+      publisher.organizationId,
+      {
+        type: "mcp",
+        name: "Legacy query endpoint",
+        defaultEnabled: "available",
+        payload: {
+          name: "legacy_query_endpoint",
+          transport: "http",
+          url: "https://legacy.example/mcp?mode=readonly",
+        },
+      },
+      publisher.memberId,
+    );
+    const legacyTemplateId = `legacy-strict-${crypto.randomUUID().slice(0, 8)}`;
+    await app.db.insert(agentTemplates).values({
+      id: legacyTemplateId,
+      organizationId: publisher.organizationId,
+      title: "Legacy strict projection",
+      summary: "Simulates a row written before strict cross-Team validation.",
+      outcomes: [],
+      customInstructions: "Legacy instructions.",
+      resourceIds: [legacyResource.id],
+      status: "active",
+      sortOrder: 11,
+      createdBy: publisher.memberId,
+      updatedBy: publisher.memberId,
+    });
+    const catalog = await app.agentTemplatesService.listCatalog();
+    expect(catalog.items.find((item) => item.id === legacyTemplateId)?.mcp).toEqual([]);
+    await app.db
+      .update(agentConfigs)
+      .set({ templateIds: [safeTemplateId, legacyTemplateId] })
+      .where(eq(agentConfigs.agentId, agentId));
+    const legacyEffective = await app.resourcesService.resolveEffectiveResources(agentId);
+    expect(legacyEffective.unavailable).toContainEqual({
+      type: "mcp",
+      id: legacyResource.id,
+      reason: "invalid_mcp_payload",
+    });
+    const legacyRuntime = await app.resourcesService.resolveRuntimeConfig(await app.configService.get(agentId));
+    expect(legacyRuntime.payload.mcpServers.some((server) => server.name === "legacy_query_endpoint")).toBe(false);
   });
 
   it("serializes catalog-wide MCP renames so only one conflicting write commits", async () => {

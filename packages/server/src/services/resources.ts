@@ -2,6 +2,7 @@ import type { AgentRuntimeConfig } from "@first-tree/shared";
 import {
   type AgentResourceBindingInput,
   type AgentResourcesOutput,
+  agentTemplateMcpServerSchema,
   type ConfirmTeamRepositories,
   type ConfirmTeamRepositoriesOutput,
   type CreateTeamResource,
@@ -706,7 +707,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
 
         let mode: EffectiveResourceRow["mode"] = "enabled";
         if (resource.type === "mcp") {
-          const parsed = noSecretMcpServerSchema.safeParse(resource.payload);
+          const parsed = agentTemplateMcpServerSchema.safeParse(resource.payload);
           const consumerResourceId = parsed.success
             ? enabledConsumerMcpByName.get(parsed.data.name.toLowerCase())
             : undefined;
@@ -809,7 +810,10 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     }
     for (const row of mcpRows) {
       if (row.mode !== "enabled") continue;
-      const parsed = noSecretMcpServerSchema.safeParse(row.payload);
+      const parsed =
+        row.source === "agent_template"
+          ? agentTemplateMcpServerSchema.safeParse(row.payload)
+          : noSecretMcpServerSchema.safeParse(row.payload);
       if (parsed.success) continue;
       row.mode = "unavailable";
       row.unavailableReason = "invalid_mcp_payload";
@@ -939,7 +943,13 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
   }
 
   function runtimeMcp(rows: EffectiveResourceRow[]): NoSecretMcpServer[] {
-    return rows.filter((row) => row.mode === "enabled").map((row) => noSecretMcpServerSchema.parse(row.payload));
+    return rows
+      .filter((row) => row.mode === "enabled")
+      .map((row) =>
+        row.source === "agent_template"
+          ? agentTemplateMcpServerSchema.parse(row.payload)
+          : noSecretMcpServerSchema.parse(row.payload),
+      );
   }
 
   async function resolveRuntimeConfig(config: AgentRuntimeConfig): Promise<AgentRuntimeConfig> {
