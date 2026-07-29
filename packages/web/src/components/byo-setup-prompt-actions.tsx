@@ -156,7 +156,10 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
           if (!nextOpen) closePrompt();
         }}
       >
-        <DialogContent className="max-h-[calc(100vh-var(--sp-8))] max-w-3xl overflow-y-auto">
+        <DialogContent
+          data-clarity-mask="true"
+          className="max-h-[calc(100vh-var(--sp-8))] max-w-3xl overflow-y-auto"
+        >
           <DialogHeader>
             <DialogTitle>Review setup prompt</DialogTitle>
             <DialogDescription style={{ color: "var(--fg-2)" }}>

@@ -93,6 +93,7 @@ describe("personal Context access", () => {
     const preview = promptPreview();
     expect(preview?.value).toContain("'first-tree-staging' login 'short-lived-code'");
     expect(preview?.value).toContain("context enable --provider 'claude-code' --team 'org-1'");
+    expect(preview?.closest('[data-clarity-mask="true"]')).not.toBeNull();
     expect(document.body.textContent).toContain("Nothing runs until you paste them into Claude Code or Codex.");
     expect(document.body.textContent).toContain("Contains a temporary sign-in code. Don't share it.");
 
