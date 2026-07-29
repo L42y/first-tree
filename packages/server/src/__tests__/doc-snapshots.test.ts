@@ -101,6 +101,9 @@ describe("validateMessageAttachmentRefs", () => {
       where() {
         return chain;
       },
+      for() {
+        return chain;
+      },
       async limit() {
         return row ? [{ id, ...row }] : [];
       },

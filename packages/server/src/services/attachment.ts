@@ -7,12 +7,14 @@ import { agents } from "../db/schema/agents.js";
 import { attachments } from "../db/schema/attachments.js";
 import { messages } from "../db/schema/messages.js";
 import { resources } from "../db/schema/resources.js";
-import { BadRequestError, NotFoundError } from "../errors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 
 export const MAX_ORGANIZATION_ATTACHMENT_BYTES = 2 * 1024 * 1024 * 1024;
 export const MAX_ORGANIZATION_ATTACHMENTS = 1_000;
+export const MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER = 3;
 export const ORPHAN_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1_000;
+const LEGACY_BACKFILL_CLAIM_STALE_MS = 15 * 60 * 1_000;
 
 export type AttachmentRow = typeof attachments.$inferSelect;
 
@@ -46,6 +48,7 @@ export async function createAttachment(
   await db.transaction(async (tx) => {
     const targetDb = tx as unknown as Database;
     await lockOrganizationAttachmentQuota(targetDb, input.organizationId);
+    await assertCallerUploadConcurrency(targetDb, input.organizationId, input.uploadedBy);
     await assertOrganizationQuota(targetDb, input.organizationId, {
       additionalObjects: 1,
       additionalBytes: reservedBytes,
@@ -132,6 +135,25 @@ function validateCreateInput(input: CreateAttachmentInput): void {
   }
 }
 
+async function assertCallerUploadConcurrency(db: Database, organizationId: string, uploadedBy: string): Promise<void> {
+  const [usage] = await db
+    .select({ activeCount: sql<number>`count(*)` })
+    .from(attachments)
+    .where(
+      and(
+        eq(attachments.organizationId, organizationId),
+        eq(attachments.uploadedBy, uploadedBy),
+        eq(attachments.lifecycleState, "uploading"),
+      ),
+    );
+  const activeCount = Number(usage?.activeCount ?? 0);
+  if (activeCount >= MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER) {
+    throw new ConflictError(
+      `Caller already has ${MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER} attachment uploads in progress`,
+    );
+  }
+}
+
 async function lockOrganizationAttachmentQuota(db: Database, organizationId: string): Promise<void> {
   await db.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext('organization_attachment_quota'), hashtext(${organizationId}))`,
@@ -194,6 +216,32 @@ export async function loadAttachmentMeta(db: AttachmentReader, id: string): Prom
     })
     .from(attachments)
     .where(and(eq(attachments.id, id), eq(attachments.lifecycleState, "ready")))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Validate a reference while holding a lock that conflicts with orphan
+ * cleanup. When called inside the message write transaction, the lock remains
+ * held until the message row is committed.
+ */
+export async function loadAttachmentMetaForReference(db: AttachmentReader, id: string): Promise<AttachmentMeta | null> {
+  const [row] = await db
+    .select({
+      id: attachments.id,
+      organizationId: attachments.organizationId,
+      objectKey: attachments.objectKey,
+      lifecycleState: attachments.lifecycleState,
+      mimeType: attachments.mimeType,
+      filename: attachments.filename,
+      sizeBytes: attachments.sizeBytes,
+      uploadedBy: attachments.uploadedBy,
+      createdAt: attachments.createdAt,
+      updatedAt: attachments.updatedAt,
+    })
+    .from(attachments)
+    .where(and(eq(attachments.id, id), eq(attachments.lifecycleState, "ready")))
+    .for("key share")
     .limit(1);
   return row ?? null;
 }
@@ -313,7 +361,12 @@ export async function sweepOrphanAttachments(
   const candidates = await db
     .select({ id: attachments.id })
     .from(attachments)
-    .where(or(eq(attachments.lifecycleState, "deleting"), lt(attachments.updatedAt, cutoff)))
+    .where(
+      or(
+        eq(attachments.lifecycleState, "deleting"),
+        and(inArray(attachments.lifecycleState, ["uploading", "ready"]), lt(attachments.updatedAt, cutoff)),
+      ),
+    )
     .limit(batchSize);
   let deleted = 0;
   for (const candidate of candidates) {
@@ -336,23 +389,27 @@ export async function backfillLegacyAttachments(
   blobStore: AttachmentBlobStore,
   batchSize = 25,
 ): Promise<{ migrated: number; skipped: number }> {
+  const staleCutoff = new Date(Date.now() - LEGACY_BACKFILL_CLAIM_STALE_MS);
   const rows = await db
     .select({
       id: attachments.id,
       organizationId: attachments.organizationId,
       uploadedBy: attachments.uploadedBy,
-      data: attachments.data,
-      sizeBytes: attachments.sizeBytes,
     })
     .from(attachments)
     .where(
-      and(isNotNull(attachments.data), or(isNull(attachments.objectKey), eq(attachments.lifecycleState, "uploading"))),
+      and(
+        isNotNull(attachments.data),
+        or(
+          isNull(attachments.objectKey),
+          and(eq(attachments.lifecycleState, "uploading"), lt(attachments.updatedAt, staleCutoff)),
+        ),
+      ),
     )
     .limit(batchSize);
   let migrated = 0;
   let skipped = 0;
   for (const row of rows) {
-    if (!row.data) continue;
     let organizationId = row.organizationId;
     if (!organizationId) {
       const [uploader] = await db
@@ -367,22 +424,55 @@ export async function backfillLegacyAttachments(
       continue;
     }
     const objectKey = attachmentObjectKey(organizationId, row.id);
+    const claimStartedAt = new Date();
+    const [claimed] = await db
+      .update(attachments)
+      .set({ organizationId, objectKey, lifecycleState: "uploading", updatedAt: claimStartedAt })
+      .where(
+        and(
+          eq(attachments.id, row.id),
+          isNotNull(attachments.data),
+          or(
+            isNull(attachments.objectKey),
+            and(eq(attachments.lifecycleState, "uploading"), lt(attachments.updatedAt, staleCutoff)),
+          ),
+        ),
+      )
+      .returning({ data: attachments.data, sizeBytes: attachments.sizeBytes });
+    if (!claimed?.data) {
+      skipped++;
+      continue;
+    }
     try {
-      await db
-        .update(attachments)
-        .set({ organizationId, objectKey, lifecycleState: "uploading", updatedAt: new Date() })
-        .where(and(eq(attachments.id, row.id), isNotNull(attachments.data)));
-      await blobStore.put(objectKey, Readable.from([row.data]), row.sizeBytes);
-      await db
+      await blobStore.put(objectKey, Readable.from([claimed.data]), claimed.sizeBytes);
+      const [completed] = await db
         .update(attachments)
         .set({ data: null, lifecycleState: "ready", updatedAt: new Date() })
-        .where(eq(attachments.id, row.id));
-      migrated++;
+        .where(
+          and(
+            eq(attachments.id, row.id),
+            eq(attachments.objectKey, objectKey),
+            eq(attachments.lifecycleState, "uploading"),
+            eq(attachments.updatedAt, claimStartedAt),
+            isNotNull(attachments.data),
+          ),
+        )
+        .returning({ id: attachments.id });
+      if (completed) migrated++;
+      else skipped++;
     } catch {
       await db
         .update(attachments)
         .set({ objectKey: null, lifecycleState: "ready", updatedAt: new Date() })
-        .where(eq(attachments.id, row.id));
+        .where(
+          and(
+            eq(attachments.id, row.id),
+            eq(attachments.objectKey, objectKey),
+            eq(attachments.lifecycleState, "uploading"),
+            eq(attachments.updatedAt, claimStartedAt),
+            isNotNull(attachments.data),
+          ),
+        );
       skipped++;
     }
   }

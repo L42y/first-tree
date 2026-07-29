@@ -66,6 +66,7 @@ export const attachments = pgTable(
   },
   (table) => [
     index("attachments_org_state_idx").on(table.organizationId, table.lifecycleState),
+    index("attachments_state_updated_idx").on(table.lifecycleState, table.updatedAt),
     index("attachments_uploaded_by_idx").on(table.uploadedBy),
     index("attachments_created_at_idx").on(table.createdAt),
   ],

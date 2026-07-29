@@ -1,10 +1,22 @@
+import type { Readable } from "node:stream";
 import { ATTACHMENT_FILENAME_HEADER, ATTACHMENT_MIME_HEADER, MAX_ATTACHMENT_BYTES } from "@first-tree/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
+import type { Database } from "../db/connection.js";
 import { attachments } from "../db/schema/attachments.js";
+import { chats } from "../db/schema/chats.js";
+import { messages } from "../db/schema/messages.js";
 import { organizations } from "../db/schema/organizations.js";
-import { attachmentObjectKey, backfillLegacyAttachments, createAttachment } from "../services/attachment.js";
+import {
+  attachmentObjectKey,
+  backfillLegacyAttachments,
+  createAttachment,
+  deleteAttachmentIfUnreferenced,
+  MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER,
+} from "../services/attachment.js";
+import { type AttachmentBlobStore, MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
+import { validateMessageAttachmentRefs } from "../services/doc-snapshots.js";
 import { ensureMembership } from "../services/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
@@ -80,6 +92,7 @@ describe("attachments route — upload + capability download", () => {
       sizeBytes: bytes.byteLength,
       data: bytes,
       uploadedBy: admin.humanAgentUuid,
+      updatedAt: new Date(Date.now() - 16 * 60 * 1_000),
     });
 
     await expect(backfillLegacyAttachments(app.db, app.attachmentBlobStore)).resolves.toMatchObject({ migrated: 1 });
@@ -87,6 +100,175 @@ describe("attachments route — upload + capability download", () => {
     expect(stored).toMatchObject({ lifecycleState: "ready", data: null });
     const download = await getAttachment(app, admin, id);
     expect(download.rawPayload.equals(bytes)).toBe(true);
+  });
+
+  it("does not let a failed stale backfill claim overwrite a newer successful claim", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `backfill-cas-${crypto.randomUUID().slice(0, 6)}` });
+    const id = crypto.randomUUID();
+    const bytes = Buffer.from("legacy-race");
+    await app.db.insert(attachments).values({
+      id,
+      organizationId: admin.organizationId,
+      objectKey: null,
+      lifecycleState: "ready",
+      mimeType: "application/octet-stream",
+      filename: "legacy-race.bin",
+      sizeBytes: bytes.byteLength,
+      data: bytes,
+      uploadedBy: admin.humanAgentUuid,
+    });
+
+    let signalFirstPut!: () => void;
+    const firstPutStarted = new Promise<void>((resolve) => {
+      signalFirstPut = resolve;
+    });
+    let releaseFirstPut!: () => void;
+    const firstPutReleased = new Promise<void>((resolve) => {
+      releaseFirstPut = resolve;
+    });
+    const failingStore: AttachmentBlobStore = {
+      async put(_key, body) {
+        for await (const _chunk of body) {
+          // Drain the claimed bytes before exposing the interleaving point.
+        }
+        signalFirstPut();
+        await firstPutReleased;
+        throw new Error("simulated stale claimant failure");
+      },
+      async get() {
+        throw new Error("not used");
+      },
+      async delete() {},
+    };
+
+    const staleClaim = backfillLegacyAttachments(app.db, failingStore);
+    await firstPutStarted;
+    await app.db
+      .update(attachments)
+      .set({ updatedAt: new Date(Date.now() - 16 * 60 * 1_000) })
+      .where(eq(attachments.id, id));
+
+    const successfulStore = new MemoryAttachmentBlobStore();
+    await expect(backfillLegacyAttachments(app.db, successfulStore)).resolves.toMatchObject({ migrated: 1 });
+    releaseFirstPut();
+    await expect(staleClaim).resolves.toMatchObject({ skipped: 1 });
+
+    const [stored] = await app.db.select().from(attachments).where(eq(attachments.id, id));
+    expect(stored).toMatchObject({
+      objectKey: attachmentObjectKey(admin.organizationId, id),
+      lifecycleState: "ready",
+      data: null,
+    });
+    expect(successfulStore.objects.get(attachmentObjectKey(admin.organizationId, id))).toEqual(bytes);
+  });
+
+  it("bounds simultaneous upload streams for one caller using shared lifecycle rows", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `upload-bound-${crypto.randomUUID().slice(0, 6)}` });
+    let startedCount = 0;
+    let signalLimitReached!: () => void;
+    const limitReached = new Promise<void>((resolve) => {
+      signalLimitReached = resolve;
+    });
+    let releaseUploads!: () => void;
+    const uploadsReleased = new Promise<void>((resolve) => {
+      releaseUploads = resolve;
+    });
+    class BlockingBlobStore extends MemoryAttachmentBlobStore {
+      override async put(key: string, body: Readable): Promise<void> {
+        startedCount += 1;
+        if (startedCount === MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER) signalLimitReached();
+        if (startedCount > MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER) {
+          throw new Error("unexpected upload stream admitted");
+        }
+        await uploadsReleased;
+        await super.put(key, body);
+      }
+    }
+    const store = new BlockingBlobStore();
+    const input = (index: number) => ({
+      organizationId: admin.organizationId,
+      mimeType: "application/octet-stream",
+      filename: `parallel-${index}.bin`,
+      body: Buffer.from(`parallel-${index}`),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    const active = Array.from({ length: MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER }, (_, index) =>
+      createAttachment(app.db, store, input(index)),
+    );
+
+    await limitReached;
+    await expect(createAttachment(app.db, store, input(MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER))).rejects.toThrow(
+      `already has ${MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER}`,
+    );
+    expect(startedCount).toBe(MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER);
+
+    releaseUploads();
+    const completed = await Promise.all(active);
+    expect(completed).toHaveLength(MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER);
+    expect(completed.every((row) => row.lifecycleState === "ready")).toBe(true);
+  });
+
+  it("holds attachment reference locks until the message transaction commits", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `ref-lock-${crypto.randomUUID().slice(0, 6)}` });
+    const stored = await createAttachment(app.db, app.attachmentBlobStore, {
+      organizationId: admin.organizationId,
+      mimeType: "text/markdown",
+      filename: "locked.md",
+      body: Buffer.from("locked"),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    const chatId = uuidv7();
+    await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
+    const metadata = {
+      attachments: [
+        {
+          attachmentId: stored.id,
+          kind: "document" as const,
+          mimeType: stored.mimeType,
+          filename: stored.filename,
+          size: stored.sizeBytes,
+          sha256: "a".repeat(64),
+          source: { path: "locked.md" },
+        },
+      ],
+    };
+
+    await app.db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Database;
+      await validateMessageAttachmentRefs(tx, metadata);
+      const lockError = await app.db
+        .transaction(async (cleanupTx) => {
+          await cleanupTx.execute(sql`SET LOCAL lock_timeout = '100ms'`);
+          await cleanupTx
+            .select({ id: attachments.id })
+            .from(attachments)
+            .where(eq(attachments.id, stored.id))
+            .for("update");
+        })
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(lockError).toBeInstanceOf(Error);
+      const wrapped = lockError as Error & { cause?: unknown };
+      const causeMessage = wrapped.cause instanceof Error ? wrapped.cause.message : String(wrapped.cause ?? "");
+      expect(`${wrapped.message} ${causeMessage}`).toMatch(/lock timeout/);
+      await tx.insert(messages).values({
+        id: uuidv7(),
+        chatId,
+        senderId: admin.humanAgentUuid,
+        format: "markdown",
+        content: "message keeps the attachment",
+        metadata,
+        source: "api",
+      });
+    });
+
+    await expect(deleteAttachmentIfUnreferenced(app.db, app.attachmentBlobStore, stored.id)).resolves.toBe(false);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, stored.id))).toHaveLength(1);
   });
 
   it("capability model: any authenticated user with the id can download", async () => {
