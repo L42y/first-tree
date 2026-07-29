@@ -263,22 +263,26 @@ describe("bootstrap singleton guard with a real BrowserRouter", () => {
     expect(locationText()).toBe("/");
     expect(container.querySelector('[data-testid="home-surface"]')).not.toBeNull();
 
-    // Bubble-phase witness registered BEFORE the guard can ever engage —
-    // the same position React Router's own popstate listener holds. The
-    // capture interceptor must stop a pop before this witness can see it.
+    // Router-side witness, registered AFTER the bootstrap singleton (which
+    // `renderBrowserShell` installed before the React root) — the same
+    // position React Router's own popstate listener holds in production.
+    // `popstate` fires AT the window target, so listeners run in
+    // REGISTRATION ORDER: the singleton sees a locked pop first and calls
+    // `stopImmediatePropagation()`, and no later-registered listener — this
+    // witness included — may ever observe it.
     const bubbleWitness = vi.fn();
     window.addEventListener("popstate", bubbleWitness);
     try {
       // Build real history: / → /?review=need-you. The owner mounts and
-      // publishes the attempt lock; the guard captures URL + history index.
+      // publishes the attempt lock; the store pins URL + history index.
       await click(buttonByText(container, "open review"));
       expect(locationText()).toBe("/?review=need-you");
       expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="browser-locked"]')?.textContent).toBe("true");
       expect(isAskAgentNavLocked()).toBe(true);
 
-      // Real browser Back. Without the capture interceptor, the router's own
-      // bubble-phase listener would process the pop first and commit the exit
+      // Real browser Back. Without the earlier-registered singleton, the
+      // router's listener would process the pop and commit the exit
       // (unmounting the owner, whose cleanup removes the lock).
       await act(async () => {
         window.history.back();
@@ -300,7 +304,7 @@ describe("bootstrap singleton guard with a real BrowserRouter", () => {
       expect(container.querySelector('[data-testid="owner-surface"]')).not.toBeNull();
 
       // The attempt lifts: the same Back now commits normally (the router's
-      // bubble listener sees the pop again).
+      // listener sees the pop again).
       await act(async () => {
         clearAskAgentNavLocks();
       });
