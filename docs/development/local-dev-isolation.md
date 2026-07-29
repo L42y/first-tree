@@ -70,7 +70,11 @@ home instead:
 FIRST_TREE_HOME="$(mktemp -d)" first-tree-dev daemon start --foreground
 ```
 
-Distinct temporary dev homes can run concurrently.
+Distinct temporary dev homes can run concurrently, including while the ordinary
+dev background service remains active under its separately configured home.
+Foreground preflight compares the canonical current home with the home pinned
+into the installed supervisor definition before asking the operator to stop the
+service; the per-home owner lock remains the final authority.
 
 ## How channel identity is wired
 

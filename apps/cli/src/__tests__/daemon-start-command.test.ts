@@ -23,6 +23,7 @@ const coreMocks = vi.hoisted(() => ({
   createApiNameResolver: vi.fn(),
   createExecuteUpdate: vi.fn(),
   createLoggerRuntimeOutput: vi.fn(),
+  daemonRuntimeHomesEqual: vi.fn(),
   declineUpdate: vi.fn(),
   ensureActiveRootClientIdPersisted: vi.fn(),
   ensureFreshAccessToken: vi.fn(),
@@ -164,6 +165,7 @@ beforeEach(() => {
   coreMocks.isDaemonRuntimeOwnershipError.mockImplementation(
     (error: unknown) => typeof error === "object" && error !== null && "daemonOwnership" in error,
   );
+  coreMocks.daemonRuntimeHomesEqual.mockImplementation((left: string, right: string) => left === right);
   coreMocks.resolveClientRuntimeStopReason.mockReturnValue(undefined);
   coreMocks.isServiceSupported.mockReturnValue(false);
   coreMocks.getClientServiceStatus.mockReturnValue({
@@ -342,6 +344,7 @@ describe("daemon start command", () => {
       label: "first-tree-dev",
       detail: "pid 123",
       logDir: "/logs",
+      configuredHome: home,
     });
 
     await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
@@ -351,6 +354,30 @@ describe("daemon start command", () => {
     expect(coreMocks.acquireDaemonRuntimeOwnership).not.toHaveBeenCalled();
     expect(coreMocks.promptMissingFields).not.toHaveBeenCalled();
     expect(coreMocks.ClientRuntime).not.toHaveBeenCalled();
+  });
+
+  it("lets an explicit foreground home run beside an active service for a different home", async () => {
+    coreMocks.isServiceSupported.mockReturnValue(true);
+    coreMocks.getClientServiceStatus.mockReturnValue({
+      platform: "launchd",
+      state: "active",
+      label: "first-tree-dev",
+      detail: "pid 123",
+      logDir: "/logs",
+      configuredHome: join(home, "service-home"),
+    });
+
+    await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(output()).not.toContain("Cannot start a foreground daemon while the launchd service is active");
+    expect(coreMocks.acquireDaemonRuntimeOwnership).toHaveBeenCalledWith({
+      channel: "dev",
+      home,
+      mode: "foreground",
+      version: "0.0.0-test",
+    });
+    expect(coreMocks.promptMissingFields).toHaveBeenCalled();
+    expect(coreMocks.ClientRuntime).toHaveBeenCalled();
   });
 
   it("starts an inactive service and prints log hints", async () => {

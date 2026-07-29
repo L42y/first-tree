@@ -1013,8 +1013,11 @@ another process owns stale-lock recovery.
 After a crash, a later start only recovers the lock when OS process inspection
 strictly proves the PID is gone or has a different process-start identity. The
 old record is renamed beside the lock as a `.stale.*` diagnostic and creation
-is retried once. Malformed, unreadable, or unverifiable locks fail closed and
-are never deleted automatically. Normal cleanup removes the lock only when its
+is retried once. The same evidence rule applies to the recovery guard: a live
+guard blocks startup, while a guard whose PID/start identity is strictly stale
+is quarantined as `.recovery.stale.*` before recovery continues. Malformed,
+unreadable, or unverifiable locks and recovery guards fail closed and are never
+deleted automatically. Normal cleanup removes the lock or guard only when its
 `instanceId` still belongs to the exiting process.
 
 Files under `<home>/state/client-runtimes/` remain runtime markers for

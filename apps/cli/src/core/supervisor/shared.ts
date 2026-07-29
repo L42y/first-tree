@@ -109,6 +109,12 @@ function unescapeXml(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
+/** Read the home pinned into a generated launchd plist. */
+export function extractFirstTreeHomeFromPlist(xml: string): string | undefined {
+  const match = xml.match(/<key>FIRST_TREE_HOME<\/key>\s*<string>([^<]*)<\/string>/u);
+  return match?.[1] ? unescapeXml(match[1]) : undefined;
+}
+
 /** Lift proxy env vars baked into a previous launchd plist (pre-compat units). */
 export function extractProxyFromPlist(xml: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -119,16 +125,27 @@ export function extractProxyFromPlist(xml: string): Record<string, string> {
   return out;
 }
 
+function unquoteSystemdEnvironmentValue(raw: string): string {
+  let value = raw.trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return value;
+}
+
+/** Read the home pinned into a generated systemd unit. */
+export function extractFirstTreeHomeFromSystemd(text: string): string | undefined {
+  const match = text.match(/^Environment=FIRST_TREE_HOME=(.*)$/mu);
+  return match ? unquoteSystemdEnvironmentValue(match[1]) : undefined;
+}
+
 /** Lift proxy env vars baked into a previous systemd unit (pre-compat units). */
 export function extractProxyFromSystemd(text: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const key of PROXY_ENV_KEYS) {
     const match = text.match(new RegExp(`^Environment=${key}=(.*)$`, "m"));
     if (!match) continue;
-    let value = match[1].trim();
-    if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-    }
+    const value = unquoteSystemdEnvironmentValue(match[1]);
     if (value.length > 0) out[key] = value;
   }
   return out;

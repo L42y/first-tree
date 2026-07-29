@@ -1,7 +1,16 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -18,7 +27,7 @@ import {
 } from "../core/daemon-runtime-ownership.js";
 
 type ChildMessage = {
-  event: "ready" | "acquired" | "rejected" | "error";
+  event: "ready" | "acquired" | "recovery-guard-created" | "rejected" | "error";
   pid: number;
   mode?: "foreground" | "service";
   message?: string;
@@ -55,6 +64,26 @@ function parseOwner(lockPath: string): DaemonRuntimeOwner {
   return JSON.parse(readFileSync(lockPath, "utf8")) as DaemonRuntimeOwner;
 }
 
+function recoveryGuardPath(home: string): string {
+  return `${daemonRuntimeOwnershipPath(home)}.recovery`;
+}
+
+function writeRecoveryGuard(
+  home: string,
+  guard: {
+    lockVersion: 1;
+    instanceId: string;
+    pid: number;
+    processStartIdentity: string;
+    startedAt: string;
+  },
+): string {
+  const path = recoveryGuardPath(home);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(guard, null, 2)}\n`, "utf8");
+  return path;
+}
+
 function waitForChildMessage(child: ChildProcessWithoutNullStreams): () => Promise<ChildMessage> {
   const queued: ChildMessage[] = [];
   const waiting: Array<(message: ChildMessage) => void> = [];
@@ -79,7 +108,7 @@ function waitForChildMessage(child: ChildProcessWithoutNullStreams): () => Promi
 }
 
 function waitForExit(child: ChildProcessWithoutNullStreams): Promise<number | null> {
-  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(child.exitCode);
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code) => resolve(code));
@@ -175,7 +204,7 @@ describe("daemon runtime ownership", () => {
     const first = acquire(home);
     expect(first.release()).toBe(true);
     expect(first.release()).toBe(false);
-    expect(inspectDaemonRuntimeOwnership(home).state).toBe("absent");
+    expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({ state: "absent" });
 
     const second = acquire(home, "dev", "service");
     expect(second.owner.instanceId).not.toBe(first.owner.instanceId);
@@ -200,6 +229,99 @@ describe("daemon runtime ownership", () => {
     expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
       state: "live",
       owner: { instanceId: recovered.owner.instanceId },
+    });
+  });
+
+  it("keeps a live recovery guard fail-closed with holder diagnostics", () => {
+    const home = join(root, "live-recovery");
+    const probe = acquire(home);
+    expect(probe.release()).toBe(true);
+    const recoveryPath = writeRecoveryGuard(home, {
+      lockVersion: 1,
+      instanceId: probe.owner.instanceId,
+      pid: probe.owner.pid,
+      processStartIdentity: probe.owner.processStartIdentity,
+      startedAt: probe.owner.startedAt,
+    });
+
+    try {
+      acquireDaemonRuntimeOwnership({ channel: "dev", mode: "foreground", version: "test", home });
+      throw new Error("expected live recovery guard rejection");
+    } catch (error) {
+      expect(isDaemonRuntimeOwnershipError(error)).toBe(true);
+      if (!isDaemonRuntimeOwnershipError(error)) return;
+      expect(error.code).toBe(DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES.recoveryBusy);
+      expect(error.message).toContain(`pid ${process.pid}`);
+      expect(error.message).toContain(recoveryPath);
+    }
+    expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
+      state: "untrusted",
+      reason: expect.stringContaining("recovery is in progress"),
+    });
+  });
+
+  it("recovers a guard abandoned by a process crash before stale-owner cleanup", async () => {
+    const home = join(root, "crashed-recovery");
+    const original = acquire(home);
+    const staleOwner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:recovery-owner",
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, staleOwner);
+
+    const fixture = fileURLToPath(new URL("./fixtures/daemon-runtime-owner-child.ts", import.meta.url));
+    const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const crashed = spawn(process.execPath, ["--import", "tsx", fixture, home, "seed-recovery"], {
+      cwd: cliRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const next = waitForChildMessage(crashed);
+
+    try {
+      expect((await next()).event).toBe("ready");
+      crashed.stdin.write("go\n");
+      const created = await next();
+      expect(created.event).toBe("recovery-guard-created");
+      crashed.kill("SIGKILL");
+      expect(await waitForExit(crashed)).toBeNull();
+
+      expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
+        state: "untrusted",
+        reason: expect.stringContaining("is abandoned"),
+      });
+
+      const recovered = acquire(home, "dev", "service");
+      expect(recovered.quarantinedRecoveryGuardPath).toBeTruthy();
+      expect(existsSync(recovered.quarantinedRecoveryGuardPath ?? "")).toBe(true);
+      expect(JSON.parse(readFileSync(recovered.quarantinedRecoveryGuardPath ?? "", "utf8"))).toMatchObject({
+        pid: created.pid,
+      });
+      expect(recovered.quarantinedLockPath).toBeTruthy();
+      expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
+        state: "live",
+        owner: { instanceId: recovered.owner.instanceId },
+      });
+    } finally {
+      if (crashed.exitCode === null && crashed.signalCode === null) crashed.kill("SIGKILL");
+    }
+  });
+
+  it("fails closed without changing a corrupted recovery guard", () => {
+    const home = join(root, "corrupt-recovery");
+    const recoveryPath = recoveryGuardPath(home);
+    mkdirSync(dirname(recoveryPath), { recursive: true });
+    writeFileSync(recoveryPath, "{ definitely-not-json", "utf8");
+
+    expect(() => acquireDaemonRuntimeOwnership({ channel: "dev", mode: "foreground", version: "test", home })).toThrow(
+      /recovery guard .* cannot be trusted: invalid JSON/u,
+    );
+    expect(readFileSync(recoveryPath, "utf8")).toBe("{ definitely-not-json");
+    expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
+      state: "untrusted",
+      reason: expect.stringContaining("recovery guard"),
     });
   });
 
@@ -265,5 +387,59 @@ describe("daemon runtime ownership", () => {
     expect(winnerExit).toBe(0);
     expect(loserExit).toBe(2);
     expect(inspectDaemonRuntimeOwnership(home).state).toBe("absent");
+  });
+
+  it("isolates one stale recovery guard under concurrent acquisition without admitting two owners", async () => {
+    const home = join(root, "concurrent-recovery");
+    const original = acquire(home);
+    const staleOwner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:concurrent-recovery",
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, staleOwner);
+    writeRecoveryGuard(home, {
+      lockVersion: 1,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:recovery-guard",
+      startedAt: new Date().toISOString(),
+    });
+
+    const fixture = fileURLToPath(new URL("./fixtures/daemon-runtime-owner-child.ts", import.meta.url));
+    const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const first = spawn(process.execPath, ["--import", "tsx", fixture, home, "service"], {
+      cwd: cliRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const second = spawn(process.execPath, ["--import", "tsx", fixture, home, "foreground"], {
+      cwd: cliRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const nextFirst = waitForChildMessage(first);
+    const nextSecond = waitForChildMessage(second);
+
+    expect((await nextFirst()).event).toBe("ready");
+    expect((await nextSecond()).event).toBe("ready");
+    first.stdin.write("go\n");
+    second.stdin.write("go\n");
+
+    const results = await Promise.all([nextFirst(), nextSecond()]);
+    expect(results.map((result) => result.event).sort()).toEqual(["acquired", "rejected"]);
+    const winner = results[0]?.event === "acquired" ? first : second;
+    const loser = winner === first ? second : first;
+    winner.stdin.write("release\n");
+
+    const [winnerExit, loserExit] = await Promise.all([waitForExit(winner), waitForExit(loser)]);
+    expect(winnerExit).toBe(0);
+    expect(loserExit).toBe(2);
+    const finalInspection = inspectDaemonRuntimeOwnership(home);
+    const stateFiles = readdirSync(dirname(original.lockPath));
+    expect(finalInspection, JSON.stringify({ finalInspection, stateFiles }, null, 2)).toMatchObject({
+      state: "absent",
+    });
+    expect(stateFiles.some((name) => name.includes(".recovery.stale."))).toBe(true);
   });
 });

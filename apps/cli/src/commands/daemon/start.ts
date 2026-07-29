@@ -35,6 +35,7 @@ import {
   createApiNameResolver,
   createExecuteUpdate,
   createLoggerRuntimeOutput,
+  daemonRuntimeHomesEqual,
   declineUpdate,
   ensureActiveRootClientIdPersisted,
   ensureFreshAccessToken,
@@ -131,7 +132,8 @@ export function registerDaemonStartCommand(daemon: Command): void {
         //   1. service active           → refuse, point at `daemon restart`
         //   2. service installed/inactive → systemctl/launchctl start
         //   3. service not installed    → fall through to inline run
-        //   4. --foreground             → always inline (debug / --no-start users)
+        //   4. --foreground             → inline unless the active service owns
+        //                                  the same canonical home
         // The supervisor itself reaches this code with --no-interactive and
         // FIRST_TREE_SERVICE_MODE=1 set; we treat that combo as "supervisor
         // invoking us, run inline" so we don't recursively call systemctl
@@ -146,7 +148,10 @@ export function registerDaemonStartCommand(daemon: Command): void {
             writeLine(`  Complete the root systemd migration out-of-service with \`${binName} login <code>\`.\n\n`);
             process.exit(1);
           }
-          if (svc.state === "active") {
+          const serviceOwnsCurrentHome =
+            svc.state === "active" &&
+            daemonRuntimeHomesEqual(svc.configuredHome ?? channelConfig.defaultHome, defaultHome());
+          if (serviceOwnsCurrentHome) {
             writeLine(
               `\n  Cannot start a foreground daemon while the ${svc.platform} service is active${
                 svc.detail ? ` (${svc.detail})` : ""

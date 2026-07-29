@@ -137,6 +137,7 @@ export {
   acquireDaemonRuntimeOwnership,
   DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES,
   DaemonRuntimeOwnershipError,
+  daemonRuntimeHomesEqual,
   daemonRuntimeOwnershipPath,
   formatDaemonRuntimeOwner,
   formatDaemonRuntimeOwnerSummary,

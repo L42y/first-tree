@@ -52,8 +52,11 @@ Exercise the following branches, resetting only run-cell state between them:
   time.
 - Start the real background service, then attempt `daemon start --foreground`
   for the same home. Confirm the foreground preflight gives actionable stop
-  guidance. Also arrange a race where service-state observation alone is
-  insufficient and verify the atomic home lock is still the final decision.
+  guidance. While that service remains active, start foreground with a
+  different explicit home and confirm it is allowed to reach its own owner
+  lock and WebSocket runtime. Also arrange a race where service-state
+  observation alone is insufficient and verify the atomic home lock is still
+  the final decision.
 - Compete a foreground owner with a supervisor child. The child must log one
   holder summary and settle without repeated child restarts or repeated
   collision log lines.
@@ -62,6 +65,10 @@ Exercise the following branches, resetting only run-cell state between them:
 - Hard-kill a winning process without cleanup. The next start must prove the
   old PID/start identity stale, rename the old lock to a `.stale.*` diagnostic,
   retry once, and become the sole owner.
+- Hard-kill a process after it creates the stale-lock `.recovery` guard but
+  before cleanup. Race two later starts against that home. They must prove and
+  quarantine the abandoned guard, and exactly one may become the owner; a live
+  or unverifiable recovery guard must remain fail-closed.
 - Replace the lock with malformed or incomplete content after proving no
   daemon owns the test home. Startup must refuse without deleting or rewriting
   the damaged file, and `daemon status` / `daemon doctor` must identify the
