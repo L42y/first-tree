@@ -122,6 +122,19 @@ export const AGENT_SELECTOR_HEADER = "x-agent-id";
 /** Header used on agent-scoped HTTP calls to prove the current runtime WS bind. */
 export const AGENT_RUNTIME_SESSION_HEADER = "x-agent-runtime-session";
 
+/**
+ * Stable HTTP error codes for bind-scoped runtime proof failures. Callers
+ * must route these separately from provider credentials: a fresh `agent:bind`
+ * can mint a new proof without asking the operator to re-authenticate the
+ * provider.
+ */
+export const AGENT_RUNTIME_SESSION_ERROR_CODES = {
+  MISSING: "AGENT_RUNTIME_SESSION_MISSING",
+  INVALID: "AGENT_RUNTIME_SESSION_INVALID",
+} as const;
+export type AgentRuntimeSessionErrorCode =
+  (typeof AGENT_RUNTIME_SESSION_ERROR_CODES)[keyof typeof AGENT_RUNTIME_SESSION_ERROR_CODES];
+
 // -- Extended Agent Presence --
 
 export const agentPresenceSchema = z.object({

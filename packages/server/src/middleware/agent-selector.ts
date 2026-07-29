@@ -1,4 +1,8 @@
-import { AGENT_RUNTIME_SESSION_HEADER, AGENT_SELECTOR_HEADER } from "@first-tree/shared";
+import {
+  AGENT_RUNTIME_SESSION_ERROR_CODES,
+  AGENT_RUNTIME_SESSION_HEADER,
+  AGENT_SELECTOR_HEADER,
+} from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Database } from "../db/connection.js";
@@ -117,12 +121,16 @@ export function agentSelectorHook(db: Database, options: AgentSelectorOptions = 
       if (typeof runtimeSessionToken === "string" && runtimeSessionToken.length > 0) {
         if (!(await validateAgentRuntimeSession(db, row.uuid, row.clientId, runtimeSessionToken))) {
           if (options.enforceRuntimeSession) {
-            throw new ForbiddenError("Invalid agent runtime session");
+            throw new ForbiddenError("Invalid agent runtime session", {
+              code: AGENT_RUNTIME_SESSION_ERROR_CODES.INVALID,
+            });
           }
           warnLegacyRuntimeHttpAccepted("invalid_token");
         }
       } else if (options.enforceRuntimeSession) {
-        throw new ForbiddenError(`Missing ${AGENT_RUNTIME_SESSION_HEADER} header`);
+        throw new ForbiddenError(`Missing ${AGENT_RUNTIME_SESSION_HEADER} header`, {
+          code: AGENT_RUNTIME_SESSION_ERROR_CODES.MISSING,
+        });
       } else {
         warnLegacyRuntimeHttpAccepted("missing_token");
       }

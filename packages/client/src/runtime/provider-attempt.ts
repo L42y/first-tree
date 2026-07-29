@@ -144,6 +144,7 @@ export class ProviderAttempt {
 
 export function isHardFailureCategory(category: ProviderFailureCategory): boolean {
   return (
+    category === "runtime_transport" ||
     category === "credential" ||
     category === "capability" ||
     category === "configuration" ||
@@ -152,6 +153,7 @@ export function isHardFailureCategory(category: ProviderFailureCategory): boolea
 }
 
 function failureCategoryScore(category: ProviderFailureCategory): number {
+  if (category === "runtime_transport") return 500;
   if (isHardFailureCategory(category)) return 400;
   if (category === "provider_capacity") return 300;
   if (category === "transient_transport") return 200;

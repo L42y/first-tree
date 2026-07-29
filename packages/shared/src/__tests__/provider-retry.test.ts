@@ -88,6 +88,19 @@ describe("provider retry event messages", () => {
       statusReasonFromProviderRetryEvent(
         retryPayload({
           event: "provider_failure_terminal",
+          category: "runtime_transport",
+          reasonCode: "runtime_session_invalid",
+          userSeverity: "error",
+        }),
+      ),
+    ).toMatchObject({
+      kind: "terminal",
+      label: "Runtime connection interrupted",
+    });
+    expect(
+      statusReasonFromProviderRetryEvent(
+        retryPayload({
+          event: "provider_failure_terminal",
           category: "provider_capacity",
           reasonCode: "capacity_wait_required",
           userSeverity: "error",

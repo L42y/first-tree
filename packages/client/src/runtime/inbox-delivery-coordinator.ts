@@ -288,6 +288,42 @@ export class InboxDeliveryCoordinator {
     void this.markRecoveryDebt(chatId, reason);
   }
 
+  /**
+   * Retain custody without asking the current socket to redeliver. Runtime
+   * proof failures cannot make progress on that socket: both the failed turn
+   * and its durable HTTP notice use the same stale proof. A successful
+   * `agent:bound` is the only boundary that may release this hold.
+   */
+  async holdTurnForBindRecovery(
+    chatId: string,
+    messages: SessionMessage | readonly SessionMessage[],
+    reason: string,
+  ): Promise<boolean> {
+    const entryIds = this.messageEntryIds(chatId, messages);
+    if (entryIds.size === 0) return false;
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger?.entries.some((entry) => entryIds.has(entry.entryId))) return false;
+    await this.markRecoveryDebt(chatId, reason, { requestNow: false });
+    return true;
+  }
+
+  /**
+   * The server resets delivered rows before it emits `agent:bound`, then
+   * drains them after the frame. Clear only the proof-fault ledger here so
+   * the subsequent redelivery can establish fresh local ownership.
+   */
+  completeBindRecovery(chatId: string): void {
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger) return;
+    this.clearEntriesForRecoverySuccess(chatId);
+    const current = this.ledger(chatId);
+    current.recoveryDebt = "none";
+    current.recoveryActivationReady = true;
+    current.recoveryWindowOpen = false;
+    this.config.log.info({ chatId }, "bind recovery released held inbox work");
+    this.emitWorkChanged(chatId);
+  }
+
   async prepareSuspend(chatId: string, reason: string): Promise<void> {
     const ledger = this.ledgers.get(chatId);
     if (!ledger || ledger.entries.length === 0) return;

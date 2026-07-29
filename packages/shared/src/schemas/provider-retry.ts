@@ -5,6 +5,7 @@ export const providerRetryScopeSchema = z.enum(["session_start", "session_resume
 export type ProviderRetryScope = z.infer<typeof providerRetryScopeSchema>;
 
 export const providerFailureCategorySchema = z.enum([
+  "runtime_transport",
   "transient_transport",
   "provider_capacity",
   "credential",
@@ -111,6 +112,7 @@ export function statusReasonFromProviderRetryEvent(payload: ProviderRetryEventPa
 }
 
 function statusReasonLabel(kind: AgentStatusReason["kind"], payload: ProviderRetryEventPayload): string {
+  if (payload.category === "runtime_transport") return "Runtime connection interrupted";
   if (kind === "waiting") {
     if (payload.category === "provider_capacity") return "Waiting for provider capacity";
     return "Waiting to retry provider";

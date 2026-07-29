@@ -618,6 +618,97 @@ describe("Agent client WS branch fakes", () => {
     });
   });
 
+  it("opens a same-socket recovery circuit after repeated identical debt without progress", async () => {
+    mockSuccessfulBindServices();
+    const recoverSpy = vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValue({ resetEntryIds: [101] });
+    const { handler } = routeHarness(
+      queuedDb([
+        [{ id: "user_1", status: "active" }],
+        [{ userId: "user_1", retiredAt: null }],
+        ...Array.from({ length: 12 }, () => [activeAgentRow()]),
+      ]),
+    );
+    const socket = new FakeSocket();
+    await bindAgent(socket, handler);
+
+    for (const ref of ["recover-1", "recover-2"]) {
+      await emitMessage(socket, {
+        type: "inbox:recover",
+        ref,
+        agentId: "agent_1",
+        chatId: "chat_no_progress",
+      });
+      expect(socket.sent).toContainEqual({
+        type: "inbox:recover:accepted",
+        ref,
+        agentId: "agent_1",
+        chatId: "chat_no_progress",
+        resetCount: 1,
+      });
+    }
+
+    await emitMessage(socket, {
+      type: "inbox:recover",
+      ref: "recover-3",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+    });
+    expect(socket.sent).toContainEqual({
+      type: "inbox:recover:rejected",
+      ref: "recover-3",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+      reason: "recover_failed",
+    });
+
+    await emitMessage(socket, {
+      type: "inbox:recover",
+      ref: "recover-4",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+    });
+    expect(socket.sent).toContainEqual({
+      type: "inbox:recover:rejected",
+      ref: "recover-4",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+      reason: "recover_failed",
+    });
+    expect(recoverSpy).toHaveBeenCalledTimes(3);
+    expect(inboxService.claimBacklogForPushForChat).toHaveBeenCalledTimes(2);
+
+    vi.mocked(inboxService.ackEntryByIdForBoundAgents).mockResolvedValueOnce({
+      ok: true,
+      throughEntry: inboxDbRow({ chatId: "chat_no_progress" }),
+      disposition: "acked",
+      ackedCount: 1,
+      ackedEntryIds: [101],
+    });
+    await emitMessage(socket, { type: "inbox:ack", entryId: 101, ref: "ack-progress" });
+    expect(socket.sent).toContainEqual({
+      type: "inbox:ack:accepted",
+      entryId: 101,
+      ref: "ack-progress",
+      disposition: "acked",
+      ackedCount: 1,
+    });
+
+    await emitMessage(socket, {
+      type: "inbox:recover",
+      ref: "recover-after-progress",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+    });
+    expect(socket.sent).toContainEqual({
+      type: "inbox:recover:accepted",
+      ref: "recover-after-progress",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+      resetCount: 1,
+    });
+    expect(recoverSpy).toHaveBeenCalledTimes(4);
+  });
+
   it("stops a drain when the socket closes after backlog is claimed", async () => {
     mockSuccessfulBindServices();
     const { handler, notifier } = routeHarness(
