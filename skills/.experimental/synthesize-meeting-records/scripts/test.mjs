@@ -401,6 +401,38 @@ for (const [unsafePacket, pattern] of [
   ],
   [packet(completeBundle, { reason: "Contact person@example.invalid" }), /forbidden email address/u],
   [
+    packet(completeBundle, { reason: "Call +1 (415) 555-2671 for follow-up." }),
+    /packet\.reason contains a forbidden phone number/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [item({ statement: "Owner phone 415-555-2671 coordinates the follow-up." })],
+    }),
+    /packet\.items\[0\]\.statement contains a forbidden phone number/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [item({ context: "Confirm the result by calling (415) 555-2671." })],
+    }),
+    /packet\.items\[0\]\.context contains a forbidden phone number/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [item({ attribution: "Call +1 415 555 2671" })],
+    }),
+    /packet\.items\[0\]\.attribution contains a forbidden phone number/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [
+        item({
+          evidence: [{ artifact_id: "minutes", location_hint: "Call 415.555.2671" }],
+        }),
+      ],
+    }),
+    /packet\.items\[0\]\.evidence\[0\]\.location_hint contains a forbidden phone number/u,
+  ],
+  [
     packet(completeBundle, {
       items: [item({ statement: "Credential sk-proj-1234567890abcdef was supplied." })],
     }),
@@ -433,6 +465,25 @@ assert.doesNotThrow(() =>
     completeBundle,
     packet(completeBundle, {
       reason: "An A/B experiment and/or staged review remains valid on 2026/07/29.",
+    }),
+  ),
+);
+
+const identifierBundle = bundle({
+  artifacts: [{ ...bundle().artifacts[0], artifact_id: "artifact-415-555-2671" }],
+});
+assert.doesNotThrow(() =>
+  validateMeetingAnalysisPacket(
+    identifierBundle,
+    packet(identifierBundle, {
+      reason: "An A/B experiment and/or staged review remains valid on 2026/07/29.",
+      items: [
+        item({
+          statement: "Version v4.15.5 processed 2671 records in 2026.",
+          context: "Ordinary counts are 415, 555, and 2671.",
+          evidence: [{ artifact_id: "artifact-415-555-2671", location_hint: "Section 4.15.5" }],
+        }),
+      ],
     }),
   ),
 );

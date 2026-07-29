@@ -44,6 +44,9 @@ const FORBIDDEN_KEY_PARTS = [
   "secret",
 ];
 
+const HIGH_CONFIDENCE_PHONE_NUMBER =
+  /(?<![\p{L}\p{N}_-])(?:\+1[\s.-]?)?(?:\([2-9]\d{2}\)|[2-9]\d{2})[\s.-][2-9]\d{2}[\s.-]\d{4}(?![\p{L}\p{N}_-])/u;
+
 function fail(message) {
   throw new Error(message);
 }
@@ -259,6 +262,7 @@ function scanPrivateOutput(value, path = "packet") {
     [/\b(?:ou|on|oc|cli)_[A-Za-z0-9_-]{8,}\b/u, "provider identifier"],
     [/\b(?:boxcn|docx?|doxcn|fldcn|shtcn|wiki)[A-Za-z0-9_-]{8,}\b/iu, "provider document token"],
     [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu, "email address"],
+    [HIGH_CONFIDENCE_PHONE_NUMBER, "phone number"],
     [/\b(?:sk(?:-proj)?|ghp|gho|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/iu, "secret"],
     [/\b(?:basic|bearer)\s+[A-Za-z0-9._~+=-]{8,}\b/iu, "credential"],
     [/(?:[$€£¥￥]\s?\d[\d,.]*|\b(?:USD|EUR|GBP|CNY|RMB)\s+\d[\d,.]*)/iu, "exact currency amount"],
