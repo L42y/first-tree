@@ -86,45 +86,6 @@ function assistantEvent(text: string) {
   };
 }
 
-function claudeToolUseEvent(id: string, name: "Bash" | "Read", input: Record<string, unknown>) {
-  return {
-    type: "codex_event",
-    event: {
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [{ type: "tool_use", id, name, input }],
-      },
-    },
-  };
-}
-
-function claudeToolResultEvent(id: string, isError = false) {
-  return {
-    type: "codex_event",
-    event: {
-      type: "user",
-      message: {
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: id, is_error: isError, content: "done" }],
-      },
-    },
-  };
-}
-
-function claudeAssistantEvent(text: string) {
-  return {
-    type: "codex_event",
-    event: {
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text }],
-      },
-    },
-  };
-}
-
 function passingMetrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
   return {
     categoriesObserved: true,
@@ -197,19 +158,6 @@ describe("standalone synthesize-meeting-records grader", () => {
     ).toBe(false);
     expect(skillFileReadObserved([commandEvent(`sed -n '1,220p' ${skillPath}`)])).toBe(true);
     expect(skillFileReadObserved([nativeReadEvent(skillPath)])).toBe(true);
-    expect(
-      skillFileReadObserved([
-        claudeToolUseEvent("skill-read", "Read", { file_path: skillPath }),
-        claudeToolResultEvent("skill-read"),
-      ]),
-    ).toBe(true);
-    expect(
-      skillFileReadObserved([
-        claudeToolUseEvent("skill-bash", "Bash", { command: `sed -n '1,220p' ${skillPath}` }),
-        claudeToolResultEvent("skill-bash"),
-      ]),
-    ).toBe(true);
-    expect(skillFileReadObserved([claudeToolUseEvent("failed-read", "Read", { file_path: skillPath })])).toBe(false);
   });
 
   it("scans intermediate assistant-visible messages but excludes command output", () => {
@@ -217,7 +165,6 @@ describe("standalone synthesize-meeting-records grader", () => {
     const events = [
       assistantEvent("Intermediate VERBATIM-CANARY-SIX-314159 leak."),
       commandEvent("printf VERBATIM-CANARY-SIX-314159"),
-      claudeAssistantEvent("Claude also exposed VERBATIM-CANARY-SIX-314159."),
       assistantEvent("Clean final response."),
     ];
     const visibleText = assistantVisibleText(events);

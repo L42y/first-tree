@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { runCommand } from "../../core/commands.js";
 import { appendEvent, readEvents } from "../../core/events.js";
 import { createRunPaths } from "../../core/paths.js";
-import { runAgentProvider } from "../../core/provider/index.js";
+import { runCodexProvider } from "../../core/provider/codex.js";
 import { createEvalReporter } from "../../core/reporter.js";
 import {
   type PartialRawAccessMonitor,
@@ -98,18 +98,18 @@ export async function runSynthesizeMeetingRecordsCase(
   let fixtureValidation = initialFixtureValidation;
   const runnerResult = await (async () => {
     try {
-      return await runAgentProvider(
+      const exitCode = await runCodexProvider(
         {
+          bin: options.codexBin,
           caseId: evalCase.id,
-          claudeBin: options.claudeBin,
-          codexBin: options.codexBin,
           model: options.model,
           prompt: evalCase.prompt,
-          provider: options.provider,
+          provider: "codex",
           verbose: options.verbose,
         },
         { paths, reporter },
       );
+      return { exitCode };
     } finally {
       fixtureValidation = finalizeFixtureValidationAfterAgent(
         paths,

@@ -1,7 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AgentProviderName } from "../../core/provider/types.js";
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "./cases.js";
 import { runSynthesizeMeetingRecordsCase } from "./runner.js";
 import { buildBatchSummary, formatSummaryTable } from "./summary.js";
@@ -13,13 +12,13 @@ function usage(): string {
   pnpm --filter @first-tree/skill-evals eval:standalone:synthesize-meeting-records -- --case <id>
 
 This is a human-directed model-backed evaluation. Do not run it implicitly.
+This standalone gate runs Codex only. The Skill contract itself remains
+provider-agnostic.
 
 Options:
   --case <id>            Run one case.
-  --provider <name>      codex or claude. Defaults to codex.
   --model <model>        Model override.
   --codex-bin <path>     Codex binary. Defaults to CODEX_BIN or codex.
-  --claude-bin <path>    Claude binary. Defaults to CLAUDE_BIN, CLAUDE_CODE_EXECUTABLE, or claude.
   --json                 Print JSON instead of a table.
   --verbose              Print live progress.
   --help                 Show this help.
@@ -32,20 +31,13 @@ function readOptionValue(args: readonly string[], index: number, optionName: str
   return value;
 }
 
-function parseProvider(value: string): AgentProviderName {
-  if (value === "codex" || value === "claude") return value;
-  throw new Error(`Unknown provider: ${value}`);
-}
-
 export function parseArgs(args: readonly string[]): CliOptions {
   const normalized = args.filter((arg) => arg !== "--");
   const options: CliOptions = {
     caseId: null,
-    claudeBin: process.env.CLAUDE_BIN ?? process.env.CLAUDE_CODE_EXECUTABLE ?? "claude",
     codexBin: process.env.CODEX_BIN ?? "codex",
     json: false,
     model: process.env.CODEX_MODEL ?? null,
-    provider: "codex",
     verbose: false,
   };
   for (let index = 0; index < normalized.length; index += 1) {
@@ -67,11 +59,6 @@ export function parseArgs(args: readonly string[]): CliOptions {
       index += 1;
       continue;
     }
-    if (arg === "--provider") {
-      options.provider = parseProvider(readOptionValue(normalized, index, "--provider"));
-      index += 1;
-      continue;
-    }
     if (arg === "--model") {
       options.model = readOptionValue(normalized, index, "--model");
       index += 1;
@@ -79,11 +66,6 @@ export function parseArgs(args: readonly string[]): CliOptions {
     }
     if (arg === "--codex-bin") {
       options.codexBin = readOptionValue(normalized, index, "--codex-bin");
-      index += 1;
-      continue;
-    }
-    if (arg === "--claude-bin") {
-      options.claudeBin = readOptionValue(normalized, index, "--claude-bin");
       index += 1;
       continue;
     }

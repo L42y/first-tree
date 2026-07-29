@@ -12,12 +12,6 @@ import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEval
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 const CONTENT_READ_COMMANDS = new Set(["cat", "grep", "head", "nl", "rg", "sed", "tail"]);
 
-type ClaudeToolUse = {
-  id: string;
-  input: Record<string, unknown>;
-  name: string;
-};
-
 function eventType(event: Record<string, unknown>): string | null {
   return typeof event.type === "string" ? event.type : null;
 }
@@ -36,65 +30,6 @@ function nativeFileReadPaths(event: unknown): readonly string[] {
   return path === null ? [] : [path];
 }
 
-function claudeContentBlocks(event: unknown, envelopeType: "assistant" | "user"): readonly Record<string, unknown>[] {
-  const payload = codexEventPayload(event);
-  if (payload === null || payload.type !== envelopeType || !isRecord(payload.message)) return [];
-  const content = payload.message.content;
-  return Array.isArray(content) ? content.filter(isRecord) : [];
-}
-
-function claudeToolUses(events: readonly unknown[]): readonly ClaudeToolUse[] {
-  const uses: ClaudeToolUse[] = [];
-  for (const event of events) {
-    for (const block of claudeContentBlocks(event, "assistant")) {
-      if (
-        block.type === "tool_use" &&
-        typeof block.id === "string" &&
-        typeof block.name === "string" &&
-        isRecord(block.input)
-      ) {
-        uses.push({ id: block.id, input: block.input, name: block.name });
-      }
-    }
-  }
-  return uses;
-}
-
-function successfulClaudeToolUseIds(events: readonly unknown[]): ReadonlySet<string> {
-  const ids = new Set<string>();
-  for (const event of events) {
-    for (const block of claudeContentBlocks(event, "user")) {
-      if (block.type === "tool_result" && typeof block.tool_use_id === "string" && block.is_error !== true) {
-        ids.add(block.tool_use_id);
-      }
-    }
-  }
-  return ids;
-}
-
-function successfulClaudeToolUses(events: readonly unknown[]): readonly ClaudeToolUse[] {
-  const successfulIds = successfulClaudeToolUseIds(events);
-  return claudeToolUses(events).filter((use) => successfulIds.has(use.id));
-}
-
-function normalizedClaudeToolName(value: string): string {
-  return value.split(/[:.]/u).at(-1)?.toLowerCase() ?? value.toLowerCase();
-}
-
-function claudeReadPath(use: ClaudeToolUse): string | null {
-  if (normalizedClaudeToolName(use.name) !== "read") return null;
-  return typeof use.input.file_path === "string"
-    ? use.input.file_path
-    : typeof use.input.path === "string"
-      ? use.input.path
-      : null;
-}
-
-function claudeBashCommand(use: ClaudeToolUse): string | null {
-  if (normalizedClaudeToolName(use.name) !== "bash") return null;
-  return typeof use.input.command === "string" ? use.input.command : null;
-}
-
 function normalizedPath(value: string): string {
   return value.replace(/\\/gu, "/").replace(/^(?:\.\/)+/u, "");
 }
@@ -111,10 +46,7 @@ function commandReadPaths(command: string): readonly string[] {
 }
 
 function isSkillPath(path: string): boolean {
-  return (
-    pathMatches(path, `.agents/skills/${SKILL_NAME}/SKILL.md`) ||
-    pathMatches(path, `.claude/skills/${SKILL_NAME}/SKILL.md`)
-  );
+  return pathMatches(path, `.agents/skills/${SKILL_NAME}/SKILL.md`);
 }
 
 function commandReadsSkill(command: string): boolean {
@@ -127,18 +59,6 @@ function nativeSkillReadObserved(events: readonly unknown[]): boolean {
 
 function successfulCodexCommands(events: readonly unknown[]): readonly string[] {
   return events.map(successfulCommand).filter((command): command is string => command !== null);
-}
-
-function successfulClaudeCommands(events: readonly unknown[]): readonly string[] {
-  return successfulClaudeToolUses(events)
-    .map(claudeBashCommand)
-    .filter((command): command is string => command !== null);
-}
-
-function successfulClaudeReadPaths(events: readonly unknown[]): readonly string[] {
-  return successfulClaudeToolUses(events)
-    .map(claudeReadPath)
-    .filter((path): path is string => path !== null);
 }
 
 function successfulCommand(event: unknown): string | null {
@@ -187,18 +107,11 @@ function collectText(value: unknown): string[] {
   return texts;
 }
 
-function claudeAssistantText(event: unknown): readonly string[] {
-  return claudeContentBlocks(event, "assistant")
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string);
-}
-
 function assistantTexts(events: readonly unknown[]): readonly string[] {
   const texts: string[] = [];
   for (const event of events) {
     if (!isRecord(event) || eventType(event) !== "codex_event") continue;
     texts.push(...collectText(event.event));
-    texts.push(...claudeAssistantText(event));
   }
   return texts;
 }
@@ -208,11 +121,7 @@ export function assistantVisibleText(events: readonly unknown[]): string {
 }
 
 export function skillFileReadObserved(events: readonly unknown[]): boolean {
-  return (
-    nativeSkillReadObserved(events) ||
-    successfulClaudeReadPaths(events).some(isSkillPath) ||
-    [...successfulCodexCommands(events), ...successfulClaudeCommands(events)].some(commandReadsSkill)
-  );
+  return nativeSkillReadObserved(events) || successfulCodexCommands(events).some(commandReadsSkill);
 }
 
 function sourceBaselineHead(events: readonly unknown[]): string | null {

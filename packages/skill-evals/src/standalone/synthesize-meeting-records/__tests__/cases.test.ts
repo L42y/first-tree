@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
+import { parseArgs } from "../index.js";
 
 describe("standalone synthesize-meeting-records cases", () => {
   it("covers each required model-owned behavior", () => {
@@ -36,5 +37,12 @@ describe("standalone synthesize-meeting-records cases", () => {
       expect(evalCase.prompt.toLowerCase()).not.toContain("for this eval");
       expect(evalCase.prompt.toLowerCase()).not.toContain("use the skill");
     }
+  });
+
+  it("keeps the executable standalone gate Codex-only", () => {
+    expect(parseArgs([])).toMatchObject({ codexBin: "codex" });
+    expect(parseArgs([])).not.toHaveProperty("provider");
+    expect(() => parseArgs(["--provider", "claude"])).toThrow("Unknown option: --provider");
+    expect(() => parseArgs(["--claude-bin", "claude"])).toThrow("Unknown option: --claude-bin");
   });
 });

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,14 +28,9 @@ function installStandaloneSkill(repoRoot: string, workspacePath: string): string
   if (!existsSync(skillPath)) throw new Error(`Missing standalone skill: ${sourceDir}`);
 
   const agentsDir = join(workspacePath, ".agents", "skills", SKILL_NAME);
-  const claudeDir = join(workspacePath, ".claude", "skills");
-  const claudeLink = join(claudeDir, SKILL_NAME);
   rmSync(agentsDir, { force: true, recursive: true });
   mkdirSync(dirname(agentsDir), { recursive: true });
   cpSync(sourceDir, agentsDir, { recursive: true });
-  rmSync(claudeLink, { force: true, recursive: true });
-  mkdirSync(claudeDir, { recursive: true });
-  symlinkSync(join("..", "..", ".agents", "skills", SKILL_NAME), claudeLink, "dir");
   return readFileSync(skillPath, "utf8");
 }
 

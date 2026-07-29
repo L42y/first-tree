@@ -1,4 +1,3 @@
-import type { AgentProviderName } from "../../core/provider/types.js";
 import type { CommandResult } from "../../core/types.js";
 
 export type MeetingFixtureMode = "six-categories" | "later-override" | "ai-only" | "partial-source";
@@ -25,11 +24,9 @@ export type MeetingRecordsEvalCase = {
 
 export type CliOptions = {
   caseId: string | null;
-  claudeBin: string;
   codexBin: string;
   json: boolean;
   model: string | null;
-  provider: AgentProviderName;
   verbose: boolean;
 };
 

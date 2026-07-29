@@ -35,6 +35,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
       expect(existsSync(join(paths.workspacePath, ".agents", "skills", "synthesize-meeting-records", "SKILL.md"))).toBe(
         true,
       );
+      expect(existsSync(join(paths.workspacePath, ".claude", "skills", "synthesize-meeting-records"))).toBe(false);
       expect(existsSync(join(paths.workspacePath, "context-tree"))).toBe(false);
       expect(readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8")).toContain("`synthesize-meeting-records`");
     } finally {

@@ -27,6 +27,9 @@ Run `node scripts/test.mjs`. Cover:
 The repository-local standalone harness installs this experimental Skill into
 an isolated workspace. It does not register the Skill as a First Tree
 Client/core payload and does not expose a Context Tree or downstream writer.
+The executable gate currently runs Codex only because its partial-source
+isolation depends on the Codex sandbox boundary. This does not narrow the
+provider-agnostic Skill contract or the meeting artifacts it can analyze.
 Run it only with explicit human instruction:
 
 ```sh
