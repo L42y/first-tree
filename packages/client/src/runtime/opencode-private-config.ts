@@ -3,10 +3,12 @@ import {
   chmodSync,
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -38,8 +40,18 @@ type HandlerGenerationJournal = Readonly<{
 }>;
 
 export type OpenCodePrivateConfigLease = Readonly<{
-  runtimeRoot: string;
+  materialize: (configContent: string) => OpenCodePrivateConfigMaterialization;
   close: () => Promise<void>;
+}>;
+
+export type OpenCodePrivateConfigMaterialization = Readonly<{
+  configPath: string;
+  cleanup: () => void;
+}>;
+
+type FileIdentity = Readonly<{
+  dev: number;
+  ino: number;
 }>;
 
 /**
@@ -64,6 +76,7 @@ export async function acquireOpenCodePrivateConfigLease(input: {
   const lockPath = join(callerParent, LOCK_FILENAME);
   const lock = await acquireWorkspaceFileLock(lockPath, { timeoutMs: 10_000 });
   const runtimeRoot = join(callerParent, `handler-${input.handlerId}`);
+  let handlerIdentity: FileIdentity | null = null;
 
   try {
     assertSafeDirectoryChain(workspaceRoot, callerParent);
@@ -84,7 +97,7 @@ export async function acquireOpenCodePrivateConfigLease(input: {
     if (entries.length >= MAX_JOURNAL_ENTRIES) {
       throw new Error("OpenCode private-config generation journal exceeded its safety bound");
     }
-    createHandlerChild(workspaceRoot, callerParent, input.handlerId);
+    handlerIdentity = createHandlerChild(workspaceRoot, callerParent, input.handlerId);
     entries.push({
       handlerId: input.handlerId,
       pid: process.pid,
@@ -96,11 +109,62 @@ export async function acquireOpenCodePrivateConfigLease(input: {
     await lock.release();
   }
 
+  if (!handlerIdentity) {
+    throw new Error("OpenCode private-config handler generation was not created");
+  }
+  const ownedHandlerIdentity = handlerIdentity;
+  const activeProjectionDirectories = new Map<string, FileIdentity>();
   let closed = false;
   return {
-    runtimeRoot,
+    materialize: (configContent) => {
+      if (closed) throw new Error("OpenCode private-config lease is closed");
+      assertHandlerChildIdentity(workspaceRoot, callerParent, input.handlerId, ownedHandlerIdentity);
+      const configDirectory = mkdtempSync(join(runtimeRoot, "turn-"));
+      const directoryIdentity = directoryIdentityAt(configDirectory, "projection directory");
+      let retained = false;
+      try {
+        assertHandlerChildIdentity(workspaceRoot, callerParent, input.handlerId, ownedHandlerIdentity);
+        assertDirectoryIdentity(configDirectory, directoryIdentity, "projection directory");
+        chmodSync(configDirectory, 0o700);
+        const configPath = join(configDirectory, "opencode.json");
+        writeConfigFileNoFollow(configPath, configContent, () => {
+          assertHandlerChildIdentity(workspaceRoot, callerParent, input.handlerId, ownedHandlerIdentity);
+          assertDirectoryIdentity(configDirectory, directoryIdentity, "projection directory");
+        });
+        assertHandlerChildIdentity(workspaceRoot, callerParent, input.handlerId, ownedHandlerIdentity);
+        assertDirectoryIdentity(configDirectory, directoryIdentity, "projection directory");
+        activeProjectionDirectories.set(configDirectory, directoryIdentity);
+        retained = true;
+        let cleaned = false;
+        return {
+          configPath,
+          cleanup: () => {
+            if (cleaned) return;
+            assertHandlerChildIdentity(workspaceRoot, callerParent, input.handlerId, ownedHandlerIdentity);
+            assertDirectoryIdentity(configDirectory, directoryIdentity, "projection directory");
+            removeDirectoryTreeNoFollow(configDirectory);
+            activeProjectionDirectories.delete(configDirectory);
+            cleaned = true;
+          },
+        };
+      } finally {
+        if (!retained) {
+          removeProjectionDirectoryIfOwned(
+            workspaceRoot,
+            callerParent,
+            input.handlerId,
+            ownedHandlerIdentity,
+            configDirectory,
+            directoryIdentity,
+          );
+        }
+      }
+    },
     close: async () => {
       if (closed) return;
+      if (activeProjectionDirectories.size > 0) {
+        throw new Error("OpenCode private-config lease still has active projections");
+      }
       assertSafeDirectoryChain(workspaceRoot, callerParent);
       const closeLock = await acquireWorkspaceFileLock(lockPath, { timeoutMs: 10_000 });
       try {
@@ -116,6 +180,7 @@ export async function acquireOpenCodePrivateConfigLease(input: {
         if (!owned) {
           throw new Error("OpenCode private-config generation ownership changed before shutdown");
         }
+        assertHandlerChildIdentity(workspaceRoot, callerParent, input.handlerId, ownedHandlerIdentity);
         removeHandlerChild(workspaceRoot, callerParent, input.handlerId);
         writeJournalAtomic(journalPath, {
           schemaVersion: 1,
@@ -193,7 +258,7 @@ function assertSafeDirectoryChain(workspaceRoot: string, target: string): void {
   }
 }
 
-function createHandlerChild(workspaceRoot: string, callerParent: string, handlerId: string): void {
+function createHandlerChild(workspaceRoot: string, callerParent: string, handlerId: string): FileIdentity {
   assertSafeDirectoryChain(workspaceRoot, callerParent);
   const child = join(callerParent, `handler-${handlerId}`);
   try {
@@ -207,6 +272,71 @@ function createHandlerChild(workspaceRoot: string, callerParent: string, handler
   const stats = lstatSync(child);
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new Error("OpenCode private-config handler directory is not a real directory");
+  }
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function assertHandlerChildIdentity(
+  workspaceRoot: string,
+  callerParent: string,
+  handlerId: string,
+  expected: FileIdentity,
+): void {
+  assertSafeDirectoryChain(workspaceRoot, callerParent);
+  assertDirectoryIdentity(join(callerParent, `handler-${handlerId}`), expected, "handler generation");
+}
+
+function directoryIdentityAt(path: string, label: string): FileIdentity {
+  const stats = lstatSync(path);
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error(`OpenCode private-config ${label} is not a real directory`);
+  }
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function assertDirectoryIdentity(path: string, expected: FileIdentity, label: string): void {
+  const stats = lstatSync(path);
+  if (stats.isSymbolicLink() || !stats.isDirectory() || stats.dev !== expected.dev || stats.ino !== expected.ino) {
+    throw new Error(`OpenCode private-config ${label} identity changed`);
+  }
+}
+
+function writeConfigFileNoFollow(path: string, configContent: string, validateParent: () => void): void {
+  validateParent();
+  const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+  const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow, 0o600);
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.nlink === 0) {
+      throw new Error("OpenCode private-config file is not a live regular file");
+    }
+    writeFileSync(fd, configContent, "utf8");
+    fsyncSync(fd);
+    fchmodSync(fd, 0o600);
+    const current = lstatSync(path);
+    if (current.isSymbolicLink() || !current.isFile() || current.dev !== opened.dev || current.ino !== opened.ino) {
+      throw new Error("OpenCode private-config file identity changed while writing");
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function removeProjectionDirectoryIfOwned(
+  workspaceRoot: string,
+  callerParent: string,
+  handlerId: string,
+  handlerIdentity: FileIdentity,
+  configDirectory: string,
+  directoryIdentity: FileIdentity,
+): void {
+  try {
+    assertHandlerChildIdentity(workspaceRoot, callerParent, handlerId, handlerIdentity);
+    assertDirectoryIdentity(configDirectory, directoryIdentity, "projection directory");
+    removeDirectoryTreeNoFollow(configDirectory);
+  } catch {
+    // Fail closed: never follow or remove a path whose containment/identity
+    // cannot still be proven.
   }
 }
 

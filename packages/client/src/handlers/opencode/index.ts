@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   type AgentRuntimeConfig,
@@ -178,11 +177,10 @@ export function projectOpenCodeConfig(
   env: Record<string, string>,
   configContent: string,
   deps: {
+    fileStore?: Pick<OpenCodePrivateConfigLease, "materialize">;
     maxEnvBytes?: number;
     maxWindowsEnvChars?: number;
-    makeTempDir?: () => string;
     platform?: NodeJS.Platform;
-    runtimeRoot?: string;
   } = {},
 ): OpenCodeConfigProjection {
   const maxEnvBytes = deps.maxEnvBytes ?? CONFIG_CONTENT_ENV_MAX_BYTES;
@@ -207,38 +205,22 @@ export function projectOpenCodeConfig(
       "OpenCode private projection is too large for the child environment and cannot replace the host OPENCODE_CONFIG",
     );
   }
-  let configDir: string;
-  if (deps.makeTempDir) {
-    configDir = deps.makeTempDir();
-  } else {
-    if (!deps.runtimeRoot) {
-      throw new Error("OpenCode file-backed projection requires a runtime-owned workspace directory");
-    }
-    mkdirSync(deps.runtimeRoot, { recursive: true, mode: 0o700 });
-    chmodSync(deps.runtimeRoot, 0o700);
-    configDir = mkdtempSync(join(deps.runtimeRoot, "turn-"));
+  if (!deps.fileStore) {
+    throw new Error("OpenCode file-backed projection requires a runtime-owned workspace lease");
   }
-  const configPath = join(configDir, "opencode.json");
-  try {
-    writeFileSync(configPath, configContent, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    chmodSync(configDir, 0o700);
-    chmodSync(configPath, 0o600);
-  } catch (error) {
-    rmSync(configDir, { recursive: true, force: true });
-    throw error;
-  }
+  const materialization = deps.fileStore.materialize(configContent);
   const fileEnv = {
     ...privateEnv,
-    OPENCODE_CONFIG: configPath,
+    OPENCODE_CONFIG: materialization.configPath,
     OPENCODE_CONFIG_CONTENT: JSON.stringify({ autoupdate: false, share: "disabled", snapshot: false }),
   };
   if (platform === "win32" && windowsEnvBlockChars(fileEnv) > maxWindowsEnvChars) {
-    rmSync(configDir, { recursive: true, force: true });
+    materialization.cleanup();
     throw new Error("OpenCode runtime provider mismatch: child environment exceeds the safe Windows block limit");
   }
   return {
     env: fileEnv,
-    cleanup: () => rmSync(configDir, { recursive: true, force: true }),
+    cleanup: materialization.cleanup,
     transport: "file",
   };
 }
@@ -270,7 +252,13 @@ type TurnState = {
 };
 
 const dbGatePromises = new Map<string, Promise<void>>();
-const providerTurnFailureAttempts = new Map<string, { attempt: number; touchedAt: number }>();
+type ProviderTurnFailureWindow = {
+  attempt: number;
+  touchedAt: number;
+  hasPendingDelivery: () => boolean;
+};
+
+const providerTurnFailureAttempts = new Map<string, ProviderTurnFailureWindow>();
 
 export function clearOpenCodeDbGateCacheForTests(): void {
   dbGatePromises.clear();
@@ -349,21 +337,41 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     return `${sessionCtx.agent.agentId}\0${sessionCtx.chatId}\0${deliveryHead.inboxEntryId}\0${deliveryHead.id}`;
   }
 
-  function nextProviderAttempt(attemptKey: string): number {
+  function nextProviderAttempt(
+    attemptKey: string,
+    hasPendingDelivery: ProviderTurnFailureWindow["hasPendingDelivery"],
+  ): number {
     const now = Date.now();
     for (const [key, entry] of providerTurnFailureAttempts) {
-      if (now - entry.touchedAt >= PROVIDER_ATTEMPT_WINDOW_TTL_MS) {
+      let pending = true;
+      try {
+        pending = entry.hasPendingDelivery();
+      } catch {
+        // Observer failure is not authority to forget an unacked delivery.
+      }
+      if (!pending && now - entry.touchedAt >= PROVIDER_ATTEMPT_WINDOW_TTL_MS) {
         providerTurnFailureAttempts.delete(key);
       }
     }
-    const attempt = (providerTurnFailureAttempts.get(attemptKey)?.attempt ?? 0) + 1;
-    providerTurnFailureAttempts.delete(attemptKey);
-    providerTurnFailureAttempts.set(attemptKey, { attempt, touchedAt: now });
-    while (providerTurnFailureAttempts.size > MAX_PROVIDER_ATTEMPT_WINDOWS) {
-      const oldest = providerTurnFailureAttempts.keys().next().value;
-      if (typeof oldest !== "string") break;
-      providerTurnFailureAttempts.delete(oldest);
+    const existing = providerTurnFailureAttempts.get(attemptKey);
+    const attempt = (existing?.attempt ?? 0) + 1;
+    while (!existing && providerTurnFailureAttempts.size >= MAX_PROVIDER_ATTEMPT_WINDOWS) {
+      const abandoned = [...providerTurnFailureAttempts]
+        .sort((left, right) => left[1].touchedAt - right[1].touchedAt)
+        .find(([, entry]) => {
+          try {
+            return !entry.hasPendingDelivery();
+          } catch {
+            return false;
+          }
+        });
+      if (!abandoned) {
+        throw new Error("OpenCode provider attempt ledger is full of pending deliveries");
+      }
+      providerTurnFailureAttempts.delete(abandoned[0]);
     }
+    providerTurnFailureAttempts.delete(attemptKey);
+    providerTurnFailureAttempts.set(attemptKey, { attempt, touchedAt: now, hasPendingDelivery });
     return attempt;
   }
 
@@ -801,7 +809,10 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       error: input.spawnError ?? input.failure,
       messagePreview: displayMessage,
     });
-    const attemptNumber = nextProviderAttempt(attemptKey);
+    const attemptNumber = nextProviderAttempt(
+      attemptKey,
+      () => input.sessionCtx.hasPendingDelivery?.(input.messages) ?? true,
+    );
     const settlement = attempt.settle({ attempt: attemptNumber });
     if (!settlement) {
       input.token.retry(input.messages, "opencode_unclassified_failure");
@@ -826,7 +837,6 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         generation !== input.turnGeneration ||
         !sessionActive
       ) {
-        providerTurnFailureAttempts.delete(attemptKey);
         return false;
       }
       input.token.retry(input.messages, settlement.decision.reasonCode);
@@ -855,13 +865,13 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     const activeBinary = binary;
     const activeProjectionScope = projectionScope;
     const activeManagedAgentName = managedAgentName;
-    const activePrivateConfigRuntimeRoot = privateConfigLease?.runtimeRoot ?? null;
+    const activePrivateConfigLease = privateConfigLease;
     if (
       !workspaceCwd ||
       !activeBinary ||
       !activeProjectionScope ||
       !activeManagedAgentName ||
-      !activePrivateConfigRuntimeRoot ||
+      !activePrivateConfigLease ||
       !sessionActive
     ) {
       token.retry(messages, sessionActive ? "opencode_not_prepared" : "opencode_session_inactive");
@@ -919,7 +929,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
             managedAgentName: activeManagedAgentName,
             scope: activeProjectionScope,
           }),
-          { runtimeRoot: activePrivateConfigRuntimeRoot },
+          { fileStore: activePrivateConfigLease },
         );
         try {
           outcome = await runProcess({

@@ -196,6 +196,14 @@ export type SessionContext = HandlerContext & {
   retryTurn: (messages: SessionMessage | readonly SessionMessage[], reason: string) => void;
 
   /**
+   * True while the delivery coordinator still owns at least one concrete
+   * inbox row in this message/fused batch. Retry windows use this as their
+   * durable cleanup authority; route-generation invalidation alone does not
+   * mean the unacked server delivery was abandoned.
+   */
+  hasPendingDelivery?: (messages: SessionMessage | readonly SessionMessage[]) => boolean;
+
+  /**
    * Drop the current live handler after it has fenced an unknown-custody
    * provider failure and marked the affected inbox work for recovery. The
    * optional session id lets recovery resume provider context from a fresh

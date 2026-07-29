@@ -2819,6 +2819,18 @@ export class SessionManager {
         this.retryDeliveryTurn(chatId, messages, reason);
         this.projectSessionRuntime(chatId);
       },
+      hasPendingDelivery: (messages) => {
+        const batch = Array.isArray(messages) ? messages : [messages];
+        return batch.some(
+          (message) =>
+            message.inboxEntryId !== undefined &&
+            this.inboxDelivery.hasEntry({
+              chatId,
+              entryId: message.inboxEntryId,
+              messageId: message.id,
+            }),
+        );
+      },
       failSessionForRecovery: (reason, sessionId) => {
         if (routeLeaseValid && !routeLeaseValid()) return;
         this.failSessionForRecovery(chatId, reason, sessionId);
