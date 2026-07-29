@@ -5,12 +5,15 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { chats } from "../db/schema/chats.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
+import { organizationSettings } from "../db/schema/organization-settings.js";
 import { putContextReviewerAssignment } from "../services/context-reviewer-settings.js";
 import {
   isGithubAppTargetLogin,
   resolveGithubAudience as resolveAudienceResolution,
   resolveGithubActorHumanId,
 } from "../services/github-audience.js";
+import { putOrgSetting } from "../services/org-settings.js";
+import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;
@@ -58,6 +61,22 @@ async function configureTeamAgent(app: App, admin: Awaited<ReturnType<typeof cre
     orgId: admin.organizationId,
     memberId: admin.memberId,
     name: `team-agent-${randomUUID().slice(0, 6)}`,
+    clientId,
+    visibility: "organization",
+  });
+  await putTeamAgentAssignment(app.db, admin.organizationId, agentUuid, {
+    updatedBy: admin.userId,
+    appSlug: "test-app-slug",
+  });
+  return agentUuid;
+}
+
+async function configureContextReviewer(app: App, admin: Awaited<ReturnType<typeof createTestAdmin>>): Promise<string> {
+  const clientId = await seedClient(app, admin.userId, admin.organizationId);
+  const agentUuid = await seedAgent(app, {
+    orgId: admin.organizationId,
+    memberId: admin.memberId,
+    name: `context-reviewer-${randomUUID().slice(0, 6)}`,
     clientId,
     visibility: "organization",
   });
@@ -136,6 +155,8 @@ function makeEvent(opts: {
   entityKey: string;
   actorLogin: string;
   actorIsBot?: boolean;
+  actorAuthorAssociation?: string | null;
+  projectKey?: string;
   targets?: Array<{ externalUsername: string; reason: "mentioned" | "review_requested" | "assigned" }>;
   kind?: NormalizedScmEvent["kind"];
   eventType?: string;
@@ -154,12 +175,16 @@ function makeEvent(opts: {
     action: opts.action ?? KIND_TO_ACTION[kind],
     entity: {
       type: opts.entityType,
-      projectKey: "owner/repo",
+      projectKey: opts.projectKey ?? "owner/repo",
       key: opts.entityKey,
       title: "X",
       url: "https://github.com/owner/repo",
     },
-    actor: { externalUsername: opts.actorLogin, isBot: opts.actorIsBot ?? false },
+    actor: {
+      externalUsername: opts.actorLogin,
+      isBot: opts.actorIsBot ?? false,
+      authorAssociation: opts.actorAuthorAssociation ?? null,
+    },
     kind,
     targets: opts.targets ?? [],
     surface: { title: "X", body: "", url: "" },
@@ -240,6 +265,7 @@ describe("resolveAudience", () => {
         entityType: "issue",
         entityKey: "owner/repo#app-task",
         actorLogin: admin.username,
+        actorAuthorAssociation: reason === "mentioned" ? "MEMBER" : "NONE",
         targets: [{ externalUsername, reason }],
         kind: reason === "assigned" ? "assigned" : "commented",
       }),
@@ -253,7 +279,7 @@ describe("resolveAudience", () => {
         kind: "new",
         involveReason: reason,
         involveLogin: externalUsername.toLowerCase(),
-        teamAgentTask: true,
+        teamAgentTask: { agentUuid: teamAgentUuid },
       }),
     ]);
   });
@@ -276,6 +302,119 @@ describe("resolveAudience", () => {
     );
 
     expect(resolution.targets).toEqual([]);
+  });
+
+  it("ignores an unauthorized public text mention while preserving ordinary audience routing", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await configureTeamAgent(app, admin);
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#public-mention",
+        actorLogin: "external-contributor",
+        actorAuthorAssociation: "CONTRIBUTOR",
+        targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
+        kind: "commented",
+      }),
+      { appSlug: "test-app-slug" },
+    );
+
+    expect(resolution.targets).toEqual([]);
+  });
+
+  it("routes the bound GitHub Context Tree repo to the Context Reviewer and other repos to the Team Agent", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const teamAgentUuid = await configureTeamAgent(app, admin);
+    const reviewerUuid = await configureContextReviewer(app, admin);
+    await putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      {
+        provider: "github",
+        repo: "git@github.com:Owner/Context-Tree.git",
+        branch: "main",
+      },
+      { updatedBy: admin.userId },
+    );
+
+    const resolveAppAssignment = (projectKey: string) =>
+      resolveAudienceResolution(
+        app.db,
+        makeEvent({
+          orgId: admin.organizationId,
+          entityType: "issue",
+          entityKey: `${projectKey}#role`,
+          projectKey,
+          actorLogin: "external",
+          actorAuthorAssociation: "NONE",
+          targets: [{ externalUsername: "test-app-slug[bot]", reason: "assigned" }],
+          kind: "assigned",
+        }),
+        { appSlug: "test-app-slug" },
+      );
+
+    await expect(resolveAppAssignment("OWNER/CONTEXT-TREE")).resolves.toMatchObject({
+      targets: [
+        expect.objectContaining({
+          delegateAgentId: reviewerUuid,
+          teamAgentTask: { agentUuid: reviewerUuid },
+        }),
+      ],
+    });
+    await expect(resolveAppAssignment("owner/code")).resolves.toMatchObject({
+      targets: [
+        expect.objectContaining({
+          delegateAgentId: teamAgentUuid,
+          teamAgentTask: { agentUuid: teamAgentUuid },
+        }),
+      ],
+    });
+  });
+
+  it("does not treat a GitLab Context Tree binding as a GitHub context repo", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const teamAgentUuid = await configureTeamAgent(app, admin);
+    const reviewerUuid = await configureContextReviewer(app, admin);
+    await app.db.insert(organizationSettings).values({
+      organizationId: admin.organizationId,
+      namespace: "context_tree",
+      value: {
+        provider: "gitlab",
+        repo: "https://gitlab.com/owner/context-tree.git",
+        branch: "main",
+      },
+      version: 1,
+      updatedBy: admin.userId,
+    });
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/context-tree#gitlab-bound",
+        projectKey: "owner/context-tree",
+        actorLogin: "external",
+        targets: [{ externalUsername: "test-app-slug[bot]", reason: "assigned" }],
+        kind: "assigned",
+      }),
+      { appSlug: "test-app-slug" },
+    );
+
+    expect(resolution.targets).toEqual([
+      expect.objectContaining({
+        delegateAgentId: teamAgentUuid,
+        teamAgentTask: { agentUuid: teamAgentUuid },
+      }),
+    ]);
+    expect(resolution.targets).not.toEqual([expect.objectContaining({ delegateAgentId: reviewerUuid })]);
   });
 
   it("returns subscribed mappings (existing) when no fresh involves", async () => {

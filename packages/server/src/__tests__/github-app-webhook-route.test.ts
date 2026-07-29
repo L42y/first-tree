@@ -2,6 +2,7 @@ import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agents } from "../db/schema/agents.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
 import { githubAppInstallations } from "../db/schema/github-app-installations.js";
@@ -10,11 +11,12 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
-import { putContextReviewerAssignment } from "../services/context-reviewer-settings.js";
+import { createChat } from "../services/chat.js";
 import * as eventDedupService from "../services/event-dedup.js";
 import * as githubAudienceService from "../services/github-audience.js";
 import * as githubEntityStateService from "../services/github-entity-state.js";
 import { putOrgSetting } from "../services/org-settings.js";
+import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
@@ -188,8 +190,9 @@ async function configureTeamAgent(app: App, admin: Awaited<ReturnType<typeof cre
     agentUuid: teamAgent,
     clientId,
   });
-  await putContextReviewerAssignment(app.db, admin.organizationId, teamAgent, {
+  await putTeamAgentAssignment(app.db, admin.organizationId, teamAgent, {
     updatedBy: admin.userId,
+    appSlug: "test-app-slug",
   });
   return teamAgent;
 }
@@ -1742,6 +1745,7 @@ describe("POST /webhooks/github-app", () => {
         html_url: `https://github.com/owner/repo/issues/${scenario.action === "opened" ? 12 : 13}`,
         body: scenario.body,
         assignees: scenario.assignees,
+        author_association: scenario.expectedReason === "mentioned" ? "MEMBER" : "NONE",
       },
       ...(scenario.assignee ? { assignee: scenario.assignee } : {}),
       repository: { full_name: "owner/repo" },
@@ -1773,11 +1777,11 @@ describe("POST /webhooks/github-app", () => {
       type: "github_event",
       reason: scenario.expectedReason,
       mentionedUser: scenario.expectedLogin,
-      teamAgentTask: true,
+      teamAgentTask: { agentUuid: teamAgent },
     });
     expect(message?.metadata).toMatchObject({
       mentions: [teamAgent],
-      teamAgentTask: true,
+      teamAgentTask: { agentUuid: teamAgent },
     });
 
     const [entry] = await app.db
@@ -1797,7 +1801,87 @@ describe("POST /webhooks/github-app", () => {
       .from(messages)
       .where(eq(messages.chatId, mapping?.chatId ?? ""));
     expect(messageRows).toHaveLength(2);
-    expect(messageRows.every((row) => row.metadata.teamAgentTask === true)).toBe(true);
+    expect(
+      messageRows.every(
+        (row) =>
+          typeof row.metadata.teamAgentTask === "object" &&
+          row.metadata.teamAgentTask !== null &&
+          "agentUuid" in row.metadata.teamAgentTask &&
+          row.metadata.teamAgentTask.agentUuid === teamAgent,
+      ),
+    ).toBe(true);
+  });
+
+  it("reuses an existing human mapping, adds the Team Agent as a participant, and scopes the wake marker", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100034;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const teamAgent = await configureTeamAgent(app, admin);
+    const otherDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `other-delegate-${randomUUID().slice(0, 6)}`,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [otherDelegate],
+    });
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: otherDelegate,
+      entityType: "issue",
+      entityKey: "owner/repo#14",
+      chatId: chat.id,
+      boundVia: "human_declared",
+    });
+
+    const response = await postWebhook(app, "issues", {
+      action: "assigned",
+      issue: {
+        number: 14,
+        title: "Existing mapping",
+        html_url: "https://github.com/owner/repo/issues/14",
+        body: "",
+        assignees: [{ login: "test-app-slug[bot]", type: "Bot" }],
+        author_association: "NONE",
+      },
+      assignee: { login: "test-app-slug[bot]", type: "Bot" },
+      repository: { full_name: "owner/repo" },
+      sender: { login: "external", type: "User" },
+      installation: { id: installationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ delivered: 1, newChats: 0, failed: 0 });
+    const mappings = await app.db
+      .select()
+      .from(githubEntityChatMappings)
+      .where(eq(githubEntityChatMappings.chatId, chat.id));
+    expect(mappings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ delegateAgentId: otherDelegate }),
+        expect.objectContaining({ delegateAgentId: teamAgent, boundVia: "human_fallback" }),
+      ]),
+    );
+    const [membership] = await app.db
+      .select()
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, teamAgent)))
+      .limit(1);
+    expect(membership).toMatchObject({ accessMode: "speaker" });
+    const [message] = await app.db.select().from(messages).where(eq(messages.chatId, chat.id)).limit(1);
+    expect(message?.metadata).toMatchObject({
+      mentions: [teamAgent],
+      teamAgentTask: { agentUuid: teamAgent },
+    });
+    const [otherInbox] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, message?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${otherDelegate}`)))
+      .limit(1);
+    expect(otherInbox?.notify).not.toBe(true);
   });
 
   it("pull_request.opened on the bound context repo creates a Context Reviewer task message", async () => {

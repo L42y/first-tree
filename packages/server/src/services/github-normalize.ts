@@ -35,6 +35,26 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function readGithubAuthorAssociation(eventType: string, payload: Record<string, unknown>): string | null {
+  const source =
+    eventType === "pull_request"
+      ? payload.pull_request
+      : eventType === "pull_request_review"
+        ? payload.review
+        : eventType === "pull_request_review_comment" ||
+            eventType === "issue_comment" ||
+            eventType === "discussion_comment" ||
+            eventType === "commit_comment"
+          ? payload.comment
+          : eventType === "issues"
+            ? payload.issue
+            : eventType === "discussion"
+              ? payload.discussion
+              : null;
+  if (!isRecord(source)) return null;
+  return readString(source.author_association)?.toUpperCase() ?? null;
+}
+
 function pullRequestStateFromPayload(pr: Record<string, unknown>, action: string): EntityStateSeed["state"] {
   const state = readString(pr.state);
   if (action === "closed" || state === "closed") {
@@ -262,7 +282,11 @@ export function normalizeGithubEvent(
       title: rule.entity.title,
       url: rule.entity.url,
     },
-    actor: { externalUsername: senderLogin, isBot: senderIsBot },
+    actor: {
+      externalUsername: senderLogin,
+      isBot: senderIsBot,
+      authorAssociation: readGithubAuthorAssociation(eventType, payload),
+    },
     kind: rule.kind,
     targets: rule.involves,
     surface: rule.surface,

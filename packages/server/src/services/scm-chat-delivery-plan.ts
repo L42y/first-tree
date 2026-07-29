@@ -5,7 +5,7 @@ export type ScmAudienceTarget = {
   directedContext?: {
     reason: InvolveReason;
     externalUsername: string;
-    teamAgentTask?: true;
+    teamAgentTask?: { agentUuid: string };
   } | null;
 };
 
@@ -16,7 +16,7 @@ export type ScmDeliveryEntry = {
   reasons: Set<"follow" | InvolveReason>;
   involveReason: InvolveReason | null;
   involveLogin: string | null;
-  teamAgentTask: boolean;
+  teamAgentTask: { agentUuid: string } | null;
 };
 
 export type ScmPlannedChatDelivery = {
@@ -85,7 +85,7 @@ function addScmDeliveryEntry(delivery: ScmPlannedChatDelivery, target: ScmAudien
     target.entry.kind === "personnel_target"
       ? target.entry.externalUsername
       : (target.directedContext?.externalUsername ?? null);
-  const teamAgentTask = target.directedContext?.teamAgentTask === true;
+  const teamAgentTask = target.directedContext?.teamAgentTask ?? null;
   const key = `${senderAgentId}:${humanAgentId ?? "-"}:${wakeAgentId ?? "-"}`;
   const reasons = new Set<"follow" | InvolveReason>();
   if (target.entry.kind !== "personnel_target") reasons.add("follow");
@@ -100,7 +100,7 @@ function addScmDeliveryEntry(delivery: ScmPlannedChatDelivery, target: ScmAudien
       existing.involveReason = involveReason;
       existing.involveLogin = involveLogin;
     }
-    existing.teamAgentTask ||= teamAgentTask;
+    existing.teamAgentTask ??= teamAgentTask;
     return;
   }
   delivery.entries.set(key, {
@@ -163,7 +163,7 @@ export function selectScmSenderId(entries: ScmDeliveryEntry[]): string {
 export function selectScmCardContext(entries: ScmDeliveryEntry[]): {
   involveReason: InvolveReason | null;
   involveLogin: string | null;
-  teamAgentTask: boolean;
+  teamAgentTask: { agentUuid: string } | null;
 } {
   const involved = [...entries]
     .filter((entry) => entry.involveReason)
@@ -174,7 +174,13 @@ export function selectScmCardContext(entries: ScmDeliveryEntry[]): {
   return {
     involveReason: involved?.involveReason ?? null,
     involveLogin: involved?.involveLogin ?? null,
-    teamAgentTask: entries.some((entry) => entry.teamAgentTask),
+    teamAgentTask:
+      [...entries]
+        .filter(
+          (entry): entry is ScmDeliveryEntry & { teamAgentTask: { agentUuid: string } } =>
+            entry.teamAgentTask !== null && entry.teamAgentTask.agentUuid === entry.wakeAgentId,
+        )
+        .sort(compareScmDeliveryEntries)[0]?.teamAgentTask ?? null,
   };
 }
 

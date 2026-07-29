@@ -672,8 +672,14 @@ describe("Team setup capabilities", () => {
     ).resolves.toMatchObject({
       contextTree: {
         automaticReview: {
-          health: "pending_verification",
-          blockers: [{ code: "provider_probe_failed", resolutionOwner: "operator", actionKind: null }],
+          health: "unavailable",
+          blockers: [
+            {
+              code: "github_app_slug_missing",
+              resolutionOwner: "operator",
+              actionKind: "configure_github_app",
+            },
+          ],
         },
       },
     });

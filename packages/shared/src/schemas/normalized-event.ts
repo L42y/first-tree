@@ -53,12 +53,26 @@ const normalizedScmEntitySchema = z.object({
 const normalizedScmActorSchema = z.object({
   externalUsername: z.string().min(1),
   isBot: z.boolean(),
+  authorAssociation: z.string().nullable().optional(),
 });
 
 const normalizedScmTargetSchema = z.object({
   externalUsername: z.string().min(1),
   reason: involveReasonSchema,
 });
+
+export const githubAgentTaskSchema = z.union([
+  // Historical cards emitted by the first implementation carried only a
+  // boolean. Keep them renderable while requiring new tasks to identify the
+  // one Agent allowed to execute them.
+  z.literal(true),
+  z
+    .object({
+      agentUuid: z.string().min(1),
+    })
+    .strict(),
+]);
+export type GithubAgentTask = z.infer<typeof githubAgentTaskSchema>;
 
 const normalizedSurfaceSchema = z.object({
   title: z.string(),
@@ -156,7 +170,7 @@ export const githubEventCardSchema = z.object({
    * configured GitHub App itself was mentioned or assigned. The selected
    * Team Agent treats it as work to complete and answer on GitHub.
    */
-  teamAgentTask: z.literal(true).optional(),
+  teamAgentTask: githubAgentTaskSchema.optional(),
 });
 export type GithubEventCard = z.infer<typeof githubEventCardSchema>;
 

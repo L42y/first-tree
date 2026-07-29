@@ -5,6 +5,7 @@ import { createLogger } from "../observability/index.js";
 import type { AudienceTarget } from "./github-audience.js";
 import { findReuseChatForInvolved, refreshGithubChatTopic, resolveTargetChat } from "./github-entity-chat.js";
 import { type EntityStateSeed, setEntityTitle } from "./github-entity-state.js";
+import { applyMembershipWrite } from "./participant-mode.js";
 import { sendScmSystemCard } from "./scm-card-delivery.js";
 import {
   compareScmDeliveryEntries,
@@ -90,7 +91,7 @@ export async function deliverGithubEvent(
                   ? {
                       reason: target.involveReason,
                       externalUsername: target.involveLogin,
-                      ...(target.teamAgentTask ? { teamAgentTask: true as const } : {}),
+                      ...(target.teamAgentTask ? { teamAgentTask: target.teamAgentTask } : {}),
                     }
                   : null,
             }
@@ -106,7 +107,7 @@ export async function deliverGithubEvent(
                 ? {
                     reason: target.involveReason as InvolveReason,
                     externalUsername: target.involveLogin as string,
-                    teamAgentTask: true,
+                    teamAgentTask: target.teamAgentTask,
                   }
                 : null,
             },
@@ -199,7 +200,7 @@ export async function deliverGithubEvent(
       // out by the message service (the card still lands as a silent row via
       // `allowRecipientlessSend`). The unread-mention red dot stays off because
       // delegates are non-human mention targets.
-      const mentions = scmWakeAgentIds(entries);
+      const mentions = cardContext.teamAgentTask ? [cardContext.teamAgentTask.agentUuid] : scmWakeAgentIds(entries);
       await sendScmSystemCard(app, {
         chatId: delivery.chatId,
         senderId,
@@ -219,7 +220,7 @@ export async function deliverGithubEvent(
           // visual attribution shifts. Scoped to GitHub cards so an arbitrary
           // client cannot impersonate other sources.
           ...(mentionedUser ? { mentionedUser } : {}),
-          ...(card.teamAgentTask ? { teamAgentTask: true } : {}),
+          ...(card.teamAgentTask ? { teamAgentTask: card.teamAgentTask } : {}),
         },
       });
       stats.delivered += 1;
@@ -329,6 +330,9 @@ async function resolveChatFor(
     isMentionMatched: true,
   });
   if (!resolved) return null;
+  if (target.directedContext?.teamAgentTask && target.directedContext.teamAgentTask.agentUuid === wakeAgentId) {
+    await applyMembershipWrite(app.db, resolved.chatId, [{ agentId: wakeAgentId }], { upgradeWatcherToSpeaker: true });
+  }
   return { chatId: resolved.chatId, created: resolved.created };
 }
 
@@ -342,7 +346,7 @@ function buildCard(
   event: NormalizedScmEvent,
   involveReason: InvolveReason | null,
   involveLogin: string | null,
-  teamAgentTask: boolean,
+  teamAgentTask: { agentUuid: string } | null,
 ): GithubEventCard {
   const reason: GithubEventCard["reason"] = involveReason ?? "subscribed";
   const card: GithubEventCard = {
@@ -363,6 +367,6 @@ function buildCard(
     },
   };
   if (involveLogin) card.mentionedUser = involveLogin;
-  if (teamAgentTask) card.teamAgentTask = true;
+  if (teamAgentTask) card.teamAgentTask = teamAgentTask;
   return card;
 }

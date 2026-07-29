@@ -23,6 +23,7 @@ import { upsertInstallationFromMetadata } from "../services/github-app-installat
 import { createGitlabConnection } from "../services/gitlab-connections.js";
 import { getOrgSetting } from "../services/org-settings.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
+import { listTeamAgentCandidates, putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
@@ -950,6 +951,107 @@ describe("Context Reviewer assignment/readiness contract", () => {
     expect(privateAssignment.statusCode).toBe(409);
     expect(privateAssignment.json()).toMatchObject({
       code: "context_review_agent_private",
+    });
+  });
+});
+
+describe("Team Agent assignment contract", () => {
+  const getApp = useTestApp();
+
+  it("is configurable without a Context Tree and requires a verified App login", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const teamAgent = await createReviewer(app, admin, { displayName: "Team Agent" });
+
+    await expect(
+      listTeamAgentCandidates(app.db, {
+        organizationId: admin.organizationId,
+        appSlug: "test-app-slug",
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      items: [expect.objectContaining({ uuid: teamAgent.uuid, displayName: "Team Agent" })],
+      blockers: [],
+    });
+    await expect(
+      putTeamAgentAssignment(app.db, admin.organizationId, teamAgent.uuid, {
+        updatedBy: admin.userId,
+        appSlug: null,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: { code: "github_app_slug_missing" },
+    });
+    await expect(
+      putTeamAgentAssignment(app.db, admin.organizationId, teamAgent.uuid, {
+        updatedBy: admin.userId,
+        appSlug: "test-app-slug",
+      }),
+    ).resolves.toMatchObject({
+      teamAgent: { agentUuid: teamAgent.uuid, agent: { uuid: teamAgent.uuid } },
+    });
+  });
+
+  it("rejects the same Agent UUID in both roles regardless of assignment order", async () => {
+    const app = getApp();
+
+    const reviewerFirst = await createAdminContext(app);
+    const firstAgent = await createReviewer(app, reviewerFirst);
+    await putContextReviewerAssignment(app.db, reviewerFirst.organizationId, firstAgent.uuid, {
+      updatedBy: reviewerFirst.userId,
+    });
+    await expect(
+      putTeamAgentAssignment(app.db, reviewerFirst.organizationId, firstAgent.uuid, {
+        updatedBy: reviewerFirst.userId,
+        appSlug: "test-app-slug",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: { code: "team_agent_conflicts_context_reviewer" },
+    });
+
+    const teamFirst = await createAdminContext(app);
+    const secondAgent = await createReviewer(app, teamFirst);
+    await putTeamAgentAssignment(app.db, teamFirst.organizationId, secondAgent.uuid, {
+      updatedBy: teamFirst.userId,
+      appSlug: "test-app-slug",
+    });
+    await expect(
+      putContextReviewerAssignment(app.db, teamFirst.organizationId, secondAgent.uuid, {
+        updatedBy: teamFirst.userId,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: { code: "team_agent_conflicts_context_reviewer" },
+    });
+  });
+
+  it("exposes dedicated Team Agent endpoints to Team admins", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const teamAgent = await createReviewer(app, admin, { displayName: "Team Agent" });
+    const baseUrl = `/api/v1/orgs/${admin.organizationId}/team-agent`;
+
+    const candidates = await app.inject({
+      method: "GET",
+      url: `${baseUrl}/candidates`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+    });
+    expect(candidates.statusCode).toBe(200);
+    expect(candidates.json()).toMatchObject({
+      items: [expect.objectContaining({ uuid: teamAgent.uuid })],
+    });
+
+    const assignment = await app.inject({
+      method: "PUT",
+      url: `${baseUrl}/assignment`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { agentUuid: teamAgent.uuid },
+    });
+    expect(assignment.statusCode).toBe(200);
+    expect(assignment.json()).toMatchObject({
+      teamAgent: { agentUuid: teamAgent.uuid },
     });
   });
 });
