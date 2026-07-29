@@ -670,16 +670,21 @@ describe("Team setup capabilities", () => {
         githubFetch: missingSlugFetch,
       }),
     ).resolves.toMatchObject({
+      repositoryAutomation: {
+        providers: [
+          {
+            provider: "github",
+            adoption: "enabled",
+            health: "ready",
+            blockers: [],
+          },
+          expect.any(Object),
+        ],
+      },
       contextTree: {
         automaticReview: {
-          health: "unavailable",
-          blockers: [
-            {
-              code: "github_app_slug_missing",
-              resolutionOwner: "operator",
-              actionKind: "configure_github_app",
-            },
-          ],
+          health: "pending_verification",
+          blockers: [{ code: "provider_probe_failed", resolutionOwner: "operator", actionKind: null }],
         },
       },
     });

@@ -200,7 +200,10 @@ export async function deliverGithubEvent(
       // out by the message service (the card still lands as a silent row via
       // `allowRecipientlessSend`). The unread-mention red dot stays off because
       // delegates are non-human mention targets.
-      const mentions = cardContext.teamAgentTask ? [cardContext.teamAgentTask.agentUuid] : scmWakeAgentIds(entries);
+      // The task marker scopes who may execute an App-directed request; it
+      // does not replace independent subscription / explicit wake lines that
+      // survived into this chat delivery.
+      const mentions = scmWakeAgentIds(entries);
       await sendScmSystemCard(app, {
         chatId: delivery.chatId,
         senderId,

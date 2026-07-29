@@ -7,7 +7,8 @@ const SETUP_BLOCKER_COPY = {
   github_webhook_events_missing: "Required GitHub App webhook events are missing.",
   github_pull_requests_permission_required: "GitHub pull-request write access is required.",
   github_tree_repo_not_covered: "The GitHub App cannot access this Context Tree repository.",
-  github_app_slug_missing: "The GitHub App login is missing from this First Tree deployment.",
+  github_app_slug_missing:
+    "A deployment operator must configure the GitHub App login before App-target delegation can run.",
   gitlab_webhook_not_seen: "Waiting for the first valid GitLab webhook.",
   gitlab_hook_source_not_identified:
     "Webhook traffic was received before source-specific health was available. Trigger an enabled event from the configured Hook.",

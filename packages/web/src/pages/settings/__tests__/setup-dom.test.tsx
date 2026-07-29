@@ -220,6 +220,15 @@ async function waitForSelector<T extends Element>(host: ParentNode, selector: st
   throw new Error(`Expected selector "${selector}"`);
 }
 
+async function waitForText(host: ParentNode, expected: string, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (host.textContent?.includes(expected)) return;
+    await flush();
+  }
+  throw new Error(`Expected content to include "${expected}"`);
+}
+
 async function openContextTreeControls(view: Awaited<ReturnType<typeof renderSettingsSetupPage>>) {
   const tree = await waitForRowText(view.host, "context-tree", "Available");
   const manage = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -1344,6 +1353,34 @@ describe("Settings Setup overview", () => {
     expect(teamAgentMocks.getTeamAgentCandidates).toHaveBeenCalledWith("org-1");
     expect(teamAgentMocks.putTeamAgentAssignment).toHaveBeenCalledWith("org-1", "team-agent-1");
     expect(controls.textContent).toContain("Automatic Review does not control this delegation.");
+    await act(async () => view.root.unmount());
+  });
+
+  it("shows a deployment-operator blocker without an admin GitHub recovery link when the App slug is missing", async () => {
+    orgSettingsMocks.getGithubFeaturesSetting.mockResolvedValue({
+      teamAgent: { agentUuid: null, agent: null },
+    });
+    teamAgentMocks.getTeamAgentCandidates.mockResolvedValue({
+      items: [],
+      blockers: [
+        {
+          code: "github_app_slug_missing",
+          resolutionOwner: "operator",
+          actionKind: null,
+        },
+      ],
+    });
+
+    const view = await renderSettingsSetupPage();
+    const { controls } = await openTeamAgentControls(view);
+
+    await waitForText(
+      controls,
+      "A deployment operator must configure the GitHub App login before App-target delegation can run.",
+    );
+    expect(controls.querySelector('a[href="/settings/integrations/github"]')).toBeNull();
+    expect(controls.textContent).not.toContain("Manage GitHub");
+    expect(controls.textContent).not.toContain("Manage Team Agents");
     await act(async () => view.root.unmount());
   });
 

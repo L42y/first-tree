@@ -975,13 +975,34 @@ describe("Team Agent assignment contract", () => {
       blockers: [],
     });
     await expect(
+      listTeamAgentCandidates(app.db, {
+        organizationId: admin.organizationId,
+        appSlug: null,
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      items: [],
+      blockers: [
+        {
+          code: "github_app_slug_missing",
+          resolutionOwner: "operator",
+          actionKind: null,
+        },
+      ],
+    });
+    await expect(
       putTeamAgentAssignment(app.db, admin.organizationId, teamAgent.uuid, {
         updatedBy: admin.userId,
         appSlug: null,
       }),
     ).rejects.toMatchObject({
       statusCode: 409,
-      blocker: { code: "github_app_slug_missing" },
+      blocker: {
+        code: "github_app_slug_missing",
+        resolutionOwner: "operator",
+        actionKind: null,
+      },
     });
     await expect(
       putTeamAgentAssignment(app.db, admin.organizationId, teamAgent.uuid, {

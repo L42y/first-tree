@@ -24,8 +24,12 @@ export class TeamAgentSettingsError extends ConflictError {
   }
 }
 
-function blocker(code: SetupBlocker["code"], actionKind: SetupBlocker["actionKind"]): SetupBlocker {
-  return { code, resolutionOwner: "admin", actionKind };
+function blocker(
+  code: SetupBlocker["code"],
+  actionKind: SetupBlocker["actionKind"],
+  resolutionOwner: SetupBlocker["resolutionOwner"] = "admin",
+): SetupBlocker {
+  return { code, resolutionOwner, actionKind };
 }
 
 async function lockOrganization(db: Database, organizationId: string): Promise<void> {
@@ -110,7 +114,7 @@ export async function listTeamAgentCandidates(
   if (!input.appSlug?.trim()) {
     return {
       items: [],
-      blockers: [blocker("github_app_slug_missing", "configure_github_app")],
+      blockers: [blocker("github_app_slug_missing", null, "operator")],
     };
   }
   const [candidates, reviewerAgentUuid] = await Promise.all([
@@ -133,7 +137,7 @@ export async function putTeamAgentAssignment(
 ): Promise<OrgGithubFeaturesOutput> {
   if (agentUuid !== null && !options.appSlug?.trim()) {
     throw new TeamAgentSettingsError(
-      blocker("github_app_slug_missing", "configure_github_app"),
+      blocker("github_app_slug_missing", null, "operator"),
       "GitHub App login is required before selecting a Team Agent",
     );
   }

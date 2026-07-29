@@ -126,7 +126,6 @@ function projectRepositoryAutomation(
   installation: InstallationRow | null,
   gitlabConnection: typeof gitlabConnections.$inferSelect | null,
   githubWebhookConfigured: boolean,
-  githubAppSlugConfigured: boolean,
   observedAt: string,
 ): SetupRepositoryAutomationProvider[] {
   const github: SetupRepositoryAutomationProvider = !installation
@@ -145,37 +144,29 @@ function projectRepositoryAutomation(
           blockers: [blocker("github_app_not_configured", "operator", null)],
           observedAt,
         }
-      : !githubAppSlugConfigured
+      : installation.suspendedAt
         ? {
             provider: "github",
             adoption: "enabled",
             health: "unavailable",
-            blockers: [blocker("github_app_slug_missing", "operator", "configure_github_app")],
+            blockers: [blocker("github_app_suspended", "admin", "manage_github_installation")],
             observedAt,
           }
-        : installation.suspendedAt
+        : !githubRepositoryAutomationEventsReady(installation.events)
           ? {
               provider: "github",
               adoption: "enabled",
               health: "unavailable",
-              blockers: [blocker("github_app_suspended", "admin", "manage_github_installation")],
+              blockers: [blocker("github_webhook_events_missing", "operator", null)],
               observedAt,
             }
-          : !githubRepositoryAutomationEventsReady(installation.events)
-            ? {
-                provider: "github",
-                adoption: "enabled",
-                health: "unavailable",
-                blockers: [blocker("github_webhook_events_missing", "operator", null)],
-                observedAt,
-              }
-            : {
-                provider: "github",
-                adoption: "enabled",
-                health: "ready",
-                blockers: [],
-                observedAt,
-              };
+          : {
+              provider: "github",
+              adoption: "enabled",
+              health: "ready",
+              blockers: [],
+              observedAt,
+            };
 
   let gitlab: SetupRepositoryAutomationProvider;
   const gitlabReadiness = gitlabConnection ? projectGitlabConnectionReadiness(gitlabConnection) : null;
@@ -334,9 +325,6 @@ export async function getTeamSetupCapabilities(
       if (!options.githubAppCredentials?.webhookSecret) {
         reviewBlockers.push(blocker("github_app_not_configured", "operator", null));
         reviewHealth = "unavailable";
-      } else if (!options.githubAppCredentials.slug) {
-        reviewBlockers.push(blocker("github_app_slug_missing", "operator", "configure_github_app"));
-        reviewHealth = "unavailable";
       } else if (!installation) {
         reviewBlockers.push(blocker("context_review_provider_prerequisite_missing", "admin", "connect_github"));
         reviewHealth = "unavailable";
@@ -396,7 +384,6 @@ export async function getTeamSetupCapabilities(
         installation,
         gitlabConnection,
         Boolean(options.githubAppCredentials?.webhookSecret),
-        Boolean(options.githubAppCredentials?.slug),
         observedAt,
       ),
     },
