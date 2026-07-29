@@ -103,12 +103,12 @@ function renderPage(harness: DomHarness, needYouCount = 1): QueryClient {
   });
   meChatMocks.listMeChats.mockResolvedValue(listResponse);
   harness.render(
-    <MemoryRouter initialEntries={["/m/work"]}>
+    <MemoryRouter initialEntries={["/m/chat"]}>
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <LocationProbe />
           <Routes>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Routes>
         </ToastProvider>
       </QueryClientProvider>
@@ -215,7 +215,7 @@ describe("mobile Chat card behavior", () => {
     const removeAllRanges = vi.spyOn(selection, "removeAllRanges");
     await longPress(harness.container.querySelector('[data-mobile-card="work"]'));
 
-    expect(currentLocation).toBe("/m/work");
+    expect(currentLocation).toBe("/m/chat");
     expect(removeAllRanges).toHaveBeenCalledOnce();
     removeAllRanges.mockRestore();
     const actionsSheet = document.body.querySelector("[data-mobile-chat-actions]");
@@ -234,7 +234,7 @@ describe("mobile Chat card behavior", () => {
     await longPress(card, 12);
     expect(document.body.querySelector("[data-mobile-chat-actions]")).toBeNull();
     await click(card);
-    expect(currentLocation).toBe(`/m/work?c=${row.chatId}`);
+    expect(currentLocation).toBe(`/m/chat?c=${row.chatId}`);
     expect(harness.container.querySelector('[data-testid="mobile-chat-detail"]')).not.toBeNull();
   });
 
@@ -270,7 +270,7 @@ describe("mobile Chat card behavior", () => {
     });
     await click(buttonWithText("Mark as read"));
     await harness.waitFor(() => expect(meChatMocks.markMeChatRead).toHaveBeenCalledWith(row.chatId));
-    expect(currentLocation).toBe("/m/work");
+    expect(currentLocation).toBe("/m/chat");
   });
 
   it("provides an Archived recovery view whose actions only restore or pin", async () => {
@@ -319,7 +319,7 @@ describe("mobile Chat card behavior", () => {
     );
 
     await click(harness.container.querySelector('button[aria-label="Need you, 1 question"]'));
-    expect(currentLocation).toBe("/m/work?review=need-you");
+    expect(currentLocation).toBe("/m/chat?review=need-you");
     expect(harness.container.querySelector('[data-testid="mobile-need-you"]')).not.toBeNull();
   });
 

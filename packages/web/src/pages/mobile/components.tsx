@@ -253,7 +253,7 @@ export function MobileSegmentedControl<T extends string>({
 
 export function MobileBottomTabs({ chatCount }: { chatCount: number }) {
   const tabs = [
-    { to: "/m/work", label: "Chat", icon: ListTodo, badge: chatCount },
+    { to: "/m/chat", label: "Chat", icon: ListTodo, badge: chatCount },
     { to: "/m/team", label: "Team", icon: UsersRound, badge: 0 },
     { to: "/m/me", label: "Me", icon: CircleUserRound, badge: 0 },
   ] as const;

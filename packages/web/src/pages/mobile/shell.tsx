@@ -40,8 +40,7 @@ export function MobileShell() {
   });
 
   const selectedChatId = searchParams.get("c");
-  const workRoute =
-    location.pathname === "/m/work" || location.pathname === "/m/now" || location.pathname === "/m/chat";
+  const workRoute = location.pathname === "/m/chat";
   const immersiveChat = workRoute && selectedChatId !== null;
   const firstWorkPage = tabCountsQuery.data?.pages[0];
   const rows = mobileRowsFromList(firstWorkPage);

@@ -4,7 +4,7 @@ import { MAX_ATTACHMENT_BYTES } from "@first-tree/shared";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AskTakeover } from "../ask-takeover.js";
+import { AskTakeover, clearAskTakeoverDraft } from "../ask-takeover.js";
 
 // The body renders through the app's Markdown; stub it to plain text so this
 // test pins the answer surface, not the markdown pipeline.
@@ -144,6 +144,15 @@ function btn(c: ParentNode, text: string): HTMLButtonElement | null {
 }
 
 describe("AskTakeover", () => {
+  it("moves focus into the modal card on mount", async () => {
+    const c = await renderDom(
+      <AskTakeover body="# Concerns?" payload={{ multiSelect: false }} onReply={() => {}} onSkip={() => {}} />,
+    );
+    const dialog = c.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(document.activeElement).toBe(dialog);
+  });
+
   it("lifts above the visual viewport keyboard inset and unregisters viewport listeners", async () => {
     const listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
     const visualViewport = {
@@ -391,13 +400,24 @@ describe("AskTakeover", () => {
     expect(c.textContent).toContain("Original rollout question");
     expect(c.textContent).toContain("Waiting for agent");
     expect(c.textContent).toContain("The canary stayed green for 30 minutes.");
+    expect(freeTextBox(c)?.disabled).toBe(true);
+    expect(btn(c, "Skip")?.disabled).toBe(true);
+    expect(btn(c, "Submit")?.disabled).toBe(true);
+    expect(btn(c, "Waiting…")?.disabled).toBe(true);
   });
 
-  it("Esc resolves with Skip; Enter resolves with Reply once the answer is valid", async () => {
+  it("Escape performs only the explicit non-resolving action; Enter submits a valid answer", async () => {
     const onReply = vi.fn();
     const onSkip = vi.fn();
+    const onEscape = vi.fn();
     const c = await renderDom(
-      <AskTakeover body="# Concerns?" payload={{ multiSelect: false }} onReply={onReply} onSkip={onSkip} />,
+      <AskTakeover
+        body="# Concerns?"
+        payload={{ multiSelect: false }}
+        onReply={onReply}
+        onSkip={onSkip}
+        onEscape={onEscape}
+      />,
     );
     const ta = c.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Type your answer"]');
     if (!ta) throw new Error("free-text input missing");
@@ -411,9 +431,19 @@ describe("AskTakeover", () => {
     expect(onReply).toHaveBeenCalledWith({ content: "looks risky", mentions: [], images: [] });
     expect(entered.defaultPrevented).toBe(true); // no newline gets inserted
 
-    // Esc skips, regardless of focus / typed text.
+    // Escape leaves review without resolving or advancing the request.
     await keyDown(ta, "Escape");
-    expect(onSkip).toHaveBeenCalledTimes(1);
+    expect(onEscape).toHaveBeenCalledTimes(1);
+    expect(onSkip).not.toHaveBeenCalled();
+  });
+
+  it("Escape is inert when the host supplies no non-resolving action", async () => {
+    const onSkip = vi.fn();
+    const c = await renderDom(
+      <AskTakeover body="# Concerns?" payload={{ multiSelect: false }} onReply={() => {}} onSkip={onSkip} />,
+    );
+    await keyDown(freeTextBox(c) ?? window, "Escape");
+    expect(onSkip).not.toHaveBeenCalled();
   });
 
   it("Shift+Enter and IME composition do not resolve (newline / candidate confirm)", async () => {
@@ -462,6 +492,39 @@ describe("AskTakeover", () => {
     await keyDown(ta, "Escape");
     expect(onReply).not.toHaveBeenCalled();
     expect(onSkip).not.toHaveBeenCalled();
+  });
+
+  it("freezes every resolving/editing action while Ask agent is waiting", async () => {
+    const onReply = vi.fn();
+    const onSkip = vi.fn();
+    const onEscape = vi.fn();
+    const c = await renderDom(
+      <AskTakeover
+        body="# Pick"
+        payload={{ multiSelect: false, options: OPTS }}
+        askAgent={{ exchanges: [], waiting: true, sending: false, error: null, onAsk: async () => undefined }}
+        onReply={onReply}
+        onSkip={onSkip}
+        onEscape={onEscape}
+      />,
+    );
+
+    const ship = option(c, "Ship");
+    const textarea = freeTextBox(c);
+    const attach = c.querySelector<HTMLButtonElement>('[aria-label="Attach file"]');
+    if (!ship || !textarea || !attach) throw new Error("Expected frozen answer controls");
+    expect(ship.disabled).toBe(true);
+    expect(textarea.disabled).toBe(true);
+    expect(attach.disabled).toBe(true);
+    expect(btn(c, "Skip")?.disabled).toBe(true);
+    expect(btn(c, "Submit")?.disabled).toBe(true);
+
+    await click(ship);
+    await keyDown(window, "Escape");
+    expect(ship.getAttribute("aria-checked")).toBe("false");
+    expect(onReply).not.toHaveBeenCalled();
+    expect(onSkip).not.toHaveBeenCalled();
+    expect(onEscape).not.toHaveBeenCalled();
   });
 
   it("stays inert while a higher overlay owns the keystroke (aria-hidden region)", async () => {
@@ -604,6 +667,50 @@ describe("AskTakeover", () => {
       images: [],
       attachments: [{ file, kind: "file" }],
     });
+  });
+
+  it("restores request-scoped text, options, and attachments after a full-chat round trip", async () => {
+    const requestId = `draft-${crypto.randomUUID()}`;
+    const image = new File(["png"], "round-trip.png", { type: "image/png" });
+    const evidenceDocument = new File(["a,b\n1,2"], "round-trip.csv", { type: "text/csv" });
+    const onReply = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const card = (
+      <AskTakeover
+        requestId={requestId}
+        body="# Evidence?"
+        payload={{ multiSelect: false, options: OPTS }}
+        onReply={onReply}
+        onSkip={() => {}}
+      />
+    );
+
+    await act(async () => root.render(card));
+    await click(option(container, "Ship"));
+    const other = freeTextBox(container);
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!other || !fileInput) throw new Error("Draft controls missing");
+    await setValue(other, "keep this note");
+    await changeFiles(fileInput, [image, evidenceDocument]);
+
+    await act(async () => root.render(null));
+    await act(async () => root.render(card));
+
+    expect(option(container, "Ship")?.getAttribute("aria-checked")).toBe("true");
+    expect(freeTextBox(container)?.value).toBe("keep this note");
+    expect(thumbnails(container)).toHaveLength(1);
+    expect(container.textContent).toContain("round-trip.csv");
+    await click(btn(container, "Submit"));
+    expect(onReply).toHaveBeenCalledWith({
+      content: "Ship\nkeep this note",
+      mentions: [],
+      images: [image],
+      attachments: [{ file: evidenceDocument, kind: "file" }],
+    });
+    clearAskTakeoverDraft(requestId);
   });
 
   it("opens the file picker, stages pasted and dropped images, and removes thumbnails", async () => {

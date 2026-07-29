@@ -1330,7 +1330,7 @@ describe("web DOM interaction coverage", () => {
         <LoginPage />,
         {
           pathname: "/login",
-          state: { from: { pathname: "/m/work", search: "", hash: "" } },
+          state: { from: { pathname: "/m/chat", search: "", hash: "" } },
         },
         undefined,
       );
@@ -1343,7 +1343,7 @@ describe("web DOM interaction coverage", () => {
       expect(mobileRoot?.className).toContain("pt-safe-top");
       expect(mobileRoot?.className).toContain("pb-safe-bottom");
       expect(
-        mobile.container.querySelector<HTMLAnchorElement>('a[href="/api/v1/auth/github/start?next=%2Fm%2Fwork"]'),
+        mobile.container.querySelector<HTMLAnchorElement>('a[href="/api/v1/auth/github/start?next=%2Fm%2Fchat"]'),
       ).toBeTruthy();
       await unmountRoot(mobile.root);
 
@@ -1356,7 +1356,7 @@ describe("web DOM interaction coverage", () => {
         <LoginPage />,
         {
           pathname: "/login",
-          state: { from: { pathname: "/m/work", search: "", hash: "" } },
+          state: { from: { pathname: "/m/chat", search: "", hash: "" } },
         },
         undefined,
       );

@@ -1,5 +1,7 @@
 import { ASK_AGENT_METADATA_KEY, readAskAgentMessageMetadata } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
+import { chats } from "../db/schema/chats.js";
+import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
 import { createMeChat } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
@@ -155,6 +157,104 @@ describe("Need you request queue and Ask agent protocol", () => {
       requestId: request.id,
       agentId: input.asker.uuid,
     });
+  });
+
+  it("fails closed across the Class B org boundary and Class C chat boundary", async () => {
+    const input = await setup("boundary-owner");
+    const request = await ask(input, "Private decision");
+    const outsider = await createTestAdmin(input.app);
+    const ownerHeaders = { authorization: `Bearer ${input.owner.accessToken}` };
+    const outsiderHeaders = { authorization: `Bearer ${outsider.accessToken}` };
+
+    const foreignOrgId = `org-need-you-${crypto.randomUUID().slice(0, 8)}`;
+    await input.app.db
+      .insert(organizations)
+      .values({ id: foreignOrgId, name: foreignOrgId.slice(0, 30), displayName: "Need You Foreign" });
+    const foreignChatId = crypto.randomUUID();
+    await input.app.db.insert(chats).values({
+      id: foreignChatId,
+      organizationId: foreignOrgId,
+      type: "direct",
+    });
+
+    // Class B: an explicit org URL never falls back to the caller's default
+    // Team or discloses another Team's queue.
+    const foreignQueue = await input.app.inject({
+      method: "GET",
+      url: `/api/v1/orgs/${encodeURIComponent(foreignOrgId)}/chats/open-requests`,
+      headers: ownerHeaders,
+    });
+    expect(foreignQueue.statusCode).toBe(403);
+
+    // Class C: a same-Team member without chat access and a caller from a
+    // different Team both receive the anti-enumerating 404 on read and write.
+    for (const [headers, chatId] of [
+      [outsiderHeaders, input.chatId],
+      [ownerHeaders, foreignChatId],
+    ] as const) {
+      const thread = await input.app.inject({
+        method: "GET",
+        url: `/api/v1/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(request.id)}/thread`,
+        headers,
+      });
+      expect(thread.statusCode).toBe(404);
+
+      const clarification = await input.app.inject({
+        method: "POST",
+        url: `/api/v1/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(request.id)}/ask-agent`,
+        headers,
+        payload: { content: "Reveal the private context." },
+      });
+      expect(clarification.statusCode).toBe(404);
+    }
+  });
+
+  it("binds Class C request ids to the addressed chat", async () => {
+    const input = await setup("request-chat-binding");
+    const firstRequest = await ask(input, "First chat decision");
+    const secondAgent = await createAgent(input.app.db, {
+      name: "request-chat-binding-second",
+      type: "agent",
+      displayName: "request-chat-binding-second",
+      managerId: input.owner.memberId,
+      organizationId: input.owner.organizationId,
+    });
+    if (!secondAgent) throw new Error("second agent setup failed");
+    const secondChat = await createMeChat(input.app.db, input.owner.humanAgentUuid, input.owner.organizationId, {
+      participantIds: [secondAgent.uuid],
+      topic: "request binding second chat",
+    });
+    const secondRequest = (
+      await sendMessage(input.app.db, secondChat.chatId, secondAgent.uuid, {
+        source: "api",
+        format: "request",
+        content: "Second chat decision",
+        metadata: { mentions: [input.owner.humanAgentUuid] },
+      })
+    ).message;
+    const headers = { authorization: `Bearer ${input.owner.accessToken}` };
+
+    const thread = await input.app.inject({
+      method: "GET",
+      url: `/api/v1/chats/${encodeURIComponent(input.chatId)}/requests/${encodeURIComponent(secondRequest.id)}/thread`,
+      headers,
+    });
+    expect(thread.statusCode).toBe(404);
+
+    const clarification = await input.app.inject({
+      method: "POST",
+      url: `/api/v1/chats/${encodeURIComponent(input.chatId)}/requests/${encodeURIComponent(secondRequest.id)}/ask-agent`,
+      headers,
+      payload: { content: "This request belongs to another chat." },
+    });
+    expect(clarification.statusCode).toBe(404);
+
+    const validThread = await input.app.inject({
+      method: "GET",
+      url: `/api/v1/chats/${encodeURIComponent(input.chatId)}/requests/${encodeURIComponent(firstRequest.id)}/thread`,
+      headers,
+    });
+    expect(validThread.statusCode).toBe(200);
   });
 
   it("strips a forged Ask agent marker from ordinary messages", async () => {

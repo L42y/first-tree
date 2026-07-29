@@ -103,7 +103,7 @@ function renderWithClient(harness: DomHarness, element: ReactElement, path: stri
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <Routes>
-            <Route path="/m/work" element={element} />
+            <Route path="/m/chat" element={element} />
           </Routes>
         </ToastProvider>
       </QueryClientProvider>
@@ -178,7 +178,7 @@ describe("mobile density tiers", () => {
   });
 
   it("renders one continuous Chat list without promoting ask or recovery states", async () => {
-    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    renderWithClient(harness, <MobileWorkPage />, "/m/chat");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Release readiness"));
     expect(harness.container.textContent).toContain("Chat");
 
@@ -196,7 +196,7 @@ describe("mobile density tiers", () => {
   });
 
   it("gives summaries three lines while keeping dynamic evidence compact", async () => {
-    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    renderWithClient(harness, <MobileWorkPage />, "/m/chat");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Release readiness"));
 
     const cards = [...harness.container.querySelectorAll<HTMLElement>("[data-mobile-card]")];
@@ -238,7 +238,7 @@ describe("mobile density tiers", () => {
       counts: { manual: { chatCount: 3, unreadChatCount: 2 } },
     });
 
-    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    renderWithClient(harness, <MobileWorkPage />, "/m/chat");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Pinned urgent work"));
 
     const needYou = harness.container.querySelector<HTMLButtonElement>('button[aria-label="Need you, 1 question"]');
@@ -266,7 +266,7 @@ describe("mobile density tiers", () => {
       priorityRows: { pinned: [] },
       nextCursor: null,
     });
-    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    renderWithClient(harness, <MobileWorkPage />, "/m/chat");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Markdown preview"));
 
     const preview = harness.container.querySelector("[data-mobile-card-preview]");
@@ -327,7 +327,7 @@ describe("mobile density tiers", () => {
       nextCursor: null,
     });
 
-    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    renderWithClient(harness, <MobileWorkPage />, "/m/chat");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("Progressive 0"));
 
     const list = harness.container.querySelector("[data-mobile-work-list]");
@@ -380,7 +380,7 @@ describe("mobile density tiers", () => {
         nextCursor: null,
       });
 
-    renderWithClient(harness, <MobileWorkPage />, "/m/work");
+    renderWithClient(harness, <MobileWorkPage />, "/m/chat");
     await waitForSettled(harness, () => expect(harness.container.textContent).toContain("First page only"));
 
     const searchToggle = harness.container.querySelector<HTMLButtonElement>('button[aria-label="Search Chat"]');

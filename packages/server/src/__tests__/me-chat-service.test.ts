@@ -898,7 +898,7 @@ describe("chat-first workspace service layer", () => {
       engagement: "all",
       cursor: legacy,
     });
-    expect(recovered.priorityRows).toEqual({ pinned: [] });
+    expect(recovered.priorityRows).toEqual({ pinned: [], attention: [] });
     expect(Array.isArray(recovered.rows)).toBe(true);
 
     // A genuinely invalid cursor (here: an unsupported version) still surfaces as

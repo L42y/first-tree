@@ -10,7 +10,7 @@ surfaces: [server, web]
 ## Goal
 
 Confirm that a desktop user can discover the mobile PWA, scan a public same-origin QR code, install it through the
-platform-supported path, and open the installed app into the existing mobile Work surface. The QR must carry no
+platform-supported path, and open the installed app into the existing mobile Chat surface. The QR must carry no
 credentials or private context. First use may require the product's existing OAuth flow, while an account that has not
 completed setup must return to desktop rather than starting a second mobile onboarding.
 
@@ -44,7 +44,7 @@ exercise the native install action when the browser exposes it, dismiss it once,
 usable manual-install path. In a clean state where no native prompt is offered, complete the manual path directly.
 
 Launch each installed app from the home-screen icon. With the completed account signed out on the device, use the
-existing OAuth provider once and follow the return into mobile Work. Close and reopen the installed app to check that a
+existing OAuth provider once and follow the return into mobile Chat. Close and reopen the installed app to check that a
 valid session is reused. Then repeat the first-launch path with the incomplete account and use both recovery actions:
 copy the desktop setup link, transfer that public URL to a desktop browser and open its `/onboarding` destination, and
 switch to another account.
@@ -68,8 +68,8 @@ valid deployment or simulate a product response merely to make this live branch 
 - The public page presents truthful platform-specific instructions. iOS requires the operating system's Add to Home
   Screen action. Android offers a single native install action only when the browser makes it available; a user
   dismissal or a browser that offers no prompt leaves usable manual instructions.
-- The installed icon launches in standalone display mode and reaches the existing mobile Work surface. An
-  unauthenticated user completes the existing OAuth flow and returns to mobile Work without receiving a credential
+- The installed icon launches in standalone display mode and reaches the existing mobile Chat surface. An
+  unauthenticated user completes the existing OAuth flow and returns to mobile Chat without receiving a credential
   from the desktop QR or repeating product onboarding. Safe-area content remains reachable, and neither standalone
   login nor OAuth completion loops back to the install page.
 - A valid mobile session survives an ordinary app close and reopen. An expired or failed session returns to normal
@@ -87,7 +87,7 @@ valid deployment or simulate a product response merely to make this live branch 
 
 Keep screenshots or a short recording of both desktop entry points, the decoded same-origin QR paths with any
 deployment hostname redacted, the iOS and Android install branches, the resulting home-screen icon, standalone display
-mode, the final `/m/work` destination after OAuth, and incomplete-setup handoff. Record only a callback's fixed pathname
+mode, the final `/m/chat` destination after OAuth, and incomplete-setup handoff. Record only a callback's fixed pathname
 if needed; strip its search and hash before capture and never export or record the complete callback URL. Browser
 network logs may establish the absence of a third-party QR request. Record the device, OS, browser, target ref, channel
 state, and whether Android used the native or manual branch.
@@ -103,9 +103,9 @@ identifiers, or unredacted production analytics.
 ## Expected behavior and limitations
 
 `PASS` requires a credential-free scan, real installation on both platform families, standalone launch through existing
-OAuth into Work, a durable desktop handoff for incomplete setup, usable manual Android instructions after a dismissal
+OAuth into Chat, a durable desktop handoff for incomplete setup, usable manual Android instructions after a dismissal
 or absent prompt, and safe product recovery from a transient network fault. `FAIL` includes credential-bearing QR data,
-an external QR-rendering request, an installation dead end, auth return outside mobile Work, repeated mobile
+an external QR-rendering request, an installation dead end, auth return outside mobile Chat, repeated mobile
 onboarding, or a reproducible product-owned recovery loop. `BLOCKED` applies when physical devices, platform install
 support, OAuth, or an eligible deployment are unavailable; `INCONCLUSIVE` applies when an external outage prevents
 attribution. Source inspection or simulated browser events alone cannot upgrade the live journey to `PASS`.

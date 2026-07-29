@@ -21,7 +21,7 @@ export function MobileSetupHandoff() {
     logout();
     navigate("/login", {
       replace: true,
-      state: { from: { pathname: "/m/work", search: "", hash: "" } },
+      state: { from: { pathname: "/m/chat", search: "", hash: "" } },
     });
   };
 

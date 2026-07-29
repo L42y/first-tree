@@ -240,7 +240,7 @@ function MobileWorkList({
             {searchOpen ? <X aria-hidden className="h-5 w-5" /> : <Search aria-hidden className="h-5 w-5" />}
           </button>
           <Link
-            to="/m/work?c=draft"
+            to="/m/chat?c=draft"
             aria-label="Start new chat"
             className="inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-full)]"
             style={{ background: "var(--bg-active)", color: "var(--fg)", textDecoration: "none" }}

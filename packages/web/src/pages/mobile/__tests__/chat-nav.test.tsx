@@ -78,11 +78,11 @@ describe("MobileWorkPage back navigation", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     // Start on the chat detail (c=chat-1) with the list already behind it.
     harness.render(
-      <MemoryRouter initialEntries={["/m/work", "/m/work?c=chat-1"]}>
+      <MemoryRouter initialEntries={["/m/chat", "/m/chat?c=chat-1"]}>
         <QueryClientProvider client={queryClient}>
           <NavProbe />
           <Routes>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -113,10 +113,10 @@ describe("MobileWorkPage back navigation", () => {
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     harness.render(
-      <MemoryRouter initialEntries={["/m/work"]}>
+      <MemoryRouter initialEntries={["/m/chat"]}>
         <QueryClientProvider client={queryClient}>
           <Routes>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>,

@@ -233,6 +233,7 @@ export function NeedYouPage({
               />
             }
             onRequestEarlierContext={!earlierRequested ? () => setEarlierRequested(true) : undefined}
+            onEscape={onClose}
             askAgent={{
               exchanges: askAgent.exchanges,
               waiting: askAgent.waiting,

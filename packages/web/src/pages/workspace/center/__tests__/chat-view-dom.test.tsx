@@ -2329,7 +2329,7 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("clears a stale auto-primed @ when a request dock arrives late and clean-resolves option answers", async () => {
+  it("removes a focused composer when a request arrives and clean-resolves through takeover", async () => {
     const { ChatView } = await import("../chat-view.js");
     const dockMessages = messages([
       message({
@@ -2368,13 +2368,19 @@ describe("ChatView", () => {
     });
     await flush();
     await waitForText(container, "Submit");
-    await waitForCondition(() => textarea.value === "", "Expected late request dock to clear auto-primed @");
+    expect(textarea.isConnected).toBe(false);
+    expect(container.querySelector("[data-ask-blocked-composer]")).not.toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('[role="dialog"]'));
 
-    // Decoupled: clicking an option highlights the pill but does NOT fill the
-    // composer — the draft stays empty (the auto-primed @ has been cleared).
-    // Answering happens in the overlay: the composer stays empty.
+    // A queued background-composer Enter cannot send an ordinary message after
+    // takeover: that composer is gone and focus belongs to the request dialog.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Answering happens only in the overlay.
     await click(askOption(container, "Blue-green"));
-    expect(textarea.value).toBe("");
     await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected option answer send");
     // The answer is the selected option label, resolving the question.

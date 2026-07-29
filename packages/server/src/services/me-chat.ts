@@ -64,6 +64,15 @@ import { ensureCanJoin, joinAsParticipant, leaveAsParticipant, resolveChatMember
 const CURSOR_VERSION = "v2";
 
 /**
+ * Expand-contract bridge for independently deployed Web and Server builds.
+ * The retired `attention` tier stays empty so an older Web can deserialize a
+ * newer response; current clients strip it and never use it for ordering.
+ */
+type LegacyCompatibleListMeChatsResponse = Omit<ListMeChatsResponse, "priorityRows"> & {
+  priorityRows: ListMeChatsResponse["priorityRows"] & { attention: MeChatRow[] };
+};
+
+/**
  * A decoded cursor is one of three cases so the caller can treat them
  * differently across a rollout:
  *   - `ok`     — a valid `v2|<iso>|<chatId>` cursor; resume from it.
@@ -668,7 +677,7 @@ export async function listMeChats(
   callerMemberId: string,
   organizationId: string,
   query: ListMeChatsQuery,
-): Promise<ListMeChatsResponse> {
+): Promise<LegacyCompatibleListMeChatsResponse> {
   const limit = query.limit;
   // Resolve the cursor into a keyset anchor. A recognized `legacy` cursor (a
   // pre-PR shape a client held across the rollout) restarts from page 1 — the
@@ -782,7 +791,7 @@ export async function listMeChats(
     const rows = pageRaw.map((row) => rowById.get(row.chat_id)).filter((row): row is MeChatRow => row !== undefined);
 
     return {
-      priorityRows: { pinned },
+      priorityRows: { pinned, attention: [] },
       rows,
       nextCursor,
     };
@@ -790,7 +799,7 @@ export async function listMeChats(
 
   const rows = await enrichMeChatRows(db, pageRaw, { humanAgentId, managedAgentIds });
   return {
-    priorityRows: { pinned: [] },
+    priorityRows: { pinned: [], attention: [] },
     rows,
     nextCursor,
   };

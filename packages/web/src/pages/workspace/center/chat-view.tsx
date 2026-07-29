@@ -1593,7 +1593,7 @@ export function ChatView({
    *  rail with a participants sheet. */
   narrow?: boolean;
   /** Generic narrow Workspace keeps the full details rail, including GitHub
-   * state. `/m/work` opts into the smaller mobile participants sheet. */
+   * state. `/m/chat` opts into the smaller mobile participants sheet. */
   presentation?: "workspace" | "mobile";
   /** Non-null only in narrow mode. Invoking it summons the conversation-
    *  list overlay (which lives in `WorkspacePage`). */
@@ -1824,6 +1824,7 @@ export function ChatView({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const readOnlyComposerRef = useRef<HTMLDivElement | null>(null);
+  const blockedComposerRef = useRef<HTMLDivElement | null>(null);
   const inspectComposerRef = useRef<HTMLButtonElement | null>(null);
   // The composer footer band — wraps BOTH the request dock (with its option
   // radios) and the composer. The Enter-to-resolve backstop binds its keydown
@@ -2210,6 +2211,10 @@ export function ChatView({
 
   const handleSend = async () => {
     if (isLandingCampaignTrialChatLocked(chatDetail?.metadata)) return;
+    // A request can arrive while the old composer still owns keyboard focus.
+    // Fail closed at the mutation boundary as well as replacing that composer
+    // in the render tree below, so a queued Enter/click cannot bypass takeover.
+    if (askOverlayActive) return;
     const text = draft.trim();
     // Images ride `content` as ImageRefContent (unchanged); documents/files ride
     // `metadata.attachments[]` as generic AttachmentRefs. A mixed send carries
@@ -3548,9 +3553,9 @@ export function ChatView({
   );
 
   // Group-chat mention gate, shared by the send button (dimming / title) and
-  // handleSend's guard. A blocking question lifts the gate: the pinned question
-  // makes its asker the default recipient, so no typed @mention is required
-  // while a question blocks me.
+  // handleSend's guard. The ask overlay owns all answering while active, so the
+  // ordinary composer cannot reach this gate until the viewer enters inspect
+  // mode or resolves the request.
   const sendBlockedByMentionGate = requiresMention && draftMentions.length === 0 && !askOverlayActive;
 
   // Once the gate lifts (a member gets @mentioned, or a dock/overlay takes over)
@@ -3559,16 +3564,19 @@ export function ChatView({
     if (!sendBlockedByMentionGate) dismissMentionTip();
   }, [sendBlockedByMentionGate, dismissMentionTip]);
 
-  // Unified send-disabled gate for the composer. While the AskTakeover overlay
-  // is active it covers the composer (answering is owned there), so the composer
-  // only ever sends ordinary messages: need text or an image. NOTE: the mention
+  // Unified send-disabled gate for the composer. The overlay replaces the
+  // editable composer and also disables the mutation path defensively. NOTE: the mention
   // gate is deliberately NOT part of `sendDisabled` — a truly disabled button
   // swallows clicks, so we keep the button clickable when only the mention is
   // missing and let handleSend pop the tip. `sendDimmed` carries the greyed-out
   // look for that state.
   const landingCampaignChatLocked = isLandingCampaignTrialChatLocked(chatDetail?.metadata);
   const sendDisabled =
-    landingCampaignChatLocked || sendMut.isPending || uploading || (!draft.trim() && pendingAttachments.length === 0);
+    askOverlayActive ||
+    landingCampaignChatLocked ||
+    sendMut.isPending ||
+    uploading ||
+    (!draft.trim() && pendingAttachments.length === 0);
   const sendDimmed = sendDisabled || sendBlockedByMentionGate;
 
   const mention = useMentionAutocomplete({
@@ -4206,9 +4214,37 @@ export function ChatView({
                 <ComposeStatusBar
                   chatId={chatId}
                   agents={(chatDetail?.participants ?? []).filter((p) => p.type !== "human")}
-                  fallbackFocusRef={readOnly ? readOnlyComposerRef : inspectAskMode ? inspectComposerRef : textareaRef}
+                  fallbackFocusRef={
+                    askOverlayActive
+                      ? blockedComposerRef
+                      : readOnly
+                        ? readOnlyComposerRef
+                        : inspectAskMode
+                          ? inspectComposerRef
+                          : textareaRef
+                  }
                 />
-                {readOnly ? (
+                {askOverlayActive ? (
+                  <div
+                    ref={blockedComposerRef}
+                    tabIndex={-1}
+                    data-ask-blocked-composer
+                    className="composer-card flex items-center"
+                    style={{
+                      gap: "var(--sp-3)",
+                      minHeight: composerMobile ? 52 : 46,
+                      padding: "var(--sp-2_5) var(--sp-3)",
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      color: "var(--fg-3)",
+                    }}
+                  >
+                    <span aria-hidden className="mono">
+                      ?
+                    </span>
+                    <span className="text-body">Answer the question above to continue this chat.</span>
+                  </div>
+                ) : readOnly ? (
                   <div
                     ref={readOnlyComposerRef}
                     tabIndex={-1}
@@ -4286,9 +4322,6 @@ export function ChatView({
                   </button>
                 ) : (
                   <>
-                    {/* A blocking question is answered in the full-coverage
-                        AskTakeover overlay (rendered over the workspace), not in
-                        the composer. */}
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: drop target for image upload */}
                     <div
                       className="composer-card composer-input"

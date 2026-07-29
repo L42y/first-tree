@@ -39,10 +39,10 @@ describe("MobileWorkPage document-evidence surface", () => {
   it("mounts the document preview drawer so captured doc links are not a no-op", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     harness.render(
-      <MemoryRouter initialEntries={["/m/work"]}>
+      <MemoryRouter initialEntries={["/m/chat"]}>
         <QueryClientProvider client={queryClient}>
           <Routes>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>,

@@ -32,10 +32,10 @@ describe("mobile projections share the realtime invalidation prefix", () => {
   it("refetches Work when ['me','chats'] is invalidated (answer / new message / failure)", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     harness.render(
-      <MemoryRouter initialEntries={["/m/work"]}>
+      <MemoryRouter initialEntries={["/m/chat"]}>
         <QueryClientProvider client={queryClient}>
           <Routes>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>,
