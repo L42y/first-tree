@@ -126,6 +126,7 @@ export async function handleContextReviewerMrEvent(input: {
   normalized: NormalizedGitlabWebhook;
   connection: { id: string; organizationId: string; instanceOrigin: string; tokenHash: string };
   staleSeconds?: number;
+  beforeAuthorityFenceForTest?: () => Promise<void>;
 }): Promise<ContextReviewerMrResult> {
   if (!isContextReviewerMrCandidate(input.normalized)) {
     return { handled: false, reason: "unsupported_event" };
@@ -187,6 +188,7 @@ export async function handleContextReviewerMrEvent(input: {
     contextReviewRunId,
   };
   const prompt = await renderContextReviewerMrPrompt(templateInput);
+  await input.beforeAuthorityFenceForTest?.();
   const fenced = await withContextReviewerDispatchAuthority(
     input.database,
     {
@@ -200,6 +202,8 @@ export async function handleContextReviewerMrEvent(input: {
         connectionId: input.connection.id,
         instanceOrigin: input.connection.instanceOrigin,
         tokenHash: input.connection.tokenHash,
+        repository: webhookRepo,
+        branch: runtime.branch,
       },
     },
     async (tx, currentReviewer): Promise<Extract<ContextReviewerMrResult, { handled: true }>> => {
