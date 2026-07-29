@@ -355,31 +355,80 @@ expectReject(
   /requires an incomplete or unclassifiable artifact/u,
 );
 
-for (const unsafe of [
-  { raw_excerpt: "copied meeting text" },
-  { note: "https://example.invalid/private" },
-  { note: "file:///tmp/source.md" },
-  { note: "/etc/passwd" },
-  { note: "../source/minutes.md" },
-  { note: "minutes.md" },
-  { note: "ou_1234567890" },
-  { note: "doxcnABCdef1234567890" },
-  { note: "person@example.invalid" },
-  { note: "sk-proj-1234567890abcdef" },
-  { note: "xoxb-1234567890abcdef" },
-  { note: "Bearer abcdefghijklmnop" },
-  { note: "Budget is $1000" },
+expectReject(
+  () => validateMeetingAnalysisPacket(completeBundle, { ...packet(completeBundle), raw_excerpt: "copied text" }),
+  /unknown field/u,
+);
+
+for (const [unsafePacket, pattern] of [
+  [packet(completeBundle, { reason: "See https://example.invalid/private" }), /forbidden URI/u],
+  [packet(completeBundle, { reason: "See file:///tmp/source.md" }), /forbidden URI/u],
+  [packet(completeBundle, { reason: "/etc/passwd" }), /forbidden absolute path/u],
+  [
+    packet(completeBundle, {
+      items: [item({ statement: "Read ../source/minutes.md before continuing." })],
+    }),
+    /forbidden relative path/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [item({ context: "The evidence is recorded in minutes.md." })],
+    }),
+    /forbidden filename/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [item({ attribution: "ou_1234567890" })],
+    }),
+    /forbidden provider identifier/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [
+        item({
+          evidence: [{ artifact_id: "minutes", location_hint: "doxcnABCdef1234567890" }],
+        }),
+      ],
+    }),
+    /forbidden provider document token/u,
+  ],
+  [packet(completeBundle, { reason: "Contact person@example.invalid" }), /forbidden email address/u],
+  [
+    packet(completeBundle, {
+      items: [item({ statement: "Credential sk-proj-1234567890abcdef was supplied." })],
+    }),
+    /forbidden secret/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [item({ context: "Credential xoxb-1234567890abcdef was supplied." })],
+    }),
+    /forbidden secret/u,
+  ],
+  [
+    packet(completeBundle, {
+      items: [item({ attribution: "Bearer abcdefghijklmnop" })],
+    }),
+    /forbidden credential/u,
+  ],
+  [packet(completeBundle, { reason: "Budget is $1000" }), /forbidden exact currency amount/u],
 ]) {
-  expectReject(
-    () => validateMeetingAnalysisPacket(completeBundle, { ...packet(completeBundle), ...unsafe }),
-    /unknown field|forbidden/u,
-  );
+  expectReject(() => validateMeetingAnalysisPacket(completeBundle, unsafePacket), pattern);
 }
 
 const unsafeAttribution = packet(completeBundle, {
   items: [item({ attribution: "person@example.invalid" })],
 });
 expectReject(() => validateMeetingAnalysisPacket(completeBundle, unsafeAttribution), /forbidden email address/u);
+
+assert.doesNotThrow(() =>
+  validateMeetingAnalysisPacket(
+    completeBundle,
+    packet(completeBundle, {
+      reason: "An A/B experiment and/or staged review remains valid on 2026/07/29.",
+    }),
+  ),
+);
 
 const stale = packet(completeBundle, { source_revision: "0".repeat(64) });
 expectReject(() => validateMeetingAnalysisPacket(completeBundle, stale), /does not match/u);

@@ -248,9 +248,14 @@ function scanPrivateOutput(value, path = "packet") {
   if (path === "packet.source_revision") return;
   const checks = [
     [/[\r\n\t]/u, "multi-line or control character"],
-    [/[\\/]/u, "path or URL delimiter"],
-    [/\b(?:https?|file|ftp|s3|gs|mailto):/iu, "URI"],
+    [/\b(?:https?|file|ftp|s3|gs):\/\/\S+/iu, "URI"],
+    [/\bmailto:\S+/iu, "URI"],
+    [/(?:^|[\s"'(=])\/(?:[^\s/]+\/)*[^\s/]+/u, "absolute path"],
+    [/(?:^|[\s"'(=])(?:\.{1,2}|~)[\\/](?:[^\s\\/]+[\\/])*[^\s\\/]+/u, "relative path"],
+    [/\b[A-Za-z]:\\(?:[^\s\\]+\\)*[^\s\\]+/u, "absolute path"],
+    [/\b(?:[\w.-]+[\\/])+[\w.-]+\.(?:csv|docx?|html?|json|md|pdf|pptx?|text|tsv|txt|xlsx?|ya?ml)\b/iu, "relative path"],
     [/\b[\w.-]+\.(?:csv|docx?|html?|json|md|pdf|pptx?|text|tsv|txt|xlsx?|ya?ml)\b/iu, "filename"],
+    [/\bwww\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/u, "URL"],
     [/\b(?:ou|on|oc|cli)_[A-Za-z0-9_-]{8,}\b/u, "provider identifier"],
     [/\b(?:boxcn|docx?|doxcn|fldcn|shtcn|wiki)[A-Za-z0-9_-]{8,}\b/iu, "provider document token"],
     [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu, "email address"],

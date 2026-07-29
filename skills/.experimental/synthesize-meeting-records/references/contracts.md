@@ -145,6 +145,6 @@ field.
 Reject raw/private keys and values, including transcript bodies, excerpts,
 URLs and URIs, provider IDs, document tokens, credentials, absolute or
 relative paths, filenames, contact details, secret shapes, and exact currency
-amounts. Output strings are plain single-line prose; avoid slash and backslash
-delimiters. Minimize personal attribution even when it is not
-machine-detectable.
+amounts. Output strings are plain single-line prose. Path-like values are
+forbidden, but ordinary prose such as `A/B test` or `and/or` remains valid.
+Minimize personal attribution even when it is not machine-detectable.

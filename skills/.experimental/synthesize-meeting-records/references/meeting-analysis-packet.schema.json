@@ -26,14 +26,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "category",
-          "statement",
-          "context",
-          "settlement",
-          "chronology",
-          "evidence"
-        ],
+        "required": ["category", "statement", "context", "settlement", "chronology", "evidence"],
         "properties": {
           "category": {
             "enum": ["decision", "progress", "plan", "action", "blocker", "risk"]
