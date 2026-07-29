@@ -187,6 +187,42 @@ describe("deliverGithubEvent dependency edge paths", () => {
     });
   });
 
+  it("uses the surface URL consistently for task card and publisher provenance when the entity URL is absent", async () => {
+    const sentPayloads: Array<Record<string, unknown>> = [];
+    const sendMessage = vi.fn(async (_db: unknown, _chatId: string, _senderId: string, payload: unknown) => {
+      sentPayloads.push(payload as Record<string, unknown>);
+      return { message: { id: "message-fallback-url" }, recipients: ["recipient-fallback-url"] };
+    });
+    const { deliverGithubEvent } = await loadDelivery({ sendMessage });
+    const event = makeEvent();
+    event.entity.url = undefined;
+    event.surface.url = "https://github.com/owner/repo/pull/1";
+
+    const stats = await deliverGithubEvent(makeApp(), event, [
+      existingTarget({
+        humanAgentId: "human-task",
+        delegateAgentId: "delegate-task",
+        involveReason: "mentioned",
+        involveLogin: "test-app-slug",
+        teamAgentTask: { agentUuid: "delegate-task" },
+      }),
+    ]);
+
+    expect(stats).toEqual({ delivered: 1, newChats: 0, failed: 0 });
+    expect(sentPayloads).toHaveLength(1);
+    expect(sentPayloads[0]).toMatchObject({
+      content: {
+        entity: { url: "https://github.com/owner/repo/pull/1" },
+        teamAgentTask: { agentUuid: "delegate-task", runId: expect.any(String) },
+      },
+      metadata: {
+        githubTaskEntityUrl: "https://github.com/owner/repo/pull/1",
+        githubTaskRun: true,
+        teamAgentTask: { agentUuid: "delegate-task", runId: expect.any(String) },
+      },
+    });
+  });
+
   it("isolates a per-chat delivery failure and continues with later chats", async () => {
     const sendMessage = vi
       .fn()

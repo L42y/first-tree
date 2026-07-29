@@ -684,8 +684,11 @@ coverage, and keeps the App credential server-side. Each run accepts one
 immutable payload. Unknown GitHub writes reconcile a hidden run marker before
 retrying, and a different payload is rejected. The body must not mention the
 App or contain the reserved marker. Historical markers without a run id and
-Discussion/commit events cannot publish. This ordinary comment publisher does
-not grant Context Review verdict or merge authority.
+Discussion/commit events cannot publish; webhook ingress reports the stable
+`GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED` blocker without creating a run.
+Missing accepted Issue/PR write permission similarly reports
+`GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED`. This ordinary comment publisher
+does not grant Context Review verdict or merge authority.
 
 `<entity>` accepts a full GitHub URL, `owner/repo#N`, or `owner/repo@<sha>`.
 A `409` means the same (human, delegate) line already lives in another chat

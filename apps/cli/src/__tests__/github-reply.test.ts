@@ -1,6 +1,8 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { GITHUB_TASK_REPLY_BODY_MAX_BYTES } from "@first-tree/shared";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -82,12 +84,73 @@ describe("github reply", () => {
   });
 
   it("rejects oversized files and propagates SDK publication errors", async () => {
-    await writeFile(bodyFile, Buffer.alloc(64 * 1024 + 1, "x"));
+    await writeFile(bodyFile, Buffer.alloc(GITHUB_TASK_REPLY_BODY_MAX_BYTES + 1, "x"));
     await expect(run(["--run", "run-42", "--body-file", bodyFile])).rejects.toThrow("REPLY_BODY_TOO_LARGE");
     await writeFile(bodyFile, "Done", "utf8");
     sdk.submitGithubTaskReply.mockRejectedValueOnce(new Error("publisher unavailable"));
     await expect(run(["--run", "run-42", "--body-file", bodyFile])).rejects.toThrow("publisher unavailable");
     expect(localAgentMocks.handleSdkError).toHaveBeenCalled();
+  });
+
+  it("reads stdin exactly and rejects interactive or oversized stdin with stable exit codes", async () => {
+    const stdin = new PassThrough();
+    Object.defineProperty(stdin, "isTTY", { value: false });
+    const stdinSpy = vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
+    try {
+      const pending = run(["--run", "run-stdin", "--body-file", "-"]);
+      stdin.end("Completed from stdin.\n");
+      await pending;
+    } finally {
+      stdinSpy.mockRestore();
+    }
+    expect(sdk.submitGithubTaskReply).toHaveBeenLastCalledWith("chat-42", "run-stdin", {
+      body: "Completed from stdin.\n",
+    });
+
+    const tty = new PassThrough();
+    Object.defineProperty(tty, "isTTY", { value: true });
+    const ttySpy = vi.spyOn(process, "stdin", "get").mockReturnValue(tty as unknown as typeof process.stdin);
+    try {
+      await expect(run(["--run", "run-tty", "--body-file", "-"])).rejects.toThrow("NO_REPLY_BODY:");
+      expect(outputMocks.fail).toHaveBeenLastCalledWith(
+        "NO_REPLY_BODY",
+        expect.stringContaining("requires reply body content on stdin"),
+        2,
+      );
+    } finally {
+      ttySpy.mockRestore();
+    }
+
+    const oversized = new PassThrough();
+    Object.defineProperty(oversized, "isTTY", { value: false });
+    const oversizedSpy = vi
+      .spyOn(process, "stdin", "get")
+      .mockReturnValue(oversized as unknown as typeof process.stdin);
+    try {
+      const pending = run(["--run", "run-large", "--body-file", "-"]);
+      oversized.end(Buffer.alloc(GITHUB_TASK_REPLY_BODY_MAX_BYTES + 1, "x"));
+      await expect(pending).rejects.toThrow("REPLY_BODY_TOO_LARGE:");
+      expect(outputMocks.fail).toHaveBeenLastCalledWith(
+        "REPLY_BODY_TOO_LARGE",
+        expect.stringContaining(`${GITHUB_TASK_REPLY_BODY_MAX_BYTES} bytes`),
+        2,
+      );
+    } finally {
+      oversizedSpy.mockRestore();
+    }
+  });
+
+  it("rejects missing and non-file body paths before SDK creation", async () => {
+    await expect(run(["--run", "run-42", "--body-file", join(tempDir, "missing.md")])).rejects.toThrow(
+      "REPLY_BODY_FILE_INVALID:",
+    );
+    await expect(run(["--run", "run-42", "--body-file", tempDir])).rejects.toThrow("REPLY_BODY_FILE_INVALID:");
+    expect(outputMocks.fail).toHaveBeenLastCalledWith(
+      "REPLY_BODY_FILE_INVALID",
+      expect.stringContaining("--body-file must name a readable regular file"),
+      2,
+    );
+    expect(localAgentMocks.createSdk).not.toHaveBeenCalled();
   });
 
   it("exposes one direct reply command without repo/entity/provider options", async () => {

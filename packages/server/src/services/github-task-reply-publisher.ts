@@ -105,7 +105,11 @@ export async function submitGithubTaskReply(input: {
       callerClientId: input.callerClientId,
       runtimeSessionToken: input.callerRuntimeSessionToken,
     });
-    if (run.submission.state === "submitting" || run.submission.state === "unknown") {
+    if (run.submission.state === "submitting") {
+      if (run.submission.payloadHash !== hashPayload(run, request.body)) throw payloadMismatch();
+      throw alreadySubmitted();
+    }
+    if (run.submission.state === "unknown") {
       const payloadHash = hashPayload(run, request.body);
       if (run.submission.payloadHash !== payloadHash) throw payloadMismatch();
       return {
@@ -170,7 +174,11 @@ export async function submitGithubTaskReply(input: {
       return { kind: "submitted" as const, response: submittedResponse(run.submission) };
     }
     if (run.submission.state === "failed") throw alreadySubmitted();
-    if (run.submission.state === "submitting" || run.submission.state === "unknown") {
+    if (run.submission.state === "submitting") {
+      if (run.submission.payloadHash !== payloadHash) throw payloadMismatch();
+      throw alreadySubmitted();
+    }
+    if (run.submission.state === "unknown") {
       if (run.submission.payloadHash !== payloadHash) throw payloadMismatch();
       return {
         kind: "reconcile" as const,
@@ -239,6 +247,22 @@ export async function submitGithubTaskReply(input: {
       failedAt: new Date().toISOString(),
     });
     throw mapped;
+  }
+
+  const expectedCommentBody = replyBody(request.body, input.runId);
+  if (comment.actor !== `${github.appSlug}[bot]` || comment.body !== expectedCommentBody) {
+    await setSubmissionForAttempt(input.db, claim.run.messageId, claim.attemptId, {
+      state: "unknown",
+      payloadHash,
+      attemptId: claim.attemptId,
+      failedAt: new Date().toISOString(),
+      publisherClientId: input.callerClientId,
+    });
+    throw new GithubTaskReplyPublisherError(
+      502,
+      "GITHUB_TASK_REPLY_GITHUB_UNKNOWN",
+      "GitHub returned a comment whose App actor or immutable reply payload could not be verified. Reconciliation is required.",
+    );
   }
 
   const submitted = submissionFromComment({
@@ -446,6 +470,7 @@ async function assertCurrentAuthority(
     .select({ accessMode: chatMembership.accessMode })
     .from(chatMembership)
     .where(and(eq(chatMembership.chatId, run.chatId), eq(chatMembership.agentId, input.callerAgentUuid)))
+    .for("update")
     .limit(1);
   if (
     !agent ||

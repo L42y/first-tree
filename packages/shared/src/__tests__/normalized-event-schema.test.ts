@@ -184,7 +184,7 @@ describe("githubEventCardSchema", () => {
       ...baseCard,
       reason: "mentioned" as const,
       mentionedUser: "bob",
-      teamAgentTask: { agentUuid: "agent-uuid", runId: "server-run-id" },
+      teamAgentTask: { agentUuid: "agent-uuid", runId: "01900000-0000-7000-8000-000000000042" },
     });
     expect(res.success).toBe(true);
   });

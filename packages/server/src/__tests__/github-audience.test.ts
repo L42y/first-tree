@@ -327,11 +327,11 @@ describe("resolveAudience", () => {
   });
 
   it.each([
-    ["issue", { issues: "read" }],
-    ["pull_request", { pull_requests: "read" }],
-    ["discussion", { issues: "write", pull_requests: "write" }],
-    ["commit", { issues: "write", pull_requests: "write" }],
-  ] as const)("fails closed for an App-directed %s without a safe App comment publisher", async (entityType, permissions) => {
+    ["issue", { issues: "read" }, "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED"],
+    ["pull_request", { pull_requests: "read" }, "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED"],
+    ["discussion", { issues: "write", pull_requests: "write" }, "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED"],
+    ["commit", { issues: "write", pull_requests: "write" }, "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED"],
+  ] as const)("fails closed with a stable blocker for an App-directed %s without a safe App comment publisher", async (entityType, permissions, blocker) => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     await configureTeamAgent(app, admin);
@@ -340,7 +340,7 @@ describe("resolveAudience", () => {
       makeEvent({
         orgId: admin.organizationId,
         entityType,
-        entityKey: entityType === "commit" ? "owner/repo@abc1234" : `owner/repo#unsupported-${entityType}`,
+        entityKey: entityType === "commit" ? "owner/repo@abc1234" : "owner/repo#19",
         actorLogin: admin.username,
         actorAuthorAssociation: "MEMBER",
         targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
@@ -349,6 +349,7 @@ describe("resolveAudience", () => {
       { appSlug: "test-app-slug", appPermissions: permissions },
     );
     expect(resolution.targets).toEqual([]);
+    expect(resolution.appTaskBlocker).toBe(blocker);
   });
 
   it("routes the bound GitHub Context Tree repo to the Context Reviewer and other repos to the Team Agent", async () => {

@@ -378,7 +378,7 @@ function buildCard(
     entity: {
       type: event.entity.type,
       key: event.entity.key,
-      url: event.entity.url ?? null,
+      url: event.entity.url ?? event.surface.url,
     },
   };
   if (involveLogin) card.mentionedUser = involveLogin;

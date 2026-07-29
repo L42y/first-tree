@@ -1,7 +1,13 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { AGENT_RUNTIME_SESSION_HEADER, AGENT_SELECTOR_HEADER } from "@first-tree/shared";
-import { eq } from "drizzle-orm";
+import {
+  AGENT_RUNTIME_SESSION_HEADER,
+  AGENT_SELECTOR_HEADER,
+  GITHUB_TASK_REPLY_BODY_MAX_BYTES,
+  githubTaskReplyRequestSchema,
+} from "@first-tree/shared";
+import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { githubAppInstallations } from "../db/schema/github-app-installations.js";
 import { messages } from "../db/schema/messages.js";
 import { createAgent } from "../services/agent.js";
@@ -60,6 +66,97 @@ describe("GitHub App task reply publisher", () => {
       publisherClientId: fixture.admin.clientId,
       commentId: 901,
     });
+  });
+
+  it("accepts the exact composed GitHub comment boundary and rejects one extra user byte before GitHub", async () => {
+    const acceptedFixture = await createRunFixture(getApp());
+    const acceptedFetcher = successfulGithubFetcher(acceptedFixture.runId);
+    await expect(
+      submitGithubTaskReply(
+        publishInput(acceptedFixture, acceptedFetcher, "x".repeat(GITHUB_TASK_REPLY_BODY_MAX_BYTES)),
+      ),
+    ).resolves.toMatchObject({ commentId: 901 });
+    const [post] = githubCommentPosts(acceptedFetcher);
+    const postedBody = JSON.parse(String(post?.[1]?.body)) as { body: string };
+    expect(Buffer.byteLength(postedBody.body, "utf8")).toBe(64 * 1024);
+
+    expect(
+      githubTaskReplyRequestSchema.safeParse({
+        body: "x".repeat(GITHUB_TASK_REPLY_BODY_MAX_BYTES + 1),
+      }),
+    ).toMatchObject({
+      success: false,
+      error: { issues: [expect.objectContaining({ message: expect.stringContaining("body must not exceed") })] },
+    });
+
+    const multibyteBoundary =
+      "界".repeat(Math.floor(GITHUB_TASK_REPLY_BODY_MAX_BYTES / 3)) + "x".repeat(GITHUB_TASK_REPLY_BODY_MAX_BYTES % 3);
+    expect(Buffer.byteLength(multibyteBoundary, "utf8")).toBe(GITHUB_TASK_REPLY_BODY_MAX_BYTES);
+    expect(githubTaskReplyRequestSchema.safeParse({ body: multibyteBoundary })).toMatchObject({ success: true });
+    expect(githubTaskReplyRequestSchema.safeParse({ body: `${multibyteBoundary}界` })).toMatchObject({
+      success: false,
+    });
+  });
+
+  it("serializes concurrent same-payload claims to one comment and lets a later retry read the result", async () => {
+    const fixture = await createRunFixture(getApp());
+    let releasePost: (() => void) | undefined;
+    let markPostStarted: (() => void) | undefined;
+    const postStarted = new Promise<void>((resolve) => {
+      markPostStarted = resolve;
+    });
+    const postGate = new Promise<void>((resolve) => {
+      releasePost = resolve;
+    });
+    const fetcher = successfulGithubFetcher(fixture.runId, "issues", async () => {
+      markPostStarted?.();
+      await postGate;
+    });
+    const input = publishInput(fixture, fetcher, "Concurrent outcome.");
+
+    const winner = submitGithubTaskReply(input);
+    await postStarted;
+    await expect(submitGithubTaskReply(input)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_RUN_ALREADY_SUBMITTED",
+    });
+    expect(githubCommentPosts(fetcher)).toHaveLength(1);
+
+    releasePost?.();
+    const result = await winner;
+    await expect(submitGithubTaskReply(input)).resolves.toEqual(result);
+    expect(githubCommentPosts(fetcher)).toHaveLength(1);
+  });
+
+  it("rejects a concurrently changed payload without a second comment POST", async () => {
+    const fixture = await createRunFixture(getApp());
+    let releasePost: (() => void) | undefined;
+    let markPostStarted: (() => void) | undefined;
+    const postStarted = new Promise<void>((resolve) => {
+      markPostStarted = resolve;
+    });
+    const postGate = new Promise<void>((resolve) => {
+      releasePost = resolve;
+    });
+    const fetcher = successfulGithubFetcher(fixture.runId, "issues", async () => {
+      markPostStarted?.();
+      await postGate;
+    });
+    const winnerInput = publishInput(fixture, fetcher, "First immutable outcome.");
+    const changedInput = publishInput(fixture, fetcher, "Conflicting outcome.");
+
+    const winner = submitGithubTaskReply(winnerInput);
+    await postStarted;
+    await expect(submitGithubTaskReply(changedInput)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_RUN_PAYLOAD_MISMATCH",
+    });
+    expect(githubCommentPosts(fetcher)).toHaveLength(1);
+
+    releasePost?.();
+    await winner;
+    await expect(submitGithubTaskReply(changedInput)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_RUN_PAYLOAD_MISMATCH",
+    });
+    expect(githubCommentPosts(fetcher)).toHaveLength(1);
   });
 
   it("publishes a pull-request conversation comment with only pull-request write authority", async () => {
@@ -139,6 +236,61 @@ describe("GitHub App task reply publisher", () => {
     expect(accepted.json()).toMatchObject({ appActor: "test-app-slug[bot]" });
   });
 
+  it("rejects a stale rebound runtime proof and revoked original-chat speaker membership before GitHub", async () => {
+    const fixture = await createRunFixture(getApp());
+    const fetcher = successfulGithubFetcher(fixture.runId);
+    const successorToken = await bindAgentRuntimeSession(fixture.app.db, fixture.agent.uuid, fixture.admin.clientId);
+
+    await expect(submitGithubTaskReply(publishInput(fixture, fetcher))).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_RUN_FORBIDDEN",
+    });
+    await fixture.app.db
+      .update(chatMembership)
+      .set({ accessMode: "watcher" })
+      .where(and(eq(chatMembership.chatId, fixture.chatId), eq(chatMembership.agentId, fixture.agent.uuid)));
+    await expect(
+      submitGithubTaskReply({
+        ...publishInput(fixture, fetcher),
+        callerRuntimeSessionToken: successorToken,
+      }),
+    ).rejects.toMatchObject({ code: "GITHUB_TASK_REPLY_RUN_FORBIDDEN" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("serializes a concurrent speaker removal ahead of the publication claim", async () => {
+    const fixture = await createRunFixture(getApp());
+    let markMembershipLocked: (() => void) | undefined;
+    let releaseRevocation: (() => void) | undefined;
+    const membershipLocked = new Promise<void>((resolve) => {
+      markMembershipLocked = resolve;
+    });
+    const revocationGate = new Promise<void>((resolve) => {
+      releaseRevocation = resolve;
+    });
+    const revocation = fixture.app.db.transaction(async (tx) => {
+      await tx
+        .select({ agentId: chatMembership.agentId })
+        .from(chatMembership)
+        .where(and(eq(chatMembership.chatId, fixture.chatId), eq(chatMembership.agentId, fixture.agent.uuid)))
+        .for("update");
+      markMembershipLocked?.();
+      await revocationGate;
+      await tx
+        .delete(chatMembership)
+        .where(and(eq(chatMembership.chatId, fixture.chatId), eq(chatMembership.agentId, fixture.agent.uuid)));
+    });
+    await membershipLocked;
+
+    const fetcher = successfulGithubFetcher(fixture.runId);
+    const publication = submitGithubTaskReply(publishInput(fixture, fetcher));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseRevocation?.();
+    await revocation;
+
+    await expect(publication).rejects.toMatchObject({ code: "GITHUB_TASK_REPLY_RUN_FORBIDDEN" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("revokes publication when the selected Team Agent or installation permission changes", async () => {
     const fixture = await createRunFixture(getApp());
     const replacement = await createAgent(fixture.app.db, {
@@ -173,6 +325,35 @@ describe("GitHub App task reply publisher", () => {
     ).rejects.toMatchObject({ code: "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED" });
   });
 
+  it("fails closed before token mint when the installation is suspended", async () => {
+    const fixture = await createRunFixture(getApp());
+    await fixture.app.db
+      .update(githubAppInstallations)
+      .set({ suspendedAt: new Date() })
+      .where(eq(githubAppInstallations.hubOrganizationId, fixture.admin.organizationId));
+    const fetcher = successfulGithubFetcher(fixture.runId);
+
+    await expect(submitGithubTaskReply(publishInput(fixture, fetcher))).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_APP_NOT_INSTALLED",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["token", 403, "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED"],
+    ["token", 404, "GITHUB_TASK_REPLY_REPO_NOT_ACCESSIBLE"],
+    ["comment", 403, "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED"],
+    ["comment", 404, "GITHUB_TASK_REPLY_REPO_NOT_ACCESSIBLE"],
+    ["comment", 422, "GITHUB_TASK_REPLY_GITHUB_REJECTED"],
+    ["comment", 503, "GITHUB_TASK_REPLY_GITHUB_UNKNOWN"],
+  ] as const)("maps GitHub %s status %s to stable fail-closed code %s", async (phase, status, code) => {
+    const fixture = await createRunFixture(getApp());
+    const fetcher = failingGithubFetcher(phase, status);
+
+    await expect(submitGithubTaskReply(publishInput(fixture, fetcher))).rejects.toMatchObject({ code });
+    expect(githubCommentPosts(fetcher)).toHaveLength(phase === "comment" ? 1 : 0);
+  });
+
   it("rejects App mentions and reserved hidden markers before GitHub comment mutation", async () => {
     const fixture = await createRunFixture(getApp());
     const fetcher = successfulGithubFetcher(fixture.runId);
@@ -198,6 +379,115 @@ describe("GitHub App task reply publisher", () => {
       appActor: "test-app-slug[bot]",
     });
     expect(githubCommentPosts(fetcher)).toHaveLength(1);
+  });
+
+  it.each([
+    "zero",
+    "duplicate",
+    "list_failure",
+  ] as const)("keeps an unknown write unresolved for %s reconciliation without another POST", async (mode) => {
+    const fixture = await createRunFixture(getApp());
+    const fetcher = unresolvedGithubFetcher(fixture.runId, mode);
+    const input = publishInput(fixture, fetcher, "Deferred outcome");
+
+    await expect(submitGithubTaskReply(input)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_GITHUB_UNKNOWN",
+    });
+    await expect(submitGithubTaskReply(input)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_GITHUB_UNKNOWN",
+    });
+    await expect(submitGithubTaskReply(input)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_GITHUB_UNKNOWN",
+    });
+    expect(githubCommentPosts(fetcher)).toHaveLength(1);
+  });
+
+  it.each([
+    "wrong_actor",
+    "wrong_body",
+    "invalid_id",
+    "invalid_url",
+  ] as const)("keeps an unverifiable successful POST with %s in unknown state and never blindly posts again", async (mode) => {
+    const fixture = await createRunFixture(getApp());
+    const fetcher = mismatchedSuccessGithubFetcher(fixture.runId, mode);
+    const input = publishInput(fixture, fetcher, "Exact outcome");
+
+    await expect(submitGithubTaskReply(input)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_GITHUB_UNKNOWN",
+    });
+    await expect(submitGithubTaskReply(input)).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_GITHUB_UNKNOWN",
+    });
+    expect(githubCommentPosts(fetcher)).toHaveLength(1);
+    const [message] = await fixture.app.db
+      .select({ metadata: messages.metadata })
+      .from(messages)
+      .where(eq(messages.id, fixture.messageId));
+    expect(message?.metadata.githubTaskReplySubmission).toMatchObject({
+      state: "unknown",
+      publisherClientId: fixture.admin.clientId,
+    });
+  });
+
+  it.each([
+    {
+      label: "wrong organization",
+      mutate: (metadata: Record<string, unknown>) => {
+        metadata.githubTaskOrganizationId = randomUUID();
+      },
+    },
+    {
+      label: "wrong repository",
+      mutate: (metadata: Record<string, unknown>) => {
+        metadata.githubTaskRepository = "owner/another-repo";
+      },
+    },
+    {
+      label: "wrong entity",
+      mutate: (metadata: Record<string, unknown>) => {
+        metadata.githubTaskEntityNumber = 43;
+      },
+    },
+  ])("rejects $label provenance before GitHub", async ({ mutate }) => {
+    const fixture = await createRunFixture(getApp());
+    const [row] = await fixture.app.db
+      .select({ metadata: messages.metadata })
+      .from(messages)
+      .where(eq(messages.id, fixture.messageId));
+    const metadata = { ...row?.metadata };
+    mutate(metadata);
+    await fixture.app.db.update(messages).set({ metadata }).where(eq(messages.id, fixture.messageId));
+
+    const fetcher = successfulGithubFetcher(fixture.runId);
+    await expect(submitGithubTaskReply(publishInput(fixture, fetcher))).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_RUN_FORBIDDEN",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "boolean",
+    "recipient_only",
+  ] as const)("rejects a %s legacy task marker as App publication authority", async (marker) => {
+    const fixture = await createRunFixture(getApp());
+    const [row] = await fixture.app.db
+      .select({ content: messages.content, metadata: messages.metadata })
+      .from(messages)
+      .where(eq(messages.id, fixture.messageId));
+    const teamAgentTask = marker === "boolean" ? true : { agentUuid: fixture.agent.uuid };
+    await fixture.app.db
+      .update(messages)
+      .set({
+        content: { ...(row?.content as Record<string, unknown>), teamAgentTask },
+        metadata: { ...row?.metadata, teamAgentTask },
+      })
+      .where(eq(messages.id, fixture.messageId));
+
+    const fetcher = successfulGithubFetcher(fixture.runId);
+    await expect(submitGithubTaskReply(publishInput(fixture, fetcher))).rejects.toMatchObject({
+      code: "GITHUB_TASK_REPLY_RUN_FORBIDDEN",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("does not allow an ordinary message sender to author reserved GitHub task run provenance", async () => {
@@ -334,7 +624,11 @@ function publishInput(
   };
 }
 
-function successfulGithubFetcher(runId: string, permission: "issues" | "pull_requests" = "issues") {
+function successfulGithubFetcher(
+  runId: string,
+  permission: "issues" | "pull_requests" = "issues",
+  beforePost?: () => Promise<void>,
+) {
   return vi.fn<typeof fetch>(async (url, init) => {
     const target = String(url);
     if (target.endsWith("/access_tokens")) {
@@ -349,6 +643,7 @@ function successfulGithubFetcher(runId: string, permission: "issues" | "pull_req
       );
     }
     if (target.endsWith("/issues/42/comments") && init?.method === "POST") {
+      await beforePost?.();
       const payload = JSON.parse(String(init.body)) as { body: string };
       expect(payload.body).toContain(`first-tree-github-task-reply-run:${runId}`);
       return jsonResponse({
@@ -358,6 +653,98 @@ function successfulGithubFetcher(runId: string, permission: "issues" | "pull_req
         body: payload.body,
       });
     }
+    return new Response("not found", { status: 404 });
+  });
+}
+
+function failingGithubFetcher(phase: "token" | "comment", status: number) {
+  return vi.fn<typeof fetch>(async (url, init) => {
+    const target = String(url);
+    if (target.endsWith("/access_tokens")) {
+      if (phase === "token") return new Response("rejected", { status });
+      return jsonResponse(
+        {
+          token: "installation-token",
+          expires_at: "2026-12-15T18:00:00Z",
+          permissions: { metadata: "read", issues: "write" },
+          repository_selection: "selected",
+        },
+        201,
+      );
+    }
+    if (target.endsWith("/issues/42/comments") && init?.method === "POST") {
+      return new Response("rejected", { status });
+    }
+    return new Response("not found", { status: 404 });
+  });
+}
+
+function unresolvedGithubFetcher(runId: string, mode: "zero" | "duplicate" | "list_failure") {
+  return vi.fn<typeof fetch>(async (url, init) => {
+    const target = String(url);
+    if (target.endsWith("/access_tokens")) {
+      return jsonResponse(
+        {
+          token: "installation-token",
+          expires_at: "2026-12-15T18:00:00Z",
+          permissions: { metadata: "read", issues: "write" },
+          repository_selection: "selected",
+        },
+        201,
+      );
+    }
+    if (target.endsWith("/issues/42/comments") && init?.method === "POST") {
+      throw new TypeError("socket closed after request dispatch");
+    }
+    if (target.endsWith("/issues/42/comments?per_page=100")) {
+      if (mode === "list_failure") return new Response("unavailable", { status: 503 });
+      if (mode === "zero") return jsonResponse([]);
+      const body = `Deferred outcome\n\n<!-- first-tree-github-task-reply-run:${runId} -->`;
+      return jsonResponse([
+        {
+          id: 903,
+          html_url: "https://github.com/owner/repo/issues/42#issuecomment-903",
+          user: { login: "test-app-slug[bot]" },
+          body,
+        },
+        {
+          id: 904,
+          html_url: "https://github.com/owner/repo/issues/42#issuecomment-904",
+          user: { login: "test-app-slug[bot]" },
+          body,
+        },
+      ]);
+    }
+    return new Response("not found", { status: 404 });
+  });
+}
+
+function mismatchedSuccessGithubFetcher(
+  runId: string,
+  mode: "wrong_actor" | "wrong_body" | "invalid_id" | "invalid_url",
+) {
+  const expectedBody = `Exact outcome\n\n<!-- first-tree-github-task-reply-run:${runId} -->`;
+  const comment = {
+    id: mode === "invalid_id" ? 0 : 905,
+    html_url: mode === "invalid_url" ? "not-a-url" : "https://github.com/owner/repo/issues/42#issuecomment-905",
+    user: { login: mode === "wrong_actor" ? "another-app[bot]" : "test-app-slug[bot]" },
+    body: mode === "wrong_body" ? `${expectedBody}\nmutated` : expectedBody,
+  };
+  return vi.fn<typeof fetch>(async (url, init) => {
+    const target = String(url);
+    if (target.endsWith("/access_tokens")) {
+      return jsonResponse(
+        {
+          token: "installation-token",
+          expires_at: "2026-12-15T18:00:00Z",
+          permissions: { metadata: "read", issues: "write" },
+          repository_selection: "selected",
+        },
+        201,
+      );
+    }
+    if (target.endsWith("/issues/42/comments") && init?.method === "POST") return jsonResponse(comment, 201);
+    if (target.endsWith("/issues/42/comments?per_page=100")) return jsonResponse([comment]);
     return new Response("not found", { status: 404 });
   });
 }

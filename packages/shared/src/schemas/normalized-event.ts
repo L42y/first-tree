@@ -74,7 +74,7 @@ export const githubAgentTaskSchema = z.union([
   z
     .object({
       agentUuid: z.string().min(1),
-      runId: z.string().min(1),
+      runId: z.string().uuid(),
     })
     .strict(),
 ]);

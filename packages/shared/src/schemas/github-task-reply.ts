@@ -65,7 +65,7 @@ export const githubTaskRunMessageMetadataSchema = z
   .object({
     source: z.literal("github"),
     githubTaskRun: z.literal(true),
-    githubTaskRunId: z.string().min(1),
+    githubTaskRunId: z.string().uuid(),
     githubTaskOrganizationId: z.string().min(1),
     githubTaskAgentUuid: z.string().min(1),
     githubTaskManagerHumanAgentId: z.string().min(1),
@@ -113,6 +113,7 @@ export const GITHUB_TASK_REPLY_ERROR_CODES = [
   "GITHUB_TASK_REPLY_RUN_FORBIDDEN",
   "GITHUB_TASK_REPLY_RUN_ALREADY_SUBMITTED",
   "GITHUB_TASK_REPLY_RUN_PAYLOAD_MISMATCH",
+  "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED",
   "GITHUB_TASK_REPLY_APP_NOT_INSTALLED",
   "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED",
   "GITHUB_TASK_REPLY_REPO_NOT_ACCESSIBLE",

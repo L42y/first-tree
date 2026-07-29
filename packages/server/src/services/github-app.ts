@@ -490,7 +490,14 @@ function parseIssueComment(value: unknown): GithubIssueComment {
     body?: string | null;
   };
   const id = body.id;
-  if (typeof id !== "number" || !Number.isInteger(id) || !body.html_url || !body.user?.login) {
+  if (
+    typeof id !== "number" ||
+    !Number.isInteger(id) ||
+    id <= 0 ||
+    typeof body.html_url !== "string" ||
+    !URL.canParse(body.html_url) ||
+    !body.user?.login
+  ) {
     throw new GithubAppApiError(502, "GitHub issue comment response was malformed");
   }
   return {
