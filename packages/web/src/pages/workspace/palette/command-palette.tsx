@@ -5,6 +5,7 @@ import { useNavigate } from "react-router";
 import { listMeChats } from "../../../api/me-chats.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { Avatar } from "../../../components/avatar.js";
+import { isAskAgentNavLocked } from "../../../components/chat/ask-agent-nav-lock.js";
 import { ChatRowAvatar } from "../../../components/chat/chat-row-avatar.js";
 import {
   CommandDialog,
@@ -117,6 +118,11 @@ export function CommandPalette({
 
   const go = (url: string) => {
     onOpenChange(false);
+    // Fail closed while an Ask agent attempt is pending: the jump would
+    // unmount the pending feedback's owning surface, so it is dismissed
+    // instead of navigating. Covers a palette that was already open when the
+    // attempt started; opening is blocked at the Layout triggers while locked.
+    if (isAskAgentNavLocked()) return;
     navigate(url);
   };
 

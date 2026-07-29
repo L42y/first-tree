@@ -2,7 +2,7 @@ import { CHAT_SOURCES, type ChatEngagementView, type ChatSource, chatEngagementV
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, useLocation, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
-import { isAskAgentNavLocked, useAskAgentNavGuard } from "../../components/chat/ask-agent-nav-lock.js";
+import { isAskAgentNavLocked } from "../../components/chat/ask-agent-nav-lock.js";
 import { DocPreviewDrawer } from "../../components/doc-preview-drawer.js";
 import { useAdminWs } from "../../hooks/use-admin-ws.js";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
@@ -179,10 +179,10 @@ export function WorkspaceBody() {
   // Fail closed while an Ask agent attempt is pending. The attempt state
   // lives inside the owning review surface (Need you page / Chat takeover),
   // so every URL transition that would unmount that surface — a rail row, new
-  // chat, the Need you entry, a filter that drops `?c=`, or browser back —
-  // is blocked until the attempt lifts. Browser back/forward is reverted by
-  // the guard hook; the in-app callbacks below refuse while locked.
-  useAskAgentNavGuard();
+  // chat, the Need you entry, or a filter that drops `?c=` — is refused by
+  // the callbacks below. Browser back/forward and the desktop top tabs /
+  // Jump-to palette are handled one level up in `Layout` (and in
+  // `MobileShell` on mobile routes), where the navigation guard is mounted.
 
   // Viewport-driven layout: at `narrow` (<768) the conversation list
   // collapses out of the inline three-pane shell and becomes a summon-able

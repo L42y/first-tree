@@ -2698,6 +2698,126 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the ordinary composer fail-closed on the normal route while the open-requests source is pending", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // NO `showAsk` param: the normal chat route must fail closed too — a
+    // buried request (outside the latest-50 window) is invisible to
+    // `blockingMessages` until the open-requests query lands.
+    const buriedAsk = message({
+      id: "req-normal-pending",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/",
+    );
+
+    expect(container.querySelector("textarea")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // The query lands with the still-open request: the blocking takeover
+    // appears; the ordinary composer is replaced by the blocked bar.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "Approve the migration?");
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).not.toBeNull();
+    expect(buttonByText(container, "Submit")).toBeTruthy();
+    expect(container.querySelector("[data-ask-blocked-composer]")).not.toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the ordinary composer fail-closed on the normal route when the open-requests source fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("open requests unavailable"));
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/",
+    );
+
+    await waitForText(container, "Couldn’t check for open questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Retry confirms a fresh zero in this mount: the composer may return.
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+    await click(buttonByText(container, "Retry"));
+    await waitForCondition(
+      () => container.querySelector("textarea") !== null,
+      "ordinary composer after mount-confirmed zero on the normal route",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("treats a cached empty success as unconfirmed on the normal route until this mount's fetch settles", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const buriedAsk = message({
+      id: "req-normal-stale-cache",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([]));
+        // A previous visit's successful EMPTY result rides the mount as
+        // status "success" through the background refetch — the fail-open
+        // window this test pins shut on the normal route.
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [] });
+        // The harness client uses staleTime: Infinity; production (staleTime 0)
+        // refetches on mount, so mark the row stale to match.
+        void client.invalidateQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+      },
+      "/",
+    );
+
+    expect(container.querySelector("textarea")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.listChatOpenRequests).toHaveBeenCalled();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Settling with the still-open request enters the takeover directly.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "Approve the migration?");
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).not.toBeNull();
+    expect(container.querySelector("[data-ask-blocked-composer]")).not.toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
   it("Skip resolves the question with a skipped answer (no temporary dismiss)", async () => {
     const { ChatView } = await import("../chat-view.js");
     const dockMessages = messages([

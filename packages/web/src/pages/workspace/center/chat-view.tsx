@@ -1938,9 +1938,9 @@ export function ChatView({
   // these into its derivation (`blockingMessages`) so an open ask that has
   // scrolled past the latest page still surfaces. Same 5s poll + WS
   // invalidation as the timeline; the query usually returns 0–1 rows.
-  // Inspect mode also gates on this query's STATUS: while it has not
-  // confirmed the open-request state, an empty derivation is unknown, not
-  // "no requests" — see `inspectSourceUnverified` below.
+  // The composer also gates on this query's mount-scoped confirmation: until
+  // a fetch completes in this mount, an empty derivation is unknown, not
+  // "no requests" — see `openRequestsUnverified` below.
   const openRequestsQuery = useQuery({
     queryKey: ["chat-open-requests", chatId],
     queryFn: () => listChatOpenRequests(chatId),
@@ -2223,10 +2223,10 @@ export function ChatView({
     // Fail closed at the mutation boundary as well as replacing that composer
     // in the render tree below, so a queued Enter/click cannot bypass takeover.
     if (askOverlayActive) return;
-    // Inspect mode with an unverified open-requests source fails closed too
-    // (`inspectSourceUnverified`): the chat's open-request state is unknown,
+    // An unverified open-requests source fails closed on every route
+    // (`openRequestsUnverified`): the chat's open-request state is unknown,
     // so no ordinary send may reach the mutation.
-    if (inspectSourceUnverified) return;
+    if (openRequestsUnverified) return;
     const text = draft.trim();
     // Images ride `content` as ImageRefContent (unchanged); documents/files ride
     // `metadata.attachments[]` as generic AttachmentRefs. A mixed send carries
@@ -2632,7 +2632,8 @@ export function ChatView({
   // confirms the state; a mount-scope failure (`errorUpdatedAt` past it, even
   // when stale data keeps status "success") stays unverified. Deliberately
   // not `isFetching`: the 5s poll must not flicker an already-confirmed
-  // composer.
+  // composer. Applies to the normal route AND inspect mode — see
+  // `openRequestsUnverified` below.
   const openRequestsObservedAtRef = useRef<{ chatId: string | null; at: number }>({ chatId: null, at: 0 });
   if (openRequestsObservedAtRef.current.chatId !== chatId) {
     openRequestsObservedAtRef.current = { chatId, at: Date.now() };
@@ -2640,16 +2641,18 @@ export function ChatView({
   const openRequestsMountConfirmed = openRequestsQuery.dataUpdatedAt > openRequestsObservedAtRef.current.at;
   const openRequestsMountFailed =
     !openRequestsMountConfirmed && openRequestsQuery.errorUpdatedAt > openRequestsObservedAtRef.current.at;
-  // Inspect mode must fail closed while the window-independent open-requests
-  // source has not CONFIRMED the chat's open-request state in this mount:
-  // pending, background-refetching from a stale cache, and mount-scope
-  // failure all derive the same empty count as "no open requests", and
-  // treating that as confirmed would restore the ordinary composer and let a
-  // fast send bypass a still-open request — precisely the contract this mode
-  // exists to preserve. Only a mount-scope successful fetch, or a blocking
-  // request found in the already-loaded timeline (count > 0 above), lifts
-  // this gate.
-  const inspectSourceUnverified = inspectAskMode && openRequestCount === 0 && !openRequestsMountConfirmed;
+  // The ordinary composer must fail closed on BOTH the normal route and
+  // `showAsk=false` inspect mode while the window-independent open-requests
+  // source has not CONFIRMED this chat's open-request state in this mount.
+  // Pending, background-refetching from a stale cache, and mount-scope
+  // failure all derive the same empty count as "no open requests" — and a
+  // request that scrolled past the latest-50 timeline is invisible to
+  // `blockingMessages` until this query lands, so treating the empty
+  // derivation as confirmed lets a fast send bypass a still-open request:
+  // precisely the contract the blocking takeover exists to preserve. Only a
+  // mount-scope successful fetch, or a blocking request found in the
+  // already-loaded timeline (count > 0 above), lifts this gate.
+  const openRequestsUnverified = openRequestCount === 0 && !openRequestsMountConfirmed;
   const askAgent = useAskAgent({
     chatId,
     requestId: dockRequest?.id ?? null,
@@ -3614,7 +3617,7 @@ export function ChatView({
   const landingCampaignChatLocked = isLandingCampaignTrialChatLocked(chatDetail?.metadata);
   const sendDisabled =
     askOverlayActive ||
-    inspectSourceUnverified ||
+    openRequestsUnverified ||
     landingCampaignChatLocked ||
     sendMut.isPending ||
     uploading ||
@@ -4261,7 +4264,7 @@ export function ChatView({
                       ? blockedComposerRef
                       : readOnly
                         ? readOnlyComposerRef
-                        : inspectAskMode
+                        : inspectAskMode || openRequestsUnverified
                           ? inspectComposerRef
                           : textareaRef
                   }
@@ -4364,19 +4367,19 @@ export function ChatView({
                       Open
                     </span>
                   </button>
-                ) : inspectSourceUnverified ? (
-                  /* Fail-closed inspect state: the window-independent
-                     open-requests source has not confirmed this chat's state,
-                     so the ordinary composer must NOT render — a fast send
-                     would bypass a possibly still-open request. Shares the
-                     inspect composer's focus ref so ComposeStatusBar keeps a
-                     stable fallback target across every inspect branch. */
+                ) : openRequestsUnverified ? (
+                  /* Fail-closed state, BOTH routes: the window-independent
+                     open-requests source has not confirmed this chat's state
+                     in this mount, so the ordinary composer must NOT render —
+                     a fast send would bypass a possibly still-open request.
+                     Shares the inspect composer's focus ref so
+                     ComposeStatusBar keeps a stable fallback target. */
                   <div
                     ref={(el) => {
                       inspectComposerRef.current = el;
                     }}
                     tabIndex={-1}
-                    data-inspect-ask-unverified
+                    data-open-requests-unverified
                     className="composer-card flex items-center"
                     style={{
                       gap: "var(--sp-3)",

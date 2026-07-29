@@ -7,6 +7,7 @@ import { useWorkspaceViewport } from "../hooks/use-viewport.js";
 import { cn } from "../lib/utils.js";
 import { isLandingTrialSurface } from "../pages/quickstart/route.js";
 import { CommandPalette } from "../pages/workspace/palette/command-palette.js";
+import { isAskAgentNavLocked, useAskAgentNavGuard } from "./chat/ask-agent-nav-lock.js";
 import { DisconnectChip } from "./disconnect-chip.js";
 import { FirstTreeLogo } from "./first-tree-logo.js";
 import { NewVersionChip } from "./new-version-chip.js";
@@ -34,6 +35,13 @@ export function Layout() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { organizationId } = useAuth();
   const location = useLocation();
+  // Desktop navigation guard for pending Ask agent attempts: owns the
+  // popstate revert for every desktop surface and exposes the locked flag so
+  // the top tabs and the Jump-to palette — both rendered HERE, above the
+  // Workspace outlet that owns the attempt's feedback — can fail closed.
+  // (Mobile routes live outside this Layout; MobileShell mounts its own
+  // guard, and the two are never co-mounted.)
+  const askAgentNavLocked = useAskAgentNavGuard();
   // Landing-campaign trial surface (`/quickstart`): render a stripped "trial
   // chrome" — brand + one conversion CTA + user menu — with none of the normal
   // workspace escape hatches (nav tabs, team switcher, command palette, rail).
@@ -50,6 +58,9 @@ export function Layout() {
     function onKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
+        // The palette is a pure navigation device — an Ask agent attempt
+        // pending on the current surface keeps it closed.
+        if (isAskAgentNavLocked()) return;
         setPaletteOpen((prev) => !prev);
       }
     }
@@ -235,34 +246,63 @@ export function Layout() {
               ...(dropBrand ? { minWidth: 0, width: "100%", overflowX: "auto" } : null),
             }}
           >
-            {navTabs.map((tab) => (
-              <NavLink
-                key={tab.to}
-                to={tab.to}
-                end={tab.end}
-                style={{ pointerEvents: "auto" }}
-                className={({ isActive }) =>
-                  // `shrink-0` keeps each tab its natural width inside the narrow
-                  // scrollable nav, so labels never compress or wrap.
-                  cn("inline-flex shrink-0 items-center transition-colors", isActive ? "" : "hover:text-[var(--fg)]")
-                }
-              >
-                {({ isActive }) => (
+            {navTabs.map((tab) =>
+              // A pending Ask agent attempt owns the current surface: every
+              // tab becomes an inert disabled button so tab clicks, keyboard
+              // activation, and programmatic activation all fail closed until
+              // the attempt lifts. (External/read-only links elsewhere — the
+              // brand link, chat markdown — are untouched: this guard covers
+              // only these named navigation exits.)
+              askAgentNavLocked ? (
+                <button
+                  key={tab.to}
+                  type="button"
+                  disabled
+                  aria-label={`${tab.label}, unavailable while waiting for the agent reply`}
+                  className="inline-flex shrink-0 items-center opacity-40"
+                  style={{ pointerEvents: "auto", border: 0, background: "transparent" }}
+                >
                   <span
                     className="inline-flex items-center text-subtitle font-medium"
                     style={{
                       padding: "var(--sp-1_5) var(--sp-3)",
                       gap: 6,
                       borderRadius: 5,
-                      color: isActive ? "var(--fg)" : "var(--fg-3)",
-                      background: isActive ? "var(--bg-hover)" : "transparent",
+                      color: "var(--fg-3)",
                     }}
                   >
                     {tab.label}
                   </span>
-                )}
-              </NavLink>
-            ))}
+                </button>
+              ) : (
+                <NavLink
+                  key={tab.to}
+                  to={tab.to}
+                  end={tab.end}
+                  style={{ pointerEvents: "auto" }}
+                  className={({ isActive }) =>
+                    // `shrink-0` keeps each tab its natural width inside the narrow
+                    // scrollable nav, so labels never compress or wrap.
+                    cn("inline-flex shrink-0 items-center transition-colors", isActive ? "" : "hover:text-[var(--fg)]")
+                  }
+                >
+                  {({ isActive }) => (
+                    <span
+                      className="inline-flex items-center text-subtitle font-medium"
+                      style={{
+                        padding: "var(--sp-1_5) var(--sp-3)",
+                        gap: 6,
+                        borderRadius: 5,
+                        color: isActive ? "var(--fg)" : "var(--fg-3)",
+                        background: isActive ? "var(--bg-hover)" : "transparent",
+                      }}
+                    >
+                      {tab.label}
+                    </span>
+                  )}
+                </NavLink>
+              ),
+            )}
           </nav>
 
           {/* Right controls. The user menu (avatar) renders at every breakpoint
@@ -286,7 +326,12 @@ export function Layout() {
               <>
                 <button
                   type="button"
-                  onClick={() => setPaletteOpen(true)}
+                  onClick={() => {
+                    // The palette is a pure navigation device — closed while
+                    // an Ask agent attempt is pending on this surface.
+                    if (isAskAgentNavLocked()) return;
+                    setPaletteOpen(true);
+                  }}
                   aria-label="Jump to… (⌘K)"
                   aria-keyshortcuts="Meta+K Control+K"
                   title="Jump to… (⌘K / Ctrl+K)"
