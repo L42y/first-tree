@@ -15,10 +15,9 @@ const TEAM_NON_ACTIONABLE_GITLAB_REASONS = new Set<ContextTreeUnavailableReason>
   "gitlab_egress_denied",
 ]);
 
-export const GITLAB_WEB_CONTEXT_UNAVAILABLE_TITLE = "GitLab Web Context isn’t available for this repository";
+export const GITLAB_WEB_CONTEXT_UNAVAILABLE_TITLE = "Web preview isn’t available for this repository";
 
-export const GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL =
-  "First Tree can’t display this Context Tree in the web app. Agents and Context Reviewer with repository access can continue using it as usual.";
+export const GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL = "Agent access and Automatic Review are unaffected.";
 
 export function isTeamNonActionableGitlabWebContext(
   snapshot: ContextTreeSnapshotAvailability | null | undefined,

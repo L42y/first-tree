@@ -36,10 +36,7 @@ import { getTeamSetupCapabilitiesAt, setupCapabilitiesQueryKey } from "../../api
 import { useAuth } from "../../auth/auth-context.js";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { cn } from "../../lib/utils.js";
-import {
-  GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL,
-  isTeamNonActionableGitlabWebContext,
-} from "../context-tree-availability.js";
+import { isTeamNonActionableGitlabWebContext } from "../context-tree-availability.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
 import { ContextEnablement } from "./context-enablement.js";
 import { setupBlockerCopy } from "./setup-blocker-copy.js";
@@ -358,9 +355,9 @@ function contextTreeStatus(
   const detail = [bindingDetail, issueDetail].filter((item): item is string => Boolean(item)).join(" · ");
   if (teamNonActionableGitlabWebContext) {
     return {
-      label: "Web Context unavailable",
-      detail: `${bindingDetail} · ${GITLAB_WEB_CONTEXT_UNAVAILABLE_DETAIL}`,
-      kind: "neutral",
+      label: "Connected",
+      detail: bindingDetail,
+      kind: "ready",
     };
   }
   if (availability === "active") return { label: "Available", detail, kind: "ready" };
