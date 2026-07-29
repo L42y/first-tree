@@ -1967,25 +1967,20 @@ describe("POST /webhooks/github-app", () => {
     expect(await app.db.select().from(githubEntityChatMappings)).toHaveLength(1);
   });
 
-  it("suppresses an App-authored task reply from trusted Context Review while preserving its generic subscription", async () => {
+  it("suppresses an App-authored task reply from trusted Context Review while preserving a same-Agent generic subscription", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const installationId = 100044;
     await seedInstallation(app, { installationId, orgId: admin.organizationId });
     const reviewer = await configureContextReviewer(app, admin);
-    const subscribedDelegate = await seedAgent(app, {
-      orgId: admin.organizationId,
-      memberId: admin.memberId,
-      name: `subscribed-${randomUUID().slice(0, 6)}`,
-    });
     const subscribedChat = await createChat(app.db, admin.humanAgentUuid, {
       type: "group",
-      participantIds: [subscribedDelegate],
+      participantIds: [reviewer],
     });
     await app.db.insert(githubEntityChatMappings).values({
       organizationId: admin.organizationId,
       humanAgentId: admin.humanAgentUuid,
-      delegateAgentId: subscribedDelegate,
+      delegateAgentId: reviewer,
       entityType: "pull_request",
       entityKey: "owner/context-tree#42",
       chatId: subscribedChat.id,
@@ -2018,7 +2013,7 @@ describe("POST /webhooks/github-app", () => {
     expect(messageRows[0]?.metadata).toMatchObject({
       event: "issue_comment",
       action: "created",
-      mentions: [subscribedDelegate],
+      mentions: [reviewer],
     });
     expect(messageRows[0]?.metadata).not.toHaveProperty("contextReviewRunId");
     expect(messageRows[0]?.metadata).not.toHaveProperty("contextTreeReviewer");
@@ -2031,9 +2026,6 @@ describe("POST /webhooks/github-app", () => {
       .from(inboxEntries)
       .where(eq(inboxEntries.messageId, messageRows[0]?.id ?? ""));
     expect(notified).toEqual(
-      expect.arrayContaining([expect.objectContaining({ inboxId: `inbox_${subscribedDelegate}`, notify: true })]),
-    );
-    expect(notified).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ inboxId: `inbox_${reviewer}`, notify: true })]),
     );
   });
