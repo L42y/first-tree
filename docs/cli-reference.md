@@ -979,6 +979,7 @@ first-tree daemon
 ├── restart
 ├── status
 ├── doctor
+├── repair-ownership
 ├── probe [--no-upload] [--json]
 ├── install-codex [--spec <spec>] [--json]
 └── install-claude [--spec <spec>] [--json]
@@ -986,14 +987,102 @@ first-tree daemon
 
 | Subcommand | Purpose |
 |---|---|
-| `start` | Start the daemon and connect every configured agent to the server. **Fail-closed**: exits 1 with `NO_CREDENTIALS` if no `credentials.json` exists; run `login` first. `--foreground` runs in the current shell (for debugging); the default installs/starts the service. |
+| `start` | Start the daemon and connect every configured agent to the server. **Fail-closed**: exits 1 with `NO_CREDENTIALS` if no `credentials.json` exists; run `login` first. `--foreground` runs in the current shell (for debugging), but refuses when that home's background service is already active; stop the service first. The default delegates to the service manager. Every inline runtime must acquire the resolved home owner lock before reading `client.yaml` or opening the WebSocket. |
 | `stop` | Stop the service (preserves auto-start; bring it back with `start`). |
 | `restart` | Restart the service. |
-| `status` | Local service state + server binding + auth health. Runs in well under a second. |
-| `doctor` | Walk Node version, config, server reachability, WS, agent registrations, the installed service file, **and the runtime providers** — each step reported. The runtime-provider rows run the real launch-verified probe (a 1-turn model call for `claude-code`, a `codex doctor` handshake for `codex`), so `doctor` makes live provider calls; it is a deliberate diagnostic, not a hot path. |
+| `status` | Local service state + authoritative daemon owner + server binding + auth health. Runs in well under a second. |
+| `doctor` | Walk Node version, config, server reachability, WS, agent registrations, the installed service file, the authoritative daemon owner lock, **and the runtime providers** — each step reported. The runtime-provider rows run the real launch-verified probe (a 1-turn model call for `claude-code`, a `codex doctor` handshake for `codex`), so `doctor` makes live provider calls; it is a deliberate diagnostic, not a hot path. |
+| `repair-ownership` | Reconcile an interrupted fenced ownership mutation. The command elects one repair process through per-instance ticket slots, atomically acquires a canonical repair guard, requires strict PID/start-identity proof that the exact fence owner is gone or reused, drains published startup entrants, and refuses live, malformed, unverifiable, changed, or ambiguous evidence. It never blindly deletes a fence. |
 | `probe` | Launch-probe the local runtime providers on demand and upload the result to the server (`PATCH /clients/:id/capabilities`). This is the manual refresh for a client's advertised capabilities after a provider is installed / logged in. Each probe really launches its provider. `--no-upload` runs a **credentials-free local-only** diagnostic (probe + print, no server auth needed). `--json` (or the global `--json`) emits the capability snapshot as the machine-readable `{ ok, data }` envelope on stdout. |
 | `install-codex` | Install the native Codex runtime engine on this machine (`npm install -g @openai/codex`). First Tree does not bundle the ~225MB native `codex` binary by default — the runtime resolves an external `codex` from PATH, known install locations, or the macOS ChatGPT/Codex desktop app — so this is the on-demand remediation when the `codex` capability probes as `missing`. Runs the same tracked-subprocess install path as self-update, then re-probes so the freshly installed binary is reflected. Purely local (no credentials). `--spec <spec>` picks an npm dist-tag or exact version (default `latest`); `--json` emits the post-install capability snapshot as the `{ ok, data }` envelope. |
 | `install-claude` | Install the native Claude Code runtime engine on this machine (`npm install -g @anthropic-ai/claude-code`). First Tree does not bundle the ~210MB native `claude` binary by default — the runtime resolves a system `claude` (env override / PATH / well-known install dirs) — so this is the on-demand remediation when the `claude-code` capability probes as `missing`. Runs the same tracked-subprocess install path as self-update, then re-probes so the freshly installed binary is reflected. Purely local (no credentials). `--spec <spec>` picks an npm dist-tag or exact version (default `latest`); `--json` emits the post-install capability snapshot as the `{ ok, data }` envelope. |
+
+### Single runtime owner per home
+
+The resolved `FIRST_TREE_HOME` is the daemon's complete ownership key. An
+inline foreground or supervisor child atomically creates
+`<home>/state/daemon-runtime.lock` before reading the active client config or
+opening a WebSocket. The record includes an instance id, PID, OS process-start
+identity, channel, mode, CLI version, and start time. Client id, server URL, and
+release channel never subdivide the lock: channel, mode, and version are
+recorded only as holder diagnostics, while client id and server URL are not
+part of the ownership record at all.
+
+Consequently, prod, staging, and dev can run together under their distinct
+default homes. If two binaries — including binaries from different channels —
+are pointed at one explicit `FIRST_TREE_HOME`, the second runtime is refused
+and reports the live holder. Service delegation commands do not acquire the
+lock themselves; the supervisor child acquires it when it actually enters the
+runtime. A colliding supervisor child logs the holder once and exits cleanly so
+the service manager does not create a restart/log storm.
+
+Script-facing failures use `DAEMON_RUNTIME_ALREADY_RUNNING` for a verified live
+holder, `DAEMON_RUNTIME_LOCK_UNTRUSTED` when the existing record or process
+identity cannot be trusted, and `DAEMON_RUNTIME_LOCK_RECOVERY_BUSY` while
+another process owns stale-lock recovery.
+
+After a crash, a later start only recovers the lock when OS process inspection
+strictly proves the PID is gone or has a different process-start identity. The
+old record is renamed beside the lock as a `.stale.*` diagnostic and creation
+is retried once. The same evidence rule applies to the recovery guard: a live
+guard blocks startup, while a guard whose PID/start identity is strictly stale
+is quarantined as `.recovery.stale.*` before recovery continues. Malformed,
+unreadable, or unverifiable locks and recovery guards fail closed and are never
+deleted automatically. Normal cleanup removes the lock or guard only when its
+`instanceId` still belongs to the exiting process.
+
+Before changing the main lock, recovery also publishes a
+`.recovery-fence` and drains startup attempts that began before that fence.
+The fence stays authoritative across quarantine and restore, so no process can
+return a new lease through a temporarily empty main-lock path. Every startup
+publishes a complete per-instance entrant atomically before checking the fence;
+an incomplete temporary record is never visible to the drain protocol.
+The main owner, recovery guard, mutation fence, entrant, canonical repair guard,
+and repair election slot/ticket all use the same complete-publication rule:
+write and fsync a unique ignored same-directory temporary inode, close it, then
+hard-link it without overwriting the canonical path. A crash before that link
+cannot expose a partial canonical record; after the link, the canonical record
+is already complete. Publication temporaries are never ownership evidence.
+
+An interrupted or unresolved fenced mutation is deliberately not recovered by
+ordinary startup. `status` and `doctor` report the exact fence instance,
+PID/start identity, canonical main state, quarantine candidates, repair slots,
+and entrant count. Run `first-tree daemon repair-ownership` to perform the
+supported repair. The command:
+
+1. elects one repair owner with non-destructive per-instance intent/ticket
+   slots, then acquires a separate canonical repair guard; simultaneous repairs
+   therefore have one mutation owner, and stale unique records are removable
+   only after PID/start-identity proof;
+2. refuses a live, malformed, or process-identity-unverifiable fence, fixes the
+   target as an exact instance plus content fingerprint, drains pre-fence
+   entrants, and revalidates that exact stale fence before every main mutation;
+3. keeps a trusted canonical live or stale owner; when canonical is absent,
+   restores the unique trusted live quarantine candidate (preferred) or unique
+   trusted stale placeholder without overwriting another claimant; when no
+   candidate exists at all, records an explicit safe-empty reconciliation
+   without inventing a live owner;
+4. treats hard-link aliases as one candidate only when both instance and inode
+   match, and refuses unreadable evidence, changed file identity, different
+   live candidates, copied duplicates, or ambiguous stale candidates; and
+5. removes the matching stale recovery guard, revalidates the repair guard and
+   exact fence, then removes that fence. Fence removal is the repair opening
+   point: repair never changes main ownership afterward and only releases its
+   own repair records.
+
+The repair command automatically handles a strictly stale fence with a trusted
+canonical owner, a unique trusted quarantine candidate, or a provably empty
+candidate set. It fails closed with the exact evidence when the fence/repair
+holder is live or unverifiable, any authoritative record is malformed or
+unreadable, the target fence changes, or candidates are ambiguous. An
+interrupted repair remains fenced and can be rerun: the next repair proves the
+old repair guard stale and resumes idempotently. Do not manually delete
+`.recovery-fence`, `.recovery`, `.repair`, entrant, repair-slot/ticket, owner,
+or quarantine files.
+
+Files under `<home>/state/client-runtimes/` remain runtime markers for
+diagnostics, account-switch drain checks, and Windows supervisor lifecycle
+reporting. They are not daemon ownership or mutual-exclusion authority.
 
 **Capability refresh timing.** The daemon launch-probes runtime providers at
 startup and re-probes automatically on every WebSocket reconnect. A full real
@@ -1611,7 +1700,7 @@ Most environment variables use the `FIRST_TREE_` prefix.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `FIRST_TREE_HOME` | Override the CLI home directory for config, data, and agent workspaces. | Channel-dependent: `~/.first-tree` (prod), `~/.first-tree-staging` (staging), `~/.first-tree-dev` (dev). |
+| `FIRST_TREE_HOME` | Override the CLI home directory for config, data, agent workspaces, and daemon ownership. Binaries that explicitly share one resolved home are mutually exclusive even when their channels, client ids, or server URLs differ. | Channel-dependent: `~/.first-tree` (prod), `~/.first-tree-staging` (staging), `~/.first-tree-dev` (dev). |
 | `FIRST_TREE_SERVER_URL` | Server URL override for `login <code>` and fallback for other commands; otherwise `login` uses the CLI channel default. | — |
 | `FIRST_TREE_LOG_LEVEL` | Log level (`trace` / `debug` / `info` / `warn` / `error` / `fatal`). | `info` |
 | `FIRST_TREE_JSON` | JSON output mode (equivalent to `--json`). | — |
@@ -1885,6 +1974,9 @@ See [observability.md](observability.md) for the full config reference, backend 
 │       └── <agent-name>/                          # per-agent home (cwd is shared across chats)
 │           ├── context-tree/                      # agent-managed Context Tree clone (agent clones/pulls it per its briefing)
 │           └── worktrees/                         # per-task worktrees the agent creates and cleans up
+├── state/
+│   ├── daemon-runtime.lock                        # authoritative single runtime owner for this resolved home
+│   └── client-runtimes/                           # non-authoritative runtime markers used by diagnostics/lifecycle checks
 └── logs/                                          # daemon stderr / stdout (macOS)
 ```
 

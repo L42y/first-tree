@@ -5,6 +5,7 @@ import {
   agentConfigSchema,
   clientConfigSchema,
   defaultConfigDir,
+  defaultHome,
   loadAgents,
   resolveConfigReadonly,
 } from "@first-tree/shared/config";
@@ -12,6 +13,12 @@ import { parse as parseYaml } from "yaml";
 import { findStaleAliases, formatStaleReason, type PinnedAgent, type StaleAlias } from "./agent-prune.js";
 import { channelConfig } from "./channel.js";
 import { cliFetch } from "./cli-fetch.js";
+import {
+  formatDaemonRuntimeOwnerSummary,
+  formatDaemonRuntimeRecoveryEvidence,
+  inspectDaemonRuntimeOwnership,
+  inspectDaemonRuntimeRecoveryEvidence,
+} from "./daemon-runtime-ownership.js";
 import { blank, print } from "./output.js";
 import { getClientServiceStatus } from "./service-install.js";
 
@@ -272,6 +279,36 @@ export function checkBackgroundService(): CheckResult {
     label: "Background service",
     ok: false,
     detail: `not installed — re-run \`${channelConfig.binName} login <code>\` to install`,
+  };
+}
+
+export function checkDaemonRuntimeOwnership(): CheckResult {
+  const ownership = inspectDaemonRuntimeOwnership(defaultHome());
+  if (ownership.state === "absent") {
+    return { label: "Daemon owner", ok: true, detail: "lock not held" };
+  }
+  if (ownership.state === "live") {
+    return {
+      label: "Daemon owner",
+      ok: true,
+      detail: formatDaemonRuntimeOwnerSummary(ownership.owner),
+    };
+  }
+  if (ownership.state === "stale") {
+    return {
+      label: "Daemon owner",
+      ok: false,
+      detail: `stale ${formatDaemonRuntimeOwnerSummary(ownership.owner)} — ${ownership.reason}`,
+    };
+  }
+  const evidence = inspectDaemonRuntimeRecoveryEvidence(defaultHome());
+  return {
+    label: "Daemon owner",
+    ok: false,
+    detail:
+      evidence.fence.state === "absent"
+        ? `untrusted lock — ${ownership.reason}`
+        : `untrusted lock — ${formatDaemonRuntimeRecoveryEvidence(evidence).join("; ")}`,
   };
 }
 

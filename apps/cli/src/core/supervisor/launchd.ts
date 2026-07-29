@@ -7,6 +7,7 @@ import { channelConfig } from "../channel.js";
 import { print } from "../output.js";
 import {
   ensureLogDir,
+  extractFirstTreeHomeFromPlist,
   extractProxyFromPlist,
   launchdPathEnv,
   logDir,
@@ -330,12 +331,22 @@ function getLaunchdServiceStatus(): ServiceInfo {
 }
 
 function launchdInfo(unitPath: string, state: ServiceState, pid?: number, detail?: string): ServiceInfo {
+  let configuredHome: string | undefined;
+  if (existsSync(unitPath)) {
+    try {
+      configuredHome = extractFirstTreeHomeFromPlist(readFileSync(unitPath, "utf8")) ?? channelConfig.defaultHome;
+    } catch {
+      // An unreadable definition cannot prove which home the service owns.
+      configuredHome = undefined;
+    }
+  }
   return {
     platform: "launchd",
     label: LAUNCHD_LABEL,
     unitPath,
     logDir: logDir(),
     state,
+    configuredHome,
     pid,
     detail,
   };

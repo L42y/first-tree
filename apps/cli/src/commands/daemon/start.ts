@@ -28,18 +28,21 @@ import { CLIENT_SENTRY_DSN, GIT_SHA } from "../../build-info.js";
 import { fail } from "../../cli/output.js";
 import { channelConfig } from "../../core/channel.js";
 import {
+  acquireDaemonRuntimeOwnership,
   CapabilityRefresher,
   ClientRuntime,
   COMMAND_VERSION,
   createApiNameResolver,
   createExecuteUpdate,
   createLoggerRuntimeOutput,
+  daemonRuntimeHomesEqual,
   declineUpdate,
   ensureActiveRootClientIdPersisted,
   ensureFreshAccessToken,
   getClientServiceStatus,
   getClientSwitchStartupBlock,
   handleClientOrgMismatch,
+  isDaemonRuntimeOwnershipError,
   isServiceSupported,
   listPinnedAgents,
   loadCredentials,
@@ -122,13 +125,15 @@ export function registerDaemonStartCommand(daemon: Command): void {
       }
 
       let unregisterRuntimeMarker: (() => void) | null = null;
+      let releaseRuntimeOwnership: (() => void) | null = null;
       try {
         // Service-mode delegation. We split four cases so the user gets a
         // single coherent command:
         //   1. service active           → refuse, point at `daemon restart`
         //   2. service installed/inactive → systemctl/launchctl start
         //   3. service not installed    → fall through to inline run
-        //   4. --foreground             → always inline (debug / --no-start users)
+        //   4. --foreground             → inline unless the active service owns
+        //                                  the same canonical home
         // The supervisor itself reaches this code with --no-interactive and
         // FIRST_TREE_SERVICE_MODE=1 set; we treat that combo as "supervisor
         // invoking us, run inline" so we don't recursively call systemctl
@@ -143,13 +148,29 @@ export function registerDaemonStartCommand(daemon: Command): void {
             writeLine(`  Complete the root systemd migration out-of-service with \`${binName} login <code>\`.\n\n`);
             process.exit(1);
           }
+          const serviceOwnsCurrentHome =
+            svc.state === "active" &&
+            daemonRuntimeHomesEqual(svc.configuredHome ?? channelConfig.defaultHome, defaultHome());
+          if (serviceOwnsCurrentHome) {
+            writeLine(
+              `\n  Cannot start a foreground daemon while the ${svc.platform} service is active${
+                svc.detail ? ` (${svc.detail})` : ""
+              }.\n`,
+            );
+            writeLine(
+              `  Stop it with \`${binName} daemon stop\` before running \`${binName} daemon start --foreground\`.\n\n`,
+            );
+            process.exit(1);
+          }
         }
         if (!wantInline && isServiceSupported()) {
           const svc = getClientServiceStatus();
           if (svc.state === "active") {
             writeLine("\n");
             writeLine(`  Service is already running (${svc.platform}${svc.detail ? `, ${svc.detail}` : ""}).\n`);
-            writeLine(`  Use \`${binName} daemon restart\` to restart, or \`--foreground\` to run inline.\n\n`);
+            writeLine(
+              `  Use \`${binName} daemon restart\` to restart it, or stop it before running \`${binName} daemon start --foreground\`.\n\n`,
+            );
             return;
           }
           if (svc.state === "inactive") {
@@ -220,6 +241,35 @@ export function registerDaemonStartCommand(daemon: Command): void {
             process.exit(1);
           }
           // state === "not-installed" → fall through to inline run.
+        }
+
+        // The resolved channel home is the daemon's ownership boundary. Take
+        // the authoritative lock only after service delegation has decided
+        // this command will run inline, and before client.yaml or the
+        // WebSocket runtime can be opened.
+        try {
+          const ownership = acquireDaemonRuntimeOwnership({
+            channel: channelConfig.channel,
+            home: defaultHome(),
+            mode: isSupervisorChild ? "service" : "foreground",
+            version: COMMAND_VERSION,
+          });
+          const releaseOwnership = () => {
+            process.off("exit", releaseOwnership);
+            ownership.release();
+          };
+          process.once("exit", releaseOwnership);
+          releaseRuntimeOwnership = releaseOwnership;
+        } catch (error) {
+          if (isSupervisorChild && isDaemonRuntimeOwnershipError(error)) {
+            // systemd Restart=on-failure, launchd SuccessfulExit=false, and the
+            // Windows wrapper all treat exit 0 as a settled stop. Log the live
+            // holder once and return cleanly instead of creating a restart/log
+            // storm while another foreground/service owner holds this home.
+            writeStatus("✗", `${error.message}; supervisor child is stopping without restart.`);
+            return;
+          }
+          throw error;
         }
 
         // Schema-driven prompts for missing required fields
@@ -466,6 +516,8 @@ export function registerDaemonStartCommand(daemon: Command): void {
           await runtime.stop(resolveClientRuntimeStopReason());
           unregisterRuntimeMarker?.();
           unregisterRuntimeMarker = null;
+          releaseRuntimeOwnership?.();
+          releaseRuntimeOwnership = null;
           await flushClientSentry();
           process.exit(0);
         };
@@ -518,13 +570,19 @@ export function registerDaemonStartCommand(daemon: Command): void {
           });
         }
         const msg = error instanceof Error ? error.message : String(error);
-        captureClientException(error, { command: "daemon start" });
+        if (!isDaemonRuntimeOwnershipError(error)) {
+          captureClientException(error, { command: "daemon start" });
+        }
         unregisterRuntimeMarker?.();
         unregisterRuntimeMarker = null;
         await flushClientSentry();
+        if (isDaemonRuntimeOwnershipError(error)) {
+          fail(error.code, msg, 1);
+        }
         writeErrorAndExit(`Error: ${msg}`);
       } finally {
         unregisterRuntimeMarker?.();
+        releaseRuntimeOwnership?.();
         // Reset singleton so other commands can reinit
         resetConfig();
         resetConfigMeta();
