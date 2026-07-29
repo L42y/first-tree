@@ -219,7 +219,11 @@ export function validateArtifactBundle(input) {
   return {
     bundle,
     source_revision: sourceRevision(bundle),
-    source_status: artifacts.every((artifact) => artifact.completeness === "complete") ? "complete" : "blocked-source",
+    source_status: artifacts.every(
+      (artifact) => artifact.completeness === "complete" && artifact.source_role !== "unknown",
+    )
+      ? "complete"
+      : "blocked-source",
   };
 }
 
@@ -241,13 +245,17 @@ function scanPrivateOutput(value, path = "packet") {
     return;
   }
   if (typeof value !== "string") return;
+  if (path === "packet.source_revision") return;
   const checks = [
-    [/https?:\/\//iu, "URL"],
-    [/(?:^|\s)\/(?:Users|home|tmp|var|private|mnt)\//u, "absolute path"],
-    [/[A-Za-z]:\\(?:Users|Temp|Documents)\\/u, "absolute path"],
-    [/\b(?:ou|on|oc|cli|docx|doxcn)_[A-Za-z0-9_-]{8,}\b/u, "provider identifier"],
+    [/[\r\n\t]/u, "multi-line or control character"],
+    [/[\\/]/u, "path or URL delimiter"],
+    [/\b(?:https?|file|ftp|s3|gs|mailto):/iu, "URI"],
+    [/\b[\w.-]+\.(?:csv|docx?|html?|json|md|pdf|pptx?|text|tsv|txt|xlsx?|ya?ml)\b/iu, "filename"],
+    [/\b(?:ou|on|oc|cli)_[A-Za-z0-9_-]{8,}\b/u, "provider identifier"],
+    [/\b(?:boxcn|docx?|doxcn|fldcn|shtcn|wiki)[A-Za-z0-9_-]{8,}\b/iu, "provider document token"],
     [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu, "email address"],
-    [/\b(?:sk|ghp|gho|xox[baprs])_[A-Za-z0-9_-]{8,}\b/u, "secret"],
+    [/\b(?:sk(?:-proj)?|ghp|gho|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/iu, "secret"],
+    [/\b(?:basic|bearer)\s+[A-Za-z0-9._~+=-]{8,}\b/iu, "credential"],
     [/(?:[$€£¥￥]\s?\d[\d,.]*|\b(?:USD|EUR|GBP|CNY|RMB)\s+\d[\d,.]*)/iu, "exact currency amount"],
   ];
   for (const [pattern, label] of checks) {
@@ -338,10 +346,12 @@ export function validateMeetingAnalysisPacket(bundleInput, packetInput) {
   const items = packet.items.map((item, index) => validateItem(item, index, artifactRoles));
 
   if (packet.status === "blocked-source") {
-    if (prepared.source_status !== "blocked-source") fail("blocked-source requires an incomplete artifact.");
+    if (prepared.source_status !== "blocked-source") {
+      fail("blocked-source requires an incomplete or unclassifiable artifact.");
+    }
     if (items.length !== 0) fail("blocked-source requires zero items.");
   } else if (prepared.source_status !== "complete") {
-    fail(`${packet.status} requires every artifact to be complete.`);
+    fail(`${packet.status} requires every artifact to be complete and safely classified.`);
   }
 
   if (packet.status === "no-findings" && items.length !== 0) {

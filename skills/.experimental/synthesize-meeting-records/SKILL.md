@@ -49,7 +49,8 @@ Classify every artifact as:
 
 Take `completeness` from the reader result. Do not infer `complete` merely
 because some text was returned. If any supplied artifact is `partial` or
-`unknown`, emit `blocked-source` without semantic analysis.
+`unknown`, or if any `source_role` is `unknown`, emit `blocked-source` without
+semantic analysis.
 
 Keep the bundle and raw content task-local. Clean temporary copies through the
 reader's normal cleanup path as soon as they are no longer needed.
@@ -88,9 +89,8 @@ Evidence strength matters:
   confirmation.
 - A transcript confirms only what it explicitly records. Do not infer speaker
   identity, authority, or agreement from participation.
-- Unknown provenance or missing chronology requires `blocked-source` or an
-  `uncertain` item, depending on whether the source can be analyzed safely at
-  all.
+- Unknown provenance requires `blocked-source`. Ambiguous wording in a
+  complete artifact with known provenance produces an `uncertain` item.
 
 ## Produce a destination-neutral packet
 
@@ -156,4 +156,6 @@ python3 scripts/quick_validate_skill.py skills/.experimental/synthesize-meeting-
 ```
 
 Use [eval-cases.md](references/eval-cases.md) as the model-behavior test design.
-Do not run model-backed evaluation without explicit human instruction.
+Its repository-local standalone harness is executable but remains
+human-directed. Do not run model-backed evaluation without explicit human
+instruction.

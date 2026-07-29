@@ -169,6 +169,33 @@ for (const completeness of ["partial", "unknown"]) {
   );
 }
 
+const unknownRoleBundle = bundle({
+  artifacts: [{ ...bundle().artifacts[0], source_role: "unknown" }],
+});
+assert.equal(validateArtifactBundle(unknownRoleBundle).source_status, "blocked-source");
+assert.doesNotThrow(() =>
+  validateMeetingAnalysisPacket(
+    unknownRoleBundle,
+    packet(unknownRoleBundle, {
+      status: "blocked-source",
+      reason: "The source provenance cannot be classified safely.",
+      items: [],
+    }),
+  ),
+);
+expectReject(
+  () =>
+    validateMeetingAnalysisPacket(
+      unknownRoleBundle,
+      packet(unknownRoleBundle, {
+        status: "needs-confirmation",
+        reason: "The source role is unknown.",
+        items: [item({ settlement: { status: "uncertain", basis: "unknown" } })],
+      }),
+    ),
+  /requires every artifact to be complete/u,
+);
+
 const completeBundle = bundle();
 assert.doesNotThrow(() =>
   validateMeetingAnalysisPacket(
@@ -325,15 +352,22 @@ expectReject(
         items: [],
       }),
     ),
-  /requires an incomplete artifact/u,
+  /requires an incomplete or unclassifiable artifact/u,
 );
 
 for (const unsafe of [
   { raw_excerpt: "copied meeting text" },
   { note: "https://example.invalid/private" },
+  { note: "file:///tmp/source.md" },
+  { note: "/etc/passwd" },
+  { note: "../source/minutes.md" },
+  { note: "minutes.md" },
   { note: "ou_1234567890" },
+  { note: "doxcnABCdef1234567890" },
   { note: "person@example.invalid" },
-  { note: "/Users/example/private.txt" },
+  { note: "sk-proj-1234567890abcdef" },
+  { note: "xoxb-1234567890abcdef" },
+  { note: "Bearer abcdefghijklmnop" },
   { note: "Budget is $1000" },
 ]) {
   expectReject(

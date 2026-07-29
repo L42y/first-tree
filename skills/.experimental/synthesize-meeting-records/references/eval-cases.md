@@ -22,14 +22,33 @@ Run `node scripts/test.mjs`. Cover:
 11. raw/private fields and values are rejected;
 12. validation creates no persistent state, lock, report, or raw copy.
 
+## Executable standalone model gate
+
+The repository-local standalone harness installs this experimental Skill into
+an isolated workspace. It does not register the Skill as a First Tree
+Client/core payload and does not expose a Context Tree or downstream writer.
+Run it only with explicit human instruction:
+
+```sh
+pnpm --filter @first-tree/skill-evals \
+  eval:standalone:synthesize-meeting-records
+```
+
+The harness uses natural prompts that do not name the Skill. Deterministic
+oracles verify that the agent reads the installed Skill, produces a packet
+accepted by the real validator, preserves the six-category contract, removes
+superseded material, keeps AI-only material uncertain, blocks partial input
+before reading its raw artifact, does not copy synthetic raw canaries, leaves
+the supplied source repository unchanged, and creates no Context Tree.
+
 ## Model-backed cases
 
-### G1 — Progress, plans, actions, blockers, and risks
+### G1 — Six-category synthesis
 
-Input: synthetic human-confirmed minutes containing a shipped result, a future
-plan, a concrete follow-up, a temporary blocker, and a material risk.
+Input: synthetic human-confirmed minutes containing a decision, shipped
+result, future plan, concrete follow-up, temporary blocker, and material risk.
 
-Expected: five distinct confirmed items in the matching categories; concise
+Expected: six distinct confirmed items in the matching categories; concise
 context; no copied meeting prose.
 
 ### G2 — Later override and final decision
@@ -61,6 +80,9 @@ Input: complete synthetic minutes containing greetings, attendance logistics,
 and a date for the next meeting but no meaningful work content.
 
 Expected: `no-findings`; zero items.
+
+G1 through G4 are executable in the standalone harness. G5 remains a broader
+design case until it earns a deterministic oracle and fixture.
 
 ## Quality dimensions
 

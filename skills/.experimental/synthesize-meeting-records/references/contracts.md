@@ -57,7 +57,9 @@ temporary file. Reference it from the bundle; do not inline it.
 task-local routing data and must not appear in the output packet.
 
 `completeness` is `complete`, `partial`, or `unknown`. Any non-complete
-artifact blocks semantic analysis.
+artifact blocks semantic analysis. A complete artifact whose `source_role`
+remains `unknown` also blocks analysis because its provenance cannot support a
+safe evidence-strength judgment.
 
 Use the provider's document revision when available; otherwise use a content
 SHA-256. The preparation script hashes each complete `content_ref` and includes
@@ -118,8 +120,8 @@ Do not include raw excerpts. `location_hint` is a structural locator such as
 
 ## Status rules
 
-`blocked-source` requires at least one `partial` or `unknown` artifact and zero
-items.
+`blocked-source` requires at least one artifact whose completeness is
+`partial` or `unknown`, or whose `source_role` is `unknown`, and zero items.
 
 `no-findings` requires complete sources and zero items.
 
@@ -141,6 +143,8 @@ The packet has no destination, handoff, target, dedupe, write, or publication
 field.
 
 Reject raw/private keys and values, including transcript bodies, excerpts,
-URLs, provider IDs, tokens, credentials, absolute paths, contact details,
-secret shapes, and exact currency amounts. Minimize personal attribution even
-when it is not machine-detectable.
+URLs and URIs, provider IDs, document tokens, credentials, absolute or
+relative paths, filenames, contact details, secret shapes, and exact currency
+amounts. Output strings are plain single-line prose; avoid slash and backslash
+delimiters. Minimize personal attribution even when it is not
+machine-detectable.
