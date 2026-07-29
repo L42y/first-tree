@@ -1,5 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import type { CSSProperties } from "react";
+import { isAskAgentNavLocked, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 
 const TOOLTIP = "A new version is available. Click to refresh.";
 
@@ -39,19 +40,26 @@ type NewVersionChipProps = {
  * Copy is intentionally English-only; a future i18n pass owns translation.
  */
 export function NewVersionChip({ show, compact = false }: NewVersionChipProps) {
+  // A page reload destroys the surface that owns a pending Ask agent attempt
+  // — fail closed (inert + an imperative re-check) until it lifts.
+  const askAgentNavLocked = useAskAgentNavLocked();
   if (!show) return null;
 
-  const reload = () => window.location.reload();
+  const reload = () => {
+    if (isAskAgentNavLocked()) return;
+    window.location.reload();
+  };
 
   if (compact) {
     return (
       <button
         type="button"
         onClick={reload}
+        disabled={askAgentNavLocked}
         title={TOOLTIP}
         aria-label={TOOLTIP}
         className="inline-flex items-center justify-center cursor-pointer"
-        style={{ ...CHIP_STYLE, width: 26, padding: 0 }}
+        style={{ ...CHIP_STYLE, width: 26, padding: 0, opacity: askAgentNavLocked ? 0.5 : undefined }}
       >
         <RefreshCw aria-hidden="true" size={14} />
       </button>
@@ -62,10 +70,16 @@ export function NewVersionChip({ show, compact = false }: NewVersionChipProps) {
     <button
       type="button"
       onClick={reload}
+      disabled={askAgentNavLocked}
       title={TOOLTIP}
       aria-label={TOOLTIP}
       className="inline-flex items-center cursor-pointer text-body font-medium"
-      style={{ ...CHIP_STYLE, gap: 7, padding: "0 var(--sp-2_5) 0 var(--sp-2_25)" }}
+      style={{
+        ...CHIP_STYLE,
+        gap: 7,
+        padding: "0 var(--sp-2_5) 0 var(--sp-2_25)",
+        opacity: askAgentNavLocked ? 0.5 : undefined,
+      }}
     >
       <RefreshCw aria-hidden="true" size={13} style={{ flexShrink: 0 }} />
       <span>Update available</span>

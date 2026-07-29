@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { MeChatRow } from "@first-tree/shared";
+import type { MeChatRow, OrgBrief } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,7 +11,19 @@ import { addAskAgentNavLock, clearAskAgentNavLocks } from "../chat/ask-agent-nav
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const authMock = vi.hoisted(() => ({
-  value: { organizationId: "org-1" as string | null, agentId: "human-1" as string | null },
+  value: {
+    organizationId: "org-1" as string | null,
+    agentId: "human-1" as string | null,
+    role: "admin" as string | null,
+    teamDisplayName: "Team One" as string | null,
+    currentMembership: { id: "mem-1" } as { id: string } | null,
+    switchingOrg: null as OrgBrief | null,
+    setSwitchingOrg: vi.fn(),
+    selectOrganization: vi.fn(),
+    refreshMe: vi.fn(),
+    logout: vi.fn(),
+    user: { displayName: "Gandy", username: "gandy", avatarUrl: null } as unknown,
+  },
 }));
 
 const meChatMocks = vi.hoisted(() => ({
@@ -23,6 +35,16 @@ const orgAgentsMock = vi.hoisted(() => ({
   isLoading: false,
 }));
 
+const apiMocks = vi.hoisted(() => ({
+  get: vi.fn(),
+}));
+
+const versionMock = vi.hoisted(() => ({ value: true }));
+
+const disconnectMock = vi.hoisted(() => ({
+  value: { rows: [{ id: "computer-1" }] as unknown[], firstHostname: "gandy-macbook" as string | null },
+}));
+
 vi.mock("../../auth/auth-context.js", () => ({
   useAuth: () => authMock.value,
 }));
@@ -32,8 +54,24 @@ vi.mock("../../hooks/use-viewport.js", () => ({
 }));
 
 vi.mock("../../hooks/use-version-check.js", () => ({
-  useNewVersionAvailable: () => false,
+  useNewVersionAvailable: () => versionMock.value,
 }));
+
+vi.mock("../../hooks/use-disconnected-computers.js", () => ({
+  useDisconnectedComputers: () => disconnectMock.value,
+}));
+
+vi.mock("../../hooks/use-mobile-experience.js", () => ({
+  useMobileExperienceState: () => ({ settled: false, enabled: false }),
+}));
+
+vi.mock("../../api/client.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../api/client.js")>();
+  return {
+    ...original,
+    api: { ...original.api, get: apiMocks.get },
+  };
+});
 
 vi.mock("../../api/me-chats.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/me-chats.js")>()),
@@ -44,18 +82,21 @@ vi.mock("../../lib/use-org-agents.js", () => ({
   useOrgAgents: () => ({ data: orgAgentsMock.value, isLoading: orgAgentsMock.isLoading }),
 }));
 
-// Unrelated top-bar chrome is stubbed so the test exercises the REAL Layout —
-// its nav tabs, Jump-to trigger, and CommandPalette — without dragging every
-// status chip's own data dependencies along. Layout itself is never mocked.
-vi.mock("../disconnect-chip.js", () => ({ DisconnectChip: () => null }));
-vi.mock("../new-version-chip.js", () => ({ NewVersionChip: () => null }));
-vi.mock("../support-menu.js", () => ({ SupportMenu: () => null }));
+// Only the org-switch veil (not a navigation exit) and the two controls that
+// are explicitly allowed to keep working while locked (external support
+// links, pure theme toggle) are stubbed. Every navigation-capable host
+// control — TeamSwitcher, UserMenu, DisconnectChip, NewVersionChip,
+// CommandPalette, nav tabs — is the REAL component under test.
 vi.mock("../team-switch-overlay.js", () => ({ TeamSwitchOverlay: () => null }));
-vi.mock("../team-switcher.js", () => ({ TeamSwitcher: () => null }));
-vi.mock("../user-menu.js", () => ({ UserMenu: () => null }));
+vi.mock("../support-menu.js", () => ({ SupportMenu: () => null }));
 vi.mock("../ui/theme-toggle.js", () => ({ ThemeToggle: () => null }));
 
 const NOW = "2026-05-28T12:00:00.000Z";
+
+const ORGS: OrgBrief[] = [
+  { id: "org-1", name: "team-one", displayName: "Team One", role: "admin" },
+  { id: "org-2", name: "team-two", displayName: "Team Two", role: "member" },
+];
 
 function chatRow(): MeChatRow {
   const participants = [
@@ -130,9 +171,13 @@ async function renderLayout(initialEntry: string): Promise<{ container: HTMLElem
           <Routes>
             <Route element={<Layout />}>
               <Route path="/" element={<div data-testid="workspace-surface">workspace surface</div>} />
+              <Route path="/quickstart" element={<div data-testid="trial-surface">trial surface</div>} />
               <Route path="/context" element={<div>context surface</div>} />
               <Route path="/team" element={<div>team surface</div>} />
               <Route path="/settings" element={<div>settings surface</div>} />
+              <Route path="/settings/account" element={<div>account settings surface</div>} />
+              <Route path="/settings/computers" element={<div>computers settings surface</div>} />
+              <Route path="/onboarding" element={<div>onboarding surface</div>} />
             </Route>
           </Routes>
         </QueryClientProvider>
@@ -168,6 +213,14 @@ function buttonByText(scope: ParentNode, text: string): HTMLButtonElement | null
   return [...scope.querySelectorAll("button")].find((button) => button.textContent === text) ?? null;
 }
 
+function menuItemByText(scope: ParentNode, text: string): HTMLButtonElement | null {
+  return (
+    [...scope.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')].find((button) =>
+      button.textContent?.includes(text),
+    ) ?? null
+  );
+}
+
 function linkByText(scope: ParentNode, text: string): HTMLAnchorElement | null {
   return [...scope.querySelectorAll("a")].find((anchor) => anchor.textContent === text) ?? null;
 }
@@ -179,12 +232,44 @@ function commandItemByText(text: string): HTMLElement | null {
   );
 }
 
+async function engageLock(): Promise<void> {
+  await act(async () => {
+    addAskAgentNavLock({ chatId: "chat-1", requestId: "req-1" });
+  });
+  await flush();
+}
+
+async function releaseLock(): Promise<void> {
+  await act(async () => {
+    clearAskAgentNavLocks();
+  });
+  await flush();
+}
+
 beforeEach(() => {
   document.body.innerHTML = "";
   vi.clearAllMocks();
   clearAskAgentNavLocks();
-  authMock.value = { organizationId: "org-1", agentId: "human-1" };
+  authMock.value = {
+    organizationId: "org-1",
+    agentId: "human-1",
+    role: "admin",
+    teamDisplayName: "Team One",
+    currentMembership: { id: "mem-1" },
+    switchingOrg: null,
+    setSwitchingOrg: vi.fn(),
+    selectOrganization: vi.fn(() => Promise.resolve()),
+    refreshMe: vi.fn(() => Promise.resolve()),
+    logout: vi.fn(),
+    user: { displayName: "Gandy", username: "gandy", avatarUrl: null },
+  };
+  versionMock.value = true;
+  disconnectMock.value = { rows: [{ id: "computer-1" }], firstHostname: "gandy-macbook" };
   meChatMocks.listMeChats.mockResolvedValue({ rows: [chatRow()], nextCursor: null });
+  apiMocks.get.mockImplementation((path: string) => {
+    if (path === "/me/organizations") return Promise.resolve(ORGS);
+    return Promise.resolve({});
+  });
 });
 
 afterEach(() => {
@@ -201,10 +286,7 @@ describe("Layout Ask agent navigation lock", () => {
     const brandLink = container.querySelector('a[target="_blank"]');
     expect(brandLink).not.toBeNull();
 
-    await act(async () => {
-      addAskAgentNavLock({ chatId: "chat-1", requestId: "req-1" });
-    });
-    await flush();
+    await engageLock();
 
     // Every top tab is now an inert disabled button — no navigable anchors.
     expect(container.querySelector('a[href="/team"]')).toBeNull();
@@ -231,10 +313,7 @@ describe("Layout Ask agent navigation lock", () => {
     expect(document.body.textContent).not.toContain("Jump to chat or teammate…");
 
     // Unlock: tabs navigate again (back to real anchors) and the palette opens.
-    await act(async () => {
-      clearAskAgentNavLocks();
-    });
-    await flush();
+    await releaseLock();
     expect(container.querySelector('a[href="/team"]')).not.toBeNull();
     await click(linkByText(container, "Team"));
     expect(locationText(container)).toBe("/team");
@@ -255,16 +334,119 @@ describe("Layout Ask agent navigation lock", () => {
     await waitForText("Launch planning");
 
     // …then the Ask agent attempt engages the lock.
-    await act(async () => {
-      addAskAgentNavLock({ chatId: "chat-1", requestId: "req-1" });
-    });
-    await flush();
+    await engageLock();
 
     // The destination is dismissed without leaving the review surface.
     await click(commandItemByText("Launch planning"));
     expect(locationText(container)).toBe("/?review=need-you");
     expect(document.body.textContent).not.toContain("Jump to chat or teammate…");
     expect(container.querySelector('[data-testid="workspace-surface"]')).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the real TeamSwitcher inert while locked, including a menu opened before the attempt", async () => {
+    const { container, root } = await renderLayout("/?review=need-you");
+    const trigger = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Switch team"]');
+
+    // Menu opens BEFORE the attempt starts; the other team is visible.
+    await click(trigger());
+    await waitForText("Team Two");
+
+    await engageLock();
+    expect(trigger()?.disabled).toBe(true);
+
+    // The switch action boundary re-checks the lock: no cache-clearing
+    // selectOrganization, no navigation.
+    await click(menuItemByText(container, "Team Two"));
+    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
+    expect(locationText(container)).toBe("/?review=need-you");
+    expect(container.querySelector('[data-testid="workspace-surface"]')).not.toBeNull();
+
+    // Unlock: the same row switches again.
+    await releaseLock();
+    expect(trigger()?.disabled).toBe(false);
+    await click(menuItemByText(container, "Team Two"));
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-2");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the real UserMenu inert while locked: no account settings, no sign out", async () => {
+    const { container, root } = await renderLayout("/?review=need-you");
+    const trigger = () => container.querySelector<HTMLButtonElement>('button[aria-label^="User menu"]');
+
+    // Menu opened BEFORE the attempt: Account settings is blocked.
+    await click(trigger());
+    await waitForText("Account settings");
+    await engageLock();
+    expect(trigger()?.disabled).toBe(true);
+    await click(buttonByText(container, "Account settings"));
+    expect(locationText(container)).toBe("/?review=need-you");
+
+    // Re-open, then Sign out is blocked at its action boundary.
+    await releaseLock();
+    await click(trigger());
+    await waitForText("Sign out");
+    await engageLock();
+    await click(buttonByText(container, "Sign out"));
+    expect(authMock.value.logout).not.toHaveBeenCalled();
+    expect(locationText(container)).toBe("/?review=need-you");
+
+    // Unlock: Account settings navigates again.
+    await releaseLock();
+    await click(trigger());
+    await waitForText("Account settings");
+    await click(buttonByText(container, "Account settings"));
+    expect(locationText(container)).toBe("/settings/account");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the real DisconnectChip and NewVersionChip inert while locked", async () => {
+    const { container, root } = await renderLayout("/?review=need-you");
+    const disconnect = buttonByText(container, "Computer disconnected");
+    const update = buttonByText(container, "Update available");
+    expect(disconnect).not.toBeNull();
+    expect(update).not.toBeNull();
+    expect(disconnect?.disabled).toBe(false);
+    expect(update?.disabled).toBe(false);
+
+    await engageLock();
+    expect(disconnect?.disabled).toBe(true);
+    expect(update?.disabled).toBe(true);
+    await click(disconnect);
+    expect(locationText(container)).toBe("/?review=need-you");
+
+    await releaseLock();
+    expect(disconnect?.disabled).toBe(false);
+    await click(disconnect);
+    expect(locationText(container)).toBe("/settings/computers");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the trial onboarding CTA inert while locked", async () => {
+    const { container, root } = await renderLayout("/quickstart?c=chat-1");
+    expect(container.querySelector('[data-testid="trial-surface"]')).not.toBeNull();
+    // Unlocked: the CTA is a real onboarding link.
+    expect(container.querySelector('a[href="/onboarding"]')).not.toBeNull();
+
+    await engageLock();
+    // Locked: no navigable CTA anchor; the disabled replacement does not move.
+    expect(container.querySelector('a[href="/onboarding"]')).toBeNull();
+    const cta = buttonByText(container, "Set up First Tree for your team");
+    expect(cta?.disabled).toBe(true);
+    await click(cta);
+    expect(locationText(container)).toBe("/quickstart?c=chat-1");
+    expect(container.querySelector('[data-testid="trial-surface"]')).not.toBeNull();
+
+    // Unlock: the link is restored and navigates.
+    await releaseLock();
+    const ctaLink = container.querySelector('a[href="/onboarding"]');
+    expect(ctaLink).not.toBeNull();
+    await click(ctaLink);
+    expect(locationText(container)).toBe("/onboarding");
 
     await act(async () => root.unmount());
   });

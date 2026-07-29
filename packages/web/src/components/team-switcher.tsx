@@ -9,6 +9,7 @@ import { updateOrganization } from "../api/organizations.js";
 import { useAuth } from "../auth/auth-context.js";
 import { cn } from "../lib/utils.js";
 import { Avatar } from "./avatar.js";
+import { isAskAgentNavLocked, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 import { InviteDialog } from "./invite-dialog.js";
 import { TeamSetupModal } from "./team-setup-modal.js";
 import { Button } from "./ui/button.js";
@@ -55,6 +56,11 @@ export function TeamSwitcher({
   } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  // While an Ask agent attempt is pending, team switching/leaving clears
+  // org-scoped caches and navigates — destroying the attempt's owning
+  // surface. The trigger goes inert and the switch/leave actions re-check
+  // the lock imperatively (a menu opened before the attempt started).
+  const askAgentNavLocked = useAskAgentNavLocked();
   const [open, setOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [setupAction, setSetupAction] = useState<"create" | "join" | null>(null);
@@ -170,6 +176,7 @@ export function TeamSwitcher({
   });
 
   const switchAfterLeave = async (org: OrgBrief) => {
+    if (isAskAgentNavLocked()) return;
     setSwitchError(null);
     setSwitchingOrg(org);
     const startedAt = Date.now();
@@ -209,6 +216,7 @@ export function TeamSwitcher({
   });
 
   const handleSwitch = async (org: OrgBrief) => {
+    if (isAskAgentNavLocked()) return;
     if (org.id === organizationId) {
       setOpen(false);
       return;
@@ -286,6 +294,7 @@ export function TeamSwitcher({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={`Switch team, current: ${currentOrg.displayName}`}
+          disabled={askAgentNavLocked}
           onClick={() => setOpen((v) => !v)}
           className={cn(
             "inline-flex items-center border transition-colors",
@@ -300,7 +309,8 @@ export function TeamSwitcher({
             padding: isCompact ? "var(--sp-1) var(--sp-1_25)" : "var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1_25)",
             borderRadius: "var(--radius-input)",
             maxWidth: isCompact ? undefined : 185,
-            cursor: "pointer",
+            cursor: askAgentNavLocked ? "default" : "pointer",
+            opacity: askAgentNavLocked ? 0.5 : undefined,
           }}
         >
           <Avatar seed={anchorSeed} name={anchorName} size={18} />
@@ -558,7 +568,10 @@ export function TeamSwitcher({
             <Button
               type="button"
               variant="destructive"
-              onClick={() => leaveMutation.mutate()}
+              onClick={() => {
+                if (isAskAgentNavLocked()) return;
+                leaveMutation.mutate();
+              }}
               disabled={leaveMutation.isPending}
             >
               {leaveMutation.isPending ? "Leaving…" : "Leave team"}

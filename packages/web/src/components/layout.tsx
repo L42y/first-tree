@@ -158,13 +158,22 @@ export function Layout() {
             )}
           </a>
 
-          {/* The single intentional way out of the trial → standard onboarding. */}
-          <Button asChild size="sm" className="min-w-0" style={{ justifySelf: "center" }}>
-            <Link to="/onboarding">
+          {/* The single intentional way out of the trial → standard onboarding.
+              Locked while an Ask agent attempt is pending: the jump unmounts
+              the trial ChatView that owns the attempt's feedback. */}
+          {askAgentNavLocked ? (
+            <Button size="sm" className="min-w-0" style={{ justifySelf: "center" }} disabled>
               <span className="truncate">Set up First Tree{dropBrand ? "" : " for your team"}</span>
               <ArrowRight className="h-4 w-4 shrink-0" />
-            </Link>
-          </Button>
+            </Button>
+          ) : (
+            <Button asChild size="sm" className="min-w-0" style={{ justifySelf: "center" }}>
+              <Link to="/onboarding">
+                <span className="truncate">Set up First Tree{dropBrand ? "" : " for your team"}</span>
+                <ArrowRight className="h-4 w-4 shrink-0" />
+              </Link>
+            </Button>
+          )}
 
           {/* User menu (sign out) stays reachable at every width. */}
           <div className="flex items-center shrink-0" style={{ gap: 6, justifySelf: "end" }}>

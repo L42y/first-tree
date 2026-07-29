@@ -2629,12 +2629,29 @@ export function ChatView({
   // fetch completes; `status` lands on "error" for ANY failed fetch — even a
   // background refetch that keeps serving stale data. So a cached empty
   // success from an earlier visit can never pass as this mount's
-  // confirmation, and a failed mount refetch is caught by `isError` whether
-  // or not stale data exists. Deliberately not `isFetching`: the 5s poll
-  // must not flicker an already-confirmed composer. Applies to the normal
-  // route AND inspect mode — see `openRequestsUnverified` below.
-  const openRequestsMountFailed = openRequestsQuery.isError;
-  const openRequestsMountConfirmed = openRequestsQuery.isFetchedAfterMount && openRequestsQuery.status === "success";
+  // confirmation. Deliberately not `isFetching`: the 5s poll must not
+  // flicker an already-confirmed composer.
+  //
+  // The single-slot latch below preserves that confirmation for the REST of
+  // this viewing: once this chat's snapshot has been confirmed, a later
+  // transient 5s poll failure must not re-block the composer. Every viewing
+  // confirms its own snapshot, so the latch resets on chat switch — in a
+  // layout effect, so a stale latch from an earlier visit to this chat can
+  // never paint the composer before the reset lands.
+  const [openRequestsConfirmedChatId, setOpenRequestsConfirmedChatId] = useState<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed intentionally on chatId — the latch resets on every chat switch, not when the effect body changes.
+  useLayoutEffect(() => {
+    setOpenRequestsConfirmedChatId(null);
+  }, [chatId]);
+  useEffect(() => {
+    if (openRequestsQuery.isFetchedAfterMount && openRequestsQuery.status === "success") {
+      setOpenRequestsConfirmedChatId(chatId);
+    }
+  }, [chatId, openRequestsQuery.isFetchedAfterMount, openRequestsQuery.status]);
+  const openRequestsMountConfirmed =
+    openRequestsConfirmedChatId === chatId ||
+    (openRequestsQuery.isFetchedAfterMount && openRequestsQuery.status === "success");
+  const openRequestsMountFailed = !openRequestsMountConfirmed && openRequestsQuery.isError;
   // The ordinary composer must fail closed on BOTH the normal route and
   // `showAsk=false` inspect mode while the window-independent open-requests
   // source has not CONFIRMED this chat's open-request state in this mount.

@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 import { useAuth } from "../auth/auth-context.js";
 import { useMobileExperienceState } from "../hooks/use-mobile-experience.js";
 import { Avatar } from "./avatar.js";
+import { isAskAgentNavLocked, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 import { OpenOnMobileDialog } from "./mobile-install-promotion.js";
 
 // Marketing site — where an explicit sign-out lands the browser, so the user
@@ -24,6 +25,11 @@ export function UserMenu() {
   const { user, logout } = useAuth();
   const mobileExperience = useMobileExperienceState();
   const navigate = useNavigate();
+  // While an Ask agent attempt is pending, Account settings navigates away
+  // and Sign out leaves the app entirely — both destroy the attempt's owning
+  // surface. The trigger goes inert and the actions re-check the lock
+  // imperatively (a menu opened before the attempt started).
+  const askAgentNavLocked = useAskAgentNavLocked();
   const [open, setOpen] = useState(false);
   const [mobileDialogOpen, setMobileDialogOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -58,13 +64,15 @@ export function UserMenu() {
         aria-label={`User menu, ${displayName}`}
         aria-haspopup="menu"
         aria-expanded={open}
+        disabled={askAgentNavLocked}
         onClick={() => setOpen((o) => !o)}
         className="inline-flex items-center justify-center rounded-full focus:outline-none focus:ring-1 focus:ring-ring transition-shadow"
         style={{
           background: "transparent",
           border: open ? "var(--hairline) solid var(--border)" : "var(--hairline) solid transparent",
           padding: 1,
-          cursor: "pointer",
+          cursor: askAgentNavLocked ? "default" : "pointer",
+          opacity: askAgentNavLocked ? 0.5 : undefined,
         }}
       >
         <Avatar src={avatarSrc} name={displayName} size={28} />
@@ -96,6 +104,7 @@ export function UserMenu() {
               role="menuitem"
               onClick={() => {
                 setOpen(false);
+                if (isAskAgentNavLocked()) return;
                 navigate("/settings/account");
               }}
               className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-body hover:bg-accent transition-colors"
@@ -126,6 +135,7 @@ export function UserMenu() {
               role="menuitem"
               onClick={() => {
                 setOpen(false);
+                if (isAskAgentNavLocked()) return;
                 logout();
                 // Leave the app on the marketing site rather than an app
                 // route — `logout()` clears local auth state, so staying in

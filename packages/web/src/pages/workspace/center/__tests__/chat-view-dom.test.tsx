@@ -2818,6 +2818,96 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("latches the confirmation per chat viewing: transient poll errors do not re-block, chat switches re-verify", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // Per-chat deferred control over the open-requests source.
+    const pendingResolvers = new Map<string, (value: { items: MessageWithDelivery[] }) => void>();
+    const deferAll = () => {
+      chatMocks.listChatOpenRequests.mockImplementation(
+        (chatId: string) =>
+          new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+            pendingResolvers.set(chatId, resolve);
+          }),
+      );
+    };
+    deferAll();
+
+    const { container, queryClient, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/",
+    );
+
+    // chat-1 confirms a zero: the composer appears.
+    await act(async () => {
+      pendingResolvers.get("chat-1")?.({ items: [] });
+    });
+    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-1 confirmed");
+
+    // A transient poll failure AFTER the latch must not re-block the composer
+    // or surface the retry panel — this viewing is already confirmed.
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("poll blip"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+    });
+    await flush();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.textContent).not.toContain("Couldn’t check for open questions.");
+
+    // Switch to chat-2 WITHOUT remounting ChatView: the latch must reset, so
+    // the pending source is unverified again — no composer.
+    deferAll();
+    seedChat(queryClient, chatDetail({ id: "chat-2" }), messages([]));
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <ChatView agentId="agent-1" chatId="chat-2" />
+            </ToastProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flush();
+    expect(container.querySelector("textarea")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // chat-2 confirms: composer returns.
+    await act(async () => {
+      pendingResolvers.get("chat-2")?.({ items: [] });
+    });
+    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-2 confirmed");
+
+    // Back to chat-1 (still without remount): the earlier chat-1 latch was
+    // cleared on switch, so this viewing re-verifies too.
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <ChatView agentId="agent-1" chatId="chat-1" />
+            </ToastProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flush();
+    expect(container.querySelector("textarea")).toBeNull();
+    // chat-1's query still carries the blip's error status, so this viewing
+    // shows the retryable fail-closed error (not the neutral checking state);
+    // the in-flight mount refetch settles it.
+    await waitForText(container, "Couldn’t check for open questions.");
+
+    await act(async () => {
+      pendingResolvers.get("chat-1")?.({ items: [] });
+    });
+    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-1 re-confirmed");
+
+    await act(async () => root.unmount());
+  });
+
   it("Skip resolves the question with a skipped answer (no temporary dismiss)", async () => {
     const { ChatView } = await import("../chat-view.js");
     const dockMessages = messages([
