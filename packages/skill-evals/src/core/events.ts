@@ -25,6 +25,10 @@ export function appendEvent(eventsPath: string, event: JsonRecord): void {
 export function readEvents(eventsPath: string): unknown[] {
   if (!existsSync(eventsPath)) return [];
   const text = readFileSync(eventsPath, "utf8");
+  return parseEvents(text);
+}
+
+export function parseEvents(text: string): unknown[] {
   const events: unknown[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();

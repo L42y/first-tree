@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { classifyShellCommandIo } from "@first-tree/shared";
 
 import { isRecord } from "../../core/events.js";
+import { readNoFollowRegularText } from "../../core/safe-file.js";
 import type { RunPaths } from "../../core/types.js";
 import { SKILL_NAME, sourceArtifactManifest } from "./fixture.js";
 import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEvaluation } from "./types.js";
@@ -150,7 +151,7 @@ function sourceBaselineManifest(events: readonly unknown[]): readonly string[] |
 export function sourceRepoChanged(events: readonly unknown[], paths: RunPaths): boolean {
   const sourceRepoPath = join(paths.workspacePath, "source-artifacts");
   const baseline = sourceBaselineManifest(events);
-  if (!existsSync(sourceRepoPath) || baseline === null) return true;
+  if (baseline === null) return true;
   try {
     return JSON.stringify(sourceArtifactManifest(sourceRepoPath)) !== JSON.stringify(baseline);
   } catch {
@@ -158,13 +159,13 @@ export function sourceRepoChanged(events: readonly unknown[], paths: RunPaths): 
   }
 }
 
-function parsePacket(path: string): Record<string, unknown> | null {
-  if (!existsSync(path)) return null;
+function readPacketSnapshot(path: string): { packet: Record<string, unknown> | null; text: string } {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return isRecord(parsed) ? parsed : null;
+    const text = readNoFollowRegularText(path);
+    const parsed: unknown = JSON.parse(text);
+    return { packet: isRecord(parsed) ? parsed : null, text };
   } catch {
-    return null;
+    return { packet: null, text: "" };
   }
 }
 
@@ -223,8 +224,9 @@ export function deriveMetrics(
   paths: RunPaths,
 ): EvalMetrics {
   const packetPath = join(paths.workspacePath, "meeting-analysis-output.json");
-  const packet = parsePacket(packetPath);
-  const packetText = existsSync(packetPath) ? readFileSync(packetPath, "utf8") : "";
+  const packetSnapshot = readPacketSnapshot(packetPath);
+  const packet = packetSnapshot.packet;
+  const packetText = packetSnapshot.text;
   const visibleAssistantText = assistantVisibleText(events);
   const finalResponse = assistantTexts(events).at(-1) ?? "";
   return {

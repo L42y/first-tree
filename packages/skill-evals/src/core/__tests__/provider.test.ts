@@ -166,6 +166,49 @@ describe("codex provider runner hardening", () => {
       rmSync(packageRoot, { force: true, recursive: true });
     }
   });
+
+  it("rejects a replaced model-event receipt without following its symlink target", async () => {
+    const packageRoot = tempPackageRoot();
+    try {
+      const codexBinDir = join(packageRoot, "operator-codex-bin");
+      mkdirSync(codexBinDir, { recursive: true });
+      const outsideEventsPath = join(packageRoot, "outside-events.jsonl");
+      writeFileSync(outsideEventsPath, '{"type":"forged-host-receipt"}\n', "utf8");
+      const codexBin = join(codexBinDir, "codex");
+      writeFileSync(
+        codexBin,
+        [
+          "#!/bin/sh",
+          'rm -f "$FIRST_TREE_EVAL_EVENTS"',
+          `ln -s ${JSON.stringify(outsideEventsPath)} "$FIRST_TREE_EVAL_EVENTS"`,
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      chmodSync(codexBin, 0o755);
+
+      const context = fakeContext(packageRoot);
+      const exitCode = await runCodexProvider(
+        {
+          bin: codexBin,
+          caseId: "provider-hardening-test",
+          model: null,
+          prompt: "Run the eval case.",
+          provider: "codex",
+          verbose: false,
+        },
+        context,
+      );
+
+      expect(exitCode).toBe(0);
+      const events = readEvents(context.paths.eventsPath);
+      expect(events).toContainEqual(expect.objectContaining({ type: "model_events_rejected" }));
+      expect(events).not.toContainEqual(expect.objectContaining({ type: "forged-host-receipt" }));
+    } finally {
+      rmSync(packageRoot, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("claude provider runner hardening", () => {

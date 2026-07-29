@@ -3,8 +3,9 @@ import { existsSync, mkdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import { appendEvent, isRecord, previewText, readEvents } from "../events.js";
+import { appendEvent, isRecord, parseEvents, previewText } from "../events.js";
 import { isShimTraceLine } from "../reporter.js";
+import { readNoFollowRegularText } from "../safe-file.js";
 import type { ProviderRunContext, ProviderRunOptions } from "./types.js";
 
 const ALLOWED_ENV_KEYS = new Set([
@@ -240,8 +241,18 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, context: Provid
 }
 
 function appendModelEvents(context: ProviderRunContext): void {
-  if (!existsSync(context.paths.modelEventsPath)) return;
-  for (const modelEvent of readEvents(context.paths.modelEventsPath)) {
+  let modelEvents: readonly unknown[];
+  try {
+    modelEvents = parseEvents(readNoFollowRegularText(context.paths.modelEventsPath));
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return;
+    appendEvent(context.paths.eventsPath, {
+      error: error instanceof Error ? error.message : String(error),
+      type: "model_events_rejected",
+    });
+    return;
+  }
+  for (const modelEvent of modelEvents) {
     appendEvent(
       context.paths.eventsPath,
       isRecord(modelEvent)

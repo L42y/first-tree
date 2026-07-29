@@ -1,10 +1,12 @@
 import { join } from "node:path";
 
-import { runCommand } from "../../core/commands.js";
+import { runCommand, writeText } from "../../core/commands.js";
 import { appendEvent, readEvents } from "../../core/events.js";
 import { createRunPaths } from "../../core/paths.js";
 import { runCodexProvider } from "../../core/provider/codex.js";
 import { createEvalReporter } from "../../core/reporter.js";
+import { readNoFollowRegularText } from "../../core/safe-file.js";
+import type { CommandResult } from "../../core/types.js";
 import {
   type PartialRawAccessMonitor,
   setupFixture,
@@ -15,19 +17,53 @@ import {
 } from "./fixture.js";
 import { casePassed, deriveMetrics } from "./grader.js";
 import { writeCaseSummaries } from "./summary.js";
-import type { CaseRunSummary, CliOptions, MeetingRecordsEvalCase } from "./types.js";
+import type { CaseRunSummary, CliOptions, FixtureValidation, MeetingRecordsEvalCase } from "./types.js";
 
-export function runPacketValidator(paths: Parameters<typeof validateFixture>[0]) {
+function skippedValidatorResult(paths: Parameters<typeof validateFixture>[0], reason: string): CommandResult {
+  return {
+    args: [],
+    command: "packet-validator-skipped",
+    cwd: paths.runRoot,
+    exitCode: 1,
+    stderr: reason,
+    stdout: "",
+  };
+}
+
+export function runPacketValidator(
+  paths: Parameters<typeof validateFixture>[0],
+  fixtureValidation: FixtureValidation,
+): CommandResult {
+  if (!fixtureValidation.ok) {
+    return skippedValidatorResult(paths, "Fixture validation failed before packet validation.");
+  }
+
+  const snapshotDir = join(paths.runRoot, "validator-inputs");
+  const bundleSnapshotPath = join(snapshotDir, "bundle.json");
+  const packetSnapshotPath = join(snapshotDir, "meeting-analysis-output.json");
+  try {
+    writeText(
+      bundleSnapshotPath,
+      readNoFollowRegularText(join(paths.workspacePath, "source-artifacts", "bundle.json")),
+    );
+    writeText(packetSnapshotPath, readNoFollowRegularText(join(paths.workspacePath, "meeting-analysis-output.json")));
+  } catch (error) {
+    return skippedValidatorResult(
+      paths,
+      `Host snapshot rejected: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   return runCommand(
     "node",
     [
       join(paths.repoRoot, "skills", ".experimental", "synthesize-meeting-records", "scripts", "validate-output.mjs"),
       "--bundle",
-      join(paths.workspacePath, "source-artifacts", "bundle.json"),
+      bundleSnapshotPath,
       "--output",
-      join(paths.workspacePath, "meeting-analysis-output.json"),
+      packetSnapshotPath,
     ],
-    paths.workspacePath,
+    snapshotDir,
   );
 }
 
@@ -119,7 +155,7 @@ export async function runSynthesizeMeetingRecordsCase(
       );
     }
   })();
-  const validatorResult = runPacketValidator(paths);
+  const validatorResult = runPacketValidator(paths, fixtureValidation);
   appendEvent(paths.eventsPath, {
     args: validatorResult.args,
     caseId: evalCase.id,

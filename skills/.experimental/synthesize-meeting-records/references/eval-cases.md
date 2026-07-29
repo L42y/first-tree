@@ -75,6 +75,11 @@ only the pre-created regular model-receipt file may change content. Index flags
 and writes hidden inside allowed container directories therefore cannot hide
 content, type, or mode changes.
 
+Before any unsandboxed host read, the model receipt, bundle, and packet are
+opened with no-follow regular-file checks and copied into host-owned snapshots.
+Failed fixture validation skips packet validation entirely, so a rejected
+workspace path is never followed as a later validation input.
+
 ## Model-backed cases
 
 ### G1 — Six-category synthesis

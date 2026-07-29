@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { assertCommandOk, runCommand, writeText } from "../../core/commands.js";
 import { appendEvent, isRecord, isStringArray, readEvents } from "../../core/events.js";
 import type { EvalReporter } from "../../core/reporter.js";
+import { readNoFollowRegularFile, readNoFollowRegularText } from "../../core/safe-file.js";
 import { parseSkillDescription } from "../../core/skills/install.js";
 import type { RunPaths } from "../../core/types.js";
 import type { FixtureValidation, MeetingFixtureMode, MeetingRecordsEvalCase } from "./types.js";
@@ -69,7 +70,17 @@ verbatim source prose into the packet or final response.
 }
 
 function fileSha256(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+  return createHash("sha256").update(readNoFollowRegularFile(path)).digest("hex");
+}
+
+function pathExistsNoFollow(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 type DirectoryManifestOptions = {
@@ -193,8 +204,8 @@ function validateInstalledInstructions(paths: RunPaths): readonly string[] {
   const errors: string[] = [];
   try {
     if (
-      existsSync(sourceSkillPath) &&
-      existsSync(installedSkillPath) &&
+      pathExistsNoFollow(sourceSkillPath) &&
+      pathExistsNoFollow(installedSkillPath) &&
       JSON.stringify(directoryManifest(sourceSkillPath)) !== JSON.stringify(directoryManifest(installedSkillPath))
     ) {
       errors.push("installed standalone Skill changed after setup");
@@ -208,9 +219,9 @@ function validateInstalledInstructions(paths: RunPaths): readonly string[] {
   const agentsPath = join(paths.workspacePath, "AGENTS.md");
   const sourceSkillMarkdownPath = join(sourceSkillPath, "SKILL.md");
   try {
-    if (existsSync(agentsPath) && existsSync(sourceSkillMarkdownPath)) {
+    if (pathExistsNoFollow(agentsPath) && pathExistsNoFollow(sourceSkillMarkdownPath)) {
       const expected = agentsMarkdown(parseSkillDescription(readFileSync(sourceSkillMarkdownPath, "utf8")));
-      if (readFileSync(agentsPath, "utf8") !== expected) errors.push("workspace AGENTS.md changed after setup");
+      if (readNoFollowRegularText(agentsPath) !== expected) errors.push("workspace AGENTS.md changed after setup");
     }
   } catch (error) {
     errors.push(`workspace AGENTS.md cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
@@ -329,7 +340,7 @@ function initSourceRepo(sourceRepoPath: string): string {
 }
 
 function partialArtifactLocators(sourceRepoPath: string): readonly string[] {
-  const bundle = JSON.parse(readFileSync(join(sourceRepoPath, "bundle.json"), "utf8")) as {
+  const bundle = JSON.parse(readNoFollowRegularText(join(sourceRepoPath, "bundle.json"))) as {
     artifacts?: Array<{ completeness?: unknown; content_ref?: { locator?: unknown } }>;
   };
   if (!bundle.artifacts?.some((artifact) => artifact.completeness !== "complete")) return [];
@@ -498,7 +509,7 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
     join(paths.workspacePath, ".agents", "skills", SKILL_NAME, "scripts", "validate-output.mjs"),
     join(sourceRepoPath, "bundle.json"),
   ];
-  const missingFiles = required.filter((path) => !existsSync(path));
+  const missingFiles = required.filter((path) => !pathExistsNoFollow(path));
   const errors = [
     ...missingFiles.map((path) => `missing required file: ${path}`),
     ...validateInstalledInstructions(paths),

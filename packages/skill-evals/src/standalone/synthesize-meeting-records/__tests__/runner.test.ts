@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,13 +41,71 @@ describe("standalone synthesize-meeting-records runner cleanup", () => {
       );
       writeFileSync(join(paths.workspacePath, "meeting-analysis-output.json"), "{}\n", "utf8");
 
-      const validatorResult = runPacketValidator(paths);
       const finalValidation = finalizeFixtureValidationAfterAgent(paths, sourceRepoPath, initialValidation, []);
+      const validatorResult = runPacketValidator(paths, finalValidation);
 
       expect(validatorResult.exitCode).not.toBe(0);
+      expect(validatorResult.command).toBe("packet-validator-skipped");
       expect(existsSync(markerPath)).toBe(false);
       expect(finalValidation.ok).toBe(false);
       expect(finalValidation.errors).toContain("post-run installed standalone Skill changed after setup");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("passes only host snapshots of regular bundle and packet files to the canonical validator", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "six-categories");
+    if (evalCase === undefined) throw new Error("Missing six-categories eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-validator-snapshot-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:02.750Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const initialValidation = validateFixture(paths, sourceRepoPath);
+      writeFileSync(join(paths.workspacePath, "meeting-analysis-output.json"), "{}\n", "utf8");
+      const finalValidation = finalizeFixtureValidationAfterAgent(paths, sourceRepoPath, initialValidation, []);
+      const validatorResult = runPacketValidator(paths, finalValidation);
+
+      expect(finalValidation.ok).toBe(true);
+      expect(validatorResult.command).toBe("node");
+      expect(validatorResult.args).toContain(join(paths.runRoot, "validator-inputs", "bundle.json"));
+      expect(validatorResult.args).toContain(join(paths.runRoot, "validator-inputs", "meeting-analysis-output.json"));
+      expect(validatorResult.args).not.toContain(join(paths.workspacePath, "source-artifacts", "bundle.json"));
+      expect(validatorResult.args).not.toContain(join(paths.workspacePath, "meeting-analysis-output.json"));
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(["bundle", "packet"] as const)("skips host validation before opening a symlinked %s path", (target) => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "six-categories");
+    if (evalCase === undefined) throw new Error("Missing six-categories eval case.");
+    const paths = createRunPaths({
+      caseId: `standalone-meeting-${target}-symlink-guard-test`,
+      packageRoot,
+      startedAt: `2026-07-29T00:00:02.${target === "bundle" ? "800" : "850"}Z`,
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const initialValidation = validateFixture(paths, sourceRepoPath);
+      const outsidePath = join(paths.runRoot, `outside-${target}.json`);
+      writeFileSync(outsidePath, "{}\n", "utf8");
+      const targetPath =
+        target === "bundle"
+          ? join(sourceRepoPath, "bundle.json")
+          : join(paths.workspacePath, "meeting-analysis-output.json");
+      rmSync(targetPath, { force: true });
+      symlinkSync(outsidePath, targetPath);
+
+      const finalValidation = finalizeFixtureValidationAfterAgent(paths, sourceRepoPath, initialValidation, []);
+      const validatorResult = runPacketValidator(paths, finalValidation);
+
+      expect(finalValidation.ok).toBe(false);
+      expect(validatorResult.command).toBe("packet-validator-skipped");
+      expect(existsSync(join(paths.runRoot, "validator-inputs"))).toBe(false);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
