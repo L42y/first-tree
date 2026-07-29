@@ -169,6 +169,20 @@ function workspaceFixtureBaseline(paths: RunPaths): readonly string[] | null {
 
 function validateWorkspaceFixture(paths: RunPaths): readonly string[] {
   const errors: string[] = [];
+  // This manifest walk is the only workspace-rooted check that can safely
+  // reject replaced ancestors without first resolving a deeper workspace path.
+  const baseline = workspaceFixtureBaseline(paths);
+  if (baseline === null) {
+    return ["workspace fixture baseline is missing"];
+  }
+  try {
+    if (JSON.stringify(workspaceFixtureManifest(paths)) !== JSON.stringify(baseline)) {
+      return ["workspace fixture content changed after setup"];
+    }
+  } catch (error) {
+    return [`workspace fixture cannot be verified: ${error instanceof Error ? error.message : String(error)}`];
+  }
+
   for (const [path, label] of [
     [paths.modelEventsPath, "model event receipt"],
     [join(paths.workspacePath, OUTPUT_NAME), "meeting analysis output"],
@@ -181,19 +195,6 @@ function validateWorkspaceFixture(paths: RunPaths): readonly string[] {
     if (!identity.isFile() || identity.nlink !== 1) {
       errors.push(`${label} must be a standalone regular file`);
     }
-  }
-
-  const baseline = workspaceFixtureBaseline(paths);
-  if (baseline === null) {
-    errors.push("workspace fixture baseline is missing");
-    return errors;
-  }
-  try {
-    if (JSON.stringify(workspaceFixtureManifest(paths)) !== JSON.stringify(baseline)) {
-      errors.push("workspace fixture content changed after setup");
-    }
-  } catch (error) {
-    errors.push(`workspace fixture cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
   }
   return errors;
 }
@@ -505,6 +506,15 @@ export function setupFixture(evalCase: MeetingRecordsEvalCase, paths: RunPaths, 
 }
 
 export function validateFixture(paths: RunPaths, sourceRepoPath: string): FixtureValidation {
+  const workspaceErrors = validateWorkspaceFixture(paths);
+  if (workspaceErrors.length > 0) {
+    return {
+      errors: workspaceErrors,
+      ok: false,
+      requiredFilesOk: false,
+    };
+  }
+
   const required = [
     join(paths.workspacePath, "AGENTS.md"),
     join(paths.workspacePath, ".agents", "skills", SKILL_NAME, "SKILL.md"),
@@ -515,7 +525,6 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
   const errors = [
     ...missingFiles.map((path) => `missing required file: ${path}`),
     ...validateInstalledInstructions(paths),
-    ...validateWorkspaceFixture(paths),
   ];
   let partialLocators: readonly string[] = [];
   try {

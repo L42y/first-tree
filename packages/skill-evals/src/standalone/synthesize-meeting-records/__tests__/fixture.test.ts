@@ -8,6 +8,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -74,8 +75,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
       const validation = validateFixture(paths, sourceRepoPath);
 
       expect(validation.ok).toBe(false);
-      expect(validation.errors).toContain("workspace AGENTS.md changed after setup");
-      expect(validation.errors).toContain("workspace fixture content changed after setup");
+      expect(validation.errors).toEqual(["workspace fixture content changed after setup"]);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
@@ -104,8 +104,41 @@ describe("standalone synthesize-meeting-records fixture", () => {
       const validation = validateFixture(paths, sourceRepoPath);
       expect(validation.ok).toBe(false);
       expect(validation.errors).toContain("workspace fixture content changed after setup");
-      expect(validation.errors).toContain("source artifact fixture content changed after setup");
       expect(sourceRepoChanged(readEvents(paths.eventsPath), paths)).toBe(true);
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a replaced .agents ancestor before scanning the redirected installed Skill", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES[0];
+    if (evalCase === undefined) throw new Error("Missing eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-agents-ancestor-replacement-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:00.675Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const outsideAgentsPath = join(paths.runRoot, "outside-agents");
+      const outsideSkillPath = join(outsideAgentsPath, "skills", "synthesize-meeting-records");
+      const outsideCanaryPath = join(outsideSkillPath, "outside-canary.txt");
+      mkdirSync(outsideSkillPath, { recursive: true });
+      writeFileSync(outsideCanaryPath, "", "utf8");
+      truncateSync(outsideCanaryPath, 21 * 1024 * 1024);
+      chmodSync(outsideCanaryPath, 0o000);
+
+      const installedAgentsPath = join(paths.workspacePath, ".agents");
+      rmSync(installedAgentsPath, { force: true, recursive: true });
+      symlinkSync(outsideAgentsPath, installedAgentsPath);
+
+      const validation = validateFixture(paths, sourceRepoPath);
+      expect(validation).toMatchObject({
+        errors: ["workspace fixture content changed after setup"],
+        ok: false,
+        requiredFilesOk: false,
+      });
+      expect(validation.errors.join("\n")).not.toContain("outside-canary");
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
@@ -127,9 +160,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
 
       const validation = validateFixture(paths, sourceRepoPath);
       expect(validation.ok).toBe(false);
-      expect(validation.errors).toContain("meeting analysis output must be a standalone regular file");
-      expect(validation.errors).toContain("model event receipt must be a standalone regular file");
-      expect(validation.errors).toContain("workspace fixture content changed after setup");
+      expect(validation.errors).toEqual(["workspace fixture content changed after setup"]);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
@@ -150,7 +181,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
       expect(runCommand("git", ["status", "--porcelain"], sourceRepoPath).stdout.trim()).toBe("");
 
       const validation = validateFixture(paths, sourceRepoPath);
-      expect(validation.errors).toContain("source artifact fixture content changed after setup");
+      expect(validation.errors).toEqual(["workspace fixture content changed after setup"]);
       expect(sourceRepoChanged(readEvents(paths.eventsPath), paths)).toBe(true);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
@@ -189,9 +220,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
       }
       rmSync(join(sourceRepoPath, "appendix.md"));
       writeFileSync(join(sourceRepoPath, "appendix.md"), "raw content must remain unavailable\n", "utf8");
-      expect(validateFixture(paths, sourceRepoPath).errors).toContain(
-        "partial-source fixture exposed non-sentinel raw artifact: source-artifacts/appendix.md",
-      );
+      expect(validateFixture(paths, sourceRepoPath).errors).toEqual(["workspace fixture content changed after setup"]);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
@@ -209,9 +238,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
     const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
     try {
       rmSync(join(sourceRepoPath, "appendix.md"));
-      expect(validateFixture(paths, sourceRepoPath).errors).toContain(
-        "partial-source fixture missing raw access sentinel: source-artifacts/appendix.md",
-      );
+      expect(validateFixture(paths, sourceRepoPath).errors).toEqual(["workspace fixture content changed after setup"]);
       writeFileSync(join(sourceRepoPath, "appendix.md"), "", "utf8");
       expect(validatePartialRawAccessMonitors(paths, monitors)).toContain(
         "post-run raw access sentinel identity changed: source-artifacts/appendix.md",

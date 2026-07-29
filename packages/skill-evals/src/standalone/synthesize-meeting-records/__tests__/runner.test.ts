@@ -48,7 +48,7 @@ describe("standalone synthesize-meeting-records runner cleanup", () => {
       expect(validatorResult.command).toBe("packet-validator-skipped");
       expect(existsSync(markerPath)).toBe(false);
       expect(finalValidation.ok).toBe(false);
-      expect(finalValidation.errors).toContain("post-run installed standalone Skill changed after setup");
+      expect(finalValidation.errors).toContain("post-run workspace fixture content changed after setup");
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
@@ -115,17 +115,12 @@ describe("standalone synthesize-meeting-records runner cleanup", () => {
     {
       changeBundle: (bundlePath: string) => rmSync(bundlePath),
       description: "removes",
-      expectedError: "bundle.json",
     },
     {
       changeBundle: (bundlePath: string) => writeFileSync(bundlePath, "{not-json", "utf8"),
       description: "corrupts",
-      expectedError: "invalid meeting artifact bundle",
     },
-  ])("fails cleanly and stops every monitor when the agent $description bundle.json", async ({
-    changeBundle,
-    expectedError,
-  }) => {
+  ])("fails cleanly and stops every monitor when the agent $description bundle.json", async ({ changeBundle }) => {
     const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
     if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
     const paths = createRunPaths({
@@ -145,7 +140,7 @@ describe("standalone synthesize-meeting-records runner cleanup", () => {
       const finalValidation = finalizeFixtureValidationAfterAgent(paths, sourceRepoPath, initialValidation, monitors);
 
       expect(finalValidation.ok).toBe(false);
-      expect(finalValidation.errors.some((error) => error.includes(expectedError))).toBe(true);
+      expect(finalValidation.errors).toContain("post-run workspace fixture content changed after setup");
       expect(monitors.every((monitor) => monitor.child.killed)).toBe(true);
       await Promise.all(monitorExits);
       expect(monitors.every((monitor) => monitor.child.exitCode !== null || monitor.child.signalCode !== null)).toBe(
