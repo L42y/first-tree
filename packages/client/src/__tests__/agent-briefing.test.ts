@@ -353,23 +353,6 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(tree).toContain("before any tree read/write, re-check the workspace binding");
   });
 
-  it("routes meeting artifacts through the interpreter before Tree writing", () => {
-    const tree = topLevelSection(
-      buildAgentBriefing(makeOpts({ contextTreePath: "/tree" })),
-      "# Context Tree (First Tree Managed)",
-    );
-    const start = tree.indexOf("## Writing the Tree");
-    expect(start).toBeGreaterThanOrEqual(0);
-    const writing = tree.slice(start);
-
-    expect(writing).toContain("When a specific non-meeting PR/MR");
-    expect(writing).toContain("meeting artifacts always load `return-meeting-context` first");
-    expect(writing).toContain("only its validated `DecisionEvidencePacket`");
-    expect(writing).toContain("or validated meeting packet");
-    expect(writing).not.toMatch(/meeting note,[\s\S]{0,120}load `first-tree-write`/u);
-    expect(writing).not.toContain("ask for the PR/MR, design doc, meeting note");
-  });
-
   it("lists every installed First Tree skill in the family map", () => {
     const familyMap = topLevelSection(
       buildAgentBriefing(makeOpts({ contextTreePath: "/tree" })),
@@ -377,15 +360,9 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     );
     expect(familyMap).toContain("The generated Context Tree Policy is always present");
     expect(familyMap).toMatch(/\|\s*`first-tree-read`\s*\| read relevant Context Tree files before acting/);
-    expect(familyMap).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete non-meeting source artifact/);
+    expect(familyMap).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
     expect(familyMap).toMatch(/\|\s*`context-tree-review`\s*\| a trusted GitHub App Context Review run/);
     expect(familyMap).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
-    expect(familyMap).toMatch(
-      /\|\s*`return-meeting-context`\s*\| always handle meeting minutes, AI notes, transcripts, decision records/,
-    );
-    expect(familyMap).toContain(
-      "meeting sources enter only as a validated `DecisionEvidencePacket` from `return-meeting-context`",
-    );
 
     const treelessFamily = topLevelSection(
       buildAgentBriefing(makeOpts({ contextTreePath: null })),
@@ -396,9 +373,8 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(treelessFamily).toContain("first-tree-file-bug");
     expect(treelessFamily).not.toContain("first-tree-gitlab");
     expect(treelessFamily).toContain("first-tree-qa");
-    expect(treelessFamily).toContain("return-meeting-context");
     expect(treelessFamily).toMatch(/\|\s*`first-tree-read`\s*\| read relevant Context Tree files before acting/);
-    expect(treelessFamily).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete non-meeting source artifact/);
+    expect(treelessFamily).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
     expect(treelessFamily).toMatch(/\|\s*`context-tree-review`\s*\| a trusted GitHub App Context Review run/);
     expect(treelessFamily).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
     expect(treelessFamily).toMatch(/without a binding, the audit fails closed/);
@@ -800,11 +776,11 @@ describe("buildAgentBriefing — Context Tree", () => {
 
     expect(tree).toContain("fresh context");
     expect(tree).toContain("persistent context");
-    expect(tree).toContain("specific non-meeting PR/MR, design doc");
-    expect(tree).toMatch(/tree-write request includes creating and\s+updating the needed tree-node files/);
+    expect(tree).toContain("specific PR/MR, design doc");
+    expect(tree).toMatch(/request explicitly includes\s+creating and updating the needed tree-node\s+files/);
     expect(tree).toContain("`NODE.md` and other `*.md` nodes");
-    expect(tree).toMatch(/Implementation-only changes skip the\s+tree write/);
-    expect(tree).toContain("Without a specific non-meeting source artifact or validated meeting packet");
+    expect(tree).toMatch(/Implementation-only changes skip\s+the tree write/);
+    expect(tree).toContain("If there is no specific source artifact");
     expect(tree).toContain("first-tree tree verify");
     expect(tree).toContain("open them together");
     expect(tree).toContain("cross-link");

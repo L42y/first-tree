@@ -67,11 +67,6 @@ import {
 } from "./suites/quality/index.js";
 import type { QualityBatchSummary, QualitySkillName } from "./suites/quality/types.js";
 import { SKILL_EVAL_SUITES } from "./suites/registry.js";
-import {
-  formatReturnMeetingContextGateSummary,
-  runReturnMeetingContextGate,
-} from "./suites/return-meeting-context/index.js";
-import type { BatchSummary as MeetingBatchSummary } from "./suites/return-meeting-context/types.js";
 
 type CliOptions = {
   base: string | null;
@@ -113,7 +108,6 @@ function usage(): string {
   pnpm --filter @first-tree/skill-evals eval:gate -- --suite first-tree-read
   pnpm --filter @first-tree/skill-evals eval:gate -- --suite first-tree-qa
   pnpm --filter @first-tree/skill-evals eval:gate -- --suite first-tree-write
-  pnpm --filter @first-tree/skill-evals eval:gate -- --suite return-meeting-context
   pnpm --filter @first-tree/skill-evals eval:gate -- --suite first-tree-write --include-quality
   pnpm --filter @first-tree/skill-evals eval:gate -- --suite first-tree-welcome
   pnpm --filter @first-tree/skill-evals eval:gate -- --suite first-tree-seed
@@ -503,8 +497,7 @@ type GateBatchSummary =
   | ReviewBatchSummary
   | SeedBatchSummary
   | WelcomeBatchSummary
-  | WriteBatchSummary
-  | MeetingBatchSummary;
+  | WriteBatchSummary;
 
 function gateResultEntries(
   packageRootPath: string,
@@ -882,22 +875,6 @@ async function runGate(options: CliOptions): Promise<void> {
     if (gateCommandFailed(batch, quality)) {
       process.exitCode = 1;
     }
-    return;
-  }
-
-  if (options.suite === "return-meeting-context") {
-    const batch = await runReturnMeetingContextGate(packageRootPath, {
-      caseId: options.caseId,
-      claudeBin: options.claudeBin,
-      codexBin: options.codexBin,
-      json: options.json,
-      model: options.model,
-      provider: options.provider,
-      verbose: options.verbose,
-    });
-    appendResultStoreEntries(packageRootPath, gateResultEntries(packageRootPath, batch, options.suite, options));
-    printGateWithOptionalQuality(formatReturnMeetingContextGateSummary(batch), batch, null, options.json);
-    if (batch.failed > 0) process.exitCode = 1;
     return;
   }
 

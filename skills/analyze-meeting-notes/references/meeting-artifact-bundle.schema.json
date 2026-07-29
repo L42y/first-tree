@@ -1,19 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://first-tree.dev/schemas/return-meeting-context-artifact-bundle-v1.json",
   "title": "Meeting Artifact Bundle",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "meeting_scope", "requested_intent", "artifacts"],
+  "required": ["schema", "meeting_scope", "artifacts"],
   "properties": {
     "schema": {
-      "const": "return-meeting-context.artifact-bundle.v1"
+      "const": "analyze-meeting-notes.artifact-bundle.v1"
     },
     "meeting_scope": {
       "const": "single-meeting"
-    },
-    "requested_intent": {
-      "enum": ["analyze", "write"]
     },
     "artifacts": {
       "type": "array",

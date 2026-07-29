@@ -1,19 +1,17 @@
 ---
 name: first-tree-write
-version: 0.14.0
+version: 0.13.0
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
-description: Source-driven Context Tree write workflow for managed workspaces and clean BYO invocations against GitHub- or GitLab-bound Context Trees. Use when a concrete non-meeting source artifact such as a PR/MR, forge Issue, design doc, review thread, or pasted non-meeting material should be reflected into the Context Tree. For meeting minutes, AI notes, transcripts, decision records, or equivalent meeting artifacts, use return-meeting-context first; this skill accepts them only with its validated DecisionEvidencePacket. A clean BYO write also requires an explicit Team, an exact tree-read snapshot, current source/target context, and write intent. If no source artifact is available, there is no write task; ask the user for one.
+description: Source-driven Context Tree write workflow for managed workspaces and clean BYO invocations against GitHub- or GitLab-bound Context Trees. Use when a concrete source artifact such as a PR/MR, forge Issue, design doc, meeting note, review thread, or pasted source material should be reflected into the Context Tree. A clean BYO write also requires an explicit Team, an exact tree-read snapshot, current source/target context, and write intent. If no source artifact is available, there is no write task; ask the user for one.
 ---
 
 # First Tree Write
 
-Use this skill when a specific non-meeting source artifact should be reflected
-into the Context Tree, or when `return-meeting-context` hands off a supplied
-meeting artifact with its validated `DecisionEvidencePacket`. Never interpret
-raw meeting material directly. The generated `AGENTS.md` / `CLAUDE.md` Context
-Tree Policy is the baseline for what belongs in the tree; this skill applies
-that policy to a source-backed write.
+Use this skill when a specific source artifact should be reflected into the
+Context Tree. The generated `AGENTS.md` / `CLAUDE.md` Context Tree Policy is
+the baseline for what belongs in the tree; this skill applies that policy to a
+source-backed write.
 
 Use `first-tree-read` for task-scoped tree reads before acting, except when the
 source is a current-session Audit finding whose exact snapshot context is
@@ -24,9 +22,7 @@ already loaded. Use this skill only for source artifact -> tree edit work.
 Writing is source-driven. Acceptable sources include:
 
 - a PR/MR, forge Issue, commit discussion, or review thread;
-- a design doc, decision note, or pasted non-meeting source material;
-- a user-supplied meeting artifact only when accompanied by the validated
-  `DecisionEvidencePacket` produced by `return-meeting-context`;
+- a design doc, meeting note, decision note, or pasted source material;
 - a source repo change you just completed, when its design decision now needs
   durable tree context;
 - an evidence-backed `context-tree-audit` finding from the current session that
@@ -229,10 +225,9 @@ that mirrors source detail.
 ### Worked Examples
 
 In the examples below, **"Trigger: …"** labels what prompted the
-tree-write (a PR/MR, a validated `DecisionEvidencePacket` from a supplied
-meeting artifact, a report). The labels are meta-narration in this skill —
-they are not a body section template; no `## Trigger` / `## Source` heading
-goes into the actual node.
+tree-write (a PR/MR, a meeting note, a report). The labels are
+meta-narration in this skill — they are not a body section template;
+no `## Trigger` / `## Source` heading goes into the actual node.
 
 Some examples split `Belongs:` into `Belongs (What):` and `Belongs
 (Why):` to make the Content Model distinction concrete; others
@@ -247,8 +242,7 @@ X's SDK"; "we chose Redis over Memcached because of pubsub support".
 Does not belong: the cache key format, the eviction policy class, the
 retry constants.
 
-**Trigger: a validated `DecisionEvidencePacket` from a supplied meeting
-artifact says "billing is moving to a new repo".**
+**Trigger: meeting note "we are moving billing to a new repo".**
 Belongs: workspace map gets a new repo; ownership for billing shifts;
 the `billing/` ↔ `platform/` boundary is updated.
 Does not belong: migration timeline, release-day playbook, per-PR/MR

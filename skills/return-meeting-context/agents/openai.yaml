@@ -1,7 +1,0 @@
-interface:
-  display_name: "Return Meeting Context"
-  short_description: "Extract durable context from supplied meeting artifacts"
-  default_prompt: "Use $return-meeting-context to analyze the meeting artifact I supplied and prepare durable context."
-
-policy:
-  allow_implicit_invocation: true

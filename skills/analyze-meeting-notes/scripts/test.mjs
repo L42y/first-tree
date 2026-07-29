@@ -7,15 +7,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { validateArtifactBundle, validateDecisionPacket } from "./lib.mjs";
+import { validateArtifactBundle, validateMeetingAnalysisPacket } from "./lib.mjs";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 
 function bundle(overrides = {}) {
   return {
-    schema: "return-meeting-context.artifact-bundle.v1",
+    schema: "analyze-meeting-notes.artifact-bundle.v1",
     meeting_scope: "single-meeting",
-    requested_intent: "write",
     artifacts: [
       {
         artifact_id: "minutes",
@@ -33,20 +32,18 @@ function bundle(overrides = {}) {
   };
 }
 
-function candidate(overrides = {}) {
+function item(overrides = {}) {
   return {
-    claim: {
-      what: "Meeting context starts from artifacts the user explicitly supplies.",
-      why: "The explicit boundary works across providers without hidden discovery.",
-      constraints: ["Raw meeting content remains outside persistent output."],
-    },
+    category: "decision",
+    statement: "Use a provider-neutral artifact contract for meeting analysis.",
+    context: "The contract keeps reading separate from analysis and downstream publication.",
     settlement: {
-      status: "settled",
+      status: "confirmed",
       basis: "human_confirmed_minutes",
     },
     chronology: {
       later_override_checked: true,
-      overridden_claims_excluded: true,
+      overridden_items_excluded: true,
     },
     evidence: [{ artifact_id: "minutes", location_hint: "Decision section" }],
     ...overrides,
@@ -56,12 +53,11 @@ function candidate(overrides = {}) {
 function packet(bundleValue, overrides = {}) {
   const prepared = validateArtifactBundle(bundleValue);
   return {
-    schema: "return-meeting-context.decision-evidence-packet.v1",
+    schema: "analyze-meeting-notes.meeting-analysis-packet.v1",
     source_revision: prepared.source_revision,
-    status: "ready-for-write",
-    reason: "One settled durable decision survives the supplied chronology.",
-    handoff: "first-tree-write",
-    candidates: [candidate()],
+    status: "complete",
+    reason: "The supplied minutes establish one confirmed decision.",
+    items: [item()],
     ...overrides,
   };
 }
@@ -125,36 +121,81 @@ expectReject(
     ),
   /Duplicate chronology_index/u,
 );
-
-const partialBundle = bundle({
-  artifacts: [{ ...bundle().artifacts[0], completeness: "partial", extraction_warnings: ["OCR page missing"] }],
-});
-assert.equal(validateArtifactBundle(partialBundle).source_status, "blocked-source");
-assert.doesNotThrow(() =>
-  validateDecisionPacket(
-    partialBundle,
-    packet(partialBundle, {
-      status: "blocked-source",
-      reason: "The supplied attachment is incomplete.",
-      handoff: "none",
-      candidates: [],
-    }),
-  ),
-);
 expectReject(
   () =>
-    validateDecisionPacket(
-      partialBundle,
-      packet(partialBundle, { status: "no-change", reason: "Nothing durable.", handoff: "none", candidates: [] }),
+    validateArtifactBundle(
+      bundle({
+        artifacts: [
+          { ...bundle().artifacts[0], artifact_id: "later", chronology_index: 1 },
+          { ...bundle().artifacts[0], artifact_id: "earlier", chronology_index: 0 },
+        ],
+      }),
     ),
-  /requires every artifact to be complete/u,
+  /ordered by chronology_index/u,
 );
+
+for (const completeness of ["partial", "unknown"]) {
+  const incompleteBundle = bundle({
+    artifacts: [
+      {
+        ...bundle().artifacts[0],
+        completeness,
+        extraction_warnings: ["A page could not be read."],
+      },
+    ],
+  });
+  assert.equal(validateArtifactBundle(incompleteBundle).source_status, "blocked-source");
+  assert.doesNotThrow(() =>
+    validateMeetingAnalysisPacket(
+      incompleteBundle,
+      packet(incompleteBundle, {
+        status: "blocked-source",
+        reason: "The supplied attachment is incomplete.",
+        items: [],
+      }),
+    ),
+  );
+  expectReject(
+    () =>
+      validateMeetingAnalysisPacket(
+        incompleteBundle,
+        packet(incompleteBundle, {
+          status: "no-findings",
+          reason: "No meaningful meeting content.",
+          items: [],
+        }),
+      ),
+    /requires every artifact to be complete/u,
+  );
+}
 
 const completeBundle = bundle();
 assert.doesNotThrow(() =>
-  validateDecisionPacket(
+  validateMeetingAnalysisPacket(
     completeBundle,
-    packet(completeBundle, { status: "no-change", reason: "Only progress updates.", handoff: "none", candidates: [] }),
+    packet(completeBundle, {
+      status: "no-findings",
+      reason: "The complete source contains only logistics.",
+      items: [],
+    }),
+  ),
+);
+
+const categories = ["decision", "progress", "plan", "action", "blocker", "risk"];
+assert.doesNotThrow(() =>
+  validateMeetingAnalysisPacket(
+    completeBundle,
+    packet(completeBundle, {
+      reason: "The minutes establish one item in each supported category.",
+      items: categories.map((category) =>
+        item({
+          category,
+          statement: `Synthetic ${category} statement.`,
+          context: `Synthetic ${category} context.`,
+          ...(category === "action" ? { attribution: "Delivery lead" } : {}),
+        }),
+      ),
+    }),
   ),
 );
 
@@ -163,34 +204,37 @@ const aiBundle = bundle({
 });
 expectReject(
   () =>
-    validateDecisionPacket(
+    validateMeetingAnalysisPacket(
       aiBundle,
       packet(aiBundle, {
-        candidates: [candidate({ settlement: { status: "settled", basis: "ai_generated_summary" } })],
+        items: [item({ settlement: { status: "confirmed", basis: "ai_generated_summary" } })],
       }),
     ),
   /weak settlement basis/u,
 );
-for (const forgedBasis of ["human_confirmed_minutes", "explicit_decision_record", "transcript_explicit_human_choice"]) {
+for (const forgedBasis of [
+  "human_confirmed_minutes",
+  "explicit_decision_record",
+  "transcript_explicit_human_statement",
+]) {
   expectReject(
     () =>
-      validateDecisionPacket(
+      validateMeetingAnalysisPacket(
         aiBundle,
         packet(aiBundle, {
-          candidates: [candidate({ settlement: { status: "settled", basis: forgedBasis } })],
+          items: [item({ settlement: { status: "confirmed", basis: forgedBasis } })],
         }),
       ),
     /requires cited evidence with source_role/u,
   );
 }
 assert.doesNotThrow(() =>
-  validateDecisionPacket(
+  validateMeetingAnalysisPacket(
     aiBundle,
     packet(aiBundle, {
       status: "needs-confirmation",
-      reason: "AI notes identify a candidate but do not prove settlement.",
-      handoff: "none",
-      candidates: [candidate({ settlement: { status: "uncertain", basis: "ai_generated_summary" } })],
+      reason: "AI notes identify an item but do not prove confirmation.",
+      items: [item({ settlement: { status: "uncertain", basis: "ai_generated_summary" } })],
     }),
   ),
 );
@@ -198,16 +242,16 @@ assert.doesNotThrow(() =>
 for (const [basis, sourceRole] of [
   ["human_confirmed_minutes", "human_minutes"],
   ["explicit_decision_record", "decision_record"],
-  ["transcript_explicit_human_choice", "transcript"],
+  ["transcript_explicit_human_statement", "transcript"],
 ]) {
   const matchingBundle = bundle({
     artifacts: [{ ...bundle().artifacts[0], source_role: sourceRole }],
   });
   assert.doesNotThrow(() =>
-    validateDecisionPacket(
+    validateMeetingAnalysisPacket(
       matchingBundle,
       packet(matchingBundle, {
-        candidates: [candidate({ settlement: { status: "settled", basis } })],
+        items: [item({ settlement: { status: "confirmed", basis } })],
       }),
     ),
   );
@@ -215,12 +259,12 @@ for (const [basis, sourceRole] of [
 
 expectReject(
   () =>
-    validateDecisionPacket(
+    validateMeetingAnalysisPacket(
       completeBundle,
       packet(completeBundle, {
-        candidates: [
-          candidate({
-            chronology: { later_override_checked: false, overridden_claims_excluded: true },
+        items: [
+          item({
+            chronology: { later_override_checked: false, overridden_items_excluded: true },
           }),
         ],
       }),
@@ -230,18 +274,59 @@ expectReject(
 
 expectReject(
   () =>
-    validateDecisionPacket(
+    validateMeetingAnalysisPacket(
       completeBundle,
       packet(completeBundle, {
-        candidates: [candidate({ evidence: [{ artifact_id: "unknown", location_hint: "Decision section" }] })],
+        items: [item({ evidence: [{ artifact_id: "unknown", location_hint: "Decision section" }] })],
       }),
     ),
   /unknown artifact_id/u,
 );
 
-const analyzeBundle = bundle({ requested_intent: "analyze" });
-expectReject(() => validateDecisionPacket(analyzeBundle, packet(analyzeBundle)), /requires handoff 'none'/u);
-assert.doesNotThrow(() => validateDecisionPacket(analyzeBundle, packet(analyzeBundle, { handoff: "none" })));
+expectReject(
+  () =>
+    validateMeetingAnalysisPacket(
+      completeBundle,
+      packet(completeBundle, {
+        items: [item({ settlement: { status: "uncertain", basis: "unknown" } })],
+      }),
+    ),
+  /must be confirmed for complete/u,
+);
+expectReject(
+  () =>
+    validateMeetingAnalysisPacket(
+      completeBundle,
+      packet(completeBundle, {
+        status: "needs-confirmation",
+        reason: "No uncertain item exists.",
+      }),
+    ),
+  /requires at least one uncertain item/u,
+);
+expectReject(
+  () =>
+    validateMeetingAnalysisPacket(
+      completeBundle,
+      packet(completeBundle, {
+        status: "no-findings",
+        reason: "Contradictory output.",
+      }),
+    ),
+  /requires zero items/u,
+);
+expectReject(
+  () =>
+    validateMeetingAnalysisPacket(
+      completeBundle,
+      packet(completeBundle, {
+        status: "blocked-source",
+        reason: "Contradictory output.",
+        items: [],
+      }),
+    ),
+  /requires an incomplete artifact/u,
+);
 
 for (const unsafe of [
   { raw_excerpt: "copied meeting text" },
@@ -252,15 +337,20 @@ for (const unsafe of [
   { note: "Budget is $1000" },
 ]) {
   expectReject(
-    () => validateDecisionPacket(completeBundle, { ...packet(completeBundle), ...unsafe }),
+    () => validateMeetingAnalysisPacket(completeBundle, { ...packet(completeBundle), ...unsafe }),
     /unknown field|forbidden/u,
   );
 }
 
-const stale = packet(completeBundle, { source_revision: "0".repeat(64) });
-expectReject(() => validateDecisionPacket(completeBundle, stale), /does not match/u);
+const unsafeAttribution = packet(completeBundle, {
+  items: [item({ attribution: "person@example.invalid" })],
+});
+expectReject(() => validateMeetingAnalysisPacket(completeBundle, unsafeAttribution), /forbidden email address/u);
 
-const tempRoot = mkdtempSync(join(tmpdir(), "return-meeting-context-contract-test-"));
+const stale = packet(completeBundle, { source_revision: "0".repeat(64) });
+expectReject(() => validateMeetingAnalysisPacket(completeBundle, stale), /does not match/u);
+
+const tempRoot = mkdtempSync(join(tmpdir(), "analyze-meeting-notes-contract-test-"));
 try {
   const bundlePath = join(tempRoot, "bundle.json");
   const packetPath = join(tempRoot, "packet.json");
@@ -271,16 +361,17 @@ try {
     encoding: "utf8",
   });
   assert.equal(prepared.status, 0, prepared.stderr);
-  assert.match(prepared.stdout, /return-meeting-context\.prepared-artifacts\.v1/u);
+  assert.match(prepared.stdout, /analyze-meeting-notes\.prepared-artifacts\.v1/u);
   const validated = spawnSync(
     process.execPath,
     [join(scriptsDir, "validate-output.mjs"), "--bundle", bundlePath, "--output", packetPath],
     { encoding: "utf8" },
   );
   assert.equal(validated.status, 0, validated.stderr);
+  assert.match(validated.stdout, /analyze-meeting-notes\.meeting-analysis-packet\.v1/u);
   assert.deepEqual(readdirSync(tempRoot).sort(), before);
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
 }
 
-process.stdout.write("return-meeting-context deterministic tests passed\n");
+process.stdout.write("analyze-meeting-notes deterministic tests passed\n");

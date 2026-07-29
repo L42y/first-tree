@@ -4,27 +4,26 @@ import { readFileSync } from "node:fs";
 const INPUT_KINDS = ["provider_link", "attachment", "local_file", "pasted_text"];
 const SOURCE_ROLES = ["human_minutes", "ai_notes", "transcript", "decision_record", "unknown"];
 const COMPLETENESS = ["complete", "partial", "unknown"];
-const INTENTS = ["analyze", "write"];
 const CONTENT_REF_KINDS = ["conversation", "task_file"];
-const PACKET_STATUSES = ["no-change", "needs-confirmation", "ready-for-write", "blocked-source"];
-const HANDOFFS = ["none", "first-tree-write"];
-const SETTLEMENT_STATUSES = ["settled", "uncertain"];
+const PACKET_STATUSES = ["complete", "needs-confirmation", "no-findings", "blocked-source"];
+const ITEM_CATEGORIES = ["decision", "progress", "plan", "action", "blocker", "risk"];
+const SETTLEMENT_STATUSES = ["confirmed", "uncertain"];
 const SETTLEMENT_BASES = [
   "human_confirmed_minutes",
   "explicit_decision_record",
-  "transcript_explicit_human_choice",
+  "transcript_explicit_human_statement",
   "ai_generated_summary",
   "unknown",
 ];
 const STRONG_SETTLEMENT_BASES = new Set([
   "human_confirmed_minutes",
   "explicit_decision_record",
-  "transcript_explicit_human_choice",
+  "transcript_explicit_human_statement",
 ]);
 const SETTLEMENT_BASIS_SOURCE_ROLES = new Map([
   ["human_confirmed_minutes", "human_minutes"],
   ["explicit_decision_record", "decision_record"],
-  ["transcript_explicit_human_choice", "transcript"],
+  ["transcript_explicit_human_statement", "transcript"],
 ]);
 
 const FORBIDDEN_KEY_PARTS = [
@@ -136,7 +135,6 @@ function sha256(value) {
 function sourceRevision(bundle) {
   const projection = {
     meeting_scope: bundle.meeting_scope,
-    requested_intent: bundle.requested_intent,
     artifacts: bundle.artifacts.map((artifact) => ({
       artifact_id: artifact.artifact_id,
       chronology_index: artifact.chronology_index,
@@ -154,16 +152,15 @@ function sourceRevision(bundle) {
 
 export function validateArtifactBundle(input) {
   const bundle = requireObject(input, "bundle");
-  const topKeys = ["schema", "meeting_scope", "requested_intent", "artifacts"];
+  const topKeys = ["schema", "meeting_scope", "artifacts"];
   requireAllowedKeys(bundle, topKeys, "bundle");
   requireKeys(bundle, topKeys, "bundle");
-  if (bundle.schema !== "return-meeting-context.artifact-bundle.v1") {
+  if (bundle.schema !== "analyze-meeting-notes.artifact-bundle.v1") {
     fail("bundle.schema is unsupported.");
   }
   if (bundle.meeting_scope !== "single-meeting") {
     fail("bundle.meeting_scope must be single-meeting.");
   }
-  requireEnum(bundle.requested_intent, INTENTS, "bundle.requested_intent");
   if (!Array.isArray(bundle.artifacts) || bundle.artifacts.length < 1 || bundle.artifacts.length > 8) {
     fail("bundle.artifacts must contain between 1 and 8 artifacts.");
   }
@@ -258,42 +255,46 @@ function scanPrivateOutput(value, path = "packet") {
   }
 }
 
-function validateCandidate(value, index, artifactRoles) {
-  const label = `packet.candidates[${index}]`;
-  const candidate = requireObject(value, label);
-  const keys = ["claim", "settlement", "chronology", "evidence"];
-  requireAllowedKeys(candidate, keys, label);
-  requireKeys(candidate, keys, label);
+function validateItem(value, index, artifactRoles) {
+  const label = `packet.items[${index}]`;
+  const item = requireObject(value, label);
+  const allowedKeys = ["category", "statement", "context", "attribution", "settlement", "chronology", "evidence"];
+  const requiredKeys = ["category", "statement", "context", "settlement", "chronology", "evidence"];
+  requireAllowedKeys(item, allowedKeys, label);
+  requireKeys(item, requiredKeys, label);
 
-  const claim = requireObject(candidate.claim, `${label}.claim`);
-  requireAllowedKeys(claim, ["what", "why", "constraints"], `${label}.claim`);
-  requireKeys(claim, ["what", "why", "constraints"], `${label}.claim`);
-  requireString(claim.what, `${label}.claim.what`, 1, 500);
-  requireString(claim.why, `${label}.claim.why`, 1, 1000);
-  requireStringArray(claim.constraints, `${label}.claim.constraints`, 8, 400);
+  requireEnum(item.category, ITEM_CATEGORIES, `${label}.category`);
+  requireString(item.statement, `${label}.statement`, 1, 600);
+  requireString(item.context, `${label}.context`, 1, 1000);
+  if ("attribution" in item) {
+    requireString(item.attribution, `${label}.attribution`, 1, 160);
+  }
 
-  const settlement = requireObject(candidate.settlement, `${label}.settlement`);
+  const settlement = requireObject(item.settlement, `${label}.settlement`);
   requireAllowedKeys(settlement, ["status", "basis"], `${label}.settlement`);
   requireKeys(settlement, ["status", "basis"], `${label}.settlement`);
   requireEnum(settlement.status, SETTLEMENT_STATUSES, `${label}.settlement.status`);
   requireEnum(settlement.basis, SETTLEMENT_BASES, `${label}.settlement.basis`);
-  if (settlement.status === "settled" && !STRONG_SETTLEMENT_BASES.has(settlement.basis)) {
-    fail(`${label} uses a weak settlement basis for a settled claim.`);
+  if (settlement.status === "confirmed" && !STRONG_SETTLEMENT_BASES.has(settlement.basis)) {
+    fail(`${label} uses a weak settlement basis for a confirmed item.`);
   }
 
-  const chronology = requireObject(candidate.chronology, `${label}.chronology`);
-  requireAllowedKeys(chronology, ["later_override_checked", "overridden_claims_excluded"], `${label}.chronology`);
-  requireKeys(chronology, ["later_override_checked", "overridden_claims_excluded"], `${label}.chronology`);
+  const chronology = requireObject(item.chronology, `${label}.chronology`);
+  requireAllowedKeys(chronology, ["later_override_checked", "overridden_items_excluded"], `${label}.chronology`);
+  requireKeys(chronology, ["later_override_checked", "overridden_items_excluded"], `${label}.chronology`);
   requireBoolean(chronology.later_override_checked, `${label}.chronology.later_override_checked`);
-  requireBoolean(chronology.overridden_claims_excluded, `${label}.chronology.overridden_claims_excluded`);
+  requireBoolean(chronology.overridden_items_excluded, `${label}.chronology.overridden_items_excluded`);
+  if (!chronology.later_override_checked || !chronology.overridden_items_excluded) {
+    fail(`${label} has incomplete later-override gates.`);
+  }
 
-  if (!Array.isArray(candidate.evidence) || candidate.evidence.length < 1 || candidate.evidence.length > 3) {
+  if (!Array.isArray(item.evidence) || item.evidence.length < 1 || item.evidence.length > 3) {
     fail(`${label}.evidence must contain between 1 and 3 items.`);
   }
   const citedSourceRoles = new Set();
-  for (let evidenceIndex = 0; evidenceIndex < candidate.evidence.length; evidenceIndex += 1) {
+  for (let evidenceIndex = 0; evidenceIndex < item.evidence.length; evidenceIndex += 1) {
     const evidenceLabel = `${label}.evidence[${evidenceIndex}]`;
-    const evidence = requireObject(candidate.evidence[evidenceIndex], evidenceLabel);
+    const evidence = requireObject(item.evidence[evidenceIndex], evidenceLabel);
     requireAllowedKeys(evidence, ["artifact_id", "location_hint"], evidenceLabel);
     requireKeys(evidence, ["artifact_id", "location_hint"], evidenceLabel);
     const artifactId = requireString(evidence.artifact_id, `${evidenceLabel}.artifact_id`, 1, 64);
@@ -302,22 +303,24 @@ function validateCandidate(value, index, artifactRoles) {
     citedSourceRoles.add(sourceRole);
     requireString(evidence.location_hint, `${evidenceLabel}.location_hint`, 1, 200);
   }
+
   const requiredSourceRole = SETTLEMENT_BASIS_SOURCE_ROLES.get(settlement.basis);
   if (requiredSourceRole !== undefined && !citedSourceRoles.has(requiredSourceRole)) {
     fail(
       `${label}.settlement.basis '${settlement.basis}' requires cited evidence with source_role '${requiredSourceRole}'.`,
     );
   }
-  return candidate;
+
+  return item;
 }
 
-export function validateDecisionPacket(bundleInput, packetInput) {
+export function validateMeetingAnalysisPacket(bundleInput, packetInput) {
   const prepared = validateArtifactBundle(bundleInput);
   const packet = requireObject(packetInput, "packet");
-  const keys = ["schema", "source_revision", "status", "reason", "handoff", "candidates"];
+  const keys = ["schema", "source_revision", "status", "reason", "items"];
   requireAllowedKeys(packet, keys, "packet");
   requireKeys(packet, keys, "packet");
-  if (packet.schema !== "return-meeting-context.decision-evidence-packet.v1") {
+  if (packet.schema !== "analyze-meeting-notes.meeting-analysis-packet.v1") {
     fail("packet.schema is unsupported.");
   }
   if (packet.source_revision !== prepared.source_revision) {
@@ -325,53 +328,39 @@ export function validateDecisionPacket(bundleInput, packetInput) {
   }
   requireEnum(packet.status, PACKET_STATUSES, "packet.status");
   requireString(packet.reason, "packet.reason", 1, 400);
-  requireEnum(packet.handoff, HANDOFFS, "packet.handoff");
-  if (!Array.isArray(packet.candidates) || packet.candidates.length > 3) {
-    fail("packet.candidates must be an array with at most 3 items.");
+  if (!Array.isArray(packet.items) || packet.items.length > 12) {
+    fail("packet.items must be an array with at most 12 items.");
   }
+
   const artifactRoles = new Map(
     prepared.bundle.artifacts.map((artifact) => [artifact.artifact_id, artifact.source_role]),
   );
-  const candidates = packet.candidates.map((candidate, index) => validateCandidate(candidate, index, artifactRoles));
+  const items = packet.items.map((item, index) => validateItem(item, index, artifactRoles));
 
   if (packet.status === "blocked-source") {
     if (prepared.source_status !== "blocked-source") fail("blocked-source requires an incomplete artifact.");
-    if (candidates.length !== 0 || packet.handoff !== "none") {
-      fail("blocked-source requires zero candidates and no handoff.");
-    }
-  } else {
-    if (prepared.source_status !== "complete") fail(`${packet.status} requires every artifact to be complete.`);
+    if (items.length !== 0) fail("blocked-source requires zero items.");
+  } else if (prepared.source_status !== "complete") {
+    fail(`${packet.status} requires every artifact to be complete.`);
   }
 
-  if (packet.status === "no-change" && (candidates.length !== 0 || packet.handoff !== "none")) {
-    fail("no-change requires zero candidates and no handoff.");
+  if (packet.status === "no-findings" && items.length !== 0) {
+    fail("no-findings requires zero items.");
   }
 
   if (packet.status === "needs-confirmation") {
-    if (candidates.length === 0 || !candidates.some((candidate) => candidate.settlement.status === "uncertain")) {
-      fail("needs-confirmation requires at least one uncertain candidate.");
-    }
-    if (packet.handoff !== "none") fail("needs-confirmation cannot hand off to first-tree-write.");
-  }
-
-  if (packet.status === "ready-for-write") {
-    if (candidates.length === 0) fail("ready-for-write requires at least one candidate.");
-    for (const [index, candidate] of candidates.entries()) {
-      if (candidate.settlement.status !== "settled") {
-        fail(`packet.candidates[${index}] must be settled for ready-for-write.`);
-      }
-      if (!candidate.chronology.later_override_checked || !candidate.chronology.overridden_claims_excluded) {
-        fail(`packet.candidates[${index}] has incomplete later-override gates.`);
-      }
-    }
-    const expectedHandoff = prepared.bundle.requested_intent === "write" ? "first-tree-write" : "none";
-    if (packet.handoff !== expectedHandoff) {
-      fail(`ready-for-write requires handoff '${expectedHandoff}' for the requested intent.`);
+    if (items.length === 0 || !items.some((item) => item.settlement.status === "uncertain")) {
+      fail("needs-confirmation requires at least one uncertain item.");
     }
   }
 
-  if ((packet.status === "no-change" || packet.status === "blocked-source") && packet.handoff !== "none") {
-    fail(`${packet.status} cannot hand off to first-tree-write.`);
+  if (packet.status === "complete") {
+    if (items.length === 0) fail("complete requires at least one item.");
+    for (const [index, item] of items.entries()) {
+      if (item.settlement.status !== "confirmed") {
+        fail(`packet.items[${index}] must be confirmed for complete.`);
+      }
+    }
   }
 
   scanPrivateOutput(packet);

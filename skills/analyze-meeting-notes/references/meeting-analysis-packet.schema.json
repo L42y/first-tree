@@ -1,62 +1,57 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://first-tree.dev/schemas/return-meeting-context-decision-evidence-packet-v1.json",
-  "title": "Meeting Decision Evidence Packet",
+  "title": "Meeting Analysis Packet",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "source_revision", "status", "reason", "handoff", "candidates"],
+  "required": ["schema", "source_revision", "status", "reason", "items"],
   "properties": {
     "schema": {
-      "const": "return-meeting-context.decision-evidence-packet.v1"
+      "const": "analyze-meeting-notes.meeting-analysis-packet.v1"
     },
     "source_revision": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
     },
     "status": {
-      "enum": ["no-change", "needs-confirmation", "ready-for-write", "blocked-source"]
+      "enum": ["complete", "needs-confirmation", "no-findings", "blocked-source"]
     },
     "reason": {
       "type": "string",
       "minLength": 1,
       "maxLength": 400
     },
-    "handoff": {
-      "enum": ["none", "first-tree-write"]
-    },
-    "candidates": {
+    "items": {
       "type": "array",
-      "maxItems": 3,
+      "maxItems": 12,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["claim", "settlement", "chronology", "evidence"],
+        "required": [
+          "category",
+          "statement",
+          "context",
+          "settlement",
+          "chronology",
+          "evidence"
+        ],
         "properties": {
-          "claim": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["what", "why", "constraints"],
-            "properties": {
-              "what": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 500
-              },
-              "why": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1000
-              },
-              "constraints": {
-                "type": "array",
-                "maxItems": 8,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 400
-                }
-              }
-            }
+          "category": {
+            "enum": ["decision", "progress", "plan", "action", "blocker", "risk"]
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "context": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "attribution": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
           },
           "settlement": {
             "type": "object",
@@ -64,13 +59,13 @@
             "required": ["status", "basis"],
             "properties": {
               "status": {
-                "enum": ["settled", "uncertain"]
+                "enum": ["confirmed", "uncertain"]
               },
               "basis": {
                 "enum": [
                   "human_confirmed_minutes",
                   "explicit_decision_record",
-                  "transcript_explicit_human_choice",
+                  "transcript_explicit_human_statement",
                   "ai_generated_summary",
                   "unknown"
                 ]
@@ -80,12 +75,12 @@
           "chronology": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["later_override_checked", "overridden_claims_excluded"],
+            "required": ["later_override_checked", "overridden_items_excluded"],
             "properties": {
               "later_override_checked": {
                 "type": "boolean"
               },
-              "overridden_claims_excluded": {
+              "overridden_items_excluded": {
                 "type": "boolean"
               }
             }

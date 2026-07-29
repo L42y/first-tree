@@ -55,7 +55,6 @@ describe("first-tree-read periodic cases", () => {
       expect(briefing).toContain("first-tree-file-bug");
       expect(briefing).not.toContain("first-tree-gitlab");
       expect(briefing).toContain("first-tree-qa");
-      expect(briefing).toContain("return-meeting-context");
       expect(existsSync(join(paths.workspacePath, ".first-tree-workspace", "identity.json"))).toBe(true);
       expect(lstatSync(claudePath).isSymbolicLink()).toBe(true);
       expect(readlinkSync(claudePath)).toBe("AGENTS.md");
@@ -67,7 +66,6 @@ describe("first-tree-read periodic cases", () => {
         "first-tree-write",
         "first-tree-file-bug",
         "first-tree-qa",
-        "return-meeting-context",
       ]) {
         expect(existsSync(join(paths.workspacePath, ".agents", "skills", skill, "SKILL.md"))).toBe(true);
         expect(lstatSync(join(paths.workspacePath, ".claude", "skills", skill)).isSymbolicLink()).toBe(true);

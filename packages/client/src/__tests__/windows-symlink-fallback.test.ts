@@ -27,7 +27,6 @@ const CORE_SKILLS = [
   "first-tree-qa",
   "first-tree-read",
   "first-tree-write",
-  "return-meeting-context",
 ] as const;
 
 function setPlatform(platform: NodeJS.Platform): void {

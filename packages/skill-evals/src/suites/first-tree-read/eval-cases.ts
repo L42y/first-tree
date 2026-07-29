@@ -56,7 +56,6 @@ export const FIRST_TREE_READ_EVAL_CASES: readonly SkillEvalCase[] = [
           "first-tree-write",
           "first-tree-file-bug",
           "first-tree-qa",
-          "return-meeting-context",
         ],
         workspaceKind: evalCase.workspaceKind,
       },

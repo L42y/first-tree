@@ -6,20 +6,19 @@ export const SHIPPED_SKILLS = [
   "context-tree-review",
   "context-tree-audit",
   "first-tree-qa",
-  "return-meeting-context",
 ] as const;
 
 // Skills that ship in the runtime but are intentionally NOT modeled by this
 // eval harness. skill-evals is built around per-suite, model-graded live runners
 // for the Context-Tree / onboarding skill family (each suite carries a bespoke
-// fixture + grader + gate runner).
-//
-// `first-tree-file-bug` performs an external provider write by creating a
-// public GitHub issue after human confirmation. That side-effecting,
-// credential-dependent flow belongs in isolated QA rather than this live model
-// harness.
-// The entry is named here so its omission from `SHIPPED_SKILLS` is explicit.
-// Revisit when it gains a safe model-gradable surface.
+// fixture + grader + gate runner). `first-tree-file-bug` performs an external
+// provider write by creating a public GitHub issue after human confirmation.
+// That side-effecting, credential-dependent flow belongs in isolated QA rather
+// than this live model harness. Its guardrails (core-tier install, trigger
+// boundary, family-map wiring, and generated-briefing routing) are covered by
+// client unit / drift tests. It is named here so its omission from
+// `SHIPPED_SKILLS` is explicit; revisit when it gains a deterministic,
+// model-gradable surface.
 export const UNEVALUATED_SHIPPED_SKILLS = ["first-tree-file-bug"] as const;
 
 export const SKILL_EVAL_TIERS = ["floor", "gate", "quality", "periodic"] as const;

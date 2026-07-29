@@ -19,7 +19,7 @@ describe("context-tree-audit fixture", () => {
   it.each([
     ["mechanical", 1],
     ["strong-local", 0],
-  ] as const)("records real validator result and all default skills for %s", (scenario, expectedExitCode) => {
+  ] as const)("records real validator result and all eight skills for %s", (scenario, expectedExitCode) => {
     const evalCase = CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.fixture.scenario === scenario);
     expect(evalCase).toBeDefined();
     if (!evalCase) throw new Error(`Missing context-tree-audit eval case for '${scenario}'.`);
@@ -40,7 +40,6 @@ describe("context-tree-audit fixture", () => {
         "context-tree-review",
         "context-tree-audit",
         "first-tree-qa",
-        "return-meeting-context",
       ]) {
         expect(agents).toContain(`\`${skill}\``);
         expect(readFileSync(join(paths.workspacePath, ".agents", "skills", skill, "SKILL.md"), "utf8")).toContain(

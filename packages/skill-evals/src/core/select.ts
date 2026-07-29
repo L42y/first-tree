@@ -54,10 +54,6 @@ const SKILL_BY_PATH: readonly {
     paths: ["skills/first-tree-welcome/", "packages/skill-evals/src/suites/first-tree-welcome/"],
     skill: "first-tree-welcome",
   },
-  {
-    paths: ["skills/return-meeting-context/", "packages/skill-evals/src/suites/return-meeting-context/"],
-    skill: "return-meeting-context",
-  },
 ];
 
 function normalizePath(path: string): string {

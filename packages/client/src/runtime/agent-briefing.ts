@@ -237,5 +237,4 @@ export const FIRST_TREE_FAMILY_SKILL_NAMES = [
   "context-tree-review",
   "context-tree-audit",
   "first-tree-qa",
-  "return-meeting-context",
 ] as const;

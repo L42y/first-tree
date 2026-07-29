@@ -8,7 +8,7 @@ try {
   process.stdout.write(
     `${JSON.stringify(
       {
-        schema: "return-meeting-context.prepared-artifacts.v1",
+        schema: "analyze-meeting-notes.prepared-artifacts.v1",
         source_revision: prepared.source_revision,
         source_status: prepared.source_status,
         artifact_count: prepared.bundle.artifacts.length,

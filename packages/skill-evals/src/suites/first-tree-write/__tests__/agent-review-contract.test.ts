@@ -50,7 +50,7 @@ describe("first-tree-write App review handoff floor", () => {
 
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.14.0");
+    expect(version).toBe("0.13.0");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });

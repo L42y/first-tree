@@ -467,20 +467,19 @@ tree bootstrap from readable sources, load `first-tree-seed`.<% } %><% if (conte
 
 ## Writing the Tree
 
-Tree writes are source-driven. A chat is **fresh context**; the tree is **persistent context** for future agents. When a specific non-meeting PR/MR, design doc,
-review thread, or pasted source changes a durable decision, constraint, owner,
-or cross-domain relationship, load `first-tree-write` and make the smallest
-correct tree diff. Meeting minutes, AI notes, transcripts, decision records,
-and equivalent meeting artifacts always load `return-meeting-context` first;
-only its validated `DecisionEvidencePacket` may hand the supplied meeting
-source to `first-tree-write`. A tree-write request includes creating and
-updating the needed tree-node files (`NODE.md` and other `*.md` nodes) as
-structured persistent-context output. Implementation-only changes skip the
-tree write — not the read.
+Tree writes are source-driven. A chat is **fresh context**; the tree is
+**persistent context** for future agents. When a specific PR/MR, design doc,
+meeting note, review thread, or pasted source changes a durable decision,
+constraint, owner, or cross-domain relationship, load `first-tree-write`
+and make the smallest correct tree diff. When a task calls for a tree write,
+the request explicitly includes creating and updating the needed tree-node
+files (`NODE.md` and other `*.md` nodes) as structured persistent-context
+output. Implementation-only changes skip the tree write — not the read.
 
-Without a specific non-meeting source artifact or validated meeting packet,
-there is no write task. Ask for the non-meeting source, or route supplied meeting artifacts through `return-meeting-context`.
-Before editing, read the target/parent/soft-linked nodes the skill identifies; after editing, run `<%- contextTree.verifyCommand %>`.
+If there is no specific source artifact, there is no write task yet:
+ask for the PR/MR, design doc, meeting note, or pasted source before
+editing the tree. Before editing, read the target/parent/soft-linked
+nodes the skill identifies; after editing, run `<%- contextTree.verifyCommand %>`.
 
 When a code PR/MR and tree PR/MR are both needed, open them together, cross-link
 the descriptions, open the tree PR/MR as a draft, merge the code PR/MR first,
@@ -548,13 +547,12 @@ harness skills (`tdoc`, `review`, `simplify`, `update-config`, …).
 |---|---|
 | `first-tree-welcome` | the onboarding first chat — a natural welcome / "help me get started" message from the user; value-first intro, not a repo scan or tree setup chat |
 | `first-tree-read`    | read relevant Context Tree files before acting from task / path / feature signals |
-| `first-tree-write`   | reflect a concrete non-meeting source artifact (PR/MR, design doc, review thread, or pasted non-meeting source) into the Context Tree; meeting sources enter only as a validated `DecisionEvidencePacket` from `return-meeting-context` |
+| `first-tree-write`   | reflect a concrete source artifact (PR/MR, design doc, meeting note, review thread, or pasted source) into the Context Tree |
 | `first-tree-seed`    | bootstrap the team's Context Tree from readable sources (declared repos or a local Git repo / GitHub or GitLab URL supplied in chat); create + bind if none exists, fill a bound-but-empty tree, or continue Phase 2 after Phase 1 merges |
 | `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
 | `first-tree-file-bug` | you hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and want it reported — gathers repro + version + chat/user IDs and opens an issue on First Tree's own repo (not the user's own/bound repo) via the user's `gh` CLI |
 | `context-tree-review` | a trusted GitHub App Context Review run or an explicit request to review a GitHub Context Tree pull request; GitLab MRs use ordinary GitLab review |
-| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems |
-| `return-meeting-context` | always handle meeting minutes, AI notes, transcripts, decision records, or other user-supplied meeting artifacts first; keep raw material outside the Tree and hand settled durable claims to `first-tree-write` |<% } else { %>
+| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems |<% } else { %>
 
 ## First Tree Family
 
@@ -566,10 +564,9 @@ binding, follow the Tree Location guidance before proceeding.
 |---|---|
 | `first-tree-welcome` | the onboarding first chat — a natural welcome / "help me get started" message from the user; value-first intro, not a repo scan or tree setup chat |
 | `first-tree-read`    | read relevant Context Tree files before acting from task / path / feature signals |
-| `first-tree-write`   | reflect a concrete non-meeting source artifact (PR/MR, design doc, review thread, or pasted non-meeting source) into the Context Tree; meeting sources enter only as a validated `DecisionEvidencePacket` from `return-meeting-context` |
+| `first-tree-write`   | reflect a concrete source artifact (PR/MR, design doc, meeting note, review thread, or pasted source) into the Context Tree |
 | `first-tree-seed` | set up the team's Context Tree from readable sources — declared workspace repos or a local Git repo / GitHub or GitLab URL supplied in chat; creates + binds the tree if none exists, fills a bound-but-empty tree, and can continue Phase 2 after Phase 1 merges |
 | `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
 | `first-tree-file-bug` | the user hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and wants it reported — gathers repro + version + chat/user IDs and opens an issue on First Tree's own repo (not the user's own/bound repo) via the user's `gh` CLI |
 | `context-tree-review` | a trusted GitHub App Context Review run or an explicit request to review a GitHub Context Tree pull request; GitLab MRs use ordinary GitLab review |
-| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems; without a binding, the audit fails closed |
-| `return-meeting-context` | always handle meeting minutes, AI notes, transcripts, decision records, or other user-supplied meeting artifacts first; without a binding it may report candidates but cannot hand them to a Tree write |<% } %>
+| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems; without a binding, the audit fails closed |<% } %>
