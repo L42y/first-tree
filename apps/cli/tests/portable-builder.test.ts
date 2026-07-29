@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   artifactDownloadUrl,
   artifactFileName,
+  assertNativeWorkspaceLockPrebuild,
   assertNoBuildRootReferences,
   buildPortableReleaseMetadata,
   copyPortableAppTemplate,
@@ -159,6 +160,18 @@ describe("portable builder helpers", () => {
     expect(parsePlatform("linux-x64")).toEqual({ os: "linux", arch: "x64" });
     expect(parsePlatform("darwin-arm64")).toEqual({ os: "darwin", arch: "arm64" });
     expect(() => parsePlatform("win32-x64")).toThrow(/unsupported/);
+  });
+
+  it("requires the native workspace-lock prebuild for every portable target", async () => {
+    const appDir = tempDir("first-tree-portable-native-lock-");
+    const prebuildDir = join(appDir, "node_modules", "fs-native-extensions", "prebuilds", "darwin-arm64");
+    await mkdir(prebuildDir, { recursive: true });
+    await writeFile(join(prebuildDir, "fs-native-extensions.node"), "prebuild");
+
+    expect(() => assertNativeWorkspaceLockPrebuild(appDir, "darwin-arm64")).not.toThrow();
+    expect(() => assertNativeWorkspaceLockPrebuild(appDir, "linux-x64")).toThrow(
+      /missing native workspace-lock prebuild for linux-x64/,
+    );
   });
 
   it("uses immutable artifact names", () => {

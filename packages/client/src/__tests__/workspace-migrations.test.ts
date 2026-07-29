@@ -169,74 +169,20 @@ describe("workspace-migrations registry", () => {
     expect(existsSync(whitepaper)).toBe(false);
   });
 
-  it("v1-orphan-skills removes hardcoded legacy skill payloads + matching .claude symlinks", () => {
-    // Plant each retired skill on disk in the canonical layout
-    // (`.agents/skills/<name>/SKILL.md` + `.claude/skills/<name>` symlink).
-    // The migration must remove all of them in one pass.
-    const legacy = [
-      "attention",
-      "first-tree-cloud",
-      "first-tree-github-scan",
-      "first-tree-onboarding",
-      "github-scan",
-      "first-tree",
-      "first-tree-context",
-      "first-tree-sync",
-      "first-tree-github",
-      "first-tree-kickoff",
-    ];
+  it("does not sweep legacy Skill names without reconciler ownership proof", () => {
+    const legacy = "first-tree-cloud";
     mkdirSync(join(workspace, ".claude", "skills"), { recursive: true });
-    for (const name of legacy) {
-      const agentsDir = join(workspace, ".agents", "skills", name);
-      mkdirSync(agentsDir, { recursive: true });
-      writeFileSync(join(agentsDir, "SKILL.md"), `---\nname: ${name}\n---\nstale ${name}\n`);
-      symlinkSync(join("..", "..", ".agents", "skills", name), join(workspace, ".claude", "skills", name));
-    }
-
-    const result = applyPendingMigrations(workspace, () => {}, { currentSourceRepoNames: new Set() });
-
-    for (const name of legacy) {
-      expect(existsSync(join(workspace, ".agents", "skills", name))).toBe(false);
-      // The symlink itself should be gone, not just dangling.
-      expect(() => lstatSync(join(workspace, ".claude", "skills", name))).toThrow();
-    }
-    expect(result.applied).toContain("v1-orphan-skills");
-  });
-
-  it("v1-orphan-skills leaves current skill payloads alone (only the hardcoded historical list matches)", () => {
-    // Plant a currently-bundled skill alongside one of the legacy names.
-    // The current skill must survive; the legacy one must go.
-    mkdirSync(join(workspace, ".claude", "skills"), { recursive: true });
-    const currentName = "first-tree-write"; // still in the bundled First Tree skill set
-    const legacyName = "first-tree-cloud"; // retired
-    for (const name of [currentName, legacyName]) {
-      const agentsDir = join(workspace, ".agents", "skills", name);
-      mkdirSync(agentsDir, { recursive: true });
-      writeFileSync(join(agentsDir, "SKILL.md"), `---\nname: ${name}\n---\n`);
-      symlinkSync(join("..", "..", ".agents", "skills", name), join(workspace, ".claude", "skills", name));
-    }
+    const agentsDir = join(workspace, ".agents", "skills", legacy);
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, "SKILL.md"), `---\nname: ${legacy}\n---\nuser content\n`);
+    const claudeLink = join(workspace, ".claude", "skills", legacy);
+    symlinkSync(join("..", "..", ".agents", "skills", legacy), claudeLink);
 
     applyPendingMigrations(workspace, () => {}, { currentSourceRepoNames: new Set() });
 
-    expect(existsSync(join(workspace, ".agents", "skills", currentName, "SKILL.md"))).toBe(true);
-    expect(lstatSync(join(workspace, ".claude", "skills", currentName)).isSymbolicLink()).toBe(true);
-    expect(existsSync(join(workspace, ".agents", "skills", legacyName))).toBe(false);
-  });
-
-  it("v1-orphan-skills does NOT remove a `.claude/skills/<legacy>` entry that's a regular directory (not a symlink)", () => {
-    // A user-authored regular directory at the Claude path — the migration
-    // unlinks ONLY when the entry is a symbolic link, so this should
-    // survive. The `.agents/skills/<legacy>/` payload (if any) is still
-    // removed because that path IS owned by the CLI by convention.
-    const name = "attention";
-    const claudeDir = join(workspace, ".claude", "skills", name);
-    mkdirSync(claudeDir, { recursive: true });
-    writeFileSync(join(claudeDir, "user-content.md"), "# my notes\n");
-
-    applyPendingMigrations(workspace, () => {}, { currentSourceRepoNames: new Set() });
-
-    expect(existsSync(claudeDir)).toBe(true);
-    expect(existsSync(join(claudeDir, "user-content.md"))).toBe(true);
+    expect(readFileSync(join(agentsDir, "SKILL.md"), "utf-8")).toContain("user content");
+    expect(lstatSync(claudeLink).isSymbolicLink()).toBe(true);
+    expect(MIGRATIONS_REGISTRY.some((migration) => migration.id === "v1-orphan-skills")).toBe(false);
   });
 
   it("v1-legacy-workspace-gitignore deletes a `.gitignore` that contains only the legacy entries", () => {

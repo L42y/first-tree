@@ -975,11 +975,18 @@ describe("buildAgentBriefing — Skills", () => {
       ],
       reasoningEffort: "" as const,
     };
-    const briefing = buildAgentBriefing(makeOpts({ payload, contextTreePath: "/tree" }));
+    const briefing = buildAgentBriefing(
+      makeOpts({
+        payload,
+        contextTreePath: "/tree",
+        teamSkills: [{ name: "internal-playbook", description: "Team-internal playbook" }],
+      }),
+    );
     const skills = topLevelSection(briefing, "# Skills (First Tree Managed)");
 
     expect(skills).toContain("## Team Skills");
     expect(skills).toContain("internal-playbook: Team-internal playbook");
+    expect(skills).not.toContain("Path:");
     expect(skills).toContain("## First Tree Family");
     expect(skills.indexOf("## Team Skills")).toBeLessThan(skills.indexOf("## First Tree Family"));
   });

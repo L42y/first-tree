@@ -109,6 +109,18 @@ function assertRuntimeEmbedsCanonicalPolicy(runtime: BuiltBriefingRuntime): void
   expect(briefing.split(canonical)).toHaveLength(2);
 }
 
+describe("built package CLI", () => {
+  it("starts the built package CLI with its external native lock addon", () => {
+    const packageJson = JSON.parse(readFileSync(join(cliRoot, "package.json"), "utf8")) as { version: string };
+    const output = execFileSync(process.execPath, [join(cliEntryDir, "index.mjs"), "--version"], {
+      cwd: cliRoot,
+      encoding: "utf8",
+    });
+
+    expect(output.trim()).toBe(packageJson.version);
+  });
+});
+
 describe("canonical Policy runtime layouts", () => {
   it("does not expose Managed briefing internals from public package entries", async () => {
     const [clientEntry, cliEntry] = await Promise.all([

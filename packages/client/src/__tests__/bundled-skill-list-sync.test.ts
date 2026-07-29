@@ -1,9 +1,8 @@
-// Drift guard for the two hand-maintained skill lists that MUST stay in
-// sync:
+// Drift guard for the two hand-maintained bundled Core Skill lists.
 //
-//   - `TREE_SKILL_NAMES` in `runtime/first-tree-skills/installer.ts`
-//     — what the runtime installer copies into the agent workspace at
-//     session start.
+//   - `CORE_SKILL_NAMES` in `runtime/first-tree-skills/installer.ts`
+//     — what the managed reconciler projects into the active provider's
+//     native discovery root at session start/resume.
 //
 //   - `BUNDLED_SKILLS` in `scripts/copy-bundled-skills.mjs`
 //     — what the prebuild script copies from repo-root `skills/` into the
@@ -11,9 +10,9 @@
 //
 // If they drift, one of two bad things happens on the next session bootstrap:
 //
-//   (a) installer asks for a skill the prebuild never copied →
-//       installFirstTreeIntegration returns false; the skill is silently
-//       missing from the workspace.
+//   (a) reconciler asks for a skill the prebuild never copied → that Core
+//       entry reports a packaging failure and remains missing or
+//       last-known-good in the workspace.
 //
 //   (b) prebuild copies a skill the installer never reads →
 //       tarball is bigger than needed (cosmetic only, but a hint of an
@@ -26,7 +25,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CORE_SKILL_NAMES, TREE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
+import { CORE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
 
 const clientPackageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -50,6 +49,6 @@ describe("bundled skill list — runtime vs prebuild script", () => {
     // Use a Set for the equality assertion so the diff vitest shows on
     // failure surfaces "missing in installer" vs "missing in script"
     // directly, rather than an order-sensitive array compare.
-    expect(new Set(bundled)).toEqual(new Set([...CORE_SKILL_NAMES, ...TREE_SKILL_NAMES]));
+    expect(new Set(bundled)).toEqual(new Set(CORE_SKILL_NAMES));
   });
 });

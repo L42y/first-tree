@@ -28,6 +28,21 @@ function packageFiles(value: unknown): string[] {
   return value.files;
 }
 
+function packageDependencies(value: unknown): Record<string, string> {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("dependencies" in value) ||
+    typeof value.dependencies !== "object" ||
+    value.dependencies === null ||
+    Array.isArray(value.dependencies) ||
+    !Object.values(value.dependencies).every((entry) => typeof entry === "string")
+  ) {
+    throw new Error("apps/cli/package.json must declare a string-valued dependencies object");
+  }
+  return value.dependencies as Record<string, string>;
+}
+
 describe("npm package metadata", () => {
   it("includes package-root documentation and license files in the tarball allow-list", () => {
     const files = packageFiles(readJson(join(CLI_ROOT, "package.json")));
@@ -58,5 +73,11 @@ describe("npm package metadata", () => {
     expect(readText(licensePath)).toBe(readText(join(REPO_ROOT, "LICENSE")));
     expect(readText(licensePath)).toContain("Apache License");
     expect(readText(licensePath)).toContain("Version 2.0, January 2004");
+  });
+
+  it("installs the external native workspace-lock addon with the published CLI", () => {
+    const dependencies = packageDependencies(readJson(join(CLI_ROOT, "package.json")));
+
+    expect(dependencies["fs-native-extensions"]).toBe("^1.5.0");
   });
 });

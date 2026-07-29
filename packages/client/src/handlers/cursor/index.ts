@@ -4,6 +4,7 @@ import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
+  type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
   classifyShellCommandIo,
   encodeProviderRetryEventMessage,
@@ -40,9 +41,9 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
-import { materializeResourceSkills } from "../../runtime/resource-skills.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -529,6 +530,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
   let activePayload: AgentRuntimeConfigPayload | null = null;
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   let binary: string | null = null;
   /** Stream-confirmed provider session id — the ONLY value `--resume` may carry. */
   let providerSessionId: string | null = null;
@@ -699,6 +701,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -1504,12 +1507,18 @@ export const createCursorHandler: HandlerFactory = (config) => {
    * rewrite AGENTS.md and report so the caller prepends the one-time re-read
    * notice. Never throws on the drain path.
    */
-  function refreshBriefingForActiveTurn(sessionCtx: SessionContext): { fingerprint: string; changed: boolean } | null {
+  async function refreshBriefingForActiveTurn(
+    sessionCtx: SessionContext,
+  ): Promise<{ fingerprint: string; changed: boolean } | null> {
     const sessionKey = providerSessionId ?? pendingSyntheticId;
     if (!agentConfigCache || !cwd || !sessionKey) return null;
     try {
-      const payload = agentConfigCache.get(sessionCtx.agent.agentId)?.payload;
-      if (!payload) return null;
+      const runtimeConfig = agentConfigCache.get(sessionCtx.agent.agentId);
+      if (!runtimeConfig) return null;
+      const payload = runtimeConfig.payload;
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
       if (readSessionBriefingFingerprint(cwd, sessionKey) === fingerprint) return { fingerprint, changed: false };
@@ -1546,7 +1555,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       for (const queued of drained) queued.token.retry(queued.message, "cursor_queued_turn_format_failed");
       return;
     }
-    const refreshed = refreshBriefingForActiveTurn(sessionCtx);
+    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
     if (refreshed?.changed && cwd) {
       const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
       pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
@@ -1590,9 +1599,11 @@ export const createCursorHandler: HandlerFactory = (config) => {
     const workspaceCwd = acquireAgentHome(workspaceRoot);
     cwd = workspaceCwd;
 
+    let runtimeConfig: AgentRuntimeConfig | null = null;
     let payload: AgentRuntimeConfigPayload | null = null;
     if (agentConfigCache) {
-      payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+      runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+      payload = runtimeConfig.payload;
     }
     const payloadResolved = payload !== null;
     if (!payload) {
@@ -1611,7 +1622,9 @@ export const createCursorHandler: HandlerFactory = (config) => {
     pendingChatContextPrompt = renderChatContextPrompt(chatContext);
 
     declareSourceRepos(payload, workspaceCwd);
-    await materializeResourceSkills(workspaceCwd, payload, sessionCtx);
+    reconciledTeamSkills = (
+      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+    ).teamSkills;
 
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);
     ensureAgentBootstrap({

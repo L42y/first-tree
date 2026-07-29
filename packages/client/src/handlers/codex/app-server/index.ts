@@ -1,5 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import {
+  type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
   encodeProviderRetryEventMessage,
   isLandingCampaignTrialAgentMetadata,
@@ -33,8 +34,8 @@ import type {
   TurnConsumedErrorReason,
 } from "../../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../../runtime/handler.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../../runtime/provider-attempt.js";
-import { materializeResourceSkills } from "../../../runtime/resource-skills.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -189,6 +190,7 @@ const CODEX_COMPACT_FAILURE_MESSAGE =
   "Codex failed to compact this thread before answering. Start a new thread or clear earlier history before retrying.";
 export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfig): AgentHandler => {
   const workspaceRoot = config.workspaceRoot as string;
+  const runtimeProvider = "codex" as const;
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
@@ -205,6 +207,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   let currentModel = "";
   let currentReasoningEffort = "high";
   let activePayload: AgentRuntimeConfigPayload | null = null;
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   let serviceTierConfigurationFailure: string | null = null;
   let currentTurn: CurrentTurn | null = null;
   let currentTurnPromise: Promise<void> | null = null;
@@ -379,6 +382,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -414,14 +418,15 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   async function resolvePayload(sessionCtx: SessionContext): Promise<{
     payload: AgentRuntimeConfigPayload;
     resolved: boolean;
+    runtimeConfig: AgentRuntimeConfig | null;
   }> {
-    let payload: AgentRuntimeConfigPayload | null = null;
     if (agentConfigCache) {
-      payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+      const runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+      return { payload: runtimeConfig.payload, resolved: true, runtimeConfig };
     }
-    if (payload) return { payload, resolved: true };
     return {
       resolved: false,
+      runtimeConfig: null,
       payload: {
         kind: "codex",
         prompt: { append: "" },
@@ -443,11 +448,12 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   }> {
     cwd = acquireAgentHome(workspaceRoot);
     workspaceOnly = isLandingCampaignTrialAgentMetadata(sessionCtx.agent.metadata);
-    const { payload, resolved } = await resolvePayload(sessionCtx);
+    const { payload, resolved, runtimeConfig } = await resolvePayload(sessionCtx);
     const chatContext = await fetchChatContextOrLog(sessionCtx);
     pendingChatContextPrompt = renderChatContextPrompt(chatContext);
     declareSourceRepos(payload, cwd);
-    await materializeResourceSkills(cwd, payload, sessionCtx);
+    reconciledTeamSkills = (await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log))
+      .teamSkills;
     let env = buildEnv(sessionCtx);
     if (workspaceOnly) {
       const { accessToken } = await sessionCtx.sdk.createAgentOutboxToken(sessionCtx.chatId);
@@ -1691,10 +1697,13 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
    * would otherwise only land after a suspend/resume. Before an injected turn we
    * rebuild the briefing from the latest cached config; if it changed, rewrite
    * AGENTS.md and report so the caller prepends the re-read notice. Synchronous
-   * + `.get()` so it adds no await on the drain path. The prompt is the target;
-   * model / MCP hot-switch (which needs a thread restart) stays out of scope.
+   * It awaits the managed Skill settlement before rewriting the briefing. The
+   * prompt and Skills are the targets; model / MCP hot-switch (which needs a
+   * thread restart) stays out of scope.
    */
-  function refreshBriefingForActiveTurn(sessionCtx: SessionContext): { fingerprint: string; changed: boolean } | null {
+  async function refreshBriefingForActiveTurn(
+    sessionCtx: SessionContext,
+  ): Promise<{ fingerprint: string; changed: boolean } | null> {
     if (!agentConfigCache || !cwd || !threadId || !activeProviderEnv) return null;
     // Never throw: `startTurnFromPendingInputs` has already dequeued the batch
     // by the time this runs, so a thrown briefing rewrite would strand the
@@ -1702,8 +1711,12 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     // hot-switch for this turn — the message still delivers under the prior
     // briefing, and the next injected turn retries the refresh.
     try {
-      const payload = agentConfigCache.get(sessionCtx.agent.agentId)?.payload;
-      if (!payload) return null;
+      const runtimeConfig = agentConfigCache.get(sessionCtx.agent.agentId);
+      if (!runtimeConfig) return null;
+      const payload = runtimeConfig.payload;
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
       if (readSessionBriefingFingerprint(cwd, threadId) === fingerprint) return { fingerprint, changed: false };
@@ -1734,7 +1747,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     if (!token) return;
     // Active-session hot-switch: pick up a mid-session briefing change before
     // this injected turn and surface the re-read notice.
-    const refreshed = refreshBriefingForActiveTurn(sessionCtx);
+    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
     if (refreshed?.changed && cwd) {
       const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
       pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;

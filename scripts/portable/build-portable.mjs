@@ -96,6 +96,21 @@ export function parsePlatform(platform) {
   return { os, arch };
 }
 
+export function assertNativeWorkspaceLockPrebuild(appDir, platform) {
+  parsePlatform(platform);
+  const prebuild = join(
+    appDir,
+    "node_modules",
+    "fs-native-extensions",
+    "prebuilds",
+    platform,
+    "fs-native-extensions.node",
+  );
+  if (!existsSync(prebuild)) {
+    fail(`portable app is missing native workspace-lock prebuild for ${platform}`);
+  }
+}
+
 export function artifactFileName(options) {
   return `${options.packageName}-${options.version}-${options.platform}.tar.gz`;
 }
@@ -791,6 +806,7 @@ async function buildPlatformArtifact(options) {
   try {
     const appEntry = "app/cli/index.mjs";
     copyPortableAppTemplate(options.appTemplateDir, join(artifactRoot, "app"));
+    assertNativeWorkspaceLockPrebuild(join(artifactRoot, "app"), options.platform);
     await downloadNodeRuntime({
       nodeVersion: options.nodeVersion,
       platform: options.platform,
