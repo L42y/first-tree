@@ -39,11 +39,35 @@ function pickPrimaryAgent(participants: { agentId: string; type: string }[], myA
   return nonSelf[0]?.agentId ?? null;
 }
 
+type MeChatsCache = InfiniteData<ListMeChatsResponse> | ListMeChatsResponse;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function isListResponse(value: unknown): value is ListMeChatsResponse {
+  if (!isRecord(value) || !Array.isArray(value.rows) || !isRecord(value.priorityRows)) return false;
+  return Array.isArray(value.priorityRows.attention) && Array.isArray(value.priorityRows.pinned);
+}
+
+function isMeChatsCache(value: unknown): value is MeChatsCache {
+  if (isListResponse(value)) return true;
+  return isRecord(value) && Array.isArray(value.pages) && value.pages.every(isListResponse);
+}
+
+function isUnreadListQuery(queryKey: readonly unknown[]): boolean {
+  if (queryKey[2] === "unread") return true;
+  return queryKey[2] === "mobile" && queryKey[3] === "work-list" && queryKey[7] === "unread";
+}
+
 function patchReadChatInCachedLists(queryClient: QueryClient, chatId: string, unreadMentionCount: number): void {
   const cachedQueries = queryClient.getQueryCache().findAll({ queryKey: ["me", "chats"] });
   for (const query of cachedQueries) {
-    const unreadFilter = query.queryKey[2] === "unread";
-    // Decrement the opened chat's unread within a single page's rows; in the
+    const previous = query.state.data;
+    if (!isMeChatsCache(previous)) continue;
+
+    const unreadFilter = isUnreadListQuery(query.queryKey);
+    // Update the opened chat wherever the response projects it; in the
     // unread-only view drop it once it reaches zero.
     const patchRows = (rows: MeChatRow[]): { rows: MeChatRow[]; changed: boolean } => {
       let changed = false;
@@ -55,24 +79,43 @@ function patchReadChatInCachedLists(queryClient: QueryClient, chatId: string, un
       });
       return { rows: next, changed };
     };
-    // The desktop rail stores `InfiniteData` (`useInfiniteQuery`); the command
-    // palette and mobile lists store a bare `ListMeChatsResponse`. The prefix
-    // `findAll(["me","chats"])` matches both, so patch whichever this holds.
-    queryClient.setQueryData<InfiniteData<ListMeChatsResponse> | ListMeChatsResponse>(query.queryKey, (prev) => {
-      if (!prev) return prev;
-      if ("pages" in prev) {
-        let changed = false;
-        const pages = prev.pages.map((page) => {
-          const res = patchRows(page.rows);
-          if (res.changed) changed = true;
-          return res.changed ? { ...page, rows: res.rows } : page;
-        });
-        return changed ? { ...prev, pages } : prev;
-      }
-      const res = patchRows(prev.rows);
-      return res.changed ? { ...prev, rows: res.rows } : prev;
-    });
+    const patchResponse = (response: ListMeChatsResponse): ListMeChatsResponse => {
+      const rows = patchRows(response.rows);
+      const attention = patchRows(response.priorityRows.attention);
+      const pinned = patchRows(response.priorityRows.pinned);
+      if (!rows.changed && !attention.changed && !pinned.changed) return response;
+      return {
+        ...response,
+        rows: rows.changed ? rows.rows : response.rows,
+        priorityRows:
+          attention.changed || pinned.changed
+            ? {
+                attention: attention.changed ? attention.rows : response.priorityRows.attention,
+                pinned: pinned.changed ? pinned.rows : response.priorityRows.pinned,
+              }
+            : response.priorityRows,
+      };
+    };
+
+    if ("pages" in previous) {
+      let changed = false;
+      const pages = previous.pages.map((page) => {
+        const next = patchResponse(page);
+        if (next !== page) changed = true;
+        return next;
+      });
+      if (changed) queryClient.setQueryData(query.queryKey, { ...previous, pages });
+      continue;
+    }
+
+    const patched = patchResponse(previous);
+    if (patched !== previous) queryClient.setQueryData(query.queryKey, patched);
   }
+
+  // Source counts have a different cache shape and are server-owned aggregates.
+  // Refresh active mobile count projections instead of trying to derive them
+  // from whichever paginated list rows happen to be cached.
+  void queryClient.invalidateQueries({ queryKey: ["me", "chats", "mobile", "work-source-counts"] });
 }
 
 export function ChatByIdView({

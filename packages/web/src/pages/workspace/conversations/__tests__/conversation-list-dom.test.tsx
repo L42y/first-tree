@@ -765,15 +765,37 @@ describe("ConversationList", () => {
     }
   });
 
-  it("marks the selected row with aria-current and reveals the row-actions kebab on touch", async () => {
-    const container = await renderDom(<StatefulList selectedChatId="chat-manual" />);
+  it("separates row selection from its actions and keeps the kebab reachable on touch", async () => {
+    const onSelectChat = vi.fn();
+    const pinnedRow = row({
+      chatId: "chat-pinned",
+      title: "Pinned planning",
+      pinnedAt: "2026-05-28T11:30:00.000Z",
+    });
+    const client = createClient([...BASE_ROWS, pinnedRow], null);
+    const container = await renderDom(
+      <StatefulList selectedChatId="chat-pinned" onSelectChat={onSelectChat} />,
+      client,
+    );
+    const selectedRow = rowButton(container, "Pinned planning");
     // Row selection is exposed to assistive tech (was tint + left bar only).
-    expect(rowButton(container, "Manual planning").getAttribute("aria-current")).toBe("page");
+    expect(selectedRow.getAttribute("aria-current")).toBe("page");
     expect(rowButton(container, "Broken deploy").getAttribute("aria-current")).toBeNull();
+    expect(selectedRow.className).toContain("cursor-pointer");
+    expect(selectedRow.className).toContain("active:bg-[var(--bg-active)]");
+    await click(selectedRow);
+    expect(onSelectChat).toHaveBeenCalledWith("chat-pinned");
     // The row-actions kebab (the only Pin entry point) reveals on coarse (touch)
     // pointers, not hover-only, so Pin is reachable on phones / the narrow overlay.
-    const kebab = container.querySelector('button[aria-label="Manage chat"]');
+    const kebab = selectedRow.parentElement?.querySelector<HTMLButtonElement>('button[aria-label="Manage chat"]');
+    expect(kebab).not.toBeNull();
     expect(kebab?.className).toContain("pointer-coarse:opacity-100");
+    expect(kebab?.className).toContain("pointer-events-none");
+    expect(kebab?.className).toContain("group-hover:pointer-events-auto");
+    // The main selector and action menu are sibling hit regions. The action no
+    // longer sits absolutely over the selector's right edge.
+    expect(kebab?.parentElement?.parentElement?.parentElement).toBe(selectedRow.parentElement);
+    expect(kebab?.parentElement?.parentElement?.className).not.toContain("absolute");
     // ...and the trailing metadata cluster hides on coarse pointers so the
     // always-visible kebab never overlaps the row's time / status (R5).
     expect(container.querySelector('[class~="pointer-coarse:opacity-0"]')).not.toBeNull();
