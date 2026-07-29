@@ -239,7 +239,7 @@ source-backed write.`,
     content = replaceRequiredPattern(
       content,
       /^description: .+$/mu,
-      `description: Source-driven Context Tree write workflow for the ${provider} user-scope Plugin. Use when an explicit Tree-write request or the connected SessionStart standing route classifies a concrete source artifact as durable Tree work. Requires an exact provider + checkout binding, a Plugin-created exact read snapshot, and live write preflight; source PR/MR authorization alone is not write intent, and Team never comes from the model or user.`,
+      `description: Source-driven Context Tree write workflow for the ${provider} user-scope Plugin. Use when an explicit Tree-write request or the connected SessionStart standing route classifies a concrete source artifact — for example, a PR/MR, forge Issue, design doc, meeting or decision note, commit discussion or review thread, or pasted source material — as durable Tree work. Requires an exact provider + checkout binding, a Plugin-created exact read snapshot, and live write preflight; source PR/MR authorization alone is not write intent, and Team never comes from the model or user.`,
       `${name} description`,
     );
     content = replaceRequired(
@@ -367,7 +367,7 @@ function writeSessionStartHook(pluginRoot, provider) {
                 provider === "codex"
                   ? `"\${PLUGIN_ROOT}/bin/context-session-start" --release-digest __RELEASE_DIGEST__`
                   : `"\${CLAUDE_PLUGIN_ROOT}/bin/context-session-start" --release-digest __RELEASE_DIGEST__`,
-              timeout: 3,
+              timeout: 5,
               statusMessage: "Connecting First Tree Context",
               additionalContextLimit: 2048,
             },

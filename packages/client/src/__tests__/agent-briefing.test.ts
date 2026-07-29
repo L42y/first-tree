@@ -786,6 +786,12 @@ describe("buildAgentBriefing — Context Tree", () => {
     const writeRouting = readCanonicalContextTreeWriteRouting();
     expect(tree).toContain(writeRouting);
     expect(tree.split(writeRouting)).toHaveLength(2);
+    expect(writeRouting).toContain("for example, a\nPR/MR, forge Issue");
+    expect(writeRouting).toContain("meeting or decision note");
+    expect(writeRouting).toContain("commit discussion or\nreview thread");
+    expect(writeRouting).not.toContain("source repo change you just completed");
+    expect(writeRouting).not.toContain("Audit finding");
+    expect(writeRouting).not.toContain("context-tree-audit");
     expect(resolveCanonicalContextTreeWriteRoutingPath()).toBe(
       resolve(dirname(fileURLToPath(import.meta.url)), "..", "runtime", "assets", "context-tree-write-routing.md"),
     );
@@ -808,8 +814,8 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).toMatch(/If the root also contains an\s+`AGENTS\.md`, read it too/);
     expect(tree).toContain("the tree wins");
 
-    expect(tree).toContain("concrete source artifact (PR/MR, design");
-    expect(tree).toContain("standing route makes the required\nTree node files part of the task");
+    expect(tree).toContain("concrete source artifact (for example, a");
+    expect(tree).toMatch(/standing route makes the required\s+Tree\s+node files part\s+of the task/);
     expect(tree).toMatch(/Implementation-only changes skip the Tree\s+write/);
     expect(tree).toContain("Without a concrete source artifact");
     expect(tree).toContain("first-tree tree verify");

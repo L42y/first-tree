@@ -37,11 +37,15 @@ manifest also records both adapter digests and the canonical Policy digest.
   an exact local binding that still passes live membership, Team repository,
   and Tree binding checks.
 - A connected SessionStart always carries the same source-artifact routing
-  contract as the Managed briefing. When a concrete PR/MR, design document,
-  meeting note, review thread, or pasted source changes a durable decision,
-  constraint, owner, or cross-domain relationship, the provider loads
-  `first-tree-write`. Implementation-only artifacts do not produce a Tree
-  write, and no Tree write task exists before a concrete source artifact does.
+  contract as the Managed briefing. Its non-exhaustive automatic examples are
+  PR/MR, forge Issue, design document, meeting or decision note, commit
+  discussion or review thread, and pasted source. When one changes a durable
+  decision, constraint, owner, or cross-domain relationship, the provider
+  loads `first-tree-write`. Implementation-only artifacts do not produce a
+  Tree write, and no Tree write task exists before a concrete source artifact
+  does. A just-completed local source change is not promoted to this generic
+  route, and Audit findings continue through their dedicated Maintenance
+  handoff; the Skill's accepted-source gate remains broader.
 - External write intent comes only from an explicit Tree-write request or that
   connected SessionStart standing route classifying a concrete artifact as
   durable Tree work. Permission to publish a source PR/MR is not a separate
@@ -52,6 +56,16 @@ manifest also records both adapter digests and the canonical Policy digest.
   push, and PR/MR creation.
 - Activation failure never blocks ordinary provider work and never falls back
   to another Team or cached authority.
+- SessionStart uses one non-retrying two-second live-authority attempt covering
+  access-token refresh and the validator request inside a five-second provider
+  hook budget, so timeout or network failure can return a controlled
+  unavailable envelope instead of being killed by the provider. Explicit
+  status, Read, and Write activation use a five-second attempt covering the
+  same two stages and retry the same exact Team + repository once only for
+  timeout, network, or HTTP 5xx failures. Authentication, authorization,
+  binding, scope, and typed disabled results never retry. Failures expose
+  stable timeout, network, server, or rejection reason codes without returning
+  cached authority.
 - Read does not depend on Reviewer readiness. A new official Write fails before
   remote mutation when Automatic Review is absent, disabled, structurally
   incomplete, or offline.

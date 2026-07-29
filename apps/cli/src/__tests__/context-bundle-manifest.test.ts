@@ -64,14 +64,26 @@ describe("context integration bundle", () => {
     const projectedSkills = new Map<string, { read: string; write: string }>();
     for (const provider of ["claude-code", "codex"]) {
       const pluginRoot = join(root, provider, "plugins", "first-tree-context");
+      const hook = readFileSync(join(pluginRoot, "hooks", "hooks.json"), "utf8");
       const readSkill = readFileSync(join(pluginRoot, "skills", "first-tree-read", "SKILL.md"), "utf8");
       const writeSkill = readFileSync(join(pluginRoot, "skills", "first-tree-write", "SKILL.md"), "utf8");
       projectedSkills.set(provider, { read: readSkill, write: writeSkill });
+      expect(hook).toContain('"timeout": 5');
+      expect(hook).not.toContain('"timeout": 3');
+      expect(hook).toContain('"matcher": "startup|resume|clear|compact"');
       expect(readSkill).toContain(`context read --provider ${provider}`);
       expect(writeSkill).toContain(`context write --provider ${provider}`);
-      expect(writeSkill).toContain(
-        "connected SessionStart standing route classifies a concrete source artifact as durable Tree work",
-      );
+      const writeDescription = /^description: (.+)$/mu.exec(writeSkill)?.[1];
+      expect(writeDescription).toContain("connected SessionStart standing route classifies a concrete source artifact");
+      expect(writeDescription).toContain("for example, a PR/MR, forge Issue");
+      expect(writeDescription).toContain("meeting or decision note");
+      expect(writeDescription).toContain("commit discussion or review thread");
+      expect(writeDescription).not.toContain("source repo change you just completed");
+      expect(writeDescription).not.toContain("Audit finding");
+      expect(writeDescription).not.toContain("context-tree-audit");
+      expect(writeSkill).toContain("a source repo change you just completed");
+      expect(writeSkill).toContain("an evidence-backed `context-tree-audit` finding");
+      expect(writeSkill).toContain("This Source Gate\nremains intentionally broader than the generic automatic route.");
       expect(writeSkill).toContain(
         "Write intent comes only from an\n  explicit Tree-write request or the connected SessionStart standing route",
       );

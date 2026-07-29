@@ -226,8 +226,12 @@ describe("first-tree-welcome floor invariants", () => {
 
   it("keeps the Context Tree launcher brief user-visible and leaves implementation to seed", () => {
     expect(skillMarkdown).toContain("Build our team's\n  Context Tree from the connected code");
-    expect(skillMarkdown).toContain("load `first-tree-seed` from the task itself");
-    expect(skillMarkdown).toContain("this launcher does none of\n  that");
+    expect(skillMarkdown).toMatch(/load `first-tree-seed` from\s+the task itself/u);
+    expect(skillMarkdown).toMatch(/this launcher does none of\s+that/u);
+    expect(skillMarkdown).toContain("Open the Structure PR/MR first");
+    expect(skillMarkdown).toContain("preserve any existing Reviewer");
+    expect(skillMarkdown).toMatch(/use this same\s+Agent as the default/u);
+    expect(skillMarkdown).toMatch(/do not open its PR\/MR until a selected Reviewer is\s+enabled/u);
     expect(skillMarkdown).not.toContain("working Code Owner mapping");
     expect(skillMarkdown).not.toContain("GitHub governance setup");
     expect(skillMarkdown).not.toContain("default-branch rules");
