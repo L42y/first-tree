@@ -2621,26 +2621,20 @@ export function ChatView({
   const askOverlayActive = dockRequest != null && dockPayload != null && !inspectAskMode;
   const dockRequestId = askOverlayActive ? dockRequest.id : undefined;
   const openRequestCount = Math.max(openRequestsData?.items.length ?? 0, dockRequest ? 1 : 0);
-  // Mount-scoped confirmation for the open-requests source. ChatView is NOT
-  // remounted on chat switch, so the observation point is keyed by chatId: a
-  // cached success from an earlier visit (possibly written BEFORE a new
-  // request arrived) must not count as confirmation — TanStack Query keeps
-  // `status === "success"` for that stale row through the mount refetch, so
-  // gating on status alone re-opens the ordinary composer for exactly the
-  // window the gate exists to close. Only a fetch that COMPLETED while this
-  // chat is being viewed (`dataUpdatedAt` past the observation point)
-  // confirms the state; a mount-scope failure (`errorUpdatedAt` past it, even
-  // when stale data keeps status "success") stays unverified. Deliberately
-  // not `isFetching`: the 5s poll must not flicker an already-confirmed
-  // composer. Applies to the normal route AND inspect mode — see
-  // `openRequestsUnverified` below.
-  const openRequestsObservedAtRef = useRef<{ chatId: string | null; at: number }>({ chatId: null, at: 0 });
-  if (openRequestsObservedAtRef.current.chatId !== chatId) {
-    openRequestsObservedAtRef.current = { chatId, at: Date.now() };
-  }
-  const openRequestsMountConfirmed = openRequestsQuery.dataUpdatedAt > openRequestsObservedAtRef.current.at;
-  const openRequestsMountFailed =
-    !openRequestsMountConfirmed && openRequestsQuery.errorUpdatedAt > openRequestsObservedAtRef.current.at;
+  // Mount-scoped confirmation for the open-requests source, keyed on TanStack
+  // Query's own observer state — no wall-clock comparisons. In v5
+  // `isFetchedAfterMount` stays false while the FIRST fetch of this observer
+  // is in flight (including a background refetch riding a stale cached
+  // success, and after the queryKey switches chats), and flips true once any
+  // fetch completes; `status` lands on "error" for ANY failed fetch — even a
+  // background refetch that keeps serving stale data. So a cached empty
+  // success from an earlier visit can never pass as this mount's
+  // confirmation, and a failed mount refetch is caught by `isError` whether
+  // or not stale data exists. Deliberately not `isFetching`: the 5s poll
+  // must not flicker an already-confirmed composer. Applies to the normal
+  // route AND inspect mode — see `openRequestsUnverified` below.
+  const openRequestsMountFailed = openRequestsQuery.isError;
+  const openRequestsMountConfirmed = openRequestsQuery.isFetchedAfterMount && openRequestsQuery.status === "success";
   // The ordinary composer must fail closed on BOTH the normal route and
   // `showAsk=false` inspect mode while the window-independent open-requests
   // source has not CONFIRMED this chat's open-request state in this mount.
@@ -2651,8 +2645,9 @@ export function ChatView({
   // derivation as confirmed lets a fast send bypass a still-open request:
   // precisely the contract the blocking takeover exists to preserve. Only a
   // mount-scope successful fetch, or a blocking request found in the
-  // already-loaded timeline (count > 0 above), lifts this gate.
-  const openRequestsUnverified = openRequestCount === 0 && !openRequestsMountConfirmed;
+  // already-loaded timeline (count > 0 above), lifts this gate. Watchers
+  // (`readOnly`) never send, so they never gate.
+  const openRequestsUnverified = !readOnly && openRequestCount === 0 && !openRequestsMountConfirmed;
   const askAgent = useAskAgent({
     chatId,
     requestId: dockRequest?.id ?? null,
