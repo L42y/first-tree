@@ -205,6 +205,7 @@ function availabilityReasonMessage(reason: "invalid" | "reserved" | "taken"): st
 
 export type NewAgentDraft = {
   displayName: string;
+  manualHandle: string;
   visibility: AgentVisibility;
   runtimeProvider: RuntimeProvider;
   clientId: string | null;
@@ -295,7 +296,7 @@ export function NewAgentDialog({
       setTemplateIds(initialDraft?.templateIds ?? initialTemplateIds);
       setResolvedHandle("");
       setHandleState({ status: "idle" });
-      setManualHandle("");
+      setManualHandle(initialDraft?.manualHandle ?? "");
       setManualAvailability({ status: "idle" });
       setConnectedClients([]);
       setClientsLoaded(false);
@@ -793,6 +794,7 @@ export function NewAgentDialog({
                 onOpenChange(false);
                 onBrowseTemplates?.({
                   displayName,
+                  manualHandle: handleState.status === "manual" ? manualHandle : "",
                   visibility,
                   runtimeProvider: runtime,
                   clientId: pickedClientId,

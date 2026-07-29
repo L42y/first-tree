@@ -453,7 +453,7 @@ describe("NewAgentDialog extra branches", () => {
     expect(agentMocks.createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: "probe-bot" }));
   });
 
-  it("shows the selected Template inline, preserves it while browsing, and submits its id", async () => {
+  it("restores a manual handle and all Template draft fields after a real Browse remount", async () => {
     const { NewAgentDialog } = await import("../new-agent-dialog.js");
     const onOpenChange = vi.fn();
     const onBrowseTemplates = vi.fn();
@@ -469,7 +469,10 @@ describe("NewAgentDialog extra branches", () => {
 
     await waitForText(container, "Code reviewer");
     expect(document.body.textContent).toContain("Template · Release manager, Code reviewer");
-    await setValue(inputById("new-agent-display-name"), "Review Bot");
+    await setValue(inputById("new-agent-display-name"), "审查机器人 🤖");
+    await waitForText(container, "Pick an @handle");
+    await setValue(inputById("new-agent-name"), "review-bot");
+    await waitForText(container, "Available.");
     await click(optionByText(document.body, "Visible to your team"));
     await click(optionByText(document.body, "alice-linux"));
     await waitForText(container, "Codex");
@@ -477,7 +480,8 @@ describe("NewAgentDialog extra branches", () => {
     await click(buttonByText(document.body, "Browse"));
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(onBrowseTemplates).toHaveBeenCalledWith({
-      displayName: "Review Bot",
+      displayName: "审查机器人 🤖",
+      manualHandle: "review-bot",
       visibility: "organization",
       runtimeProvider: "codex",
       clientId: "client-2",
@@ -485,6 +489,7 @@ describe("NewAgentDialog extra branches", () => {
     });
 
     const draft = onBrowseTemplates.mock.calls[0]?.[0];
+    const probesBeforeRemount = agentMocks.checkAgentNameAvailability.mock.calls.length;
     await act(async () => root?.unmount());
     root = null;
     container.remove();
@@ -498,13 +503,21 @@ describe("NewAgentDialog extra branches", () => {
       />,
     );
     await waitForText(remounted, "Code reviewer");
-    expect(inputById("new-agent-display-name").value).toBe("Review Bot");
-    await waitForCondition(() => agentMocks.checkAgentNameAvailability.mock.calls.length > 0, "Expected probe");
+    expect(inputById("new-agent-display-name").value).toBe("审查机器人 🤖");
+    await waitForText(remounted, "Pick an @handle");
+    expect(inputById("new-agent-name").value).toBe("review-bot");
+    await waitForCondition(
+      () => agentMocks.checkAgentNameAvailability.mock.calls.length > probesBeforeRemount,
+      "Expected a fresh manual-handle probe after remount",
+    );
+    expect(agentMocks.checkAgentNameAvailability).toHaveBeenLastCalledWith("review-bot");
+    await waitForText(remounted, "Available.");
     await click(buttonByText(document.body, "Create"));
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length > 0, "Expected createAgent");
     expect(agentMocks.createAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "review-bot",
+        displayName: "审查机器人 🤖",
         visibility: "organization",
         runtimeProvider: "codex",
         clientId: "client-2",

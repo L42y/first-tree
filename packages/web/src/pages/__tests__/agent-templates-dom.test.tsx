@@ -58,6 +58,7 @@ function withProviders(
           selectedTemplateIds?: string[];
           newAgentDraft?: {
             displayName: string;
+            manualHandle: string;
             visibility: "private" | "organization";
             runtimeProvider: "claude-code" | "codex";
             clientId: string | null;
@@ -106,6 +107,7 @@ describe("AgentTemplatesPage", () => {
           fromNewAgent: true,
           newAgentDraft: {
             displayName: "Draft researcher",
+            manualHandle: "",
             visibility: "organization",
             runtimeProvider: "codex",
             clientId: "client-2",

@@ -53,6 +53,7 @@ export function AgentTemplatesPage() {
           ? { ...routeState.newAgentDraft, templateIds: selectedIds }
           : {
               displayName: "",
+              manualHandle: "",
               visibility: "private",
               runtimeProvider: "claude-code",
               clientId: null,

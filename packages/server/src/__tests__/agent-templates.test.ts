@@ -340,6 +340,80 @@ describe("Agent Templates", () => {
     expect(retireResource.json<{ error: string }>().error).toMatch(/Agent Template/i);
   });
 
+  it("returns one coherent winner for concurrent Template selection CAS updates", async () => {
+    const app = getApp();
+    const publisher = await createTestAdmin(app, {
+      username: `template-cas-${crypto.randomUUID().slice(0, 8)}`,
+    });
+    const consumer = await createConsumerAdmin(app, publisher);
+    const templateIds = [
+      `cas-first-${crypto.randomUUID().slice(0, 8)}`,
+      `cas-second-${crypto.randomUUID().slice(0, 8)}`,
+    ];
+    for (const [index, id] of templateIds.entries()) {
+      await app.agentTemplatesService.createTemplate(
+        publisher.organizationId,
+        {
+          id,
+          title: `CAS ${index + 1}`,
+          summary: `Concurrent selection ${index + 1}.`,
+          outcomes: [],
+          customInstructions: `CAS INSTRUCTION ${index + 1}`,
+          resourceIds: [],
+          sortOrder: index,
+        },
+        publisher.memberId,
+      );
+    }
+
+    const created = await inject(app, consumer.accessToken, "POST", `/api/v1/orgs/${consumer.organizationId}/agents`, {
+      name: `template-cas-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: "Template CAS Agent",
+      type: "agent",
+      clientId: consumer.clientId,
+      runtimeProvider: "claude-code",
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const agentId = created.json<{ uuid: string }>().uuid;
+    const selections = templateIds.map((templateId) => [templateId]);
+    const attempts = await Promise.all(
+      selections.map(async (selection) => ({
+        selection,
+        response: await inject(app, consumer.accessToken, "PATCH", `/api/v1/agents/${agentId}/templates`, {
+          expectedVersion: 1,
+          templateIds: selection,
+        }),
+      })),
+    );
+
+    const successes = attempts.filter(({ response }) => response.statusCode === 200);
+    const conflicts = attempts.filter(({ response }) => response.statusCode === 409);
+    expect(successes).toHaveLength(1);
+    expect(conflicts).toHaveLength(1);
+    const winner = successes[0];
+    if (!winner) throw new Error("Expected exactly one successful Template selection");
+    const successBody = winner.response.json<{
+      version: number;
+      templateIds: string[];
+      templates: Array<{ id: string }>;
+    }>();
+    expect(successBody).toMatchObject({
+      version: 2,
+      templateIds: winner.selection,
+    });
+    expect(successBody.templates.map((template) => template.id)).toEqual(winner.selection);
+
+    const [stored] = await app.db
+      .select({ version: agentConfigs.version, templateIds: agentConfigs.templateIds })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, agentId))
+      .limit(1);
+    expect(stored).toEqual({
+      version: successBody.version,
+      templateIds: successBody.templateIds,
+    });
+  });
+
   it("keeps a legal boundary Template in runtime and rejects over-budget combinations and live updates", async () => {
     const app = getApp();
     const publisher = await createTestAdmin(app, {
