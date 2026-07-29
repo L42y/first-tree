@@ -129,7 +129,7 @@ function facts(overrides: Partial<SetupFacts> = {}): SetupFacts {
     },
     repositories: { state: "ready", value: 2 },
     capabilities: { state: "ready", value: capabilityFixture() },
-    contextTreeSnapshot: { state: "ready", value: "active" },
+    contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "active" } },
     ...overrides,
   };
 }
@@ -347,7 +347,7 @@ describe("Settings Setup overview", () => {
         computers: { state: "ready", value: { connected: 0, saved: 0, connectedHostname: null } },
         repositories: { state: "error" },
         capabilities: { state: "ready", value: mixed },
-        contextTreeSnapshot: { state: "ready", value: "stale" },
+        contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "stale" } },
       }),
     );
     const expectation = [
@@ -648,11 +648,58 @@ describe("Settings Setup overview", () => {
     ["stale", "Available · update delayed", "pending", "Manage", "acme/context-tree · Review on"],
     ["unavailable", "Needs recovery", "attention", "Recover", "acme/context-tree · main branch · GitHub"],
   ] as const)("maps bound Context Tree snapshot %s without equating binding to health", (value, label, kind, action, detail) => {
-    const row = rowFor("context-tree", facts({ contextTreeSnapshot: { state: "ready", value } }));
+    const row = rowFor(
+      "context-tree",
+      facts({ contextTreeSnapshot: { state: "ready", value: { snapshotStatus: value } } }),
+    );
 
     expect(row.status).toMatchObject({ label, kind });
     expect(row.status.detail).toBe(detail);
     expect(row.action?.label).toBe(action);
+  });
+
+  it("keeps private GitLab Web Context neutral and role-consistent", () => {
+    const capabilities = capabilityFixture({
+      binding: {
+        state: "bound",
+        provider: "gitlab",
+        repo: "https://gitlab.example/acme/context-tree.git",
+        branch: "main",
+      },
+    });
+    const privateGitlabSnapshot = {
+      snapshotStatus: "unavailable",
+      provider: "gitlab",
+      contentAvailability: {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: "gitlab_authentication_required",
+      },
+    } as const;
+    const admin = rowFor(
+      "context-tree",
+      facts({
+        capabilities: { state: "ready", value: capabilities },
+        contextTreeSnapshot: { state: "ready", value: privateGitlabSnapshot },
+      }),
+    );
+    const member = rowFor(
+      "context-tree",
+      facts({
+        role: "member",
+        capabilities: { state: "ready", value: capabilities },
+        contextTreeSnapshot: { state: "ready", value: privateGitlabSnapshot },
+      }),
+    );
+
+    for (const row of [admin, member]) {
+      expect(row.status).toMatchObject({ label: "Coming soon", kind: "neutral" });
+      expect(row.status.detail).toContain("First Tree can’t display private GitLab Context Trees");
+      expect(row.status.detail).toContain("Agents and Context Reviewer");
+      expect(row.status.detail).not.toContain("recover");
+    }
+    expect(admin.action?.label).toBe("Manage");
+    expect(member.action).toEqual({ label: "View", to: "/context" });
   });
 
   it("keeps unbound optional and invalid role-aware", () => {
@@ -727,7 +774,7 @@ describe("Settings Setup overview", () => {
       "context-tree",
       facts({
         role: "member",
-        contextTreeSnapshot: { state: "ready", value: "unavailable" },
+        contextTreeSnapshot: { state: "ready", value: { snapshotStatus: "unavailable" } },
       }),
     );
 
@@ -1238,6 +1285,48 @@ describe("Settings Setup overview", () => {
     const view = await renderSettingsSetupPage();
     const row = await waitForRowText(view.host, "context-tree", expected);
     expect(row.textContent).toContain(expected);
+    await act(async () => view.root.unmount());
+  });
+
+  it("suppresses private GitLab recovery chat while keeping independent review controls", async () => {
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
+      capabilityFixture({
+        binding: {
+          state: "bound",
+          provider: "gitlab",
+          repo: "https://gitlab.example/acme/context-tree.git",
+          branch: "main",
+        },
+      }),
+    );
+    contextTreeMocks.getContextTreeSnapshot.mockResolvedValue({
+      snapshotStatus: "unavailable",
+      provider: "gitlab",
+      contentAvailability: {
+        status: "unavailable",
+        accessMode: "anonymous",
+        reason: "gitlab_authentication_required",
+      },
+      contextStatus: {
+        severity: "error",
+        label: "Team context unavailable",
+        detail: "Private GitLab server diagnostic",
+      },
+    });
+
+    const view = await renderSettingsSetupPage();
+    const row = await waitForRowText(view.host, "context-tree", "Coming soon");
+    const manage = [...row.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Manage",
+    );
+
+    expect(row.textContent).not.toContain("Needs recovery");
+    expect(row.textContent).not.toContain("Private GitLab server diagnostic");
+    await act(async () => manage?.click());
+    const controls = await waitForSelector<HTMLElement>(row, '[data-setup-owner-controls="context-tree"]');
+    expect(controls.textContent).toContain("Open Context");
+    expect(controls.textContent).toContain("Automatic review");
+    expect(controls.textContent).not.toContain("Work on this in chat");
     await act(async () => view.root.unmount());
   });
 

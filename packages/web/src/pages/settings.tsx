@@ -101,9 +101,9 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
     },
     enabled: teamAttentionEnabled && contextBound,
   });
-  const currentContextTreeSnapshotStatus =
+  const currentContextTreeSnapshot =
     teamAttentionEnabled && setupCapabilitiesQuery.isSuccess && contextBound && contextTreeSnapshotQuery.isSuccess
-      ? contextTreeSnapshotQuery.data.snapshotStatus
+      ? contextTreeSnapshotQuery.data
       : undefined;
   const setupNeedsAttention =
     personalSetupNeedsAttention({
@@ -112,7 +112,7 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
       onboardingCompletedAt,
     }) ||
     teamSetupNeedsAttention(currentCapabilities, role) ||
-    contextTreeSnapshotNeedsAttention(currentContextTreeSnapshotStatus, role);
+    contextTreeSnapshotNeedsAttention(currentContextTreeSnapshot, role);
   // DEV preview galleries render this real layout below their own route. Let
   // those galleries supply the path whose heading/nav state they are showing;
   // production always follows the actual router location.

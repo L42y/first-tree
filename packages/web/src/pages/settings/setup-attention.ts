@@ -1,4 +1,9 @@
-import type { ContextTreeSnapshotStatus, SetupBlocker, TeamSetupCapabilities } from "@first-tree/shared";
+import type { ContextTreeSnapshot, SetupBlocker, TeamSetupCapabilities } from "@first-tree/shared";
+
+export type ContextTreeSnapshotAvailability = Pick<
+  ContextTreeSnapshot,
+  "snapshotStatus" | "provider" | "contentAvailability"
+>;
 
 function hasAdminOwnedBlocker(blockers: SetupBlocker[]): boolean {
   return blockers.some((blocker) => blocker.resolutionOwner === "admin");
@@ -31,10 +36,20 @@ export function teamSetupNeedsAttention(
 }
 
 export function contextTreeSnapshotNeedsAttention(
-  snapshotStatus: ContextTreeSnapshotStatus | null | undefined,
+  snapshot: ContextTreeSnapshotAvailability | null | undefined,
   role: string | null,
 ): boolean {
-  return role === "admin" && snapshotStatus === "unavailable";
+  return role === "admin" && snapshot?.snapshotStatus === "unavailable" && !isPrivateGitlabContextUnavailable(snapshot);
+}
+
+export function isPrivateGitlabContextUnavailable(
+  snapshot: ContextTreeSnapshotAvailability | null | undefined,
+): boolean {
+  return (
+    snapshot?.provider === "gitlab" &&
+    snapshot.contentAvailability?.status === "unavailable" &&
+    snapshot.contentAvailability.reason === "gitlab_authentication_required"
+  );
 }
 
 export function personalSetupNeedsAttention({
