@@ -1,14 +1,28 @@
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { SKILL_NAME_REGEX, type SkillResourcePayload, skillResourcePayloadSchema } from "@first-tree/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import {
+  isTeamSkillOwnershipMarkerPath,
+  parseTeamSkillBundleEntryPath,
+  parseTeamSkillMarkdown,
+  SKILL_NAME_REGEX,
+  type SkillResourcePayload,
+  skillResourcePayloadSchema,
+  TEAM_SKILL_BUNDLE_LIMITS,
+  TEAM_SKILL_OWNERSHIP_MARKER,
+  TEAM_SKILL_RUNTIME_NAME_MAX,
+  teamSkillBundleCollisionKey,
+  teamSkillBundleTopologyConflict,
+} from "@first-tree/shared";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { strToU8, zipSync } from "fflate";
-import matter from "gray-matter";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
 import type { Database } from "../db/connection.js";
+import { agentConfigs } from "../db/schema/agent-configs.js";
+import { agents } from "../db/schema/agents.js";
 import { members } from "../db/schema/members.js";
 import { resources } from "../db/schema/resources.js";
 import { BadRequestError } from "../errors.js";
@@ -19,10 +33,6 @@ import {
   openAttachmentStream,
 } from "./attachment.js";
 import type { AttachmentBlobStore } from "./attachment-blob-store.js";
-
-const MAX_SKILL_FILES = 256;
-const MAX_SKILL_UNCOMPRESSED_BYTES = 25 * 1024 * 1024;
-const MAX_SKILL_MARKDOWN_BYTES = 256 * 1024;
 
 const RESERVED_SKILL_NAMES = new Set([
   "first-tree-welcome",
@@ -55,13 +65,32 @@ export async function validateSkillBundle(
   if (!meta || meta.organizationId !== organizationId) {
     throw new BadRequestError("Skill bundle attachment must be a ready attachment owned by this organization");
   }
+  if (meta.sizeBytes > TEAM_SKILL_BUNDLE_LIMITS.compressedBytes) {
+    throw new BadRequestError(`Skill ZIP exceeds ${TEAM_SKILL_BUNDLE_LIMITS.compressedBytes} compressed bytes`);
+  }
   const stream = await openAttachmentStream(db, blobStore, attachmentId);
   if (!stream) throw new BadRequestError("Skill bundle attachment bytes are unavailable");
 
   const tempDir = await mkdtemp(join(tmpdir(), "first-tree-skill-"));
   const zipPath = join(tempDir, "bundle.zip");
   try {
-    await pipeline(stream, createWriteStream(zipPath, { flags: "wx" }));
+    let measuredCompressedBytes = 0;
+    const limiter = new Transform({
+      transform(chunk: Buffer | Uint8Array, _encoding, callback) {
+        measuredCompressedBytes += chunk.byteLength;
+        if (measuredCompressedBytes > TEAM_SKILL_BUNDLE_LIMITS.compressedBytes) {
+          callback(
+            new BadRequestError(`Skill ZIP exceeds ${TEAM_SKILL_BUNDLE_LIMITS.compressedBytes} compressed bytes`),
+          );
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    await pipeline(stream, limiter, createWriteStream(zipPath, { flags: "wx" }));
+    if (measuredCompressedBytes !== meta.sizeBytes) {
+      throw new BadRequestError("Skill ZIP stored size does not match its attachment metadata");
+    }
     return await inspectZip(zipPath);
   } catch (error) {
     if (error instanceof BadRequestError) throw error;
@@ -74,46 +103,67 @@ export async function validateSkillBundle(
 async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   const zipFile = await openZip(path);
   const seenPaths = new Set<string>();
+  const pathTypes: Array<{ path: string; directory: boolean }> = [];
   const files: string[] = [];
   const skillMarkdown = new Map<string, Buffer>();
   let totalUncompressed = 0;
+  let entryCount = 0;
 
   try {
     await forEachEntry(zipFile, async (entry) => {
-      const normalized = validateEntryPath(entry.fileName);
-      const collisionKey = normalized.toLocaleLowerCase("en-US");
+      entryCount++;
+      if (entryCount > TEAM_SKILL_BUNDLE_LIMITS.entries) {
+        throw new BadRequestError(`Skill ZIP cannot contain more than ${TEAM_SKILL_BUNDLE_LIMITS.entries} entries`);
+      }
+      const parsedPath = parseTeamSkillBundleEntryPath(entry.fileName);
+      if (!parsedPath) throw new BadRequestError(`Skill ZIP contains an unsafe path: ${entry.fileName}`);
+      const normalized = parsedPath.normalized;
+      const collisionKey = teamSkillBundleCollisionKey(normalized);
       if (seenPaths.has(collisionKey)) {
         throw new BadRequestError(`Skill ZIP contains a duplicate path: ${normalized}`);
       }
       seenPaths.add(collisionKey);
+      pathTypes.push({ path: normalized, directory: parsedPath.directory });
       if ((entry.generalPurposeBitFlag & 0x1) !== 0) {
         throw new BadRequestError(`Skill ZIP contains an encrypted entry: ${normalized}`);
       }
-      if (isSymlink(entry)) {
-        throw new BadRequestError(`Skill ZIP cannot contain symlinks: ${normalized}`);
+      validateEntryType(entry, parsedPath.directory, normalized);
+      if (parsedPath.directory) {
+        if (entry.uncompressedSize !== 0) {
+          throw new BadRequestError(`Skill ZIP directory has non-zero content: ${normalized}`);
+        }
+        return;
       }
-      if (entry.fileName.endsWith("/")) return;
 
       files.push(normalized);
-      if (files.length > MAX_SKILL_FILES) {
-        throw new BadRequestError(`Skill ZIP cannot contain more than ${MAX_SKILL_FILES} files`);
+      if (files.length > TEAM_SKILL_BUNDLE_LIMITS.files) {
+        throw new BadRequestError(`Skill ZIP cannot contain more than ${TEAM_SKILL_BUNDLE_LIMITS.files} files`);
+      }
+      if (entry.uncompressedSize > TEAM_SKILL_BUNDLE_LIMITS.fileBytes) {
+        throw new BadRequestError(`Skill ZIP entry exceeds ${TEAM_SKILL_BUNDLE_LIMITS.fileBytes} bytes: ${normalized}`);
       }
       totalUncompressed += entry.uncompressedSize;
-      if (totalUncompressed > MAX_SKILL_UNCOMPRESSED_BYTES) {
-        throw new BadRequestError(`Skill ZIP exceeds ${MAX_SKILL_UNCOMPRESSED_BYTES} uncompressed bytes`);
+      if (totalUncompressed > TEAM_SKILL_BUNDLE_LIMITS.totalBytes) {
+        throw new BadRequestError(`Skill ZIP exceeds ${TEAM_SKILL_BUNDLE_LIMITS.totalBytes} uncompressed bytes`);
       }
 
-      const isSkillMarkdown = basename(normalized).toLocaleLowerCase("en-US") === "skill.md";
-      if (isSkillMarkdown && entry.uncompressedSize > MAX_SKILL_MARKDOWN_BYTES) {
-        throw new BadRequestError(`SKILL.md exceeds ${MAX_SKILL_MARKDOWN_BYTES} bytes`);
+      const isSkillMarkdown = parsedPath.segments.at(-1) === "SKILL.md";
+      if (isSkillMarkdown && entry.uncompressedSize > TEAM_SKILL_BUNDLE_LIMITS.skillMarkdownBytes) {
+        throw new BadRequestError(`SKILL.md exceeds ${TEAM_SKILL_BUNDLE_LIMITS.skillMarkdownBytes} bytes`);
       }
-      const bytes = await readEntry(zipFile, entry, isSkillMarkdown ? MAX_SKILL_MARKDOWN_BYTES : 0);
+      const bytes = await readEntry(zipFile, entry, isSkillMarkdown ? TEAM_SKILL_BUNDLE_LIMITS.skillMarkdownBytes : 0);
       if (isSkillMarkdown) skillMarkdown.set(normalized, bytes);
     });
   } finally {
     zipFile.close();
   }
 
+  const topologyConflict = teamSkillBundleTopologyConflict(pathTypes);
+  if (topologyConflict) {
+    throw new BadRequestError(
+      `Skill ZIP path ${topologyConflict.path} is nested below file ${topologyConflict.fileParent}`,
+    );
+  }
   if (skillMarkdown.size !== 1) {
     throw new BadRequestError("Skill ZIP must contain exactly one SKILL.md");
   }
@@ -121,12 +171,23 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   if (!skillEntry) throw new BadRequestError("Skill ZIP must contain SKILL.md");
   const [skillPath, bytes] = skillEntry;
   const segments = skillPath.split("/");
-  if (segments.length > 2 || segments.at(-1)?.toLocaleLowerCase("en-US") !== "skill.md") {
+  if (segments.length > 2 || segments.at(-1) !== "SKILL.md") {
     throw new BadRequestError("SKILL.md must be at the ZIP root or inside one top-level directory");
   }
   const rootPrefix = segments.length === 2 ? `${segments[0]}/` : "";
-  if (rootPrefix && files.some((file) => !file.startsWith(rootPrefix))) {
-    throw new BadRequestError("A wrapped Skill ZIP cannot contain files outside its top-level directory");
+  const rootName = segments.length === 2 ? segments[0] : null;
+  if (
+    rootPrefix &&
+    pathTypes.some(({ path: entryPath }) => entryPath !== rootName && !entryPath.startsWith(rootPrefix))
+  ) {
+    throw new BadRequestError("A wrapped Skill ZIP cannot contain entries outside its top-level directory");
+  }
+  const strippedPaths = pathTypes.flatMap(({ path: entryPath }) => {
+    const stripped = rootPrefix ? (entryPath === rootName ? "" : entryPath.slice(rootPrefix.length)) : entryPath;
+    return stripped ? [stripped] : [];
+  });
+  if (strippedPaths.some(isTeamSkillOwnershipMarkerPath)) {
+    throw new BadRequestError(`Skill ZIP may not provide reserved file ${TEAM_SKILL_OWNERSHIP_MARKER}`);
   }
 
   let markdown: string;
@@ -135,16 +196,20 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   } catch {
     throw new BadRequestError("SKILL.md must be valid UTF-8");
   }
-  let parsed: matter.GrayMatterFile<string>;
+  let parsed: ReturnType<typeof parseTeamSkillMarkdown>;
   try {
-    parsed = matter(markdown);
+    parsed = parseTeamSkillMarkdown(markdown);
   } catch (error) {
     throw new BadRequestError(`SKILL.md frontmatter is invalid: ${error instanceof Error ? error.message : error}`);
   }
-  const name = typeof parsed.data.name === "string" ? parsed.data.name.trim() : "";
-  const description = typeof parsed.data.description === "string" ? parsed.data.description.trim() : "";
-  const namespace = typeof parsed.data.namespace === "string" ? parsed.data.namespace.trim() : undefined;
-  if (!name || name.length > 100 || !SKILL_NAME_REGEX.test(name)) {
+  const frontmatter =
+    parsed.frontmatter && typeof parsed.frontmatter === "object" && !Array.isArray(parsed.frontmatter)
+      ? (parsed.frontmatter as Record<string, unknown>)
+      : {};
+  const name = typeof frontmatter.name === "string" ? frontmatter.name.trim() : "";
+  const description = typeof frontmatter.description === "string" ? frontmatter.description.trim() : "";
+  const namespace = typeof frontmatter.namespace === "string" ? frontmatter.namespace.trim() : undefined;
+  if (!name || name.length > TEAM_SKILL_RUNTIME_NAME_MAX || !SKILL_NAME_REGEX.test(name)) {
     throw new BadRequestError("SKILL.md name must start with an alphanumeric and contain only letters, digits, _ or -");
   }
   if (RESERVED_SKILL_NAMES.has(name.toLocaleLowerCase("en-US"))) {
@@ -156,7 +221,7 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   if (namespace && (namespace.length > 100 || !SKILL_NAME_REGEX.test(namespace))) {
     throw new BadRequestError("SKILL.md namespace must contain only letters, digits, _ or -");
   }
-  const rawMetadata = parsed.data.metadata;
+  const rawMetadata = frontmatter.metadata;
   const metadata =
     rawMetadata && typeof rawMetadata === "object" && !Array.isArray(rawMetadata)
       ? (rawMetadata as Record<string, unknown>)
@@ -165,32 +230,21 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
     name,
     ...(namespace ? { namespace } : {}),
     description,
-    body: parsed.content.trim(),
+    body: parsed.body.trim(),
     metadata,
   });
   return { name, payload };
 }
 
-function validateEntryPath(raw: string): string {
-  if (!raw || raw.includes("\0") || raw.includes("\\")) {
-    throw new BadRequestError("Skill ZIP contains an invalid path");
-  }
-  if (raw.startsWith("/") || /^[A-Za-z]:/.test(raw)) {
-    throw new BadRequestError(`Skill ZIP contains an absolute path: ${raw}`);
-  }
-  const withoutTrailingSlash = raw.endsWith("/") ? raw.slice(0, -1) : raw;
-  const segments = withoutTrailingSlash.split("/");
-  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-    throw new BadRequestError(`Skill ZIP contains an unsafe path: ${raw}`);
-  }
-  return withoutTrailingSlash;
-}
-
-function isSymlink(entry: Entry): boolean {
+function validateEntryType(entry: Entry, directory: boolean, path: string): void {
   const madeByUnix = entry.versionMadeBy >>> 8 === 3;
-  if (!madeByUnix) return false;
+  if (!madeByUnix) return;
   const mode = entry.externalFileAttributes >>> 16;
-  return (mode & 0o170000) === 0o120000;
+  const type = mode & 0o170000;
+  if (type === 0) return;
+  if (type === 0o120000) throw new BadRequestError(`Skill ZIP cannot contain symlinks: ${path}`);
+  const expected = directory ? 0o040000 : 0o100000;
+  if (type !== expected) throw new BadRequestError(`Skill ZIP cannot contain special files: ${path}`);
 }
 
 function openZip(path: string): Promise<ZipFile> {
@@ -247,25 +301,44 @@ function readEntry(zipFile: ZipFile, entry: Entry, captureLimit: number): Promis
         }
       });
       stream.once("error", reject);
-      stream.once("end", () => resolve(captureLimit > 0 ? Buffer.concat(chunks) : Buffer.alloc(0)));
+      stream.once("end", () => {
+        if (measured !== entry.uncompressedSize) {
+          reject(new BadRequestError(`Skill ZIP entry size is invalid: ${entry.fileName}`));
+          return;
+        }
+        resolve(captureLimit > 0 ? Buffer.concat(chunks) : Buffer.alloc(0));
+      });
     });
   });
 }
 
 export function buildLegacySkillBundle(payload: SkillResourcePayload): Buffer {
   const metadata = JSON.stringify(payload.metadata) ?? "{}";
-  const markdown = [
-    "---",
-    `name: ${JSON.stringify(payload.name)}`,
-    ...(payload.namespace ? [`namespace: ${JSON.stringify(payload.namespace)}`] : []),
-    `description: ${JSON.stringify(payload.description)}`,
-    `metadata: ${metadata}`,
-    "---",
-    "",
-    payload.body,
-    "",
-  ].join("\n");
-  return Buffer.from(zipSync({ "SKILL.md": strToU8(markdown) }, { level: 6 }));
+  const markdown = strToU8(
+    [
+      "---",
+      `name: ${JSON.stringify(payload.name)}`,
+      ...(payload.namespace ? [`namespace: ${JSON.stringify(payload.namespace)}`] : []),
+      `description: ${JSON.stringify(payload.description)}`,
+      `metadata: ${metadata}`,
+      "---",
+      "",
+      payload.body,
+      "",
+    ].join("\n"),
+  );
+  if (markdown.byteLength > TEAM_SKILL_BUNDLE_LIMITS.skillMarkdownBytes) {
+    throw new BadRequestError(
+      `Legacy Skill cannot be bundled because SKILL.md exceeds ${TEAM_SKILL_BUNDLE_LIMITS.skillMarkdownBytes} bytes`,
+    );
+  }
+  const bundle = Buffer.from(zipSync({ "SKILL.md": markdown }, { level: 6 }));
+  if (bundle.byteLength > TEAM_SKILL_BUNDLE_LIMITS.compressedBytes) {
+    throw new BadRequestError(
+      `Legacy Skill cannot be bundled because its ZIP exceeds ${TEAM_SKILL_BUNDLE_LIMITS.compressedBytes} bytes`,
+    );
+  }
+  return bundle;
 }
 
 /**
@@ -275,8 +348,12 @@ export function buildLegacySkillBundle(payload: SkillResourcePayload): Buffer {
 export async function backfillSkillResourceBundles(
   db: Database,
   blobStore: AttachmentBlobStore,
-  batchSize = 50,
-): Promise<{ migrated: number; skipped: number }> {
+  options: Readonly<{
+    batchSize?: number;
+    notifyAgent?: (agentId: string) => Promise<void>;
+  }> = {},
+): Promise<{ migrated: number; skipped: number; affectedAgentCount: number }> {
+  const batchSize = options.batchSize ?? 50;
   const rows = await db
     .select({
       id: resources.id,
@@ -290,15 +367,16 @@ export async function backfillSkillResourceBundles(
     .limit(batchSize);
   let migrated = 0;
   let skipped = 0;
+  const affectedAgentIds = new Set<string>();
   for (const row of rows) {
     const parsed = skillResourcePayloadSchema.safeParse(row.payload);
     if (!parsed.success) {
       skipped++;
       continue;
     }
-    const body = buildLegacySkillBundle(parsed.data);
     let attachmentId: string | undefined;
     try {
+      const body = buildLegacySkillBundle(parsed.data);
       let uploaderId = row.ownerAgentId;
       if (!uploaderId) {
         const [creator] = await db
@@ -317,21 +395,47 @@ export async function backfillSkillResourceBundles(
         uploadedBy: uploaderId ?? "system:skill-resource-backfill",
       });
       attachmentId = attachment.id;
-      const updated = await db
-        .update(resources)
-        .set({ bundleAttachmentId: attachment.id, updatedAt: new Date() })
-        .where(and(eq(resources.id, row.id), isNull(resources.bundleAttachmentId)))
-        .returning({ id: resources.id });
-      if (updated.length === 0) {
+      const updated = await db.transaction(async (tx) => {
+        const claimed = await tx
+          .update(resources)
+          .set({ bundleAttachmentId: attachment.id, updatedAt: new Date() })
+          .where(and(eq(resources.id, row.id), isNull(resources.bundleAttachmentId)))
+          .returning({ id: resources.id });
+        if (claimed.length === 0) return { claimed: false as const, agentIds: [] };
+        const runtimeAgents = await tx
+          .select({ agentId: agents.uuid })
+          .from(agents)
+          .where(
+            and(eq(agents.organizationId, row.organizationId), ne(agents.status, "deleted"), ne(agents.type, "human")),
+          );
+        const agentIds = runtimeAgents.map(({ agentId }) => agentId);
+        if (agentIds.length > 0) {
+          await tx
+            .update(agentConfigs)
+            .set({
+              version: sql`${agentConfigs.version} + 1`,
+              updatedAt: new Date(),
+              updatedBy: row.createdBy,
+            })
+            .where(inArray(agentConfigs.agentId, agentIds));
+        }
+        return { claimed: true as const, agentIds };
+      });
+      if (!updated.claimed) {
         await deleteAttachmentIfUnreferenced(db, blobStore, attachment.id);
         skipped++;
       } else {
         migrated++;
+        for (const agentId of updated.agentIds) affectedAgentIds.add(agentId);
       }
     } catch {
       if (attachmentId) await deleteAttachmentIfUnreferenced(db, blobStore, attachmentId).catch(() => undefined);
       skipped++;
     }
   }
-  return { migrated, skipped };
+  const notifyAgent = options.notifyAgent;
+  if (notifyAgent) {
+    await Promise.allSettled(Array.from(affectedAgentIds, (agentId) => notifyAgent(agentId)));
+  }
+  return { migrated, skipped, affectedAgentCount: affectedAgentIds.size };
 }

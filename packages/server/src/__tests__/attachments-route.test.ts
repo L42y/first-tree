@@ -661,8 +661,10 @@ describe("attachments route — upload + capability download", () => {
   it("returns 404 for unknown attachment id", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `nf-${crypto.randomUUID().slice(0, 6)}` });
-    const reply = await getAttachment(app, admin, "00000000-0000-4000-8000-000000000000");
+    const capability = "00000000-0000-4000-8000-000000000000";
+    const reply = await getAttachment(app, admin, capability);
     expect(reply.statusCode).toBe(404);
+    expect(reply.body).not.toContain(capability);
   });
 
   it("rejects upload to an org the caller is not a member of (403)", async () => {

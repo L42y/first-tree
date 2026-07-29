@@ -1,3 +1,4 @@
+import { Writable } from "node:stream";
 import {
   AGENT_RUNTIME_SESSION_HEADER,
   AGENT_SELECTOR_HEADER,
@@ -80,6 +81,19 @@ function requestInit(fetchMock: ReturnType<typeof vi.fn>, index: number): Reques
   const init = fetchMock.mock.calls[index]?.[1] as RequestInit | undefined;
   if (!init) throw new Error(`missing fetch init at call ${index}`);
   return init;
+}
+
+function collectLogs(): { destination: Writable; read: () => string } {
+  const chunks: string[] = [];
+  return {
+    destination: new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    }),
+    read: () => chunks.join(""),
+  };
 }
 
 async function flush<T>(promise: Promise<T>, maxFlushes = 50): Promise<T> {
@@ -480,12 +494,53 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     vi.unstubAllGlobals();
-    fetchMock = mockFetch(jsonResponse({ error: "attachment missing" }, 404));
+    fetchMock = mockFetch(jsonResponse({ error: "Attachment not found" }, 404));
     await expect(makeSdk().fetchAttachment({ id: "att-missing" })).rejects.toMatchObject({
       statusCode: 404,
-      message: "attachment missing",
+      message: "Attachment not found",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds attachment downloads by both declared and streamed bytes", async () => {
+    const fetchMock = mockFetch(
+      binaryResponse(new Uint8Array([1, 2, 3]), { "content-length": "3" }),
+      binaryResponse(new Uint8Array([1, 2, 3])),
+    );
+    const sdk = makeSdk();
+
+    await expect(sdk.fetchAttachment({ id: "declared-large", maxBytes: 2, timeoutMs: 1_000 })).rejects.toThrow(
+      "caller limit",
+    );
+    await expect(sdk.fetchAttachment({ id: "streamed-large", maxBytes: 2, timeoutMs: 1_000 })).rejects.toThrow(
+      "caller limit",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds attachment error bodies and omits capability ids from retry logs", async () => {
+    const oversizedError = new Uint8Array(64 * 1024 + 1);
+    let fetchMock = mockFetch(new Response(oversizedError, { status: 400 }));
+    await expect(makeSdk().fetchAttachment({ id: "sensitive-capability" })).rejects.toThrow(
+      "response body exceeded 65536 bytes",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    vi.unstubAllGlobals();
+    const { destination, read } = collectLogs();
+    applyClientLoggerConfig({ level: "warn", format: "json", destination });
+    fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(textResponse("temporary", 503))
+      .mockResolvedValueOnce(binaryResponse(new Uint8Array([1])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(flush(makeSdk().fetchAttachment({ id: "sensitive-capability" }))).resolves.toMatchObject({
+      size: 1,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(read()).not.toContain("sensitive-capability");
   });
 
   it("parses SDK errors, Retry-After dates, invalid Retry-After values, and invalid success JSON", async () => {

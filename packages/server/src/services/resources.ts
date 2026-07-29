@@ -26,8 +26,11 @@ import {
   type ResourceType,
   type ResourceUsageOutput,
   type RuntimeResourceSkill,
+  type RuntimeTeamSkillEntry,
+  type RuntimeTeamSkillSnapshot,
   repoResourcePayloadSchema,
   skillResourcePayloadSchema,
+  TEAM_SKILL_BUNDLE_LIMITS,
   type UpdateAgentResources,
   type UpdateTeamResource,
 } from "@first-tree/shared";
@@ -49,6 +52,7 @@ import {
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
 } from "./landing-campaigns/trial-prompt.js";
 import type { Notifier } from "./notifier.js";
+import { RuntimeConfigSnapshotChangedError } from "./runtime-config-snapshot.js";
 import { validateSkillBundle } from "./skill-bundle.js";
 
 type ResourceDbRow = typeof resources.$inferSelect;
@@ -823,19 +827,129 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       });
   }
 
-  function runtimeSkills(rows: EffectiveResourceRow[]): RuntimeResourceSkill[] {
-    return rows
-      .filter((row) => row.mode === "enabled" && row.resourceId)
-      .map((row) => {
-        const payload = skillResourcePayloadSchema.parse(row.payload);
-        return {
-          resourceId: row.resourceId ?? "",
-          name: payload.name,
-          description: payload.description,
-          body: payload.body,
-          metadata: payload.metadata,
-        };
+  async function runtimeSkillProjection(
+    rows: EffectiveResourceRow[],
+  ): Promise<Readonly<{ legacySkills: RuntimeResourceSkill[]; snapshot: RuntimeTeamSkillSnapshot }>> {
+    const selectedRows = rows.filter((row) => (row.mode === "enabled" || row.mode === "unavailable") && row.resourceId);
+    const resourceIds = Array.from(new Set(selectedRows.flatMap((row) => (row.resourceId ? [row.resourceId] : []))));
+    const storedResources =
+      resourceIds.length === 0
+        ? []
+        : await db
+            .select({
+              id: resources.id,
+              organizationId: resources.organizationId,
+              bundleAttachmentId: resources.bundleAttachmentId,
+            })
+            .from(resources)
+            .where(inArray(resources.id, resourceIds));
+    const resourceById = new Map(storedResources.map((resource) => [resource.id, resource]));
+    const attachmentIds = Array.from(
+      new Set(
+        storedResources.flatMap((resource) => (resource.bundleAttachmentId ? [resource.bundleAttachmentId] : [])),
+      ),
+    );
+    const attachmentRows =
+      attachmentIds.length === 0
+        ? []
+        : await db
+            .select({
+              id: attachments.id,
+              organizationId: attachments.organizationId,
+              lifecycleState: attachments.lifecycleState,
+              sizeBytes: attachments.sizeBytes,
+              payloadReady: sql<boolean>`${attachments.data} is not null or ${attachments.objectKey} is not null`,
+            })
+            .from(attachments)
+            .where(inArray(attachments.id, attachmentIds));
+    const attachmentById = new Map(attachmentRows.map((attachment) => [attachment.id, attachment]));
+
+    const entries: RuntimeTeamSkillEntry[] = [];
+    const seen = new Set<string>();
+    const duplicateIds = new Set<string>();
+    for (const row of selectedRows) {
+      if (!row.resourceId) continue;
+      if (seen.has(row.resourceId)) duplicateIds.add(row.resourceId);
+      seen.add(row.resourceId);
+    }
+    const emitted = new Set<string>();
+    for (const row of selectedRows) {
+      const resourceId = row.resourceId;
+      if (!resourceId || emitted.has(resourceId)) continue;
+      emitted.add(resourceId);
+      if (duplicateIds.has(resourceId)) {
+        entries.push({ kind: "unavailable", resourceId, reason: "duplicate_skill_resource" });
+        continue;
+      }
+      if (row.mode === "unavailable") {
+        entries.push({
+          kind: "unavailable",
+          resourceId,
+          reason: row.unavailableReason ?? "skill_unavailable",
+        });
+        continue;
+      }
+      const resource = resourceById.get(resourceId);
+      const payload = skillResourcePayloadSchema.safeParse(row.payload);
+      if (!resource || !payload.success) {
+        entries.push({ kind: "unavailable", resourceId, reason: "invalid_skill_payload" });
+        continue;
+      }
+      const attachmentId = resource.bundleAttachmentId;
+      if (!attachmentId) {
+        entries.push({
+          kind: "inline",
+          resourceId,
+          name: payload.data.name,
+          description: payload.data.description,
+          body: payload.data.body,
+          metadata: payload.data.metadata,
+        });
+        continue;
+      }
+      const attachment = attachmentById.get(attachmentId);
+      if (
+        !attachment ||
+        attachment.organizationId !== resource.organizationId ||
+        attachment.lifecycleState !== "ready" ||
+        !attachment.payloadReady ||
+        attachment.sizeBytes <= 0 ||
+        attachment.sizeBytes > TEAM_SKILL_BUNDLE_LIMITS.compressedBytes
+      ) {
+        entries.push({ kind: "unavailable", resourceId, reason: "skill_bundle_unavailable" });
+        continue;
+      }
+      entries.push({
+        kind: "attachment-bundle",
+        resourceId,
+        name: payload.data.name,
+        description: payload.data.description,
+        attachmentId,
+        sizeBytes: attachment.sizeBytes,
       });
+    }
+
+    const legacySkills: RuntimeResourceSkill[] = entries.flatMap((entry) =>
+      entry.kind === "inline"
+        ? [
+            {
+              resourceId: entry.resourceId,
+              name: entry.name,
+              description: entry.description,
+              body: entry.body,
+              metadata: entry.metadata,
+            },
+          ]
+        : [],
+    );
+    return {
+      legacySkills,
+      snapshot: {
+        kind: "authoritative",
+        schemaVersion: 1,
+        entries,
+      },
+    };
   }
 
   function runtimeMcp(rows: EffectiveResourceRow[]): NoSecretMcpServer[] {
@@ -844,8 +958,15 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
 
   async function resolveRuntimeConfig(config: AgentRuntimeConfig): Promise<AgentRuntimeConfig> {
     const effective = await resolveEffectiveResources(config.agentId);
+    if (effective.version !== config.version) {
+      throw new RuntimeConfigSnapshotChangedError();
+    }
     const resolvedPrompt = runtimePromptAppend(effective.prompts);
     const resolvedMcp = runtimeMcp(effective.mcp);
+    const skillProjection = await runtimeSkillProjection(effective.skills);
+    if ((await getConfigVersion(config.agentId)) !== effective.version) {
+      throw new RuntimeConfigSnapshotChangedError();
+    }
     return {
       ...config,
       version: effective.version,
@@ -862,7 +983,14 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         },
         mcpServers:
           effective.mcp.length === 0 && config.payload.mcpServers.length > 0 ? config.payload.mcpServers : resolvedMcp,
-        resourceSkills: runtimeSkills(effective.skills),
+        // Older Clients understand only inline Team Skills. Bundle-backed
+        // rows never dual-send a derived body because that would expose an
+        // incomplete, falsely-successful installation without support files.
+        // Release ordering is therefore Client-first: snapshot-aware Clients
+        // can consume an old Server's legacy field before this projection is
+        // activated for the fleet.
+        resourceSkills: skillProjection.legacySkills,
+        teamSkillSnapshot: skillProjection.snapshot,
       },
     };
   }

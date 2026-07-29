@@ -157,6 +157,7 @@ export type PaginatedResult<T> = {
 };
 
 const FETCH_TIMEOUT_MS = 15_000;
+const SDK_ERROR_BODY_MAX_BYTES = 64 * 1024;
 
 /**
  * Shorter per-call budget for startup-critical GETs (currently
@@ -861,13 +862,50 @@ export class FirstTreeHubSDK {
    */
   public async fetchAttachment(opts: {
     id: string;
+    /** Refuse a declared or streamed payload beyond this caller-owned bound. */
+    maxBytes?: number;
+    /** Per-attempt download timeout; defaults to the SDK-wide 15 second bound. */
+    timeoutMs?: number;
   }): Promise<{ bytes: Buffer; mimeType: string; filename: string; size: number }> {
-    const response = await this.doFetch(`/api/v1/attachments/${encodeURIComponent(opts.id)}`);
+    const response = await this.doFetch(`/api/v1/attachments/${encodeURIComponent(opts.id)}`, undefined, {
+      timeoutMs: opts.timeoutMs,
+      logRetries: false,
+    });
     if (!response.ok) {
-      throw await this.toSdkError(response);
+      throw await this.toSdkError(response, SDK_ERROR_BODY_MAX_BYTES);
     }
-    const arrayBuffer = await response.arrayBuffer();
-    const bytes = Buffer.from(arrayBuffer);
+    const contentLengthHeader = response.headers.get("content-length");
+    const contentLength = contentLengthHeader === null ? null : Number(contentLengthHeader);
+    if (
+      opts.maxBytes !== undefined &&
+      Number.isFinite(contentLength) &&
+      contentLength !== null &&
+      contentLength > opts.maxBytes
+    ) {
+      await response.body?.cancel();
+      throw new Error(`Attachment exceeds caller limit of ${opts.maxBytes} bytes`);
+    }
+    const chunks: Buffer[] = [];
+    let measured = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          const chunk = Buffer.from(next.value);
+          measured += chunk.byteLength;
+          if (opts.maxBytes !== undefined && measured > opts.maxBytes) {
+            await reader.cancel();
+            throw new Error(`Attachment exceeds caller limit of ${opts.maxBytes} bytes`);
+          }
+          chunks.push(chunk);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    const bytes = Buffer.concat(chunks, measured);
     return {
       bytes,
       mimeType: response.headers.get("content-type") ?? "application/octet-stream",
@@ -1017,6 +1055,7 @@ export class FirstTreeHubSDK {
         const response = await this.doFetchOnce(path, init, opts);
         const isLastAttempt = attempt === delays.length - 1;
         if (response.status >= 500 && !isLastAttempt) {
+          await response.body?.cancel();
           if (opts?.logRetries !== false) {
             this.logger.warn(`retry attempt=${attempt + 1} reason=http-${response.status} path=${path}`);
           }
@@ -1070,8 +1109,9 @@ export class FirstTreeHubSDK {
     return fetch(url, { ...init, headers, signal });
   }
 
-  private async toSdkError(response: Response): Promise<SdkError> {
-    const body = await response.text();
+  private async toSdkError(response: Response, maxBodyBytes?: number): Promise<SdkError> {
+    const body =
+      maxBodyBytes === undefined ? await response.text() : await readResponseTextBounded(response, maxBodyBytes);
     let message: string;
     let code: string | undefined;
     try {
@@ -1088,6 +1128,39 @@ export class FirstTreeHubSDK {
       retryAfterMs: parseRetryAfterMs(retryAfter),
     });
   }
+}
+
+async function readResponseTextBounded(response: Response, maxBytes: number): Promise<string> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    await response.body?.cancel();
+    return `HTTP ${response.status} response body exceeded ${maxBytes} bytes`;
+  }
+  if (!response.body) return "";
+  const chunks: Uint8Array[] = [];
+  let measured = 0;
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      measured += next.value.byteLength;
+      if (measured > maxBytes) {
+        await reader.cancel();
+        return `HTTP ${response.status} response body exceeded ${maxBytes} bytes`;
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(measured);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 export class SdkError extends Error {

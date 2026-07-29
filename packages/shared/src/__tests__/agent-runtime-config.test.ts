@@ -19,6 +19,7 @@ import {
   isRedactedEnvValue,
   isSafeRepoLocalPath,
   normalizeRepoLocalPath,
+  runtimeTeamSkillSnapshotSchema,
   updateAgentRuntimeConfigSchema,
 } from "../schemas/agent-runtime-config.js";
 
@@ -34,6 +35,46 @@ function effortOf(payload: AgentRuntimeConfigPayload): string | undefined {
 function serviceTierOf(payload: AgentRuntimeConfigPayload): string | undefined {
   return "serviceTier" in payload ? payload.serviceTier : undefined;
 }
+
+describe("Team Skill runtime snapshot", () => {
+  it("keeps the optional wire field opaque while validating the recognized v1 shape separately", () => {
+    const snapshot = {
+      kind: "authoritative",
+      schemaVersion: 1,
+      entries: [
+        {
+          kind: "attachment-bundle",
+          resourceId: "resource-review",
+          name: "review",
+          description: "Review changes.",
+          attachmentId: "11111111-1111-4111-8111-111111111111",
+          sizeBytes: 1024,
+        },
+        {
+          kind: "unavailable",
+          resourceId: "resource-missing",
+          reason: "skill_bundle_unavailable",
+        },
+      ],
+    };
+
+    const payload = agentRuntimeConfigPayloadSchema.parse({ teamSkillSnapshot: snapshot });
+    expect(payload.teamSkillSnapshot).toEqual(snapshot);
+    expect(runtimeTeamSkillSnapshotSchema.parse(payload.teamSkillSnapshot)).toEqual(snapshot);
+  });
+
+  it("preserves future and malformed snapshot values for Client last-known-good handling", () => {
+    const future = { kind: "authoritative", schemaVersion: 2, entries: [] };
+    const malformed = { kind: "authoritative", schemaVersion: 1, entries: "invalid" };
+
+    expect(agentRuntimeConfigPayloadSchema.parse({ teamSkillSnapshot: future }).teamSkillSnapshot).toEqual(future);
+    expect(agentRuntimeConfigPayloadSchema.parse({ teamSkillSnapshot: malformed }).teamSkillSnapshot).toEqual(
+      malformed,
+    );
+    expect(runtimeTeamSkillSnapshotSchema.safeParse(future).success).toBe(false);
+    expect(runtimeTeamSkillSnapshotSchema.safeParse(malformed).success).toBe(false);
+  });
+});
 
 /**
  * Lock the server-side default model. This default backs two separate paths:

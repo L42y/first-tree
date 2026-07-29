@@ -779,12 +779,14 @@ describe("service branch defaults", () => {
           order: 1,
         }),
       ],
+      [validSkill, invalidSkill],
+      [{ version: 7 }],
     ]);
     const service = createResourcesService({ db: db as never, notifier });
 
     const config = await service.resolveRuntimeConfig({
       agentId: "agent_1",
-      version: 1,
+      version: 7,
       payload: {
         kind: "claude-code",
         prompt: { append: "base" },
@@ -799,6 +801,24 @@ describe("service branch defaults", () => {
     expect(config.payload.resourceSkills).toEqual([
       expect.objectContaining({ resourceId: "skill_valid", name: "skill", metadata: { source: "test" } }),
     ]);
+    expect(config.payload.teamSkillSnapshot).toEqual(
+      expect.objectContaining({
+        kind: "authoritative",
+        schemaVersion: 1,
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "inline",
+            resourceId: "skill_valid",
+            name: "skill",
+            metadata: { source: "test" },
+          }),
+          expect.objectContaining({
+            kind: "unavailable",
+            resourceId: "skill_bad",
+          }),
+        ]),
+      }),
+    );
     expect(config.payload.mcpServers).toEqual([
       expect.objectContaining({ name: "mcp", transport: "http", url: "https://mcp.example.test/rpc" }),
     ]);
@@ -907,13 +927,14 @@ describe("service branch defaults", () => {
         [{ version: 3 }],
         [],
         [],
+        [{ version: 3 }],
       ]) as never,
       notifier,
     });
 
     const config = await service.resolveRuntimeConfig({
       agentId: "agent_1",
-      version: 1,
+      version: 3,
       payload: {
         kind: "claude-code",
         prompt: { append: "" },

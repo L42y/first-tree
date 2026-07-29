@@ -1444,7 +1444,9 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+          sessionCtx.sdk.fetchAttachment(options),
+        )
       ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
@@ -1581,7 +1583,9 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       // source-repo paths the agent should know about.
       declareSourceRepos(payload, cwd);
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+          sessionCtx.sdk.fetchAttachment(options),
+        )
       ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
@@ -1663,7 +1667,9 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
 
       declareSourceRepos(payload, cwd);
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+          sessionCtx.sdk.fetchAttachment(options),
+        )
       ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);

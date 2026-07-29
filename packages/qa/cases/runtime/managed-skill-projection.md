@@ -26,11 +26,18 @@ degradation.
   plan, never an operator workspace.
 - Make at least one selected provider `one-turn-ready`. Cross-provider claims
   require each named provider to be independently ready.
-- Use disposable Team Skills with non-sensitive bodies and a disposable
-  user-authored Skill conflict. Do not inspect provider credentials or include
-  private Skill content in evidence.
+- Upload disposable complete Team Skill ZIPs with non-sensitive `SKILL.md`,
+  `scripts/`, and `references/` content, plus a disposable user-authored Skill
+  conflict. The supporting script must produce a unique run-local token and
+  the reference must contain a different unique token. Do not inspect provider
+  credentials or include private Skill content in evidence.
 - Preserve the tested product checkout; all workspace and Cloud Resource
   changes must be run-local fixtures.
+- Roll out the snapshot-aware Client before enabling the new Server projection
+  and legacy bundle backfill. The compatible mixed-version window is new
+  Client + old Server, where the Client falls back to `resourceSkills`. Do not
+  enable new Server bundle snapshots while old Clients are still active:
+  bundle-backed rows intentionally have no derived inline fallback.
 
 ## Checklist
 
@@ -38,13 +45,17 @@ degradation.
   under the native root: Claude `.claude/skills`, Codex `.agents/skills`,
   Cursor `.cursor/skills`, or Kimi `.kimi-code/skills`. A real turn must be
   able to discover and invoke a Core Skill without a cross-provider symlink.
-- Bind a disposable Team Skill in Cloud, start or inject the next turn, and
-  confirm the provider discovers its normalized effective name. The generated
-  briefing should list the Team Skill description without exposing a
-  filesystem path.
-- Change the Team Skill body and confirm the next reconciled turn observes the
-  new content. Remove the binding and confirm a later authoritative reconcile
-  revokes it before the provider turn begins.
+- Bind the uploaded complete Team Skill in Cloud, start or inject the next
+  turn, and confirm the provider discovers its normalized effective name. In
+  one real provider turn, explicitly invoke the Skill and require it to execute
+  the bundled supporting script and use the bundled reference; the response
+  must contain both run-local tokens. A response derived only from
+  `SKILL.md` is insufficient. The generated briefing should list the Team
+  Skill description without exposing a filesystem path.
+- Replace the Team Skill with a new complete ZIP whose script/reference tokens
+  and `SKILL.md` body all change, then confirm the next reconciled turn observes
+  the new supporting files. Remove the binding and confirm a later
+  authoritative reconcile revokes it before the provider turn begins.
 - Plant a user-owned Skill at the requested Team name. The managed Team Skill
   must receive a deterministic First Tree suffix while the original directory
   remains byte-for-byte unchanged. Plant a conflicting Core name with
@@ -54,6 +65,11 @@ degradation.
   last-known-good Team directory must remain on disk, the Client must emit a
   bounded warning, and no empty fallback may revoke it. Once an authoritative
   newer snapshot returns, convergence resumes.
+- During the client-first rollout window, verify a new Client still installs a
+  legacy inline Team Skill from an old Server with no snapshot field. After
+  Server activation, verify a bundle-backed row is never dual-sent through
+  `resourceSkills`; an unsupported old Client must see the Skill as unavailable
+  rather than a prompt-only installation.
 - If the environment can move one disposable agent workspace between provider
   runtimes, confirm the new provider projection is usable before recorded old
   targets disappear. Claude TUI and Claude SDK should share the Claude root
@@ -65,9 +81,10 @@ degradation.
 ## Expected Result
 
 `PASS` requires real provider evidence that every selected runtime discovers
-the reconciled Skill in its native root, Cloud update and revoke behavior
-settles before the relevant turn, unavailable config preserves
-last-known-good content, and user-owned conflicts are not overwritten.
+the reconciled Skill in its native root and uses both a bundled script and
+reference, Cloud complete-bundle update and revoke behavior settles before the
+relevant turn, unavailable config preserves last-known-good content, and
+user-owned conflicts are not overwritten.
 
 `FAIL` includes a provider missing a settled Skill, a Team Skill appearing in
 the wrong provider root, a stale/empty fallback revoking live content, user
@@ -82,8 +99,10 @@ discovery from prompt-only behavior.
 ## Evidence
 
 Keep sanitized Cloud Resource version/readback, provider start/resume logs,
-workspace-relative directory listings, ownership-marker keys and revisions,
-briefing excerpts, effective Skill names, and a short real-turn transcript
-showing discovery. Record warnings and timing around configuration failure and
-recovery. Do not retain absolute home paths, Skill bodies beyond disposable
-fixtures, credentials, tokens, or private provider state.
+workspace-relative directory listings, sanitized supporting-file digests,
+ownership-marker keys and hashed revisions, briefing excerpts, effective Skill
+names, and a short real-turn transcript showing the disposable script and
+reference tokens. Record warnings and timing around configuration failure and
+recovery. Do not retain attachment capability ids, absolute home paths, Skill
+bodies beyond disposable fixtures, credentials, tokens, or private provider
+state.

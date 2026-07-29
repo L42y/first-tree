@@ -15,6 +15,13 @@ describe("redactUrl", () => {
     expect(redactUrl("/api/v1/webhooks/gitlab/secret-bearer/extra")).toBe("/api/v1/webhooks/gitlab/***/extra");
   });
 
+  it("redacts attachment capability path segments", () => {
+    expect(redactUrl("/api/v1/attachments/11111111-1111-4111-8111-111111111111")).toBe("/api/v1/attachments/***");
+    expect(redactUrl("https://first-tree.test/api/v1/attachments/private-capability?download=1")).toBe(
+      "https://first-tree.test/api/v1/attachments/***?download=1",
+    );
+  });
+
   it("returns the URL unchanged when the query string is empty", () => {
     // Path ends with `?` but no params — keep the trailing `?` to preserve
     // the original shape, since we only redact values, never structure.

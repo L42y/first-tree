@@ -729,7 +729,9 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     await backfillExternalAttachmentsToPostgres(db, attachmentBlobStore).catch((err) => {
       app.log.warn({ err }, "legacy S3 attachment reverse backfill failed");
     });
-    await backfillSkillResourceBundles(db, attachmentBlobStore).catch((err) => {
+    await backfillSkillResourceBundles(db, attachmentBlobStore, {
+      notifyAgent: (agentId) => notifier.notifyConfigChange(`agent:${agentId}`),
+    }).catch((err) => {
       app.log.warn({ err }, "legacy Skill bundle backfill failed");
     });
     const gitlabAttentionBackfill = await backfillGitlabAttentionPairs(db);

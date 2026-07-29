@@ -680,6 +680,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
               runtimeProvider,
               agentConfigCache?.get(sessionCtx.agent.agentId),
               sessionCtx.log,
+              (options) => sessionCtx.sdk.fetchAttachment(options),
             )
           ).teamSkills;
           const providerEnv = buildEnv(sessionCtx, payload);
@@ -746,6 +747,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
               runtimeProvider,
               agentConfigCache?.get(sessionCtx.agent.agentId),
               sessionCtx.log,
+              (options) => sessionCtx.sdk.fetchAttachment(options),
             )
           ).teamSkills;
           const providerEnv = buildEnv(sessionCtx, payload);

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAgent } from "../../middleware/require-identity.js";
+import { resolveCurrentRuntimeConfig } from "../../services/runtime-config-snapshot.js";
 
 /**
  * Agent-facing runtime config endpoint (Step 4).
@@ -12,7 +13,9 @@ import { requireAgent } from "../../middleware/require-identity.js";
 export async function agentConfigRoutes(app: FastifyInstance): Promise<void> {
   app.get("/config", async (request) => {
     const identity = requireAgent(request);
-    const cfg = await app.configService.getDecrypted(identity.uuid);
-    return app.resourcesService.resolveRuntimeConfig(cfg);
+    return resolveCurrentRuntimeConfig(
+      () => app.configService.getDecrypted(identity.uuid),
+      (config) => app.resourcesService.resolveRuntimeConfig(config),
+    );
   });
 }

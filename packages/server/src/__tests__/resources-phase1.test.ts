@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
 import { agents } from "../db/schema/agents.js";
+import { attachments } from "../db/schema/attachments.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
@@ -22,6 +23,7 @@ import { createAttachment } from "../services/attachment.js";
 import { LANDING_CAMPAIGN_TRIAL_PROMPT } from "../services/landing-campaigns/trial-prompt.js";
 import { createOrganization } from "../services/organization.js";
 import { backfillResourcesPhase1 } from "../services/resources-migration.js";
+import { RuntimeConfigSnapshotChangedError } from "../services/runtime-config-snapshot.js";
 import { buildLegacySkillBundle } from "../services/skill-bundle.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -133,6 +135,31 @@ describe("Resources Phase 1", () => {
       .where(and(eq(agentResourceBindings.agentId, agent.uuid), eq(agentResourceBindings.type, "skill")));
     expect(bindings).toHaveLength(1);
     expect(bindings[0]?.resourceId).toBe(legacyResourceId);
+
+    const resolved = await app.resourcesService.resolveRuntimeConfig(await app.configService.get(agent.uuid));
+    expect(resolved.payload.resourceSkills).toEqual([
+      {
+        resourceId: legacyResourceId,
+        name: "production-scan",
+        description: "legacy",
+        body: "LEGACY BODY",
+        metadata: {},
+      },
+    ]);
+    expect(resolved.payload.teamSkillSnapshot).toEqual({
+      kind: "authoritative",
+      schemaVersion: 1,
+      entries: [
+        {
+          kind: "inline",
+          resourceId: legacyResourceId,
+          name: "production-scan",
+          description: "legacy",
+          body: "LEGACY BODY",
+          metadata: {},
+        },
+      ],
+    });
   });
 
   it("resolves inline prompt replace as resourceId=null plus replacesResourceId", async () => {
@@ -877,6 +904,21 @@ describe("Resources Phase 1", () => {
     expect(resolved.payload.prompt.append.length).toBeLessThanOrEqual(PROMPT_APPEND_MAX_LENGTH);
   });
 
+  it("refuses to label a Resource snapshot with a stale base config version", async () => {
+    const app = getApp();
+    const owner = await createOrgUser(app, "admin");
+    const agent = await createRuntimeAgent(app, owner);
+    const stale = await app.configService.get(agent.uuid);
+    await app.db
+      .update(agentConfigs)
+      .set({ version: stale.version + 1 })
+      .where(eq(agentConfigs.agentId, agent.uuid));
+
+    await expect(app.resourcesService.resolveRuntimeConfig(stale)).rejects.toBeInstanceOf(
+      RuntimeConfigSnapshotChangedError,
+    );
+  });
+
   it("preserves legacy stored MCP servers until Team MCP resources take over", async () => {
     const app = getApp();
     const owner = await createOrgUser(app, "admin");
@@ -1045,7 +1087,7 @@ describe("Resources Phase 1", () => {
     );
   });
 
-  it("projects team skill resources into runtime config skills", async () => {
+  it("projects bundle-backed Team Skills only through the authoritative attachment snapshot", async () => {
     const app = getApp();
     const owner = await createOrgUser(app, "admin");
     const agent = await createRuntimeAgent(app, owner);
@@ -1059,15 +1101,66 @@ describe("Resources Phase 1", () => {
     const baseConfig = await app.configService.get(agent.uuid);
     const resolved = await app.resourcesService.resolveRuntimeConfig(baseConfig);
 
-    expect(resolved.payload.resourceSkills).toEqual([
-      {
-        resourceId: skill.id,
-        name: "reviewer",
-        description: "Review changes.",
-        body: "# Reviewer\n\nCheck edge cases.",
-        metadata: { source: "team" },
-      },
-    ]);
+    expect(resolved.payload.resourceSkills).toEqual([]);
+    expect(resolved.payload.teamSkillSnapshot).toEqual({
+      kind: "authoritative",
+      schemaVersion: 1,
+      entries: [
+        {
+          kind: "attachment-bundle",
+          resourceId: skill.id,
+          name: "reviewer",
+          description: "Review changes.",
+          attachmentId: skill.bundleAttachmentId,
+          sizeBytes: expect.any(Number),
+        },
+      ],
+    });
+  });
+
+  it.each([
+    "missing",
+    "wrong-org",
+    "not-ready",
+  ] as const)("emits an unavailable sentinel instead of inline fallback for a %s authoritative bundle", async (failure) => {
+    const app = getApp();
+    const owner = await createOrgUser(app, "admin");
+    const agent = await createRuntimeAgent(app, owner);
+    const skill = await createTeamSkill(app, owner, "recommended", {
+      name: `bundle-required-${failure}`,
+      description: "Needs supporting files.",
+      body: "Do not use this derived body alone.",
+      metadata: {},
+    });
+    if (!skill.bundleAttachmentId) throw new Error("fixture Skill bundle is missing");
+
+    if (failure === "missing") {
+      await app.db.delete(attachments).where(eq(attachments.id, skill.bundleAttachmentId));
+    } else if (failure === "wrong-org") {
+      await app.db
+        .update(attachments)
+        .set({ organizationId: uuidv7() })
+        .where(eq(attachments.id, skill.bundleAttachmentId));
+    } else if (failure === "not-ready") {
+      await app.db
+        .update(attachments)
+        .set({ lifecycleState: "deleting" })
+        .where(eq(attachments.id, skill.bundleAttachmentId));
+    }
+    const resolved = await app.resourcesService.resolveRuntimeConfig(await app.configService.get(agent.uuid));
+
+    expect(resolved.payload.resourceSkills).toEqual([]);
+    expect(resolved.payload.teamSkillSnapshot).toEqual({
+      kind: "authoritative",
+      schemaVersion: 1,
+      entries: [
+        {
+          kind: "unavailable",
+          resourceId: skill.id,
+          reason: "skill_bundle_unavailable",
+        },
+      ],
+    });
   });
 
   it("validates resource create/update edge paths and bumps recommended updates", async () => {

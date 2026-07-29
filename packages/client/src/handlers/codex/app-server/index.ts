@@ -452,8 +452,11 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     const chatContext = await fetchChatContextOrLog(sessionCtx);
     pendingChatContextPrompt = renderChatContextPrompt(chatContext);
     declareSourceRepos(payload, cwd);
-    reconciledTeamSkills = (await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log))
-      .teamSkills;
+    reconciledTeamSkills = (
+      await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+        sessionCtx.sdk.fetchAttachment(options),
+      )
+    ).teamSkills;
     let env = buildEnv(sessionCtx);
     if (workspaceOnly) {
       const { accessToken } = await sessionCtx.sdk.createAgentOutboxToken(sessionCtx.chatId);
@@ -1715,7 +1718,9 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+          sessionCtx.sdk.fetchAttachment(options),
+        )
       ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);

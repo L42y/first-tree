@@ -31,7 +31,7 @@ export type ManagedSkillEntry = Readonly<{
   target: string;
   requestedSlug: string;
   effectiveName: string;
-  /** Source identity: bundled VERSION, inline DTO digest, or attachment id. */
+  /** Source identity: bundled VERSION, inline DTO digest, or hashed attachment identity. */
   revision: string;
   /** Digest of the final installed bytes after all runtime transformations. */
   installedDigest: `sha256:${string}`;

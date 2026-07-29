@@ -671,7 +671,9 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
 
     sourceReposForPrompt = declaredSourceRepos(workspaceCwd, payload);
     reconciledTeamSkills = (
-      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+        sessionCtx.sdk.fetchAttachment(options),
+      )
     ).teamSkills;
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);
     ensureAgentBootstrap({

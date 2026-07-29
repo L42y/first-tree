@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { runtimeProviderSchema } from "./runtime-provider.js";
+import { TEAM_SKILL_BUNDLE_LIMITS } from "./team-skill-bundle.js";
 
 /**
  * Agent runtime configuration.
@@ -94,6 +95,50 @@ export const runtimeResourceSkillSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
 export type RuntimeResourceSkill = z.infer<typeof runtimeResourceSkillSchema>;
+
+export const runtimeTeamSkillInlineEntrySchema = runtimeResourceSkillSchema.extend({
+  kind: z.literal("inline"),
+});
+export type RuntimeTeamSkillInlineEntry = z.infer<typeof runtimeTeamSkillInlineEntrySchema>;
+
+export const runtimeTeamSkillAttachmentEntrySchema = z.object({
+  kind: z.literal("attachment-bundle"),
+  resourceId: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().default(""),
+  attachmentId: z.string().uuid(),
+  sizeBytes: z.number().int().positive().max(TEAM_SKILL_BUNDLE_LIMITS.compressedBytes),
+});
+export type RuntimeTeamSkillAttachmentEntry = z.infer<typeof runtimeTeamSkillAttachmentEntrySchema>;
+
+export const runtimeTeamSkillUnavailableEntrySchema = z.object({
+  kind: z.literal("unavailable"),
+  resourceId: z.string().min(1),
+  reason: z.string().min(1),
+});
+export type RuntimeTeamSkillUnavailableEntry = z.infer<typeof runtimeTeamSkillUnavailableEntrySchema>;
+
+export const runtimeTeamSkillEntrySchema = z.discriminatedUnion("kind", [
+  runtimeTeamSkillInlineEntrySchema,
+  runtimeTeamSkillAttachmentEntrySchema,
+  runtimeTeamSkillUnavailableEntrySchema,
+]);
+export type RuntimeTeamSkillEntry = z.infer<typeof runtimeTeamSkillEntrySchema>;
+
+/**
+ * Authoritative current Team Skill selection. The payload keeps this field as
+ * `unknown` below so future snapshot versions reach older Clients intact:
+ * recognized v1 snapshots win, while malformed/future snapshots can preserve
+ * last-known-good state instead of invalidating the whole runtime config.
+ */
+export const runtimeTeamSkillSnapshotSchema = z
+  .object({
+    kind: z.literal("authoritative"),
+    schemaVersion: z.literal(1),
+    entries: z.array(runtimeTeamSkillEntrySchema),
+  })
+  .strict();
+export type RuntimeTeamSkillSnapshot = z.infer<typeof runtimeTeamSkillSnapshotSchema>;
 
 export const envEntrySchema = z.object({
   key: z.string().regex(ENV_KEY_PATTERN, "Env key must match /^[A-Z][A-Z0-9_]*$/"),
@@ -232,6 +277,7 @@ export const agentRuntimeConfigPayloadShape = z.object({
   env: z.array(envEntrySchema).default([]),
   gitRepos: z.array(gitRepoSchema).default([]),
   resourceSkills: z.array(runtimeResourceSkillSchema).default([]),
+  teamSkillSnapshot: z.unknown().optional(),
 });
 
 /**

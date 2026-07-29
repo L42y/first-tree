@@ -1517,7 +1517,9 @@ export const createCursorHandler: HandlerFactory = (config) => {
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+          sessionCtx.sdk.fetchAttachment(options),
+        )
       ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
@@ -1623,7 +1625,9 @@ export const createCursorHandler: HandlerFactory = (config) => {
 
     declareSourceRepos(payload, workspaceCwd);
     reconciledTeamSkills = (
-      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log, (options) =>
+        sessionCtx.sdk.fetchAttachment(options),
+      )
     ).teamSkills;
 
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);

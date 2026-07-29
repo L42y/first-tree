@@ -165,7 +165,17 @@ export {
   promptSectionSchema,
   promptSectionScopeSchema,
   type RuntimeResourceSkill,
+  type RuntimeTeamSkillAttachmentEntry,
+  type RuntimeTeamSkillEntry,
+  type RuntimeTeamSkillInlineEntry,
+  type RuntimeTeamSkillSnapshot,
+  type RuntimeTeamSkillUnavailableEntry,
   runtimeResourceSkillSchema,
+  runtimeTeamSkillAttachmentEntrySchema,
+  runtimeTeamSkillEntrySchema,
+  runtimeTeamSkillInlineEntrySchema,
+  runtimeTeamSkillSnapshotSchema,
+  runtimeTeamSkillUnavailableEntrySchema,
   type UpdateAgentRuntimeConfig,
   updateAgentRuntimeConfigSchema,
 } from "./schemas/agent-runtime-config.js";
@@ -1282,6 +1292,18 @@ export {
   type Stats,
   statsSchema,
 } from "./schemas/stats.js";
+export {
+  isTeamSkillOwnershipMarkerPath,
+  type ParsedTeamSkillMarkdown,
+  parseTeamSkillBundleEntryPath,
+  parseTeamSkillMarkdown,
+  TEAM_SKILL_BUNDLE_LIMITS,
+  TEAM_SKILL_OWNERSHIP_MARKER,
+  TEAM_SKILL_RUNTIME_NAME_MAX,
+  type TeamSkillBundleEntryPath,
+  teamSkillBundleCollisionKey,
+  teamSkillBundleTopologyConflict,
+} from "./schemas/team-skill-bundle.js";
 export {
   isGithubEventCardContent,
   isGithubSystemSenderMetadata,

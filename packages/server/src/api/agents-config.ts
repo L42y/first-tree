@@ -5,6 +5,7 @@ import { agentPresence } from "../db/schema/agent-presence.js";
 import { requireAgentAccess } from "../scope/require-resource.js";
 import { assertNoRuntimeSwitchInProgress } from "../services/agent-runtime-switch.js";
 import { assertMutableAgentIsNotLandingCampaignTrial } from "../services/landing-campaigns/guards.js";
+import { resolveCurrentRuntimeConfig } from "../services/runtime-config-snapshot.js";
 
 /**
  * Class C — `/api/v1/agents/:uuid/config`. Runtime config (system prompt,
@@ -13,8 +14,10 @@ import { assertMutableAgentIsNotLandingCampaignTrial } from "../services/landing
 export async function agentConfigRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { uuid: string } }>("/:uuid/config", async (request) => {
     await requireAgentAccess(request, app.db, "manage");
-    const cfg = await app.configService.get(request.params.uuid);
-    return app.resourcesService.resolveRuntimeConfig(cfg);
+    return resolveCurrentRuntimeConfig(
+      () => app.configService.get(request.params.uuid),
+      (config) => app.resourcesService.resolveRuntimeConfig(config),
+    );
   });
 
   app.patch<{ Params: { uuid: string } }>("/:uuid/config", { config: { otelRecordBody: true } }, async (request) => {
@@ -23,7 +26,11 @@ export async function agentConfigRoutes(app: FastifyInstance): Promise<void> {
     assertNoRuntimeSwitchInProgress(agent);
     const body = updateAgentRuntimeConfigSchema.parse(request.body);
     const cfg = await app.configService.update(request.params.uuid, body, scope.memberId);
-    return app.resourcesService.resolveRuntimeConfig(cfg);
+    return resolveCurrentRuntimeConfig(
+      () => app.configService.get(request.params.uuid),
+      (config) => app.resourcesService.resolveRuntimeConfig(config),
+      cfg,
+    );
   });
 
   app.post<{ Params: { uuid: string } }>(

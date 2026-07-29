@@ -28,7 +28,7 @@ export async function attachmentRoutes(app: FastifyInstance): Promise<void> {
     // never drags the bytea payload out of PG.
     const meta = await loadAttachmentMeta(app.db, id);
     if (!meta) {
-      throw new NotFoundError(`Attachment "${id}" not found`);
+      throw new NotFoundError("Attachment not found");
     }
 
     // If-None-Match: cheap ETag check. id is content-stable (UUIDv4 + bytes
@@ -43,7 +43,7 @@ export async function attachmentRoutes(app: FastifyInstance): Promise<void> {
     if (!stream) {
       // Deleted between the metadata read and now — vanishingly rare, but
       // surface it honestly rather than streaming an empty body.
-      throw new NotFoundError(`Attachment "${id}" not found`);
+      throw new NotFoundError("Attachment not found");
     }
 
     reply

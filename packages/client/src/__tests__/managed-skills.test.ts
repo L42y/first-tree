@@ -12,14 +12,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RuntimeProvider, RuntimeResourceSkill } from "@first-tree/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  type AgentRuntimeConfig,
+  type RuntimeProvider,
+  type RuntimeResourceSkill,
+  type RuntimeTeamSkillAttachmentEntry,
+  type RuntimeTeamSkillEntry,
+  TEAM_SKILL_BUNDLE_LIMITS,
+} from "@first-tree/shared";
+import { strToU8, zipSync } from "fflate";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CORE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
 import {
   authoritativeTeamSkillSnapshot,
+  type ManagedSkillAttachmentFetcher,
   type ManagedSkillsCheckpoint,
   providerSkillRoot,
   reconcileManagedSkills,
+  teamSkillSnapshotFromConfig,
 } from "../runtime/managed-skills.js";
 import {
   MANAGED_SKILLS_JOURNAL_REL,
@@ -28,6 +38,7 @@ import {
   readManagedState,
   readManagedStateResult,
 } from "../runtime/managed-state.js";
+import { extractTeamSkillBundle } from "../runtime/team-skill-bundle.js";
 
 const PROVIDERS: readonly RuntimeProvider[] = ["claude-code", "claude-code-tui", "codex", "cursor", "kimi-code"];
 
@@ -40,6 +51,133 @@ function teamSkill(overrides: Partial<RuntimeResourceSkill> = {}): RuntimeResour
     metadata: { owner: "platform" },
     ...overrides,
   };
+}
+
+function teamBundleZip(
+  name = "review",
+  body = "# Review\n\nUse the supporting files.",
+  wrapper = "",
+  supporting: Record<string, Uint8Array> = {
+    "scripts/run.sh": strToU8("#!/bin/sh\necho bundled\n"),
+    "references/policy.md": strToU8("bundled policy\n"),
+  },
+): Buffer {
+  const prefix = wrapper ? `${wrapper}/` : "";
+  const entries: Record<string, Uint8Array> = {
+    [`${prefix}SKILL.md`]: strToU8(
+      ["---", `name: ${name}`, "description: Review changes.", "---", "", body, ""].join("\n"),
+    ),
+  };
+  for (const [path, bytes] of Object.entries(supporting)) entries[`${prefix}${path}`] = bytes;
+  return Buffer.from(zipSync(entries));
+}
+
+function maximumAdmissibleTeamBundleZip(): Buffer {
+  const manifest = strToU8(
+    ["---", "name: review", "description: Review changes.", "---", "", "# Review", "", "At the limit.", ""].join("\n"),
+  );
+  const entries: Record<string, Uint8Array> = { "SKILL.md": manifest };
+  const tinyFiles = 251;
+  for (let index = 0; index < tinyFiles; index++) {
+    entries[`references/tiny-${index}.txt`] = Uint8Array.of(index % 256);
+  }
+  for (let index = 0; index < 3; index++) {
+    entries[`references/full-${index}.bin`] = new Uint8Array(TEAM_SKILL_BUNDLE_LIMITS.fileBytes);
+  }
+  const remaining =
+    TEAM_SKILL_BUNDLE_LIMITS.totalBytes - manifest.byteLength - tinyFiles - 3 * TEAM_SKILL_BUNDLE_LIMITS.fileBytes;
+  entries["references/remainder.bin"] = new Uint8Array(remaining);
+  return Buffer.from(zipSync(entries));
+}
+
+function attachmentEntry(
+  attachmentId: string,
+  bytes: Buffer,
+  overrides: Partial<RuntimeTeamSkillAttachmentEntry> = {},
+): RuntimeTeamSkillAttachmentEntry {
+  return {
+    kind: "attachment-bundle",
+    resourceId: "resource-review",
+    name: "review",
+    description: "Review changes.",
+    attachmentId,
+    sizeBytes: bytes.byteLength,
+    ...overrides,
+  };
+}
+
+function attachmentSnapshot(resourceConfigVersion: number, entries: readonly RuntimeTeamSkillEntry[]) {
+  return {
+    kind: "authoritative" as const,
+    resourceConfigVersion,
+    entries,
+  };
+}
+
+function runtimeConfig(
+  version: number,
+  resourceSkills: readonly RuntimeResourceSkill[],
+  teamSkillSnapshot?: unknown,
+): AgentRuntimeConfig {
+  return {
+    agentId: "agent-1",
+    version,
+    payload: {
+      kind: "codex",
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [...resourceSkills],
+      ...(teamSkillSnapshot === undefined ? {} : { teamSkillSnapshot }),
+      reasoningEffort: "high",
+      serviceTier: "default",
+    },
+    updatedAt: new Date(0).toISOString(),
+    updatedBy: "member-1",
+  };
+}
+
+function mutateFirstZipEntry(
+  source: Buffer,
+  mutateLocal: (bytes: Buffer, offset: number) => void,
+  mutateCentral: (bytes: Buffer, offset: number) => void,
+): Buffer {
+  const bytes = Buffer.from(source);
+  const local = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  const central = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  if (local < 0 || central < 0) throw new Error("fixture ZIP headers are missing");
+  mutateLocal(bytes, local);
+  mutateCentral(bytes, central);
+  return bytes;
+}
+
+function encryptedZip(source: Buffer): Buffer {
+  return mutateFirstZipEntry(
+    source,
+    (bytes, offset) => bytes.writeUInt16LE(bytes.readUInt16LE(offset + 6) | 0x1, offset + 6),
+    (bytes, offset) => bytes.writeUInt16LE(bytes.readUInt16LE(offset + 8) | 0x1, offset + 8),
+  );
+}
+
+function unixTypeZip(source: Buffer, mode: number): Buffer {
+  return mutateFirstZipEntry(
+    source,
+    () => {},
+    (bytes, offset) => {
+      bytes.writeUInt16LE((3 << 8) | 20, offset + 4);
+      bytes.writeUInt32LE((mode << 16) >>> 0, offset + 38);
+    },
+  );
+}
+
+function mismatchedSizeZip(source: Buffer): Buffer {
+  return mutateFirstZipEntry(
+    source,
+    (bytes, offset) => bytes.writeUInt32LE(bytes.readUInt32LE(offset + 22) + 1, offset + 22),
+    (bytes, offset) => bytes.writeUInt32LE(bytes.readUInt32LE(offset + 24) + 1, offset + 24),
+  );
 }
 
 function writeCoreBundle(parent: string, version = "1.0.0", label = version): string {
@@ -212,6 +350,558 @@ describe("managed Skill reconciler", () => {
     expect(revoked.removed).toContain("resource:resource-review@.agents/skills/review");
     expect(existsSync(target(workspace, "codex", "review"))).toBe(false);
     expect(readManagedState(workspace)?.resourceConfigVersion).toBe(12);
+  });
+
+  it("uses a recognized snapshot exclusively and preserves LKG for malformed or future snapshots", () => {
+    const legacy = teamSkill();
+    const absent = teamSkillSnapshotFromConfig(runtimeConfig(3, [legacy]));
+    expect(absent).toEqual(authoritativeTeamSkillSnapshot(3, [legacy]));
+
+    const recognized = teamSkillSnapshotFromConfig(
+      runtimeConfig(4, [legacy], { kind: "authoritative", schemaVersion: 1, entries: [] }),
+    );
+    expect(recognized).toEqual(attachmentSnapshot(4, []));
+
+    expect(
+      teamSkillSnapshotFromConfig(
+        runtimeConfig(5, [legacy], { kind: "authoritative", schemaVersion: 1, entries: "invalid" }),
+      ),
+    ).toEqual({ kind: "unavailable" });
+    expect(
+      teamSkillSnapshotFromConfig(runtimeConfig(6, [legacy], { kind: "authoritative", schemaVersion: 2, entries: [] })),
+    ).toEqual({ kind: "unavailable" });
+  });
+
+  it.each([
+    "",
+    "review-wrapper",
+  ])("installs a complete %s attachment bundle, skips unchanged downloads, and repairs supporting-file drift", async (wrapper) => {
+    const attachmentId = "11111111-1111-4111-8111-111111111111";
+    const bytes = teamBundleZip("review", undefined, wrapper);
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async () => ({
+      bytes,
+      size: bytes.byteLength,
+    }));
+    const snapshot = attachmentSnapshot(20, [attachmentEntry(attachmentId, bytes)]);
+
+    const installed = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(installed.ok, JSON.stringify(installed.failures)).toBe(true);
+    expect(readFileSync(join(target(workspace, "codex", "review"), "scripts", "run.sh"), "utf-8")).toContain("bundled");
+    expect(readFileSync(join(target(workspace, "codex", "review"), "references", "policy.md"), "utf-8")).toContain(
+      "bundled policy",
+    );
+    const marker = readFileSync(join(target(workspace, "codex", "review"), ".first-tree-managed.json"), "utf-8");
+    expect(marker).not.toContain(attachmentId);
+    expect(readFileSync(join(workspace, MANAGED_STATE_REL), "utf-8")).not.toContain(attachmentId);
+    expect(fetchAttachment).toHaveBeenCalledTimes(1);
+    expect(fetchAttachment).toHaveBeenCalledWith({
+      id: attachmentId,
+      maxBytes: 10 * 1024 * 1024,
+      timeoutMs: 15_000,
+    });
+
+    const unchanged = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(unchanged.skipped).toContain("resource:resource-review");
+    expect(fetchAttachment).toHaveBeenCalledTimes(1);
+
+    writeFileSync(join(target(workspace, "codex", "review"), "references", "policy.md"), "drift\n");
+    const repaired = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(repaired.installed).toContain("resource:resource-review");
+    expect(fetchAttachment).toHaveBeenCalledTimes(2);
+    expect(readFileSync(join(target(workspace, "codex", "review"), "references", "policy.md"), "utf-8")).toContain(
+      "bundled policy",
+    );
+  });
+
+  it("installs an archive at the exact file and byte limits plus generated managed metadata", async () => {
+    const attachmentId = "11111111-1111-4111-8111-111111111111";
+    const bytes = maximumAdmissibleTeamBundleZip();
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async () => ({
+      bytes,
+      size: bytes.byteLength,
+    }));
+
+    const installed = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(21, [attachmentEntry(attachmentId, bytes)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+
+    expect(installed.ok, JSON.stringify(installed.failures)).toBe(true);
+    expect(existsSync(join(target(workspace, "codex", "review"), ".first-tree-managed.json"))).toBe(true);
+    expect(existsSync(join(target(workspace, "codex", "review"), "references", "remainder.bin"))).toBe(true);
+  });
+
+  it("preserves LKG on download failure and retries the same config version", async () => {
+    const oldId = "11111111-1111-4111-8111-111111111111";
+    const newId = "22222222-2222-4222-8222-222222222222";
+    const oldBytes = teamBundleZip("review", "# Review\n\nOld bundle.");
+    const newBytes = teamBundleZip("review", "# Review\n\nNew bundle.");
+    const responses = new Map<string, Buffer>([[oldId, oldBytes]]);
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async ({ id }) => {
+      const bytes = responses.get(id);
+      if (!bytes) throw new Error("missing fixture attachment");
+      return { bytes, size: bytes.byteLength };
+    });
+
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(30, [attachmentEntry(oldId, oldBytes)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    const failed = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(31, [attachmentEntry(newId, newBytes)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(failed.ok).toBe(false);
+    expect(readFileSync(join(target(workspace, "codex", "review"), "SKILL.md"), "utf-8")).toContain("Old bundle.");
+    expect(readManagedState(workspace)?.resourceConfigVersion).toBe(31);
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(false);
+
+    responses.set(newId, newBytes);
+    const retried = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(31, [attachmentEntry(newId, newBytes)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(retried.installed).toContain("resource:resource-review");
+    expect(readFileSync(join(target(workspace, "codex", "review"), "SKILL.md"), "utf-8")).toContain("New bundle.");
+  });
+
+  it("leaves no target, staging directory, or journal after a first-install bundle failure", async () => {
+    const attachmentId = "11111111-1111-4111-8111-111111111111";
+    const valid = teamBundleZip();
+    const invalid = Buffer.alloc(valid.byteLength);
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async () => ({
+      bytes: invalid,
+      size: invalid.byteLength,
+    }));
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(35, [attachmentEntry(attachmentId, valid)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(existsSync(target(workspace, "codex", "review"))).toBe(false);
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(false);
+    expect(
+      readdirSync(join(workspace, ".agents", "skills")).some(
+        (name) => name.startsWith(".review.ft-") && name.endsWith(".staging"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not replace a user target created while an attachment is downloading", async () => {
+    const attachmentId = "11111111-1111-4111-8111-111111111111";
+    const bytes = teamBundleZip();
+    const userTarget = target(workspace, "codex", "review");
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async () => {
+      mkdirSync(userTarget, { recursive: true });
+      writeFileSync(join(userTarget, "SKILL.md"), "user content created during download\n");
+      return { bytes, size: bytes.byteLength };
+    });
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(36, [attachmentEntry(attachmentId, bytes)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+
+    expect(result.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: expect.stringContaining("target created while staging"),
+    });
+    expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("user content created during download\n");
+    expect(existsSync(join(userTarget, ".first-tree-managed.json"))).toBe(false);
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(false);
+    expect(
+      readdirSync(join(workspace, ".agents", "skills")).some(
+        (name) => name.startsWith(".review.ft-") && name.endsWith(".staging"),
+      ),
+    ).toBe(false);
+  });
+
+  it("preserves user content that replaces a previously managed target on update and revoke", async () => {
+    const attachmentIdV1 = "11111111-1111-4111-8111-111111111111";
+    const attachmentIdV2 = "22222222-2222-4222-8222-222222222222";
+    const bytesV1 = teamBundleZip("review", "# Review\n\nManaged v1.");
+    const bytesV2 = teamBundleZip("review", "# Review\n\nManaged v2.");
+    const responses = new Map<string, Buffer>([
+      [attachmentIdV1, bytesV1],
+      [attachmentIdV2, bytesV2],
+    ]);
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async ({ id }) => {
+      const bytes = responses.get(id);
+      if (!bytes) throw new Error("missing fixture attachment");
+      return { bytes, size: bytes.byteLength };
+    });
+    const userTarget = target(workspace, "codex", "review");
+
+    const installed = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(37, [attachmentEntry(attachmentIdV1, bytesV1)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(installed.ok, JSON.stringify(installed.failures)).toBe(true);
+
+    rmSync(userTarget, { recursive: true, force: true });
+    mkdirSync(userTarget, { recursive: true });
+    writeFileSync(join(userTarget, "SKILL.md"), "user replacement\n");
+
+    const update = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(38, [attachmentEntry(attachmentIdV2, bytesV2)]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(update.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: expect.stringContaining("refusing to mutate unowned managed Skill target"),
+    });
+    expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("user replacement\n");
+
+    const revoke = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(39, []),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(revoke.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: expect.stringContaining("cleanup .agents/skills/review: refusing to mutate unowned managed Skill target"),
+    });
+    expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("user replacement\n");
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(false);
+  });
+
+  it("preserves unowned directories even when their names resemble internal staging paths", async () => {
+    const skillsRoot = join(workspace, ".agents", "skills");
+    const userDirectory = join(skillsRoot, ".review.ft-0123456789abcdef.staging");
+    mkdirSync(userDirectory, { recursive: true });
+    writeFileSync(join(userDirectory, "keep.txt"), "keep\n");
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+
+    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+    expect(readFileSync(join(userDirectory, "keep.txt"), "utf-8")).toBe("keep\n");
+  });
+
+  it("materializes explicit empty directories from root and wrapped bundles", async () => {
+    for (const wrapper of ["", "wrapped"]) {
+      const destination = join(workspace, `empty-directory-${wrapper || "root"}`);
+      mkdirSync(destination, { recursive: true });
+      const bytes = teamBundleZip("review", "# Review\n\nEmpty template.", wrapper, {
+        "templates/empty/": new Uint8Array(),
+      });
+
+      await extractTeamSkillBundle(bytes, destination);
+
+      expect(lstatSync(join(destination, "templates", "empty")).isDirectory()).toBe(true);
+      expect(readdirSync(join(destination, "templates", "empty"))).toEqual([]);
+    }
+  });
+
+  it("preserves an unavailable Skill while other entries update, then revokes only on omission", async () => {
+    const reviewV1 = teamBundleZip("review", "# Review\n\nReview v1.");
+    const deployV1 = teamBundleZip("deploy", "# Deploy\n\nDeploy v1.");
+    const deployV2 = teamBundleZip("deploy", "# Deploy\n\nDeploy v2.");
+    const ids = {
+      review: "11111111-1111-4111-8111-111111111111",
+      deployV1: "22222222-2222-4222-8222-222222222222",
+      deployV2: "33333333-3333-4333-8333-333333333333",
+    };
+    const responses = new Map<string, Buffer>([
+      [ids.review, reviewV1],
+      [ids.deployV1, deployV1],
+      [ids.deployV2, deployV2],
+    ]);
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async ({ id }) => {
+      const bytes = responses.get(id);
+      if (!bytes) throw new Error("missing fixture attachment");
+      return { bytes, size: bytes.byteLength };
+    });
+    const review = attachmentEntry(ids.review, reviewV1);
+    const deploy = attachmentEntry(ids.deployV1, deployV1, {
+      resourceId: "resource-deploy",
+      name: "deploy",
+    });
+
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(40, [review, deploy]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    const partial = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(41, [
+        { kind: "unavailable", resourceId: "resource-review", reason: "skill_bundle_unavailable" },
+        attachmentEntry(ids.deployV2, deployV2, { resourceId: "resource-deploy", name: "deploy" }),
+      ]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(partial.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: "skill_bundle_unavailable",
+    });
+    expect(readFileSync(join(target(workspace, "codex", "review"), "SKILL.md"), "utf-8")).toContain("Review v1.");
+    expect(readFileSync(join(target(workspace, "codex", "deploy"), "SKILL.md"), "utf-8")).toContain("Deploy v2.");
+
+    const revoked = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(42, []),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    expect(revoked.removed).toEqual(
+      expect.arrayContaining([
+        "resource:resource-review@.agents/skills/review",
+        "resource:resource-deploy@.agents/skills/deploy",
+      ]),
+    );
+  });
+
+  it("rewrites a bundle manifest to a deterministic alternate name without changing supporting files", async () => {
+    const userTarget = target(workspace, "codex", "review");
+    mkdirSync(userTarget, { recursive: true });
+    writeFileSync(join(userTarget, "SKILL.md"), "user-owned review\n");
+    const attachmentId = "11111111-1111-4111-8111-111111111111";
+    const bytes = teamBundleZip("Review");
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async () => ({
+      bytes,
+      size: bytes.byteLength,
+    }));
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: attachmentSnapshot(50, [attachmentEntry(attachmentId, bytes, { name: "Review" })]),
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+
+    expect(result.teamSkills[0]?.name).toBe("review-first-tree");
+    expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("user-owned review\n");
+    expect(readFileSync(join(target(workspace, "codex", "review-first-tree"), "SKILL.md"), "utf-8")).toContain(
+      "name: review-first-tree",
+    );
+    expect(
+      readFileSync(join(target(workspace, "codex", "review-first-tree"), "references", "policy.md"), "utf-8"),
+    ).toContain("bundled policy");
+  });
+
+  it("installs the new provider target before removing the old provider bundle target", async () => {
+    const attachmentId = "11111111-1111-4111-8111-111111111111";
+    const bytes = teamBundleZip();
+    const fetchAttachment = vi.fn<ManagedSkillAttachmentFetcher>(async () => ({
+      bytes,
+      size: bytes.byteLength,
+    }));
+    const snapshot = attachmentSnapshot(60, [attachmentEntry(attachmentId, bytes)]);
+
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+    const switched = await reconcileManagedSkills({
+      workspace,
+      provider: "claude-code",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      fetchAttachment,
+    });
+
+    expect(switched.installed).toContain("resource:resource-review");
+    expect(existsSync(target(workspace, "claude-code", "review"))).toBe(true);
+    expect(existsSync(target(workspace, "codex", "review"))).toBe(false);
+  });
+
+  it.each([
+    [
+      "path traversal",
+      Buffer.from(
+        zipSync({
+          "../SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+        }),
+      ),
+    ],
+    [
+      "absolute path",
+      Buffer.from(
+        zipSync({
+          "/SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+        }),
+      ),
+    ],
+    [
+      "backslash path",
+      Buffer.from(
+        zipSync({
+          "wrapped\\SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+        }),
+      ),
+    ],
+    [
+      "wrong-case manifest",
+      Buffer.from(
+        zipSync({
+          "skill.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+        }),
+      ),
+    ],
+    [
+      "case-colliding files",
+      Buffer.from(
+        zipSync({
+          "SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          "scripts/run.sh": strToU8("one"),
+          "scripts/RUN.sh": strToU8("two"),
+        }),
+      ),
+    ],
+    [
+      "wrapped-root extra content",
+      Buffer.from(
+        zipSync({
+          "wrapped/SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          "outside.txt": strToU8("outside"),
+        }),
+      ),
+    ],
+    [
+      "Windows device name",
+      Buffer.from(
+        zipSync({
+          "SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          "scripts/CON": strToU8("device"),
+        }),
+      ),
+    ],
+    [
+      "trailing-dot segment",
+      Buffer.from(
+        zipSync({
+          "SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          "references./policy.md": strToU8("unsafe"),
+        }),
+      ),
+    ],
+    [
+      "reserved ownership marker",
+      Buffer.from(
+        zipSync({
+          "SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          ".first-tree-managed.json": strToU8("{}"),
+        }),
+      ),
+    ],
+    [
+      "case-varied ownership marker",
+      Buffer.from(
+        zipSync({
+          "SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          ".FIRST-TREE-MANAGED.JSON": strToU8("{}"),
+        }),
+      ),
+    ],
+    [
+      "ownership marker child",
+      Buffer.from(
+        zipSync({
+          "SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          ".first-tree-managed.json/data": strToU8("unsafe"),
+        }),
+      ),
+    ],
+    [
+      "file parent",
+      Buffer.from(
+        zipSync({
+          "SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          scripts: strToU8("file"),
+          "scripts/run.sh": strToU8("nested"),
+        }),
+      ),
+    ],
+    [
+      "wrapped-root outside empty directory",
+      Buffer.from(
+        zipSync({
+          "wrapped/SKILL.md": strToU8("---\nname: review\ndescription: Review changes.\n---\n"),
+          "outside/": new Uint8Array(),
+        }),
+      ),
+    ],
+    [
+      "overlong path segment",
+      teamBundleZip("review", "# Review\n\nUnsafe.", "", {
+        [`references/${"a".repeat(TEAM_SKILL_BUNDLE_LIMITS.segmentCodeUnits + 1)}.txt`]: strToU8("unsafe"),
+      }),
+    ],
+    [
+      "overlong extracted path",
+      teamBundleZip("review", "# Review\n\nUnsafe.", "", {
+        [`${Array.from({ length: 8 }, () => "a".repeat(100)).join("/")}/file.txt`]: strToU8("unsafe"),
+      }),
+    ],
+    ["encrypted entry", encryptedZip(teamBundleZip())],
+    ["symlink entry", unixTypeZip(teamBundleZip(), 0o120777)],
+    ["special entry", unixTypeZip(teamBundleZip(), 0o010644)],
+    ["declared size mismatch", mismatchedSizeZip(teamBundleZip())],
+  ])("rejects a Team Skill ZIP with %s", async (_label, bytes) => {
+    const destination = join(workspace, "zip-attack");
+    mkdirSync(destination, { recursive: true });
+    await expect(extractTeamSkillBundle(bytes, destination)).rejects.toThrow();
+    expect(existsSync(join(workspace, "SKILL.md"))).toBe(false);
   });
 
   it("serializes callers and prevents an older Team snapshot from rolling back a newer one", async () => {
