@@ -356,18 +356,44 @@ describe("Layout Ask agent navigation lock", () => {
     await engageLock();
     expect(trigger()?.disabled).toBe(true);
 
+    // Every surface-leaving row is VISIBLY inert — not only handler-guarded:
+    // the other-team switch row, Leave, Create, Join, Invite.
+    const teamTwoRow = menuItemByText(container, "Team Two");
+    expect(teamTwoRow?.disabled).toBe(true);
+    const createRow = menuItemByText(container, "Create new team");
+    expect(createRow?.disabled).toBe(true);
+    expect(menuItemByText(container, "Join with invite link")?.disabled).toBe(true);
+    expect(menuItemByText(container, "Leave this team")?.disabled).toBe(true);
+    expect(menuItemByText(container, "Invite teammates")?.disabled).toBe(true);
+
     // The switch action boundary re-checks the lock: no cache-clearing
     // selectOrganization, no navigation.
-    await click(menuItemByText(container, "Team Two"));
+    await click(teamTwoRow);
     expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
     expect(locationText(container)).toBe("/?review=need-you");
     expect(container.querySelector('[data-testid="workspace-surface"]')).not.toBeNull();
 
-    // Unlock: the same row switches again.
+    // Create/Join cannot reach the setup modal (whose success path calls
+    // selectOrganization and navigates to /onboarding).
+    await click(createRow);
+    expect(document.body.textContent).not.toContain("Create a new team");
+    expect(document.body.textContent).not.toContain("Join a team");
+    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
+    expect(locationText(container)).toBe("/?review=need-you");
+
+    // Unlock: the same rows act again — team switch…
     await releaseLock();
     expect(trigger()?.disabled).toBe(false);
-    await click(menuItemByText(container, "Team Two"));
+    const teamTwoRowAfter = menuItemByText(container, "Team Two");
+    expect(teamTwoRowAfter?.disabled).toBe(false);
+    await click(teamTwoRowAfter);
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-2");
+
+    // …and Create reaches the setup modal.
+    await click(trigger());
+    await waitForText("Create new team");
+    await click(menuItemByText(container, "Create new team"));
+    await waitForText("Create a new team");
 
     await act(async () => root.unmount());
   });
@@ -376,28 +402,25 @@ describe("Layout Ask agent navigation lock", () => {
     const { container, root } = await renderLayout("/?review=need-you");
     const trigger = () => container.querySelector<HTMLButtonElement>('button[aria-label^="User menu"]');
 
-    // Menu opened BEFORE the attempt: Account settings is blocked.
+    // Menu opened BEFORE the attempt: both items are visibly inert AND
+    // blocked at their action boundaries.
     await click(trigger());
     await waitForText("Account settings");
     await engageLock();
     expect(trigger()?.disabled).toBe(true);
-    await click(buttonByText(container, "Account settings"));
+    const accountItem = menuItemByText(container, "Account settings");
+    expect(accountItem?.disabled).toBe(true);
+    const signOutItem = menuItemByText(container, "Sign out");
+    expect(signOutItem?.disabled).toBe(true);
+    await click(accountItem);
     expect(locationText(container)).toBe("/?review=need-you");
-
-    // Re-open, then Sign out is blocked at its action boundary.
-    await releaseLock();
-    await click(trigger());
-    await waitForText("Sign out");
-    await engageLock();
-    await click(buttonByText(container, "Sign out"));
+    await click(signOutItem);
     expect(authMock.value.logout).not.toHaveBeenCalled();
     expect(locationText(container)).toBe("/?review=need-you");
 
-    // Unlock: Account settings navigates again.
+    // Unlock (menu still open): Account settings navigates again.
     await releaseLock();
-    await click(trigger());
-    await waitForText("Account settings");
-    await click(buttonByText(container, "Account settings"));
+    await click(menuItemByText(container, "Account settings"));
     expect(locationText(container)).toBe("/settings/account");
 
     await act(async () => root.unmount());
@@ -426,14 +449,26 @@ describe("Layout Ask agent navigation lock", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps the trial onboarding CTA inert while locked", async () => {
+  it("keeps the trial onboarding CTA inert while locked, including a same-frame stale link click", async () => {
     const { container, root } = await renderLayout("/quickstart?c=chat-1");
     expect(container.querySelector('[data-testid="trial-surface"]')).not.toBeNull();
     // Unlocked: the CTA is a real onboarding link.
-    expect(container.querySelector('a[href="/onboarding"]')).not.toBeNull();
+    const ctaAnchor = container.querySelector('a[href="/onboarding"]');
+    if (!ctaAnchor) throw new Error("Expected onboarding CTA anchor");
 
-    await engageLock();
-    // Locked: no navigable CTA anchor; the disabled replacement does not move.
+    // Same-frame race: the lock is published but React has not yet swapped
+    // the link for the disabled button. The link's own click boundary must
+    // preventDefault — dispatchEvent returns false when it did.
+    let clickResult = true;
+    await act(async () => {
+      addAskAgentNavLock({ chatId: "chat-1", requestId: "req-1" });
+      clickResult = ctaAnchor.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(clickResult).toBe(false);
+    expect(locationText(container)).toBe("/quickstart?c=chat-1");
+
+    // Committed state: no navigable CTA anchor; the disabled replacement does not move.
     expect(container.querySelector('a[href="/onboarding"]')).toBeNull();
     const cta = buttonByText(container, "Set up First Tree for your team");
     expect(cta?.disabled).toBe(true);

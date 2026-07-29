@@ -102,13 +102,14 @@ export function UserMenu() {
             <button
               type="button"
               role="menuitem"
+              disabled={askAgentNavLocked}
               onClick={() => {
                 setOpen(false);
                 if (isAskAgentNavLocked()) return;
                 navigate("/settings/account");
               }}
               className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-body hover:bg-accent transition-colors"
-              style={{ color: "var(--fg)" }}
+              style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
             >
               <Settings className="h-3.5 w-3.5" />
               <span>Account settings</span>
@@ -133,6 +134,7 @@ export function UserMenu() {
             <button
               type="button"
               role="menuitem"
+              disabled={askAgentNavLocked}
               onClick={() => {
                 setOpen(false);
                 if (isAskAgentNavLocked()) return;
@@ -143,7 +145,7 @@ export function UserMenu() {
                 window.location.href = PARENT_URL;
               }}
               className="flex w-full items-center gap-2 px-4 py-1.5 text-left text-body hover:bg-accent transition-colors"
-              style={{ color: "var(--fg)" }}
+              style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
             >
               <LogOut className="h-3.5 w-3.5" />
               <span>Sign out</span>

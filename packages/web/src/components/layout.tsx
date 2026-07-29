@@ -168,7 +168,14 @@ export function Layout() {
             </Button>
           ) : (
             <Button asChild size="sm" className="min-w-0" style={{ justifySelf: "center" }}>
-              <Link to="/onboarding">
+              {/* Imperative click guard too: the store can publish the lock a
+                  frame before React swaps this link for the disabled button. */}
+              <Link
+                to="/onboarding"
+                onClick={(event) => {
+                  if (isAskAgentNavLocked()) event.preventDefault();
+                }}
+              >
                 <span className="truncate">Set up First Tree{dropBrand ? "" : " for your team"}</span>
                 <ArrowRight className="h-4 w-4 shrink-0" />
               </Link>

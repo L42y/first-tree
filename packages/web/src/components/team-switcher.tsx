@@ -261,6 +261,7 @@ export function TeamSwitcher({
   };
 
   const openLeaveConfirm = () => {
+    if (isAskAgentNavLocked()) return;
     leaveMutation.reset();
     setOpen(false);
     setLeaveConfirmOpen(true);
@@ -268,6 +269,7 @@ export function TeamSwitcher({
 
   const handleRenameSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (isAskAgentNavLocked()) return;
     const nextName = renameDraft.trim();
     if (!currentOrg || !nextName || renameMutation.isPending) return;
     if (nextName === currentOrg.displayName) {
@@ -284,7 +286,10 @@ export function TeamSwitcher({
   const canRenameTeam = role === "admin";
   const trimmedRenameDraft = renameDraft.trim();
   const renameDisabled =
-    !trimmedRenameDraft || trimmedRenameDraft === currentOrg.displayName || renameMutation.isPending;
+    !trimmedRenameDraft ||
+    trimmedRenameDraft === currentOrg.displayName ||
+    renameMutation.isPending ||
+    askAgentNavLocked;
 
   return (
     <>
@@ -402,8 +407,13 @@ export function TeamSwitcher({
                         aria-label="Edit team name"
                         title="Edit team name"
                         onClick={startRenaming}
+                        disabled={askAgentNavLocked}
                         className="inline-flex h-7 w-7 flex-none items-center justify-center rounded-[var(--radius-input)] border transition-colors hover:bg-[var(--bg-hover)]"
-                        style={{ borderColor: "var(--border)", color: "var(--fg-3)" }}
+                        style={{
+                          borderColor: "var(--border)",
+                          color: "var(--fg-3)",
+                          opacity: askAgentNavLocked ? 0.5 : undefined,
+                        }}
                       >
                         <Pencil className="h-3.5 w-3.5" />
                       </button>
@@ -415,8 +425,9 @@ export function TeamSwitcher({
                 type="button"
                 role="menuitem"
                 onClick={openLeaveConfirm}
+                disabled={askAgentNavLocked}
                 className="mt-2 flex w-full items-center gap-2 rounded-[var(--radius-input)] px-2 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
-                style={{ color: "var(--state-error)" }}
+                style={{ color: "var(--state-error)", opacity: askAgentNavLocked ? 0.5 : undefined }}
               >
                 <LogOut className="h-3.5 w-3.5" />
                 <span>Leave this team</span>
@@ -446,11 +457,14 @@ export function TeamSwitcher({
                         key={o.id}
                         type="button"
                         role="menuitem"
-                        disabled={!!switchingOrg}
+                        disabled={!!switchingOrg || askAgentNavLocked}
                         aria-busy={isBusy}
                         onClick={() => void handleSwitch(o)}
                         className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
-                        style={{ color: "var(--fg)", opacity: switchingOrg && !isBusy ? 0.45 : undefined }}
+                        style={{
+                          color: "var(--fg)",
+                          opacity: (switchingOrg || askAgentNavLocked) && !isBusy ? 0.45 : undefined,
+                        }}
                       >
                         <span className="inline-flex flex-none justify-center" style={{ width: 18 }}>
                           {isBusy ? (
@@ -476,17 +490,23 @@ export function TeamSwitcher({
               </div>
             )}
 
-            {/* ③ Team management — always shown. */}
+            {/* ③ Team management — always shown. Create/Join complete via
+                `TeamSetupModal`'s `selectOrganization` + `/onboarding` navigation,
+                so they are guarded exactly like the switch rows: inert while a
+                pending Ask agent attempt owns the surface, plus an imperative
+                re-check at the action boundary. */}
             <div className="py-1">
               <button
                 type="button"
                 role="menuitem"
+                disabled={askAgentNavLocked}
                 onClick={() => {
+                  if (isAskAgentNavLocked()) return;
                   setOpen(false);
                   setSetupAction("create");
                 }}
                 className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
-                style={{ color: "var(--fg)" }}
+                style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
               >
                 <Plus className="h-3.5 w-3.5" />
                 <span>Create new team</span>
@@ -494,12 +514,14 @@ export function TeamSwitcher({
               <button
                 type="button"
                 role="menuitem"
+                disabled={askAgentNavLocked}
                 onClick={() => {
+                  if (isAskAgentNavLocked()) return;
                   setOpen(false);
                   setSetupAction("join");
                 }}
                 className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
-                style={{ color: "var(--fg)" }}
+                style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
               >
                 <UserPlus className="h-3.5 w-3.5" />
                 <span>Join with invite link</span>
@@ -510,12 +532,14 @@ export function TeamSwitcher({
                 <button
                   type="button"
                   role="menuitem"
+                  disabled={askAgentNavLocked}
                   onClick={() => {
+                    if (isAskAgentNavLocked()) return;
                     setOpen(false);
                     setInviteOpen(true);
                   }}
                   className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
-                  style={{ color: "var(--fg)" }}
+                  style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
                 >
                   <Link2 className="h-3.5 w-3.5" />
                   <span>Invite teammates</span>
