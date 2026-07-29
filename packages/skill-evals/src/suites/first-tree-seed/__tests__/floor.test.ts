@@ -80,9 +80,9 @@ describe("first-tree-seed floor invariants", () => {
     expect(durableProgressMarkdown).toContain("binding change");
   });
 
-  it("publishes the portable Seed skill as version 0.5.1", () => {
-    expect(skillVersion).toBe("0.5.1");
-    expect(skillMarkdown).toContain("version: 0.5.1");
+  it("publishes the portable Seed skill as version 0.5.2", () => {
+    expect(skillVersion).toBe("0.5.2");
+    expect(skillMarkdown).toContain("version: 0.5.2");
     expect(skillMarkdown).toContain('first-tree: ">=0.5.16 <0.6.0"');
     expect(openAiMetadata).toContain("$first-tree-seed");
     expect(openAiMetadata).toContain("merged durable progress");
@@ -133,7 +133,7 @@ describe("first-tree-seed floor invariants", () => {
     expect(skillMarkdown).toMatch(/collect any uncovered\s+tree-repo recovery returned/u);
   });
 
-  it("hands off Review Agent configuration to Setup without blocking Seed", () => {
+  it("hands off Review Agent configuration to Setup without blocking ordinary Seed", () => {
     expect(skillMarkdown).toContain("After the Phase 1 PR/MR is open, check Review Agent configuration once");
     expect(skillMarkdown).toContain('first-tree org context-tree review-config --as-member --org "<team-id>" --json');
     expect(skillMarkdown).toContain("Use only the JSON `enabled` and `agentUuid` fields");
@@ -145,11 +145,11 @@ describe("first-tree-seed floor invariants", () => {
     expect(skillMarkdown).toContain("send at most one combined setup handoff");
     expect(skillMarkdown).toMatch(/supersedes\s+the generated briefing's generic GitHub-follow setup prompt/u);
     expect(skillMarkdown).toMatch(/If only one is\s+missing, mention only that action/u);
-    expect(skillMarkdown).toContain("creates no inferred debt and does not block Seed");
-    expect(skillMarkdown).toContain("optional for Team, Chat, basic Tree use and Seed\n  completion");
-    expect(skillMarkdown).toContain("only when this run verified that ruleset setup succeeded");
-    expect(skillMarkdown).toContain("report the governance actually observed");
-    expect(skillMarkdown).toContain("Do not repeat the Review Agent\nhandoff from Phase 1");
+    expect(skillMarkdown).toMatch(/creates no inferred debt[\s\S]*does not block\s+ordinary Seed/u);
+    expect(skillMarkdown).toMatch(/optional for Team, Chat, basic Tree use,\s+and ordinary Seed completion/u);
+    expect(skillMarkdown).toMatch(/only when this run verified that\s+ruleset setup succeeded/u);
+    expect(skillMarkdown).toMatch(/report\s+the governance actually observed/u);
+    expect(skillMarkdown).toMatch(/Do not repeat the Review Agent\s+handoff from Phase 1/u);
 
     const handoffRows = [
       "| GitHub coverage missing | No selected Agent | One combined handoff: authoritative coverage recovery plus select and enable Automatic Review in Settings → Setup |",
@@ -177,6 +177,24 @@ describe("first-tree-seed floor invariants", () => {
     expect(skillMarkdown).toContain("no GitHub App coverage guidance applies");
     expect(skillMarkdown).toContain("Never substitute a GitHub App URL");
     expect(skillMarkdown).toContain("Use **Settings → Setup** only for an actual Team capability");
+  });
+
+  it("gates only Welcome-launched Content PRs on a selected enabled Reviewer", () => {
+    expect(skillMarkdown).toContain("### Optional Welcome Reviewer contract");
+    expect(skillMarkdown).toContain("Review gate: automatic-review-required");
+    expect(skillMarkdown).toContain("Review gate: optional");
+    expect(skillMarkdown).toContain("do not open the Content PR/MR");
+    expect(skillMarkdown).toContain("non-null `agentUuid` and `enabled: true`");
+    expect(skillMarkdown).toContain("delays only the Content PR/MR remote");
+    expect(skillMarkdown).toContain("must not substitute the recovery\n    Agent");
+    expect(skillMarkdown).toMatch(/`agentUuid` is null:[\s\S]*select and\s+enable a Reviewer/u);
+    expect(skillMarkdown).toMatch(/`agentUuid` is present and `enabled` is false:[\s\S]*only to enable/u);
+    expect(skillMarkdown).toMatch(/read fails or is ambiguous:[\s\S]*infer no selection or enablement action/u);
+    expect(durableProgressMarkdown).toContain("A legacy v1 record without the line");
+    expect(durableProgressMarkdown).toContain("treated as `optional`");
+    expect(durableProgressMarkdown).toContain("Count every line whose trimmed text begins with");
+    expect(durableProgressMarkdown).toContain("duplicate lines or any other value fail closed");
+    expect(durableProgressMarkdown).toContain("Malformed/duplicate marker, ledger, or Review gate");
   });
 
   it("discovers GitLab CI as a Tier 0 operations signal", () => {
