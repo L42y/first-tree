@@ -11,7 +11,7 @@ import { CommunityChannels } from "../../../components/community-channels.js";
 import { Button } from "../../../components/ui/button.js";
 import { readCampaignActionHandoffFlag, writeCampaignActionHandoffFlag } from "../../../utils/onboarding-flags.js";
 import { getCampaign } from "../../quickstart/campaigns.js";
-import { ContextEnablement } from "../../settings/context-enablement.js";
+import { OnboardingContextPersonalAccess } from "../../settings/context-enablement.js";
 import {
   buildCampaignActionBootstrap,
   buildInviteeReadyBootstrap,
@@ -293,7 +293,7 @@ function AdminStartChat() {
 // ── Invitee ─────────────────────────────────────────────────────────────
 
 function InviteeStartChat() {
-  const { organizationId, computer } = useOnboardingFlow();
+  const { organizationId } = useOnboardingFlow();
   // BYO Context readiness and managed first-chat readiness are deliberately
   // separate. External Read needs only a bound Context Tree plus an active
   // Team code-repository resource; the legacy managed first chat may still
@@ -350,7 +350,7 @@ function InviteeStartChat() {
   // Read failure → not-ready; the query keeps polling so a transient blip
   // resolves on its own.
   if (teamQuery.isError || !teamQuery.data) {
-    return <InviteeNotReady contextReady={false} computerConnected={computer.connectedClient !== null} />;
+    return <InviteeNotReady contextReady={false} />;
   }
 
   const { treeUrl, hasInstallation, installationKnown, hasCodeRepository } = teamQuery.data;
@@ -363,9 +363,9 @@ function InviteeStartChat() {
   // polling, so it advances to ready on its own once install is confirmed.
   const installed = installationKnown && hasInstallation;
   return resolveInviteeStartChatState({ treeUrl, hasInstallation: installed }) === "ready" && hasCodeRepository ? (
-    <InviteeReady computerConnected={computer.connectedClient !== null} />
+    <InviteeReady />
   ) : (
-    <InviteeNotReady contextReady={contextReady} computerConnected={computer.connectedClient !== null} />
+    <InviteeNotReady contextReady={contextReady} />
   );
 }
 
@@ -377,7 +377,7 @@ function InviteeStartChat() {
  * (they're enabled for every org agent). This mirrors the admin finale as a
  * pure launch into a real chat. An invitee never mutates team config.
  */
-function InviteeReady({ computerConnected }: { computerConnected: boolean }) {
+function InviteeReady() {
   const { organizationId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
   const [phase, setPhase] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -421,14 +421,7 @@ function InviteeReady({ computerConnected }: { computerConnected: boolean }) {
             {error}
           </FlowHint>
         )}
-        {organizationId && (
-          <ContextEnablement
-            organizationId={organizationId}
-            teamRole="member"
-            ready
-            computerConnected={computerConnected}
-          />
-        )}
+        {organizationId && <OnboardingContextPersonalAccess organizationId={organizationId} ready />}
         <div className="flex">
           <Button type="button" variant="cta" onClick={() => void handleStart()}>
             <span>{COPY.startChat.startWorking}</span>
@@ -451,7 +444,7 @@ function InviteeReady({ computerConnected }: { computerConnected: boolean }) {
  * `completeAndEnterChat` — not `finishLater` — means the button lands the user
  * in a real chat WITH the agent, instead of dropping them into an empty workspace.
  */
-function InviteeNotReady({ contextReady, computerConnected }: { contextReady: boolean; computerConnected: boolean }) {
+function InviteeNotReady({ contextReady }: { contextReady: boolean }) {
   const { organizationId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
   const [phase, setPhase] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -492,14 +485,7 @@ function InviteeNotReady({ contextReady, computerConnected }: { contextReady: bo
             {error}
           </FlowHint>
         )}
-        {organizationId && (
-          <ContextEnablement
-            organizationId={organizationId}
-            teamRole="member"
-            ready={contextReady}
-            computerConnected={computerConnected}
-          />
-        )}
+        {organizationId && <OnboardingContextPersonalAccess organizationId={organizationId} ready={contextReady} />}
         {/* The primary action is not an escape hatch: the common not-ready case
             (admin finished without a tree) never resolves, so the real path
             forward is to start now. If the team does finish, the page still

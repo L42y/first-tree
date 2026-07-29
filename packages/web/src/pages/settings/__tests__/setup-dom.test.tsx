@@ -11,7 +11,7 @@ import { buildSetupRows, SettingsSetupPage, type SetupFacts, SetupOverview } fro
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-const activityMocks = vi.hoisted(() => ({ listClients: vi.fn() }));
+const activityMocks = vi.hoisted(() => ({ generateConnectToken: vi.fn(), listClients: vi.fn() }));
 const contextTreeMocks = vi.hoisted(() => ({ getContextTreeSnapshot: vi.fn() }));
 const contextEnablementMocks = vi.hoisted(() => ({ getContextEnablementHandoff: vi.fn() }));
 const onboardingEventMocks = vi.hoisted(() => ({ reportOnboardingEvent: vi.fn() }));
@@ -231,6 +231,15 @@ async function openContextTreeControls(view: Awaited<ReturnType<typeof renderSet
 beforeEach(() => {
   vi.clearAllMocks();
   activityMocks.listClients.mockResolvedValue([]);
+  activityMocks.generateConnectToken.mockResolvedValue({
+    bootstrapCommand: "first-tree-dev login short-lived-code",
+    installerUrl: null,
+    binName: "first-tree-dev",
+  });
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn(async () => undefined) },
+  });
   resourceMocks.listTeamResourcesForOrg.mockResolvedValue([]);
   orgSettingsMocks.getRawContextTreeSetting.mockResolvedValue({
     repo: "https://github.com/acme/context-tree.git",
@@ -596,7 +605,11 @@ describe("Settings Setup overview", () => {
       kind: "attention",
     });
     expect(rowFor("repository-automation", memberFacts).action).toBeUndefined();
-    expect(rowFor("context-tree", memberFacts).action).toEqual({ label: "View", to: "/context" });
+    expect(rowFor("context-tree", memberFacts).action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("turns the same Team blocker into admin attention and member read-only explanation", () => {
@@ -707,7 +720,11 @@ describe("Settings Setup overview", () => {
       });
     }
     expect(admin.action?.label).toBe("Manage");
-    expect(member.action).toEqual({ label: "View", to: "/context" });
+    expect(member.action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("keeps unbound optional and invalid role-aware", () => {
@@ -777,7 +794,7 @@ describe("Settings Setup overview", () => {
     expect(invalidMember.action).toEqual({ label: "View", to: "/context" });
   });
 
-  it("keeps bound Context Tree recovery read-only and explicit for a member", () => {
+  it("keeps Team recovery read-only while preserving Member personal Context access", () => {
     const row = rowFor(
       "context-tree",
       facts({
@@ -788,7 +805,11 @@ describe("Settings Setup overview", () => {
 
     expect(row.status).toMatchObject({ label: "Unavailable", kind: "blocked" });
     expect(row.status.detail).toContain("Ask an admin to recover");
-    expect(row.action).toEqual({ label: "View", to: "/context" });
+    expect(row.action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("keeps snapshot lookup failure unknown rather than claiming recovery is needed", () => {
@@ -897,7 +918,11 @@ describe("Settings Setup overview", () => {
     expect(member.status).toMatchObject({ label: "Review service unavailable", kind: "blocked" });
     expect(member.status.detail).toContain("Ask an admin to resolve this: The configured reviewer is missing.");
     expect(member.status.detail).toContain("Context Tree available");
-    expect(member.action).toEqual({ label: "View", to: "/context" });
+    expect(member.action).toEqual({
+      label: "Access",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
   });
 
   it("uses the Team projection and only asks the snapshot owner endpoint for a bound tree", async () => {
@@ -932,6 +957,113 @@ describe("Settings Setup overview", () => {
     await act(async () => manage?.click());
     expect(manage?.getAttribute("aria-expanded")).toBe("false");
     expect(view.host.querySelector('[data-setup-owner-controls="context-tree"]')).toBeNull();
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("nests optional personal coding-agent access under a bound Context Tree without assuming this browser's Computer", async () => {
+    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
+      {
+        type: "repo",
+        status: "active",
+      },
+    ]);
+    contextEnablementMocks.getContextEnablementHandoff.mockImplementation(
+      async (_organizationId: string, provider: "claude-code" | "codex") => ({
+        organizationId: "org-1",
+        teamDisplayName: "Acme",
+        role: "admin",
+        provider,
+        command: `first-tree-dev context enable --provider ${provider} --team org-1`,
+        workingDirectoryInstruction: "Run this from the target repository.",
+      }),
+    );
+
+    const view = await renderSettingsSetupPage();
+    expect(view.host.querySelector("#context-access")).toBeNull();
+    const { controls } = await openContextTreeControls(view);
+    const personalAccess = await waitForSelector<HTMLElement>(controls, "[data-setup-personal-access]");
+
+    expect(personalAccess.textContent).toContain("Use in your coding agent");
+    expect(personalAccess.textContent).toContain("Personal access");
+    expect(personalAccess.textContent).toContain("Copy setup prompt");
+    expect(personalAccess.textContent).not.toContain("context enable --provider");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
+
+    const copy = [...personalAccess.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Copy setup prompt",
+    );
+    await act(async () => copy?.click());
+    await flush();
+
+    expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("first-tree-dev login short-lived-code"),
+    );
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("lets a Member expand personal Context access without loading Admin Tree or Reviewer controls", async () => {
+    authMock.value = { ...authMock.value, role: "member" };
+    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
+      {
+        type: "repo",
+        status: "active",
+      },
+    ]);
+    contextEnablementMocks.getContextEnablementHandoff.mockImplementation(
+      async (_organizationId: string, provider: "claude-code" | "codex") => ({
+        organizationId: "org-1",
+        teamDisplayName: "Acme",
+        role: "member",
+        provider,
+        command: `first-tree-dev context enable --provider ${provider} --team org-1`,
+        workingDirectoryInstruction: "Run this from the target repository.",
+      }),
+    );
+
+    const view = await renderSettingsSetupPage();
+    const tree = await waitForRowText(view.host, "context-tree", "Available");
+    const access = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Access",
+    );
+    expect(access?.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => access?.click());
+    const controls = await waitForSelector<HTMLElement>(tree, '[data-setup-owner-controls="context-tree"]');
+    const personalAccess = await waitForSelector<HTMLElement>(controls, "[data-setup-personal-access]");
+    const openContext = [...controls.querySelectorAll<HTMLAnchorElement>("a")].find(
+      (link) => link.textContent === "Open Context →",
+    );
+    expect(personalAccess.textContent).toContain("Personal access");
+    expect(personalAccess.textContent).toContain("Copy setup prompt");
+    expect(openContext?.getAttribute("href")).toBe("/context");
+    expect(controls.querySelector('[data-setup-owner-controls="automatic-review"]')).toBeNull();
+    expect(controls.querySelector('[role="switch"]')).toBeNull();
+    expect(reviewerMocks.getContextReviewerCandidates).not.toHaveBeenCalled();
+    expect(orgSettingsMocks.getRawContextTreeSetting).not.toHaveBeenCalled();
+
+    const copy = [...personalAccess.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Copy setup prompt",
+    );
+    await act(async () => copy?.click());
+    await flush();
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("does not render a Personal access blocker when its prerequisites are incomplete", async () => {
+    const view = await renderSettingsSetupPage();
+    const { controls } = await openContextTreeControls(view);
+
+    expect(controls.querySelector("[data-setup-personal-access]")).toBeNull();
+    expect(controls.textContent).not.toContain("Personal access");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
 
     await act(async () => view.root.unmount());
   });

@@ -244,6 +244,9 @@ describe("extra preview pages", () => {
     expect(reviewerControls).not.toBeNull();
     expect(rendered.container.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
     expect(text(reviewerControls ?? treeRow)).toContain("Context Reviewer");
+    expect(text(treeControls ?? treeRow)).toContain("Use in your coding agent");
+    expect(text(treeControls ?? treeRow)).toContain("Copy setup prompt");
+    expect(text(treeControls ?? treeRow)).not.toContain("context enable --provider");
     const enablement = reviewerControls?.querySelector<HTMLButtonElement>('[role="switch"]');
     expect(enablement?.getAttribute("aria-checked")).toBe("true");
     if (!enablement) throw new Error("Missing preview Reviewer enablement switch");
@@ -252,6 +255,23 @@ describe("extra preview pages", () => {
     await click(buttonByText(treeRow, "Manage"));
     expect(treeRow.querySelector('[data-setup-owner-controls="context-tree"]')).toBeNull();
     expect(globalThis.fetch).not.toHaveBeenCalled();
+
+    await cleanupRendered(rendered);
+  });
+
+  it("renders Member personal Context access without Admin controls", async () => {
+    const rendered = await renderPreview(<SetupPreviewPage />, "/preview/setup?role=member&state=ready");
+    const treeRow = rendered.container.querySelector<HTMLElement>('[data-setup-row="context-tree"]');
+    if (!treeRow) throw new Error("Missing Context Tree row");
+
+    await click(buttonByText(treeRow, "Access"));
+    const controls = treeRow.querySelector<HTMLElement>('[data-setup-owner-controls="context-tree"]');
+    expect(controls).not.toBeNull();
+    expect(controls?.querySelector<HTMLAnchorElement>('a[href="/context"]')?.textContent).toBe("Open Context →");
+    expect(text(controls ?? treeRow)).toContain("Personal access");
+    expect(text(controls ?? treeRow)).toContain("Copy setup prompt");
+    expect(controls?.querySelector('[data-setup-owner-controls="automatic-review"]')).toBeNull();
+    expect(controls?.querySelector('[role="switch"]')).toBeNull();
 
     await cleanupRendered(rendered);
   });
