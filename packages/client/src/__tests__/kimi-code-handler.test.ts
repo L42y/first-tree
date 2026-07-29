@@ -142,6 +142,7 @@ afterEach(() => {
 function makeHandler(
   fakeSession: FakeSession,
   captures: { create?: CreateSessionOptions; resume?: ResumeSessionInput },
+  extraConfig: Record<string, unknown> = {},
 ) {
   const fakeKaos = {
     withCwd: vi.fn().mockReturnThis(),
@@ -162,6 +163,7 @@ function makeHandler(
       },
       close: async () => {},
     }),
+    ...extraConfig,
   });
 }
 
@@ -181,6 +183,7 @@ describe("Kimi Code handler", () => {
       permission: "yolo",
     });
     expect(captures.create).not.toHaveProperty("model");
+    expect(captures.create).not.toHaveProperty("mcpServers");
     expect(captures.create?.roleAdditional).toContain("First Tree");
     expect(fakeSession.prompts).toEqual(["[From: human-1]\n\ndo work"]);
     expect(events.some((item) => item.kind === "thinking")).toBe(true);
@@ -199,6 +202,59 @@ describe("Kimi Code handler", () => {
     expect(token.completed).toEqual([{ status: "success" }]);
   });
 
+  it("injects every managed MCP transport directly into createSession", async () => {
+    const fakeSession = new FakeSession("kimi-session-mcp", [successfulTurn("kimi-session-mcp")]);
+    const captures: { create?: CreateSessionOptions } = {};
+    const payload: AgentRuntimeConfigPayload = {
+      kind: "kimi-code",
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [
+        { name: "docs", transport: "stdio", command: "docs-server", args: ["--stdio"] },
+        {
+          name: "remote",
+          transport: "http",
+          url: "https://mcp.example.test/rpc",
+          headers: { "X-Test": "http" },
+        },
+        {
+          name: "events",
+          transport: "sse",
+          url: "https://mcp.example.test/events",
+          headers: { "X-Test": "sse" },
+        },
+      ],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const events: SessionEvent[] = [];
+    const handler = makeHandler(fakeSession, captures, {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+    });
+
+    await handler.start(message("m1", "use managed tools"), makeContext(events), makeToken());
+
+    expect(captures.create).toHaveProperty("mcpServers", {
+      docs: { transport: "stdio", command: "docs-server", args: ["--stdio"] },
+      remote: {
+        transport: "http",
+        url: "https://mcp.example.test/rpc",
+        headers: { "X-Test": "http" },
+      },
+      events: {
+        transport: "sse",
+        url: "https://mcp.example.test/events",
+        headers: { "X-Test": "sse" },
+      },
+    });
+    expect(
+      events.some(
+        (item) => item.kind === "error" && item.payload.source === "runtime" && /MCP/.test(item.payload.message),
+      ),
+    ).toBe(false);
+  });
+
   it("resumes with roleAdditional/kaos and reapplies explicit model plus permission", async () => {
     const fakeSession = new FakeSession("kimi-session-2", [successfulTurn("kimi-session-2")]);
     const captures: { resume?: ResumeSessionInput } = {};
@@ -206,7 +262,7 @@ describe("Kimi Code handler", () => {
       kind: "kimi-code" as const,
       prompt: { append: "" },
       model: "kimi-for-coding",
-      mcpServers: [],
+      mcpServers: [{ name: "docs", transport: "stdio" as const, command: "docs-server" }],
       env: [],
       gitRepos: [],
       resourceSkills: [],
@@ -229,6 +285,9 @@ describe("Kimi Code handler", () => {
     await handler.resume(message("m2", "continue"), "kimi-session-2", makeContext([]), makeToken());
 
     expect(captures.resume).toMatchObject({ id: "kimi-session-2" });
+    expect(captures.resume).toHaveProperty("mcpServers", {
+      docs: { transport: "stdio", command: "docs-server" },
+    });
     expect(captures.resume?.roleAdditional).toContain("First Tree");
     expect(fakeSession.setPermission).toHaveBeenCalledWith("yolo");
     expect(fakeSession.setModel).toHaveBeenCalledWith("kimi-for-coding");
