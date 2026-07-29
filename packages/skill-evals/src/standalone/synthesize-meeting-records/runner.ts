@@ -176,7 +176,7 @@ export async function runSynthesizeMeetingRecordsCase(
     type: "packet_validator_finished",
   });
   const events = readEvents(paths.eventsPath);
-  const metrics = deriveMetrics(events, evalCase, runnerResult.exitCode, validatorResult, paths);
+  const metrics = deriveMetrics(events, evalCase, fixtureValidation, runnerResult.exitCode, validatorResult, paths);
   const passed = casePassed(fixtureValidation, metrics);
   const summary: CaseRunSummary = {
     caseId: evalCase.id,

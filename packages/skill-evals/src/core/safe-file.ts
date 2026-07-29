@@ -86,6 +86,46 @@ finally:
             pass
 `;
 
+const ENTRY_EXISTS_BENEATH_PYTHON = String.raw`
+import os
+import sys
+
+root = sys.argv[1]
+parts = sys.argv[2:]
+opened = []
+
+def fail(message):
+    raise RuntimeError(message)
+
+try:
+    if not parts or any(part in ("", ".", "..") or "/" in part or "\\" in part for part in parts):
+        fail("invalid trusted-root locator")
+
+    base_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        base_flags |= os.O_CLOEXEC
+    directory_flags = base_flags | os.O_DIRECTORY
+
+    current = os.open(root, directory_flags)
+    opened.append(current)
+    for part in parts[:-1]:
+        current = os.open(part, directory_flags, dir_fd=current)
+        opened.append(current)
+
+    os.stat(parts[-1], dir_fd=current, follow_symlinks=False)
+except FileNotFoundError:
+    sys.exit(3)
+except Exception as error:
+    sys.stderr.write(f"{type(error).__name__}: {error}\n")
+    sys.exit(1)
+finally:
+    for descriptor in reversed(opened):
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+`;
+
 export type OpenedRegularFile = {
   descriptor: number;
   path: string;
@@ -208,6 +248,21 @@ export function readNoFollowRegularFileBeneath(
     throw new Error(`Trusted-root open rejected ${path}${detail ? `: ${detail}` : ""}`);
   }
   return result.stdout;
+}
+
+export function entryExistsNoFollowBeneath(trustedRoot: string, path: string): boolean {
+  const { parts, root } = trustedLocatorParts(trustedRoot, path);
+  const result = spawnSync("python3", ["-I", "-c", ENTRY_EXISTS_BENEATH_PYTHON, root, ...parts], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024,
+  });
+  if (result.error) {
+    throw new Error(`Trusted-root entry check could not start: ${result.error.message}`, { cause: result.error });
+  }
+  if (result.status === 0) return true;
+  if (result.status === 3) return false;
+  const detail = result.stderr.trim();
+  throw new Error(`Trusted-root entry check rejected ${path}${detail ? `: ${detail}` : ""}`);
 }
 
 export function readNoFollowRegularText(path: string, maxBytes = DEFAULT_MAX_BYTES): string {

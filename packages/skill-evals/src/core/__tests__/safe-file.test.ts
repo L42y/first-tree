@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
-import { readNoFollowRegularTextBeneath } from "../safe-file.js";
+import { entryExistsNoFollowBeneath, readNoFollowRegularTextBeneath } from "../safe-file.js";
 
 describe("trusted-root file snapshots", () => {
   it("reads a standalone regular file beneath ordinary directory components", () => {
@@ -83,6 +83,24 @@ describe("trusted-root file snapshots", () => {
       expect(exitCode).toBe(0);
       expect(contents).toBe("safe\n");
       expect(readFileSync(join(nested, "value.txt"), "utf8")).toBe("external\n");
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("observes a final symlink entry without following its target", () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-evals-safe-file-"));
+    try {
+      const outside = join(root, "outside");
+      mkdirSync(outside);
+      const link = join(root, "context-tree");
+      symlinkSync(outside, link);
+
+      expect(entryExistsNoFollowBeneath(root, link)).toBe(true);
+      rmSync(outside, { recursive: true });
+      expect(entryExistsNoFollowBeneath(root, link)).toBe(true);
+      unlinkSync(link);
+      expect(entryExistsNoFollowBeneath(root, link)).toBe(false);
     } finally {
       rmSync(root, { force: true, recursive: true });
     }

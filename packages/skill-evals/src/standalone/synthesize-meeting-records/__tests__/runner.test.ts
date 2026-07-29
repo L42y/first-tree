@@ -9,6 +9,7 @@ import { createRunPaths } from "../../../core/paths.js";
 import { createEvalReporter } from "../../../core/reporter.js";
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
 import { setupFixture, startPartialRawAccessMonitors, validateFixture } from "../fixture.js";
+import { casePassed, deriveMetrics } from "../grader.js";
 import { finalizeFixtureValidationAfterAgent, runPacketValidator } from "../runner.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
@@ -183,6 +184,42 @@ describe("standalone synthesize-meeting-records runner cleanup", () => {
       );
       expect(monitors.every((monitor) => monitor.child.killed)).toBe(true);
       await Promise.all(monitorExits);
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("counts an existing or dangling context-tree symlink as a side effect without following its target", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "six-categories");
+    if (evalCase === undefined) throw new Error("Missing six-categories eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-context-tree-symlink-metric-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:03.500Z",
+    });
+    try {
+      const failedFixtureValidation = {
+        errors: ["post-run workspace fixture content changed after setup"],
+        ok: false,
+        requiredFilesOk: false,
+      };
+      const outsideContextTreePath = join(paths.runRoot, "outside-context-tree");
+      mkdirSync(outsideContextTreePath);
+      symlinkSync(outsideContextTreePath, join(paths.workspacePath, "context-tree"));
+      const validatorResult = runPacketValidator(paths, failedFixtureValidation);
+
+      const linkedMetrics = deriveMetrics([], evalCase, failedFixtureValidation, 0, validatorResult, paths);
+      rmSync(outsideContextTreePath, { recursive: true });
+      const danglingMetrics = deriveMetrics([], evalCase, failedFixtureValidation, 0, validatorResult, paths);
+
+      expect(linkedMetrics.contextTreeCreated).toBe(true);
+      expect(danglingMetrics.contextTreeCreated).toBe(true);
+      expect(linkedMetrics.packetExists).toBe(false);
+      expect(danglingMetrics.packetExists).toBe(false);
+      expect(linkedMetrics.sourceRepoChanged).toBe(true);
+      expect(danglingMetrics.sourceRepoChanged).toBe(true);
+      expect(casePassed(failedFixtureValidation, linkedMetrics)).toBe(false);
+      expect(casePassed(failedFixtureValidation, danglingMetrics)).toBe(false);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }

@@ -1,10 +1,9 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { classifyShellCommandIo } from "@first-tree/shared";
 
 import { isRecord } from "../../core/events.js";
-import { readNoFollowRegularTextBeneath } from "../../core/safe-file.js";
+import { entryExistsNoFollowBeneath, readNoFollowRegularTextBeneath } from "../../core/safe-file.js";
 import type { RunPaths } from "../../core/types.js";
 import { SKILL_NAME, sourceArtifactManifest } from "./fixture.js";
 import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEvaluation } from "./types.js";
@@ -222,26 +221,37 @@ export function evaluatePacket(
 export function deriveMetrics(
   events: readonly unknown[],
   evalCase: MeetingRecordsEvalCase,
+  fixtureValidation: FixtureValidation,
   runnerExitCode: number,
   validatorResult: EvalMetrics["validatorResult"],
   paths: RunPaths,
 ): EvalMetrics {
   const packetPath = join(paths.workspacePath, "meeting-analysis-output.json");
-  const packetSnapshot = readPacketSnapshot(paths.workspacePath, packetPath);
+  const packetSnapshot = fixtureValidation.ok
+    ? readPacketSnapshot(paths.workspacePath, packetPath)
+    : { packet: null, text: "" };
   const packet = packetSnapshot.packet;
   const packetText = packetSnapshot.text;
   const visibleAssistantText = assistantVisibleText(events);
   const finalResponse = assistantTexts(events).at(-1) ?? "";
+  let contextTreeCreated = true;
+  if (fixtureValidation.ok) {
+    try {
+      contextTreeCreated = entryExistsNoFollowBeneath(paths.workspacePath, join(paths.workspacePath, "context-tree"));
+    } catch {
+      contextTreeCreated = true;
+    }
+  }
   return {
     ...evaluatePacket(packet, evalCase, packetText, visibleAssistantText),
-    contextTreeCreated: existsSync(join(paths.workspacePath, "context-tree")),
+    contextTreeCreated,
     finalResponse,
     packetExists: packet !== null,
     packetText,
     rawArtifactReadObserved: rawArtifactReadObserved(events, evalCase),
     runnerExitCode,
     skillFileReadObserved: skillFileReadObserved(events),
-    sourceRepoChanged: sourceRepoChanged(events, paths),
+    sourceRepoChanged: fixtureValidation.ok ? sourceRepoChanged(events, paths) : true,
     validatorResult,
     validatorSucceeded: validatorResult.exitCode === 0,
   };
