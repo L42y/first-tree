@@ -9,7 +9,9 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
+import { loadValidContextReviewerAgent } from "./context-reviewer-common.js";
 import { githubEntityKeyCandidates } from "./github-entity-key.js";
+import { getOrgContextReviewRuntime } from "./org-settings.js";
 
 /**
  * Why a delegate-target lookup did or didn't qualify. Hoisted to a discrete
@@ -81,6 +83,8 @@ export type AudienceTarget = {
    * reason.
    */
   involveLogin: string | null;
+  /** The configured GitHub App was the directed target for this delivery. */
+  teamAgentTask?: true;
   provenance?: "explicit" | "identity_target" | "related_entity";
 };
 
@@ -88,6 +92,22 @@ export type AudienceResolution = {
   targets: AudienceTarget[];
   actorHumanId: string | null;
 };
+
+export type GithubAudienceOptions = {
+  appSlug?: string | null;
+};
+
+function normalizeGithubAppLogin(login: string): string {
+  return login
+    .trim()
+    .toLowerCase()
+    .replace(/\[bot\]$/u, "");
+}
+
+export function isGithubAppTargetLogin(login: string, appSlug: string | null | undefined): boolean {
+  if (!appSlug?.trim()) return false;
+  return normalizeGithubAppLogin(login) === normalizeGithubAppLogin(appSlug);
+}
 
 /**
  * Compute the Stage 2 audience for a normalized event.
@@ -103,10 +123,22 @@ export type AudienceResolution = {
  * Echo pruning happens in delivery, before fresh-chat resolution, so self-only
  * events do not write cards and mixed events keep the other humans' entries.
  */
-export async function resolveGithubAudience(db: Database, event: NormalizedScmEvent): Promise<AudienceResolution> {
+export async function resolveGithubAudience(
+  db: Database,
+  event: NormalizedScmEvent,
+  options: GithubAudienceOptions = {},
+): Promise<AudienceResolution> {
   const organizationId = event.source.organizationId;
   const entityKeys = githubEntityKeyCandidates(event.entity.type, event.entity.key);
   const actorHumanId = await resolveGithubActorHumanId(db, organizationId, event.actor);
+  const teamAgentTaskTarget = event.targets.find(
+    (target) =>
+      (target.reason === "mentioned" || target.reason === "assigned") &&
+      isGithubAppTargetLogin(target.externalUsername, options.appSlug),
+  );
+  const humanTargets = event.targets.filter(
+    (target) => !isGithubAppTargetLogin(target.externalUsername, options.appSlug),
+  );
 
   const subscribedRows = await db
     .select({
@@ -204,10 +236,10 @@ export async function resolveGithubAudience(db: Database, event: NormalizedScmEv
   }
 
   const involved: AudienceTarget[] = [];
-  if (event.targets.length > 0) {
-    const candidateLogins = event.targets.map((target) => target.externalUsername.toLowerCase());
+  if (humanTargets.length > 0) {
+    const candidateLogins = humanTargets.map((target) => target.externalUsername.toLowerCase());
     const reasonByLogin = new Map<string, InvolveReason>();
-    for (const target of event.targets) reasonByLogin.set(target.externalUsername.toLowerCase(), target.reason);
+    for (const target of humanTargets) reasonByLogin.set(target.externalUsername.toLowerCase(), target.reason);
 
     const candidates = await db
       .select({
@@ -269,6 +301,35 @@ export async function resolveGithubAudience(db: Database, event: NormalizedScmEv
         chatId: null,
         involveReason: reason,
         involveLogin: candidateLogin,
+      });
+    }
+  }
+
+  if (teamAgentTaskTarget) {
+    // The compatibility storage field is still named `contextReviewer`, but
+    // its selected Agent is the Team's shared GitHub execution target. The
+    // Automatic Review `enabled` flag remains independent: it gates trusted
+    // App review publication, not ordinary mention/assignee delegation.
+    const runtime = await getOrgContextReviewRuntime(db, organizationId);
+    const teamAgent = runtime.contextReviewer.agentUuid
+      ? await loadValidContextReviewerAgent(db, {
+          organizationId,
+          reviewerAgentUuid: runtime.contextReviewer.agentUuid,
+        })
+      : null;
+    if (teamAgent) {
+      // Always model an App-directed request as a fresh personnel target, even
+      // when its attention line already exists. `resolveTargetChat` still
+      // reuses that mapping, while the personnel shape preserves a manager's
+      // self-directed @App request from actor-echo pruning.
+      involved.push({
+        humanAgentId: teamAgent.managerHumanAgentId,
+        delegateAgentId: teamAgent.uuid,
+        kind: "new",
+        chatId: null,
+        involveReason: teamAgentTaskTarget.reason,
+        involveLogin: teamAgentTaskTarget.externalUsername.toLowerCase(),
+        teamAgentTask: true,
       });
     }
   }

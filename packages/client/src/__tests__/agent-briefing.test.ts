@@ -623,6 +623,9 @@ describe("buildAgentBriefing — asking humans, GitHub, and CLI overview", () =>
     expect(briefing).toContain("gh <command> --help");
     expect(briefing).toContain("If the current member is not an org admin");
     expect(briefing).toContain("hidden server sync path");
+    expect(briefing).toContain("`teamAgentTask: true`");
+    expect(briefing).toContain("post the outcome back to that GitHub PR or Issue");
+    expect(briefing).toContain("Do not mention the App again");
 
     // Issues/PRs the agent files for the user default to the repo the work is
     // about (the bound source repo), not reflexively First Tree's own repo.

@@ -16,16 +16,16 @@ const SETUP_BLOCKER_COPY = {
   context_tree_provider_unresolved: "The Context Tree provider could not be resolved.",
   context_tree_connection_mismatch: "The Context Tree repository does not match the current GitLab connection.",
   context_review_provider_prerequisite_missing: "The repository provider must be connected before review can run.",
-  context_review_assignment_required: "Choose a reviewer before enabling Automatic Review.",
+  context_review_assignment_required: "Choose a Team Agent before enabling Automatic Review.",
   context_review_no_eligible_agent: "No eligible organization-visible managed Agent is available.",
-  context_review_agent_missing: "The configured reviewer is missing.",
-  context_review_agent_inactive: "The configured reviewer is inactive.",
-  context_review_agent_manager_inactive: "The configured reviewer's manager is inactive.",
-  context_review_agent_private: "The configured reviewer is private and cannot run Automatic Review.",
+  context_review_agent_missing: "The configured Team Agent is missing.",
+  context_review_agent_inactive: "The configured Team Agent is inactive.",
+  context_review_agent_manager_inactive: "The configured Team Agent's manager is inactive.",
+  context_review_agent_private: "The configured Team Agent is private and cannot run Automatic Review.",
   context_review_agent_no_runtime:
-    "The configured reviewer needs a supported runtime on a usable Computer owned by its manager.",
-  context_review_agent_runtime_unavailable: "The configured reviewer's runtime is currently unavailable.",
-  context_review_state_changed: "Reviewer settings changed while this request was in progress.",
+    "The configured Team Agent needs a supported runtime on a usable Computer owned by its manager.",
+  context_review_agent_runtime_unavailable: "The configured Team Agent's runtime is currently unavailable.",
+  context_review_state_changed: "Team Agent settings changed while this request was in progress.",
 } satisfies Record<SetupBlockerCode, string>;
 
 export function setupBlockerCopy(code: SetupBlockerCode): string {

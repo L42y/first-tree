@@ -190,10 +190,10 @@ const ACTION_LABELS = {
   configure_gitlab_webhook: "Set up GitLab",
   repair_tree_binding: "Repair",
   open_tree_setup_chat: "Open setup chat",
-  select_review_agent: "Choose reviewer",
-  replace_review_agent: "Replace reviewer",
+  select_review_agent: "Choose Team Agent",
+  replace_review_agent: "Replace Team Agent",
   open_agent_owner_flow: "Manage agents",
-  manage_review_agent: "Manage reviewer",
+  manage_review_agent: "Manage Team Agent",
 } satisfies Record<SetupActionKind, string>;
 
 function blockerDetail(blockers: SetupBlocker[], isAdmin: boolean): string | undefined {
@@ -407,11 +407,11 @@ function reviewDiagnosticDetail(review: SetupAutomaticReview, isAdmin: boolean):
   const healthDetail =
     review.adoption === "disabled"
       ? review.health === "pending_verification"
-        ? "Reviewer verification pending"
+        ? "Team Agent verification pending"
         : review.health === "degraded"
-          ? "Reviewer degraded"
+          ? "Team Agent degraded"
           : review.health === "unavailable"
-            ? "Reviewer unavailable"
+            ? "Team Agent unavailable"
             : null
       : null;
   const issues = blockerDetail(review.blockers, isAdmin);
@@ -423,13 +423,13 @@ function reviewStatus(review: SetupAutomaticReview, isAdmin: boolean): SetupRowM
     return { label: "Available after Context Tree", kind: "optional" };
   }
   if (review.adoption === "disabled") {
-    const reviewer = review.reviewerAgent ? `Reviewer · ${review.reviewerAgent.displayName}` : null;
+    const reviewer = review.reviewerAgent ? `Team Agent · ${review.reviewerAgent.displayName}` : null;
     const diagnostic = reviewDiagnosticDetail(review, isAdmin);
     const detail = [reviewer, diagnostic, "Optional"].filter((item): item is string => Boolean(item)).join(" · ");
     return { label: "Off", detail, kind: "optional" };
   }
 
-  const reviewer = review.reviewerAgent ? `Reviewer · ${review.reviewerAgent.displayName}` : null;
+  const reviewer = review.reviewerAgent ? `Team Agent · ${review.reviewerAgent.displayName}` : null;
   const issues = blockerDetail(review.blockers, isAdmin);
   const detail = [reviewer, issues].filter((item): item is string => Boolean(item)).join(" · ") || undefined;
   if (review.health === "ready") return { label: "On", detail, kind: "ready" };

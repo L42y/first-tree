@@ -97,7 +97,7 @@ export function SetupReviewerControls({
   const options = [
     {
       value: "",
-      label: selectedAgentUuid ? "No Reviewer selected" : "Select an eligible managed Agent",
+      label: selectedAgentUuid ? "No Team Agent selected" : "Select an eligible Team Agent",
       disabled: !selectedAgentUuid,
     },
     ...candidates.map((candidate) => ({
@@ -136,12 +136,12 @@ export function SetupReviewerControls({
           </span>
           <div className="text-label" style={{ marginTop: "var(--sp-0_5)", color: "var(--fg-3)" }}>
             {selectedLabel && !selectedCandidate
-              ? `Reviewer · ${selectedLabel}${enabled ? "" : " · selection retained while off"}`
+              ? `Team Agent · ${selectedLabel}${enabled ? "" : " · selection retained while review is off"}`
               : selectedLabel
                 ? enabled
-                  ? "Reviews eligible Context Tree pull requests and merge requests as webhook events arrive."
-                  : "Reviewer selection retained while Automatic review is off."
-                : "Choose an existing eligible Team Agent. Setup never creates one."}
+                  ? "Handles GitHub App requests and reviews eligible Context Tree changes."
+                  : "Handles GitHub App requests. Automatic review is off."
+                : "Choose an existing eligible Team Agent for GitHub App requests and Context Tree review."}
           </div>
         </div>
         <Switch
@@ -160,7 +160,7 @@ export function SetupReviewerControls({
         <div role="alert" className="text-label" style={{ color: "var(--state-error)" }}>
           {candidatesQuery.error instanceof Error
             ? candidatesQuery.error.message
-            : "Failed to load eligible Context Review Agents"}
+            : "Failed to load eligible Team Agents"}
         </div>
       ) : candidates.length === 0 ? (
         <div className="text-label" style={{ color: "var(--fg-3)" }}>
@@ -173,10 +173,10 @@ export function SetupReviewerControls({
       ) : (
         <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
           <span className="text-label font-medium" style={{ color: "var(--fg)" }}>
-            Reviewer Agent
+            Team Agent
           </span>
           <Select
-            aria-label="Automatic review Agent"
+            aria-label="Team Agent"
             value={selectedAgentUuid ?? ""}
             onChange={(agentUuid) => {
               const next = agentUuid || null;
@@ -185,12 +185,12 @@ export function SetupReviewerControls({
             }}
             disabled={saving}
             options={options}
-            placeholder="Select an eligible managed Agent"
+            placeholder="Select an eligible Team Agent"
             searchable={candidates.length > 6}
           />
           <div className="text-caption" style={{ color: "var(--fg-4)" }}>
-            Changing the assignment turns Automatic Review off. Re-enable it separately after confirming the selected
-            Agent.
+            Changing the Team Agent turns Automatic Review off. Re-enable it separately after confirming the selection.
+            GitHub App requests continue to use the selected Team Agent while review is off.
           </div>
         </div>
       )}

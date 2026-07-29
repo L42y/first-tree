@@ -861,7 +861,7 @@ describe("Settings Setup overview", () => {
       }),
       "Available",
       "ready",
-      "Review off · Reviewer degraded · First Tree could not verify provider readiness. · acme/context-tree",
+      "Review off · Team Agent degraded · First Tree could not verify provider readiness. · acme/context-tree",
     ],
   ] as const)("summarizes Automatic review %s in the Context Tree row", (_name, capabilities, label, kind, detail) => {
     const input = facts({ capabilities: { state: "ready", value: capabilities } });
@@ -891,11 +891,11 @@ describe("Settings Setup overview", () => {
     const member = rowFor("context-tree", facts({ role: "member", capabilities: { state: "ready", value: shared } }));
 
     expect(admin.status).toMatchObject({ label: "Review needs attention", kind: "attention" });
-    expect(admin.status.detail).toContain("The configured reviewer is missing.");
+    expect(admin.status.detail).toContain("The configured Team Agent is missing.");
     expect(admin.status.detail).toContain("Context Tree available");
     expect(admin.action?.label).toBe("Manage");
     expect(member.status).toMatchObject({ label: "Review service unavailable", kind: "blocked" });
-    expect(member.status.detail).toContain("Ask an admin to resolve this: The configured reviewer is missing.");
+    expect(member.status.detail).toContain("Ask an admin to resolve this: The configured Team Agent is missing.");
     expect(member.status.detail).toContain("Context Tree available");
     expect(member.action).toEqual({ label: "View", to: "/context" });
   });
@@ -924,7 +924,7 @@ describe("Settings Setup overview", () => {
     expect(manage?.getAttribute("aria-expanded")).toBe("true");
     expect(controls.textContent).toContain("acme/context-tree · main branch · github");
     expect(orgSettingsMocks.getRawContextTreeSetting).toHaveBeenCalledWith("org-1");
-    await waitForSelector(reviewerControls, '[aria-label="Automatic review Agent"]');
+    await waitForSelector(reviewerControls, '[aria-label="Team Agent"]');
     expect(reviewerControls.textContent).toContain("Context Reviewer");
     expect(reviewerControls.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
     expect(reviewerMocks.getContextReviewerCandidates).toHaveBeenCalledWith("org-1");
@@ -1084,7 +1084,7 @@ describe("Settings Setup overview", () => {
     expect([...reviewerControls.querySelectorAll("a")].some((link) => link.textContent === "Manage Team Agents")).toBe(
       true,
     );
-    expect(reviewerControls.textContent).toContain("The configured reviewer's runtime is currently unavailable.");
+    expect(reviewerControls.textContent).toContain("The configured Team Agent's runtime is currently unavailable.");
     await act(async () => view.root.unmount());
   });
 
@@ -1102,8 +1102,8 @@ describe("Settings Setup overview", () => {
     const { reviewerControls } = await openContextTreeControls(view);
     const enablement = reviewerControls.querySelector<HTMLButtonElement>('[role="switch"]');
     expect(enablement?.getAttribute("aria-checked")).toBe("false");
-    await waitForSelector(reviewerControls, '[aria-label="Automatic review Agent"]');
-    expect(reviewerControls.textContent).toContain("Reviewer selection retained while Automatic review is off");
+    await waitForSelector(reviewerControls, '[aria-label="Team Agent"]');
+    expect(reviewerControls.textContent).toContain("Handles GitHub App requests. Automatic review is off.");
 
     await act(async () => enablement?.click());
     await flush();
@@ -1111,7 +1111,7 @@ describe("Settings Setup overview", () => {
     expect(reviewerMocks.putContextReviewerEnablement).toHaveBeenCalledWith("org-1", true);
     expect(reviewerMocks.putContextReviewerAssignment).not.toHaveBeenCalled();
     expect(reviewerControls.textContent).toContain(
-      "Reviews eligible Context Tree pull requests and merge requests as webhook events arrive.",
+      "Handles GitHub App requests and reviews eligible Context Tree changes.",
     );
     expect(reviewerControls.querySelector('[role="alert"]')).toBeNull();
     await act(async () => view.root.unmount());
@@ -1195,12 +1195,9 @@ describe("Settings Setup overview", () => {
     });
     const view = await renderSettingsSetupPage();
     const { reviewerControls } = await openContextTreeControls(view);
-    const agentSelect = await waitForSelector<HTMLButtonElement>(
-      reviewerControls,
-      '[aria-label="Automatic review Agent"]',
-    );
+    const agentSelect = await waitForSelector<HTMLButtonElement>(reviewerControls, '[aria-label="Team Agent"]');
     await act(async () => agentSelect?.click());
-    await waitForSelector(document.body, '[role="listbox"][aria-label="Automatic review Agent"]');
+    await waitForSelector(document.body, '[role="listbox"][aria-label="Team Agent"]');
     const offlineOption = [...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) =>
       option.textContent?.includes("Offline Reviewer"),
     );
@@ -1213,7 +1210,7 @@ describe("Settings Setup overview", () => {
     expect(reviewerMocks.putContextReviewerAssignment).toHaveBeenCalledWith("org-1", "reviewer-2");
     expect(reviewerMocks.putContextReviewerEnablement).not.toHaveBeenCalled();
     expect(reviewerControls.textContent).toContain("Offline Reviewer");
-    expect(reviewerControls.textContent).toContain("Reviewer selection retained while Automatic review is off");
+    expect(reviewerControls.textContent).toContain("Handles GitHub App requests. Automatic review is off.");
     expect(reviewerControls.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
     await act(async () => view.root.unmount());
   });
@@ -1233,7 +1230,7 @@ describe("Settings Setup overview", () => {
     const { reviewerControls } = await openContextTreeControls(view);
     await waitForSelector<HTMLAnchorElement>(reviewerControls, 'a[href="/team"]');
 
-    expect(reviewerControls.querySelector('[aria-label="Automatic review Agent"]')).toBeNull();
+    expect(reviewerControls.querySelector('[aria-label="Team Agent"]')).toBeNull();
     expect(reviewerControls.querySelector<HTMLAnchorElement>('a[href="/team"]')?.textContent).toBe(
       "Manage Team Agents",
     );
@@ -1248,9 +1245,9 @@ describe("Settings Setup overview", () => {
     const { reviewerControls } = await openContextTreeControls(view);
     await waitForSelector(reviewerControls, '[role="alert"]');
 
-    expect(reviewerControls.textContent).toContain("Reviewer · Context Reviewer");
+    expect(reviewerControls.textContent).toContain("Team Agent · Context Reviewer");
     expect(reviewerControls.textContent).toContain("candidate lookup failed");
-    expect(reviewerControls.querySelector('[aria-label="Automatic review Agent"]')).toBeNull();
+    expect(reviewerControls.querySelector('[aria-label="Team Agent"]')).toBeNull();
     await act(async () => view.root.unmount());
   });
 
@@ -1260,13 +1257,10 @@ describe("Settings Setup overview", () => {
     });
     const view = await renderSettingsSetupPage();
     const { reviewerControls } = await openContextTreeControls(view);
-    const agentSelect = await waitForSelector<HTMLButtonElement>(
-      reviewerControls,
-      '[aria-label="Automatic review Agent"]',
-    );
+    const agentSelect = await waitForSelector<HTMLButtonElement>(reviewerControls, '[aria-label="Team Agent"]');
     await act(async () => agentSelect.click());
     const clearOption = [...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
-      (option) => option.textContent === "No Reviewer selected",
+      (option) => option.textContent === "No Team Agent selected",
     );
     await act(async () => clearOption?.click());
     await flush();

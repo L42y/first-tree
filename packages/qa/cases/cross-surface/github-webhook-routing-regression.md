@@ -1,8 +1,8 @@
 ---
 id: github-webhook-routing-regression
-description: Verify a signed GitHub App webhook still reaches the expected followed chat and agent wake path after SCM processing changes.
+description: Verify signed GitHub App webhooks reach followed chats and route App mentions or assignments to the Team Agent.
 areas: [cross-surface]
-surfaces: [server, github, client]
+surfaces: [server, github, client, web]
 ---
 
 # GitHub Webhook Routing Regression
@@ -20,6 +20,8 @@ together without a GitHub-specific post-delivery branch.
 - Configure a GitHub App webhook secret and a bound, active installation for the test Team. Use a disposable repository
   and test identities; do not point a production App at the run cell.
 - Create a chat with an eligible human/delegate pair and follow one disposable issue or pull request in that chat.
+- Select an active, organization-visible Team Agent in Settings. Leave Automatic Review off for the first App-target
+  observations so the generic delegation path is proven independently from Context Review.
 - Keep a matching client runtime connected if the plan includes observing the agent wake. A missing provider credential
   may block the later model turn, but it must not prevent card and inbox evidence.
 
@@ -35,15 +37,26 @@ together without a GitHub-specific post-delivery branch.
   `processed_events` claim. If the event is repeated, treat repeated side effects as the documented weak-reliability
   baseline rather than an exactly-once promise.
 - Send a request with an invalid signature and confirm it is rejected before installation lookup, claim, card, or wake.
+- Mention the exact GitHub App slug in an Issue or PR body/comment, then assign the App bot to an Issue. Confirm each
+  request creates or reuses one entity chat for the selected Team Agent through the standard human/delegate attention
+  line, wakes that Agent even when its manager is the GitHub actor, and persists `teamAgentTask: true` on both the card
+  and message metadata. Similar logins and App-target events without a valid selected Team Agent must not route.
+- Let the Team Agent finish one App-targeted task. Confirm it inspects and acts through the normal host GitHub identity,
+  posts the outcome on the originating Issue or PR, and does not mention the App again. A First Tree chat-only result is
+  incomplete, while the Agent's own GitHub follow-up must not trigger a delegation loop.
+- Redeliver an App mention with a fresh delivery id on the same entity. Confirm the existing Team Agent chat/attention
+  line is reused rather than creating another chat.
 - If Context Reviewer is enabled for the Team, include one supported Context Tree PR trigger and confirm it still reuses
-  its dedicated reviewer chat while remaining covered by the same whole-request claim.
+  its dedicated reviewer chat with the same selected Team Agent while remaining covered by the same whole-request claim.
+  The generic App-target card must not gain trusted App review or merge authority.
 
 ## Expected Result
 
 `PASS`: signed events resolve through the bound installation, reach the expected chat and wake path, stable delivery ids
 deduplicate the whole request, missing delivery ids do not claim, invalid signatures have no side effects, and optional
-Context Reviewer behavior remains dedicated and claim-covered. Agent-visible webhook attribution is GitHub/system while
-the existing participant sender, routing, and wake behavior remains unchanged.
+Context Reviewer behavior remains dedicated and claim-covered. Exact App mentions and assignments independently wake the
+selected Team Agent through the standard attention path, receive their outcome on GitHub, and do not loop. Agent-visible
+webhook attribution is GitHub/system while the existing participant sender, routing, and wake behavior remains unchanged.
 
 `FAIL`: a reproducible regression in authentication, tenant resolution, followed-chat/card delivery, wake routing,
 whole-request deduplication, or Context Reviewer claim coverage.

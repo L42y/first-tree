@@ -87,7 +87,11 @@ export async function deliverGithubEvent(
               },
               directedContext:
                 target.involveReason && target.involveLogin
-                  ? { reason: target.involveReason, externalUsername: target.involveLogin }
+                  ? {
+                      reason: target.involveReason,
+                      externalUsername: target.involveLogin,
+                      ...(target.teamAgentTask ? { teamAgentTask: true as const } : {}),
+                    }
                   : null,
             }
           : {
@@ -98,6 +102,13 @@ export async function deliverGithubEvent(
                 wakeAgentId: target.delegateAgentId,
                 externalUsername: target.involveLogin as string,
               },
+              directedContext: target.teamAgentTask
+                ? {
+                    reason: target.involveReason as InvolveReason,
+                    externalUsername: target.involveLogin as string,
+                    teamAgentTask: true,
+                  }
+                : null,
             },
     ),
     actorHumanId,
@@ -180,7 +191,7 @@ export async function deliverGithubEvent(
       const entries = [...delivery.entries.values()].sort(compareScmDeliveryEntries);
       const senderId = selectScmSenderId(entries);
       const cardContext = selectScmCardContext(entries);
-      const card = buildCard(event, cardContext.involveReason, cardContext.involveLogin);
+      const card = buildCard(event, cardContext.involveReason, cardContext.involveLogin, cardContext.teamAgentTask);
       const mentionedUser = card.mentionedUser ?? undefined;
       // Native wake-set (S8): the delegates are passed as `metadata.mentions`,
       // so the generic fan-out wakes them — no GitHub-specific addressing
@@ -208,6 +219,7 @@ export async function deliverGithubEvent(
           // visual attribution shifts. Scoped to GitHub cards so an arbitrary
           // client cannot impersonate other sources.
           ...(mentionedUser ? { mentionedUser } : {}),
+          ...(card.teamAgentTask ? { teamAgentTask: true } : {}),
         },
       });
       stats.delivered += 1;
@@ -330,6 +342,7 @@ function buildCard(
   event: NormalizedScmEvent,
   involveReason: InvolveReason | null,
   involveLogin: string | null,
+  teamAgentTask: boolean,
 ): GithubEventCard {
   const reason: GithubEventCard["reason"] = involveReason ?? "subscribed";
   const card: GithubEventCard = {
@@ -350,5 +363,6 @@ function buildCard(
     },
   };
   if (involveLogin) card.mentionedUser = involveLogin;
+  if (teamAgentTask) card.teamAgentTask = true;
   return card;
 }

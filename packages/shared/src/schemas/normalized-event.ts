@@ -151,6 +151,12 @@ export const githubEventCardSchema = z.object({
     url: z.string().nullable(),
   }),
   mentionedUser: z.string().optional(),
+  /**
+   * Server-authored signal that this directed card exists because the
+   * configured GitHub App itself was mentioned or assigned. The selected
+   * Team Agent treats it as work to complete and answer on GitHub.
+   */
+  teamAgentTask: z.literal(true).optional(),
 });
 export type GithubEventCard = z.infer<typeof githubEventCardSchema>;
 

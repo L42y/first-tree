@@ -5,11 +5,13 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { chats } from "../db/schema/chats.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
+import { putContextReviewerAssignment } from "../services/context-reviewer-settings.js";
 import {
+  isGithubAppTargetLogin,
   resolveGithubAudience as resolveAudienceResolution,
   resolveGithubActorHumanId,
 } from "../services/github-audience.js";
-import { createTestAdmin, useTestApp } from "./helpers.js";
+import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;
 
@@ -29,6 +31,8 @@ async function seedAgent(
     type?: "agent" | "human";
     status?: "active" | "suspended";
     delegateMention?: string | null;
+    clientId?: string | null;
+    visibility?: "private" | "organization";
   },
 ): Promise<string> {
   const uuid = randomUUID();
@@ -42,8 +46,25 @@ async function seedAgent(
     managerId: opts.memberId,
     delegateMention: opts.delegateMention ?? null,
     status: opts.status ?? "active",
+    clientId: opts.clientId ?? null,
+    visibility: opts.visibility ?? "private",
   });
   return uuid;
+}
+
+async function configureTeamAgent(app: App, admin: Awaited<ReturnType<typeof createTestAdmin>>): Promise<string> {
+  const clientId = await seedClient(app, admin.userId, admin.organizationId);
+  const agentUuid = await seedAgent(app, {
+    orgId: admin.organizationId,
+    memberId: admin.memberId,
+    name: `team-agent-${randomUUID().slice(0, 6)}`,
+    clientId,
+    visibility: "organization",
+  });
+  await putContextReviewerAssignment(app.db, admin.organizationId, agentUuid, {
+    updatedBy: admin.userId,
+  });
+  return agentUuid;
 }
 
 async function seedChat(app: App, orgId: string, _humanId: string): Promise<string> {
@@ -192,8 +213,70 @@ describe("resolveGithubActorHumanId", () => {
   });
 });
 
+describe("isGithubAppTargetLogin", () => {
+  it("matches both the App slug and its bot login case-insensitively", () => {
+    expect(isGithubAppTargetLogin("First-Tree", "first-tree")).toBe(true);
+    expect(isGithubAppTargetLogin("FIRST-TREE[bot]", "first-tree")).toBe(true);
+    expect(isGithubAppTargetLogin("first-tree-helper", "first-tree")).toBe(false);
+    expect(isGithubAppTargetLogin("first-tree", null)).toBe(false);
+  });
+});
+
 describe("resolveAudience", () => {
   const getApp = useTestApp();
+
+  it.each([
+    ["mentioned", "test-app-slug"],
+    ["assigned", "test-app-slug[bot]"],
+  ] as const)("routes an App %s target to the selected Team Agent while Automatic Review is off", async (reason, externalUsername) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const teamAgentUuid = await configureTeamAgent(app, admin);
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#app-task",
+        actorLogin: admin.username,
+        targets: [{ externalUsername, reason }],
+        kind: reason === "assigned" ? "assigned" : "commented",
+      }),
+      { appSlug: "test-app-slug" },
+    );
+
+    expect(resolution.targets).toEqual([
+      expect.objectContaining({
+        humanAgentId: admin.humanAgentUuid,
+        delegateAgentId: teamAgentUuid,
+        kind: "new",
+        involveReason: reason,
+        involveLogin: externalUsername.toLowerCase(),
+        teamAgentTask: true,
+      }),
+    ]);
+  });
+
+  it("does not treat the App login as a human target when no Team Agent is selected", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#unassigned-app-task",
+        actorLogin: "outsider",
+        targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
+        kind: "commented",
+      }),
+      { appSlug: "test-app-slug" },
+    );
+
+    expect(resolution.targets).toEqual([]);
+  });
 
   it("returns subscribed mappings (existing) when no fresh involves", async () => {
     const app = getApp();

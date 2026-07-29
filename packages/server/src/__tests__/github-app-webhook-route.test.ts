@@ -10,6 +10,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
+import { putContextReviewerAssignment } from "../services/context-reviewer-settings.js";
 import * as eventDedupService from "../services/event-dedup.js";
 import * as githubAudienceService from "../services/github-audience.js";
 import * as githubEntityStateService from "../services/github-entity-state.js";
@@ -173,6 +174,24 @@ async function configureContextReviewer(app: App, admin: Awaited<ReturnType<type
     { updatedBy: admin.userId, memberId: admin.memberId },
   );
   return reviewer;
+}
+
+async function configureTeamAgent(app: App, admin: Awaited<ReturnType<typeof createTestAdmin>>) {
+  const teamAgent = await seedAgent(app, {
+    orgId: admin.organizationId,
+    memberId: admin.memberId,
+    name: `team-agent-${randomUUID().slice(0, 6)}`,
+  });
+  const clientId = await seedClient(app, admin.userId, admin.organizationId);
+  await app.db.update(agents).set({ clientId, runtimeProvider: "claude-code" }).where(eq(agents.uuid, teamAgent));
+  await seedHealthyAgentRuntime(app, {
+    agentUuid: teamAgent,
+    clientId,
+  });
+  await putContextReviewerAssignment(app.db, admin.organizationId, teamAgent, {
+    updatedBy: admin.userId,
+  });
+  return teamAgent;
 }
 
 function contextPullRequestPayload(installationId: number, repoFullName = "owner/context-tree") {
@@ -1681,6 +1700,104 @@ describe("POST /webhooks/github-app", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ ok: true, audience: 0, reason: "audience_empty_with_involves" });
+  });
+
+  it.each([
+    {
+      label: "mention",
+      action: "opened",
+      body: "@test-app-slug please investigate this issue.",
+      assignees: [] as Array<{ login: string; type: string }>,
+      assignee: undefined,
+      expectedReason: "mentioned",
+      expectedLogin: "test-app-slug",
+    },
+    {
+      label: "assignment",
+      action: "assigned",
+      body: "Please investigate this issue.",
+      assignees: [{ login: "test-app-slug[bot]", type: "Bot" }],
+      assignee: { login: "test-app-slug[bot]", type: "Bot" },
+      expectedReason: "assigned",
+      expectedLogin: "test-app-slug[bot]",
+    },
+  ])("delegates an App $label to the selected Team Agent and wakes it", async (scenario) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = scenario.action === "opened" ? 100032 : 100033;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const teamAgent = await configureTeamAgent(app, admin);
+    const [managerHuman] = await app.db
+      .select({ name: agents.name })
+      .from(agents)
+      .where(eq(agents.uuid, admin.humanAgentUuid))
+      .limit(1);
+    if (!managerHuman?.name) throw new Error("Team Agent manager human is missing a GitHub-compatible name");
+
+    const payload = {
+      action: scenario.action,
+      issue: {
+        number: scenario.action === "opened" ? 12 : 13,
+        title: `App ${scenario.label}`,
+        html_url: `https://github.com/owner/repo/issues/${scenario.action === "opened" ? 12 : 13}`,
+        body: scenario.body,
+        assignees: scenario.assignees,
+      },
+      ...(scenario.assignee ? { assignee: scenario.assignee } : {}),
+      repository: { full_name: "owner/repo" },
+      // The manager is also the GitHub actor. The directed App target must
+      // survive actor-echo pruning even when this attention line already
+      // belongs to that manager.
+      sender: { login: managerHuman.name, type: "User" },
+      installation: { id: installationId },
+    };
+    const res = await postWebhook(app, "issues", payload);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, delivered: 1, newChats: 1, failed: 0 });
+
+    const [mapping] = await app.db.select().from(githubEntityChatMappings).limit(1);
+    expect(mapping).toMatchObject({
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: teamAgent,
+      entityType: "issue",
+      boundVia: "direct",
+    });
+
+    const [message] = await app.db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, mapping?.chatId ?? ""))
+      .limit(1);
+    expect(message?.content).toMatchObject({
+      type: "github_event",
+      reason: scenario.expectedReason,
+      mentionedUser: scenario.expectedLogin,
+      teamAgentTask: true,
+    });
+    expect(message?.metadata).toMatchObject({
+      mentions: [teamAgent],
+      teamAgentTask: true,
+    });
+
+    const [entry] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, message?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${teamAgent}`)))
+      .limit(1);
+    expect(entry?.notify).toBe(true);
+
+    const repeated = await postWebhook(app, "issues", payload);
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toMatchObject({ ok: true, delivered: 1, newChats: 0, failed: 0 });
+    const mappingRows = await app.db.select().from(githubEntityChatMappings);
+    expect(mappingRows).toHaveLength(1);
+    const messageRows = await app.db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, mapping?.chatId ?? ""));
+    expect(messageRows).toHaveLength(2);
+    expect(messageRows.every((row) => row.metadata.teamAgentTask === true)).toBe(true);
   });
 
   it("pull_request.opened on the bound context repo creates a Context Reviewer task message", async () => {

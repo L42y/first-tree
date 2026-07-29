@@ -184,8 +184,13 @@ describe("githubEventCardSchema", () => {
       ...baseCard,
       reason: "mentioned" as const,
       mentionedUser: "bob",
+      teamAgentTask: true,
     });
     expect(res.success).toBe(true);
+  });
+
+  it("rejects a false team-agent task marker", () => {
+    expect(githubEventCardSchema.safeParse({ ...baseCard, teamAgentTask: false }).success).toBe(false);
   });
 
   it("accepts a null entity.url (missing canonical url)", () => {
