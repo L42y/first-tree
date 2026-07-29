@@ -584,6 +584,67 @@ describe("Agent Templates", () => {
         expect.objectContaining({ provenance: "agent", body: expect.stringContaining("AGENT OWN INSTRUCTIONS") }),
       ]),
     );
+
+    const legacyOnceId = `legacy-once-${crypto.randomUUID().slice(0, 8)}`;
+    await app.agentTemplatesService.createTemplate(
+      publisher.organizationId,
+      {
+        id: legacyOnceId,
+        title: "Legacy prompt counted once",
+        summary: "Verifies migrated legacy prompt payloads are not double-counted.",
+        outcomes: [],
+        customInstructions: "L".repeat(20_000),
+        resourceIds: [],
+        sortOrder: 4,
+      },
+      publisher.memberId,
+    );
+    const legacyAgent = await inject(
+      app,
+      consumer.accessToken,
+      "POST",
+      `/api/v1/orgs/${consumer.organizationId}/agents`,
+      {
+        name: `legacy-once-agent-${crypto.randomUUID().slice(0, 8)}`,
+        type: "agent",
+        clientId: consumer.clientId,
+      },
+    );
+    expect(legacyAgent.statusCode).toBe(201);
+    const legacyAgentId = legacyAgent.json<{ uuid: string }>().uuid;
+    const migratedPromptBody = "M".repeat(10_000);
+    await app.resourcesService.replaceAgentResources(
+      legacyAgentId,
+      {
+        expectedVersion: 1,
+        bindings: [
+          {
+            type: "prompt",
+            mode: "include",
+            resourceId: null,
+            inlinePromptBody: migratedPromptBody,
+          },
+        ],
+      },
+      consumer.memberId,
+    );
+    const migratedConfig = await app.configService.get(legacyAgentId);
+    await app.db
+      .update(agentConfigs)
+      .set({
+        payload: {
+          ...migratedConfig.payload,
+          prompt: { ...migratedConfig.payload.prompt, append: migratedPromptBody },
+        },
+      })
+      .where(eq(agentConfigs.agentId, legacyAgentId));
+    await expect(
+      app.agentTemplatesService.replaceAgentTemplates(
+        legacyAgentId,
+        { expectedVersion: 2, templateIds: [legacyOnceId] },
+        consumer.memberId,
+      ),
+    ).resolves.toMatchObject({ version: 3, templateIds: [legacyOnceId] });
   });
 
   it("rejects credential-bearing official MCP create and update payloads with 400", async () => {

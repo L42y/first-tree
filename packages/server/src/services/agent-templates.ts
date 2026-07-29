@@ -43,7 +43,6 @@ export type AgentPromptBudgetUsage = {
 export type AgentPromptBudgetState = {
   agentId: string;
   organizationId: string;
-  configPromptBody: string;
 };
 
 export type AgentTemplateRuntimeSelection = {
@@ -212,16 +211,9 @@ export async function loadAgentPromptBudgetUsage(
         if (teamPromptLength + row.renderedLength > PROMPT_APPEND_MAX_LENGTH) continue;
         teamPromptLength += row.renderedLength;
       }
-      let agentPromptLength = agentRows
+      const agentPromptLength = agentRows
         .sort((a, b) => a.order - b.order)
         .reduce((total, row) => total + row.renderedLength, 0);
-      if (state.configPromptBody.trim()) {
-        agentPromptLength += renderPromptRow({
-          name: "",
-          source: "inline_prompt",
-          body: state.configPromptBody,
-        }).length;
-      }
       usageByAgent.set(state.agentId, { teamPromptLength, agentPromptLength });
     }
   }
@@ -578,20 +570,15 @@ export async function listAgentTemplateImpactsForTemplate(
       agentId: agentConfigs.agentId,
       organizationId: agents.organizationId,
       templateIds: agentConfigs.templateIds,
-      payload: agentConfigs.payload,
     })
     .from(agentConfigs)
     .innerJoin(agents, eq(agents.uuid, agentConfigs.agentId))
     .where(arrayContains(agentConfigs.templateIds, [templateId]));
   const promptUsage = await loadAgentPromptBudgetUsage(
     targetDb,
-    rows.map((row) => ({
-      agentId: row.agentId,
-      organizationId: row.organizationId,
-      configPromptBody: row.payload.prompt.append,
-    })),
+    rows.map((row) => ({ agentId: row.agentId, organizationId: row.organizationId })),
   );
-  return rows.map(({ payload: _payload, ...row }) => ({
+  return rows.map((row) => ({
     ...row,
     ...(promptUsage.get(row.agentId) ?? { teamPromptLength: 0, agentPromptLength: 0 }),
   }));
@@ -619,20 +606,15 @@ export async function listAgentTemplateImpactsForResource(
       agentId: agentConfigs.agentId,
       organizationId: agents.organizationId,
       templateIds: agentConfigs.templateIds,
-      payload: agentConfigs.payload,
     })
     .from(agentConfigs)
     .innerJoin(agents, eq(agents.uuid, agentConfigs.agentId))
     .where(arrayOverlaps(agentConfigs.templateIds, templateIds));
   const promptUsage = await loadAgentPromptBudgetUsage(
     targetDb,
-    rows.map((row) => ({
-      agentId: row.agentId,
-      organizationId: row.organizationId,
-      configPromptBody: row.payload.prompt.append,
-    })),
+    rows.map((row) => ({ agentId: row.agentId, organizationId: row.organizationId })),
   );
-  return rows.map(({ payload: _payload, ...row }) => ({
+  return rows.map((row) => ({
     ...row,
     ...(promptUsage.get(row.agentId) ?? { teamPromptLength: 0, agentPromptLength: 0 }),
   }));
@@ -912,7 +894,6 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
           .select({
             version: agentConfigs.version,
             templateIds: agentConfigs.templateIds,
-            payload: agentConfigs.payload,
           })
           .from(agentConfigs)
           .where(eq(agentConfigs.agentId, agentId))
@@ -927,7 +908,6 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
           {
             agentId,
             organizationId: agent.organizationId,
-            configPromptBody: snapshot.payload.prompt.append,
           },
         ]);
         const selectedTemplates = await lockAndValidateAgentTemplateSelection(

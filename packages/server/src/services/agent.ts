@@ -602,7 +602,6 @@ export async function createAgent(
         {
           agentId: uuid,
           organizationId: orgId,
-          configPromptBody: initialPayload.prompt.append,
         },
       ]);
       await lockAndValidateAgentTemplateSelection(

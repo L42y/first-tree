@@ -1519,7 +1519,6 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           .select({
             version: agentConfigs.version,
             templateIds: agentConfigs.templateIds,
-            payload: agentConfigs.payload,
           })
           .from(agentConfigs)
           .where(eq(agentConfigs.agentId, agentId))
@@ -1540,7 +1539,6 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             {
               agentId,
               organizationId: agent.organizationId,
-              configPromptBody: snapshot.payload.prompt.append,
             },
           ],
           new Map([[agentId, input.bindings]]),
