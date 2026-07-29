@@ -1,46 +1,102 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
+const OPEN_BENEATH_PYTHON = String.raw`
+import os
+import stat
+import sys
+import time
+
+root = sys.argv[1]
+max_bytes = int(sys.argv[2])
+after_parents_opened = sys.argv[3]
+resume_after_swap = sys.argv[4]
+parts = sys.argv[5:]
+opened = []
+
+def fail(message):
+    raise RuntimeError(message)
+
+try:
+    if not parts or any(part in ("", ".", "..") or "/" in part or "\\" in part for part in parts):
+        fail("invalid trusted-root locator")
+
+    base_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        base_flags |= os.O_CLOEXEC
+    directory_flags = base_flags | os.O_DIRECTORY
+
+    current = os.open(root, directory_flags)
+    opened.append(current)
+    for part in parts[:-1]:
+        current = os.open(part, directory_flags, dir_fd=current)
+        opened.append(current)
+
+    if after_parents_opened:
+        marker = os.open(after_parents_opened, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(marker)
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(resume_after_swap):
+            if time.monotonic() >= deadline:
+                fail("timed out waiting for deterministic open-beneath test swap")
+            time.sleep(0.005)
+
+    descriptor = os.open(parts[-1], base_flags, dir_fd=current)
+    opened.append(descriptor)
+    before = os.fstat(descriptor)
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        fail("final target is not a standalone regular file")
+    if before.st_size > max_bytes:
+        fail("final target exceeds the snapshot size limit")
+
+    chunks = []
+    remaining = before.st_size
+    while remaining:
+        chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+
+    after = os.fstat(descriptor)
+    stable = (
+        stat.S_ISREG(after.st_mode)
+        and after.st_nlink == 1
+        and after.st_dev == before.st_dev
+        and after.st_ino == before.st_ino
+        and after.st_mode == before.st_mode
+        and after.st_size == before.st_size
+        and after.st_mtime_ns == before.st_mtime_ns
+        and after.st_ctime_ns == before.st_ctime_ns
+        and remaining == 0
+    )
+    if not stable:
+        fail("file changed while taking host snapshot")
+    sys.stdout.buffer.write(b"".join(chunks))
+except Exception as error:
+    sys.stderr.write(f"{type(error).__name__}: {error}\n")
+    sys.exit(1)
+finally:
+    for descriptor in reversed(opened):
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+`;
 
 export type OpenedRegularFile = {
   descriptor: number;
   path: string;
 };
 
-type FileIdentity = {
-  ctimeNs: bigint;
-  device: bigint;
-  inode: bigint;
-  mode: bigint;
-  mtimeNs: bigint;
+export type OpenBeneathTestSynchronization = {
+  afterParentsOpenedPath: string;
+  resumeAfterSwapPath: string;
 };
 
-function identity(path: string, expectDirectory: boolean): FileIdentity {
-  const value = lstatSync(path, { bigint: true });
-  if (value.isSymbolicLink() || (expectDirectory ? !value.isDirectory() : !value.isFile())) {
-    throw new Error(`Refusing unsafe path component: ${path}`);
-  }
-  return {
-    ctimeNs: value.ctimeNs,
-    device: value.dev,
-    inode: value.ino,
-    mode: value.mode,
-    mtimeNs: value.mtimeNs,
-  };
-}
-
-function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
-  return (
-    left.device === right.device &&
-    left.inode === right.inode &&
-    left.mode === right.mode &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
-  );
-}
-
-function checkedAncestorIdentities(trustedRoot: string, path: string): ReadonlyMap<string, FileIdentity> {
+function trustedLocatorParts(trustedRoot: string, path: string): { parts: readonly string[]; root: string } {
   const root = resolve(trustedRoot);
   const target = resolve(path);
   const locator = relative(root, target);
@@ -48,23 +104,11 @@ function checkedAncestorIdentities(trustedRoot: string, path: string): ReadonlyM
     throw new Error(`Refusing path outside trusted root: ${path}`);
   }
 
-  const checked = new Map<string, FileIdentity>();
-  checked.set(root, identity(root, true));
   const parts = locator.split(sep);
-  let current = root;
-  for (const part of parts.slice(0, -1)) {
-    current = resolve(current, part);
-    checked.set(current, identity(current, true));
+  if (parts.some((part) => part === "" || part === "." || part === ".." || part.includes("/") || part.includes("\\"))) {
+    throw new Error(`Refusing invalid path beneath trusted root: ${path}`);
   }
-  return checked;
-}
-
-function verifyAncestorIdentities(checked: ReadonlyMap<string, FileIdentity>): void {
-  for (const [path, expected] of checked) {
-    if (!sameIdentity(expected, identity(path, true))) {
-      throw new Error(`Path component changed while taking host snapshot: ${path}`);
-    }
-  }
+  return { parts, root };
 }
 
 function readOpenedDescriptor(opened: OpenedRegularFile, maxBytes: number): Buffer {
@@ -133,25 +177,37 @@ export function readNoFollowRegularFileBeneath(
   trustedRoot: string,
   path: string,
   maxBytes = DEFAULT_MAX_BYTES,
+  testSynchronization?: OpenBeneathTestSynchronization,
 ): Buffer {
-  const ancestors = checkedAncestorIdentities(trustedRoot, path);
-  const opened = openNoFollowRegularFile(path);
-  try {
-    const openedIdentity = fstatSync(opened.descriptor, { bigint: true });
-    const pathIdentity = identity(path, false);
-    if (
-      openedIdentity.dev !== pathIdentity.device ||
-      openedIdentity.ino !== pathIdentity.inode ||
-      openedIdentity.mode !== pathIdentity.mode
-    ) {
-      throw new Error(`File identity changed while opening beneath trusted root: ${path}`);
-    }
-    const contents = readOpenedRegularFile(opened, maxBytes);
-    verifyAncestorIdentities(ancestors);
-    return contents;
-  } finally {
-    closeOpenedRegularFile(opened);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error(`Invalid snapshot size limit: ${String(maxBytes)}`);
   }
+  const { parts, root } = trustedLocatorParts(trustedRoot, path);
+  const result = spawnSync(
+    "python3",
+    [
+      "-I",
+      "-c",
+      OPEN_BENEATH_PYTHON,
+      root,
+      String(maxBytes),
+      testSynchronization?.afterParentsOpenedPath ?? "",
+      testSynchronization?.resumeAfterSwapPath ?? "",
+      ...parts,
+    ],
+    {
+      encoding: "buffer",
+      maxBuffer: maxBytes + 64 * 1024,
+    },
+  );
+  if (result.error) {
+    throw new Error(`Trusted-root file reader could not start: ${result.error.message}`, { cause: result.error });
+  }
+  if (result.status !== 0) {
+    const detail = result.stderr.toString("utf8").trim();
+    throw new Error(`Trusted-root open rejected ${path}${detail ? `: ${detail}` : ""}`);
+  }
+  return result.stdout;
 }
 
 export function readNoFollowRegularText(path: string, maxBytes = DEFAULT_MAX_BYTES): string {
@@ -162,6 +218,7 @@ export function readNoFollowRegularTextBeneath(
   trustedRoot: string,
   path: string,
   maxBytes = DEFAULT_MAX_BYTES,
+  testSynchronization?: OpenBeneathTestSynchronization,
 ): string {
-  return readNoFollowRegularFileBeneath(trustedRoot, path, maxBytes).toString("utf8");
+  return readNoFollowRegularFileBeneath(trustedRoot, path, maxBytes, testSynchronization).toString("utf8");
 }

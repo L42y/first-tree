@@ -77,11 +77,12 @@ content, type, or mode changes.
 
 The host opens the pre-created model receipt before the model starts and reads
 only that fixed regular-file descriptor afterward; replacing its filename or
-an ancestor directory cannot redirect the host read. Other workspace reads are
-bounded to an exact trusted root, reject every symlinked/non-directory ancestor
-and a symlinked final file, and verify component/file identity around the
-snapshot. Bundle and packet content reaches the validator only through
-host-owned snapshots after fixture validation passes. Failed fixture
+an ancestor directory cannot redirect the host read. Other workspace reads use
+a descriptor-relative `openat` walk from an exact trusted root, opening every
+directory and the final regular file with `O_NOFOLLOW`. A surviving model
+process can rename pathname components, but it cannot redirect an already-open
+parent descriptor. Bundle and packet content reaches the validator only
+through host-owned snapshots after fixture validation passes. Failed fixture
 validation skips packet validation entirely, so a rejected workspace path is
 never followed as a later validation input.
 

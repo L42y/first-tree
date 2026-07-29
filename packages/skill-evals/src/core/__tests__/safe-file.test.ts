@@ -1,4 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,8 +33,56 @@ describe("trusted-root file snapshots", () => {
       symlinkSync(outside, join(trusted, "nested"));
 
       expect(() => readNoFollowRegularTextBeneath(trusted, join(trusted, "nested", "value.txt"))).toThrow(
-        "Refusing unsafe path component",
+        "Trusted-root open rejected",
       );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps the final open beneath an already-open parent when its pathname is swapped", async () => {
+    const root = mkdtempSync(join(tmpdir(), "skill-evals-safe-file-"));
+    try {
+      const trusted = join(root, "trusted");
+      const nested = join(trusted, "nested");
+      const originalNested = join(trusted, "nested-original");
+      const outside = join(root, "outside");
+      const marker = join(root, "parents-opened");
+      const resume = join(root, "resume-open");
+      mkdirSync(nested, { recursive: true });
+      mkdirSync(outside);
+      writeFileSync(join(nested, "value.txt"), "safe\n", "utf8");
+      writeFileSync(join(outside, "value.txt"), "external\n", "utf8");
+
+      const swapper = spawn(process.execPath, [
+        "-e",
+        [
+          'const { existsSync, renameSync, symlinkSync, writeFileSync } = require("node:fs");',
+          "const [marker, nested, originalNested, outside, resume] = process.argv.slice(1);",
+          "const sleep = new Int32Array(new SharedArrayBuffer(4));",
+          "while (!existsSync(marker)) Atomics.wait(sleep, 0, 0, 5);",
+          "renameSync(nested, originalNested);",
+          "symlinkSync(outside, nested);",
+          'writeFileSync(resume, "", "utf8");',
+        ].join("\n"),
+        marker,
+        nested,
+        originalNested,
+        outside,
+        resume,
+      ]);
+      const swapperExit =
+        swapper.exitCode === null ? once(swapper, "exit") : Promise.resolve<[number | null]>([swapper.exitCode]);
+
+      const contents = readNoFollowRegularTextBeneath(trusted, join(nested, "value.txt"), 1024, {
+        afterParentsOpenedPath: marker,
+        resumeAfterSwapPath: resume,
+      });
+      const [exitCode] = await swapperExit;
+
+      expect(exitCode).toBe(0);
+      expect(contents).toBe("safe\n");
+      expect(readFileSync(join(nested, "value.txt"), "utf8")).toBe("external\n");
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
