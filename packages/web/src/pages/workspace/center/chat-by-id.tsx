@@ -43,7 +43,7 @@ function patchReadChatInCachedLists(queryClient: QueryClient, chatId: string, un
   const cachedQueries = queryClient.getQueryCache().findAll({ queryKey: ["me", "chats"] });
   for (const query of cachedQueries) {
     const unreadFilter = query.queryKey[2] === "unread";
-    // Decrement the opened chat's unread within a single page's rows; in the
+    // Update the opened chat wherever the response projects it; in the
     // unread-only view drop it once it reaches zero.
     const patchRows = (rows: MeChatRow[]): { rows: MeChatRow[]; changed: boolean } => {
       let changed = false;
@@ -55,6 +55,23 @@ function patchReadChatInCachedLists(queryClient: QueryClient, chatId: string, un
       });
       return { rows: next, changed };
     };
+    const patchResponse = (response: ListMeChatsResponse): ListMeChatsResponse => {
+      const rows = patchRows(response.rows);
+      const attention = patchRows(response.priorityRows.attention);
+      const pinned = patchRows(response.priorityRows.pinned);
+      if (!rows.changed && !attention.changed && !pinned.changed) return response;
+      return {
+        ...response,
+        rows: rows.changed ? rows.rows : response.rows,
+        priorityRows:
+          attention.changed || pinned.changed
+            ? {
+                attention: attention.changed ? attention.rows : response.priorityRows.attention,
+                pinned: pinned.changed ? pinned.rows : response.priorityRows.pinned,
+              }
+            : response.priorityRows,
+      };
+    };
     // The desktop rail stores `InfiniteData` (`useInfiniteQuery`); the command
     // palette and mobile lists store a bare `ListMeChatsResponse`. The prefix
     // `findAll(["me","chats"])` matches both, so patch whichever this holds.
@@ -63,14 +80,13 @@ function patchReadChatInCachedLists(queryClient: QueryClient, chatId: string, un
       if ("pages" in prev) {
         let changed = false;
         const pages = prev.pages.map((page) => {
-          const res = patchRows(page.rows);
-          if (res.changed) changed = true;
-          return res.changed ? { ...page, rows: res.rows } : page;
+          const next = patchResponse(page);
+          if (next !== page) changed = true;
+          return next;
         });
         return changed ? { ...prev, pages } : prev;
       }
-      const res = patchRows(prev.rows);
-      return res.changed ? { ...prev, rows: res.rows } : prev;
+      return patchResponse(prev);
     });
   }
 }

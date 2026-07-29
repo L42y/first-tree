@@ -298,16 +298,25 @@ describe("ChatByIdView and CenterPanel", () => {
     // palette stores a bare ListMeChatsResponse. Seed both so the mark-read
     // patch is exercised against each cache shape it must handle.
     const paletteKey = ["me", "chats", "palette"];
-    const infinite = (rows: MeChatRow[]): InfiniteData<ListMeChatsResponse> => ({
-      pages: [{ rows, nextCursor: null, priorityRows: { attention: [], pinned: [] } }],
+    const infinite = (
+      rows: MeChatRow[],
+      priorityRows: ListMeChatsResponse["priorityRows"] = { attention: [], pinned: [] },
+    ): InfiniteData<ListMeChatsResponse> => ({
+      pages: [{ rows, nextCursor: null, priorityRows }],
       pageParams: [undefined],
     });
-    queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(allKey, infinite([currentUnread, otherUnread]));
-    queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(unreadKey, infinite([currentUnread, otherUnread]));
+    queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
+      allKey,
+      infinite([currentUnread, otherUnread], { attention: [], pinned: [currentUnread] }),
+    );
+    queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
+      unreadKey,
+      infinite([currentUnread, otherUnread], { attention: [], pinned: [currentUnread] }),
+    );
     queryClient.setQueryData<ListMeChatsResponse>(paletteKey, {
       rows: [currentUnread, otherUnread],
       nextCursor: null,
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { attention: [currentUnread], pinned: [] },
     });
 
     const { container, root } = await renderDom(
@@ -326,6 +335,12 @@ describe("ChatByIdView and CenterPanel", () => {
       pinnedAt: null,
       activityAt: null,
     });
+    expect(
+      queryClient.getQueryData<InfiniteData<ListMeChatsResponse>>(allKey)?.pages[0]?.priorityRows.pinned[0],
+    ).toMatchObject({
+      unreadMentionCount: 0,
+      chatHasExplicitMentionToMe: false,
+    });
     expect(allRows?.find((row) => row.chatId === "chat-2")).toMatchObject({
       unreadMentionCount: 1,
       chatHasExplicitMentionToMe: true,
@@ -336,9 +351,16 @@ describe("ChatByIdView and CenterPanel", () => {
       .getQueryData<InfiniteData<ListMeChatsResponse>>(unreadKey)
       ?.pages.flatMap((p) => p.rows);
     expect(unreadRows?.map((row) => row.chatId)).toEqual(["chat-2"]);
+    expect(
+      queryClient.getQueryData<InfiniteData<ListMeChatsResponse>>(unreadKey)?.pages[0]?.priorityRows.pinned,
+    ).toEqual([]);
     // The bare-response (palette / mobile) shape is patched in place too.
     const patchedPalette = queryClient.getQueryData<ListMeChatsResponse>(paletteKey);
     expect(patchedPalette?.rows.find((row) => row.chatId === "chat-1")).toMatchObject({ unreadMentionCount: 0 });
+    expect(patchedPalette?.priorityRows.attention[0]).toMatchObject({
+      unreadMentionCount: 0,
+      chatHasExplicitMentionToMe: false,
+    });
     expect(chatViewMocks.props.at(-1)).toMatchObject({
       agentId: "agent-1",
       chatId: "chat-1",

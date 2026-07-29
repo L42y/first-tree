@@ -71,8 +71,9 @@ function actionsFor({
 // rarely fires `focus-visible`, so hover-only would leave the kebab — the only
 // Pin entry point — permanently invisible and untappable on phones and the
 // narrow-overlay rail; `pointer-coarse:opacity-100` keeps it always shown there.
+// While visually hidden it must not intercept the chat row's click target.
 const TRIGGER_HOVER_REVEAL =
-  "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100 pointer-coarse:opacity-100";
+  "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto aria-expanded:opacity-100 aria-expanded:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:pointer-events-auto";
 
 export function RowEngagementMenu({
   chatId,
