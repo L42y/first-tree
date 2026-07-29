@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,7 @@ import {
   startPartialRawAccessMonitors,
   stopPartialRawAccessMonitors,
   validateFixture,
+  validatePartialRawAccessMonitors,
 } from "../fixture.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
@@ -59,21 +61,55 @@ describe("standalone synthesize-meeting-records fixture", () => {
       const monitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
       try {
         expect(readFileSync(join(sourceRepoPath, "appendix.md"), "utf8")).toBe("");
+        expect(readEvents(paths.eventsPath)).toContainEqual(
+          expect.objectContaining({
+            locator: "source-artifacts/appendix.md",
+            type: "partial_raw_access_attempt",
+          }),
+        );
+        expect(validatePartialRawAccessMonitors(paths, monitors)).toEqual([]);
       } finally {
         stopPartialRawAccessMonitors(monitors);
       }
-      expect(readEvents(paths.eventsPath)).toContainEqual(
-        expect.objectContaining({
-          locator: "source-artifacts/appendix.md",
-          type: "partial_raw_access_attempt",
-        }),
-      );
       rmSync(join(sourceRepoPath, "appendix.md"));
       writeFileSync(join(sourceRepoPath, "appendix.md"), "raw content must remain unavailable\n", "utf8");
       expect(validateFixture(paths, sourceRepoPath).errors).toContain(
         "partial-source fixture exposed non-sentinel raw artifact: source-artifacts/appendix.md",
       );
     } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("detects a removed or replaced sentinel and an unhealthy monitor after the agent run", async () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
+    if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-sentinel-integrity-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:02.000Z",
+    });
+    const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+    const monitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
+    try {
+      rmSync(join(sourceRepoPath, "appendix.md"));
+      expect(validateFixture(paths, sourceRepoPath).errors).toContain(
+        "partial-source fixture missing raw access sentinel: source-artifacts/appendix.md",
+      );
+      writeFileSync(join(sourceRepoPath, "appendix.md"), "", "utf8");
+      expect(validatePartialRawAccessMonitors(paths, monitors)).toContain(
+        "post-run raw access sentinel identity changed: source-artifacts/appendix.md",
+      );
+      const appendixMonitor = monitors.find((monitor) => monitor.locator === "source-artifacts/appendix.md");
+      if (appendixMonitor === undefined) throw new Error("Missing appendix raw access monitor.");
+      const monitorExited = once(appendixMonitor.child, "exit");
+      appendixMonitor.child.kill("SIGTERM");
+      await monitorExited;
+      expect(validatePartialRawAccessMonitors(paths, monitors)).toContain(
+        "raw access monitor stopped before teardown: source-artifacts/appendix.md",
+      );
+    } finally {
+      stopPartialRawAccessMonitors(monitors);
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
   });

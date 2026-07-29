@@ -10,6 +10,7 @@ import {
   startPartialRawAccessMonitors,
   stopPartialRawAccessMonitors,
   validateFixture,
+  validatePartialRawAccessMonitors,
 } from "./fixture.js";
 import { casePassed, deriveMetrics } from "./grader.js";
 import { writeCaseSummaries } from "./summary.js";
@@ -46,8 +47,10 @@ export async function runSynthesizeMeetingRecordsCase(
   reporter.caseStarted();
 
   const sourceRepoPath = setupFixture(evalCase, paths, reporter);
-  const fixtureValidation = validateFixture(paths, sourceRepoPath);
+  const initialFixtureValidation = validateFixture(paths, sourceRepoPath);
   const rawAccessMonitors = startPartialRawAccessMonitors(paths, sourceRepoPath);
+  let postRunFixtureValidation = initialFixtureValidation;
+  let rawAccessMonitorErrors: readonly string[] = [];
   const runnerResult = await (async () => {
     try {
       return await runAgentProvider(
@@ -63,9 +66,21 @@ export async function runSynthesizeMeetingRecordsCase(
         { paths, reporter },
       );
     } finally {
+      postRunFixtureValidation = validateFixture(paths, sourceRepoPath);
+      rawAccessMonitorErrors = validatePartialRawAccessMonitors(paths, rawAccessMonitors);
       stopPartialRawAccessMonitors(rawAccessMonitors);
     }
   })();
+  const fixtureErrors = [
+    ...initialFixtureValidation.errors,
+    ...postRunFixtureValidation.errors.map((error) => `post-run ${error}`),
+    ...rawAccessMonitorErrors,
+  ];
+  const fixtureValidation = {
+    errors: fixtureErrors,
+    ok: fixtureErrors.length === 0,
+    requiredFilesOk: initialFixtureValidation.requiredFilesOk && postRunFixtureValidation.requiredFilesOk,
+  };
   const validatorResult = runPacketValidator(paths.workspacePath);
   appendEvent(paths.eventsPath, {
     args: validatorResult.args,

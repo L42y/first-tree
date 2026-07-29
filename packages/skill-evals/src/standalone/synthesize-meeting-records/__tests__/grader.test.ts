@@ -248,6 +248,19 @@ describe("standalone synthesize-meeting-records grader", () => {
     ).toBe(false);
   });
 
+  it("rejects post-run sentinel loss before an otherwise clean blocked packet", () => {
+    expect(
+      casePassed(
+        {
+          errors: ["post-run raw access sentinel is missing: source-artifacts/appendix.md"],
+          ok: false,
+          requiredFilesOk: true,
+        },
+        passingMetrics(),
+      ),
+    ).toBe(false);
+  });
+
   it("fails when the skill is not read or a raw canary leaks", () => {
     expect(
       casePassed(

@@ -14,6 +14,13 @@ export const SKILL_NAME = "synthesize-meeting-records";
 export const OUTPUT_NAME = "meeting-analysis-output.json";
 const RAW_ACCESS_MONITOR_PATH = fileURLToPath(new URL("./raw-access-monitor.mjs", import.meta.url));
 
+export type PartialRawAccessMonitor = {
+  child: ChildProcess;
+  device: number;
+  inode: number;
+  locator: string;
+};
+
 function installStandaloneSkill(repoRoot: string, workspacePath: string): string {
   const sourceDir = join(repoRoot, "skills", ".experimental", SKILL_NAME);
   const skillPath = join(sourceDir, "SKILL.md");
@@ -196,17 +203,49 @@ function installPartialRawAccessSentinels(paths: RunPaths, sourceRepoPath: strin
   }
 }
 
-export function startPartialRawAccessMonitors(paths: RunPaths, sourceRepoPath: string): readonly ChildProcess[] {
-  return partialArtifactLocators(sourceRepoPath).map((locator) =>
-    spawn(process.execPath, [RAW_ACCESS_MONITOR_PATH, artifactPath(paths, locator), paths.eventsPath, locator], {
-      stdio: "ignore",
-    }),
-  );
+export function startPartialRawAccessMonitors(
+  paths: RunPaths,
+  sourceRepoPath: string,
+): readonly PartialRawAccessMonitor[] {
+  return partialArtifactLocators(sourceRepoPath).map((locator) => {
+    const path = artifactPath(paths, locator);
+    const identity = lstatSync(path);
+    return {
+      child: spawn(process.execPath, [RAW_ACCESS_MONITOR_PATH, path, paths.eventsPath, locator], {
+        stdio: "ignore",
+      }),
+      device: identity.dev,
+      inode: identity.ino,
+      locator,
+    };
+  });
 }
 
-export function stopPartialRawAccessMonitors(monitors: readonly ChildProcess[]): void {
+export function validatePartialRawAccessMonitors(
+  paths: RunPaths,
+  monitors: readonly PartialRawAccessMonitor[],
+): readonly string[] {
+  const errors: string[] = [];
   for (const monitor of monitors) {
-    if (monitor.exitCode === null) monitor.kill("SIGTERM");
+    const path = artifactPath(paths, monitor.locator);
+    if (!existsSync(path)) {
+      errors.push(`post-run raw access sentinel is missing: ${monitor.locator}`);
+    } else {
+      const identity = lstatSync(path);
+      if (!identity.isFIFO() || identity.dev !== monitor.device || identity.ino !== monitor.inode) {
+        errors.push(`post-run raw access sentinel identity changed: ${monitor.locator}`);
+      }
+    }
+    if (monitor.child.exitCode !== null || monitor.child.signalCode !== null) {
+      errors.push(`raw access monitor stopped before teardown: ${monitor.locator}`);
+    }
+  }
+  return errors;
+}
+
+export function stopPartialRawAccessMonitors(monitors: readonly PartialRawAccessMonitor[]): void {
+  for (const monitor of monitors) {
+    if (monitor.child.exitCode === null) monitor.child.kill("SIGTERM");
   }
 }
 

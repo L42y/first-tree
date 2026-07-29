@@ -44,7 +44,9 @@ fixture represents every referenced raw artifact with a no-content FIFO
 sentinel. A dedicated path monitor records any actual read attempt and returns
 no content; the case fails on that event. Fixture validation rejects a missing
 sentinel or any regular/symlinked raw artifact, so no partial prose can become
-model-facing through an unmodelled shell or provider access path.
+model-facing through an unmodelled shell or provider access path. The
+post-agent check also requires every sentinel to retain its initial filesystem
+identity and every monitor to remain healthy until teardown.
 
 ## Model-backed cases
 
