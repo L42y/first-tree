@@ -2613,6 +2613,91 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("treats a cached empty open-requests result as unconfirmed until this mount's fetch succeeds", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const buriedAsk = message({
+      id: "req-inspect-stale-cache",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([]));
+        // A previous visit's successful EMPTY result, now stale: a new open
+        // request has since arrived outside the timeline window. TanStack
+        // Query keeps status "success" for this row through the mount
+        // refetch — the exact fail-open window this test pins shut.
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [] });
+        // The harness client uses staleTime: Infinity; production (staleTime 0)
+        // refetches on mount, so mark the row stale to match.
+        void client.invalidateQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+      },
+      "/?showAsk=false",
+    );
+
+    // Stale cached zero must NOT restore the ordinary composer.
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("[data-inspect-ask-composer]")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.listChatOpenRequests).toHaveBeenCalled();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // This mount's fetch lands with the still-open request: only the reopen
+    // affordance appears, never the ordinary composer.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "有 1 条待处理的问题");
+    expect(container.querySelector("[data-inspect-ask-composer]")).not.toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps fail-closed with a retryable error when the mount refetch of a cached zero fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("open requests unavailable"));
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([]));
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [] });
+        void client.invalidateQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+      },
+      "/?showAsk=false",
+    );
+
+    // The mount refetch fails while the stale cached zero keeps status
+    // "success": still no ordinary composer — a retryable error instead.
+    await waitForText(container, "Couldn’t check for open questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Retry confirms a fresh zero in this mount: the composer may return.
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+    await click(buttonByText(container, "Retry"));
+    await waitForCondition(
+      () => container.querySelector("textarea") !== null,
+      "ordinary composer after mount-confirmed zero",
+    );
+
+    await act(async () => root.unmount());
+  });
+
   it("Skip resolves the question with a skipped answer (no temporary dismiss)", async () => {
     const { ChatView } = await import("../chat-view.js");
     const dockMessages = messages([

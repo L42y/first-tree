@@ -2621,14 +2621,35 @@ export function ChatView({
   const askOverlayActive = dockRequest != null && dockPayload != null && !inspectAskMode;
   const dockRequestId = askOverlayActive ? dockRequest.id : undefined;
   const openRequestCount = Math.max(openRequestsData?.items.length ?? 0, dockRequest ? 1 : 0);
+  // Mount-scoped confirmation for the open-requests source. ChatView is NOT
+  // remounted on chat switch, so the observation point is keyed by chatId: a
+  // cached success from an earlier visit (possibly written BEFORE a new
+  // request arrived) must not count as confirmation — TanStack Query keeps
+  // `status === "success"` for that stale row through the mount refetch, so
+  // gating on status alone re-opens the ordinary composer for exactly the
+  // window the gate exists to close. Only a fetch that COMPLETED while this
+  // chat is being viewed (`dataUpdatedAt` past the observation point)
+  // confirms the state; a mount-scope failure (`errorUpdatedAt` past it, even
+  // when stale data keeps status "success") stays unverified. Deliberately
+  // not `isFetching`: the 5s poll must not flicker an already-confirmed
+  // composer.
+  const openRequestsObservedAtRef = useRef<{ chatId: string | null; at: number }>({ chatId: null, at: 0 });
+  if (openRequestsObservedAtRef.current.chatId !== chatId) {
+    openRequestsObservedAtRef.current = { chatId, at: Date.now() };
+  }
+  const openRequestsMountConfirmed = openRequestsQuery.dataUpdatedAt > openRequestsObservedAtRef.current.at;
+  const openRequestsMountFailed =
+    !openRequestsMountConfirmed && openRequestsQuery.errorUpdatedAt > openRequestsObservedAtRef.current.at;
   // Inspect mode must fail closed while the window-independent open-requests
-  // source has not CONFIRMED the chat's open-request state: a pending or
-  // failed query derives the same empty count as "no open requests", and
+  // source has not CONFIRMED the chat's open-request state in this mount:
+  // pending, background-refetching from a stale cache, and mount-scope
+  // failure all derive the same empty count as "no open requests", and
   // treating that as confirmed would restore the ordinary composer and let a
   // fast send bypass a still-open request — precisely the contract this mode
-  // exists to preserve. Only a successful query, or a blocking request found
-  // in the already-loaded timeline (count > 0 above), lifts this gate.
-  const inspectSourceUnverified = inspectAskMode && openRequestCount === 0 && openRequestsQuery.status !== "success";
+  // exists to preserve. Only a mount-scope successful fetch, or a blocking
+  // request found in the already-loaded timeline (count > 0 above), lifts
+  // this gate.
+  const inspectSourceUnverified = inspectAskMode && openRequestCount === 0 && !openRequestsMountConfirmed;
   const askAgent = useAskAgent({
     chatId,
     requestId: dockRequest?.id ?? null,
@@ -4366,7 +4387,7 @@ export function ChatView({
                       color: "var(--fg-3)",
                     }}
                   >
-                    {openRequestsQuery.isError ? (
+                    {openRequestsMountFailed ? (
                       <>
                         <span className="text-body flex-1" style={{ color: "var(--fg-2)" }}>
                           Couldn’t check for open questions.
