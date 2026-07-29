@@ -1,9 +1,9 @@
 ---
-name: sync-meeting-records-to-tree
-description: Turn exact meeting records that the user supplies into durable Context Tree updates. Use when a user asks to sync meeting minutes, transcripts, AI notes, decision records, or related meeting artifacts into the team's Context Tree: read the exact sources, reconcile chronology, identify durable decisions and constraints, map relevant participants to First Tree members, confirm only unsettled claims, keep the raw transcript locally, and hand the meeting source material to first-tree-write. Do not use for a summary-only request, calendar discovery, meeting search, provider authorization, or scheduled capture.
+name: meeting-to-tree
+description: Turn exact meeting records that the user supplies into durable Context Tree updates. Use when a user asks to sync meeting minutes, transcripts, AI notes, decision records, or related meeting artifacts into the team's Context Tree: read the exact sources, reconcile chronology, identify durable decisions and constraints, map relevant participants to First Tree members, confirm only unsettled claims, and hand the meeting source material to first-tree-write. Do not use for a summary-only request, calendar discovery, meeting search, provider authorization, or scheduled capture.
 ---
 
-# Sync Meeting Records to the Context Tree
+# Meeting to Tree
 
 Turn one logical meeting's exact source artifacts into reviewable Context Tree
 updates. Use existing readers, First Tree member communication, and
@@ -28,9 +28,11 @@ writer.
 - If an artifact is unreadable or incomplete, identify the gap. When the gap
   could contain a correction or later decision, do not call the affected point
   settled.
-- Keep any supplied raw transcript as a local task artifact. Reuse a local file
-  produced by the reader instead of creating another copy when possible. Never
-  commit raw meeting content to the Context Tree or a source repository.
+- Use the exact source through the ordinary reader in the current task. If the
+  reader already provides a transient local file, reuse it. Do not create or
+  retain an additional raw copy solely for this Skill. Never write raw meeting
+  content to the Context Tree, a source repository, or parallel persistent
+  state.
 
 ## Identify durable Tree candidates
 
