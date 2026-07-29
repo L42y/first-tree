@@ -53,10 +53,12 @@ identity and every monitor to remain healthy until teardown. Every pathname
 component from the sentinel through the isolated workspace root is watched
 continuously, so moving, unlinking, or replacing a sentinel or an ancestor
 fails the case even if the original inode hierarchy is restored before the
-post-agent identity check. Unscoped rename notifications without a filename
-fail closed. Missing or malformed bundle state becomes a failed fixture
-result, and monitor teardown runs unconditionally even if post-agent
-validation encounters an error.
+post-agent identity check. Permission or other metadata changes on protected
+path components also fail the case, so a temporary unreadable sentinel cannot
+hide a prohibited read attempt. Unscoped rename or change notifications
+without a filename fail closed. Missing or malformed bundle state becomes a
+failed fixture result, and monitor teardown runs unconditionally even if
+post-agent validation encounters an error.
 
 ## Model-backed cases
 

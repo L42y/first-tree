@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -134,6 +134,46 @@ describe("standalone synthesize-meeting-records fixture", () => {
         expect(() => readFileSync(sentinelPath, "utf8")).toThrow();
       } finally {
         renameSync(movedPath, sentinelPath);
+      }
+
+      await expect
+        .poll(
+          () =>
+            readEvents(paths.eventsPath).some(
+              (event) =>
+                isRecord(event) &&
+                event.type === "partial_raw_path_mutation" &&
+                event.locator === "source-artifacts/appendix.md",
+            ),
+          { timeout: 1_000 },
+        )
+        .toBe(true);
+      expect(validatePartialRawAccessMonitors(paths, monitors)).toEqual([]);
+      expect(rawArtifactReadObserved(readEvents(paths.eventsPath), evalCase)).toBe(true);
+    } finally {
+      stopPartialRawAccessMonitors(monitors);
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("records a sentinel permission change before a failed read and restored mode", async () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
+    if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-sentinel-permission-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:04.500Z",
+    });
+    const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+    const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
+    try {
+      const sentinelPath = join(sourceRepoPath, "appendix.md");
+      const originalMode = lstatSync(sentinelPath).mode & 0o777;
+      chmodSync(sentinelPath, 0);
+      try {
+        expect(() => readFileSync(sentinelPath, "utf8")).toThrow();
+      } finally {
+        chmodSync(sentinelPath, originalMode);
       }
 
       await expect
