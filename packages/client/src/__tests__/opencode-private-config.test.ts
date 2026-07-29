@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -44,14 +53,18 @@ describe("OpenCode private config lease", () => {
       callerScope,
       handlerId: "3".repeat(32),
     });
-    writeFileSync(join(newer.runtimeRoot, "sentinel.txt"), "newer");
+    const materialization = newer.materialize("newer");
+    const callerParent = join(workspace, ".first-tree-workspace", "opencode-config", callerScope);
+    const generationNames = () => readdirSync(callerParent).filter((name) => /^handler-[a-f0-9]{32}$/.test(name));
+    expect(generationNames()).toHaveLength(2);
 
     await older.close();
 
-    expect(existsSync(older.runtimeRoot)).toBe(false);
-    expect(readFileSync(join(newer.runtimeRoot, "sentinel.txt"), "utf8")).toBe("newer");
+    expect(generationNames()).toHaveLength(1);
+    expect(readFileSync(materialization.configPath, "utf8")).toBe("newer");
+    materialization.cleanup();
     await newer.close();
-    expect(existsSync(newer.runtimeRoot)).toBe(false);
+    expect(generationNames()).toEqual([]);
   });
 
   it("sweeps a journaled crashed generation and an unjournaled orphan under the caller lock", async () => {
@@ -85,7 +98,7 @@ describe("OpenCode private config lease", () => {
 
     expect(existsSync(join(callerParent, `handler-${staleId}`))).toBe(false);
     expect(existsSync(join(callerParent, `handler-${orphanId}`))).toBe(false);
-    expect(existsSync(current.runtimeRoot)).toBe(true);
+    expect(readdirSync(callerParent).some((name) => /^handler-[a-f0-9]{32}$/.test(name))).toBe(true);
     await current.close();
   });
 });

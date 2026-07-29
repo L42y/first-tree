@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
@@ -17,6 +17,7 @@ import {
 } from "../handlers/opencode/index.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
+import { acquireOpenCodePrivateConfigLease } from "../runtime/opencode-private-config.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
 import { readSessionBriefingFingerprint } from "../runtime/session-briefing-fingerprint.js";
 import { SessionManager } from "../runtime/session-manager.js";
@@ -304,13 +305,17 @@ describe("OpenCode V1 handler", () => {
     );
   });
 
-  it("moves oversized private config out of the Windows-sensitive environment block and cleans it", () => {
+  it("moves oversized private config out of the Windows-sensitive environment block and cleans it", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-opencode-config-"));
     roots.push(root);
-    const runtimeRoot = join(root, ".first-tree-workspace", "opencode-config", "scope");
+    const lease = await acquireOpenCodePrivateConfigLease({
+      workspace: root,
+      callerScope: "a".repeat(64),
+      handlerId: "1".repeat(32),
+    });
     const projection = projectOpenCodeConfig({ BASE: "1", OPENCODE_CONFIG_CONTENT: "stale" }, '{"secret":"value"}', {
       maxEnvBytes: 1,
-      runtimeRoot,
+      fileStore: lease,
     });
     expect(projection.transport).toBe("file");
     expect(JSON.parse(String(projection.env.OPENCODE_CONFIG_CONTENT))).toEqual({
@@ -320,11 +325,11 @@ describe("OpenCode V1 handler", () => {
     });
     expect(String(projection.env.OPENCODE_CONFIG_CONTENT)).not.toContain("secret");
     const configPath = String(projection.env.OPENCODE_CONFIG);
-    expect(configPath.startsWith(runtimeRoot)).toBe(true);
+    expect(configPath).toContain(join(".first-tree-workspace", "opencode-config"));
     expect(readFileSync(configPath, "utf8")).toBe('{"secret":"value"}');
     projection.cleanup();
     expect(existsSync(configPath)).toBe(false);
-    expect(existsSync(runtimeRoot)).toBe(true);
+    await lease.close();
   });
 
   it("preserves host custom config for inline projection and fails closed rather than replacing it on overflow", () => {
@@ -339,7 +344,6 @@ describe("OpenCode V1 handler", () => {
     expect(() =>
       projectOpenCodeConfig({ OPENCODE_CONFIG: hostConfig }, '{"agent":{}}', {
         maxEnvBytes: 1,
-        runtimeRoot: "/private/runtime",
       }),
     ).toThrow(/cannot replace the host OPENCODE_CONFIG/i);
   });
@@ -432,17 +436,59 @@ describe("OpenCode V1 handler", () => {
     expect(generationNames()).toEqual([]);
   });
 
-  it("fails closed when even the file-backed projection cannot fit a Windows environment block", () => {
+  it("fails closed before a file-backed write when a live generation leaf becomes a symlink", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-swap-"));
+    const external = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-outside-"));
+    roots.push(root, external);
+    const cfg = runtimeConfig();
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(cfg),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+      opencodeRetrySleep: async () => {},
+    });
+    await handler.start(message("m-private-swap-first", "small config"), context([], []), deliveryToken());
+    const scopeRoot = join(root, ".first-tree-workspace", "opencode-config", stableOpenCodeScope("agent-1\0chat-1"));
+    const generationName = readdirSync(scopeRoot).find((name) => /^handler-[a-f0-9]{32}$/.test(name));
+    expect(generationName).toBeTruthy();
+    const generationPath = join(scopeRoot, String(generationName));
+    rmSync(generationPath, { recursive: true, force: true });
+    writeFileSync(join(external, "sentinel.txt"), "outside");
+    symlinkSync(external, generationPath, "dir");
+    cfg.payload.mcpServers[0] = {
+      name: "large",
+      transport: "stdio",
+      command: "mcp-bin",
+      args: ["x".repeat(20_000)],
+    };
+
+    const token = deliveryToken();
+    handler.inject(message("m-private-swap-second", "force file projection"), token);
+    await vi.waitFor(() => expect(token.retry).toHaveBeenCalled());
+
+    expect(readdirSync(external)).toEqual(["sentinel.txt"]);
+    expect(readFileSync(join(external, "sentinel.txt"), "utf8")).toBe("outside");
+    await expect(handler.shutdown()).rejects.toThrow(/symlink|identity/i);
+  });
+
+  it("fails closed when even the file-backed projection cannot fit a Windows environment block", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-opencode-config-overflow-"));
     roots.push(root);
+    const lease = await acquireOpenCodePrivateConfigLease({
+      workspace: root,
+      callerScope: "b".repeat(64),
+      handlerId: "2".repeat(32),
+    });
     expect(() =>
       projectOpenCodeConfig({ HUGE: "x".repeat(1_000) }, '{"agent":{}}', {
         platform: "win32",
         maxWindowsEnvChars: 100,
-        makeTempDir: () => root,
+        fileStore: lease,
       }),
     ).toThrow(/exceeds the safe Windows block limit/i);
-    expect(existsSync(root)).toBe(false);
+    await lease.close();
   });
 
   it("serializes DB readiness, sends prompt only on stdin, and resumes the confirmed session", async () => {
@@ -713,8 +759,106 @@ describe("OpenCode V1 handler", () => {
 
     expect(token.retry).not.toHaveBeenCalled();
     expect(token.complete).not.toHaveBeenCalled();
-    expect(openCodeProviderAttemptWindowSizeForTests()).toBe(0);
+    expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
     await handler.shutdown();
+  });
+
+  it("continues the same retry window after SessionManager preempts an unacked delivery delay", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-preempt-"));
+    roots.push(root);
+    let firstDelayStarted!: () => void;
+    const delayStarted = new Promise<void>((resolveStarted) => {
+      firstDelayStarted = resolveStarted;
+    });
+    let delayCall = 0;
+    const sleep = vi.fn(async (_delayMs: number, signal: AbortSignal) => {
+      delayCall += 1;
+      if (delayCall > 1) return true;
+      firstDelayStarted();
+      return new Promise<boolean>((resolveDelay) => {
+        signal.addEventListener("abort", () => resolveDelay(false), { once: true });
+      });
+    });
+    const specs: ProviderProcessSpec[] = [];
+    const supervisor = createProtocolSupervisor(specs, [
+      "not-json\n",
+      `${successfulTurn("ses_other")}\n`,
+      "not-json\n",
+      "not-json\n",
+    ]);
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>(async () => {});
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>(async () => {});
+    const sendMessage = vi.fn(async () => ({ id: "runtime-notice" }));
+    const sdk = {
+      sendMessage,
+      getChatDetail: vi.fn(async (chatId: string) => ({
+        id: chatId,
+        title: "Retry preemption chat",
+        topic: null,
+        description: null,
+      })),
+      listChatParticipants: vi.fn(async () => []),
+    } as unknown as FirstTreeHubSDK;
+    const manager = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 1,
+      handlerFactory: (handlerConfig) =>
+        createOpenCodeHandler({
+          ...handlerConfig,
+          opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+          providerProcessSupervisor: supervisor,
+          opencodeRetrySleep: sleep,
+        }),
+      handlerConfig: { workspaceRoot: root, runtimeProvider: "opencode" },
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk,
+      log: silentLogger(),
+      registryPath: join(root, "sessions.json"),
+      ackEntry,
+      recoverChat,
+      agentConfigCache: cache(runtimeConfig()),
+    });
+    const delivery = mockEntry({
+      id: 811,
+      chatId: "chat-retry-preempt",
+      messageId: "msg-retry-preempt",
+      content: "same delivery after preemption",
+    });
+    const competing = mockEntry({
+      id: 812,
+      chatId: "chat-competing",
+      messageId: "msg-competing",
+      content: "take the only runtime slot",
+    });
+
+    const firstDispatch = manager.dispatch(delivery);
+    await delayStarted;
+    await manager.dispatch(competing);
+    await firstDispatch;
+    expect(ackEntry).not.toHaveBeenCalledWith(811);
+    expect(ackEntry).toHaveBeenCalledWith(812);
+
+    await manager.dispatch(delivery);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-retry-preempt"));
+    await manager.dispatch(delivery);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(811));
+
+    expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([5_000, 15_000]);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    await manager.shutdown();
   });
 
   it("expires abandoned provider-attempt windows before admitting a new delivery head", async () => {
@@ -722,7 +866,8 @@ describe("OpenCode V1 handler", () => {
     roots.push(root);
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-    const runFailure = async (id: string) => {
+    let oldDeliveryPending = true;
+    const runFailure = async (id: string, hasPendingDelivery: () => boolean) => {
       const handler = createOpenCodeHandler({
         workspaceRoot: root,
         runtimeProvider: "opencode",
@@ -731,14 +876,20 @@ describe("OpenCode V1 handler", () => {
         providerProcessSupervisor: createProtocolSupervisor([], ["not-json\n"]),
         opencodeRetrySleep: async () => {},
       });
-      await handler.start(message(id, "delivery"), context([], []), deliveryToken());
+      const sessionCtx = context([], []);
+      sessionCtx.hasPendingDelivery = hasPendingDelivery;
+      await handler.start(message(id, "delivery"), sessionCtx, deliveryToken());
       await handler.shutdown();
     };
 
-    await runFailure("m-old-window");
+    await runFailure("m-old-window", () => oldDeliveryPending);
     expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
     clock.mockReturnValue(now + 31 * 60_000);
-    await runFailure("m-new-window");
+    await runFailure("m-old-window", () => oldDeliveryPending);
+    expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
+    oldDeliveryPending = false;
+    clock.mockReturnValue(now + 62 * 60_000);
+    await runFailure("m-new-window", () => true);
     expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
   });
 
