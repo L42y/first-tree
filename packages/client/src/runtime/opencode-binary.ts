@@ -4,10 +4,11 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:pa
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
-/** Exact CLI contract validated by the cross-platform harness. */
-export const OPENCODE_SUPPORTED_VERSION = "1.18.7";
+/** Lowest compatible CLI validated by the runtime contract. */
+export const OPENCODE_MINIMUM_VERSION = "1.18.7";
+export const OPENCODE_SUPPORTED_VERSION_RANGE = ">=1.18.7 <2.0.0";
 /** Host-local OpenCode installation surfaced in setup and error copy. */
-export const OPENCODE_INSTALL_COMMAND = `npm install -g opencode-ai@${OPENCODE_SUPPORTED_VERSION}`;
+export const OPENCODE_INSTALL_COMMAND = `npm install -g opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
 export const OPENCODE_LOGIN_COMMAND = "opencode auth login";
 
 export function formatOpenCodeBinaryMissingMessage(input: unknown): string {
@@ -42,7 +43,8 @@ export function findOpenCodeExecutableOnPath(
   const platform = deps.platform ?? process.platform;
   const pathDelimiter = deps.pathDelimiter ?? (platform === "win32" ? ";" : delimiter);
   const loginShellPathDirs = deps.loginShellPathDirs ?? getLoginShellPathDirs;
-  const home = env.HOME && env.HOME.length > 0 ? env.HOME : homedir();
+  const configuredHome = env.HOME || env.USERPROFILE;
+  const home = configuredHome && configuredHome.length > 0 ? configuredHome : homedir();
   const wellKnownDirs = deps.wellKnownDirs ?? (() => wellKnownBinDirs(home));
   const seen = new Set<string>();
 
@@ -61,7 +63,12 @@ export function findOpenCodeExecutableOnPath(
 
   const pathValue = env.PATH ?? env.Path ?? env.path ?? "";
   const pathDirs = pathValue ? pathValue.split(pathDelimiter) : [];
-  return search(pathDirs) ?? search(wellKnownDirs()) ?? search(loginShellPathDirs());
+  return (
+    search(pathDirs) ??
+    search([join(home, ".opencode", "bin")]) ??
+    search(wellKnownDirs()) ??
+    search(loginShellPathDirs())
+  );
 }
 
 export type OpenCodeRuntimeBinaryResolution =
@@ -73,7 +80,7 @@ export type OpenCodeRuntimeResolveDeps = {
 };
 
 /**
- * Resolve only. Every OpenCode invocation, including the exact-version gate,
+ * Resolve only. Every OpenCode invocation, including the compatible-version gate,
  * is launched later through the provider process supervisor so Windows never
  * executes an unadmitted runtime process.
  */
@@ -110,24 +117,53 @@ function openCodeExecutableCandidates(base: string, platform: NodeJS.Platform): 
 export function parseOpenCodeVersionOutput(output: string): string | null {
   for (let start = 0; start < output.length; start++) {
     if (!isAsciiDigit(output.charCodeAt(start))) continue;
-    let end = start;
-    while (end < output.length) {
-      const code = output.charCodeAt(end);
-      if (!isAsciiDigit(code) && code !== 46) break;
-      end++;
+    if (start > 0 && isVersionTokenCode(output.charCodeAt(start - 1))) continue;
+    const firstDot = scanNumericPart(output, start);
+    if (firstDot < 0 || output.charCodeAt(firstDot) !== 46) continue;
+    const secondStart = firstDot + 1;
+    const secondDot = scanNumericPart(output, secondStart);
+    if (secondDot < 0 || output.charCodeAt(secondDot) !== 46) continue;
+    const patchStart = secondDot + 1;
+    const end = scanNumericPart(output, patchStart);
+    if (end < 0) continue;
+    if (end < output.length && isVersionTokenCode(output.charCodeAt(end))) {
+      start = end;
+      continue;
     }
-    const candidate = output.slice(start, end);
-    const parts = candidate.split(".");
-    if ((parts.length === 2 || parts.length === 3) && parts.every(isBoundedNumericVersionPart)) {
-      return candidate;
-    }
-    start = end - 1;
+    const parts = [output.slice(start, firstDot), output.slice(secondStart, secondDot), output.slice(patchStart, end)];
+    if (parts.every(isBoundedNumericVersionPart)) return parts.join(".");
+    start = end;
   }
   return null;
 }
 
+export function isSupportedOpenCodeVersion(version: string | null): boolean {
+  if (!version) return false;
+  const parts = version.split(".");
+  if (parts.length !== 3 || !parts.every(isBoundedNumericVersionPart)) return false;
+  const major = Number(parts[0]);
+  const minor = Number(parts[1]);
+  const patch = Number(parts[2]);
+  if (major !== 1) return false;
+  return minor > 18 || (minor === 18 && patch >= 7);
+}
+
+function scanNumericPart(value: string, start: number): number {
+  let end = start;
+  while (end < value.length && isAsciiDigit(value.charCodeAt(end))) end++;
+  return end === start ? -1 : end;
+}
+
+function isVersionTokenCode(code: number): boolean {
+  return isAsciiDigit(code) || code === 46 || code === 45 || code === 43 || isAsciiLetter(code);
+}
+
 function isAsciiDigit(code: number): boolean {
   return code >= 48 && code <= 57;
+}
+
+function isAsciiLetter(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
 function isBoundedNumericVersionPart(part: string): boolean {

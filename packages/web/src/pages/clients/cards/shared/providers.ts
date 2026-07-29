@@ -73,7 +73,7 @@ export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = {
   // Runtime execution is bundled, but the official CLI remains the supported
   // operator login/recovery surface for the shared ~/.kimi-code credential.
   "kimi-code": "@moonshot-ai/kimi-code",
-  opencode: "opencode-ai@1.18.7",
+  opencode: "opencode-ai@^1.18.7",
 };
 
 /**
@@ -222,7 +222,7 @@ export function providerInstallHint(
     return `Install the official Kimi CLI with \`npm install -g @moonshot-ai/kimi-code\` on this ${device}, run \`kimi\`, then \`/login\`. First Tree still executes through its bundled Kimi SDK.`;
   }
   if (provider === "opencode") {
-    return `Run \`npm install -g opencode-ai@1.18.7\` on this ${device}, then complete provider-owned setup with \`opencode auth login\`.`;
+    return `Run \`npm install -g opencode-ai@^1.18.7\` on this ${device}, then complete provider-owned setup with \`opencode auth login\`.`;
   }
   return `Install the OpenAI Codex CLI on this ${device}.`;
 }

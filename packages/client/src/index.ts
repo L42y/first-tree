@@ -117,9 +117,11 @@ export { InputController } from "./runtime/input-controller.js";
 export {
   findOpenCodeExecutableOnPath,
   formatOpenCodeBinaryMissingMessage,
+  isSupportedOpenCodeVersion,
   OPENCODE_INSTALL_COMMAND,
   OPENCODE_LOGIN_COMMAND,
-  OPENCODE_SUPPORTED_VERSION,
+  OPENCODE_MINIMUM_VERSION,
+  OPENCODE_SUPPORTED_VERSION_RANGE,
   parseOpenCodeVersionOutput,
   resolveOpenCodeRuntimeBinary,
 } from "./runtime/opencode-binary.js";

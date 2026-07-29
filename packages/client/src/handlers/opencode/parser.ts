@@ -18,7 +18,8 @@ export type OpenCodeStreamEvent =
   | { kind: "usage"; usage: OpenCodeUsage }
   | { kind: "terminal"; reason: string }
   | { kind: "error"; message: string }
-  | { kind: "unknown"; note: string; raw: string };
+  | { kind: "reasoning" }
+  | { kind: "unknown"; note: string };
 
 const PREVIEW_LIMIT = 400;
 
@@ -76,10 +77,10 @@ export function parseOpenCodeStreamLine(line: string): OpenCodeStreamEvent[] {
   try {
     value = JSON.parse(raw);
   } catch {
-    return [{ kind: "unknown", note: "unparsable JSONL line", raw: raw.slice(0, PREVIEW_LIMIT) }];
+    return [{ kind: "unknown", note: "unparsable JSONL line" }];
   }
   const row = record(value);
-  if (!row) return [{ kind: "unknown", note: "non-object JSONL value", raw: raw.slice(0, PREVIEW_LIMIT) }];
+  if (!row) return [{ kind: "unknown", note: "non-object JSONL value" }];
   const part = record(row.part);
   const events: OpenCodeStreamEvent[] = [];
   const id = sessionId(row, part);
@@ -88,11 +89,17 @@ export function parseOpenCodeStreamLine(line: string): OpenCodeStreamEvent[] {
   switch (string(row.type)) {
     case "text": {
       const text = string(part?.text) ?? string(row.text);
-      if (text) events.push({ kind: "text", text });
+      if (!text) events.push({ kind: "unknown", note: "text event missing text" });
+      else events.push({ kind: "text", text });
       break;
     }
     case "tool_use": {
       const state = record(part?.state);
+      const toolName = string(part?.tool);
+      if (!part || !state || !toolName) {
+        events.push({ kind: "unknown", note: "tool_use event missing part, state, or tool name" });
+        break;
+      }
       const metadata = record(state?.metadata);
       const statusValue = string(state?.status) ?? "pending";
       const status =
@@ -109,8 +116,8 @@ export function parseOpenCodeStreamLine(line: string): OpenCodeStreamEvent[] {
           string(part?.id) ??
           string(part?.callID) ??
           string(part?.callId) ??
-          `${string(part?.tool) ?? "tool"}:${string(part?.messageID) ?? "unknown"}`,
-        name: string(part?.tool) ?? "unknown",
+          `${toolName}:${string(part?.messageID) ?? "unknown"}`,
+        name: toolName,
         status,
         args: state?.input ?? part?.input ?? {},
         ...(status === "pending" ? {} : { resultPreview: preview(state?.output ?? state?.error) }),
@@ -118,10 +125,15 @@ export function parseOpenCodeStreamLine(line: string): OpenCodeStreamEvent[] {
       break;
     }
     case "step_finish": {
+      if (!part) {
+        events.push({ kind: "unknown", note: "step_finish event missing part" });
+        break;
+      }
       const tokenUsage = usage(part?.tokens ?? row.tokens);
       if (tokenUsage) events.push({ kind: "usage", usage: tokenUsage });
       const reason = string(part?.reason);
-      if (reason && reason !== "tool-calls") events.push({ kind: "terminal", reason });
+      if (!reason) events.push({ kind: "unknown", note: "step_finish event missing reason" });
+      else if (reason !== "tool-calls") events.push({ kind: "terminal", reason });
       break;
     }
     case "error": {
@@ -139,14 +151,14 @@ export function parseOpenCodeStreamLine(line: string): OpenCodeStreamEvent[] {
     }
     case "step_start":
       break;
+    case "reasoning":
+      events.push({ kind: "reasoning" });
+      break;
     default:
-      if (!id) {
-        events.push({
-          kind: "unknown",
-          note: `unknown event type ${String(row.type)}`,
-          raw: raw.slice(0, PREVIEW_LIMIT),
-        });
-      }
+      events.push({
+        kind: "unknown",
+        note: `unknown event type ${String(row.type)}`,
+      });
   }
   return events;
 }

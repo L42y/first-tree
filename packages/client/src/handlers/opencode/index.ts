@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
+  encodeProviderRetryEventMessage,
   isLandingCampaignTrialAgentMetadata,
   runtimeProviderSchema,
   type ToolFileRef,
@@ -19,14 +22,17 @@ import type {
   HandlerFactory,
   SessionContext,
   SessionMessage,
+  TurnConsumedErrorReason,
 } from "../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
 import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import {
-  OPENCODE_SUPPORTED_VERSION,
+  isSupportedOpenCodeVersion,
+  OPENCODE_SUPPORTED_VERSION_RANGE,
   parseOpenCodeVersionOutput,
   resolveOpenCodeRuntimeBinary,
 } from "../../runtime/opencode-binary.js";
+import { ProviderAttempt, type ProviderAttemptSettlement } from "../../runtime/provider-attempt.js";
 import {
   createDefaultProviderProcessSupervisor,
   type ProviderProcessSupervisor,
@@ -42,9 +48,9 @@ import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../ru
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { chunkAssistantText } from "../assistant-text.js";
 import { formatAuthHint, isOpenCodeAuthError } from "../auth-error-hint.js";
+import { consumedErrorOutcome } from "../turn-settlement.js";
 import { type OpenCodeStreamEvent, OpenCodeStreamParser, type OpenCodeUsage } from "./parser.js";
 
-export const OPENCODE_MANAGED_AGENT = "first-tree";
 export const OPENCODE_PENDING_SESSION_PREFIX = "opencode-pending-";
 
 const STDERR_TAIL_LIMIT = 8_000;
@@ -52,6 +58,8 @@ const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
 const KILL_GRACE_MS = 5_000;
 const FINAL_CLOSE_WAIT_MS = 2_000;
 const DB_GATE_TIMEOUT_MS = 30_000;
+const CONFIG_CONTENT_ENV_MAX_BYTES = 16 * 1024;
+const WINDOWS_ENV_BLOCK_MAX_CHARS = 30_000;
 
 export function isOpenCodePendingSessionId(sessionId: string): boolean {
   return sessionId.startsWith(OPENCODE_PENDING_SESSION_PREFIX);
@@ -61,17 +69,25 @@ type OpenCodeMcpConfig =
   | { type: "local"; command: string[]; enabled: true }
   | { type: "remote"; url: string; headers?: Record<string, string>; enabled: true };
 
-export function mapOpenCodeMcpServers(payload: AgentRuntimeConfigPayload): Record<string, OpenCodeMcpConfig> {
+export type OpenCodeMcpProjection = {
+  servers: Record<string, OpenCodeMcpConfig>;
+  aliases: Array<{ configuredName: string; managedName: string }>;
+};
+
+export function mapOpenCodeMcpServers(payload: AgentRuntimeConfigPayload, scope: string): OpenCodeMcpProjection {
   const out: Record<string, OpenCodeMcpConfig> = {};
-  for (const server of payload.mcpServers) {
+  const aliases: OpenCodeMcpProjection["aliases"] = [];
+  for (const [index, server] of payload.mcpServers.entries()) {
+    const managedName = `first-tree-${scope}-mcp-${index + 1}`;
+    aliases.push({ configuredName: server.name, managedName });
     if (server.transport === "stdio") {
-      out[server.name] = {
+      out[managedName] = {
         type: "local",
         command: [server.command, ...(server.args ?? [])],
         enabled: true,
       };
     } else {
-      out[server.name] = {
+      out[managedName] = {
         type: "remote",
         url: server.url,
         ...(server.headers ? { headers: server.headers } : {}),
@@ -79,23 +95,34 @@ export function mapOpenCodeMcpServers(payload: AgentRuntimeConfigPayload): Recor
       };
     }
   }
-  return out;
+  return { servers: out, aliases };
 }
 
 export function buildOpenCodeConfigContent(input: {
   payload: AgentRuntimeConfigPayload;
-  standingPrompt: string;
+  managedAgentName: string;
+  scope: string;
 }): string {
+  const mcp = mapOpenCodeMcpServers(input.payload, input.scope);
+  const aliasNotice =
+    mcp.aliases.length === 0
+      ? ""
+      : `\nManaged MCP aliases:\n${mcp.aliases
+          .map(({ configuredName, managedName }) => `- ${configuredName}: ${managedName}`)
+          .join("\n")}`;
   return JSON.stringify({
     $schema: "https://opencode.ai/config.json",
     autoupdate: false,
     share: "disabled",
     snapshot: false,
     agent: {
-      [OPENCODE_MANAGED_AGENT]: {
+      [input.managedAgentName]: {
         description: "First Tree managed agent",
         mode: "primary",
-        prompt: input.standingPrompt,
+        prompt:
+          "You are running as a First Tree managed OpenCode agent. Read and follow the workspace AGENTS.md. " +
+          "Use the First Tree runtime CLI for teammate communication when instructed." +
+          aliasNotice,
         ...(input.payload.model ? { model: input.payload.model } : {}),
         permission: {
           edit: "allow",
@@ -113,18 +140,23 @@ export function buildOpenCodeConfigContent(input: {
       websearch: "allow",
       task: "allow",
     },
-    mcp: mapOpenCodeMcpServers(input.payload),
+    mcp: mcp.servers,
   });
 }
 
-export function buildOpenCodeTurnArgs(input: { cwd: string; model: string; resumeSessionId: string | null }): string[] {
+export function buildOpenCodeTurnArgs(input: {
+  cwd: string;
+  model: string;
+  resumeSessionId: string | null;
+  managedAgentName: string;
+}): string[] {
   const args = [
     "run",
     "--format",
     "json",
     "--auto",
     "--agent",
-    OPENCODE_MANAGED_AGENT,
+    input.managedAgentName,
     "--title",
     "First Tree managed turn",
     "--dir",
@@ -136,6 +168,72 @@ export function buildOpenCodeTurnArgs(input: { cwd: string; model: string; resum
   if (input.model) args.push("--model", input.model);
   if (input.resumeSessionId) args.push("--session", input.resumeSessionId);
   return args;
+}
+
+export type OpenCodeConfigProjection = {
+  env: Record<string, string>;
+  cleanup: () => void;
+  transport: "env" | "file";
+};
+
+export function projectOpenCodeConfig(
+  env: Record<string, string>,
+  configContent: string,
+  deps: {
+    maxEnvBytes?: number;
+    maxWindowsEnvChars?: number;
+    makeTempDir?: () => string;
+    platform?: NodeJS.Platform;
+  } = {},
+): OpenCodeConfigProjection {
+  const maxEnvBytes = deps.maxEnvBytes ?? CONFIG_CONTENT_ENV_MAX_BYTES;
+  const platform = deps.platform ?? process.platform;
+  const maxWindowsEnvChars = deps.maxWindowsEnvChars ?? WINDOWS_ENV_BLOCK_MAX_CHARS;
+  const privateEnv = { ...env };
+  delete privateEnv.OPENCODE_CONFIG;
+  delete privateEnv.OPENCODE_CONFIG_CONTENT;
+  const contentEnv = { ...privateEnv, OPENCODE_CONFIG_CONTENT: configContent };
+  if (
+    Buffer.byteLength(configContent, "utf8") <= maxEnvBytes &&
+    (platform !== "win32" || windowsEnvBlockChars(contentEnv) <= maxWindowsEnvChars)
+  ) {
+    return {
+      env: contentEnv,
+      cleanup: () => {},
+      transport: "env",
+    };
+  }
+
+  const configDir = deps.makeTempDir?.() ?? mkdtempSync(join(tmpdir(), "first-tree-opencode-config-"));
+  const configPath = join(configDir, "opencode.json");
+  try {
+    writeFileSync(configPath, configContent, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    chmodSync(configDir, 0o700);
+    chmodSync(configPath, 0o600);
+  } catch (error) {
+    rmSync(configDir, { recursive: true, force: true });
+    throw error;
+  }
+  const fileEnv = {
+    ...privateEnv,
+    OPENCODE_CONFIG: configPath,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ autoupdate: false, share: "disabled", snapshot: false }),
+  };
+  if (platform === "win32" && windowsEnvBlockChars(fileEnv) > maxWindowsEnvChars) {
+    rmSync(configDir, { recursive: true, force: true });
+    throw new Error("OpenCode runtime provider mismatch: child environment exceeds the safe Windows block limit");
+  }
+  return {
+    env: fileEnv,
+    cleanup: () => rmSync(configDir, { recursive: true, force: true }),
+    transport: "file",
+  };
+}
+
+function windowsEnvBlockChars(env: Readonly<Record<string, string>>): number {
+  let total = 1;
+  for (const [key, value] of Object.entries(env)) total += key.length + 1 + value.length + 1;
+  return total;
 }
 
 type ProcessOutcome = {
@@ -155,7 +253,7 @@ type TurnState = {
   usage: OpenCodeUsage | null;
   sawProviderActivity: boolean;
   sawUnsafeTool: boolean;
-  unknownCount: number;
+  protocolDiagnostics: string[];
 };
 
 const dbGatePromises = new Map<string, Promise<void>>();
@@ -180,6 +278,8 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     typeof config.opencodeTurnTimeoutMs === "number" && config.opencodeTurnTimeoutMs > 0
       ? config.opencodeTurnTimeoutMs
       : DEFAULT_TURN_TIMEOUT_MS;
+  const projectionScope = randomUUID().replaceAll("-", "").slice(0, 12);
+  const managedAgentName = `first-tree-${projectionScope}`;
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -196,13 +296,11 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   let generation = 0;
   let drainScheduled = false;
   let drainInProgress = false;
+  let pendingChatContextPrompt: string | null = null;
+  let providerTurnFailureAttempt = 0;
   const queue: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
 
-  function buildEnv(
-    sessionCtx: SessionContext,
-    payload: AgentRuntimeConfigPayload,
-    standingPrompt: string,
-  ): Record<string, string> {
+  function buildEnv(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): Record<string, string> {
     const base: NodeJS.ProcessEnv = {};
     for (const [key, value] of Object.entries(process.env)) {
       if (typeof value === "string") base[key] = value;
@@ -213,7 +311,8 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     for (const [key, value] of Object.entries(merged)) {
       if (typeof value === "string") env[key] = value;
     }
-    env.OPENCODE_CONFIG_CONTENT = buildOpenCodeConfigContent({ payload, standingPrompt });
+    delete env.OPENCODE_CONFIG;
+    delete env.OPENCODE_CONFIG_CONTENT;
     return env;
   }
 
@@ -242,7 +341,6 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   async function refreshProjection(sessionCtx: SessionContext): Promise<{
     payload: AgentRuntimeConfigPayload;
     briefing: string;
-    standingPrompt: string;
   }> {
     if (!cwd) throw new Error("OpenCode workspace is not prepared");
     let runtimeConfig = activeConfig;
@@ -274,11 +372,8 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       currentSourceRepoNames: currentSourceRepoNamesFromPayload(payload, runtimeConfig !== null),
     });
     markWorkspaceInitComplete(cwd);
-    const chatContext = await fetchChatContextOrLog(sessionCtx);
-    const chatPrompt = renderChatContextPrompt(chatContext);
-    const standingPrompt = [renderRuntimeOutputContract(), chatPrompt].filter(Boolean).join("\n\n");
     activeConfig = runtimeConfig;
-    return { payload, briefing, standingPrompt };
+    return { payload, briefing };
   }
 
   function runProcess(input: {
@@ -423,7 +518,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         state.text.push(event.text);
         break;
       case "tool":
-        if (event.status === "pending" && !isReadOnlyTool(event.name)) state.sawUnsafeTool = true;
+        if (!isReadOnlyTool(event.name)) state.sawUnsafeTool = true;
         {
           const toolFileRefs = event.status === "pending" ? undefined : fileRefsForTool(event.name, event.args);
           sessionCtx.emitEvent({
@@ -448,11 +543,13 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       case "error":
         state.errors.push(event.message);
         break;
+      case "reasoning":
+        break;
       case "unknown":
-        if (state.unknownCount < 5) {
-          sessionCtx.log(`OpenCode tolerant-parse diagnostic: ${event.note}: ${event.raw}`);
+        if (state.protocolDiagnostics.length < 5) {
+          sessionCtx.log(`OpenCode protocol diagnostic: ${event.note}`);
         }
-        state.unknownCount++;
+        state.protocolDiagnostics.push(event.note);
         break;
     }
   }
@@ -559,16 +656,16 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       abortSignal: input.abortSignal,
       timeoutMs: DB_GATE_TIMEOUT_MS,
       turnGeneration: input.turnGeneration,
-      label: "opencode exact-version gate",
+      label: "opencode compatible-version gate",
     });
     const version = parseOpenCodeVersionOutput(`${outcome.stdoutTail}\n${outcome.stderrTail}`);
-    if (outcome.spawnError || outcome.exitCode !== 0 || version !== OPENCODE_SUPPORTED_VERSION) {
+    if (outcome.spawnError || outcome.exitCode !== 0 || !isSupportedOpenCodeVersion(version)) {
       const detail = redactErrorPreview(
         outcome.spawnError?.message || outcome.stderrTail || outcome.stdoutTail || `exit ${outcome.exitCode}`,
         800,
       );
       throw new Error(
-        `Unsupported OpenCode runtime. First Tree requires opencode-ai@${OPENCODE_SUPPORTED_VERSION}; ` +
+        `OpenCode runtime provider mismatch: unsupported version. First Tree requires ${OPENCODE_SUPPORTED_VERSION_RANGE}; ` +
           `observed ${version ?? "no parseable version"}. ${detail}`,
       );
     }
@@ -589,6 +686,78 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     }
   }
 
+  function emitProviderTurnSettlementEvent(sessionCtx: SessionContext, settlement: ProviderAttemptSettlement): void {
+    sessionCtx.emitEvent({
+      kind: "error",
+      payload: {
+        source: "runtime",
+        message: encodeProviderRetryEventMessage(settlement.eventPayload),
+      },
+    });
+  }
+
+  function consumedReasonForProviderSettlement(settlement: ProviderAttemptSettlement): TurnConsumedErrorReason {
+    return settlement.decision.action === "stop" && settlement.decision.terminalKind === "capacity_wait_required"
+      ? "capacity_wait_required"
+      : settlement.decision.action === "stop" && settlement.decision.terminalKind === "exhausted"
+        ? "provider_retry_exhausted"
+        : settlement.decision.reasonCode;
+  }
+
+  async function settleFailure(input: {
+    failure: string;
+    spawnError?: Error;
+    state: Pick<TurnState, "sawProviderActivity" | "sawUnsafeTool" | "text">;
+    sessionCtx: SessionContext;
+    messages: readonly SessionMessage[];
+    token: DeliveryToken;
+  }): Promise<boolean> {
+    const replaySafety = input.state.sawUnsafeTool
+      ? "unsafe"
+      : input.state.text.length > 0
+        ? "user_visible"
+        : input.state.sawProviderActivity
+          ? "pre_visible"
+          : "pre_provider";
+    const displayMessage = isOpenCodeAuthError(input.failure)
+      ? formatAuthHint("opencode", input.failure)
+      : input.failure;
+    const attempt = new ProviderAttempt({
+      provider: runtimeProvider,
+      scope: "provider_turn",
+      source: input.spawnError ? "sdk" : "stream",
+      replaySafety,
+    });
+    attempt.recordSignal({
+      kind: input.spawnError ? "local_error" : "provider_error",
+      error: input.spawnError ?? input.failure,
+      messagePreview: displayMessage,
+    });
+    const settlement = attempt.settle({ attempt: ++providerTurnFailureAttempt });
+    if (!settlement) {
+      input.token.retry(input.messages, "opencode_unclassified_failure");
+      return false;
+    }
+
+    emitProviderTurnSettlementEvent(input.sessionCtx, settlement);
+    input.sessionCtx.emitEvent({
+      kind: "error",
+      payload: { source: "sdk", message: displayMessage },
+    });
+    input.sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+    if (settlement.decision.action === "retry") {
+      input.token.retry(input.messages, settlement.decision.reasonCode);
+      if (input.state.sawProviderActivity) {
+        input.sessionCtx.failSessionForRecovery?.("opencode_turn_retryable_failure", providerSessionId ?? undefined);
+      }
+      return false;
+    }
+    await input.token.complete(input.messages, consumedErrorOutcome(consumedReasonForProviderSettlement(settlement)));
+    providerTurnFailureAttempt = 0;
+    pendingChatContextPrompt = null;
+    return true;
+  }
+
   async function runTurn(
     prompt: string,
     sessionCtx: SessionContext,
@@ -605,8 +774,8 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     const abort = new AbortController();
     currentAbort = abort;
     const promise = (async () => {
-      const { payload, standingPrompt } = await refreshProjection(sessionCtx);
-      const env = buildEnv(sessionCtx, payload, standingPrompt);
+      const { payload } = await refreshProjection(sessionCtx);
+      const env = buildEnv(sessionCtx, payload);
       await ensureSupportedVersion({
         activeBinary,
         env,
@@ -625,6 +794,8 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       });
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) return false;
 
+      const oneShotPrompt = pendingChatContextPrompt;
+      const providerPrompt = oneShotPrompt ? `${oneShotPrompt}\n\n${prompt}` : prompt;
       const expectedSessionId = providerSessionId;
       const state: TurnState = {
         parser: new OpenCodeStreamParser(),
@@ -635,29 +806,42 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         usage: null,
         sawProviderActivity: false,
         sawUnsafeTool: false,
-        unknownCount: 0,
+        protocolDiagnostics: [],
       };
       token.processingStarted(messages);
       const timeout = setTimeout(() => abort.abort(), turnTimeoutMs);
       timeout.unref?.();
-      const outcome = await runProcess({
-        command: activeBinary,
-        args: buildOpenCodeTurnArgs({
-          cwd: workspaceCwd,
-          model: payload.model,
-          resumeSessionId: expectedSessionId,
-        }),
-        prompt: `${prompt}\n`,
-        env,
-        workspaceCwd,
-        state,
-        sessionCtx,
-        abortSignal: abort.signal,
-        timeoutMs: turnTimeoutMs,
-        turnGeneration,
-        label: `opencode turn ${sessionCtx.chatId}`,
-      });
-      clearTimeout(timeout);
+      let outcome: ProcessOutcome;
+      try {
+        const configProjection = projectOpenCodeConfig(
+          env,
+          buildOpenCodeConfigContent({ payload, managedAgentName, scope: projectionScope }),
+        );
+        try {
+          outcome = await runProcess({
+            command: activeBinary,
+            args: buildOpenCodeTurnArgs({
+              cwd: workspaceCwd,
+              model: payload.model,
+              resumeSessionId: expectedSessionId,
+              managedAgentName,
+            }),
+            prompt: `${providerPrompt}\n`,
+            env: configProjection.env,
+            workspaceCwd,
+            state,
+            sessionCtx,
+            abortSignal: abort.signal,
+            timeoutMs: turnTimeoutMs,
+            turnGeneration,
+            label: `opencode turn ${sessionCtx.chatId}`,
+          });
+        } finally {
+          configProjection.cleanup();
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
 
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) {
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
@@ -671,8 +855,20 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       if (expectedSessionId && ids[0] !== expectedSessionId) {
         protocolErrors.push(`resume session mismatch: expected ${expectedSessionId}, observed ${ids[0] ?? "none"}`);
       }
-      if (state.terminalReasons.length === 0) protocolErrors.push("missing terminal step_finish event");
+      if (state.terminalReasons.length !== 1) {
+        protocolErrors.push(`expected one terminal step_finish event, observed ${state.terminalReasons.length}`);
+      }
       if (state.errors.length > 0) protocolErrors.push(...state.errors);
+      if (state.protocolDiagnostics.length > 0) {
+        protocolErrors.push(
+          `unsupported or malformed OpenCode JSONL (${state.protocolDiagnostics.length} line${
+            state.protocolDiagnostics.length === 1 ? "" : "s"
+          })`,
+        );
+      }
+      if (/agent\s+["'][^"']+["']\s+not found.*falling back to default agent/i.test(outcome.stderrTail)) {
+        protocolErrors.push("managed agent was not selected");
+      }
 
       const success = !outcome.spawnError && outcome.exitCode === 0 && protocolErrors.length === 0;
       if (success) {
@@ -707,10 +903,14 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
           });
           sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
           await token.complete(messages, { status: "error", completion: "consumed", reason: "forward_failed" });
+          providerTurnFailureAttempt = 0;
+          pendingChatContextPrompt = null;
           return true;
         }
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
         await token.complete(messages, { status: "success" });
+        providerTurnFailureAttempt = 0;
+        if (pendingChatContextPrompt === oneShotPrompt) pendingChatContextPrompt = null;
         return true;
       }
 
@@ -724,27 +924,14 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         .join("\n")
         .slice(0, 2000);
       const failure = redactErrorPreview(rawFailure, 2000);
-      const message = isOpenCodeAuthError(failure) ? formatAuthHint("opencode", failure) : failure;
-      sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message } });
-      sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-
-      const deterministic =
-        isOpenCodeAuthError(failure) ||
-        /invalid model|unknown model|model .* not found|permission denied|configuration/i.test(failure);
-      if (deterministic || state.sawUnsafeTool || state.text.length > 0) {
-        await token.complete(messages, {
-          status: "error",
-          completion: "consumed",
-          reason: deterministic ? "provider_clean_error" : "unsafe_provider_failure_notice_posted",
-        });
-        return true;
-      }
-      token.retry(
+      return settleFailure({
+        failure,
+        ...(outcome.spawnError ? { spawnError: outcome.spawnError } : {}),
+        state,
+        sessionCtx,
         messages,
-        state.sawProviderActivity ? "opencode_unknown_pre_effect_failure" : "opencode_pre_provider_failure",
-      );
-      sessionCtx.failSessionForRecovery?.("opencode_turn_unknown_custody", providerSessionId ?? undefined);
-      return false;
+        token,
+      });
     })();
     currentTurnPromise = promise.then(
       () => {},
@@ -752,6 +939,16 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     );
     try {
       return await promise;
+    } catch (error) {
+      const failure = redactErrorPreview(error instanceof Error ? error.message : String(error), 2000);
+      return await settleFailure({
+        failure,
+        spawnError: error instanceof Error ? error : new Error(String(error)),
+        state: { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
+        sessionCtx,
+        messages,
+        token,
+      });
     } finally {
       if (generation === turnGeneration) {
         currentAbort = null;
@@ -777,6 +974,10 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     binary = resolution.binary;
     sessionCtx.log(`OpenCode binary: ${resolution.binary}`);
     const { briefing } = await refreshProjection(sessionCtx);
+    const chatContext = await fetchChatContextOrLog(sessionCtx);
+    pendingChatContextPrompt = [renderRuntimeOutputContract(), renderChatContextPrompt(chatContext)]
+      .filter(Boolean)
+      .join("\n\n");
     sessionActive = true;
     return { briefing, workspaceCwd: cwd };
   }
@@ -958,7 +1159,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       providerSessionId = null;
       pendingSyntheticId = null;
       versionReady = false;
+      providerTurnFailureAttempt = 0;
       initialTurnPreparing = false;
+      pendingChatContextPrompt = null;
       queue.length = 0;
     },
   } satisfies AgentHandler;
