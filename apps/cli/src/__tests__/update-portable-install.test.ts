@@ -21,11 +21,16 @@ const originalPlatform = process.platform;
 const originalArch = process.arch;
 const originalPath = process.env.PATH;
 
-function isolatedPortablePath(binDir: string): string {
-  const hostEntries = (originalPath ?? "")
+function sanitizedHostPath(): string {
+  return (originalPath ?? "")
     .split(delimiter)
-    .filter((entry) => entry.length > 0 && !existsSync(join(entry, "first-tree")) && !existsSync(join(entry, "ft")));
-  return [binDir, ...hostEntries].join(delimiter);
+    .filter((entry) => entry.length > 0 && !existsSync(join(entry, "first-tree")) && !existsSync(join(entry, "ft")))
+    .join(delimiter);
+}
+
+function isolatedPortablePath(binDir: string): string {
+  const hostPath = sanitizedHostPath();
+  return hostPath.length > 0 ? `${binDir}${delimiter}${hostPath}` : binDir;
 }
 
 function tempDir(name: string): string {
@@ -463,7 +468,7 @@ describe("installPortableSpec", () => {
     vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", join(prefix, "current"));
     vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${fixture.root}`);
     vi.stubEnv("HOME", home);
-    vi.stubEnv("PATH", "/usr/bin:/bin");
+    vi.stubEnv("PATH", sanitizedHostPath());
 
     const { installPortableSpec } = await importProdUpdateModule();
     await expect(installPortableSpec("latest")).resolves.toEqual({
