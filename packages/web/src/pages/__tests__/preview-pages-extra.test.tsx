@@ -244,6 +244,9 @@ describe("extra preview pages", () => {
     expect(reviewerControls).not.toBeNull();
     expect(rendered.container.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
     expect(text(reviewerControls ?? treeRow)).toContain("Context Reviewer");
+    expect(text(treeControls ?? treeRow)).toContain("Use in your coding agent");
+    expect(text(treeControls ?? treeRow)).toContain("Copy setup prompt");
+    expect(text(treeControls ?? treeRow)).not.toContain("context enable --provider");
     const enablement = reviewerControls?.querySelector<HTMLButtonElement>('[role="switch"]');
     expect(enablement?.getAttribute("aria-checked")).toBe("true");
     if (!enablement) throw new Error("Missing preview Reviewer enablement switch");

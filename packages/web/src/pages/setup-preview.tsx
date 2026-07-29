@@ -10,7 +10,9 @@ import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { setupCapabilitiesQueryKey } from "../api/setup-capabilities.js";
 import { AuthContext } from "../auth/auth-context.js";
+import { buildByoSetupPrompt } from "../lib/byo-setup-prompt.js";
 import { cn } from "../lib/utils.js";
+import { ContextPersonalAccess } from "./settings/context-enablement.js";
 import { buildSetupRows, type SetupFacts, SetupOverview } from "./settings/setup.js";
 import { SetupContextTreeControls } from "./settings/setup-context-tree-controls.js";
 import { SetupReviewerControls } from "./settings/setup-reviewer-controls.js";
@@ -175,6 +177,32 @@ async function previewSetReviewerEnabled(
 
 async function previewRefresh(): Promise<void> {}
 
+async function previewPersonalAccessPrompt(): Promise<string> {
+  return buildByoSetupPrompt({
+    organizationId: "org-preview",
+    bootstrapCommand: "'first-tree-staging' login 'preview-code'",
+    handoffs: [
+      {
+        organizationId: "org-preview",
+        teamDisplayName: "Gandy's team",
+        role: "admin",
+        provider: "claude-code",
+        command: "'first-tree-staging' context enable --provider 'claude-code' --team 'org-preview'",
+        workingDirectoryInstruction: "Run this once from the repository root.",
+      },
+      {
+        organizationId: "org-preview",
+        teamDisplayName: "Gandy's team",
+        role: "admin",
+        provider: "codex",
+        command: "'first-tree-staging' context enable --provider 'codex' --team 'org-preview'",
+        workingDirectoryInstruction: "Run this once from the repository root.",
+      },
+    ],
+    intent: "settings",
+  });
+}
+
 function previewFacts(role: PreviewRole, state: PreviewState): SetupFacts {
   if (state === "mixed") {
     return {
@@ -264,16 +292,32 @@ export function SetupPreviewPage() {
                     saveSetting={previewSaveTreeSetting}
                     refreshFacts={previewRefresh}
                   >
-                    {capabilities.contextTree.automaticReview.adoption !== "unavailable" ? (
-                      <SetupReviewerControls
-                        review={capabilities.contextTree.automaticReview}
-                        embedded
-                        loadCandidates={async () => PREVIEW_REVIEWER_CANDIDATES}
-                        assignReviewer={previewAssignReviewer}
-                        setReviewerEnabled={previewSetReviewerEnabled}
-                        refreshFacts={previewRefresh}
-                      />
-                    ) : null}
+                    <div className="flex flex-col">
+                      {capabilities.contextTree.automaticReview.adoption !== "unavailable" ? (
+                        <SetupReviewerControls
+                          review={capabilities.contextTree.automaticReview}
+                          embedded
+                          loadCandidates={async () => PREVIEW_REVIEWER_CANDIDATES}
+                          assignReviewer={previewAssignReviewer}
+                          setReviewerEnabled={previewSetReviewerEnabled}
+                          refreshFacts={previewRefresh}
+                        />
+                      ) : null}
+                      {state === "ready" ? (
+                        <div
+                          style={{
+                            marginTop: "var(--sp-4)",
+                            paddingTop: "var(--sp-4)",
+                            borderTop: "var(--hairline) solid var(--border-faint)",
+                          }}
+                        >
+                          <ContextPersonalAccess
+                            organizationId="org-preview"
+                            preparePrompt={previewPersonalAccessPrompt}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
                   </SetupContextTreeControls>
                 ),
               }

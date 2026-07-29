@@ -1,9 +1,12 @@
 import type { ContextIntegrationProvider } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Clipboard, Terminal } from "lucide-react";
-import { useState } from "react";
+import { Check, Clipboard, RefreshCw, Terminal } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { generateConnectToken } from "../../api/activity.js";
 import { getContextEnablementHandoff } from "../../api/context-enablement.js";
 import { Button } from "../../components/ui/button.js";
+import { buildByoSetupPrompt } from "../../lib/byo-setup-prompt.js";
+import { useCopyFeedback } from "../../lib/use-copy-feedback.js";
 
 const PROVIDERS: Array<{ id: ContextIntegrationProvider; label: string }> = [
   { id: "claude-code", label: "Claude Code" },
@@ -123,5 +126,116 @@ export function ContextEnablement({
         </>
       )}
     </section>
+  );
+}
+
+export async function prepareSettingsByoSetupPrompt(organizationId: string): Promise<string> {
+  const [bootstrap, claudeHandoff, codexHandoff] = await Promise.all([
+    generateConnectToken(),
+    getContextEnablementHandoff(organizationId, "claude-code"),
+    getContextEnablementHandoff(organizationId, "codex"),
+  ]);
+  return buildByoSetupPrompt({
+    organizationId,
+    bootstrapCommand: bootstrap.bootstrapCommand,
+    handoffs: [claudeHandoff, codexHandoff],
+    intent: "settings",
+  });
+}
+
+export function ContextPersonalAccess({
+  organizationId,
+  preparePrompt = prepareSettingsByoSetupPrompt,
+}: {
+  organizationId: string;
+  preparePrompt?: (organizationId: string) => Promise<string>;
+}) {
+  const copyFeedback = useCopyFeedback();
+  const [prepareState, setPrepareState] = useState<"idle" | "loading" | "failed">("idle");
+  const prepareAttempt = useRef(0);
+  const activeOrganizationId = useRef(organizationId);
+  activeOrganizationId.current = organizationId;
+  const copyLabel =
+    copyFeedback.status === "copied"
+      ? "Copied"
+      : copyFeedback.status === "failed"
+        ? "Copy failed"
+        : "Copy setup prompt";
+
+  useEffect(() => {
+    const renderedOrganizationId = organizationId;
+    prepareAttempt.current += 1;
+    setPrepareState("idle");
+    copyFeedback.reset();
+    return () => {
+      if (activeOrganizationId.current === renderedOrganizationId) {
+        prepareAttempt.current += 1;
+      }
+    };
+  }, [copyFeedback.reset, organizationId]);
+
+  return (
+    <div
+      data-setup-personal-access
+      className="flex flex-wrap items-center justify-between"
+      style={{ gap: "var(--sp-3)" }}
+    >
+      <div className="min-w-0" style={{ flex: "1 1 28rem" }}>
+        <div className="text-body font-medium" style={{ color: "var(--fg)" }}>
+          Use in your coding agent
+        </div>
+        <div className="text-label" style={{ marginTop: "var(--sp-0_5)", color: "var(--fg-3)" }}>
+          Personal access · Work with this Team Context from Claude Code or Codex, outside First Tree Chat.
+        </div>
+        {prepareState === "failed" ? (
+          <div role="alert" className="text-label" style={{ marginTop: "var(--sp-2)", color: "var(--state-error)" }}>
+            Could not prepare the setup prompt.
+          </div>
+        ) : null}
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={prepareState === "loading"}
+        onClick={() => {
+          const attempt = ++prepareAttempt.current;
+          void (async () => {
+            setPrepareState("loading");
+            copyFeedback.reset();
+            try {
+              const prompt = await preparePrompt(organizationId);
+              if (prepareAttempt.current !== attempt || activeOrganizationId.current !== organizationId) return;
+              setPrepareState("idle");
+              await copyFeedback.copy(prompt);
+              if (prepareAttempt.current !== attempt || activeOrganizationId.current !== organizationId) return;
+            } catch {
+              if (prepareAttempt.current !== attempt || activeOrganizationId.current !== organizationId) return;
+              setPrepareState("failed");
+            }
+          })();
+        }}
+      >
+        {prepareState === "failed" ? (
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+        ) : copyFeedback.status === "copied" ? (
+          <Check className="h-3.5 w-3.5" aria-hidden />
+        ) : (
+          <Clipboard className="h-3.5 w-3.5" aria-hidden />
+        )}
+        {prepareState === "loading" ? "Preparing…" : prepareState === "failed" ? "Retry" : copyLabel}
+      </Button>
+      <span className="sr-only" aria-live="polite">
+        {prepareState === "loading"
+          ? "Preparing the setup prompt."
+          : prepareState === "failed"
+            ? "Setup prompt preparation failed."
+            : copyFeedback.status === "copied"
+              ? "Setup prompt copied."
+              : copyFeedback.status === "failed"
+                ? "Setup prompt copy failed."
+                : ""}
+      </span>
+    </div>
   );
 }

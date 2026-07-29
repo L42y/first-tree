@@ -38,7 +38,7 @@ import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { cn } from "../../lib/utils.js";
 import { isTeamNonActionableGitlabWebContext } from "../context-tree-availability.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
-import { ContextEnablement } from "./context-enablement.js";
+import { ContextPersonalAccess } from "./context-enablement.js";
 import { setupBlockerCopy } from "./setup-blocker-copy.js";
 import { SetupContextTreeControls } from "./setup-context-tree-controls.js";
 import { SetupReviewerControls } from "./setup-reviewer-controls.js";
@@ -754,6 +754,11 @@ export function SettingsSetupPage() {
   };
 
   const contextTree = contextTreeFact(capabilities, contextTreeSnapshot);
+  const personalContextAccessReady =
+    facts.repositories.state === "ready" &&
+    facts.repositories.value > 0 &&
+    contextTree.state === "ready" &&
+    contextTree.value.binding.state === "bound";
   const expandedOwnerControlKey =
     expandedOwnerControl?.organizationId === organizationId ? expandedOwnerControl.key : null;
 
@@ -798,12 +803,37 @@ export function SettingsSetupPage() {
                     availability={contextTree.value.availability}
                     teamNonActionableGitlabWebContext={contextTree.value.teamNonActionableGitlabWebContext}
                   >
-                    {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
-                      <SetupReviewerControls
-                        key={`automatic-review-${organizationId}`}
-                        review={facts.capabilities.value.contextTree.automaticReview}
-                        embedded
-                      />
+                    {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ||
+                    personalContextAccessReady ? (
+                      <div className="flex flex-col">
+                        {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
+                          <SetupReviewerControls
+                            key={`automatic-review-${organizationId}`}
+                            review={facts.capabilities.value.contextTree.automaticReview}
+                            embedded
+                          />
+                        ) : null}
+                        {personalContextAccessReady && organizationId ? (
+                          <div
+                            style={{
+                              marginTop:
+                                facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                  ? "var(--sp-4)"
+                                  : undefined,
+                              paddingTop:
+                                facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                  ? "var(--sp-4)"
+                                  : undefined,
+                              borderTop:
+                                facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                  ? "var(--hairline) solid var(--border-faint)"
+                                  : undefined,
+                            }}
+                          >
+                            <ContextPersonalAccess organizationId={organizationId} />
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                   </SetupContextTreeControls>
                 ),
@@ -812,32 +842,17 @@ export function SettingsSetupPage() {
         };
 
   return (
-    <>
-      <SetupOverview
-        facts={facts}
-        rows={buildSetupRows(facts)}
-        ownerControls={ownerControls}
-        onToggleOwnerControl={(key) => {
-          setExpandedOwnerControl((current) =>
-            current?.organizationId === organizationId && current.key === key ? null : { organizationId, key },
-          );
-        }}
-        onResumeOnboarding={resumeOnboarding}
-      />
-      {organizationId ? (
-        <ContextEnablement
-          organizationId={organizationId}
-          teamRole={role}
-          ready={
-            facts.repositories.state === "ready" &&
-            facts.repositories.value > 0 &&
-            contextTree.state === "ready" &&
-            contextTree.value.binding.state === "bound"
-          }
-          computerConnected={facts.computers.state === "ready" && facts.computers.value.connected > 0}
-        />
-      ) : null}
-    </>
+    <SetupOverview
+      facts={facts}
+      rows={buildSetupRows(facts)}
+      ownerControls={ownerControls}
+      onToggleOwnerControl={(key) => {
+        setExpandedOwnerControl((current) =>
+          current?.organizationId === organizationId && current.key === key ? null : { organizationId, key },
+        );
+      }}
+      onResumeOnboarding={resumeOnboarding}
+    />
   );
 }
 
