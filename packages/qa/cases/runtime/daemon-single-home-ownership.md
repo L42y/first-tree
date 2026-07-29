@@ -69,6 +69,26 @@ Exercise the following branches, resetting only run-cell state between them:
   before cleanup. Race two later starts against that home. They must prove and
   quarantine the abandoned guard, and exactly one may become the owner; a live
   or unverifiable recovery guard must remain fail-closed.
+- Hard-kill recovery at three fenced stages: while the old main remains
+  canonical, after the old main is quarantined and canonical is empty, and
+  after a replacement main is created but before the fence is cleared. In each
+  state, verify normal startup fails closed and `daemon status` / `daemon
+  doctor` expose the exact fence holder, PID/start identity, canonical main
+  state, quarantine candidates/ambiguity, repair slots, and entrant count.
+  Run `daemon repair-ownership`; it must reject live/unverifiable or ambiguous
+  evidence, but for a unique trusted state it must restore/retain one
+  canonical owner, remove only the matching stale guard/fence, and allow
+  exactly one later runtime.
+- Pause one startup after its complete entrant temp is fsynced but before the
+  non-overwriting publish. Let another process recover and acquire, then
+  release the late publisher: it must reject against the fence or live owner.
+  Also hard-kill before and after entrant publish; later recovery must never
+  treat an incomplete temp as an authoritative entrant and must leave no
+  active fence, entrant, or repair slot.
+- Start two `daemon repair-ownership` processes together. The per-instance
+  repair ticket order must admit only one mutation owner; crashing a repair
+  before and after ticket publication must be evidence-recoverable, and an old
+  cleanup must never remove a newer instance's slot.
 - Replace the lock with malformed or incomplete content after proving no
   daemon owns the test home. Startup must refuse without deleting or rewriting
   the damaged file, and `daemon status` / `daemon doctor` must identify the

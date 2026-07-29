@@ -9,7 +9,12 @@ import {
 } from "@first-tree/shared/config";
 import { loadCredentials } from "../../core/bootstrap.js";
 import { channelConfig } from "../../core/channel.js";
-import { formatDaemonRuntimeOwnerSummary, inspectDaemonRuntimeOwnership } from "../../core/daemon-runtime-ownership.js";
+import {
+  formatDaemonRuntimeOwnerSummary,
+  formatDaemonRuntimeRecoveryEvidence,
+  inspectDaemonRuntimeOwnership,
+  inspectDaemonRuntimeRecoveryEvidence,
+} from "../../core/daemon-runtime-ownership.js";
 import { print } from "../../core/output.js";
 import { getClientServiceStatus, isServiceSupported } from "../../core/service-install.js";
 import { COMMAND_VERSION } from "../../core/version.js";
@@ -55,6 +60,12 @@ export function renderDaemonRuntimeOwnerBlock(): void {
     print.line(`  Owner:    ⚠ stale ${formatDaemonRuntimeOwnerSummary(ownership.owner)} (${ownership.reason})\n`);
   } else {
     print.line(`  Owner:    ✗ untrusted lock (${ownership.reason})\n`);
+    const evidence = inspectDaemonRuntimeRecoveryEvidence(defaultHome());
+    if (evidence.fence.state !== "absent") {
+      for (const line of formatDaemonRuntimeRecoveryEvidence(evidence)) {
+        print.line(`            ${line}\n`);
+      }
+    }
   }
 }
 

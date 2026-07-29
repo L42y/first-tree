@@ -130,6 +130,10 @@ export type {
   DaemonRuntimeOwnershipErrorCode,
   DaemonRuntimeOwnershipInspection,
   DaemonRuntimeOwnershipLease,
+  DaemonRuntimeOwnershipRepairResult,
+  DaemonRuntimeRecoveryEvidence,
+  DaemonRuntimeRecoveryGuard,
+  DaemonRuntimeRecoveryGuardInspection,
 } from "./daemon-runtime-ownership.js";
 // Authoritative per-home daemon runtime ownership. Runtime markers remain
 // lifecycle diagnostics; they are not a mutual-exclusion primitive.
@@ -141,8 +145,11 @@ export {
   daemonRuntimeOwnershipPath,
   formatDaemonRuntimeOwner,
   formatDaemonRuntimeOwnerSummary,
+  formatDaemonRuntimeRecoveryEvidence,
   inspectDaemonRuntimeOwnership,
+  inspectDaemonRuntimeRecoveryEvidence,
   isDaemonRuntimeOwnershipError,
+  repairDaemonRuntimeOwnership,
 } from "./daemon-runtime-ownership.js";
 // Document review (docloop) CLI helpers
 export { slugFromFilename, titleFromMarkdown } from "./doc-review.js";

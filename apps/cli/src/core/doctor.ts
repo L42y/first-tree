@@ -13,7 +13,12 @@ import { parse as parseYaml } from "yaml";
 import { findStaleAliases, formatStaleReason, type PinnedAgent, type StaleAlias } from "./agent-prune.js";
 import { channelConfig } from "./channel.js";
 import { cliFetch } from "./cli-fetch.js";
-import { formatDaemonRuntimeOwnerSummary, inspectDaemonRuntimeOwnership } from "./daemon-runtime-ownership.js";
+import {
+  formatDaemonRuntimeOwnerSummary,
+  formatDaemonRuntimeRecoveryEvidence,
+  inspectDaemonRuntimeOwnership,
+  inspectDaemonRuntimeRecoveryEvidence,
+} from "./daemon-runtime-ownership.js";
 import { blank, print } from "./output.js";
 import { getClientServiceStatus } from "./service-install.js";
 
@@ -296,10 +301,14 @@ export function checkDaemonRuntimeOwnership(): CheckResult {
       detail: `stale ${formatDaemonRuntimeOwnerSummary(ownership.owner)} — ${ownership.reason}`,
     };
   }
+  const evidence = inspectDaemonRuntimeRecoveryEvidence(defaultHome());
   return {
     label: "Daemon owner",
     ok: false,
-    detail: `untrusted lock — ${ownership.reason}`,
+    detail:
+      evidence.fence.state === "absent"
+        ? `untrusted lock — ${ownership.reason}`
+        : `untrusted lock — ${formatDaemonRuntimeRecoveryEvidence(evidence).join("; ")}`,
   };
 }
 

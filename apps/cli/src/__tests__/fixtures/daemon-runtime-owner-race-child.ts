@@ -89,14 +89,35 @@ Object.defineProperty(fs, "renameSync", {
 Object.defineProperty(fs, "linkSync", {
   configurable: true,
   value: (existingPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike): void => {
+    const existingName = String(existingPath);
+    const newName = String(newPath);
+    if (
+      (role === "e" || role === "f") &&
+      existingName.includes(".lock.entrant-temp.") &&
+      newName.includes(".lock.entrant.")
+    ) {
+      if (role === "e") waitAtBarrier("entrant-before-publish");
+      originalLinkSync(existingPath, newPath);
+      if (role === "f") waitAtBarrier("entrant-after-publish");
+      return;
+    }
+    if (
+      (role === "u" || role === "v") &&
+      existingName.includes(".lock.repair-ticket-temp.") &&
+      newName.includes(".lock.repair-ticket.")
+    ) {
+      waitAtBarrier("repair-ticket-before-publish");
+      originalLinkSync(existingPath, newPath);
+      return;
+    }
     try {
       originalLinkSync(existingPath, newPath);
     } catch (error) {
       if (
         role === "r" &&
         !pausedAfterRestoreCollision &&
-        String(existingPath).includes(".lock.stale.") &&
-        String(newPath) === lockPath
+        existingName.includes(".lock.stale.") &&
+        newName === lockPath
       ) {
         pausedAfterRestoreCollision = true;
         waitAtBarrier("restore-after-link-failure");
@@ -107,7 +128,7 @@ Object.defineProperty(fs, "linkSync", {
 });
 syncBuiltinESMExports();
 
-const { acquireDaemonRuntimeOwnership, isDaemonRuntimeOwnershipError } = await import(
+const { acquireDaemonRuntimeOwnership, isDaemonRuntimeOwnershipError, repairDaemonRuntimeOwnership } = await import(
   "../../core/daemon-runtime-ownership.js"
 );
 
@@ -116,6 +137,13 @@ process.stdout.write(`${JSON.stringify({ event: "ready", pid: process.pid })}\n`
 
 lines.once("line", () => {
   try {
+    if (role === "u" || role === "v") {
+      const result = repairDaemonRuntimeOwnership(home);
+      process.stdout.write(
+        `${JSON.stringify({ event: result.repaired ? "repaired" : "no-repair", pid: process.pid })}\n`,
+      );
+      process.exit(0);
+    }
     const lease = acquireDaemonRuntimeOwnership({
       channel: "dev",
       mode: "foreground",

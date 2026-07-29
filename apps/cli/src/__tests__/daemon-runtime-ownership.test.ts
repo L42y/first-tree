@@ -8,11 +8,12 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -22,8 +23,11 @@ import {
   type DaemonRuntimeOwner,
   type DaemonRuntimeOwnershipLease,
   daemonRuntimeOwnershipPath,
+  formatDaemonRuntimeRecoveryEvidence,
   inspectDaemonRuntimeOwnership,
+  inspectDaemonRuntimeRecoveryEvidence,
   isDaemonRuntimeOwnershipError,
+  repairDaemonRuntimeOwnership,
 } from "../core/daemon-runtime-ownership.js";
 
 type ChildMessage = {
@@ -83,9 +87,22 @@ function writeRecoveryGuard(
   },
 ): string {
   const path = recoveryGuardPath(home);
+  writeGuard(path, guard);
+  return path;
+}
+
+function writeGuard(
+  path: string,
+  guard: {
+    lockVersion: 1;
+    instanceId: string;
+    pid: number;
+    processStartIdentity: string;
+    startedAt: string;
+  },
+): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(guard, null, 2)}\n`, "utf8");
-  return path;
 }
 
 function waitForChildMessage(child: ChildProcessWithoutNullStreams): () => Promise<ChildMessage> {
@@ -355,14 +372,168 @@ describe("daemon runtime ownership", () => {
     writeFileSync(fencePath, `${JSON.stringify(fence, null, 2)}\n`, "utf8");
 
     expect(() => acquireDaemonRuntimeOwnership({ channel: "dev", mode: "foreground", version: "test", home })).toThrow(
-      /recovery fence .* requires manual remediation/u,
+      /recovery fence .* run daemon repair-ownership/u,
     );
     expect(JSON.parse(readFileSync(fencePath, "utf8"))).toEqual(fence);
     expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
       state: "untrusted",
-      reason: expect.stringContaining("requires manual remediation"),
+      reason: expect.stringContaining(`instance ${fence.instanceId}`),
     });
   });
+
+  it.each([
+    "canonical-old",
+    "quarantined-old",
+    "canonical-new",
+  ] as const)("repairs a hard-killed fenced mutation at the $state stage", (state) => {
+    const home = join(root, `repair-${state}`);
+    const original = acquire(home);
+    const owner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: `test-dead-process:repair-owner-${state}`,
+      version: state === "canonical-new" ? "test-new-owner" : "test-old-owner",
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, owner);
+
+    const fence = {
+      lockVersion: 1 as const,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: `test-dead-process:repair-fence-${state}`,
+      startedAt: new Date().toISOString(),
+    };
+    let quarantinePath: string | undefined;
+    if (state === "quarantined-old") {
+      quarantinePath = `${original.lockPath}.stale.test.${owner.instanceId}.${fence.instanceId}`;
+      renameSync(original.lockPath, quarantinePath);
+    }
+    writeGuard(recoveryFencePath(home), fence);
+    writeRecoveryGuard(home, fence);
+
+    const before = inspectDaemonRuntimeRecoveryEvidence(home);
+    const beforeText = formatDaemonRuntimeRecoveryEvidence(before).join("; ");
+    expect(beforeText).toContain(`instance ${fence.instanceId}`);
+    expect(beforeText).toContain(`pid ${fence.pid}`);
+    expect(beforeText).toContain(fence.processStartIdentity);
+    expect(beforeText).toContain(state === "quarantined-old" ? "main=absent" : "main=stale");
+    if (quarantinePath) expect(beforeText).toContain(quarantinePath);
+    expect(() =>
+      acquireDaemonRuntimeOwnership({ channel: "dev", mode: "foreground", version: "blocked", home }),
+    ).toThrow(/ownership recovery fence .* run daemon repair-ownership/u);
+
+    const repaired = repairDaemonRuntimeOwnership(home);
+    expect(repaired.repaired).toBe(true);
+    expect(repaired.restoredFrom).toBe(quarantinePath);
+    expect(existsSync(recoveryFencePath(home))).toBe(false);
+    expect(existsSync(recoveryGuardPath(home))).toBe(false);
+    expect(parseOwner(original.lockPath)).toEqual(owner);
+    expect(readdirSync(dirname(original.lockPath)).some((name) => name.includes(".repair-slot."))).toBe(false);
+    expect(readdirSync(dirname(original.lockPath)).some((name) => name.includes(".repair-ticket."))).toBe(false);
+
+    const recovered = acquire(home, "dev", "service");
+    expect(recovered.owner.instanceId).not.toBe(owner.instanceId);
+    expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
+      state: "live",
+      owner: { instanceId: recovered.owner.instanceId },
+    });
+  });
+
+  it("keeps ambiguous fenced repair evidence fail-closed", () => {
+    const home = join(root, "repair-ambiguous");
+    const lockPath = daemonRuntimeOwnershipPath(home);
+    mkdirSync(dirname(lockPath), { recursive: true });
+    const probe = acquire(home);
+    const first: DaemonRuntimeOwner = {
+      ...probe.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:repair-ambiguous-first",
+    };
+    const second: DaemonRuntimeOwner = {
+      ...first,
+      instanceId: randomUUID(),
+      processStartIdentity: "test-dead-process:repair-ambiguous-second",
+    };
+    const fence = {
+      lockVersion: 1 as const,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:repair-ambiguous-fence",
+      startedAt: new Date().toISOString(),
+    };
+    expect(probe.release()).toBe(true);
+    rewriteOwner(`${lockPath}.stale.one.${first.instanceId}.${fence.instanceId}`, first);
+    rewriteOwner(`${lockPath}.stale.two.${second.instanceId}.${fence.instanceId}`, second);
+    writeGuard(recoveryFencePath(home), fence);
+    writeRecoveryGuard(home, fence);
+
+    expect(() => repairDaemonRuntimeOwnership(home)).toThrow(/stale candidates are ambiguous/u);
+    expect(existsSync(recoveryFencePath(home))).toBe(true);
+    expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({ state: "untrusted" });
+  });
+
+  it("orders simultaneous ownership repairs through per-instance tickets", async () => {
+    const home = join(root, "repair-concurrent");
+    const barrierDir = join(root, "repair-concurrent-barriers");
+    mkdirSync(barrierDir, { recursive: true });
+    const original = acquire(home);
+    const staleOwner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:repair-concurrent-owner",
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, staleOwner);
+    const fence = {
+      lockVersion: 1 as const,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:repair-concurrent-fence",
+      startedAt: new Date().toISOString(),
+    };
+    writeGuard(recoveryFencePath(home), fence);
+    writeRecoveryGuard(home, fence);
+
+    const fixture = fileURLToPath(new URL("./fixtures/daemon-runtime-owner-race-child.ts", import.meta.url));
+    const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const spawnRepair = (role: "u" | "v") => {
+      const child = spawn(process.execPath, ["--import", "tsx", fixture, home, role, barrierDir], {
+        cwd: cliRoot,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      return { child, next: waitForChildMessage(child), role };
+    };
+    const repairs = [spawnRepair("u"), spawnRepair("v")];
+
+    try {
+      for (const repair of repairs) {
+        expect((await repair.next()).event).toBe("ready");
+        repair.child.stdin.write("go\n");
+      }
+      await Promise.all(
+        repairs.map((repair) => waitForFile(join(barrierDir, `${repair.role}.repair-ticket-before-publish.ready`))),
+      );
+      for (const repair of repairs) releaseBarrier(barrierDir, repair.role, "repair-ticket-before-publish");
+
+      const outcomes = await Promise.all(repairs.map((repair) => repair.next()));
+      expect(outcomes.map((outcome) => outcome.event).sort()).toEqual(["no-repair", "repaired"]);
+      expect(await Promise.all(repairs.map((repair) => waitForExit(repair.child)))).toEqual([0, 0]);
+      expect(existsSync(recoveryFencePath(home))).toBe(false);
+      expect(existsSync(recoveryGuardPath(home))).toBe(false);
+      expect(parseOwner(original.lockPath)).toEqual(staleOwner);
+      const stateFiles = readdirSync(dirname(original.lockPath));
+      expect(stateFiles.some((name) => name.includes(".repair-slot."))).toBe(false);
+      expect(stateFiles.some((name) => name.includes(".repair-ticket."))).toBe(false);
+    } finally {
+      for (const repair of repairs) {
+        if (repair.child.exitCode === null && repair.child.signalCode === null) repair.child.kill("SIGKILL");
+      }
+    }
+  }, 45_000);
 
   it("treats a live reused pid with a different start identity as stale", () => {
     const home = join(root, "pid-reuse");
@@ -482,6 +653,113 @@ describe("daemon runtime ownership", () => {
     expect(stateFiles.some((name) => name.includes(".recovery.stale."))).toBe(true);
   });
 
+  it("ignores an unpublished entrant temp and rejects its late publish after recovery wins", async () => {
+    const home = join(root, "entrant-late-publish");
+    const barrierDir = join(root, "entrant-late-publish-barriers");
+    mkdirSync(barrierDir, { recursive: true });
+    const original = acquire(home);
+    const staleOwner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: "test-dead-process:entrant-late-publish",
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, staleOwner);
+
+    const fixture = fileURLToPath(new URL("./fixtures/daemon-runtime-owner-race-child.ts", import.meta.url));
+    const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const entrant = spawn(process.execPath, ["--import", "tsx", fixture, home, "e", barrierDir], {
+      cwd: cliRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const recovery = spawn(process.execPath, ["--import", "tsx", fixture, home, "recovery", barrierDir], {
+      cwd: cliRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const nextEntrant = waitForChildMessage(entrant);
+    const nextRecovery = waitForChildMessage(recovery);
+
+    try {
+      expect((await nextEntrant()).event).toBe("ready");
+      entrant.stdin.write("go\n");
+      await waitForFile(join(barrierDir, "e.entrant-before-publish.ready"));
+      const prePublishFiles = readdirSync(dirname(original.lockPath));
+      expect(prePublishFiles.some((name) => name.startsWith(`${basename(original.lockPath)}.entrant.`))).toBe(false);
+      expect(prePublishFiles.some((name) => name.startsWith(`${basename(original.lockPath)}.entrant-temp.`))).toBe(
+        true,
+      );
+
+      expect((await nextRecovery()).event).toBe("ready");
+      recovery.stdin.write("go\n");
+      const recoveryResult = await nextRecovery();
+      expect(recoveryResult.event).toBe("acquired");
+      expect(recovery.exitCode).toBeNull();
+
+      releaseBarrier(barrierDir, "e", "entrant-before-publish");
+      expect((await nextEntrant()).event).toBe("rejected");
+      expect(recovery.exitCode).toBeNull();
+
+      recovery.stdin.write("release\n");
+      expect(await waitForExit(recovery)).toBe(0);
+      expect(await waitForExit(entrant)).toBe(2);
+      const stateFiles = readdirSync(dirname(original.lockPath));
+      expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({ state: "absent" });
+      expect(existsSync(recoveryFencePath(home))).toBe(false);
+      expect(stateFiles.some((name) => name.includes(".entrant."))).toBe(false);
+      expect(stateFiles.some((name) => name.includes(".entrant-temp."))).toBe(false);
+    } finally {
+      if (entrant.exitCode === null && entrant.signalCode === null) entrant.kill("SIGKILL");
+      if (recovery.exitCode === null && recovery.signalCode === null) recovery.kill("SIGKILL");
+    }
+  }, 45_000);
+
+  it.each([
+    { role: "e", barrier: "entrant-before-publish", label: "before publish" },
+    { role: "f", barrier: "entrant-after-publish", label: "after publish" },
+  ])("recovers after an entrant process crashes $label", async ({ role, barrier }) => {
+    const home = join(root, `entrant-crash-${role}`);
+    const barrierDir = join(root, `entrant-crash-${role}-barriers`);
+    mkdirSync(barrierDir, { recursive: true });
+    const original = acquire(home);
+    const staleOwner: DaemonRuntimeOwner = {
+      ...original.owner,
+      instanceId: randomUUID(),
+      pid: 999_999_999,
+      processStartIdentity: `test-dead-process:entrant-crash-${role}`,
+    };
+    expect(original.release()).toBe(true);
+    rewriteOwner(original.lockPath, staleOwner);
+
+    const fixture = fileURLToPath(new URL("./fixtures/daemon-runtime-owner-race-child.ts", import.meta.url));
+    const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const crashed = spawn(process.execPath, ["--import", "tsx", fixture, home, role, barrierDir], {
+      cwd: cliRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const next = waitForChildMessage(crashed);
+
+    try {
+      expect((await next()).event).toBe("ready");
+      crashed.stdin.write("go\n");
+      await waitForFile(join(barrierDir, `${role}.${barrier}.ready`));
+      crashed.kill("SIGKILL");
+      expect(await waitForExit(crashed)).toBeNull();
+
+      const recovered = acquire(home, "dev", "service");
+      expect(inspectDaemonRuntimeOwnership(home)).toMatchObject({
+        state: "live",
+        owner: { instanceId: recovered.owner.instanceId },
+      });
+      const stateFiles = readdirSync(dirname(original.lockPath));
+      expect(existsSync(recoveryFencePath(home))).toBe(false);
+      expect(stateFiles.some((name) => name.includes(".entrant."))).toBe(false);
+      expect(stateFiles.some((name) => name.includes(".entrant-temp."))).toBe(false);
+    } finally {
+      if (crashed.exitCode === null && crashed.signalCode === null) crashed.kill("SIGKILL");
+    }
+  });
+
   it("keeps a three-contender stale-guard race to one exact owner", async () => {
     const home = join(root, "three-contender-recovery");
     const barrierDir = join(root, "barriers");
@@ -523,6 +801,7 @@ describe("daemon runtime ownership", () => {
       await waitForFile(join(barrierDir, "p1.guard-before-rename.ready"));
 
       const p2 = await spawnContender("p2");
+      await waitForFile(recoveryFencePath(home));
       releaseBarrier(barrierDir, "p1", "guard-before-rename");
       await waitForFile(join(barrierDir, "p1.guard-after-rename.ready"));
 
@@ -597,6 +876,7 @@ describe("daemon runtime ownership", () => {
       await waitForFile(join(barrierDir, "s.guard-before-rename.ready"));
 
       const r = await spawnRole("r");
+      await waitForFile(recoveryFencePath(home));
       releaseBarrier(barrierDir, "s", "guard-before-rename");
       await waitForFile(join(barrierDir, "s.guard-after-rename.ready"));
 
