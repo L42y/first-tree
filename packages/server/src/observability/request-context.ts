@@ -112,6 +112,24 @@ export function stampClientResource(request: FastifyRequest, clientId: string): 
   span.setAttribute(FIRST_TREE_ATTR.CLIENT_ID, clientId);
 }
 
+/** Record bounded Context activation telemetry without emitting raw repo identity. */
+export function stampContextActivation(
+  request: FastifyRequest,
+  input: {
+    outcome: string;
+    repositoryKeyHash: string;
+    latencyMs: number;
+    reasonCode?: string;
+  },
+): void {
+  const span = rootSpanOf(request);
+  if (!span) return;
+  span.setAttribute("context.activation.outcome", input.outcome);
+  span.setAttribute("context.activation.repository_key_hash", input.repositoryKeyHash);
+  span.setAttribute("context.activation.latency_ms", Math.round(input.latencyMs));
+  if (input.reasonCode) span.setAttribute("context.activation.reason_code", input.reasonCode);
+}
+
 /**
  * Stamp the resolved chat resource onto the HTTP root span. Called from
  * `requireChatAccess` (Class C `/chats/:chatId/...` routes).

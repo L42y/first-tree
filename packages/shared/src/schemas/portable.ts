@@ -11,6 +11,7 @@ export const portableInstallMethodSchema = z.enum(["npm", "portable", "source"])
 export type PortableInstallMethod = z.infer<typeof portableInstallMethodSchema>;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const prefixedSha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 export const portableAssetSchema = z.object({
   platform: portablePlatformSchema,
@@ -31,6 +32,18 @@ const portableMetadataBaseSchema = z.object({
   binName: z.string().min(1),
   aliasName: z.string().min(1),
   generatedAt: z.string().datetime({ offset: true }),
+  contextIntegration: z
+    .object({
+      policyDigest: prefixedSha256Schema,
+      providers: z
+        .object({
+          "claude-code": prefixedSha256Schema,
+          codex: prefixedSha256Schema,
+        })
+        .strict(),
+    })
+    .strict()
+    .optional(),
 });
 
 export const portableManifestSchema = portableMetadataBaseSchema.extend({

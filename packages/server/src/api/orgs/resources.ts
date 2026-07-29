@@ -1,4 +1,8 @@
-import { createTeamResourceSchema, resourceImpactPreviewSchema } from "@first-tree/shared";
+import {
+  confirmTeamRepositoriesSchema,
+  createTeamResourceSchema,
+  resourceImpactPreviewSchema,
+} from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { ForbiddenError } from "../../errors.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
@@ -16,6 +20,17 @@ export async function orgResourceRoutes(app: FastifyInstance): Promise<void> {
     const row = await app.resourcesService.createTeamResource(scope.organizationId, body, scope.memberId);
     return reply.status(201).send(row);
   });
+
+  app.post<{ Params: { orgId: string } }>(
+    "/repositories/confirm",
+    { config: { otelRecordBody: true } },
+    async (request) => {
+      const scope = await requireOrgMembership(request, app.db);
+      if (scope.role !== "admin") throw new ForbiddenError("Admin role required");
+      const body = confirmTeamRepositoriesSchema.parse(request.body);
+      return app.resourcesService.confirmTeamRepositories(scope.organizationId, body, scope.memberId);
+    },
+  );
 
   app.post<{ Params: { orgId: string } }>("/impact-preview", { config: { otelRecordBody: true } }, async (request) => {
     const scope = await requireOrgMembership(request, app.db);

@@ -1,0 +1,26 @@
+import { describe, expect, it } from "vitest";
+import { createTestAdmin, useTestApp } from "./helpers.js";
+
+describe("Context enablement handoff", () => {
+  const getApp = useTestApp({ channel: "staging" });
+
+  it("authors an exact Team, provider, and channel command for active members", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/orgs/${admin.organizationId}/context-enablement/handoff?provider=codex`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      organizationId: admin.organizationId,
+      provider: "codex",
+      role: "admin",
+    });
+    expect(response.json().command).toBe(
+      `'first-tree-staging' context enable --provider 'codex' --team '${admin.organizationId}'`,
+    );
+    expect(response.body).not.toContain("--no-start");
+  });
+});

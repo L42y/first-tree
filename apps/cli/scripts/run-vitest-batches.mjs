@@ -11,6 +11,7 @@ const singletonFiles = new Set([
   "src/__tests__/service-install-core.test.ts",
   "src/__tests__/task-scheduler-operations.test.ts",
   "src/__tests__/update-portable-install.test.ts",
+  "tests/context-policy-runtime-layout.test.ts",
   "tests/portable-s3-scripts.test.ts",
 ]);
 

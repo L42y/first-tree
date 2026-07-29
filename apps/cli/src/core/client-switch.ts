@@ -27,6 +27,10 @@ import { confirm } from "@inquirer/prompts";
 import { fail } from "../cli/output.js";
 import { saveCredentials } from "./bootstrap.js";
 import { channelConfig } from "./channel.js";
+import {
+  assertClientSwitchCanStart,
+  withAccountStateMutationLockAsync,
+} from "./context-integration/account-state-guard.js";
 import { print } from "./output.js";
 import { getClientServiceStatus, stopClientService } from "./service-install.js";
 
@@ -64,10 +68,12 @@ type SwitchMoveGroup = "park" | "restore";
 
 type SwitchMoveKind =
   | "park-client-yaml"
+  | "park-context-yaml"
   | "park-agents"
   | "park-sessions"
   | "park-workspaces"
   | "restore-client-yaml"
+  | "restore-context-yaml"
   | "restore-agents"
   | "restore-sessions"
   | "restore-workspaces";
@@ -373,7 +379,17 @@ export async function switchLocalClientForLogin(opts: {
   targetTokens: StoredCredentials;
   targetOwnerSub: string;
 }): Promise<ClientConfig> {
+  return withAccountStateMutationLockAsync(() => switchLocalClientForLoginLocked(opts));
+}
+
+async function switchLocalClientForLoginLocked(opts: {
+  existingCredentials?: StoredCredentials;
+  previousOwnerSub?: string;
+  targetTokens: StoredCredentials;
+  targetOwnerSub: string;
+}): Promise<ClientConfig> {
   const home = defaultHome();
+  assertClientSwitchCanStart(home);
   const configDir = defaultConfigDir();
   const dataDir = defaultDataDir();
   const pendingJournal = readJournal(home);
@@ -974,6 +990,13 @@ function buildSwitchMoves(opts: {
       true,
     ),
     move("park-agents", "park", join(opts.configDir, "agents"), join(fromParkedRoot, "config", "agents"), false),
+    move(
+      "park-context-yaml",
+      "park",
+      join(opts.configDir, "context.yaml"),
+      join(fromParkedRoot, "config", "context.yaml"),
+      false,
+    ),
     move("park-sessions", "park", join(opts.dataDir, "sessions"), join(fromParkedRoot, "data", "sessions"), false),
     move(
       "park-workspaces",
@@ -1007,6 +1030,13 @@ function buildSwitchMoves(opts: {
       true,
     ),
     move("restore-agents", "restore", join(toParkedRoot, "config", "agents"), join(opts.configDir, "agents"), false),
+    move(
+      "restore-context-yaml",
+      "restore",
+      join(toParkedRoot, "config", "context.yaml"),
+      join(opts.configDir, "context.yaml"),
+      false,
+    ),
     move("restore-sessions", "restore", join(toParkedRoot, "data", "sessions"), join(opts.dataDir, "sessions"), false),
     move(
       "restore-workspaces",

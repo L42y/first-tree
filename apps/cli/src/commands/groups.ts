@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 
-import { withCommandContext } from "./context.js";
+import { withCommandContext } from "./command-context.js";
 import type { SubcommandModule } from "./types.js";
 
 type CommandWithUnknownCommand = Command & {
@@ -9,7 +9,9 @@ type CommandWithUnknownCommand = Command & {
 
 export function registerSubcommands(command: Command, subcommands: SubcommandModule[]): void {
   for (const subcommand of subcommands) {
-    const childCommand = command.command(subcommand.name);
+    const childCommand = command.command(subcommand.name, {
+      hidden: subcommand.hidden === true,
+    });
 
     if (subcommand.alias.length > 0) {
       childCommand.alias(subcommand.alias);

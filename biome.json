@@ -36,6 +36,7 @@
       "**",
       "!**/node_modules",
       "!**/dist",
+      "!apps/cli/context-integration",
       "!**/coverage",
       "!**/.nyc_output",
       "!**/.vitest-coverage",

@@ -153,6 +153,60 @@ export const createTeamResourceSchema = z.discriminatedUnion("type", [
 ]);
 export type CreateTeamResource = z.infer<typeof createTeamResourceSchema>;
 
+const confirmTeamRepositorySchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    url: repoUrlSchema,
+    defaultBranch: z.string().min(1).optional(),
+  })
+  .strict();
+
+export const confirmTeamRepositoriesSchema = z
+  .object({
+    expectedActiveRepositoryKeys: z.array(z.string().min(3).max(2048)).max(500),
+    repositories: z.array(confirmTeamRepositorySchema).min(1).max(500),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    const expected = new Set<string>();
+    for (const [index, key] of input.expectedActiveRepositoryKeys.entries()) {
+      let canonical: string;
+      try {
+        canonical = canonicalizeResourceRepoUrl(`https://${key}`);
+      } catch {
+        canonical = "";
+      }
+      if (canonical !== key) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["expectedActiveRepositoryKeys", index],
+          message: "Expected repository keys must be canonical.",
+        });
+      } else if (expected.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["expectedActiveRepositoryKeys", index],
+          message: "Expected repository keys must be unique.",
+        });
+      }
+      expected.add(key);
+    }
+
+    const requested = new Set<string>();
+    for (const [index, repository] of input.repositories.entries()) {
+      const key = canonicalizeResourceRepoUrl(repository.url);
+      if (requested.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["repositories", index, "url"],
+          message: "Repositories must be unique by canonical identity.",
+        });
+      }
+      requested.add(key);
+    }
+  });
+export type ConfirmTeamRepositories = z.infer<typeof confirmTeamRepositoriesSchema>;
+
 export const updateTeamResourceSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   defaultEnabled: resourceDefaultEnabledSchema.optional(),
@@ -304,6 +358,13 @@ export const resourceRowSchema = z.object({
   updatedAt: z.string(),
 });
 export type ResourceRow = z.infer<typeof resourceRowSchema>;
+
+export const confirmTeamRepositoriesOutputSchema = z
+  .object({
+    repositories: z.array(resourceRowSchema),
+  })
+  .strict();
+export type ConfirmTeamRepositoriesOutput = z.infer<typeof confirmTeamRepositoriesOutputSchema>;
 
 export const effectiveResourceRowSchema = z.object({
   id: z.string(),

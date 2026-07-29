@@ -100,7 +100,7 @@ afterEach(() => {
 
 describe("command context and command groups", () => {
   it("resolves debug and quiet precedence from raw argv and invokes wrapped actions", async () => {
-    const { createCommandContext, withCommandContext } = await import("../commands/context.js");
+    const { createCommandContext, withCommandContext } = await import("../commands/command-context.js");
     const program = new Command();
     program.name("first-tree").option("--json").option("--debug", undefined, false).option("--quiet", undefined, false);
     const child = program.command("probe");

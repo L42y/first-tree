@@ -18,10 +18,22 @@ const require = createRequire(import.meta.url);
 const ejsRuntime: typeof ejs = require("ejs");
 const AGENT_BRIEFING_TEMPLATE_FILENAME = "agent-briefing.ejs";
 const TEMPLATE_CANDIDATE_URLS = [
-  // Source execution: packages/client/src/runtime/agent-briefing.ts
+  // Source execution and root-level client/CLI chunks keep templates beside
+  // this module.
   new URL(`./templates/${AGENT_BRIEFING_TEMPLATE_FILENAME}`, import.meta.url),
-  // Bundled execution: packages/client/dist/index.mjs or apps/cli/dist/<chunk>.mjs
+  // The shipped CLI entry lives in dist/cli/ (portable: app/cli/) while its
+  // copied runtime assets remain at the dist/app root.
   new URL(`../templates/${AGENT_BRIEFING_TEMPLATE_FILENAME}`, import.meta.url),
+] as const;
+const CONTEXT_TREE_POLICY_CANDIDATE_URLS = [
+  // Source execution: packages/client/src/runtime/agent-briefing.ts
+  new URL("./assets/context-tree-policy.md", import.meta.url),
+  // Root-level client/CLI chunks. This non-discoverable runtime asset is
+  // copied beside the built chunks; it is never installed as a Skill.
+  new URL("./runtime-assets/context-tree-policy.md", import.meta.url),
+  // Shipped CLI and portable entries are nested one level below the copied
+  // runtime asset directories.
+  new URL("../runtime-assets/context-tree-policy.md", import.meta.url),
 ] as const;
 
 type CachedTemplate = {
@@ -74,10 +86,12 @@ type AgentBriefingRenderModel = Readonly<{
   readWorktreePath: string;
   taskWorktreePath: string;
   contextTree: ContextTreeRenderModel;
+  contextTreePolicy: string;
   resourceSkillRows: ReadonlyArray<ResourceSkillBriefingRow>;
 }>;
 
 let templateCache: CachedTemplate | null = null;
+let contextTreePolicyCache: string | null = null;
 
 /** Wrap a runtime value in canonical POSIX-safe single quotes. */
 function shellQuote(value: string): string {
@@ -150,6 +164,7 @@ function buildAgentBriefingRenderModel(opts: BuildAgentBriefingOptions): AgentBr
       opts.contextTreeRepoUrl ?? null,
       opts.contextTreeBranch ?? null,
     ),
+    contextTreePolicy: readCanonicalContextTreePolicy(),
     resourceSkillRows: buildResourceSkillBriefingRows(opts.workspacePath, opts.payload),
   };
 }
@@ -225,6 +240,20 @@ export function resolveAgentBriefingTemplatePath(): string {
   throw new Error(
     `Agent briefing EJS template is missing. Expected ${AGENT_BRIEFING_TEMPLATE_FILENAME} in the client runtime templates assets.`,
   );
+}
+
+export function resolveCanonicalContextTreePolicyPath(): string {
+  for (const url of CONTEXT_TREE_POLICY_CANDIDATE_URLS) {
+    const filename = fileURLToPath(url);
+    if (existsSync(filename)) return filename;
+  }
+  throw new Error("Canonical Context Tree policy is missing from the First Tree skill bundle.");
+}
+
+export function readCanonicalContextTreePolicy(): string {
+  if (contextTreePolicyCache !== null) return contextTreePolicyCache;
+  contextTreePolicyCache = readFileSync(resolveCanonicalContextTreePolicyPath(), "utf8");
+  return contextTreePolicyCache;
 }
 
 /** Names of the First Tree skills listed by both routing tables. */

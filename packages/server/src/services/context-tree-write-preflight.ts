@@ -15,6 +15,7 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { ForbiddenError } from "../errors.js";
 import { loadValidContextReviewerAgent } from "./context-reviewer-common.js";
+import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
 import { getOrgContextReviewRuntime } from "./org-settings.js";
 
 type RequesterIdentity = {
@@ -36,6 +37,10 @@ export class ContextTreeWritePreflightError extends Error {
     readonly code: ContextTreeWritePreflightErrorCode,
     readonly statusCode: 403 | 409,
     message: string,
+    readonly nextAction: {
+      message: string;
+      settingsUrl?: string;
+    } = { message },
   ) {
     super(message);
     this.name = "ContextTreeWritePreflightError";
@@ -124,6 +129,7 @@ export async function preflightContextTreeWriteAuthority(
     organizationId: string;
     requester: RequesterIdentity;
     requesterGithubLogin?: string;
+    reviewerStaleSeconds?: number;
   },
 ): Promise<ContextTreeWritePreflightAuthority> {
   try {
@@ -179,15 +185,58 @@ export async function preflightContextTreeWriteAuthority(
       "The current GitLab connection origin does not match the Context Tree repository.",
     );
   }
-  if (!runtime.contextReviewer.enabled || !runtime.contextReviewer.agentUuid) {
+  if (!runtime.contextReviewer.agentUuid) {
     throw new ContextTreeWritePreflightError(
-      "CONTEXT_TREE_WRITE_REVIEW_UNAVAILABLE",
+      "CONTEXT_TREE_WRITE_REVIEW_NOT_CONFIGURED",
       409,
-      "The selected Team does not currently have Context Reviewer enabled with an assigned Reviewer.",
+      "Automatic Review is not configured for the selected Team.",
+      {
+        message: "Ask a Team Admin to assign and enable a Context Reviewer.",
+        settingsUrl: "/settings/setup#automatic-review",
+      },
+    );
+  }
+  if (!runtime.contextReviewer.enabled) {
+    throw new ContextTreeWritePreflightError(
+      "CONTEXT_TREE_WRITE_REVIEW_DISABLED",
+      409,
+      "Automatic Review is disabled for the selected Team.",
+      {
+        message: "Ask a Team Admin to enable Automatic Review.",
+        settingsUrl: "/settings/setup#automatic-review",
+      },
     );
   }
 
   const reviewerAgentUuid = runtime.contextReviewer.agentUuid;
+  const readiness = await readContextReviewerAgentReadiness(db, {
+    organizationId: input.organizationId,
+    reviewerAgentUuid,
+    now: new Date(),
+    staleSeconds: input.reviewerStaleSeconds ?? 60,
+  });
+  if (readiness.structuralBlockers.length > 0) {
+    throw new ContextTreeWritePreflightError(
+      "CONTEXT_TREE_WRITE_REVIEW_PREREQUISITES_MISSING",
+      409,
+      "Automatic Review prerequisites are incomplete for the selected Team.",
+      {
+        message: "Ask a Team Admin to repair the assigned Reviewer Agent, Computer, or provider.",
+        settingsUrl: "/settings/setup#automatic-review",
+      },
+    );
+  }
+  if (readiness.healthBlockers.length > 0) {
+    throw new ContextTreeWritePreflightError(
+      "CONTEXT_TREE_WRITE_REVIEWER_OFFLINE",
+      409,
+      "The selected Team's Reviewer is configured but currently offline or degraded.",
+      {
+        message: "Restore the Reviewer Computer and Agent, then retry this Write preflight.",
+        settingsUrl: "/settings/setup#automatic-review",
+      },
+    );
+  }
   if (
     !(await isActiveContextReviewer(db, {
       organizationId: input.organizationId,

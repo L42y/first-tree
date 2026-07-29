@@ -37,6 +37,7 @@ import { useAuth } from "../../auth/auth-context.js";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { cn } from "../../lib/utils.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
+import { ContextEnablement } from "./context-enablement.js";
 import { SetupContextTreeControls } from "./setup-context-tree-controls.js";
 import { SetupReviewerControls } from "./setup-reviewer-controls.js";
 
@@ -781,17 +782,32 @@ export function SettingsSetupPage() {
         };
 
   return (
-    <SetupOverview
-      facts={facts}
-      rows={buildSetupRows(facts)}
-      ownerControls={ownerControls}
-      onToggleOwnerControl={(key) => {
-        setExpandedOwnerControl((current) =>
-          current?.organizationId === organizationId && current.key === key ? null : { organizationId, key },
-        );
-      }}
-      onResumeOnboarding={resumeOnboarding}
-    />
+    <>
+      <SetupOverview
+        facts={facts}
+        rows={buildSetupRows(facts)}
+        ownerControls={ownerControls}
+        onToggleOwnerControl={(key) => {
+          setExpandedOwnerControl((current) =>
+            current?.organizationId === organizationId && current.key === key ? null : { organizationId, key },
+          );
+        }}
+        onResumeOnboarding={resumeOnboarding}
+      />
+      {organizationId ? (
+        <ContextEnablement
+          organizationId={organizationId}
+          teamRole={role}
+          ready={
+            facts.repositories.state === "ready" &&
+            facts.repositories.value > 0 &&
+            contextTree.state === "ready" &&
+            contextTree.value.binding.state === "bound"
+          }
+          computerConnected={facts.computers.state === "ready" && facts.computers.value.connected > 0}
+        />
+      ) : null}
+    </>
   );
 }
 

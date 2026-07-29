@@ -627,6 +627,12 @@ async function prepareAppTemplate({ channel, channelConfig, version }) {
   const dependencies = resolvePinnedAppDependencies(sourcePackage);
   const packageManager = readWorkspacePackageManager();
   cpSync(join(CLI_ROOT, "dist"), appDir, { recursive: true });
+  const { buildContextIntegrationBundle } = await import("../build-context-integration-bundle.mjs");
+  const contextIntegration = buildContextIntegrationBundle({
+    outDir: join(appDir, "context-integration"),
+    version,
+    channel,
+  });
   await rewriteBundleChannel(appDir, channel);
   cpSync(join(REPO_ROOT, "skills"), join(appDir, "skills"), { recursive: true });
   cpSync(join(CLI_ROOT, "README.md"), join(appDir, "README.md"));
@@ -655,7 +661,7 @@ async function prepareAppTemplate({ channel, channelConfig, version }) {
   const buildRoots = portableBuildRoots(appDir);
   sanitizePortableBinShims(appDir, buildRoots);
   assertNoBuildRootReferences(appDir, buildRoots);
-  return { root, appDir };
+  return { root, appDir, contextIntegrationManifest: contextIntegration.manifest };
 }
 
 export function normalizeNodeVersion(version) {
@@ -734,7 +740,15 @@ exec "$root/node/bin/node" "$root/${appEntry}" "$@"
   );
 }
 
-function buildMetadata({ channel, channelConfig, version, gitSha, nodeVersion, generatedAt }) {
+function buildMetadata({
+  channel,
+  channelConfig,
+  version,
+  gitSha,
+  nodeVersion,
+  generatedAt,
+  contextIntegrationManifest,
+}) {
   return {
     schemaVersion: 1,
     channel,
@@ -745,6 +759,17 @@ function buildMetadata({ channel, channelConfig, version, gitSha, nodeVersion, g
     binName: channelConfig.binName,
     aliasName: channelConfig.aliasName,
     generatedAt,
+    ...(contextIntegrationManifest
+      ? {
+          contextIntegration: {
+            policyDigest: contextIntegrationManifest.policyDigest,
+            providers: {
+              "claude-code": contextIntegrationManifest.providers["claude-code"].adapterDigest,
+              codex: contextIntegrationManifest.providers.codex.adapterDigest,
+            },
+          },
+        }
+      : {}),
   };
 }
 
@@ -873,6 +898,7 @@ export async function buildPortableDistribution(rawOptions) {
           versionDir,
           baseUrl: options.downloadBaseUrl,
           nodeCacheDir,
+          contextIntegrationManifest: appTemplate.contextIntegrationManifest,
         }),
       );
     }
@@ -886,6 +912,7 @@ export async function buildPortableDistribution(rawOptions) {
       generatedAt,
       downloadBaseUrl: options.downloadBaseUrl,
       assets,
+      contextIntegrationManifest: appTemplate.contextIntegrationManifest,
     });
     writeJson(join(versionDir, "manifest.json"), manifest);
     writeJson(join(channelDir, "latest.json"), latest);

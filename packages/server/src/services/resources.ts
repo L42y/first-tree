@@ -2,6 +2,8 @@ import type { AgentRuntimeConfig } from "@first-tree/shared";
 import {
   type AgentResourceBindingInput,
   type AgentResourcesOutput,
+  type ConfirmTeamRepositories,
+  type ConfirmTeamRepositoriesOutput,
   type CreateTeamResource,
   canonicalizeResourceRepoUrl,
   deriveRepoLocalPath,
@@ -52,6 +54,11 @@ type ResourceSimulation = { resources?: ResourceDbRow[] };
 
 export type ResourcesService = {
   listTeamResources(organizationId: string): Promise<ResourceRow[]>;
+  confirmTeamRepositories(
+    organizationId: string,
+    input: ConfirmTeamRepositories,
+    actorId: string,
+  ): Promise<ConfirmTeamRepositoriesOutput>;
   createTeamResource(organizationId: string, input: CreateTeamResource, actorId: string): Promise<ResourceRow>;
   getResource(resourceId: string): Promise<ResourceRow>;
   updateResource(resourceId: string, input: UpdateTeamResource, actorId: string): Promise<ResourceRow>;
@@ -821,6 +828,119 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       return rows.map(rowToResource);
     },
 
+    async confirmTeamRepositories(organizationId, input, actorId) {
+      const requested = input.repositories.map((repository) => ({
+        ...repository,
+        key: canonicalizeResourceRepoUrl(repository.url),
+        payload: repoResourcePayloadSchema.parse({
+          url: repository.url,
+          ...(repository.defaultBranch ? { defaultBranch: repository.defaultBranch } : {}),
+        }),
+      }));
+      const expectedKeys = [...input.expectedActiveRepositoryKeys].sort();
+      const impacted = await listRuntimeAgentIds(organizationId);
+      const confirmedIds: string[] = [];
+
+      await db.transaction(async (tx) => {
+        const targetDb = tx as unknown as Database;
+        await targetDb.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${organizationId}))`,
+        );
+
+        const currentActive = await targetDb
+          .select({ key: resources.repoCanonicalKey })
+          .from(resources)
+          .where(
+            and(
+              eq(resources.organizationId, organizationId),
+              eq(resources.scope, "team"),
+              eq(resources.type, "repo"),
+              eq(resources.status, "active"),
+            ),
+          );
+        const currentKeys = currentActive.flatMap((row) => (row.key ? [row.key] : [])).sort();
+        if (
+          currentKeys.length !== expectedKeys.length ||
+          currentKeys.some((key, index) => key !== expectedKeys[index])
+        ) {
+          throw new ConflictError(
+            "Team repositories changed after confirmation. Refresh the repository list and confirm again.",
+            { code: "TEAM_REPOSITORIES_CONFIRMATION_STALE" },
+          );
+        }
+
+        const requestedKeys = requested.map((repository) => repository.key);
+        const existing =
+          requestedKeys.length === 0
+            ? []
+            : await targetDb
+                .select()
+                .from(resources)
+                .where(
+                  and(
+                    eq(resources.organizationId, organizationId),
+                    eq(resources.scope, "team"),
+                    eq(resources.type, "repo"),
+                    inArray(resources.status, ["active", "stale"]),
+                    inArray(resources.repoCanonicalKey, requestedKeys),
+                  ),
+                );
+        const existingByKey = new Map(
+          existing.flatMap((row) => (row.repoCanonicalKey ? [[row.repoCanonicalKey, row]] : [])),
+        );
+        const now = new Date();
+
+        for (const repository of requested) {
+          const row = existingByKey.get(repository.key);
+          if (row) {
+            await targetDb
+              .update(resources)
+              .set({
+                name: repository.name,
+                payload: repository.payload,
+                defaultEnabled: "recommended",
+                status: "active",
+                updatedBy: actorId,
+                updatedAt: now,
+              })
+              .where(eq(resources.id, row.id));
+            confirmedIds.push(row.id);
+          } else {
+            const id = uuidv7();
+            await targetDb.insert(resources).values({
+              id,
+              organizationId,
+              type: "repo",
+              scope: "team",
+              ownerAgentId: null,
+              name: repository.name,
+              repoCanonicalKey: repository.key,
+              defaultEnabled: "recommended",
+              status: "active",
+              payload: repository.payload,
+              createdBy: actorId,
+              updatedBy: actorId,
+            });
+            confirmedIds.push(id);
+          }
+        }
+
+        await bumpAgentConfigVersions(targetDb, impacted, actorId);
+      });
+
+      await notifyAgents(impacted);
+      const rows =
+        confirmedIds.length === 0 ? [] : await db.select().from(resources).where(inArray(resources.id, confirmedIds));
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return {
+        repositories: confirmedIds.map((id) => {
+          const row = byId.get(id);
+          if (!row) throw new NotFoundError(`Confirmed resource "${id}" not found`);
+          return rowToResource(row);
+        }),
+      };
+    },
+
     async createTeamResource(organizationId, input, actorId) {
       const payload = parsePayload(input.type, input.payload);
       const repoCanonicalKey = canonicalKeyFor(input.type, payload);
@@ -829,6 +949,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       try {
         await db.transaction(async (tx) => {
           const targetDb = tx as unknown as Database;
+          if (input.type === "repo") {
+            await targetDb.execute(
+              sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${organizationId}))`,
+            );
+          }
           await targetDb.insert(resources).values({
             id,
             organizationId,
@@ -878,6 +1003,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       try {
         await db.transaction(async (tx) => {
           const targetDb = tx as unknown as Database;
+          if (current.type === "repo") {
+            await targetDb.execute(
+              sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${current.organizationId}))`,
+            );
+          }
           await targetDb
             .update(resources)
             .set({
@@ -905,6 +1035,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       const impacted = await impactForResource(current);
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
+        if (current.scope === "team" && current.type === "repo") {
+          await targetDb.execute(
+            sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${current.organizationId}))`,
+          );
+        }
         await targetDb
           .update(resources)
           .set({ status: "retired", updatedBy: actorId, updatedAt: new Date() })
@@ -933,6 +1068,9 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       let impacted: string[] = [];
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
+        await targetDb.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${current.organizationId}))`,
+        );
         const [existingTeam] = await targetDb
           .select()
           .from(resources)
