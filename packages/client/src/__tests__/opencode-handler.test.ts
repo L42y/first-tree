@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
@@ -12,10 +12,16 @@ import {
   createOpenCodeHandler,
   mapOpenCodeMcpServers,
   projectOpenCodeConfig,
+  stableOpenCodeScope,
 } from "../handlers/opencode/index.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
+import { readSessionBriefingFingerprint } from "../runtime/session-briefing-fingerprint.js";
+import { SessionManager } from "../runtime/session-manager.js";
+import type { FirstTreeHubSDK } from "../sdk.js";
+import { silentLogger } from "./_logger-helpers.js";
+import { mockEntry } from "./test-helpers.js";
 
 const roots: string[] = [];
 
@@ -83,6 +89,40 @@ function deliveryToken() {
   } satisfies DeliveryToken;
 }
 
+const SYNTHETIC_PROVIDER_SCRIPT = `
+const kind = process.env.FIRST_TREE_TEST_PROVIDER_KIND;
+if (kind === "version") {
+  process.stdout.write(process.env.FIRST_TREE_TEST_PROVIDER_VERSION ?? "");
+} else if (kind === "db") {
+  process.stdout.write('[{"ready":1}]\\n');
+} else {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+  });
+  process.stdin.on("end", () => {
+    setTimeout(() => {
+      const sid = process.env.FIRST_TREE_TEST_PROVIDER_SESSION_ID ?? "ses_new";
+      process.stdout.write(JSON.stringify({type:"step_start",sessionID:sid,part:{sessionID:sid}}) + "\\n");
+      process.stdout.write(JSON.stringify({type:"text",sessionID:sid,part:{text:input.trim()}}) + "\\n");
+      process.stdout.write(JSON.stringify({type:"step_finish",sessionID:sid,part:{reason:"stop",tokens:{input:3,output:2}}}) + "\\n");
+    }, Number(process.env.FIRST_TREE_TEST_PROVIDER_DELAY_MS ?? "0"));
+  });
+}
+`;
+
+const PROTOCOL_PROVIDER_SCRIPT = `
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const encoded = process.env.FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64 ?? "";
+  process.stdout.write(Buffer.from(encoded, "base64").toString("utf8"));
+  if (process.env.FIRST_TREE_TEST_PROVIDER_HOLD_OPEN === "1") {
+    setInterval(() => {}, 1000);
+  }
+});
+`;
+
 function createSyntheticSupervisor(
   specs: ProviderProcessSpec[],
   options: { version?: string; turnDelayMs?: number; capturedInputs?: string[] } = {},
@@ -93,25 +133,15 @@ function createSyntheticSupervisor(
       const isDb = spec.args[0] === "db";
       const isVersion = spec.args[0] === "--version";
       const resumed = spec.args.includes("--session") ? spec.args[spec.args.indexOf("--session") + 1] : "ses_new";
-      const script = isVersion
-        ? `process.stdout.write(${JSON.stringify(`${options.version ?? "1.18.7"}\n`)})`
-        : isDb
-          ? "process.stdout.write('[{\"ready\":1}]\\n')"
-          : `
-let input = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", chunk => input += chunk);
-process.stdin.on("end", () => {
-  setTimeout(() => {
-    const sid = ${JSON.stringify(resumed)};
-    process.stdout.write(JSON.stringify({type:"step_start",sessionID:sid,part:{sessionID:sid}}) + "\\n");
-    process.stdout.write(JSON.stringify({type:"text",sessionID:sid,part:{text:input.trim()}}) + "\\n");
-    process.stdout.write(JSON.stringify({type:"step_finish",sessionID:sid,part:{reason:"stop",tokens:{input:3,output:2}}}) + "\\n");
-  }, ${JSON.stringify(options.turnDelayMs ?? 0)});
-});
-`;
-      const child = spawn(process.execPath, ["-e", script], {
+      const child = spawn(process.execPath, ["-e", SYNTHETIC_PROVIDER_SCRIPT], {
         ...spec.options,
+        env: {
+          ...spec.options.env,
+          FIRST_TREE_TEST_PROVIDER_KIND: isVersion ? "version" : isDb ? "db" : "turn",
+          FIRST_TREE_TEST_PROVIDER_VERSION: `${options.version ?? "1.18.7"}\n`,
+          FIRST_TREE_TEST_PROVIDER_SESSION_ID: resumed,
+          FIRST_TREE_TEST_PROVIDER_DELAY_MS: String(options.turnDelayMs ?? 0),
+        },
         detached: false,
       });
       if (!isDb && !isVersion && child.stdin && options.capturedInputs) {
@@ -132,6 +162,7 @@ function createProtocolSupervisor(
   specs: ProviderProcessSpec[],
   turnOutputs: string[],
   capturedInputs: string[] = [],
+  holdOpen = false,
 ): ProviderProcessSupervisor {
   let turn = 0;
   return {
@@ -143,17 +174,15 @@ function createProtocolSupervisor(
           : spec.args[0] === "db"
             ? '[{"ready":1}]\n'
             : (turnOutputs[turn++] ?? "");
-      const child = spawn(
-        process.execPath,
-        [
-          "-e",
-          `process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(${JSON.stringify(output)}));`,
-        ],
-        {
-          ...spec.options,
-          detached: false,
+      const child = spawn(process.execPath, ["-e", PROTOCOL_PROVIDER_SCRIPT], {
+        ...spec.options,
+        env: {
+          ...spec.options.env,
+          FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from(output, "utf8").toString("base64"),
+          FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: holdOpen && spec.args[0] === "run" ? "1" : "0",
         },
-      );
+        detached: holdOpen,
+      });
       if (spec.args[0] === "run" && child.stdin) {
         const write = child.stdin.write.bind(child.stdin);
         child.stdin.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
@@ -166,10 +195,16 @@ function createProtocolSupervisor(
   };
 }
 
-function context(events: unknown[], forwarded: string[]): SessionContext {
+function context(
+  events: unknown[],
+  forwarded: string[],
+  identity: { agentId?: string; chatId?: string } = {},
+): SessionContext {
+  const agentId = identity.agentId ?? "agent-1";
+  const chatId = identity.chatId ?? "chat-1";
   return {
     agent: {
-      agentId: "agent-1",
+      agentId,
       inboxId: "inbox-1",
       displayName: "Agent",
       type: "agent",
@@ -198,7 +233,7 @@ function context(events: unknown[], forwarded: string[]): SessionContext {
       ],
     } as unknown as SessionContext["sdk"],
     log: vi.fn(),
-    chatId: "chat-1",
+    chatId,
     recordProviderActivity: vi.fn(),
     emitEvent: (event) => events.push(event),
     forwardResult: async (text) => {
@@ -207,10 +242,11 @@ function context(events: unknown[], forwarded: string[]): SessionContext {
     markMessagesConsumed: vi.fn(),
     finishTurn: vi.fn(async () => {}),
     retryTurn: vi.fn(),
+    failSessionForRecovery: vi.fn(),
     buildAgentEnv: (env) => ({
       ...env,
-      FIRST_TREE_AGENT_ID: "agent-1",
-      FIRST_TREE_CHAT_ID: "chat-1",
+      FIRST_TREE_AGENT_ID: agentId,
+      FIRST_TREE_CHAT_ID: chatId,
       FIRST_TREE_PROVIDER: "opencode",
       FIRST_TREE_RUNTIME_SESSION_TOKEN_FILE: "/private/token",
     }),
@@ -241,6 +277,7 @@ describe("OpenCode V1 handler", () => {
       model: "openai/gpt-test",
     });
     expect(projected.agent["first-tree-scope-a"].prompt).not.toContain("Current Chat Context");
+    expect(projected).not.toHaveProperty("permission");
     expect(projected.mcp).toHaveProperty("first-tree-scope-a-mcp-1");
     expect(
       buildOpenCodeTurnArgs({
@@ -268,14 +305,11 @@ describe("OpenCode V1 handler", () => {
   it("moves oversized private config out of the Windows-sensitive environment block and cleans it", () => {
     const root = mkdtempSync(join(tmpdir(), "ft-opencode-config-"));
     roots.push(root);
-    const projection = projectOpenCodeConfig(
-      { BASE: "1", OPENCODE_CONFIG: "/operator/override", OPENCODE_CONFIG_CONTENT: "stale" },
-      '{"secret":"value"}',
-      {
-        maxEnvBytes: 1,
-        makeTempDir: () => root,
-      },
-    );
+    const runtimeRoot = join(root, ".first-tree-workspace", "opencode-config", "scope");
+    const projection = projectOpenCodeConfig({ BASE: "1", OPENCODE_CONFIG_CONTENT: "stale" }, '{"secret":"value"}', {
+      maxEnvBytes: 1,
+      runtimeRoot,
+    });
     expect(projection.transport).toBe("file");
     expect(JSON.parse(String(projection.env.OPENCODE_CONFIG_CONTENT))).toEqual({
       autoupdate: false,
@@ -283,10 +317,88 @@ describe("OpenCode V1 handler", () => {
       snapshot: false,
     });
     expect(String(projection.env.OPENCODE_CONFIG_CONTENT)).not.toContain("secret");
-    expect(projection.env.OPENCODE_CONFIG).toBe(join(root, "opencode.json"));
-    expect(readFileSync(join(root, "opencode.json"), "utf8")).toBe('{"secret":"value"}');
+    const configPath = String(projection.env.OPENCODE_CONFIG);
+    expect(configPath.startsWith(runtimeRoot)).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe('{"secret":"value"}');
     projection.cleanup();
-    expect(existsSync(root)).toBe(false);
+    expect(existsSync(configPath)).toBe(false);
+    expect(existsSync(runtimeRoot)).toBe(true);
+  });
+
+  it("preserves host custom config for inline projection and fails closed rather than replacing it on overflow", () => {
+    const hostConfig = "/operator/custom-opencode.json";
+    const inline = projectOpenCodeConfig(
+      { OPENCODE_CONFIG: hostConfig, OPENCODE_CONFIG_CONTENT: "stale" },
+      '{"agent":{}}',
+    );
+    expect(inline.transport).toBe("env");
+    expect(inline.env.OPENCODE_CONFIG).toBe(hostConfig);
+    expect(inline.env.OPENCODE_CONFIG_CONTENT).toBe('{"agent":{}}');
+    expect(() =>
+      projectOpenCodeConfig({ OPENCODE_CONFIG: hostConfig }, '{"agent":{}}', {
+        maxEnvBytes: 1,
+        runtimeRoot: "/private/runtime",
+      }),
+    ).toThrow(/cannot replace the host OPENCODE_CONFIG/i);
+  });
+
+  it("derives a stable high-entropy caller scope without cross-caller collisions", () => {
+    const first = stableOpenCodeScope("agent-1");
+    expect(first).toHaveLength(64);
+    expect(stableOpenCodeScope("agent-1")).toBe(first);
+    expect(stableOpenCodeScope("agent-2")).not.toBe(first);
+  });
+
+  it("keeps the managed agent identity stable across fresh handlers and distinct across agents", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-stable-agent-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const supervisor = createSyntheticSupervisor(specs);
+    const run = async (agentId: string) => {
+      const handler = createOpenCodeHandler({
+        workspaceRoot: join(root, agentId),
+        runtimeProvider: "opencode",
+        agentConfigCache: cache(runtimeConfig()),
+        opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+        providerProcessSupervisor: supervisor,
+      });
+      await handler.start(
+        message(`m-${agentId}-${specs.length}`, "turn"),
+        context([], [], { agentId }),
+        deliveryToken(),
+      );
+      await handler.shutdown();
+    };
+    await run("agent-1");
+    await run("agent-1");
+    await run("agent-2");
+    const managedNames = specs
+      .filter((spec) => spec.args[0] === "run")
+      .map((spec) => spec.args[spec.args.indexOf("--agent") + 1]);
+    expect(managedNames[0]).toBe(managedNames[1]);
+    expect(managedNames[2]).not.toBe(managedNames[0]);
+  });
+
+  it("sweeps caller-owned stale private config state and removes the scope on shutdown", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-recovery-"));
+    roots.push(root);
+    const scopeRoot = join(root, ".first-tree-workspace", "opencode-config", stableOpenCodeScope("agent-1\0chat-1"));
+    const stalePath = join(scopeRoot, "stale", "opencode.json");
+    mkdirSync(join(scopeRoot, "stale"), { recursive: true });
+    writeFileSync(stalePath, '{"stale":true}');
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+    });
+
+    await handler.start(message("m-private", "turn"), context([], []), deliveryToken());
+    expect(existsSync(stalePath)).toBe(false);
+    expect(existsSync(scopeRoot)).toBe(true);
+    await handler.shutdown();
+    expect(existsSync(scopeRoot)).toBe(false);
   });
 
   it("fails closed when even the file-backed projection cannot fit a Windows environment block", () => {
@@ -310,6 +422,7 @@ describe("OpenCode V1 handler", () => {
     const forwarded: string[] = [];
     const sessionCtx = context(events, forwarded);
     const cfg = runtimeConfig();
+    cfg.payload.env.push({ key: "OPENCODE_CONFIG", value: "/operator/custom-opencode.json", sensitive: false });
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
       runtimeProvider: "opencode",
@@ -328,6 +441,7 @@ describe("OpenCode V1 handler", () => {
     expect(firstRun?.options.env).toMatchObject({
       FIRST_TREE_RUNTIME_SESSION_TOKEN_FILE: "/private/token",
       PROVIDER_ENV: "local",
+      OPENCODE_CONFIG: "/operator/custom-opencode.json",
     });
     expect(String(firstRun?.options.env?.OPENCODE_CONFIG_CONTENT)).toContain('"first-tree-');
     expect(String(firstRun?.options.env?.OPENCODE_CONFIG_CONTENT)).not.toContain("Current Chat Context");
@@ -395,6 +509,7 @@ describe("OpenCode V1 handler", () => {
         [`${JSON.stringify({ type: "future", sessionID: "ses_new" })}\n`, `${successfulTurn()}\n`],
         inputs,
       ),
+      opencodeRetrySleep: async () => {},
     });
     const firstToken = deliveryToken();
     await handler.start(message("m1", "first"), sessionCtx, firstToken);
@@ -412,6 +527,188 @@ describe("OpenCode V1 handler", () => {
     expect(inputs[0]).toContain("<first-tree-current-chat-context");
     expect(inputs[1]).toContain("<first-tree-current-chat-context");
     await handler.shutdown();
+  });
+
+  it("bounds stream-started retries across fresh handlers and observes the retry-policy delays", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-window-"));
+    roots.push(root);
+    const sleep = vi.fn<(delayMs: number) => Promise<void>>(async () => {});
+    const sessionCtx = context([], []);
+    const tokens = [deliveryToken(), deliveryToken(), deliveryToken()];
+    for (const token of tokens) {
+      const handler = createOpenCodeHandler({
+        workspaceRoot: root,
+        runtimeProvider: "opencode",
+        agentConfigCache: cache(runtimeConfig()),
+        opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+        providerProcessSupervisor: createProtocolSupervisor([], ["not-json\n"]),
+        opencodeRetrySleep: sleep,
+      });
+      await handler.start(message("m-retry", "same delivery"), sessionCtx, token);
+      await handler.shutdown();
+    }
+
+    expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([5_000, 15_000]);
+    expect(tokens[0]?.retry).toHaveBeenCalled();
+    expect(tokens[1]?.retry).toHaveBeenCalled();
+    expect(tokens[2]?.retry).not.toHaveBeenCalled();
+    expect(tokens[2]?.complete).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-retry" })],
+      expect.objectContaining({ status: "error", completion: "consumed" }),
+    );
+    expect(sessionCtx.failSessionForRecovery).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps bounded retry custody across real SessionManager handler replacement", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-session-manager-retry-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const sleep = vi.fn<(delayMs: number) => Promise<void>>(async () => {});
+    const supervisor = createProtocolSupervisor(specs, ["not-json\n", "not-json\n", "not-json\n"]);
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>(async () => {});
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>(async () => {});
+    const sendMessage = vi.fn(async () => ({ id: "runtime-notice" }));
+    const sdk = {
+      sendMessage,
+      getChatDetail: vi.fn(async () => ({
+        id: "chat-sm-retry",
+        title: "Retry chat",
+        topic: null,
+        description: null,
+      })),
+      listChatParticipants: vi.fn(async () => []),
+    } as unknown as FirstTreeHubSDK;
+    const manager = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 1,
+      handlerFactory: (handlerConfig) =>
+        createOpenCodeHandler({
+          ...handlerConfig,
+          opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+          providerProcessSupervisor: supervisor,
+          opencodeRetrySleep: sleep,
+        }),
+      handlerConfig: { workspaceRoot: root, runtimeProvider: "opencode" },
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk,
+      log: silentLogger(),
+      registryPath: join(root, "sessions.json"),
+      ackEntry,
+      recoverChat,
+      agentConfigCache: cache(runtimeConfig()),
+    });
+    const entry = mockEntry({
+      id: 801,
+      chatId: "chat-sm-retry",
+      messageId: "msg-sm-retry",
+      content: "retry this delivery",
+    });
+
+    await manager.dispatch(entry);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    for (const expectedRuns of [2, 3]) {
+      await manager.dispatch(entry);
+      await vi.waitFor(() => expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(expectedRuns));
+    }
+
+    expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([5_000, 15_000]);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(ackEntry).toHaveBeenCalledWith(801);
+    await manager.shutdown();
+  });
+
+  it("redelivers one-shot context through SessionManager when the durable failure notice post fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-session-manager-notice-"));
+    roots.push(root);
+    const inputs: string[] = [];
+    const credentialOutput = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "error",
+        sessionID: "ses_new",
+        error: { message: "401 Unauthorized: invalid API key" },
+      }),
+    ].join("\n");
+    const supervisor = createProtocolSupervisor([], [`${credentialOutput}\n`, `${successfulTurn()}\n`], inputs);
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>(async () => {});
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>(async () => {});
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("runtime notice write failed"))
+      .mockResolvedValue({ id: "runtime-notice" });
+    const sdk = {
+      sendMessage,
+      getChatDetail: vi.fn(async () => ({
+        id: "chat-sm-notice",
+        title: "Notice chat",
+        topic: null,
+        description: null,
+      })),
+      listChatParticipants: vi.fn(async () => []),
+    } as unknown as FirstTreeHubSDK;
+    const manager = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 1,
+      handlerFactory: (handlerConfig) =>
+        createOpenCodeHandler({
+          ...handlerConfig,
+          opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+          providerProcessSupervisor: supervisor,
+        }),
+      handlerConfig: { workspaceRoot: root, runtimeProvider: "opencode" },
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk,
+      log: silentLogger(),
+      registryPath: join(root, "sessions.json"),
+      ackEntry,
+      recoverChat,
+      agentConfigCache: cache(runtimeConfig()),
+    });
+    const entry = mockEntry({
+      id: 802,
+      chatId: "chat-sm-notice",
+      messageId: "msg-sm-notice",
+      content: "same terminal delivery",
+    });
+
+    await manager.dispatch(entry);
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(existsSync(join(root, ".first-tree-workspace", "session-briefings"))).toBe(false);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-sm-notice"));
+    await manager.dispatch(entry);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(802));
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toContain("<first-tree-current-chat-context");
+    expect(inputs[1]).toContain("<first-tree-current-chat-context");
+    expect(existsSync(join(root, ".first-tree-workspace", "session-briefings", "ses_new.json"))).toBe(true);
+    await manager.shutdown();
   });
 
   it("emits a standard terminal provider failure before consuming a credential failure", async () => {
@@ -445,6 +742,46 @@ describe("OpenCode V1 handler", () => {
       [expect.objectContaining({ id: "m1" })],
       expect.objectContaining({ status: "error", completion: "consumed" }),
     );
+    await handler.shutdown();
+  });
+
+  it("retains one-shot context and briefing custody when terminal completion is returned for redelivery", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-notice-redelivery-"));
+    roots.push(root);
+    const inputs: string[] = [];
+    const credentialOutput = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "error",
+        sessionID: "ses_new",
+        error: { message: "401 Unauthorized: invalid API key" },
+      }),
+    ].join("\n");
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor(
+        [],
+        [`${credentialOutput}\n`, `${successfulTurn()}\n`],
+        inputs,
+      ),
+    });
+    const firstToken = {
+      ...deliveryToken(),
+      complete: vi.fn(async () => "retry" as const),
+    } satisfies DeliveryToken;
+    const started = await handler.start(message("m-notice", "first"), context([], []), firstToken);
+    const startedSessionId = typeof started === "string" ? started : started.sessionId;
+    expect(readSessionBriefingFingerprint(root, startedSessionId)).toBeNull();
+
+    const secondToken = deliveryToken();
+    expect(handler.inject(message("m-redelivered", "first"), secondToken)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(secondToken.complete).toHaveBeenCalled());
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]).toContain("<first-tree-current-chat-context");
+    expect(inputs[1]).toContain("<first-tree-current-chat-context");
     await handler.shutdown();
   });
 
@@ -504,6 +841,119 @@ describe("OpenCode V1 handler", () => {
     await handler.shutdown();
   });
 
+  it.each([
+    "completed",
+    "failed",
+  ] as const)("settles a %s write-tool timeout as unsafe instead of replaying it", async (status) => {
+    const root = mkdtempSync(join(tmpdir(), `ft-opencode-timeout-${status}-`));
+    roots.push(root);
+    const output = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses_new",
+        part: {
+          id: "tool-1",
+          tool: "bash",
+          state: { status, input: { command: "touch effect" }, output: status === "failed" ? "failed" : "done" },
+        },
+      }),
+    ].join("\n");
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor([], [`${output}\n`], [], true),
+      opencodeTurnTimeoutMs: 250,
+    });
+    const token = deliveryToken();
+    await handler.start(message("m-timeout", "first"), context([], []), token);
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-timeout" })],
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+    await handler.shutdown();
+  });
+
+  it("settles an explicit abort after a write tool as unsafe instead of replaying it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-abort-effect-"));
+    roots.push(root);
+    const events: Array<{ kind?: string }> = [];
+    const output = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses_new",
+        part: {
+          id: "tool-1",
+          tool: "bash",
+          state: { status: "completed", input: { command: "touch effect" }, output: "done" },
+        },
+      }),
+    ].join("\n");
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor([], [`${output}\n`], [], true),
+      opencodeTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+    const started = handler.start(message("m-abort", "first"), context(events, []), token);
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "tool_call")).toBe(true));
+    await handler.suspend("test explicit abort");
+    await started;
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-abort" })],
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+    await handler.shutdown();
+  });
+
+  it("preserves the unsafe-effect fence when private-config cleanup fails after provider exit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-cleanup-effect-"));
+    roots.push(root);
+    const output = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses_new",
+        part: {
+          id: "tool-1",
+          tool: "bash",
+          state: { status: "completed", input: { command: "touch effect" }, output: "done" },
+        },
+      }),
+      JSON.stringify({ type: "step_finish", sessionID: "ses_new", part: { reason: "stop" } }),
+    ].join("\n");
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor([], [`${output}\n`]),
+      opencodeConfigProjector: (env: Record<string, string>) => ({
+        env,
+        transport: "env" as const,
+        cleanup: () => {
+          throw new Error("private config cleanup failed");
+        },
+      }),
+    });
+    const token = deliveryToken();
+    await handler.start(message("m-cleanup", "first"), context([], []), token);
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-cleanup" })],
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+    await handler.shutdown();
+  });
+
   it("serializes one shared data-home DB gate across handler instances", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-opencode-db-shared-"));
     roots.push(root);
@@ -527,7 +977,7 @@ describe("OpenCode V1 handler", () => {
     const agentNames = specs
       .filter((spec) => spec.args[0] === "run")
       .map((spec) => spec.args[spec.args.indexOf("--agent") + 1]);
-    expect(new Set(agentNames).size).toBe(2);
+    expect(new Set(agentNames).size).toBe(1);
     await left.shutdown();
     await right.shutdown();
   });

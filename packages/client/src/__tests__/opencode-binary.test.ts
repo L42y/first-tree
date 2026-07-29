@@ -77,17 +77,16 @@ describe("OpenCode binary resolution", () => {
   it("resolves a global Windows npm prefix when the daemon PATH is empty", () => {
     const root = mkdtempSync(join(tmpdir(), "ft-opencode-win-prefix-"));
     roots.push(root);
-    const native = join(root, "node_modules", "opencode-ai", "bin", "opencode.exe");
-    mkdirSync(join(root, "node_modules", "opencode-ai", "bin"), { recursive: true });
+    const native = join(root, "npm", "node_modules", "opencode-ai", "bin", "opencode.exe");
+    mkdirSync(join(root, "npm", "node_modules", "opencode-ai", "bin"), { recursive: true });
     writeFileSync(native, "native");
 
     expect(
       findOpenCodeExecutableOnPath(
-        { USERPROFILE: root, PATH: "" },
+        { USERPROFILE: join(root, "profile"), APPDATA: root, PATH: "" },
         {
           platform: "win32",
           pathDelimiter: ";",
-          wellKnownDirs: () => [root],
           loginShellPathDirs: () => [],
         },
       ),
@@ -122,6 +121,8 @@ describe("OpenCode binary resolution", () => {
   it("parses a stable semver without accepting prerelease or partial versions", () => {
     expect(parseOpenCodeVersionOutput("opencode 1.18.7")).toBe("1.18.7");
     expect(parseOpenCodeVersionOutput("opencode 1.18.9-beta.1")).toBeNull();
+    expect(parseOpenCodeVersionOutput("opencode 01.18.7")).toBeNull();
+    expect(parseOpenCodeVersionOutput("opencode 1.18.7_suffix")).toBeNull();
     expect(parseOpenCodeVersionOutput("opencode 1.18")).toBeNull();
     expect(parseOpenCodeVersionOutput("not-a-version")).toBeNull();
     expect(parseOpenCodeVersionOutput(`${"0".repeat(100_000)}.x opencode 1.18.7`)).toBe("1.18.7");
@@ -133,6 +134,9 @@ describe("OpenCode binary resolution", () => {
     expect(isSupportedOpenCodeVersion("1.19.0")).toBe(true);
     expect(isSupportedOpenCodeVersion("1.18.6")).toBe(false);
     expect(isSupportedOpenCodeVersion("2.0.0")).toBe(false);
+    expect(isSupportedOpenCodeVersion("1.18.9-beta.1")).toBe(false);
+    expect(isSupportedOpenCodeVersion("01.18.7")).toBe(false);
+    expect(isSupportedOpenCodeVersion("1.18.7_suffix")).toBe(false);
     expect(isSupportedOpenCodeVersion(null)).toBe(false);
   });
 });
