@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   foldPortableTeamSkillPath,
   type RuntimeProvider,
@@ -37,6 +37,7 @@ import {
   readManagedState,
   readManagedStateResult,
 } from "../runtime/managed-state.js";
+import { spawnWorkspaceLockWorker } from "./workspace-file-lock-worker.js";
 
 const PROVIDERS: readonly RuntimeProvider[] = ["claude-code", "claude-code-tui", "codex", "cursor", "kimi-code"];
 
@@ -842,7 +843,7 @@ describe("managed Skill reconciler", () => {
         teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
         bundledSkillsRoot,
         bundleResolver: async () => bundle,
-        testBeforeTeamRows: () => {
+        testBeforePublication: () => {
           writeFileSync(join(installed, "scripts", "run.sh"), "tampered after main loop\n");
         },
         testFailureAt: "quarantine_rename",
@@ -876,6 +877,30 @@ describe("managed Skill reconciler", () => {
     });
     expect(result.skipped).not.toContain("core:first-tree-read");
     expect(existsSync(installed)).toBe(false);
+  });
+
+  it("blocks final provider publication when late Core drift cannot leave discovery", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "first-tree-read");
+
+    await expect(
+      reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+        bundledSkillsRoot,
+        testBeforePublication: () => {
+          writeFileSync(join(installed, "references", "guide.md"), "late Core tamper\n");
+        },
+        testFailureAt: "quarantine_rename",
+      }),
+    ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(existsSync(installed)).toBe(true);
   });
 
   it("rechecks unavailable-snapshot Team LKG at publication and blocks when late drift cannot be quarantined", async () => {
@@ -920,6 +945,32 @@ describe("managed Skill reconciler", () => {
         writeFileSync(join(installed, "SKILL.md"), "late unavailable-snapshot tamper\n");
       },
     });
+    expect(result.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: "managed Skill changed during final provider publication verification and was quarantined",
+    });
+    expect(existsSync(installed)).toBe(false);
+  });
+
+  it("quarantines stale-snapshot Team drift introduced only at the publication gate", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+      testBeforePublication: () => {
+        writeFileSync(join(installed, "SKILL.md"), "late stale-snapshot tamper\n");
+      },
+    });
+    expect(result.staleTeamSnapshot).toBe(true);
     expect(result.failures).toContainEqual({
       key: "resource:resource-review",
       reason: "managed Skill changed during final provider publication verification and was quarantined",
@@ -2018,5 +2069,68 @@ describe("managed Skill reconciler", () => {
     expect(secondStats.isFile()).toBe(true);
     expect(secondStats.dev).toBe(firstStats.dev);
     expect(secondStats.ino).toBe(firstStats.ino);
+  });
+
+  it("returns an availability failure when the real workspace lock times out against empty discovery", async () => {
+    const lockPath = join(workspace, MANAGED_SKILLS_LOCK_REL);
+    mkdirSync(dirname(lockPath), { recursive: true });
+    const holder = spawnWorkspaceLockWorker(lockPath);
+    await holder.waitForLine("acquired");
+    try {
+      const result = await reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+        bundledSkillsRoot,
+        lockTimeoutMs: 50,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.failures).toContainEqual({
+        key: "workspace",
+        reason: expect.stringContaining("timed out waiting for managed skills workspace lock"),
+      });
+      expect(existsSync(join(workspace, providerSkillRoot("codex")))).toBe(false);
+    } finally {
+      holder.child.stdin.end("release\n");
+      const holderExit = await holder.waitForExit();
+      expect(holderExit, holder.stderr()).toEqual({ code: 0, signal: null });
+    }
+  });
+
+  it("blocks provider preflight when the real workspace lock times out against nonempty discovery", async () => {
+    const bundle = makeSkillZip({ "scripts/run.sh": strToU8("#!/bin/sh\necho safe\n") });
+    const skill = bundleSkill(bundle);
+    const first = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    expect(first.ok, JSON.stringify(first.failures)).toBe(true);
+
+    const lockPath = join(workspace, MANAGED_SKILLS_LOCK_REL);
+    const holder = spawnWorkspaceLockWorker(lockPath);
+    await holder.waitForLine("acquired");
+    try {
+      await expect(
+        reconcileManagedSkills({
+          workspace,
+          provider: "codex",
+          teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+          bundledSkillsRoot,
+          bundleResolver: async () => {
+            throw new Error("lock timeout must happen before bundle resolution");
+          },
+          lockTimeoutMs: 50,
+        }),
+      ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+      expect(existsSync(target(workspace, "codex", "review"))).toBe(true);
+      expect(existsSync(target(workspace, "codex", "first-tree-read"))).toBe(true);
+    } finally {
+      holder.child.stdin.end("release\n");
+      const holderExit = await holder.waitForExit();
+      expect(holderExit, holder.stderr()).toEqual({ code: 0, signal: null });
+    }
   });
 });

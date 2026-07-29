@@ -47,11 +47,7 @@ import {
   writeManagedSkillsJournal,
   writeManagedState,
 } from "./managed-state.js";
-import {
-  acquireWorkspaceFileLock,
-  type WorkspaceFileLock,
-  WorkspaceFileLockTimeoutError,
-} from "./workspace-file-lock.js";
+import { acquireWorkspaceFileLock, type WorkspaceFileLock } from "./workspace-file-lock.js";
 
 const OWNERSHIP_MARKER = TEAM_SKILL_OWNERSHIP_MARKER;
 const LEGACY_RESOURCE_SKILLS_ROOT = ".first-tree/resources/skills";
@@ -437,7 +433,6 @@ export async function reconcileManagedSkills(
     } catch (error) {
       if (error instanceof ManagedSkillsUnsafeDiscoveryError) throw error;
       if (
-        !(error instanceof WorkspaceFileLockTimeoutError) &&
         !(error instanceof ManagedSkillsSimulatedCrash) &&
         (await providerDiscoveryMayContainManagedContent(options))
       ) {
