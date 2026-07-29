@@ -37,7 +37,7 @@ import {
   agentNotLandingCampaignTrialCondition,
   agentVisibilityCondition,
 } from "./access-control.js";
-import { lockAndValidateAgentTemplateSelection } from "./agent-templates.js";
+import { loadAgentPromptBudgetUsage, lockAndValidateAgentTemplateSelection } from "./agent-templates.js";
 import { resolveDefaultOrgId } from "./organization.js";
 import { recomputeWatchersForAgent } from "./watcher.js";
 
@@ -597,10 +597,20 @@ export async function createAgent(
         }
       }
 
+      const initialPayload = defaultRuntimeConfigPayload(runtimeProvider);
+      const promptUsage = await loadAgentPromptBudgetUsage(tx as unknown as Database, [
+        {
+          agentId: uuid,
+          organizationId: orgId,
+          configPromptBody: initialPayload.prompt.append,
+        },
+      ]);
       await lockAndValidateAgentTemplateSelection(
         tx as unknown as Database,
         options.templatePublisherOrganizationId,
         templateIds,
+        new Set(),
+        promptUsage.get(uuid) ?? { teamPromptLength: 0, agentPromptLength: 0 },
       );
 
       const [row] = await tx
@@ -624,7 +634,6 @@ export async function createAgent(
 
       if (!row) throw new Error("Unexpected: INSERT RETURNING produced no row");
 
-      const initialPayload = defaultRuntimeConfigPayload(runtimeProvider);
       await tx
         .insert(agentConfigs)
         .values({

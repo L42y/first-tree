@@ -47,6 +47,7 @@ import {
   assertResourceNotReferencedByAgentTemplate,
   bumpAgentConfigsForTemplateImpacts,
   listAgentTemplateImpactsForResource,
+  loadAgentPromptBudgetUsage,
   loadAgentTemplateRuntimeSelection,
   lockAgentTemplateCatalog,
   lockAndValidateAgentTemplateSelection,
@@ -59,6 +60,7 @@ import {
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
 } from "./landing-campaigns/trial-prompt.js";
 import type { Notifier } from "./notifier.js";
+import { renderPromptRow } from "./prompt-rendering.js";
 import { validateSkillBundle } from "./skill-bundle.js";
 
 type ResourceDbRow = typeof resources.$inferSelect;
@@ -742,21 +744,16 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
   }
 
   function applyPromptBudget(rows: EffectiveResourceRow[], unavailable: EffectiveAgentResources["unavailable"]): void {
-    // Budget allocation is deliberately different from render order. Agent
-    // instructions are the final, most-specific authority and must not vanish
-    // because an earlier Team or live Template row consumes the budget.
-    // Template selection/update validation guarantees that the explicit
-    // Agent+Template stack fits; recommended Team rows use the remaining
-    // capacity. runtimePromptAppend/runtimePromptSections still render the
-    // surviving rows in Team → Template → Agent precedence order.
-    const allocationOrder = [...rows].sort(
-      (a, b) => promptBudgetRank(a.source) - promptBudgetRank(b.source) || comparePromptRows(a, b),
-    );
     let combinedLength = 0;
-    for (const row of allocationOrder) {
+    for (const row of rows.sort(comparePromptRows)) {
       if (row.mode !== "enabled") continue;
       const body = row.promptBody ?? "";
-      const rendered = renderPromptRow(row.name, row.source, body);
+      const rendered = renderPromptRow({
+        name: row.name,
+        source: row.source,
+        body,
+        replacesResourceId: row.replacesResourceId,
+      });
       if (combinedLength + rendered.length > PROMPT_APPEND_MAX_LENGTH) {
         row.mode = "unavailable";
         row.unavailableReason = "prompt_budget_exceeded";
@@ -862,23 +859,18 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     }
   }
 
-  function renderPromptRow(name: string, source: EffectiveResourceRow["source"], body: string): string {
-    const title =
-      source === "inline_prompt"
-        ? "Agent Prompt (this agent only)"
-        : source === "agent_extra"
-          ? `Agent Prompt Override: ${name}`
-          : source === "agent_template"
-            ? `Agent Template: ${name}`
-            : `Team Prompt: ${name}`;
-    return `\n\n## ${title}\n\n${body.trim()}\n`;
-  }
-
   function runtimePromptAppend(rows: EffectiveResourceRow[]): string {
     return rows
       .filter((row) => row.mode === "enabled" && row.promptBody)
       .sort(comparePromptRows)
-      .map((row) => renderPromptRow(row.name, row.source, row.promptBody ?? ""))
+      .map((row) =>
+        renderPromptRow({
+          name: row.name,
+          source: row.source,
+          body: row.promptBody ?? "",
+          replacesResourceId: row.replacesResourceId,
+        }),
+      )
       .join("")
       .trim();
   }
@@ -889,12 +881,6 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
 
   function promptSourceRank(source: EffectiveResourceRow["source"]): number {
     if (source === "team_recommended" || source === "team_available") return 0;
-    if (source === "agent_template") return 1;
-    return 2;
-  }
-
-  function promptBudgetRank(source: EffectiveResourceRow["source"]): number {
-    if (source === "inline_prompt" || source === "agent_extra") return 0;
     if (source === "agent_template") return 1;
     return 2;
   }
@@ -1548,20 +1534,23 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             `Agent resources "${agentId}" version mismatch: expected ${input.expectedVersion}, got ${snapshot.version}`,
           );
         }
-        let inlinePromptLength = 0;
-        for (const binding of input.bindings) {
-          if (binding.type !== "prompt" || !binding.inlinePromptBody?.trim()) continue;
-          inlinePromptLength += renderPromptRow("", "inline_prompt", binding.inlinePromptBody).length;
-        }
-        const storedPromptLength = snapshot.payload.prompt.append.trim()
-          ? renderPromptRow("", "inline_prompt", snapshot.payload.prompt.append).length
-          : 0;
+        const promptUsage = await loadAgentPromptBudgetUsage(
+          targetDb,
+          [
+            {
+              agentId,
+              organizationId: agent.organizationId,
+              configPromptBody: snapshot.payload.prompt.append,
+            },
+          ],
+          new Map([[agentId, input.bindings]]),
+        );
         await lockAndValidateAgentTemplateSelection(
           targetDb,
           templatePublisherOrganizationId,
           snapshot.templateIds,
           new Set(snapshot.templateIds),
-          inlinePromptLength + storedPromptLength,
+          promptUsage.get(agentId) ?? { teamPromptLength: 0, agentPromptLength: 0 },
         );
         const [updatedConfig] = await targetDb
           .update(agentConfigs)

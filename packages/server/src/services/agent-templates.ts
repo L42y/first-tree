@@ -1,4 +1,5 @@
 import {
+  type AgentResourceBindingInput,
   type AgentTemplateCatalogItem,
   type AgentTemplateCatalogOutput,
   type AgentTemplateDefinition,
@@ -6,11 +7,12 @@ import {
   type CreateAgentTemplate,
   noSecretMcpServerSchema,
   PROMPT_APPEND_MAX_LENGTH,
+  promptResourcePayloadSchema,
   skillResourcePayloadSchema,
   type UpdateAgentTemplate,
   type UpdateAgentTemplates,
 } from "@first-tree/shared";
-import { and, arrayContains, arrayOverlaps, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, arrayContains, arrayOverlaps, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
@@ -20,6 +22,7 @@ import { attachments } from "../db/schema/attachments.js";
 import { resources } from "../db/schema/resources.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError } from "../errors.js";
 import type { Notifier } from "./notifier.js";
+import { renderPromptRow } from "./prompt-rendering.js";
 
 type AgentTemplateDbRow = typeof agentTemplates.$inferSelect;
 type ResourceDbRow = typeof resources.$inferSelect;
@@ -28,7 +31,19 @@ export type AgentTemplateImpact = {
   agentId: string;
   organizationId: string;
   templateIds: string[];
+  teamPromptLength: number;
   agentPromptLength: number;
+};
+
+export type AgentPromptBudgetUsage = {
+  teamPromptLength: number;
+  agentPromptLength: number;
+};
+
+export type AgentPromptBudgetState = {
+  agentId: string;
+  organizationId: string;
+  configPromptBody: string;
 };
 
 export type AgentTemplateRuntimeSelection = {
@@ -91,66 +106,167 @@ function chunks<T>(values: readonly T[], size: number): T[][] {
   return result;
 }
 
-function renderTemplatePromptLength(template: Pick<AgentTemplateDbRow, "title" | "customInstructions">): number {
-  return `\n\n## Agent Template: ${template.title}\n\n${template.customInstructions.trim()}\n`.length;
-}
-
-function renderAgentPromptLength(body: string): number {
-  if (!body.trim()) return 0;
-  return `\n\n## Agent Prompt (this agent only)\n\n${body.trim()}\n`.length;
-}
-
-async function loadInlineAgentPromptLengths(
+export async function loadAgentPromptBudgetUsage(
   targetDb: Database,
-  agentIds: readonly string[],
-): Promise<Map<string, number>> {
-  const lengths = new Map<string, number>();
-  for (const agentIdChunk of chunks(agentIds, AGENT_TEMPLATE_UPDATE_BATCH_SIZE)) {
-    const rows = await targetDb
-      .select({
-        agentId: agentResourceBindings.agentId,
-        body: agentResourceBindings.inlinePromptBody,
-      })
-      .from(agentResourceBindings)
+  states: readonly AgentPromptBudgetState[],
+  bindingOverrides: ReadonlyMap<string, readonly AgentResourceBindingInput[]> = new Map(),
+): Promise<Map<string, AgentPromptBudgetUsage>> {
+  const usageByAgent = new Map<string, AgentPromptBudgetUsage>();
+  for (const stateChunk of chunks(states, AGENT_TEMPLATE_UPDATE_BATCH_SIZE)) {
+    const agentIds = stateChunk.map((state) => state.agentId);
+    const organizationIds = Array.from(new Set(stateChunk.map((state) => state.organizationId)));
+    const resourceRows = await targetDb
+      .select()
+      .from(resources)
       .where(
         and(
-          inArray(agentResourceBindings.agentId, agentIdChunk),
-          eq(agentResourceBindings.type, "prompt"),
-          isNotNull(agentResourceBindings.inlinePromptBody),
+          eq(resources.type, "prompt"),
+          inArray(resources.status, ["active", "stale"]),
+          or(
+            and(eq(resources.scope, "team"), inArray(resources.organizationId, organizationIds)),
+            and(eq(resources.scope, "agent"), inArray(resources.ownerAgentId, agentIds)),
+          ),
         ),
       );
-    for (const row of rows) {
-      if (!row.body) continue;
-      lengths.set(row.agentId, (lengths.get(row.agentId) ?? 0) + renderAgentPromptLength(row.body));
+    const storedBindings = await targetDb
+      .select({
+        agentId: agentResourceBindings.agentId,
+        mode: agentResourceBindings.mode,
+        resourceId: agentResourceBindings.resourceId,
+        replacesResourceId: agentResourceBindings.replacesResourceId,
+        inlinePromptBody: agentResourceBindings.inlinePromptBody,
+        order: agentResourceBindings.order,
+      })
+      .from(agentResourceBindings)
+      .where(and(inArray(agentResourceBindings.agentId, agentIds), eq(agentResourceBindings.type, "prompt")));
+    const bindingsByAgent = new Map<string, AgentResourceBindingInput[]>();
+    for (const binding of storedBindings) {
+      const rows = bindingsByAgent.get(binding.agentId) ?? [];
+      rows.push({ type: "prompt", ...binding });
+      bindingsByAgent.set(binding.agentId, rows);
+    }
+    const resourceById = new Map(resourceRows.map((row) => [row.id, row]));
+    for (const state of stateChunk) {
+      const bindings = bindingOverrides.get(state.agentId) ?? bindingsByAgent.get(state.agentId) ?? [];
+      const disabled = new Set<string>();
+      const replaced = new Set<string>();
+      const explicitlyBound = new Set<string>();
+      for (const binding of bindings) {
+        if (binding.mode === "disable" && binding.resourceId) disabled.add(binding.resourceId);
+        if (binding.mode === "replace" && binding.replacesResourceId) replaced.add(binding.replacesResourceId);
+        if (binding.mode !== "disable" && binding.resourceId) explicitlyBound.add(binding.resourceId);
+      }
+
+      const teamRows: Array<{ order: number; renderedLength: number }> = [];
+      const agentRows: Array<{ order: number; renderedLength: number }> = [];
+      for (const resource of resourceRows) {
+        if (
+          resource.organizationId !== state.organizationId ||
+          resource.scope !== "team" ||
+          resource.defaultEnabled !== "recommended" ||
+          disabled.has(resource.id) ||
+          replaced.has(resource.id) ||
+          explicitlyBound.has(resource.id)
+        ) {
+          continue;
+        }
+        const parsed = promptResourcePayloadSchema.safeParse(resource.payload);
+        if (!parsed.success) continue;
+        teamRows.push({
+          order: 0,
+          renderedLength: renderPromptRow({
+            name: resource.name,
+            source: "team_recommended",
+            body: parsed.data.body,
+          }).length,
+        });
+      }
+      for (const [index, binding] of bindings.entries()) {
+        if (binding.type !== "prompt" || binding.mode === "disable") continue;
+        const resource = binding.resourceId ? resourceById.get(binding.resourceId) : undefined;
+        const replacedResource = binding.replacesResourceId ? resourceById.get(binding.replacesResourceId) : undefined;
+        const inlineBody = binding.inlinePromptBody?.trim() ? binding.inlinePromptBody : undefined;
+        const parsed = resource ? promptResourcePayloadSchema.safeParse(resource.payload) : undefined;
+        const body = inlineBody ?? (parsed?.success ? parsed.data.body : undefined);
+        if (!body) continue;
+        const source = inlineBody
+          ? ("inline_prompt" as const)
+          : resource?.scope === "agent"
+            ? ("agent_extra" as const)
+            : resource?.defaultEnabled === "recommended"
+              ? ("team_recommended" as const)
+              : ("team_available" as const);
+        const renderedLength = renderPromptRow({
+          name: resource?.name ?? replacedResource?.name ?? "Inline prompt",
+          source,
+          body,
+          replacesResourceId: binding.replacesResourceId,
+        }).length;
+        const row = { order: binding.order ?? index + 1, renderedLength };
+        if (source === "team_recommended" || source === "team_available") teamRows.push(row);
+        else agentRows.push(row);
+      }
+
+      let teamPromptLength = 0;
+      for (const row of teamRows.sort((a, b) => a.order - b.order)) {
+        if (teamPromptLength + row.renderedLength > PROMPT_APPEND_MAX_LENGTH) continue;
+        teamPromptLength += row.renderedLength;
+      }
+      let agentPromptLength = agentRows
+        .sort((a, b) => a.order - b.order)
+        .reduce((total, row) => total + row.renderedLength, 0);
+      if (state.configPromptBody.trim()) {
+        agentPromptLength += renderPromptRow({
+          name: "",
+          source: "inline_prompt",
+          body: state.configPromptBody,
+        }).length;
+      }
+      usageByAgent.set(state.agentId, { teamPromptLength, agentPromptLength });
     }
   }
-  return lengths;
+  return usageByAgent;
 }
 
 function assertTemplatePromptBudget(
   templates: readonly Pick<AgentTemplateDbRow, "id" | "title" | "customInstructions">[],
-  reservedPromptLength = 0,
+  usage: AgentPromptBudgetUsage = { teamPromptLength: 0, agentPromptLength: 0 },
 ): void {
-  let total = reservedPromptLength;
+  let total = usage.teamPromptLength;
   for (const template of templates) {
-    total += renderTemplatePromptLength(template);
+    total += renderPromptRow({
+      name: template.title,
+      source: "agent_template",
+      body: template.customInstructions,
+    }).length;
     if (total > PROMPT_APPEND_MAX_LENGTH) {
       throw new BadRequestError(
         `Agent Template selection exceeds the ${PROMPT_APPEND_MAX_LENGTH}-character instruction budget at "${template.id}"`,
       );
     }
   }
+  if (total + usage.agentPromptLength > PROMPT_APPEND_MAX_LENGTH) {
+    throw new BadRequestError(
+      `Agent Template selection exceeds the ${PROMPT_APPEND_MAX_LENGTH}-character instruction budget at the Agent prompt`,
+    );
+  }
 }
 
 async function assertTemplatePromptBudgetForSelections(
   targetDb: Database,
   publisherOrganizationId: string,
-  selections: readonly Pick<AgentTemplateImpact, "templateIds" | "agentPromptLength">[],
+  selections: readonly Pick<AgentTemplateImpact, "templateIds" | "teamPromptLength" | "agentPromptLength">[],
   candidate: Pick<AgentTemplateDbRow, "id" | "title" | "customInstructions">,
 ): Promise<void> {
-  const selectionKeys = new Map<string, Pick<AgentTemplateImpact, "templateIds" | "agentPromptLength">>();
+  const selectionKeys = new Map<
+    string,
+    Pick<AgentTemplateImpact, "templateIds" | "teamPromptLength" | "agentPromptLength">
+  >();
   for (const selection of selections) {
-    selectionKeys.set(`${selection.agentPromptLength}:${selection.templateIds.join("\u0000")}`, selection);
+    selectionKeys.set(
+      `${selection.teamPromptLength}:${selection.agentPromptLength}:${selection.templateIds.join("\u0000")}`,
+      selection,
+    );
   }
   const distinctSelections = Array.from(selectionKeys.values());
   const templateIds = Array.from(new Set(distinctSelections.flatMap((selection) => selection.templateIds)));
@@ -171,7 +287,7 @@ async function assertTemplatePromptBudgetForSelections(
         const row = byId.get(templateId);
         return row ? [row] : [];
       }),
-      selection.agentPromptLength,
+      selection,
     );
   }
 }
@@ -397,7 +513,7 @@ export async function lockAndValidateAgentTemplateSelection(
   publisherOrganizationId: string | undefined,
   templateIds: readonly string[],
   allowedRetiredTemplateIds: ReadonlySet<string> = new Set(),
-  reservedPromptLength = 0,
+  promptUsage: AgentPromptBudgetUsage = { teamPromptLength: 0, agentPromptLength: 0 },
 ): Promise<AgentTemplateDbRow[]> {
   if (templateIds.length === 0) return [];
   const publisherId = requirePublisherOrganizationId(publisherOrganizationId);
@@ -423,7 +539,7 @@ export async function lockAndValidateAgentTemplateSelection(
     if (!row) throw new BadRequestError(`Agent Template "${templateId}" is not available`);
     return row;
   });
-  assertTemplatePromptBudget(selectedRows, reservedPromptLength);
+  assertTemplatePromptBudget(selectedRows, promptUsage);
   return selectedRows;
 }
 
@@ -467,13 +583,17 @@ export async function listAgentTemplateImpactsForTemplate(
     .from(agentConfigs)
     .innerJoin(agents, eq(agents.uuid, agentConfigs.agentId))
     .where(arrayContains(agentConfigs.templateIds, [templateId]));
-  const inlinePromptLengths = await loadInlineAgentPromptLengths(
+  const promptUsage = await loadAgentPromptBudgetUsage(
     targetDb,
-    rows.map((row) => row.agentId),
+    rows.map((row) => ({
+      agentId: row.agentId,
+      organizationId: row.organizationId,
+      configPromptBody: row.payload.prompt.append,
+    })),
   );
-  return rows.map(({ payload, ...row }) => ({
+  return rows.map(({ payload: _payload, ...row }) => ({
     ...row,
-    agentPromptLength: renderAgentPromptLength(payload.prompt.append) + (inlinePromptLengths.get(row.agentId) ?? 0),
+    ...(promptUsage.get(row.agentId) ?? { teamPromptLength: 0, agentPromptLength: 0 }),
   }));
 }
 
@@ -504,13 +624,17 @@ export async function listAgentTemplateImpactsForResource(
     .from(agentConfigs)
     .innerJoin(agents, eq(agents.uuid, agentConfigs.agentId))
     .where(arrayOverlaps(agentConfigs.templateIds, templateIds));
-  const inlinePromptLengths = await loadInlineAgentPromptLengths(
+  const promptUsage = await loadAgentPromptBudgetUsage(
     targetDb,
-    rows.map((row) => row.agentId),
+    rows.map((row) => ({
+      agentId: row.agentId,
+      organizationId: row.organizationId,
+      configPromptBody: row.payload.prompt.append,
+    })),
   );
-  return rows.map(({ payload, ...row }) => ({
+  return rows.map(({ payload: _payload, ...row }) => ({
     ...row,
-    agentPromptLength: renderAgentPromptLength(payload.prompt.append) + (inlinePromptLengths.get(row.agentId) ?? 0),
+    ...(promptUsage.get(row.agentId) ?? { teamPromptLength: 0, agentPromptLength: 0 }),
   }));
 }
 
@@ -774,7 +898,7 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
         const [agent] = await targetDb
-          .select({ type: agents.type, status: agents.status })
+          .select({ type: agents.type, status: agents.status, organizationId: agents.organizationId })
           .from(agents)
           .where(eq(agents.uuid, agentId))
           .limit(1);
@@ -799,13 +923,19 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
             `Agent Templates "${agentId}" version mismatch: expected ${input.expectedVersion}, got ${snapshot.version}`,
           );
         }
-        const inlinePromptLengths = await loadInlineAgentPromptLengths(targetDb, [agentId]);
+        const promptUsage = await loadAgentPromptBudgetUsage(targetDb, [
+          {
+            agentId,
+            organizationId: agent.organizationId,
+            configPromptBody: snapshot.payload.prompt.append,
+          },
+        ]);
         const selectedTemplates = await lockAndValidateAgentTemplateSelection(
           targetDb,
           publisherOrganizationId,
           input.templateIds,
           new Set(snapshot.templateIds),
-          renderAgentPromptLength(snapshot.payload.prompt.append) + (inlinePromptLengths.get(agentId) ?? 0),
+          promptUsage.get(agentId) ?? { teamPromptLength: 0, agentPromptLength: 0 },
         );
 
         const [current] = await targetDb

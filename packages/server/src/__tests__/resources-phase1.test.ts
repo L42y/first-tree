@@ -181,6 +181,7 @@ describe("Resources Phase 1", () => {
 
     const baseConfig = await app.configService.get(agent.uuid);
     const resolved = await app.resourcesService.resolveRuntimeConfig(baseConfig);
+    expect(resolved.payload.prompt.append).toContain("## Agent Prompt Override: Team prompt");
     expect(resolved.payload.prompt.append).toContain("Use the agent-local replacement.");
     expect(resolved.payload.prompt.append).not.toContain("Use the team baseline.");
   });
@@ -256,6 +257,7 @@ describe("Resources Phase 1", () => {
     // fragment).
     expect(resolved.payload.prompt.append).toContain("## Team Prompt: Review rules");
     expect(resolved.payload.prompt.append).toContain("## Agent Prompt (this agent only)");
+    expect(resolved.payload.prompt.append).toContain("## Agent Prompt Override: Tone guide");
     expect(resolved.payload.prompt.append).toContain("Always review twice.");
     expect(resolved.payload.prompt.append).toContain("Prefer terse replies.");
     // The replacement body is effective; the replaced team body is not.

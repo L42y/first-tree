@@ -1,18 +1,21 @@
 import {
   AGENT_TEMPLATE_MAX_INSTRUCTIONS_LENGTH,
   DEFAULT_AGENT_RUNTIME_CONFIG_PAYLOAD,
+  PROMPT_APPEND_MAX_LENGTH,
   type SkillResourcePayload,
 } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
+import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { createAgent } from "../services/agent.js";
 import { createAttachment } from "../services/attachment.js";
 import { createOrganization } from "../services/organization.js";
+import { renderPromptRow } from "../services/prompt-rendering.js";
 import { buildLegacySkillBundle } from "../services/skill-bundle.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -358,6 +361,139 @@ describe("Agent Templates", () => {
         consumer.memberId,
       ),
     ).rejects.toThrow(/instruction budget/i);
+    const [unchangedBoundaryConfig] = await app.db
+      .select({ version: agentConfigs.version })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, boundaryAgent.json<{ uuid: string }>().uuid));
+    expect(unchangedBoundaryConfig?.version).toBe(1);
+    expect(
+      await app.db
+        .select({ id: agentResourceBindings.id })
+        .from(agentResourceBindings)
+        .where(eq(agentResourceBindings.agentId, boundaryAgent.json<{ uuid: string }>().uuid)),
+    ).toEqual([]);
+
+    const replacementName = "R".repeat(200);
+    const replaceablePrompt = await app.resourcesService.createTeamResource(
+      consumer.organizationId,
+      {
+        type: "prompt",
+        name: replacementName,
+        defaultEnabled: "available",
+        payload: { body: "Team baseline." },
+      },
+      consumer.memberId,
+    );
+    const replacementBody = "Agent replacement.";
+    const boundaryTemplateLength = renderPromptRow({
+      name: "Boundary",
+      source: "agent_template",
+      body: "x".repeat(AGENT_TEMPLATE_MAX_INSTRUCTIONS_LENGTH),
+    }).length;
+    expect(
+      boundaryTemplateLength + renderPromptRow({ name: "", source: "inline_prompt", body: replacementBody }).length,
+    ).toBeLessThanOrEqual(PROMPT_APPEND_MAX_LENGTH);
+    expect(
+      boundaryTemplateLength +
+        renderPromptRow({
+          name: replacementName,
+          source: "inline_prompt",
+          body: replacementBody,
+          replacesResourceId: replaceablePrompt.id,
+        }).length,
+    ).toBeGreaterThan(PROMPT_APPEND_MAX_LENGTH);
+    await expect(
+      app.resourcesService.replaceAgentResources(
+        boundaryAgent.json<{ uuid: string }>().uuid,
+        {
+          expectedVersion: 1,
+          bindings: [
+            {
+              type: "prompt",
+              mode: "replace",
+              resourceId: null,
+              replacesResourceId: replaceablePrompt.id,
+              inlinePromptBody: replacementBody,
+            },
+          ],
+        },
+        consumer.memberId,
+      ),
+    ).rejects.toThrow(/instruction budget/i);
+    expect(
+      await app.db
+        .select({ id: agentResourceBindings.id })
+        .from(agentResourceBindings)
+        .where(eq(agentResourceBindings.agentId, boundaryAgent.json<{ uuid: string }>().uuid)),
+    ).toEqual([]);
+
+    const priorityId = `team-priority-${crypto.randomUUID().slice(0, 8)}`;
+    await app.agentTemplatesService.createTemplate(
+      publisher.organizationId,
+      {
+        id: priorityId,
+        title: "Team priority",
+        summary: "Confirms Team prompt budget precedence.",
+        outcomes: [],
+        customInstructions: "T".repeat(128),
+        resourceIds: [],
+        sortOrder: 2,
+      },
+      publisher.memberId,
+    );
+    const priorityConsumer = await createConsumerAdmin(app, publisher);
+    const priorityAgent = await inject(
+      app,
+      priorityConsumer.accessToken,
+      "POST",
+      `/api/v1/orgs/${priorityConsumer.organizationId}/agents/from-agent-templates`,
+      {
+        name: `team-priority-agent-${crypto.randomUUID().slice(0, 8)}`,
+        type: "agent",
+        clientId: priorityConsumer.clientId,
+        templateIds: [priorityId],
+      },
+    );
+    expect(priorityAgent.statusCode).toBe(201);
+    const teamPromptName = "Priority Team prompt";
+    const teamPromptHeaderLength = renderPromptRow({
+      name: teamPromptName,
+      source: "team_recommended",
+      body: "",
+    }).length;
+    const priorityTeamPrompt = await app.resourcesService.createTeamResource(
+      priorityConsumer.organizationId,
+      {
+        type: "prompt",
+        name: teamPromptName,
+        defaultEnabled: "recommended",
+        payload: { body: "P".repeat(PROMPT_APPEND_MAX_LENGTH - teamPromptHeaderLength - 64) },
+      },
+      priorityConsumer.memberId,
+    );
+    const priorityEffective = await app.resourcesService.resolveEffectiveResources(
+      priorityAgent.json<{ uuid: string }>().uuid,
+    );
+    expect(priorityEffective.prompts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resourceId: priorityTeamPrompt.id, mode: "enabled" }),
+        expect.objectContaining({ id: `template:${priorityId}:prompt`, mode: "unavailable" }),
+      ]),
+    );
+    const rejectedAfterTeamPrompt = await inject(
+      app,
+      priorityConsumer.accessToken,
+      "POST",
+      `/api/v1/orgs/${priorityConsumer.organizationId}/agents/from-agent-templates`,
+      {
+        name: `team-priority-rejected-${crypto.randomUUID().slice(0, 8)}`,
+        type: "agent",
+        clientId: priorityConsumer.clientId,
+        templateIds: [priorityId],
+      },
+    );
+    expect(rejectedAfterTeamPrompt.statusCode).toBe(400);
+    expect(rejectedAfterTeamPrompt.json<{ error: string }>().error).toMatch(/instruction budget/i);
 
     const firstId = `budget-first-${crypto.randomUUID().slice(0, 8)}`;
     const secondId = `budget-second-${crypto.randomUUID().slice(0, 8)}`;
