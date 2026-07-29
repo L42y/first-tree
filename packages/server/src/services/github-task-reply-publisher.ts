@@ -106,8 +106,16 @@ export async function submitGithubTaskReply(input: {
       runtimeSessionToken: input.callerRuntimeSessionToken,
     });
     if (run.submission.state === "submitting") {
-      if (run.submission.payloadHash !== hashPayload(run, request.body)) throw payloadMismatch();
-      throw alreadySubmitted();
+      const payloadHash = hashPayload(run, request.body);
+      if (run.submission.payloadHash !== payloadHash) throw payloadMismatch();
+      return {
+        kind: "reconcile" as const,
+        run,
+        body: request.body,
+        payloadHash,
+        publisherClientId: run.submission.publisherClientId,
+        current,
+      };
     }
     if (run.submission.state === "unknown") {
       const payloadHash = hashPayload(run, request.body);
@@ -176,7 +184,11 @@ export async function submitGithubTaskReply(input: {
     if (run.submission.state === "failed") throw alreadySubmitted();
     if (run.submission.state === "submitting") {
       if (run.submission.payloadHash !== payloadHash) throw payloadMismatch();
-      throw alreadySubmitted();
+      return {
+        kind: "reconcile" as const,
+        run,
+        publisherClientId: run.submission.publisherClientId,
+      };
     }
     if (run.submission.state === "unknown") {
       if (run.submission.payloadHash !== payloadHash) throw payloadMismatch();

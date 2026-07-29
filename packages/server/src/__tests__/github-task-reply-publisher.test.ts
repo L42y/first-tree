@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   AGENT_RUNTIME_SESSION_HEADER,
   AGENT_SELECTOR_HEADER,
@@ -117,7 +117,7 @@ describe("GitHub App task reply publisher", () => {
     const winner = submitGithubTaskReply(input);
     await postStarted;
     await expect(submitGithubTaskReply(input)).rejects.toMatchObject({
-      code: "GITHUB_TASK_REPLY_RUN_ALREADY_SUBMITTED",
+      code: "GITHUB_TASK_REPLY_GITHUB_UNKNOWN",
     });
     expect(githubCommentPosts(fetcher)).toHaveLength(1);
 
@@ -125,6 +125,49 @@ describe("GitHub App task reply publisher", () => {
     const result = await winner;
     await expect(submitGithubTaskReply(input)).resolves.toEqual(result);
     expect(githubCommentPosts(fetcher)).toHaveLength(1);
+  });
+
+  it("reconciles a persisted App comment when Cloud state remains submitting after its record write failed", async () => {
+    const fixture = await createRunFixture(getApp());
+    const body = "Deferred outcome";
+    const payloadHash = createHash("sha256")
+      .update(JSON.stringify(["owner/repo", "issue", 42, body]))
+      .digest("hex");
+    const [row] = await fixture.app.db
+      .select({ metadata: messages.metadata })
+      .from(messages)
+      .where(eq(messages.id, fixture.messageId));
+    await fixture.app.db
+      .update(messages)
+      .set({
+        metadata: {
+          ...row?.metadata,
+          githubTaskReplySubmission: {
+            state: "submitting",
+            payloadHash,
+            attemptId: randomUUID(),
+            claimedAt: new Date().toISOString(),
+            publisherClientId: fixture.admin.clientId,
+          },
+        },
+      })
+      .where(eq(messages.id, fixture.messageId));
+    const fetcher = unknownThenReconciledGithubFetcher(fixture.runId);
+
+    await expect(submitGithubTaskReply(publishInput(fixture, fetcher, body))).resolves.toMatchObject({
+      commentId: 902,
+      appActor: "test-app-slug[bot]",
+    });
+    expect(githubCommentPosts(fetcher)).toHaveLength(0);
+    const [reconciled] = await fixture.app.db
+      .select({ metadata: messages.metadata })
+      .from(messages)
+      .where(eq(messages.id, fixture.messageId));
+    expect(reconciled?.metadata.githubTaskReplySubmission).toMatchObject({
+      state: "submitted",
+      payloadHash,
+      commentId: 902,
+    });
   });
 
   it("rejects a concurrently changed payload without a second comment POST", async () => {

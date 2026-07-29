@@ -67,8 +67,9 @@ together without a GitHub-specific post-delivery branch.
   comment on the fixed originating Issue or PR; its hidden run marker is present, the visible body does not mention the
   App, and no delegated loop occurs. A First Tree chat-only result or a terminal host-identity comment is incomplete.
   Retry the identical payload and confirm the same comment is returned without another GitHub write; race two identical
-  submissions and confirm only one POST occurs, the in-flight loser receives a stable conflict, and a later retry reads
-  the winner's result. Change the payload and confirm rejection. Simulate an unknown GitHub write, then confirm retry
+  submissions and confirm only one POST occurs, the in-flight loser may receive a stable unknown result from read-only
+  reconciliation, and a later retry reads the winner's result. Change the payload and confirm rejection. Simulate an
+  unknown GitHub write, then confirm retry
   reconciles the App actor, hidden run marker, and exact body before returning rather than blindly creating another
   comment. Zero matches, duplicate exact matches, and list failure must all remain unknown with no second POST.
 - Attempt publication from a different Agent, client, runtime session, chat, repository-scoped role assignment, inactive
