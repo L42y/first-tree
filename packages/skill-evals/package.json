@@ -10,7 +10,6 @@
     "eval:periodic": "tsx src/index.ts periodic",
     "eval:quality": "tsx src/index.ts quality",
     "eval:select": "tsx src/index.ts select",
-    "eval:standalone:synthesize-meeting-records": "tsx src/standalone/synthesize-meeting-records/index.ts",
     "eval:summary": "tsx src/index.ts summary",
     "eval:compare": "tsx src/index.ts compare",
     "test": "vitest run --passWithNoTests --exclude '.runs/**'",

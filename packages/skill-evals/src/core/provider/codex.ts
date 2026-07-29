@@ -1,16 +1,10 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import { appendEvent, isRecord, parseEvents, previewText } from "../events.js";
+import { appendEvent, previewText } from "../events.js";
 import { isShimTraceLine } from "../reporter.js";
-import {
-  closeOpenedRegularFile,
-  type OpenedRegularFile,
-  openNoFollowRegularFile,
-  readOpenedRegularText,
-} from "../safe-file.js";
 import type { ProviderRunContext, ProviderRunOptions } from "./types.js";
 
 const ALLOWED_ENV_KEYS = new Set([
@@ -57,80 +51,6 @@ const SHELL_ENV_KEYS = [
 ] as const;
 
 const SYSTEM_PATH_DIRS = ["/usr/local/bin", "/usr/bin", "/bin"] as const;
-
-const LINUX_PROCESS_TREE_SUPERVISOR = String.raw`
-import ctypes
-import os
-import signal
-import subprocess
-import sys
-import time
-
-PR_SET_CHILD_SUBREAPER = 36
-libc = ctypes.CDLL(None, use_errno=True)
-if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
-    code = ctypes.get_errno()
-    sys.stderr.write(f"process containment unavailable: prctl failed with errno {code}\n")
-    sys.exit(125)
-
-def direct_children():
-    children = []
-    for name in os.listdir("/proc"):
-        if not name.isdigit():
-            continue
-        pid = int(name)
-        if pid == os.getpid():
-            continue
-        try:
-            stat = open(f"/proc/{pid}/stat", "r", encoding="utf-8").read()
-            end = stat.rfind(")")
-            fields = stat[end + 2:].split()
-            if len(fields) > 1 and int(fields[1]) == os.getpid():
-                children.append(pid)
-        except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError):
-            continue
-    return children
-
-def signal_children(sig):
-    for pid in direct_children():
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
-            pass
-
-def reap_children():
-    while True:
-        try:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
-            if pid == 0:
-                return
-        except ChildProcessError:
-            return
-
-def terminate_descendants():
-    term_deadline = time.monotonic() + 0.25
-    while True:
-        reap_children()
-        try:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
-            if pid > 0:
-                continue
-        except ChildProcessError:
-            return
-        signal_children(signal.SIGTERM if time.monotonic() < term_deadline else signal.SIGKILL)
-        time.sleep(0.01)
-
-target = subprocess.Popen(sys.argv[1:], start_new_session=True)
-try:
-    target_code = target.wait()
-finally:
-    terminate_descendants()
-
-normalized_code = target_code if target_code >= 0 else 128 + abs(target_code)
-os.write(3, f"{normalized_code}\n".encode("ascii"))
-os.close(3)
-sys.exit(0)
-`;
 
 function configArg(key: string, value: string): string {
   return `${key}=${JSON.stringify(value)}`;
@@ -292,34 +212,7 @@ async function consumeStderr(
   }
 }
 
-async function readContainmentReceipt(stream: NodeJS.ReadableStream | null): Promise<string> {
-  if (stream === null) return "";
-  const chunks: Buffer[] = [];
-  let length = 0;
-  let oversized = false;
-  for await (const chunk of stream) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    length += buffer.length;
-    if (length > 64) {
-      oversized = true;
-    } else if (!oversized) {
-      chunks.push(buffer);
-    }
-  }
-  return oversized ? "" : Buffer.concat(chunks).toString("utf8");
-}
-
-function isReadableStream(
-  stream: NodeJS.ReadableStream | NodeJS.WritableStream | null,
-): stream is NodeJS.ReadableStream {
-  return stream !== null && typeof (stream as NodeJS.ReadableStream).read === "function";
-}
-
-async function waitForChildExit(
-  child: ReturnType<typeof spawn>,
-  context: ProviderRunContext,
-  contained: boolean,
-): Promise<number> {
+async function waitForChildExit(child: ReturnType<typeof spawn>, context: ProviderRunContext): Promise<number> {
   return await new Promise((resolve) => {
     let settled = false;
     child.once("error", (error) => {
@@ -338,104 +231,54 @@ async function waitForChildExit(
       appendEvent(context.paths.eventsPath, {
         exitCode: code ?? 1,
         signal,
-        type: contained ? "codex_process_supervisor_closed" : "codex_process_closed",
+        type: "codex_process_closed",
       });
-      if (!contained) context.reporter.codexProcessFinished(code ?? 1);
+      context.reporter.codexProcessFinished(code ?? 1);
       resolve(code ?? 1);
     });
   });
 }
 
-function appendModelEvents(context: ProviderRunContext, receipt: OpenedRegularFile): void {
-  let modelEvents: readonly unknown[];
-  try {
-    modelEvents = parseEvents(readOpenedRegularText(receipt));
-  } catch (error) {
-    if (isRecord(error) && error.code === "ENOENT") return;
-    appendEvent(context.paths.eventsPath, {
-      error: error instanceof Error ? error.message : String(error),
-      type: "model_events_rejected",
-    });
-    return;
-  }
-  for (const modelEvent of modelEvents) {
-    appendEvent(
-      context.paths.eventsPath,
-      isRecord(modelEvent)
-        ? { ...modelEvent, eventProvenance: "model-writable" }
-        : { event: modelEvent, eventProvenance: "model-writable", type: "model_event" },
-    );
-  }
+function appendModelEvents(context: ProviderRunContext): void {
+  if (!existsSync(context.paths.modelEventsPath)) return;
+  const modelEvents = readFileSync(context.paths.modelEventsPath, "utf8");
+  if (!modelEvents.trim()) return;
+  appendFileSync(context.paths.eventsPath, modelEvents.endsWith("\n") ? modelEvents : `${modelEvents}\n`, "utf8");
 }
 
 export async function runCodexProvider(options: ProviderRunOptions, context: ProviderRunContext): Promise<number> {
   const command = codexProviderCommand(options);
   const env = codexProviderEnv(options, context);
   const args = codexProviderArgs(options, context.paths.workspacePath, env);
-  if (options.containProcessTree === true && process.platform !== "linux") {
-    throw new Error("Codex process-tree containment is supported only on Linux.");
-  }
-  const spawnCommand = options.containProcessTree === true ? "python3" : command;
-  const spawnArgs =
-    options.containProcessTree === true ? ["-I", "-c", LINUX_PROCESS_TREE_SUPERVISOR, command, ...args] : args;
-  const modelEventsReceipt = openNoFollowRegularFile(context.paths.modelEventsPath);
   appendEvent(context.paths.eventsPath, {
     args,
     caseId: options.caseId,
     command,
     envKeys: Object.keys(env).sort(),
-    processTreeContained: options.containProcessTree === true,
     sandbox: "workspace-write",
     type: "codex_run_started",
   });
   context.reporter.codexProcessStarted(args);
 
-  try {
-    const child = spawn(spawnCommand, spawnArgs, {
-      cwd: context.paths.workspacePath,
-      env,
-      stdio: options.containProcessTree === true ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
-    });
+  const child = spawn(command, args, {
+    cwd: context.paths.workspacePath,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 
-    const streamTasks: Promise<void>[] = [];
-    if (child.stdout) streamTasks.push(consumeCodexStdout(context.paths.eventsPath, child.stdout, context));
-    if (child.stderr) streamTasks.push(consumeStderr(context.paths.eventsPath, child.stderr, context));
-    const containmentStream = child.stdio[3] ?? null;
-    const containmentReceiptTask =
-      options.containProcessTree === true && isReadableStream(containmentStream)
-        ? readContainmentReceipt(containmentStream)
-        : Promise.resolve("");
+  const streamTasks: Promise<void>[] = [];
+  if (child.stdout) streamTasks.push(consumeCodexStdout(context.paths.eventsPath, child.stdout, context));
+  if (child.stderr) streamTasks.push(consumeStderr(context.paths.eventsPath, child.stderr, context));
 
-    const supervisorExitCode = await waitForChildExit(child, context, options.containProcessTree === true);
-    await Promise.all(streamTasks);
-    const containmentReceipt = await containmentReceiptTask;
-    let exitCode = supervisorExitCode;
-    if (options.containProcessTree === true) {
-      if (supervisorExitCode !== 0 || !/^(0|[1-9][0-9]{0,2})\n$/.test(containmentReceipt)) {
-        appendEvent(context.paths.eventsPath, {
-          receiptPreview: previewText(containmentReceipt),
-          supervisorExitCode,
-          type: "codex_process_containment_failed",
-        });
-        throw new Error("Codex process-tree containment did not produce a trusted completion receipt.");
-      }
-      exitCode = Number(containmentReceipt.trim());
-      appendEvent(context.paths.eventsPath, {
-        exitCode,
-        type: "codex_process_tree_reaped",
-      });
-      context.reporter.codexProcessFinished(exitCode);
-    }
-    appendModelEvents(context, modelEventsReceipt);
+  const exitCode = await waitForChildExit(child, context);
+  await Promise.all(streamTasks);
+  appendModelEvents(context);
 
-    appendEvent(context.paths.eventsPath, {
-      caseId: options.caseId,
-      exitCode,
-      type: "codex_run_finished",
-    });
+  appendEvent(context.paths.eventsPath, {
+    caseId: options.caseId,
+    exitCode,
+    type: "codex_run_finished",
+  });
 
-    return exitCode;
-  } finally {
-    closeOpenedRegularFile(modelEventsReceipt);
-  }
+  return exitCode;
 }
