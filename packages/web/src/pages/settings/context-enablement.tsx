@@ -1,5 +1,4 @@
 import type { ContextIntegrationProvider } from "@first-tree/shared";
-import { useQuery } from "@tanstack/react-query";
 import { Check, Clipboard, RefreshCw, Terminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { generateConnectToken } from "../../api/activity.js";
@@ -13,24 +12,32 @@ const PROVIDERS: Array<{ id: ContextIntegrationProvider; label: string }> = [
   { id: "codex", label: "Codex" },
 ];
 
-export function ContextEnablement({
-  organizationId,
-  teamRole,
-  ready,
-  computerConnected,
-}: {
-  organizationId: string;
-  teamRole: string | null;
-  ready: boolean;
-  computerConnected: boolean;
-}) {
+export function OnboardingContextPersonalAccess({ organizationId, ready }: { organizationId: string; ready: boolean }) {
   const [provider, setProvider] = useState<ContextIntegrationProvider>("claude-code");
-  const [copied, setCopied] = useState(false);
-  const handoff = useQuery({
-    queryKey: ["context-enablement-handoff", organizationId, provider],
-    queryFn: () => getContextEnablementHandoff(organizationId, provider),
-    enabled: ready && computerConnected,
-  });
+  const copyFeedback = useCopyFeedback();
+  const [prepareState, setPrepareState] = useState<"idle" | "loading" | "failed">("idle");
+  const prepareAttempt = useRef(0);
+  const activeSelection = useRef({ organizationId, provider, ready });
+  activeSelection.current = { organizationId, provider, ready };
+
+  useEffect(() => {
+    const renderedSelection = { organizationId, provider, ready };
+    prepareAttempt.current += 1;
+    setPrepareState("idle");
+    copyFeedback.reset();
+    return () => {
+      const current = activeSelection.current;
+      if (
+        current.organizationId === renderedSelection.organizationId &&
+        current.provider === renderedSelection.provider &&
+        current.ready === renderedSelection.ready
+      ) {
+        prepareAttempt.current += 1;
+      }
+    };
+  }, [copyFeedback.reset, organizationId, provider, ready]);
+
+  if (!ready) return null;
 
   return (
     <section
@@ -50,83 +57,116 @@ export function ContextEnablement({
             Use Team Context in your coding agent
           </h2>
           <p className="text-caption" style={{ margin: "var(--sp-1) 0 0", color: "var(--fg-3)" }}>
-            Enable First Tree once for each provider and code checkout. This does not connect the provider conversation
-            to First Tree Chat.
+            Optional · Copy one setup prompt into Claude Code or Codex. That conversation stays outside First Tree Chat.
           </p>
         </div>
       </div>
 
-      {!ready ? (
-        <p className="text-label" style={{ margin: "var(--sp-4) 0 0", color: "var(--state-needs-you)" }}>
-          {teamRole === "admin"
-            ? "Finish the Team's repository and Context Tree setup before enabling this checkout."
-            : "Needs Admin: ask a Team Admin to finish repository and Context Tree setup."}
+      <div className="flex flex-wrap" style={{ gap: "var(--sp-2)", marginTop: "var(--sp-4)" }}>
+        {PROVIDERS.map((item) => (
+          <Button
+            key={item.id}
+            type="button"
+            variant={provider === item.id ? "default" : "outline"}
+            size="sm"
+            aria-pressed={provider === item.id}
+            onClick={() => setProvider(item.id)}
+          >
+            {item.label}
+          </Button>
+        ))}
+      </div>
+
+      {prepareState === "failed" ? (
+        <p role="alert" className="text-label" style={{ color: "var(--state-error)" }}>
+          Could not prepare the setup prompt.
         </p>
-      ) : !computerConnected ? (
-        <p className="text-label" style={{ margin: "var(--sp-4) 0 0", color: "var(--state-needs-you)" }}>
-          Connect this computer to First Tree first. The normal login starts and maintains the Client daemon.
+      ) : null}
+      {copyFeedback.status === "failed" ? (
+        <p role="alert" className="text-label" style={{ color: "var(--state-error)" }}>
+          Could not copy the setup prompt.
         </p>
-      ) : (
-        <>
-          <div className="flex flex-wrap" style={{ gap: "var(--sp-2)", marginTop: "var(--sp-4)" }}>
-            {PROVIDERS.map((item) => (
-              <Button
-                key={item.id}
-                type="button"
-                variant={provider === item.id ? "default" : "outline"}
-                size="sm"
-                onClick={() => {
-                  setProvider(item.id);
-                  setCopied(false);
-                }}
-              >
-                {item.label}
-              </Button>
-            ))}
-          </div>
-          {handoff.isError ? (
-            <p role="alert" className="text-label" style={{ color: "var(--state-error)" }}>
-              Could not create the Team handoff. Try again.
-            </p>
-          ) : handoff.data ? (
-            <div style={{ marginTop: "var(--sp-3)" }}>
-              <p className="text-caption" style={{ color: "var(--fg-3)" }}>
-                {handoff.data.workingDirectoryInstruction}
-              </p>
-              <div
-                className="flex items-center"
-                style={{
-                  gap: "var(--sp-2)",
-                  padding: "var(--sp-3)",
-                  background: "var(--bg-sunken)",
-                  borderRadius: "var(--radius-input)",
-                }}
-              >
-                <code className="text-label min-w-0 flex-1 overflow-x-auto">{handoff.data.command}</code>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label="Copy enable command"
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(handoff.data.command);
-                    setCopied(true);
-                  }}
-                >
-                  {copied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
-                  {copied ? "Copied" : "Copy"}
-                </Button>
-              </div>
-            </div>
+      ) : null}
+
+      <div style={{ marginTop: "var(--sp-3)" }}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={prepareState === "loading"}
+          onClick={() => {
+            const attempt = ++prepareAttempt.current;
+            const selectedProvider = provider;
+            void (async () => {
+              setPrepareState("loading");
+              copyFeedback.reset();
+              try {
+                const prompt = await prepareOnboardingByoSetupPrompt(organizationId, selectedProvider);
+                const current = activeSelection.current;
+                if (
+                  prepareAttempt.current !== attempt ||
+                  current.organizationId !== organizationId ||
+                  current.provider !== selectedProvider ||
+                  !current.ready
+                ) {
+                  return;
+                }
+                setPrepareState("idle");
+                await copyFeedback.copy(prompt);
+              } catch {
+                const current = activeSelection.current;
+                if (
+                  prepareAttempt.current !== attempt ||
+                  current.organizationId !== organizationId ||
+                  current.provider !== selectedProvider ||
+                  !current.ready
+                ) {
+                  return;
+                }
+                setPrepareState("failed");
+              }
+            })();
+          }}
+        >
+          {prepareState === "failed" ? (
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+          ) : copyFeedback.status === "copied" ? (
+            <Check className="h-3.5 w-3.5" aria-hidden />
           ) : (
-            <p className="text-label" style={{ marginTop: "var(--sp-3)", color: "var(--fg-3)" }}>
-              Preparing the Team handoff…
-            </p>
+            <Clipboard className="h-3.5 w-3.5" aria-hidden />
           )}
-        </>
-      )}
+          {prepareState === "loading"
+            ? "Preparing…"
+            : prepareState === "failed"
+              ? "Retry"
+              : copyFeedback.status === "copied"
+                ? "Copied"
+                : copyFeedback.status === "failed"
+                  ? "Copy failed"
+                  : "Copy setup prompt"}
+        </Button>
+      </div>
     </section>
   );
+}
+
+export async function prepareOnboardingByoSetupPrompt(
+  organizationId: string,
+  provider: ContextIntegrationProvider,
+): Promise<string> {
+  const [bootstrap, handoff] = await Promise.all([
+    generateConnectToken(),
+    getContextEnablementHandoff(organizationId, provider),
+  ]);
+  if (handoff.provider !== provider) {
+    throw new Error("BYO setup handoff does not match the selected provider");
+  }
+  return buildByoSetupPrompt({
+    organizationId,
+    bootstrapCommand: bootstrap.bootstrapCommand,
+    handoffs: [handoff],
+    intent: "onboarding",
+  });
 }
 
 export async function prepareSettingsByoSetupPrompt(organizationId: string): Promise<string> {

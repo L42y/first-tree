@@ -375,7 +375,11 @@ function contextTreeStatus(
   return { label: "Status unknown", detail, kind: "unknown" };
 }
 
-function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean): SetupRowModel["action"] | undefined {
+function contextTreeAction(
+  contextTree: Fact<ContextTreeFact>,
+  isAdmin: boolean,
+  personalContextAccessReady: boolean,
+): SetupRowModel["action"] | undefined {
   if (contextTree.state !== "ready") return undefined;
   const { binding, availability, teamNonActionableGitlabWebContext } = contextTree.value;
   if (binding.state === "unbound") {
@@ -387,6 +391,9 @@ function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean)
     return isAdmin
       ? { label: "Repair", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
       : { label: "View", to: "/context" };
+  }
+  if (!isAdmin && personalContextAccessReady) {
+    return { label: "Access", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" };
   }
   if (teamNonActionableGitlabWebContext) {
     return isAdmin
@@ -543,6 +550,12 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
 
   const capabilities = facts.capabilities.state === "ready" ? facts.capabilities.value : null;
   const contextTree = contextTreeFact(facts.capabilities, facts.contextTreeSnapshot);
+  const personalContextAccessReady =
+    (facts.role === "admin" || facts.role === "member") &&
+    facts.repositories.state === "ready" &&
+    facts.repositories.value > 0 &&
+    contextTree.state === "ready" &&
+    contextTree.value.binding.state === "bound";
   const repositoryAutomationStatus =
     facts.capabilities.state === "loading"
       ? loadingStatus()
@@ -641,7 +654,7 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
         automaticReviewStatus,
         capabilities ? reviewDiagnosticDetail(capabilities.contextTree.automaticReview, isAdmin) : undefined,
       ),
-      action: contextTreeAction(contextTree, isAdmin),
+      action: contextTreeAction(contextTree, isAdmin, personalContextAccessReady),
     },
   ];
 }
@@ -755,6 +768,7 @@ export function SettingsSetupPage() {
 
   const contextTree = contextTreeFact(capabilities, contextTreeSnapshot);
   const personalContextAccessReady =
+    (role === "admin" || role === "member") &&
     facts.repositories.state === "ready" &&
     facts.repositories.value > 0 &&
     contextTree.state === "ready" &&
@@ -776,67 +790,88 @@ export function SettingsSetupPage() {
 
     const hashKey = `${organizationId}:${location.hash}`;
     if (handledOwnerHash.current === hashKey) return;
+    const canOpenForHash = role === "admin" || (location.hash === "#context-tree" && personalContextAccessReady);
+    if (!canOpenForHash) return;
     handledOwnerHash.current = hashKey;
-    if (role === "admin") setExpandedOwnerControl({ organizationId, key });
-  }, [facts.capabilities.state, location.hash, organizationId, role]);
+    setExpandedOwnerControl({ organizationId, key });
+  }, [facts.capabilities.state, location.hash, organizationId, personalContextAccessReady, role]);
 
   useEffect(() => {
     const key = location.hash === "#context-tree" || location.hash === "#automatic-review" ? "context-tree" : null;
     if (!key || facts.capabilities.state !== "ready") return;
-    if (role === "admin" && expandedOwnerControlKey !== key) return;
+    const canOpenForHash = role === "admin" || (location.hash === "#context-tree" && personalContextAccessReady);
+    if (canOpenForHash && expandedOwnerControlKey !== key) return;
 
     const row = document.getElementById(key);
     row?.scrollIntoView?.({ block: "start" });
     row?.focus();
-  }, [expandedOwnerControlKey, facts.capabilities.state, location.hash, role]);
+  }, [expandedOwnerControlKey, facts.capabilities.state, location.hash, personalContextAccessReady, role]);
 
   const ownerControls: Partial<Record<SetupRowModel["key"], ReactNode>> =
-    role !== "admin" || facts.capabilities.state !== "ready"
+    facts.capabilities.state !== "ready"
       ? {}
       : {
           ...(expandedOwnerControlKey === "context-tree" && contextTree.state === "ready"
             ? {
-                "context-tree": (
-                  <SetupContextTreeControls
-                    key={`context-tree-${organizationId}`}
-                    binding={contextTree.value.binding}
-                    availability={contextTree.value.availability}
-                    teamNonActionableGitlabWebContext={contextTree.value.teamNonActionableGitlabWebContext}
-                  >
-                    {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ||
-                    personalContextAccessReady ? (
-                      <div className="flex flex-col">
-                        {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
-                          <SetupReviewerControls
-                            key={`automatic-review-${organizationId}`}
-                            review={facts.capabilities.value.contextTree.automaticReview}
-                            embedded
-                          />
-                        ) : null}
-                        {personalContextAccessReady && organizationId ? (
-                          <div
-                            style={{
-                              marginTop:
-                                facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
-                                  ? "var(--sp-4)"
-                                  : undefined,
-                              paddingTop:
-                                facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
-                                  ? "var(--sp-4)"
-                                  : undefined,
-                              borderTop:
-                                facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
-                                  ? "var(--hairline) solid var(--border-faint)"
-                                  : undefined,
-                            }}
-                          >
-                            <ContextPersonalAccess organizationId={organizationId} />
-                          </div>
-                        ) : null}
+                "context-tree":
+                  role === "admin" ? (
+                    <SetupContextTreeControls
+                      key={`context-tree-${organizationId}`}
+                      binding={contextTree.value.binding}
+                      availability={contextTree.value.availability}
+                      teamNonActionableGitlabWebContext={contextTree.value.teamNonActionableGitlabWebContext}
+                    >
+                      {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ||
+                      personalContextAccessReady ? (
+                        <div className="flex flex-col">
+                          {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
+                            <SetupReviewerControls
+                              key={`automatic-review-${organizationId}`}
+                              review={facts.capabilities.value.contextTree.automaticReview}
+                              embedded
+                            />
+                          ) : null}
+                          {personalContextAccessReady && organizationId ? (
+                            <div
+                              style={{
+                                marginTop:
+                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                    ? "var(--sp-4)"
+                                    : undefined,
+                                paddingTop:
+                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                    ? "var(--sp-4)"
+                                    : undefined,
+                                borderTop:
+                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
+                                    ? "var(--hairline) solid var(--border-faint)"
+                                    : undefined,
+                              }}
+                            >
+                              <ContextPersonalAccess organizationId={organizationId} />
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </SetupContextTreeControls>
+                  ) : role === "member" && personalContextAccessReady && organizationId ? (
+                    <div
+                      data-setup-owner-controls="context-tree"
+                      style={{
+                        padding: "var(--sp-4)",
+                        border: "var(--hairline) solid var(--border)",
+                        borderRadius: "var(--radius-panel)",
+                        background: "var(--bg-sunken)",
+                      }}
+                    >
+                      <div className="flex justify-end" style={{ marginBottom: "var(--sp-3)" }}>
+                        <Link className="text-label font-medium text-primary hover:underline" to="/context">
+                          Open Context →
+                        </Link>
                       </div>
-                    ) : null}
-                  </SetupContextTreeControls>
-                ),
+                      <ContextPersonalAccess organizationId={organizationId} />
+                    </div>
+                  ) : null,
               }
             : {}),
         };

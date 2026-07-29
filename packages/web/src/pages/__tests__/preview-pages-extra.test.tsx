@@ -259,6 +259,23 @@ describe("extra preview pages", () => {
     await cleanupRendered(rendered);
   });
 
+  it("renders Member personal Context access without Admin controls", async () => {
+    const rendered = await renderPreview(<SetupPreviewPage />, "/preview/setup?role=member&state=ready");
+    const treeRow = rendered.container.querySelector<HTMLElement>('[data-setup-row="context-tree"]');
+    if (!treeRow) throw new Error("Missing Context Tree row");
+
+    await click(buttonByText(treeRow, "Access"));
+    const controls = treeRow.querySelector<HTMLElement>('[data-setup-owner-controls="context-tree"]');
+    expect(controls).not.toBeNull();
+    expect(controls?.querySelector<HTMLAnchorElement>('a[href="/context"]')?.textContent).toBe("Open Context →");
+    expect(text(controls ?? treeRow)).toContain("Personal access");
+    expect(text(controls ?? treeRow)).toContain("Copy setup prompt");
+    expect(controls?.querySelector('[data-setup-owner-controls="automatic-review"]')).toBeNull();
+    expect(controls?.querySelector('[role="switch"]')).toBeNull();
+
+    await cleanupRendered(rendered);
+  });
+
   it("renders the seeded agent-detail preview sections", async () => {
     const rendered = await renderPreview(<AgentDetailPreviewPage />);
 

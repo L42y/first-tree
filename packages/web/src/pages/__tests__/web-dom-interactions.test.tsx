@@ -2237,10 +2237,7 @@ describe("web DOM interaction coverage", () => {
     orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({ repo: "", branch: null });
     const inviteeNoTree = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
     await waitForText("Start working with your agent", inviteeNoTree.container);
-    await waitForText(
-      "Needs Admin: ask a Team Admin to finish repository and Context Tree setup.",
-      inviteeNoTree.container,
-    );
+    expect(inviteeNoTree.container.textContent).not.toContain("Use Team Context in your coding agent");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     await click(findButton(inviteeNoTree.container, "Start chat"));
     await waitForText("Starting your agent", inviteeNoTree.container);
@@ -2261,10 +2258,8 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText(
-      "Needs Admin: ask a Team Admin to finish repository and Context Tree setup.",
-      inviteeNoRepo.container,
-    );
+    await waitForText("Start working with your agent", inviteeNoRepo.container);
+    expect(inviteeNoRepo.container.textContent).not.toContain("Use Team Context in your coding agent");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     await unmountRoot(inviteeNoRepo.root);
 
@@ -2284,8 +2279,13 @@ describe("web DOM interaction coverage", () => {
     });
     await waitForText("Start working with your agent", inviteeNoInstall.container);
     await waitForText("Use Team Context in your coding agent", inviteeNoInstall.container);
-    await waitForText("--team 'org-1'", inviteeNoInstall.container);
+    expect(inviteeNoInstall.container.textContent).not.toContain("--team 'org-1'");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
+    await click(findButton(inviteeNoInstall.container, "Copy setup prompt"));
     expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("context enable --provider 'claude-code' --team 'org-1'"),
+    );
     expect(findButton(inviteeNoInstall.container, "Start working with your agent")).toBeNull();
     await click(findButton(inviteeNoInstall.container, "Start chat"));
     expect(inviteeNoInstall.flow.completeAndEnterChat).toHaveBeenCalled();
@@ -2309,8 +2309,11 @@ describe("web DOM interaction coverage", () => {
     const inviteeReady = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
     await waitForText("Start working with your agent", inviteeReady.container);
     await waitForText("Use Team Context in your coding agent", inviteeReady.container);
-    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
-    await waitForText("--team 'org-1'", inviteeReady.container);
+    expect(inviteeReady.container.textContent).not.toContain("--team 'org-1'");
+    const callsBeforeCopy = contextEnablementMocks.getContextEnablementHandoff.mock.calls.length;
+    await click(findButton(inviteeReady.container, "Copy setup prompt"));
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(callsBeforeCopy + 1);
+    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenLastCalledWith("org-1", "claude-code");
     await click(findButton(inviteeReady.container, "Start chat"));
     // Ready invitee also lands in a value-first work chat, not the tree setup
     // chat. The inherited team tree is context for orientation.

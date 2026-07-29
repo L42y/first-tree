@@ -279,49 +279,60 @@ export function SetupPreviewPage() {
     onboardingCompletedAt: facts.onboardingCompletedAt,
   } as unknown as Parameters<typeof AuthContext.Provider>[0]["value"];
   const ownerControls =
-    role !== "admin"
+    expandedOwnerControl !== "context-tree"
       ? {}
       : {
-          ...(expandedOwnerControl === "context-tree"
-            ? {
-                "context-tree": (
-                  <SetupContextTreeControls
-                    binding={capabilities.contextTree.binding}
-                    availability={snapshotStatus}
-                    loadSetting={previewLoadTreeSetting}
-                    saveSetting={previewSaveTreeSetting}
-                    refreshFacts={previewRefresh}
-                  >
-                    <div className="flex flex-col">
-                      {capabilities.contextTree.automaticReview.adoption !== "unavailable" ? (
-                        <SetupReviewerControls
-                          review={capabilities.contextTree.automaticReview}
-                          embedded
-                          loadCandidates={async () => PREVIEW_REVIEWER_CANDIDATES}
-                          assignReviewer={previewAssignReviewer}
-                          setReviewerEnabled={previewSetReviewerEnabled}
-                          refreshFacts={previewRefresh}
-                        />
-                      ) : null}
-                      {state === "ready" ? (
-                        <div
-                          style={{
-                            marginTop: "var(--sp-4)",
-                            paddingTop: "var(--sp-4)",
-                            borderTop: "var(--hairline) solid var(--border-faint)",
-                          }}
-                        >
-                          <ContextPersonalAccess
-                            organizationId="org-preview"
-                            preparePrompt={previewPersonalAccessPrompt}
-                          />
-                        </div>
-                      ) : null}
+          "context-tree":
+            role === "admin" ? (
+              <SetupContextTreeControls
+                binding={capabilities.contextTree.binding}
+                availability={snapshotStatus}
+                loadSetting={previewLoadTreeSetting}
+                saveSetting={previewSaveTreeSetting}
+                refreshFacts={previewRefresh}
+              >
+                <div className="flex flex-col">
+                  {capabilities.contextTree.automaticReview.adoption !== "unavailable" ? (
+                    <SetupReviewerControls
+                      review={capabilities.contextTree.automaticReview}
+                      embedded
+                      loadCandidates={async () => PREVIEW_REVIEWER_CANDIDATES}
+                      assignReviewer={previewAssignReviewer}
+                      setReviewerEnabled={previewSetReviewerEnabled}
+                      refreshFacts={previewRefresh}
+                    />
+                  ) : null}
+                  {state === "ready" ? (
+                    <div
+                      style={{
+                        marginTop: "var(--sp-4)",
+                        paddingTop: "var(--sp-4)",
+                        borderTop: "var(--hairline) solid var(--border-faint)",
+                      }}
+                    >
+                      <ContextPersonalAccess organizationId="org-preview" preparePrompt={previewPersonalAccessPrompt} />
                     </div>
-                  </SetupContextTreeControls>
-                ),
-              }
-            : {}),
+                  ) : null}
+                </div>
+              </SetupContextTreeControls>
+            ) : state === "ready" ? (
+              <div
+                data-setup-owner-controls="context-tree"
+                style={{
+                  padding: "var(--sp-4)",
+                  border: "var(--hairline) solid var(--border)",
+                  borderRadius: "var(--radius-panel)",
+                  background: "var(--bg-sunken)",
+                }}
+              >
+                <div className="flex justify-end" style={{ marginBottom: "var(--sp-3)" }}>
+                  <Link className="text-label font-medium text-primary hover:underline" to="/context">
+                    Open Context →
+                  </Link>
+                </div>
+                <ContextPersonalAccess organizationId="org-preview" preparePrompt={previewPersonalAccessPrompt} />
+              </div>
+            ) : null,
         };
 
   return (
@@ -333,11 +344,7 @@ export function SetupPreviewPage() {
               facts={facts}
               rows={buildSetupRows(facts)}
               ownerControls={ownerControls}
-              onToggleOwnerControl={
-                role === "admin"
-                  ? (key) => setExpandedOwnerControl((current) => (current === key ? null : key))
-                  : undefined
-              }
+              onToggleOwnerControl={(key) => setExpandedOwnerControl((current) => (current === key ? null : key))}
             />
           </SettingsLayout>
           <nav
