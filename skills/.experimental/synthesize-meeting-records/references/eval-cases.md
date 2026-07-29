@@ -64,12 +64,16 @@ The post-agent validator always executes from the immutable repository Skill
 source outside the model-writable workspace and receives workspace bundle and
 packet paths as data arguments. The installed Skill tree and generated
 `AGENTS.md` must remain content- and mode-identical to their setup sources, and
-no undeclared top-level workspace write is permitted.
+no undeclared workspace path is permitted, including paths nested inside
+harness-owned containers.
 
 Model-writable shim receipts stay provenance-marked when promoted into the
-host event log and cannot satisfy the Skill-read oracle. Source immutability is
-checked against a host-recorded direct filesystem manifest that excludes Git
-metadata, so index flags cannot hide content, type, or mode changes.
+host event log and cannot satisfy the Skill-read oracle. Host-recorded direct
+filesystem manifests cover the complete source fixture, including Git
+metadata, and the full workspace tree. Only the regular packet may be added;
+only the pre-created regular model-receipt file may change content. Index flags
+and writes hidden inside allowed container directories therefore cannot hide
+content, type, or mode changes.
 
 ## Model-backed cases
 

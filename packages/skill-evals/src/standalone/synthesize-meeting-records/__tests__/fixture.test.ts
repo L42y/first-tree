@@ -1,5 +1,15 @@
 import { once } from "node:events";
-import { chmodSync, existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +65,7 @@ describe("standalone synthesize-meeting-records fixture", () => {
     try {
       const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
       writeFileSync(join(paths.workspacePath, "meeting-analysis-output.json"), "{}\n", "utf8");
+      writeFileSync(paths.modelEventsPath, '{"type":"model-diagnostic"}\n', "utf8");
       expect(validateFixture(paths, sourceRepoPath).ok).toBe(true);
 
       const agentsPath = join(paths.workspacePath, "AGENTS.md");
@@ -64,7 +75,61 @@ describe("standalone synthesize-meeting-records fixture", () => {
 
       expect(validation.ok).toBe(false);
       expect(validation.errors).toContain("workspace AGENTS.md changed after setup");
-      expect(validation.errors).toContain("unexpected workspace write: undeclared-output.txt");
+      expect(validation.errors).toContain("workspace fixture content changed after setup");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects undeclared retained files inside every allowed workspace container", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES[0];
+    if (evalCase === undefined) throw new Error("Missing eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-nested-write-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:00.625Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const retainedCopies = [
+        join(paths.workspacePath, ".agents", "undeclared-private-copy.md"),
+        join(paths.workspacePath, ".first-tree-eval", "undeclared-private-copy.md"),
+        join(sourceRepoPath, ".git", "model-output", "undeclared-private-copy.md"),
+      ];
+      for (const path of retainedCopies) {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, "VERBATIM-CANARY-RETAINED-PRIVATE-COPY\n", "utf8");
+      }
+
+      const validation = validateFixture(paths, sourceRepoPath);
+      expect(validation.ok).toBe(false);
+      expect(validation.errors).toContain("workspace fixture content changed after setup");
+      expect(validation.errors).toContain("source artifact fixture content changed after setup");
+      expect(sourceRepoChanged(readEvents(paths.eventsPath), paths)).toBe(true);
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects symlinked packet and model event receipt paths", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES[0];
+    if (evalCase === undefined) throw new Error("Missing eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-mutable-path-identity-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:00.700Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      symlinkSync("AGENTS.md", join(paths.workspacePath, "meeting-analysis-output.json"));
+      rmSync(paths.modelEventsPath);
+      symlinkSync("../AGENTS.md", paths.modelEventsPath);
+
+      const validation = validateFixture(paths, sourceRepoPath);
+      expect(validation.ok).toBe(false);
+      expect(validation.errors).toContain("meeting analysis output must be a standalone regular file");
+      expect(validation.errors).toContain("model event receipt must be a standalone regular file");
+      expect(validation.errors).toContain("workspace fixture content changed after setup");
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }

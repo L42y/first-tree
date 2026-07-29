@@ -72,7 +72,12 @@ function fileSha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function directoryManifest(root: string, excludedRootNames: ReadonlySet<string> = new Set()): readonly string[] {
+type DirectoryManifestOptions = {
+  mutableRegularFiles?: ReadonlySet<string>;
+  omittedRegularFiles?: ReadonlySet<string>;
+};
+
+function directoryManifest(root: string, options: DirectoryManifestOptions = {}): readonly string[] {
   const entries: string[] = [];
   const rootIdentity = lstatSync(root);
   const rootMode = (rootIdentity.mode & 0o777).toString(8).padStart(3, "0");
@@ -87,7 +92,6 @@ function directoryManifest(root: string, excludedRootNames: ReadonlySet<string> 
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
       left.name.localeCompare(right.name),
     )) {
-      if (directory === root && excludedRootNames.has(entry.name)) continue;
       const path = join(directory, entry.name);
       const locator = relative(root, path).split(sep).join("/");
       const identity = lstatSync(path);
@@ -96,7 +100,12 @@ function directoryManifest(root: string, excludedRootNames: ReadonlySet<string> 
         entries.push(`directory:${mode}:${locator}`);
         visit(path);
       } else if (entry.isFile()) {
-        entries.push(`file:${mode}:${locator}:${fileSha256(path)}`);
+        if (options.omittedRegularFiles?.has(locator)) continue;
+        entries.push(
+          options.mutableRegularFiles?.has(locator)
+            ? `file:${mode}:${locator}:mutable-content`
+            : `file:${mode}:${locator}:${fileSha256(path)}`,
+        );
       } else if (entry.isSymbolicLink()) {
         entries.push(`symlink:${mode}:${locator}:${readlinkSync(path)}`);
       } else {
@@ -109,7 +118,14 @@ function directoryManifest(root: string, excludedRootNames: ReadonlySet<string> 
 }
 
 export function sourceArtifactManifest(sourceRepoPath: string): readonly string[] {
-  return directoryManifest(sourceRepoPath, new Set([".git"]));
+  return directoryManifest(sourceRepoPath);
+}
+
+function workspaceFixtureManifest(paths: RunPaths): readonly string[] {
+  return directoryManifest(paths.workspacePath, {
+    mutableRegularFiles: new Set([".first-tree-eval/events.jsonl"]),
+    omittedRegularFiles: new Set([OUTPUT_NAME]),
+  });
 }
 
 function sourceArtifactBaseline(paths: RunPaths): readonly string[] | null {
@@ -124,6 +140,51 @@ function sourceArtifactBaseline(paths: RunPaths): readonly string[] | null {
     }
   }
   return null;
+}
+
+function workspaceFixtureBaseline(paths: RunPaths): readonly string[] | null {
+  for (const event of readEvents(paths.eventsPath)) {
+    if (
+      isRecord(event) &&
+      event.type === "fixture_setup_finished" &&
+      event.eventProvenance !== "model-writable" &&
+      isStringArray(event.workspaceFixtureManifest)
+    ) {
+      return event.workspaceFixtureManifest;
+    }
+  }
+  return null;
+}
+
+function validateWorkspaceFixture(paths: RunPaths): readonly string[] {
+  const errors: string[] = [];
+  for (const [path, label] of [
+    [paths.modelEventsPath, "model event receipt"],
+    [join(paths.workspacePath, OUTPUT_NAME), "meeting analysis output"],
+  ] as const) {
+    if (!existsSync(path)) {
+      if (path === paths.modelEventsPath) errors.push(`${label} is missing`);
+      continue;
+    }
+    const identity = lstatSync(path);
+    if (!identity.isFile() || identity.nlink !== 1) {
+      errors.push(`${label} must be a standalone regular file`);
+    }
+  }
+
+  const baseline = workspaceFixtureBaseline(paths);
+  if (baseline === null) {
+    errors.push("workspace fixture baseline is missing");
+    return errors;
+  }
+  try {
+    if (JSON.stringify(workspaceFixtureManifest(paths)) !== JSON.stringify(baseline)) {
+      errors.push("workspace fixture content changed after setup");
+    }
+  } catch (error) {
+    errors.push(`workspace fixture cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return errors;
 }
 
 function validateInstalledInstructions(paths: RunPaths): readonly string[] {
@@ -155,20 +216,6 @@ function validateInstalledInstructions(paths: RunPaths): readonly string[] {
     errors.push(`workspace AGENTS.md cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  const allowedWorkspaceEntries = new Set([
-    ".agents",
-    ".first-tree-eval",
-    "AGENTS.md",
-    OUTPUT_NAME,
-    "source-artifacts",
-  ]);
-  try {
-    for (const entry of readdirSync(paths.workspacePath)) {
-      if (!allowedWorkspaceEntries.has(entry)) errors.push(`unexpected workspace write: ${entry}`);
-    }
-  } catch (error) {
-    errors.push(`workspace writes cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
-  }
   return errors;
 }
 
@@ -429,6 +476,7 @@ export function setupFixture(evalCase: MeetingRecordsEvalCase, paths: RunPaths, 
   }
   const sourceRepoHead = initSourceRepo(sourceRepoPath);
   installPartialRawAccessSentinels(paths, sourceRepoPath);
+  writeText(paths.modelEventsPath, "");
 
   appendEvent(paths.eventsPath, {
     caseId: evalCase.id,
@@ -436,6 +484,7 @@ export function setupFixture(evalCase: MeetingRecordsEvalCase, paths: RunPaths, 
     sourceRepoHead,
     sourceRepoPath,
     type: "fixture_setup_finished",
+    workspaceFixtureManifest: workspaceFixtureManifest(paths),
     workspaceKind: "standalone-meeting-records",
   });
   reporter.fixtureSetupFinished("standalone-meeting-records", null);
@@ -453,6 +502,7 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
   const errors = [
     ...missingFiles.map((path) => `missing required file: ${path}`),
     ...validateInstalledInstructions(paths),
+    ...validateWorkspaceFixture(paths),
   ];
   let partialLocators: readonly string[] = [];
   try {
