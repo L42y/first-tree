@@ -12,8 +12,10 @@ import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEval
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 const CONTENT_READ_COMMANDS = new Set(["cat", "grep", "head", "nl", "rg", "sed", "tail"]);
 const NON_CONTENT_COMMANDS = new Set(["[", "echo", "printf", "test"]);
+const SUBSTITUTION_PATH_CONSUMERS = new Set([...CONTENT_READ_COMMANDS, "cd", "find", "jq", "ls", "source", "wc"]);
 const SOURCE_ROOT = "source-artifacts";
 const BUNDLE_PATH = `${SOURCE_ROOT}/bundle.json`;
+const SUBSTITUTION_PLACEHOLDER = "__command_substitution__";
 
 type ClaudeToolUse = {
   id: string;
@@ -258,7 +260,7 @@ function parseShellExecution(command: string): ParsedShellExecution | null {
       const end = findDollarSubstitutionEnd(input, index + 2);
       if (end === null) return null;
       substitutions.push(input.slice(index + 2, end));
-      segment += "__command_substitution__";
+      segment += SUBSTITUTION_PLACEHOLDER;
       index = end;
       continue;
     }
@@ -266,7 +268,7 @@ function parseShellExecution(command: string): ParsedShellExecution | null {
       const end = findBacktickEnd(input, index + 1);
       if (end === null) return null;
       substitutions.push(input.slice(index + 1, end));
-      segment += "__command_substitution__";
+      segment += SUBSTITUTION_PLACEHOLDER;
       index = end;
       continue;
     }
@@ -299,12 +301,22 @@ function shellSegmentReadsRawSource(segment: string): boolean {
   return !onlyExactBundleReference(segment);
 }
 
+function sourceDerivedSubstitutionFeedsPath(execution: ParsedShellExecution): boolean {
+  if (!execution.substitutions.some((substitution) => normalizedPath(substitution).includes(SOURCE_ROOT))) return false;
+  return execution.segments.some((segment) => {
+    if (!segment.includes(SUBSTITUTION_PLACEHOLDER)) return false;
+    const classification = classifyShellCommandIo(segment);
+    return SUBSTITUTION_PATH_CONSUMERS.has(classification.commandName ?? "");
+  });
+}
+
 function commandReadsRawSource(command: string): boolean {
   if (!normalizedPath(command).includes(SOURCE_ROOT)) return false;
   const execution = parseShellExecution(command);
   if (execution === null) return true;
   return (
     execution.substitutions.some(commandReadsRawSource) ||
+    sourceDerivedSubstitutionFeedsPath(execution) ||
     execution.segments.some((segment) => shellSegmentReadsRawSource(segment))
   );
 }

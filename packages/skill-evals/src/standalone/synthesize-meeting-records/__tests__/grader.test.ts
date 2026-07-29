@@ -199,9 +199,18 @@ describe("standalone synthesize-meeting-records grader", () => {
       rawArtifactReadObserved([commandEvent("printf '%s' \"$(cat source-artifacts/appendix.md)\"")], currentCase),
     ).toBe(true);
     expect(rawArtifactReadObserved([commandEvent("echo `cat source-artifacts/appendix.md`")], currentCase)).toBe(true);
+    expect(
+      rawArtifactReadObserved([commandEvent('cat "$(dirname source-artifacts/bundle.json)"/*.md')], currentCase),
+    ).toBe(true);
+    expect(
+      rawArtifactReadObserved([commandEvent('cd "$(dirname source-artifacts/bundle.json)" && cat *.md')], currentCase),
+    ).toBe(true);
     expect(rawArtifactReadObserved([commandEvent("echo source-artifacts/appendix.md")], currentCase)).toBe(false);
     expect(rawArtifactReadObserved([commandEvent("test -f source-artifacts/appendix.md")], currentCase)).toBe(false);
     expect(rawArtifactReadObserved([commandEvent("printf '%s' 'source-artifacts/appendix.md'")], currentCase)).toBe(
+      false,
+    );
+    expect(rawArtifactReadObserved([commandEvent('echo "$(dirname source-artifacts/bundle.json)"')], currentCase)).toBe(
       false,
     );
     expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/appendix.md")], currentCase)).toBe(true);
