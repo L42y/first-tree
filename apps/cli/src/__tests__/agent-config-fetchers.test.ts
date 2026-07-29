@@ -229,6 +229,28 @@ describe("agent config fetch helpers", () => {
     expect(output()).toContain("https://github.com/acme/web.git@main");
   });
 
+  it("prints the Codex provider-native service tier", async () => {
+    const { printConfig } = await import("../commands/agent/config/_shared/fetchers.js");
+
+    printConfig(
+      config({
+        payload: {
+          kind: "codex",
+          prompt: { append: "" },
+          model: "gpt-5.6-sol",
+          reasoningEffort: "high",
+          serviceTier: "fast",
+          mcpServers: [],
+          env: [],
+          gitRepos: [],
+          resourceSkills: [],
+        },
+      }),
+    );
+
+    expect(output()).toContain("Service tier: fast");
+  });
+
   it("prints the effective prompt stack with provenance when prompt.sections is present", async () => {
     const { printConfig } = await import("../commands/agent/config/_shared/fetchers.js");
     const base = config();

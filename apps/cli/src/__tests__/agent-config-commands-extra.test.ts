@@ -198,6 +198,35 @@ describe("agent config command behavior", () => {
     expect(outputMocks.success).toHaveBeenLastCalledWith({ agentId: "agent-uuid", version: 2, append_length: 19 });
   });
 
+  it("sets the Codex provider-native service tier", async () => {
+    const codexPayload: AgentRuntimeConfig["payload"] = {
+      kind: "codex",
+      prompt: { append: "" },
+      model: "",
+      reasoningEffort: "high",
+      serviceTier: "default",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    fetcherMocks.getCurrent.mockResolvedValueOnce(config({ payload: codexPayload }));
+    fetcherMocks.patchConfig.mockResolvedValueOnce(
+      config({ version: 2, payload: { ...codexPayload, serviceTier: "fast" } }),
+    );
+
+    await runConfig(["set-service-tier", "nova", "fast"]);
+
+    expect(fetcherMocks.patchConfig).toHaveBeenCalledWith("https://hub.example", "admin-token", "agent-uuid", 1, {
+      serviceTier: "fast",
+    });
+    expect(outputMocks.success).toHaveBeenCalledWith({
+      agentId: "agent-1",
+      version: 2,
+      serviceTier: "fast",
+    });
+  });
+
   it("replaces the existing inline append prompt binding", async () => {
     fetcherMocks.getAgentResources.mockResolvedValueOnce({
       version: 3,

@@ -6,11 +6,15 @@ import { createCodexSdkHandler } from "./sdk.js";
 export {
   appendGitStatusDeltaRefs,
   buildCodexAgentBriefing,
+  buildCodexConfig,
   buildCodexThreadOptions,
+  codexServiceTiersEquivalent,
   collectCodexFileChangePaths,
   computePerTurnUsageDelta,
+  configuredCodexServiceTier,
   createCodexSdkHandler,
   isTransientCodexErrorMessage,
+  isUnsupportedCodexServiceTierWarning,
   toolFileRefsForTerminalCodexTool,
   toolFileRefsFromCodexFileChange,
 } from "./sdk.js";

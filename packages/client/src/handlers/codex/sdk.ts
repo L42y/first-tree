@@ -84,10 +84,87 @@ import {
  * minimal shape we need (`mcp_servers.<name>.{...}`, `project_root_markers`).
  * Mirrors the recursive structure from the SDK's `dist/index.d.ts`.
  */
-type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
-type CodexConfigObject = { [key: string]: CodexConfigValue };
+export type CodexConfigValue = string | number | boolean | CodexConfigValue[] | CodexConfigObject;
+export type CodexConfigObject = { [key: string]: CodexConfigValue };
 
 const RESULT_PREVIEW_LIMIT = 400;
+
+/**
+ * Build the provider-native Codex config shared by both handler engines.
+ *
+ * `service_tier` selects Standard (`default`), Fast (`fast`), or another
+ * provider-advertised tier. Non-default tiers explicitly enable the stable
+ * Fast-mode capability; Standard leaves the feature unset so provider-managed
+ * policy remains authoritative. First Tree forwards the configured tier
+ * unchanged and treats Codex's unsupported-tier warning as a configuration
+ * failure instead of accepting a silently downgraded turn.
+ */
+export function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
+  const cfg: CodexConfigObject = {
+    // Gap-2: anchor codex's project-root walk-up at the workspace marker
+    // we wrote in bootstrap, so `AGENTS.md` is read from this workspace
+    // instead of leaking up to the operator's repo or HOME.
+    project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
+  };
+  if (payload.kind === "codex") {
+    const serviceTier = configuredCodexServiceTier(payload);
+    cfg.service_tier = serviceTier;
+    if (serviceTier !== "default") {
+      cfg.features = { fast_mode: true };
+    }
+  }
+  if (payload.mcpServers.length === 0) return cfg;
+
+  const mcpServers: CodexConfigObject = {};
+  for (const m of payload.mcpServers) {
+    if (m.transport === "stdio") {
+      mcpServers[m.name] = { command: m.command, args: m.args ?? [] };
+    } else {
+      // http / sse — codex's TOML schema accepts url + optional headers.
+      const entry: CodexConfigObject = { url: m.url };
+      if (m.headers) entry.headers = m.headers;
+      mcpServers[m.name] = entry;
+    }
+  }
+  cfg.mcp_servers = mcpServers;
+  return cfg;
+}
+
+/**
+ * A newer Client can briefly talk to a Server that predates `serviceTier`
+ * during a rolling upgrade. Treat that missing wire field like every legacy
+ * Codex config row: explicit Standard mode.
+ */
+export function configuredCodexServiceTier(payload: AgentRuntimeConfigPayload): string {
+  if (payload.kind !== "codex") return "default";
+  const serviceTier: unknown = payload.serviceTier;
+  return typeof serviceTier === "string" && serviceTier.length > 0 ? serviceTier : "default";
+}
+
+function canonicalCodexServiceTier(serviceTier: string): string {
+  // Codex accepts `fast` as the product-facing request alias, then reports the
+  // provider-canonical `priority` id in app-server ThreadStart/ResumeResponse.
+  // This is response validation only: First Tree still forwards the configured
+  // value unchanged and does not maintain model/account compatibility data.
+  return serviceTier === "fast" ? "priority" : serviceTier;
+}
+
+export function codexServiceTiersEquivalent(configured: string, effective: string): boolean {
+  return canonicalCodexServiceTier(configured) === canonicalCodexServiceTier(effective);
+}
+
+const UNSUPPORTED_CODEX_SERVICE_TIER_WARNING =
+  /^Configured service tier `[^`]+` is not advertised as supported for model `[^`]+` and will be omitted from requests\.$/;
+
+/**
+ * Codex 0.144.1 reports an unsupported provider-native service tier as a
+ * warning and then proceeds without that tier. Both handler engines use this
+ * predicate to turn that otherwise-silent downgrade into a terminal
+ * configuration error.
+ */
+export function isUnsupportedCodexServiceTierWarning(message: string): boolean {
+  return UNSUPPORTED_CODEX_SERVICE_TIER_WARNING.test(message.trim());
+}
 
 async function emitTurnEnd(
   sessionCtx: SessionContext,
@@ -510,30 +587,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     return out;
   }
 
-  function buildCodexConfig(payload: AgentRuntimeConfigPayload): CodexConfigObject {
-    const cfg: CodexConfigObject = {
-      // Gap-2: anchor codex's project-root walk-up at the workspace marker
-      // we wrote in bootstrap, so `AGENTS.md` is read from this workspace
-      // instead of leaking up to the operator's repo or HOME.
-      project_root_markers: [FIRST_TREE_WORKSPACE_MARKER],
-    };
-    if (payload.mcpServers.length === 0) return cfg;
-
-    const mcpServers: CodexConfigObject = {};
-    for (const m of payload.mcpServers) {
-      if (m.transport === "stdio") {
-        mcpServers[m.name] = { command: m.command, args: m.args ?? [] };
-      } else {
-        // http / sse — codex's TOML schema accepts url + optional headers.
-        const entry: CodexConfigObject = { url: m.url };
-        if (m.headers) entry.headers = m.headers;
-        mcpServers[m.name] = entry;
-      }
-    }
-    cfg.mcp_servers = mcpServers;
-    return cfg;
-  }
-
   function createCodexClient(options: CodexOptions, sessionCtx: SessionContext): Codex {
     const resolved = createCodexClientWithBinaryFallback<CodexOptions, Codex>(
       options,
@@ -908,6 +961,15 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
               } else if (event.type === "turn.started") {
                 // No-op — runtime state already "working".
               } else if (event.type === "item.completed") {
+                if (event.item.type === "error" && isUnsupportedCodexServiceTierWarning(event.item.message)) {
+                  providerAttempt.recordSignal({
+                    kind: "provider_error",
+                    error: new Error(`Codex service tier configuration failed: ${event.item.message}`),
+                  });
+                  const settlement = providerAttempt.settle({ attempt: attempt + 1 });
+                  if (settlement) stopCodexFailure(settlement);
+                  break;
+                }
                 const text = processItem(event.item, sessionCtx);
                 if (text) finalResponse = text;
                 if (isUserVisibleItem(event.item)) {
@@ -1496,6 +1558,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           gitRepos: [],
           resourceSkills: [],
           reasoningEffort: "high",
+          serviceTier: "default",
         };
       }
 
@@ -1573,6 +1636,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           gitRepos: [],
           resourceSkills: [],
           reasoningEffort: "high",
+          serviceTier: "default",
         };
       }
 

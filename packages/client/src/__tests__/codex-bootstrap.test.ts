@@ -31,6 +31,7 @@ function codexPayload(
     gitRepos: [],
     resourceSkills: [],
     reasoningEffort: "high",
+    serviceTier: "default",
     ...overrides,
   };
 }

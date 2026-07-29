@@ -7,7 +7,7 @@ import { useJustSaved } from "./save-semantics.js";
 
 /**
  * Immediate-save controller for the per-agent runtime config (model / reasoning
- * effort / env). The sibling of `useAgentResources`: every edit writes through
+ * effort / Codex service tier / env). The sibling of `useAgentResources`: every edit writes through
  * the versioned `PATCH /agents/:uuid/config` endpoint as soon as it's made — no
  * draft, no Save bar. Mirrors the two protections of `agentResourcesMutationHandlers`,
  * plus an optimistic cache write so discrete controls (dropdowns) reflect the
@@ -21,7 +21,7 @@ import { useJustSaved } from "./save-semantics.js";
  *    flashes "Saved" on the field that was edited.
  */
 
-export type ConfigField = "model" | "effort" | "env";
+export type ConfigField = "model" | "effort" | "serviceTier" | "env";
 
 export type AgentConfigSaveController = {
   /** Save a partial config patch immediately. `field` drives which section flashes "Saved" / shows the error. */

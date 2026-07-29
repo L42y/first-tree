@@ -1,6 +1,7 @@
 import { Navigate } from "react-router";
 import { Section } from "../../components/ui/section.js";
 import { EnvSection } from "./env-section.js";
+import { FastModeSection } from "./fast-mode-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 import { ModelSection } from "./model-section.js";
 import { ReasoningEffortSection } from "./reasoning-effort-section.js";
@@ -24,7 +25,10 @@ export function RuntimeTab() {
     ((!!ctx.clientStatus?.clientId && ctx.agent.status === "active") ||
       (ctx.isUnclaimed && ctx.agent.status === "suspended"));
   const modelSettingsSaved =
-    configSave.justSaved && (configSave.savedField === "model" || configSave.savedField === "effort");
+    configSave.justSaved &&
+    (configSave.savedField === "model" ||
+      configSave.savedField === "effort" ||
+      configSave.savedField === "serviceTier");
   const envSaved = configSave.justSaved && configSave.savedField === "env";
 
   return (
@@ -91,10 +95,19 @@ export function RuntimeTab() {
                 provider={ctx.setupRuntimeProvider}
               />
             ) : null}
+            {config.payload.kind === "codex" ? (
+              <FastModeSection
+                serviceTier={config.payload.serviceTier}
+                onChange={(serviceTier) => configSave.save({ serviceTier }, { field: "serviceTier" })}
+                disabled={editsDisabled}
+              />
+            ) : null}
           </Section>
-          {/* Only model/effort failures belong here; env failures surface at the
+          {/* Only model/effort/service-tier failures belong here; env failures surface at the
               Env section (dialog for add/edit, toast for delete). */}
-          {configSave.errorField === "model" || configSave.errorField === "effort" ? (
+          {configSave.errorField === "model" ||
+          configSave.errorField === "effort" ||
+          configSave.errorField === "serviceTier" ? (
             configSave.conflict ? (
               <p className="text-body" style={{ color: "var(--state-blocked)", margin: "var(--sp-2) 0 0" }}>
                 This agent's configuration was updated elsewhere; reloaded the latest values.
