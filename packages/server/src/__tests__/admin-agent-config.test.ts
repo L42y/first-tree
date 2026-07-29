@@ -226,6 +226,33 @@ describe("Admin agent-config API (Step 2)", () => {
     expect("reasoningEffort" in model.json().payload).toBe(false);
   });
 
+  it("persists an exact OpenCode provider/model id and rejects reasoning effort", async () => {
+    const app = getApp();
+    const req = await authedRequest(app);
+    const agent = await (await seedAgentFactory(app))({
+      name: `cfg-opencode-${crypto.randomUUID().slice(0, 8)}`,
+      type: "agent",
+      runtimeProvider: "opencode",
+    });
+
+    const model = await req("PATCH", `/api/v1/agents/${agent.uuid}/config`, {
+      expectedVersion: 1,
+      payload: { model: "anthropic/claude-opus-4-6" },
+    });
+    expect(model.statusCode).toBe(200);
+    expect(model.json().payload).toMatchObject({
+      kind: "opencode",
+      model: "anthropic/claude-opus-4-6",
+    });
+
+    const effort = await req("PATCH", `/api/v1/agents/${agent.uuid}/config`, {
+      expectedVersion: 2,
+      payload: { reasoningEffort: "high" },
+    });
+    expect(effort.statusCode).toBe(400);
+    expect(effort.json<{ error: string }>().error).toContain("not supported");
+  });
+
   it("persists model-dependent max and ultra values for codex agents", async () => {
     const app = getApp();
     const req = await authedRequest(app);

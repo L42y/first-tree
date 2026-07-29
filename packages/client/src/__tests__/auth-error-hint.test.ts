@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatAuthHint, isClaudeAuthError, isCodexAuthError } from "../handlers/auth-error-hint.js";
+import {
+  formatAuthHint,
+  isClaudeAuthError,
+  isCodexAuthError,
+  isOpenCodeAuthError,
+} from "../handlers/auth-error-hint.js";
 
 /**
  * Locks the behavioural contract of the auth-error hint module that
@@ -93,6 +98,15 @@ describe("isClaudeAuthError", () => {
   });
 });
 
+describe("isOpenCodeAuthError", () => {
+  it("matches provider-owned credential failures without treating capacity failures as auth", () => {
+    expect(isOpenCodeAuthError("Provider returned 401 Unauthorized: invalid API key")).toBe(true);
+    expect(isOpenCodeAuthError("Run opencode auth login before using this provider")).toBe(true);
+    expect(isOpenCodeAuthError("rate limit exceeded")).toBe(false);
+    expect(isOpenCodeAuthError("")).toBe(false);
+  });
+});
+
 describe("formatAuthHint", () => {
   it("targets `codex login` for the codex runtime and quotes the original SDK message", () => {
     const hint = formatAuthHint(
@@ -113,6 +127,14 @@ describe("formatAuthHint", () => {
     expect(hint).toContain("Anthropic");
     expect(hint).toContain("not First Tree's");
     expect(hint).toContain("authentication_failed");
+  });
+
+  it("keeps OpenCode authentication host-local and points at the provider-owned login", () => {
+    const hint = formatAuthHint("opencode", "Provider returned 401 Unauthorized");
+    expect(hint).toContain("opencode");
+    expect(hint).toContain("`opencode auth login`");
+    expect(hint).toContain("OpenCode's selected provider");
+    expect(hint).toContain("not First Tree's");
   });
 
   it("falls back to a placeholder when the SDK gives no message", () => {

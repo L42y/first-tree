@@ -29,7 +29,14 @@ import {
   readManagedStateResult,
 } from "../runtime/managed-state.js";
 
-const PROVIDERS: readonly RuntimeProvider[] = ["claude-code", "claude-code-tui", "codex", "cursor", "kimi-code"];
+const PROVIDERS: readonly RuntimeProvider[] = [
+  "claude-code",
+  "claude-code-tui",
+  "codex",
+  "cursor",
+  "kimi-code",
+  "opencode",
+];
 
 function teamSkill(overrides: Partial<RuntimeResourceSkill> = {}): RuntimeResourceSkill {
   return {
@@ -97,6 +104,7 @@ describe("managed Skill reconciler", () => {
       ["codex", ".agents/skills"],
       ["cursor", ".cursor/skills"],
       ["kimi-code", ".kimi-code/skills"],
+      ["opencode", ".opencode/skills"],
     ]);
   });
 

@@ -80,6 +80,7 @@ describe("hasNonOkProvider", () => {
         codex: okEntry(),
         cursor: okEntry(),
         "kimi-code": okEntry(),
+        opencode: okEntry(),
       }),
     ).toBe(false);
   });
