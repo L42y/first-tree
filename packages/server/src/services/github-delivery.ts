@@ -2,6 +2,7 @@ import type { GithubEventCard, InvolveReason, NormalizedScmEvent } from "@first-
 import type { FastifyInstance } from "fastify";
 import type { GithubEntity } from "../api/webhooks/github-entity.js";
 import { createLogger } from "../observability/index.js";
+import { uuidv7 } from "../uuid.js";
 import type { AudienceTarget } from "./github-audience.js";
 import { findReuseChatForInvolved, refreshGithubChatTopic, resolveTargetChat } from "./github-entity-chat.js";
 import { type EntityStateSeed, setEntityTitle } from "./github-entity-state.js";
@@ -192,7 +193,16 @@ export async function deliverGithubEvent(
       const entries = [...delivery.entries.values()].sort(compareScmDeliveryEntries);
       const senderId = selectScmSenderId(entries);
       const cardContext = selectScmCardContext(entries);
-      const card = buildCard(event, cardContext.involveReason, cardContext.involveLogin, cardContext.teamAgentTask);
+      const taskRun =
+        cardContext.teamAgentTask && cardContext.teamAgentTaskHumanAgentId
+          ? createGithubTaskRun(event, cardContext.teamAgentTask, cardContext.teamAgentTaskHumanAgentId)
+          : null;
+      const card = buildCard(
+        event,
+        cardContext.involveReason,
+        cardContext.involveLogin,
+        taskRun?.marker ?? cardContext.teamAgentTask,
+      );
       const mentionedUser = card.mentionedUser ?? undefined;
       // Native wake-set (S8): the delegates are passed as `metadata.mentions`,
       // so the generic fan-out wakes them — no GitHub-specific addressing
@@ -224,7 +234,9 @@ export async function deliverGithubEvent(
           // client cannot impersonate other sources.
           ...(mentionedUser ? { mentionedUser } : {}),
           ...(card.teamAgentTask ? { teamAgentTask: card.teamAgentTask } : {}),
+          ...(taskRun ? taskRun.metadata : {}),
         },
+        allowGithubTaskRun: taskRun !== null,
       });
       stats.delivered += 1;
     } catch (err) {
@@ -349,7 +361,7 @@ function buildCard(
   event: NormalizedScmEvent,
   involveReason: InvolveReason | null,
   involveLogin: string | null,
-  teamAgentTask: { agentUuid: string } | null,
+  teamAgentTask: { agentUuid: string; runId?: string } | null,
 ): GithubEventCard {
   const reason: GithubEventCard["reason"] = involveReason ?? "subscribed";
   const card: GithubEventCard = {
@@ -372,4 +384,41 @@ function buildCard(
   if (involveLogin) card.mentionedUser = involveLogin;
   if (teamAgentTask) card.teamAgentTask = teamAgentTask;
   return card;
+}
+
+function createGithubTaskRun(
+  event: NormalizedScmEvent,
+  task: { agentUuid: string },
+  managerHumanAgentId: string,
+): {
+  marker: { agentUuid: string; runId: string };
+  metadata: Record<string, unknown>;
+} {
+  const match = /#([1-9]\d*)$/u.exec(event.entity.key);
+  const entityNumber = match?.[1] ? Number(match[1]) : Number.NaN;
+  const entityUrl = event.entity.url ?? event.surface.url;
+  if (
+    (event.entity.type !== "issue" && event.entity.type !== "pull_request") ||
+    !Number.isSafeInteger(entityNumber) ||
+    entityNumber <= 0 ||
+    !entityUrl
+  ) {
+    throw new Error("Publishable GitHub task delivery is missing a supported immutable entity identity");
+  }
+  const runId = uuidv7();
+  return {
+    marker: { agentUuid: task.agentUuid, runId },
+    metadata: {
+      githubTaskRun: true,
+      githubTaskRunId: runId,
+      githubTaskOrganizationId: event.source.organizationId,
+      githubTaskAgentUuid: task.agentUuid,
+      githubTaskManagerHumanAgentId: managerHumanAgentId,
+      githubTaskRepository: event.entity.projectKey.toLowerCase(),
+      githubTaskEntityType: event.entity.type,
+      githubTaskEntityNumber: entityNumber,
+      githubTaskEntityUrl: entityUrl,
+      githubTaskReplySubmission: { state: "pending" },
+    },
+  };
 }

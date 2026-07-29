@@ -288,6 +288,7 @@ export async function githubAppWebhookRoutes(app: FastifyInstance): Promise<void
       resolveAudience: (normalizedEvent) =>
         resolveGithubAudience(app.db, normalizedEvent, {
           appSlug: appConfig.slug,
+          appPermissions: installation.permissions,
         }),
       deliver: (normalizedEvent, audience) =>
         deliverGithubEvent(app, normalizedEvent, audience.targets, {

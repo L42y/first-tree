@@ -58,6 +58,14 @@ function stripUntrustedMetadataKeys(
       `Metadata key "${contextReviewKey}" is reserved for server-authored Context Reviewer runs.`,
     );
   }
+  const githubTaskKey = Object.keys(meta).find(
+    (key) => key === "teamAgentTask" || key === "githubTaskRun" || key.startsWith("githubTask"),
+  );
+  if (githubTaskKey && !options.allowGithubTaskRun) {
+    throw new BadRequestError(
+      `Metadata key "${githubTaskKey}" is reserved for server-authored GitHub task reply runs.`,
+    );
+  }
   if (CRON_TRIGGER_METADATA_KEY in meta && !options.allowCronTrigger) {
     throw new BadRequestError(
       `Metadata key "${CRON_TRIGGER_METADATA_KEY}" is reserved for server-authored scheduled job triggers.`,
@@ -391,6 +399,13 @@ export type SendMessageOptions = {
    * Only the GitHub App Context Reviewer webhook dispatcher may set this option.
    */
   allowContextReviewRun?: boolean;
+  /**
+   * Trusted-internal capability for creating an App-directed GitHub task run.
+   * The `teamAgentTask` marker and `githubTask*` metadata namespace carry
+   * recipient-bound App comment publication authority and are rejected at
+   * every ordinary message boundary.
+   */
+  allowGithubTaskRun?: boolean;
   /**
    * Trusted-internal capability for materializing a scheduled job trigger
    * message. The `cronTrigger` metadata namespace is rejected at every
@@ -1109,6 +1124,12 @@ export async function editMessage(
     );
     if (protectedContextReviewKey) {
       throw new ForbiddenError("Context Reviewer run history cannot be edited");
+    }
+    const protectedGithubTaskKey = Object.keys(msg.metadata).find(
+      (key) => key === "teamAgentTask" || key === "githubTaskRun" || key.startsWith("githubTask"),
+    );
+    if (protectedGithubTaskKey) {
+      throw new ForbiddenError("GitHub task reply run history cannot be edited");
     }
     const previousAttachmentIds = legacyFileAttachmentIds(msg.format, msg.content);
 

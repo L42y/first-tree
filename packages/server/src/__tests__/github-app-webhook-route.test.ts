@@ -139,7 +139,7 @@ async function seedInstallation(
     accountLogin: "owner",
     accountGithubId: 1000 + opts.installationId,
     hubOrganizationId: opts.orgId,
-    permissions: { contents: "read", pull_requests: "write" },
+    permissions: { contents: "read", pull_requests: "write", issues: "write" },
     events: ["pull_request", "issues"],
     suspendedAt: opts.suspended ? new Date(Date.now() - 1_000) : null,
   });
@@ -1777,12 +1777,23 @@ describe("POST /webhooks/github-app", () => {
       type: "github_event",
       reason: scenario.expectedReason,
       mentionedUser: scenario.expectedLogin,
-      teamAgentTask: { agentUuid: teamAgent },
+      teamAgentTask: { agentUuid: teamAgent, runId: expect.any(String) },
     });
     expect(message?.metadata).toMatchObject({
       mentions: [teamAgent],
-      teamAgentTask: { agentUuid: teamAgent },
+      teamAgentTask: { agentUuid: teamAgent, runId: expect.any(String) },
+      githubTaskRun: true,
+      githubTaskRunId: expect.any(String),
+      githubTaskAgentUuid: teamAgent,
+      githubTaskManagerHumanAgentId: admin.humanAgentUuid,
+      githubTaskRepository: "owner/repo",
+      githubTaskEntityType: "issue",
+      githubTaskEntityNumber: scenario.action === "opened" ? 12 : 13,
+      githubTaskReplySubmission: { state: "pending" },
     });
+    expect(message?.metadata.githubTaskRunId).toBe(
+      (message?.content as { teamAgentTask?: { runId?: string } }).teamAgentTask?.runId,
+    );
 
     const [entry] = await app.db
       .select({ notify: inboxEntries.notify })

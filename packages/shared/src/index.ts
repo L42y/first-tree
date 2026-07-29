@@ -643,6 +643,21 @@ export {
   githubPermissionLevelSchema,
 } from "./schemas/github-app.js";
 export {
+  GITHUB_TASK_REPLY_BODY_MAX_BYTES,
+  GITHUB_TASK_REPLY_ERROR_CODES,
+  GITHUB_TASK_REPLY_RUN_MARKER_PREFIX,
+  type GithubTaskReplyErrorCode,
+  type GithubTaskReplyRequest,
+  type GithubTaskReplyResponse,
+  type GithubTaskReplySubmissionState,
+  type GithubTaskRunMessageMetadata,
+  githubTaskReplyErrorCodeSchema,
+  githubTaskReplyRequestSchema,
+  githubTaskReplyResponseSchema,
+  githubTaskReplySubmissionStateSchema,
+  githubTaskRunMessageMetadataSchema,
+} from "./schemas/github-task-reply.js";
+export {
   type FollowGitlabEntity,
   followGitlabEntitySchema,
   GITLAB_CONNECTION_READINESS,

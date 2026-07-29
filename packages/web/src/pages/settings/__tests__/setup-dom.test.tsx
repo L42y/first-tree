@@ -1531,6 +1531,31 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
+  it("shows the App comment permission upgrade on the independent Team Agent control", async () => {
+    orgSettingsMocks.getGithubFeaturesSetting.mockResolvedValue({
+      teamAgent: { agentUuid: null, agent: null },
+    });
+    teamAgentMocks.getTeamAgentCandidates.mockResolvedValue({
+      items: [],
+      blockers: [
+        {
+          code: "github_app_task_reply_permission_required",
+          resolutionOwner: "admin",
+          actionKind: "manage_github_installation",
+        },
+      ],
+    });
+
+    const view = await renderSettingsSetupPage();
+    const { controls } = await openTeamAgentControls(view);
+    await waitForText(
+      controls,
+      "The GitHub App installation must grant Issues and Pull requests write access for App-authored task replies.",
+    );
+    expect(controls.querySelector('a[href="/settings/integrations/github"]')).not.toBeNull();
+    await act(async () => view.root.unmount());
+  });
+
   it("offers binding repair without a misleading build-chat entry for an invalid Context Tree", async () => {
     setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
       capabilityFixture({

@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
   buildAppAuthorizeUrl,
   createAppJwt,
+  createIssueComment,
   createOrganizationRepo,
   createPullRequestReview,
   createRepoFileWithToken,
@@ -14,6 +15,7 @@ import {
   getRepoFileWithToken,
   getRepository,
   listInstallationRepos,
+  listIssueCommentsForRun,
   listPullRequestReviewsForRun,
   mintInstallationToken,
   refreshAppUserToken,
@@ -274,6 +276,70 @@ describe("services/github-app", () => {
         "https://api.github.com/repos/owner/repo/pulls/42/reviews?per_page=100",
         "https://api.github.com/repos/owner/repo/pulls/42/reviews?per_page=100&page=2",
       ]);
+    });
+  });
+
+  describe("App-authored Issue and pull-request conversation comments", () => {
+    it("creates a comment and reconciles only the exact App actor and hidden run marker", async () => {
+      const marker = "<!-- first-tree-github-task-reply-run:run-1 -->";
+      const fakeFetch = vi.fn<typeof fetch>(async (url, init) => {
+        if (init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              id: 9,
+              html_url: "https://github.com/owner/repo/issues/42#issuecomment-9",
+              user: { login: "first-tree[bot]" },
+              body: JSON.parse(String(init.body)).body,
+            }),
+            { status: 201, headers: { "content-type": "application/json" } },
+          );
+        }
+        expect(String(url)).toContain("/repos/owner/repo/issues/42/comments?per_page=100");
+        return new Response(
+          JSON.stringify([
+            {
+              id: 9,
+              html_url: "https://github.com/owner/repo/issues/42#issuecomment-9",
+              user: { login: "first-tree[bot]" },
+              body: `Done\n\n${marker}`,
+            },
+            {
+              id: 10,
+              html_url: "https://github.com/owner/repo/issues/42#issuecomment-10",
+              user: { login: "another-user" },
+              body: `Spoof\n\n${marker}`,
+            },
+            {
+              id: 11,
+              html_url: "https://github.com/owner/repo/issues/42#issuecomment-11",
+              user: { login: "first-tree[bot]" },
+              body: "No marker",
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      });
+
+      await expect(
+        createIssueComment(
+          "token",
+          { owner: "owner", repo: "repo", issueNumber: 42, body: `Done\n\n${marker}` },
+          { fetcher: fakeFetch },
+        ),
+      ).resolves.toMatchObject({ id: 9, actor: "first-tree[bot]" });
+      await expect(
+        listIssueCommentsForRun(
+          "token",
+          {
+            owner: "owner",
+            repo: "repo",
+            issueNumber: 42,
+            marker,
+            appSlug: "first-tree",
+          },
+          { fetcher: fakeFetch },
+        ),
+      ).resolves.toEqual([expect.objectContaining({ id: 9, actor: "first-tree[bot]", body: `Done\n\n${marker}` })]);
     });
   });
 

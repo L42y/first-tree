@@ -1,6 +1,7 @@
 import {
   AGENT_STATUSES,
   AGENT_TYPES,
+  type GithubAppInstallationPermissions,
   type InvolveReason,
   isDeclaredBoundVia,
   type NormalizedScmEvent,
@@ -97,6 +98,7 @@ export type AudienceResolution = {
 
 export type GithubAudienceOptions = {
   appSlug?: string | null;
+  appPermissions?: GithubAppInstallationPermissions;
 };
 
 const AUTHORIZED_TEXT_TASK_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -115,6 +117,31 @@ export function isGithubAppTargetLogin(login: string, appSlug: string | null | u
 
 export function isAuthorizedGithubTextTaskRequester(authorAssociation: string | null | undefined): boolean {
   return authorAssociation ? AUTHORIZED_TEXT_TASK_ASSOCIATIONS.has(authorAssociation.trim().toUpperCase()) : false;
+}
+
+export function isGithubTaskReplySupported(
+  entityType: NormalizedScmEvent["entity"]["type"],
+  permissions: GithubAppInstallationPermissions | undefined,
+): boolean {
+  if (entityType === "issue") return permissions?.issues === "write";
+  if (entityType === "pull_request") return permissions?.pull_requests === "write";
+  return false;
+}
+
+function githubTaskEntityNumber(event: NormalizedScmEvent): number | null {
+  const match = /#([1-9]\d*)$/u.exec(event.entity.key);
+  if (!match?.[1]) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function hasGithubTaskEntityUrl(event: NormalizedScmEvent): boolean {
+  const value = event.entity.url ?? event.surface.url;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function resolveGithubAppTaskAgent(
@@ -334,7 +361,12 @@ export async function resolveGithubAudience(
     }
   }
 
-  if (teamAgentTaskTarget) {
+  if (
+    teamAgentTaskTarget &&
+    isGithubTaskReplySupported(event.entity.type, options.appPermissions) &&
+    githubTaskEntityNumber(event) !== null &&
+    hasGithubTaskEntityUrl(event)
+  ) {
     const taskAgent = await resolveGithubAppTaskAgent(db, event);
     if (taskAgent) {
       // Always model an App-directed request as a fresh personnel target, even

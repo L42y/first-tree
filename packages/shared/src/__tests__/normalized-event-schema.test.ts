@@ -184,9 +184,15 @@ describe("githubEventCardSchema", () => {
       ...baseCard,
       reason: "mentioned" as const,
       mentionedUser: "bob",
-      teamAgentTask: { agentUuid: "agent-uuid" },
+      teamAgentTask: { agentUuid: "agent-uuid", runId: "server-run-id" },
     });
     expect(res.success).toBe(true);
+  });
+
+  it("keeps historical recipient-only task cards parseable", () => {
+    expect(githubEventCardSchema.safeParse({ ...baseCard, teamAgentTask: { agentUuid: "agent-uuid" } }).success).toBe(
+      true,
+    );
   });
 
   it("keeps historical boolean task cards parseable", () => {

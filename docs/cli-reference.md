@@ -649,8 +649,9 @@ first-tree cron delete <jobId>
 
 ## github
 
-GitHub entity attention for the current chat. `follow` wires an entity's
-webhook event stream into the chat (one routing line, chat-scoped);
+GitHub entity attention and recipient-bound App task replies for the current
+chat. `follow` wires an entity's webhook event stream into the chat (one
+routing line, chat-scoped);
 `unfollow` explicitly stops this chat from tracking the entity and severs
 every line wired into the chat for that entity, however it was created.
 Creating a PR or issue never follows it automatically — declare the
@@ -662,7 +663,8 @@ for the full flag surface and conflict handling.
 first-tree github
 ├── follow <entity> [--chat <chatId>] [--rebind]    # route the entity's events into the chat
 ├── unfollow <entity> [--chat <chatId>]             # sever all of the chat's lines for the entity
-└── following [--chat <chatId>] [--json]            # list entities wired into the chat
+├── following [--chat <chatId>] [--json]            # list entities wired into the chat
+└── reply --run <runId> --body-file <path|->        # publish one task outcome as the GitHub App
 ```
 
 ```bash
@@ -673,6 +675,17 @@ first-tree github follow acme/api@3f2a91c   # commit
 first-tree github following
 first-tree github unfollow acme/api#42
 ```
+
+`github reply` is available only inside the active Agent turn and current chat
+recorded by a server-authored `teamAgentTask: { agentUuid, runId }` card. The
+CLI supplies only the run id and body; Cloud fixes the repository and Issue or
+pull request, verifies the exact selected Agent/runtime/chat and installation
+coverage, and keeps the App credential server-side. Each run accepts one
+immutable payload. Unknown GitHub writes reconcile a hidden run marker before
+retrying, and a different payload is rejected. The body must not mention the
+App or contain the reserved marker. Historical markers without a run id and
+Discussion/commit events cannot publish. This ordinary comment publisher does
+not grant Context Review verdict or merge authority.
 
 `<entity>` accepts a full GitHub URL, `owner/repo#N`, or `owner/repo@<sha>`.
 A `409` means the same (human, delegate) line already lives in another chat

@@ -84,6 +84,9 @@ export function SetupTeamAgentControls({
   ];
   const blockers = candidatesQuery.data?.blockers ?? [];
   const appSlugMissing = blockers.some((item) => item.code === "github_app_slug_missing");
+  const manageGithubInstallation = blockers.some(
+    (item) => item.resolutionOwner === "admin" && item.actionKind === "manage_github_installation",
+  );
   const error = settingQuery.error ?? candidatesQuery.error ?? assignmentMutation.error;
 
   return (
@@ -116,7 +119,14 @@ export function SetupTeamAgentControls({
       ) : candidates.length === 0 ? (
         <div className="text-label" style={{ color: "var(--fg-3)" }}>
           {blockerText(blockers)}
-          {!appSlugMissing ? (
+          {manageGithubInstallation ? (
+            <>
+              {" "}
+              <Link to="/settings/integrations/github" className="font-medium" style={{ color: "var(--fg-2)" }}>
+                Manage GitHub
+              </Link>
+            </>
+          ) : !appSlugMissing ? (
             <>
               {" "}
               <Link to="/team" className="font-medium" style={{ color: "var(--fg-2)" }}>
