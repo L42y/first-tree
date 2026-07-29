@@ -95,7 +95,7 @@ import {
   rootLogger,
 } from "./observability/index.js";
 import { broadcastToAdmins } from "./services/admin-broadcast.js";
-import { backfillLegacyAttachments } from "./services/attachment.js";
+import { backfillExternalAttachmentsToPostgres } from "./services/attachment.js";
 import {
   type AttachmentBlobStore,
   createS3AttachmentBlobStore,
@@ -726,8 +726,8 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     await backfillResourcesPhase1(db).catch((err) => {
       app.log.warn({ err }, "resources phase1 backfill failed");
     });
-    await backfillLegacyAttachments(db, attachmentBlobStore).catch((err) => {
-      app.log.warn({ err }, "legacy attachment object-store backfill failed");
+    await backfillExternalAttachmentsToPostgres(db, attachmentBlobStore).catch((err) => {
+      app.log.warn({ err }, "legacy S3 attachment reverse backfill failed");
     });
     await backfillSkillResourceBundles(db, attachmentBlobStore).catch((err) => {
       app.log.warn({ err }, "legacy Skill bundle backfill failed");

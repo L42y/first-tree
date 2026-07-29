@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createLogger } from "../observability/index.js";
-import { backfillLegacyAttachments, sweepOrphanAttachments } from "./attachment.js";
+import { backfillExternalAttachmentsToPostgres, sweepOrphanAttachments } from "./attachment.js";
 import * as chatArchiveService from "./chat-archive.js";
 import * as clientService from "./client.js";
 import { createCronScheduler } from "./cron-scheduler.js";
@@ -24,7 +24,7 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
   const cronScheduler = createCronScheduler(app);
 
   async function maintainAttachments(): Promise<void> {
-    const legacyAttachments = await backfillLegacyAttachments(app.db, app.attachmentBlobStore);
+    const legacyAttachments = await backfillExternalAttachmentsToPostgres(app.db, app.attachmentBlobStore);
     const legacySkills = await backfillSkillResourceBundles(app.db, app.attachmentBlobStore);
     const sweep = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
     if (legacyAttachments.migrated > 0 || legacySkills.migrated > 0 || sweep.deleted > 0) {

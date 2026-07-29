@@ -766,7 +766,9 @@ describe("open-question (format=request) + open_request_count", () => {
       chat.id,
       question.id,
       asker.agent.uuid,
-      { content: "ratio (clarified)?" },
+      {
+        content: "ratio (clarified)?",
+      },
       app.attachmentBlobStore,
     );
     expect(edited.format).toBe("request");

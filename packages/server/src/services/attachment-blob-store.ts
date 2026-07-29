@@ -1,9 +1,12 @@
 import { Readable } from "node:stream";
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { NotFoundError, ServiceUnavailableError } from "../errors.js";
 
+/**
+ * Transitional access to payloads written by the short-lived S3-backed
+ * implementation. New attachment writes never use this interface.
+ */
 export interface AttachmentBlobStore {
-  put(key: string, body: Readable, contentLength?: number): Promise<void>;
   get(key: string): Promise<Readable>;
   delete(key: string): Promise<void>;
 }
@@ -38,17 +41,6 @@ export function createS3AttachmentBlobStore(options: S3AttachmentBlobStoreOption
   });
 
   return {
-    async put(key, body, contentLength) {
-      await client.send(
-        new PutObjectCommand({
-          Bucket: options.bucket,
-          Key: key,
-          Body: body,
-          ...(contentLength !== undefined ? { ContentLength: contentLength } : {}),
-        }),
-      );
-    },
-
     async get(key) {
       try {
         const output = await client.send(new GetObjectCommand({ Bucket: options.bucket, Key: key }));
@@ -70,20 +62,8 @@ export function createS3AttachmentBlobStore(options: S3AttachmentBlobStoreOption
   };
 }
 
-/**
- * Tests inject this store so route and service tests exercise the same
- * streaming contract without requiring a networked object-store container.
- */
 export class MemoryAttachmentBlobStore implements AttachmentBlobStore {
   readonly objects = new Map<string, Buffer>();
-
-  async put(key: string, body: Readable): Promise<void> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of body) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    this.objects.set(key, Buffer.concat(chunks));
-  }
 
   async get(key: string): Promise<Readable> {
     const bytes = this.objects.get(key);
@@ -99,11 +79,10 @@ export class MemoryAttachmentBlobStore implements AttachmentBlobStore {
 export function createUnavailableAttachmentBlobStore(): AttachmentBlobStore {
   const unavailable = () => {
     throw new ServiceUnavailableError(
-      "Object storage is not configured. Set FIRST_TREE_OBJECT_STORAGE_BUCKET and related settings.",
+      "Legacy object storage is not configured. Keep FIRST_TREE_OBJECT_STORAGE_BUCKET and related settings until the attachment reverse backfill completes.",
     );
   };
   return {
-    put: unavailable,
     get: unavailable,
     delete: unavailable,
   };

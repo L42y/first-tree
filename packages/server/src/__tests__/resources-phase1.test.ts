@@ -2111,7 +2111,7 @@ async function createTeamSkill(
   payload: SkillResourcePayload,
 ) {
   const bundle = buildLegacySkillBundle(payload);
-  const attachment = await createAttachment(app.db, app.attachmentBlobStore, {
+  const attachment = await createAttachment(app.db, {
     organizationId: owner.organizationId,
     mimeType: "application/zip",
     filename: `${payload.name}.zip`,

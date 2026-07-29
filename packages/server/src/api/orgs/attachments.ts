@@ -75,7 +75,7 @@ export async function orgAttachmentRoutes(app: FastifyInstance): Promise<void> {
           ? Number(contentLengthHeader)
           : undefined;
 
-      const row = await createAttachment(app.db, app.attachmentBlobStore, {
+      const row = await createAttachment(app.db, {
         organizationId: scope.organizationId,
         mimeType,
         filename,
