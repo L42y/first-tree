@@ -611,6 +611,7 @@ describe("POST /me/landing-campaigns/start", () => {
     expect(resolvedConfig.payload.prompt.sections).toEqual([
       {
         scope: "agent",
+        provenance: "agent",
         name: LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
         body: LANDING_CAMPAIGN_TRIAL_PROMPT,
         editable: false,

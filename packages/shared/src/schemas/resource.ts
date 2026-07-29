@@ -94,7 +94,7 @@ const mcpHttpNoSecretServerSchema = z
   .object({
     name: z.string().min(1),
     transport: z.literal("http"),
-    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credentials."),
+    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credential-bearing values."),
   })
   .strict();
 
@@ -102,12 +102,24 @@ const mcpSseNoSecretServerSchema = z
   .object({
     name: z.string().min(1),
     transport: z.literal("sse"),
-    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credentials."),
+    url: z.string().url().refine(hasNoUrlCredentials, "MCP resource URLs must not include credential-bearing values."),
+  })
+  .strict();
+
+const mcpStdioNoSecretServerSchema = mcpStdioServerSchema
+  .extend({
+    args: z
+      .array(z.string())
+      .refine(
+        hasNoCredentialBearingArguments,
+        "No-secret MCP resources must not include credential-bearing command arguments.",
+      )
+      .optional(),
   })
   .strict();
 
 export const noSecretMcpServerSchema = z.discriminatedUnion("transport", [
-  mcpStdioServerSchema.strict(),
+  mcpStdioNoSecretServerSchema,
   mcpHttpNoSecretServerSchema,
   mcpSseNoSecretServerSchema,
 ]);
@@ -123,7 +135,13 @@ export type ResourcePayload = z.infer<typeof resourcePayloadSchema>;
 
 function hasNoUrlCredentials(value: string): boolean {
   const parsed = new URL(value);
-  return parsed.username === "" && parsed.password === "";
+  return parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "";
+}
+
+function hasNoCredentialBearingArguments(args: readonly string[]): boolean {
+  const credentialMarker =
+    /(?:^|[^a-z0-9])(?:api[-_]?key|access[-_]?token|authorization|bearer|credential|password|passwd|secret)(?:$|[^a-z0-9])/i;
+  return args.every((argument) => !credentialMarker.test(argument));
 }
 
 const namedResourceInputShape = {

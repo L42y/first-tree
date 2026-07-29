@@ -187,6 +187,7 @@ export {
   RUNTIME_STALE_MS,
 } from "./schemas/agent-status.js";
 export {
+  AGENT_TEMPLATE_MAX_INSTRUCTIONS_LENGTH,
   AGENT_TEMPLATE_MAX_RESOURCES,
   AGENT_TEMPLATE_MAX_SELECTION,
   AGENT_TEMPLATE_STATUSES,
@@ -210,6 +211,7 @@ export {
   agentTemplatesForAgentOutputSchema,
   type CreateAgentTemplate,
   createAgentTemplateSchema,
+  POSTGRES_INTEGER_MAX,
   type RetireAgentTemplate,
   retireAgentTemplateSchema,
   type UpdateAgentTemplate,

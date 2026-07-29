@@ -6,7 +6,7 @@ import {
   newChatDefaultCandidatesRequestSchema,
   paginationQuerySchema,
 } from "@first-tree/shared";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BadRequestError, ForbiddenError } from "../../errors.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
 import * as agentService from "../../services/agent.js";
@@ -52,6 +52,43 @@ export async function orgAgentRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
     sendToClient(agent.clientId, parsed.data);
+  }
+
+  async function createOrgAgent(
+    request: FastifyRequest<{ Params: { orgId: string } }>,
+    reply: FastifyReply,
+    requireTemplateSelection: boolean,
+  ) {
+    const scope = await requireOrgMembership(request, app.db);
+    const body = createAgentSchema.parse(request.body);
+    if (requireTemplateSelection && (!body.templateIds || body.templateIds.length === 0)) {
+      throw new BadRequestError("The Template-configured Agent endpoint requires at least one Agent Template");
+    }
+    if (body.type === AGENT_TYPES.HUMAN) {
+      throw new BadRequestError("Human agents are created through the member lifecycle");
+    }
+    assertMetadataDoesNotClaimLandingCampaignTrial(body.metadata);
+    const managerId = scope.role === "admin" ? (body.managerId ?? scope.memberId) : scope.memberId;
+    const agent = await agentService.createAgent(
+      app.db,
+      {
+        ...body,
+        organizationId: scope.organizationId,
+        source: body.source ?? "admin-api",
+        managerId,
+      },
+      {
+        adoptAsDelegateIfFirst: managerId === scope.memberId,
+        templatePublisherOrganizationId: app.config?.agentTemplates?.publisherOrganizationId,
+      },
+    );
+    notifyClientAgentPinned(agent);
+    return reply.status(201).send({
+      ...agent,
+      metadata: agentService.stripReservedAgentMetadata(agent.metadata),
+      createdAt: agent.createdAt.toISOString(),
+      updatedAt: agent.updatedAt.toISOString(),
+    });
   }
 
   app.get<{ Params: { orgId: string } }>("/", async (request) => {
@@ -137,42 +174,18 @@ export async function orgAgentRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post<{ Params: { orgId: string } }>("/", { config: { otelRecordBody: true } }, async (request, reply) => {
-    const scope = await requireOrgMembership(request, app.db);
-    const body = createAgentSchema.parse(request.body);
-    if (body.type === AGENT_TYPES.HUMAN) {
-      throw new BadRequestError("Human agents are created through the member lifecycle");
-    }
-    assertMetadataDoesNotClaimLandingCampaignTrial(body.metadata);
-    // member role: managerId forced to caller's member; admin role may
-    // specify any managerId in the same org.
-    const managerId = scope.role === "admin" ? (body.managerId ?? scope.memberId) : scope.memberId;
-    // First-agent → delegate adoption fires ONLY for a self-create. Delegate is
-    // a personal choice (the PATCH path rejects an admin setting another
-    // member's delegate), so an admin creating an agent FOR another member must
-    // not implicitly set that member's delegate. Only the caller acting on
-    // their own member can adopt.
-    const agent = await agentService.createAgent(
-      app.db,
-      {
-        ...body,
-        organizationId: scope.organizationId,
-        source: body.source ?? "admin-api",
-        managerId,
-      },
-      {
-        adoptAsDelegateIfFirst: managerId === scope.memberId,
-        // Some embedded/test route harnesses provide the service decorations
-        // without a full server config object; no configured catalog simply
-        // means Template selection is unavailable.
-        templatePublisherOrganizationId: app.config?.agentTemplates?.publisherOrganizationId,
-      },
-    );
-    notifyClientAgentPinned(agent);
-    return reply.status(201).send({
-      ...agent,
-      metadata: agentService.stripReservedAgentMetadata(agent.metadata),
-      createdAt: agent.createdAt.toISOString(),
-      updatedAt: agent.updatedAt.toISOString(),
-    });
+    return createOrgAgent(request, reply, false);
   });
+
+  /**
+   * Capability-safe rolling-deploy boundary for Agent Template creation.
+   * The direct parent release has no such path, so a target Web request routed
+   * to an old Server fails before creating anything instead of returning 201
+   * after its permissive schema strips `templateIds`.
+   */
+  app.post<{ Params: { orgId: string } }>(
+    "/from-agent-templates",
+    { config: { otelRecordBody: true } },
+    async (request, reply) => createOrgAgent(request, reply, true),
+  );
 }

@@ -1,8 +1,11 @@
 import { z } from "zod";
+import { AGENT_BRIEFING_GENERATED_MARKER } from "../agent-briefing-guard.js";
 import { PROMPT_APPEND_MAX_LENGTH } from "./agent-runtime-config.js";
 
 export const AGENT_TEMPLATE_MAX_SELECTION = 8;
 export const AGENT_TEMPLATE_MAX_RESOURCES = 64;
+export const AGENT_TEMPLATE_MAX_INSTRUCTIONS_LENGTH = PROMPT_APPEND_MAX_LENGTH - 256;
+export const POSTGRES_INTEGER_MAX = 2_147_483_647;
 
 export const AGENT_TEMPLATE_STATUSES = {
   ACTIVE: "active",
@@ -48,15 +51,26 @@ export const agentTemplateResourceIdsSchema = uniqueStringArraySchema(
 
 export const agentTemplateOutcomesSchema = z.array(z.string().trim().min(1).max(240)).max(8);
 
+const agentTemplateInstructionsSchema = z
+  .string()
+  .min(1)
+  .max(AGENT_TEMPLATE_MAX_INSTRUCTIONS_LENGTH)
+  .refine(
+    (value) => !value.includes(AGENT_BRIEFING_GENERATED_MARKER),
+    "Generated Agent briefings cannot be used as Agent Template instructions.",
+  );
+
+const agentTemplateSortOrderSchema = z.number().int().min(0).max(POSTGRES_INTEGER_MAX);
+
 export const createAgentTemplateSchema = z
   .object({
     id: agentTemplateIdSchema,
     title: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(1000),
     outcomes: agentTemplateOutcomesSchema.default([]),
-    customInstructions: z.string().min(1).max(PROMPT_APPEND_MAX_LENGTH),
+    customInstructions: agentTemplateInstructionsSchema,
     resourceIds: agentTemplateResourceIdsSchema.default([]),
-    sortOrder: z.number().int().min(0).default(0),
+    sortOrder: agentTemplateSortOrderSchema.default(0),
   })
   .strict();
 export type CreateAgentTemplate = z.infer<typeof createAgentTemplateSchema>;
@@ -67,9 +81,9 @@ export const updateAgentTemplateSchema = z
     title: z.string().trim().min(1).max(200).optional(),
     summary: z.string().trim().min(1).max(1000).optional(),
     outcomes: agentTemplateOutcomesSchema.optional(),
-    customInstructions: z.string().min(1).max(PROMPT_APPEND_MAX_LENGTH).optional(),
+    customInstructions: agentTemplateInstructionsSchema.optional(),
     resourceIds: agentTemplateResourceIdsSchema.optional(),
-    sortOrder: z.number().int().min(0).optional(),
+    sortOrder: agentTemplateSortOrderSchema.optional(),
   })
   .strict()
   .refine(

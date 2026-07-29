@@ -224,7 +224,7 @@ function EffectiveInstructionsBlock({ prompt, sections }: { prompt: string; sect
             {segments.length > 0 ? (
               segments.map((section, i) => (
                 <div
-                  key={`${section.scope}:${section.name}:${section.body.length}`}
+                  key={`${section.provenance ?? section.scope}:${section.name}:${section.body.length}`}
                   style={
                     i > 0
                       ? {
@@ -274,7 +274,12 @@ function EffectiveInstructionsBlock({ prompt, sections }: { prompt: string; sect
 // exactly like its row does.
 function segmentLabel(section: PromptSection): string {
   const name = section.name.trim() || "Custom instructions";
-  const source = section.scope === "team" ? "From your team" : "Added by you";
+  const source =
+    section.provenance === "agent_template"
+      ? "From an official Agent Template"
+      : section.scope === "team"
+        ? "From your team"
+        : "Added by you";
   return `${name} · ${source}`;
 }
 

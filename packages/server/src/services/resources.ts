@@ -48,6 +48,8 @@ import {
   bumpAgentConfigsForTemplateImpacts,
   listAgentTemplateImpactsForResource,
   loadAgentTemplateRuntimeSelection,
+  lockAgentTemplateCatalog,
+  lockAndValidateAgentTemplateSelection,
 } from "./agent-templates.js";
 import { deleteAttachmentIfUnreferenced } from "./attachment.js";
 import { type AttachmentBlobStore, createUnavailableAttachmentBlobStore } from "./attachment-blob-store.js";
@@ -117,8 +119,22 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
   const templatePublisherOrganizationId = opts.agentTemplatePublisherOrganizationId;
   const attachmentBlobStore = opts.attachmentBlobStore ?? createUnavailableAttachmentBlobStore();
 
+  const RESOURCE_FANOUT_BATCH_SIZE = 250;
+  const RESOURCE_NOTIFY_CONCURRENCY = 25;
+
+  function chunks<T>(values: readonly T[], size: number): T[][] {
+    const result: T[][] = [];
+    for (let index = 0; index < values.length; index += size) {
+      result.push(values.slice(index, index + size));
+    }
+    return result;
+  }
+
   async function notifyAgents(agentIds: Iterable<string>): Promise<void> {
-    await Promise.allSettled(Array.from(new Set(agentIds)).map((id) => notifier.notifyConfigChange(`agent:${id}`)));
+    const ids = Array.from(new Set(agentIds));
+    for (const batch of chunks(ids, RESOURCE_NOTIFY_CONCURRENCY)) {
+      await Promise.allSettled(batch.map((id) => notifier.notifyConfigChange(`agent:${id}`)));
+    }
   }
 
   async function bumpAgentConfigVersions(
@@ -127,15 +143,16 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     actorId: string,
   ): Promise<void> {
     const ids = Array.from(new Set(agentIds));
-    if (ids.length === 0) return;
-    await targetDb
-      .update(agentConfigs)
-      .set({
-        version: sql`${agentConfigs.version} + 1`,
-        updatedAt: new Date(),
-        updatedBy: actorId,
-      })
-      .where(inArray(agentConfigs.agentId, ids));
+    for (const batch of chunks(ids, RESOURCE_FANOUT_BATCH_SIZE)) {
+      await targetDb
+        .update(agentConfigs)
+        .set({
+          version: sql`${agentConfigs.version} + 1`,
+          updatedAt: new Date(),
+          updatedBy: actorId,
+        })
+        .where(inArray(agentConfigs.agentId, batch));
+    }
   }
 
   async function listRuntimeAgentIds(organizationId: string): Promise<string[]> {
@@ -725,13 +742,22 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
   }
 
   function applyPromptBudget(rows: EffectiveResourceRow[], unavailable: EffectiveAgentResources["unavailable"]): void {
-    let combined = "";
-    let overflow = false;
-    for (const row of rows.sort(comparePromptRows)) {
+    // Budget allocation is deliberately different from render order. Agent
+    // instructions are the final, most-specific authority and must not vanish
+    // because an earlier Team or live Template row consumes the budget.
+    // Template selection/update validation guarantees that the explicit
+    // Agent+Template stack fits; recommended Team rows use the remaining
+    // capacity. runtimePromptAppend/runtimePromptSections still render the
+    // surviving rows in Team → Template → Agent precedence order.
+    const allocationOrder = [...rows].sort(
+      (a, b) => promptBudgetRank(a.source) - promptBudgetRank(b.source) || comparePromptRows(a, b),
+    );
+    let combinedLength = 0;
+    for (const row of allocationOrder) {
       if (row.mode !== "enabled") continue;
       const body = row.promptBody ?? "";
       const rendered = renderPromptRow(row.name, row.source, body);
-      if (overflow || combined.length + rendered.length > PROMPT_APPEND_MAX_LENGTH) {
+      if (combinedLength + rendered.length > PROMPT_APPEND_MAX_LENGTH) {
         row.mode = "unavailable";
         row.unavailableReason = "prompt_budget_exceeded";
         unavailable.push({
@@ -739,10 +765,9 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           id: row.resourceId ?? row.bindingId ?? row.id,
           reason: "prompt_budget_exceeded",
         });
-        overflow = true;
         continue;
       }
-      combined += rendered;
+      combinedLength += rendered.length;
     }
   }
 
@@ -868,6 +893,12 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     return 2;
   }
 
+  function promptBudgetRank(source: EffectiveResourceRow["source"]): number {
+    if (source === "inline_prompt" || source === "agent_extra") return 0;
+    if (source === "agent_template") return 1;
+    return 2;
+  }
+
   function comparePromptRows(a: EffectiveResourceRow, b: EffectiveResourceRow): number {
     return promptSourceRank(a.source) - promptSourceRank(b.source) || a.order - b.order;
   }
@@ -893,6 +924,12 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         const editable = row.source === "inline_prompt" && !row.replacesResourceId;
         return {
           scope: promptSectionScope(row.source),
+          provenance:
+            row.source === "agent_template"
+              ? "agent_template"
+              : row.source === "inline_prompt" || row.source === "agent_extra"
+                ? "agent"
+                : "team",
           name: editable ? "" : row.name,
           body: (row.promptBody ?? "").trim(),
           editable,
@@ -1214,6 +1251,13 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       try {
         await db.transaction(async (tx) => {
           const targetDb = tx as unknown as Database;
+          if (
+            templatePublisherOrganizationId &&
+            current.organizationId === templatePublisherOrganizationId &&
+            (current.type === "mcp" || current.type === "skill")
+          ) {
+            await lockAgentTemplateCatalog(targetDb, templatePublisherOrganizationId);
+          }
           const [locked] = await targetDb
             .select({ id: resources.id })
             .from(resources)
@@ -1285,6 +1329,13 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       const impacted = await impactForResource(current);
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
+        if (
+          templatePublisherOrganizationId &&
+          current.organizationId === templatePublisherOrganizationId &&
+          (current.type === "mcp" || current.type === "skill")
+        ) {
+          await lockAgentTemplateCatalog(targetDb, templatePublisherOrganizationId);
+        }
         if (current.scope === "team" && current.type === "repo") {
           await targetDb.execute(
             sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${current.organizationId}))`,
@@ -1478,6 +1529,40 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       validateInlinePromptBodies(input.bindings);
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
+        const [snapshot] = await targetDb
+          .select({
+            version: agentConfigs.version,
+            templateIds: agentConfigs.templateIds,
+            payload: agentConfigs.payload,
+          })
+          .from(agentConfigs)
+          .where(eq(agentConfigs.agentId, agentId))
+          .limit(1);
+        if (!snapshot) {
+          throw new ConflictError(
+            `Agent resources "${agentId}" version mismatch: expected ${input.expectedVersion}, got missing`,
+          );
+        }
+        if (snapshot.version !== input.expectedVersion) {
+          throw new ConflictError(
+            `Agent resources "${agentId}" version mismatch: expected ${input.expectedVersion}, got ${snapshot.version}`,
+          );
+        }
+        let inlinePromptLength = 0;
+        for (const binding of input.bindings) {
+          if (binding.type !== "prompt" || !binding.inlinePromptBody?.trim()) continue;
+          inlinePromptLength += renderPromptRow("", "inline_prompt", binding.inlinePromptBody).length;
+        }
+        const storedPromptLength = snapshot.payload.prompt.append.trim()
+          ? renderPromptRow("", "inline_prompt", snapshot.payload.prompt.append).length
+          : 0;
+        await lockAndValidateAgentTemplateSelection(
+          targetDb,
+          templatePublisherOrganizationId,
+          snapshot.templateIds,
+          new Set(snapshot.templateIds),
+          inlinePromptLength + storedPromptLength,
+        );
         const [updatedConfig] = await targetDb
           .update(agentConfigs)
           .set({

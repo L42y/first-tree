@@ -81,6 +81,7 @@ type AgentBriefingRenderModel = Readonly<{
   identityKind: string;
   agentId: string;
   teamPromptRows: ReadonlyArray<NamedPromptRow>;
+  agentTemplatePromptRows: ReadonlyArray<NamedPromptRow>;
   agentPromptRows: ReadonlyArray<PromptBodyRow>;
   agentPromptOverrideRows: ReadonlyArray<NamedPromptRow>;
   legacyPrompt: string | null;
@@ -124,8 +125,12 @@ function buildAgentBriefingRenderModel(opts: BuildAgentBriefingOptions): AgentBr
   const { binName: bin } = getCliBinding();
   const promptSections = opts.payload?.prompt.sections ?? [];
   const teamPromptRows = buildNamedPromptRows(
-    promptSections.filter((section) => section.scope === "team"),
+    promptSections.filter((section) => section.scope === "team" && section.provenance !== "agent_template"),
     "Team prompt",
+  );
+  const agentTemplatePromptRows = buildNamedPromptRows(
+    promptSections.filter((section) => section.provenance === "agent_template"),
+    "Agent Template",
   );
   const agentPromptRows = promptSections
     .filter((section) => section.scope === "agent" && section.editable === true && section.body.trim().length > 0)
@@ -135,7 +140,10 @@ function buildAgentBriefingRenderModel(opts: BuildAgentBriefingOptions): AgentBr
     "Agent prompt override",
   );
   const hasStructuredPrompt =
-    teamPromptRows.length > 0 || agentPromptRows.length > 0 || agentPromptOverrideRows.length > 0;
+    teamPromptRows.length > 0 ||
+    agentTemplatePromptRows.length > 0 ||
+    agentPromptRows.length > 0 ||
+    agentPromptOverrideRows.length > 0;
   const legacyPrompt = hasStructuredPrompt ? null : opts.payload?.prompt.append?.trim() || null;
 
   const sourceRepositoryRows = opts.sourceRepos.map((repo) => ({
@@ -156,6 +164,7 @@ function buildAgentBriefingRenderModel(opts: BuildAgentBriefingOptions): AgentBr
     identityKind: opts.identity.visibility === "private" ? "a personal assistant agent" : "an autonomous agent",
     agentId: opts.identity.agentId,
     teamPromptRows,
+    agentTemplatePromptRows,
     agentPromptRows,
     agentPromptOverrideRows,
     legacyPrompt,

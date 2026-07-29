@@ -865,6 +865,13 @@ describe("service branch defaults", () => {
     const notifier = resourceNotifier();
     const selectRows = [
       [{ uuid: "agent_1", organizationId: "org_1", status: "active" }],
+      [
+        {
+          version: 1,
+          templateIds: [],
+          payload: { kind: "claude-code", prompt: { append: "" } },
+        },
+      ],
       [{ uuid: "agent_1", organizationId: "org_1", status: "active" }],
       [{ version: 2 }],
       [],

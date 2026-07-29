@@ -256,6 +256,29 @@ describe("resource schemas", () => {
         },
       }).success,
     ).toBe(false);
+    expect(
+      createTeamResourceSchema.safeParse({
+        type: "mcp",
+        name: "Docs",
+        payload: {
+          name: "docs",
+          transport: "http",
+          url: "https://docs.example/mcp?credential=fixture",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      createTeamResourceSchema.safeParse({
+        type: "mcp",
+        name: "Local docs",
+        payload: {
+          name: "docs",
+          transport: "stdio",
+          command: "docs-mcp",
+          args: ["--credential=fixture"],
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it("keeps the runtime prompt budget pinned to 32,000 characters", () => {

@@ -55,7 +55,14 @@ function withProviders(
         pathname: string;
         state: {
           fromNewAgent: boolean;
-          selectedTemplateIds: string[];
+          selectedTemplateIds?: string[];
+          newAgentDraft?: {
+            displayName: string;
+            visibility: "private" | "organization";
+            runtimeProvider: "claude-code" | "codex";
+            clientId: string | null;
+            templateIds: string[];
+          };
         };
       },
 ): ReactElement {
@@ -95,7 +102,16 @@ describe("AgentTemplatesPage", () => {
     harness.render(
       withProviders(<AgentTemplatesPage />, {
         pathname: "/agent-templates",
-        state: { fromNewAgent: true, selectedTemplateIds: ["research-assistant"] },
+        state: {
+          fromNewAgent: true,
+          newAgentDraft: {
+            displayName: "Draft researcher",
+            visibility: "organization",
+            runtimeProvider: "codex",
+            clientId: "client-2",
+            templateIds: ["research-assistant"],
+          },
+        },
       }),
     );
 
@@ -115,6 +131,8 @@ describe("AgentTemplatesPage", () => {
     await act(async () => buttonByText(harness.container, "Use 2 templates").click());
     await harness.waitFor(() => expect(harness.container.textContent).toContain('"pathname":"/team"'));
     expect(harness.container.textContent).toContain('"templateIds":["research-assistant","release-manager"]');
+    expect(harness.container.textContent).toContain('"displayName":"Draft researcher"');
+    expect(harness.container.textContent).toContain('"clientId":"client-2"');
   });
 
   it("uses the direct-entry fallback action when no Template is selected", async () => {
@@ -123,5 +141,23 @@ describe("AgentTemplatesPage", () => {
     await harness.waitFor(() => expect(harness.container.textContent).toContain("Release manager"));
     expect(buttonByText(harness.container, "Create an agent without a template")).toBeTruthy();
     expect(harness.container.textContent).not.toContain("Start from scratch");
+  });
+
+  it("clears a stale route selection when the catalog is empty", async () => {
+    templateMocks.listAgentTemplates.mockReset();
+    templateMocks.listAgentTemplates.mockResolvedValue({ items: [] });
+    harness.render(
+      withProviders(<AgentTemplatesPage />, {
+        pathname: "/agent-templates",
+        state: { fromNewAgent: true, selectedTemplateIds: ["retired-template"] },
+      }),
+    );
+
+    await harness.waitFor(() => expect(harness.container.textContent).toContain("No templates are available yet."));
+    await harness.waitFor(() => expect(buttonByText(harness.container, "Continue without a template")).toBeTruthy());
+    await act(async () => buttonByText(harness.container, "Continue without a template").click());
+    await harness.waitFor(() => expect(harness.container.textContent).toContain('"pathname":"/team"'));
+    expect(harness.container.textContent).toContain('"templateIds":[]');
+    expect(harness.container.textContent).not.toContain("retired-template");
   });
 });

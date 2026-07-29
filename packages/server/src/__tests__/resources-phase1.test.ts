@@ -239,9 +239,15 @@ describe("Resources Phase 1", () => {
     // and keeps the replaced team prompt's name so readers know which team
     // slot the agent-specific body stands in for.
     expect(resolved.payload.prompt.sections).toEqual([
-      { scope: "team", name: "Review rules", body: "Always review twice.", editable: false },
-      { scope: "agent", name: "", body: "Prefer terse replies.", editable: true },
-      { scope: "agent", name: "Tone guide", body: "Agent-specific tone override.", editable: false },
+      { scope: "team", provenance: "team", name: "Review rules", body: "Always review twice.", editable: false },
+      { scope: "agent", provenance: "agent", name: "", body: "Prefer terse replies.", editable: true },
+      {
+        scope: "agent",
+        provenance: "agent",
+        name: "Tone guide",
+        body: "Agent-specific tone override.",
+        editable: false,
+      },
     ]);
 
     // Legacy merged blob stays populated for older clients, with the

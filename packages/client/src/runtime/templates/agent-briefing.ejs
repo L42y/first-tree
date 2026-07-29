@@ -16,6 +16,8 @@
                       NEVER copy the merged section back into prompt set<% } else { %>
     # Team Prompt   → team prompt resources (Cloud → Org Settings →
                       Resources); managed by team admins; read-only here
+    # Agent Templates → official catalog instructions selected for this Agent;
+                      managed by the official Template publisher; read-only here
     # Agent Prompt  → this agent's own prompt fragment;
                       read:  <%- bin %> agent config prompt show <agent> --raw
                       write: <%- bin %> agent config prompt set <agent> -f <file>
@@ -35,6 +37,16 @@ You are <%- identityName %>, <%- identityKind %>.<% if (teamPromptRows.length > 
 *Source: team prompt resources, managed by team admins in Cloud → Org
 Settings → Resources. Shared across agents — do NOT copy any of this into
 your per-agent prompt.*<% for (const row of teamPromptRows) { %>
+
+## <%- row.name %>
+
+<%- row.body %><% } %><% } %><% if (agentTemplatePromptRows.length > 0) { %>
+
+# Agent Templates (official catalog — read-only)
+
+*Source: official Agent Templates selected for this Agent. These instructions
+are managed by the official Template publisher, not by this Team's admins or
+this Agent. Do NOT copy any of this into the per-agent prompt.*<% for (const row of agentTemplatePromptRows) { %>
 
 ## <%- row.name %>
 

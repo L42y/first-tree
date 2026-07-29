@@ -106,7 +106,8 @@ export function getAgentSkills(uuid: string): Promise<{ skills: AgentSkills }> {
 }
 
 export function createAgent(data: CreateAgent): Promise<Agent> {
-  return api.post<Agent>(withOrg("/agents"), data);
+  const path = data.templateIds && data.templateIds.length > 0 ? "/agents/from-agent-templates" : "/agents";
+  return api.post<Agent>(withOrg(path), data);
 }
 
 /**

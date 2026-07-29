@@ -36,6 +36,12 @@ export type PromptSectionScope = z.infer<typeof promptSectionScopeSchema>;
  */
 export const promptSectionSchema = z.object({
   scope: promptSectionScopeSchema,
+  /**
+   * More precise provenance for clients that understand Agent Templates.
+   * `scope` remains `team | agent` for rolling compatibility with older
+   * clients; older Zod object parsers ignore this additive field.
+   */
+  provenance: z.enum(["team", "agent_template", "agent"]).optional(),
   name: z.string().default(""),
   body: z.string().default(""),
   editable: z.boolean().optional(),

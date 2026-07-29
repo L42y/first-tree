@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_BRIEFING_GENERATED_MARKER,
+  AGENT_TEMPLATE_MAX_INSTRUCTIONS_LENGTH,
   AGENT_TEMPLATE_MAX_SELECTION,
   agentTemplateIdsSchema,
   createAgentSchema,
   createAgentTemplateSchema,
+  POSTGRES_INTEGER_MAX,
   updateAgentTemplateSchema,
 } from "../index.js";
 
@@ -38,6 +41,29 @@ describe("Agent Template schemas", () => {
       }).success,
     ).toBe(false);
     expect(updateAgentTemplateSchema.safeParse({ expectedVersion: 1 }).success).toBe(false);
+    expect(
+      createAgentTemplateSchema.safeParse({
+        ...base,
+        customInstructions: "x".repeat(AGENT_TEMPLATE_MAX_INSTRUCTIONS_LENGTH),
+        sortOrder: POSTGRES_INTEGER_MAX,
+      }).success,
+    ).toBe(true);
+    expect(
+      createAgentTemplateSchema.safeParse({
+        ...base,
+        customInstructions: `copied ${AGENT_BRIEFING_GENERATED_MARKER} briefing`,
+      }).success,
+    ).toBe(false);
+    expect(createAgentTemplateSchema.safeParse({ ...base, sortOrder: POSTGRES_INTEGER_MAX + 1 }).success).toBe(false);
+    expect(
+      updateAgentTemplateSchema.safeParse({
+        expectedVersion: 1,
+        customInstructions: `copied ${AGENT_BRIEFING_GENERATED_MARKER} briefing`,
+      }).success,
+    ).toBe(false);
+    expect(
+      updateAgentTemplateSchema.safeParse({ expectedVersion: 1, sortOrder: POSTGRES_INTEGER_MAX + 1 }).success,
+    ).toBe(false);
   });
 
   it("accepts an ordered Template selection during Agent creation", () => {

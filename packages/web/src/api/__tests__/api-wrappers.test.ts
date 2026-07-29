@@ -196,6 +196,12 @@ describe("api wrapper paths", () => {
     await agents.getAgent("agent/id");
     await agents.getAgentSkills("agent/id");
     await agents.createAgent({ name: "nova", type: "agent", displayName: "Nova" });
+    await agents.createAgent({
+      name: "templated",
+      type: "agent",
+      displayName: "Templated",
+      templateIds: ["release-manager"],
+    });
     await agents.checkAgentNameAvailability("name with spaces");
     await agents.updateAgent("agent/id", { displayName: "New" });
     await agents.deleteAgent("agent/id");
@@ -301,6 +307,10 @@ describe("api wrapper paths", () => {
     );
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/current/agents/all?limit=5&cursor=older");
     expect(apiMock.get).toHaveBeenCalledWith("/agents/agent%2Fid/skills");
+    expect(apiMock.post).toHaveBeenCalledWith(
+      "/orgs/current/agents/from-agent-templates",
+      expect.objectContaining({ templateIds: ["release-manager"] }),
+    );
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/current/agents/names/name%20with%20spaces/availability");
     expect(apiMock.get).toHaveBeenCalledWith("/chats/chat%2Fid/gitlab-entities");
     expect(apiMock.delete).toHaveBeenCalledWith(

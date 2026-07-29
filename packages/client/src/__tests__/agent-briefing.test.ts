@@ -53,6 +53,7 @@ function topLevelSection(briefing: string, heading: string): string {
   const knownHeadings = [
     "# Identity",
     "# Team Prompt (team-shared — read-only for agents)",
+    "# Agent Templates (official catalog — read-only)",
     "# Agent Prompt (this agent only — editable)",
     "# Agent Prompt Overrides (this agent only — managed via resource bindings)",
     "# Agent Prompt (legacy merged — may include team-shared content)",
@@ -260,6 +261,13 @@ describe("buildAgentBriefing — prompt provenance sections", () => {
         append: "legacy blob must be ignored",
         sections: [
           { scope: "team" as const, name: "Review Rules", body: "Always review twice.", editable: false },
+          {
+            scope: "team" as const,
+            provenance: "agent_template" as const,
+            name: "Release manager",
+            body: "Coordinate the release.",
+            editable: false,
+          },
           { scope: "agent" as const, name: "", body: "Prefer terse replies.", editable: true },
           { scope: "agent" as const, name: "Tone guide", body: "Override body.", editable: false },
         ],
@@ -270,6 +278,9 @@ describe("buildAgentBriefing — prompt provenance sections", () => {
     expect(briefing).toContain("# Team Prompt (team-shared — read-only for agents)");
     expect(briefing).toContain("## Review Rules\n\nAlways review twice.");
     expect(briefing).toMatch(/do NOT copy any of this into\nyour per-agent prompt/);
+    expect(briefing).toContain("# Agent Templates (official catalog — read-only)");
+    expect(briefing).toContain("## Release manager\n\nCoordinate the release.");
+    expect(briefing).toContain("managed by the official Template publisher, not by this Team's admins");
     expect(briefing).toContain("# Agent Prompt (this agent only — editable)");
     expect(briefing).toContain("Prefer terse replies.");
     expect(briefing).toContain("first-tree agent config prompt show test-agent --raw");

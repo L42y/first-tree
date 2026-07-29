@@ -4,7 +4,8 @@ import type { EffectiveResourceRow } from "@first-tree/shared";
  * Source label shown on every resource / prompt row, written in the agent
  * owner's first person — this page is the user looking at their own agent, not
  * an admin managing a fleet. `agent_extra` / `inline_prompt` are things the
- * user added to this agent; everything else is inherited from the team.
+ * user added to this agent; official Template resources keep their publisher
+ * provenance instead of falling through to the consumer Team label.
  *
  * Team resources split by how they got here: `team_recommended` is on by default
  * (a Switch toggles it), while `team_available` is one the user opted into (no
@@ -13,6 +14,7 @@ import type { EffectiveResourceRow } from "@first-tree/shared";
  */
 export function sourceLabel(source: EffectiveResourceRow["source"]): string {
   if (source === "agent_extra" || source === "inline_prompt") return "Added by you";
+  if (source === "agent_template") return "From an official Agent Template";
   if (source === "team_available") return "From your team · optional";
   return "From your team";
 }

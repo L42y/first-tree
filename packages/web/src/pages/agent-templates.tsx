@@ -4,12 +4,14 @@ import { Check, ChevronRight, Wrench } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { listAgentTemplates } from "../api/agent-templates.js";
+import type { NewAgentDraft } from "../components/new-agent-dialog.js";
 import { Button } from "../components/ui/button.js";
 import { cn } from "../lib/utils.js";
 
 type TemplateRouteState = {
   fromNewAgent?: boolean;
   selectedTemplateIds?: string[];
+  newAgentDraft?: NewAgentDraft;
 };
 
 export function AgentTemplatesPage() {
@@ -22,14 +24,15 @@ export function AgentTemplatesPage() {
   });
   const templates = useMemo(() => templatesQuery.data?.items ?? [], [templatesQuery.data]);
   const availableIds = useMemo(() => new Set(templates.map((template) => template.id)), [templates]);
-  const [selectedIds, setSelectedIds] = useState<string[]>(() => routeState.selectedTemplateIds ?? []);
-  const [activeId, setActiveId] = useState<string | null>(() => routeState.selectedTemplateIds?.[0] ?? null);
+  const initialSelectedIds = routeState.newAgentDraft?.templateIds ?? routeState.selectedTemplateIds ?? [];
+  const [selectedIds, setSelectedIds] = useState<string[]>(() => initialSelectedIds);
+  const [activeId, setActiveId] = useState<string | null>(() => initialSelectedIds[0] ?? null);
 
   useEffect(() => {
-    if (templates.length === 0) return;
+    if (templatesQuery.data === undefined) return;
     setSelectedIds((current) => current.filter((id) => availableIds.has(id)));
     setActiveId((current) => (current && availableIds.has(current) ? current : (templates[0]?.id ?? null)));
-  }, [availableIds, templates]);
+  }, [availableIds, templates, templatesQuery.data]);
 
   const activeTemplate = templates.find((template) => template.id === activeId) ?? null;
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -46,7 +49,15 @@ export function AgentTemplatesPage() {
     navigate("/team", {
       state: {
         openNewAgent: true,
-        templateIds: selectedIds,
+        newAgentDraft: routeState.newAgentDraft
+          ? { ...routeState.newAgentDraft, templateIds: selectedIds }
+          : {
+              displayName: "",
+              visibility: "private",
+              runtimeProvider: "claude-code",
+              clientId: null,
+              templateIds: selectedIds,
+            },
       },
     });
   }

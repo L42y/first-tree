@@ -21,7 +21,7 @@ import {
   AgentSuspendConfirmDialog,
 } from "../../components/agent-lifecycle-confirm-dialog.js";
 import { InviteDialog } from "../../components/invite-dialog.js";
-import { NewAgentDialog } from "../../components/new-agent-dialog.js";
+import { NewAgentDialog, type NewAgentDraft } from "../../components/new-agent-dialog.js";
 import { Button } from "../../components/ui/button.js";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog.js";
 import { Input } from "../../components/ui/input.js";
@@ -105,7 +105,7 @@ export function TeamPage() {
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [initialTemplateIds, setInitialTemplateIds] = useState<string[]>([]);
+  const [newAgentDraft, setNewAgentDraft] = useState<NewAgentDraft | undefined>();
   const [editTarget, setEditTarget] = useState<MemberEditTarget | null>(null);
   const [agentFilter, setAgentFilter] = useState<AgentFilter>(() => readAgentFilterPreference());
   const [suspendTarget, setSuspendTarget] = useState<AgentLifecycleTarget | null>(null);
@@ -113,9 +113,9 @@ export function TeamPage() {
   const [query, setQuery] = useState("");
 
   useEffect(() => {
-    const state = location.state as { openNewAgent?: boolean; templateIds?: string[] } | null;
+    const state = location.state as { openNewAgent?: boolean; newAgentDraft?: NewAgentDraft } | null;
     if (!state?.openNewAgent) return;
-    setInitialTemplateIds(state.templateIds ?? []);
+    setNewAgentDraft(state.newAgentDraft);
     setCreateOpen(true);
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
   }, [location.pathname, location.search, location.state, navigate]);
@@ -316,7 +316,7 @@ export function TeamPage() {
               size="sm"
               variant="cta"
               onClick={() => {
-                setInitialTemplateIds([]);
+                setNewAgentDraft(undefined);
                 setCreateOpen(true);
               }}
             >
@@ -384,13 +384,14 @@ export function TeamPage() {
       <NewAgentDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        initialTemplateIds={initialTemplateIds}
-        onBrowseTemplates={(selectedTemplateIds) => {
+        initialDraft={newAgentDraft}
+        onBrowseTemplates={(draft) => {
+          setNewAgentDraft(draft);
           setCreateOpen(false);
           navigate("/agent-templates", {
             state: {
               fromNewAgent: true,
-              selectedTemplateIds,
+              newAgentDraft: draft,
             },
           });
         }}

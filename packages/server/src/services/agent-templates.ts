@@ -5,13 +5,15 @@ import {
   type AgentTemplatesForAgentOutput,
   type CreateAgentTemplate,
   noSecretMcpServerSchema,
+  PROMPT_APPEND_MAX_LENGTH,
   skillResourcePayloadSchema,
   type UpdateAgentTemplate,
   type UpdateAgentTemplates,
 } from "@first-tree/shared";
-import { and, arrayContains, arrayOverlaps, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, arrayContains, arrayOverlaps, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
+import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
 import { agentTemplates } from "../db/schema/agent-templates.js";
 import { agents } from "../db/schema/agents.js";
 import { attachments } from "../db/schema/attachments.js";
@@ -25,6 +27,8 @@ type ResourceDbRow = typeof resources.$inferSelect;
 export type AgentTemplateImpact = {
   agentId: string;
   organizationId: string;
+  templateIds: string[];
+  agentPromptLength: number;
 };
 
 export type AgentTemplateRuntimeSelection = {
@@ -70,10 +74,106 @@ function canonicalResourceIds(resourceIds: readonly string[]): string[] {
   return [...resourceIds].sort();
 }
 
-async function lockTemplateCatalog(targetDb: Database, publisherOrganizationId: string): Promise<void> {
+export async function lockAgentTemplateCatalog(targetDb: Database, publisherOrganizationId: string): Promise<void> {
   await targetDb.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext('agent_template_catalog'), hashtext(${publisherOrganizationId}))`,
   );
+}
+
+const AGENT_TEMPLATE_UPDATE_BATCH_SIZE = 250;
+const AGENT_TEMPLATE_NOTIFY_CONCURRENCY = 25;
+
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
+}
+
+function renderTemplatePromptLength(template: Pick<AgentTemplateDbRow, "title" | "customInstructions">): number {
+  return `\n\n## Agent Template: ${template.title}\n\n${template.customInstructions.trim()}\n`.length;
+}
+
+function renderAgentPromptLength(body: string): number {
+  if (!body.trim()) return 0;
+  return `\n\n## Agent Prompt (this agent only)\n\n${body.trim()}\n`.length;
+}
+
+async function loadInlineAgentPromptLengths(
+  targetDb: Database,
+  agentIds: readonly string[],
+): Promise<Map<string, number>> {
+  const lengths = new Map<string, number>();
+  for (const agentIdChunk of chunks(agentIds, AGENT_TEMPLATE_UPDATE_BATCH_SIZE)) {
+    const rows = await targetDb
+      .select({
+        agentId: agentResourceBindings.agentId,
+        body: agentResourceBindings.inlinePromptBody,
+      })
+      .from(agentResourceBindings)
+      .where(
+        and(
+          inArray(agentResourceBindings.agentId, agentIdChunk),
+          eq(agentResourceBindings.type, "prompt"),
+          isNotNull(agentResourceBindings.inlinePromptBody),
+        ),
+      );
+    for (const row of rows) {
+      if (!row.body) continue;
+      lengths.set(row.agentId, (lengths.get(row.agentId) ?? 0) + renderAgentPromptLength(row.body));
+    }
+  }
+  return lengths;
+}
+
+function assertTemplatePromptBudget(
+  templates: readonly Pick<AgentTemplateDbRow, "id" | "title" | "customInstructions">[],
+  reservedPromptLength = 0,
+): void {
+  let total = reservedPromptLength;
+  for (const template of templates) {
+    total += renderTemplatePromptLength(template);
+    if (total > PROMPT_APPEND_MAX_LENGTH) {
+      throw new BadRequestError(
+        `Agent Template selection exceeds the ${PROMPT_APPEND_MAX_LENGTH}-character instruction budget at "${template.id}"`,
+      );
+    }
+  }
+}
+
+async function assertTemplatePromptBudgetForSelections(
+  targetDb: Database,
+  publisherOrganizationId: string,
+  selections: readonly Pick<AgentTemplateImpact, "templateIds" | "agentPromptLength">[],
+  candidate: Pick<AgentTemplateDbRow, "id" | "title" | "customInstructions">,
+): Promise<void> {
+  const selectionKeys = new Map<string, Pick<AgentTemplateImpact, "templateIds" | "agentPromptLength">>();
+  for (const selection of selections) {
+    selectionKeys.set(`${selection.agentPromptLength}:${selection.templateIds.join("\u0000")}`, selection);
+  }
+  const distinctSelections = Array.from(selectionKeys.values());
+  const templateIds = Array.from(new Set(distinctSelections.flatMap((selection) => selection.templateIds)));
+  const rows =
+    templateIds.length === 0
+      ? []
+      : await targetDb
+          .select()
+          .from(agentTemplates)
+          .where(
+            and(eq(agentTemplates.organizationId, publisherOrganizationId), inArray(agentTemplates.id, templateIds)),
+          );
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  byId.set(candidate.id, { ...byId.get(candidate.id), ...candidate } as AgentTemplateDbRow);
+  for (const selection of distinctSelections) {
+    assertTemplatePromptBudget(
+      selection.templateIds.flatMap((templateId) => {
+        const row = byId.get(templateId);
+        return row ? [row] : [];
+      }),
+      selection.agentPromptLength,
+    );
+  }
 }
 
 async function lockAndValidateTemplateResources(
@@ -297,6 +397,7 @@ export async function lockAndValidateAgentTemplateSelection(
   publisherOrganizationId: string | undefined,
   templateIds: readonly string[],
   allowedRetiredTemplateIds: ReadonlySet<string> = new Set(),
+  reservedPromptLength = 0,
 ): Promise<AgentTemplateDbRow[]> {
   if (templateIds.length === 0) return [];
   const publisherId = requirePublisherOrganizationId(publisherOrganizationId);
@@ -317,11 +418,13 @@ export async function lockAndValidateAgentTemplateSelection(
       throw new BadRequestError(`Agent Template "${templateId}" is retired and cannot be newly added`);
     }
   }
-  return templateIds.map((templateId) => {
+  const selectedRows = templateIds.map((templateId) => {
     const row = byId.get(templateId);
     if (!row) throw new BadRequestError(`Agent Template "${templateId}" is not available`);
     return row;
   });
+  assertTemplatePromptBudget(selectedRows, reservedPromptLength);
+  return selectedRows;
 }
 
 export async function loadAgentTemplateRuntimeSelection(
@@ -354,11 +457,24 @@ export async function listAgentTemplateImpactsForTemplate(
   targetDb: Database,
   templateId: string,
 ): Promise<AgentTemplateImpact[]> {
-  return targetDb
-    .select({ agentId: agentConfigs.agentId, organizationId: agents.organizationId })
+  const rows = await targetDb
+    .select({
+      agentId: agentConfigs.agentId,
+      organizationId: agents.organizationId,
+      templateIds: agentConfigs.templateIds,
+      payload: agentConfigs.payload,
+    })
     .from(agentConfigs)
     .innerJoin(agents, eq(agents.uuid, agentConfigs.agentId))
     .where(arrayContains(agentConfigs.templateIds, [templateId]));
+  const inlinePromptLengths = await loadInlineAgentPromptLengths(
+    targetDb,
+    rows.map((row) => row.agentId),
+  );
+  return rows.map(({ payload, ...row }) => ({
+    ...row,
+    agentPromptLength: renderAgentPromptLength(payload.prompt.append) + (inlinePromptLengths.get(row.agentId) ?? 0),
+  }));
 }
 
 export async function listAgentTemplateImpactsForResource(
@@ -378,11 +494,24 @@ export async function listAgentTemplateImpactsForResource(
     );
   const templateIds = templateRows.map((row) => row.id);
   if (templateIds.length === 0) return [];
-  return targetDb
-    .select({ agentId: agentConfigs.agentId, organizationId: agents.organizationId })
+  const rows = await targetDb
+    .select({
+      agentId: agentConfigs.agentId,
+      organizationId: agents.organizationId,
+      templateIds: agentConfigs.templateIds,
+      payload: agentConfigs.payload,
+    })
     .from(agentConfigs)
     .innerJoin(agents, eq(agents.uuid, agentConfigs.agentId))
     .where(arrayOverlaps(agentConfigs.templateIds, templateIds));
+  const inlinePromptLengths = await loadInlineAgentPromptLengths(
+    targetDb,
+    rows.map((row) => row.agentId),
+  );
+  return rows.map(({ payload, ...row }) => ({
+    ...row,
+    agentPromptLength: renderAgentPromptLength(payload.prompt.append) + (inlinePromptLengths.get(row.agentId) ?? 0),
+  }));
 }
 
 export async function assertResourceNotReferencedByAgentTemplate(
@@ -422,7 +551,7 @@ export async function bumpAgentConfigsForTemplateImpacts(
     .filter((impact) => impact.organizationId !== publisherOrganizationId)
     .map((impact) => impact.agentId);
 
-  if (publisherAgentIds.length > 0) {
+  for (const batch of chunks(publisherAgentIds, AGENT_TEMPLATE_UPDATE_BATCH_SIZE)) {
     await targetDb
       .update(agentConfigs)
       .set({
@@ -430,9 +559,9 @@ export async function bumpAgentConfigsForTemplateImpacts(
         updatedAt: new Date(),
         updatedBy: actorId,
       })
-      .where(inArray(agentConfigs.agentId, publisherAgentIds));
+      .where(inArray(agentConfigs.agentId, batch));
   }
-  if (consumerAgentIds.length > 0) {
+  for (const batch of chunks(consumerAgentIds, AGENT_TEMPLATE_UPDATE_BATCH_SIZE)) {
     await targetDb
       .update(agentConfigs)
       .set({
@@ -440,7 +569,7 @@ export async function bumpAgentConfigsForTemplateImpacts(
         updatedAt: new Date(),
         updatedBy: "system",
       })
-      .where(inArray(agentConfigs.agentId, consumerAgentIds));
+      .where(inArray(agentConfigs.agentId, batch));
   }
 }
 
@@ -448,7 +577,10 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
   const { db, notifier, publisherOrganizationId } = options;
 
   async function notifyAgents(agentIds: Iterable<string>): Promise<void> {
-    await Promise.allSettled(Array.from(new Set(agentIds)).map((id) => notifier.notifyConfigChange(`agent:${id}`)));
+    const ids = Array.from(new Set(agentIds));
+    for (const batch of chunks(ids, AGENT_TEMPLATE_NOTIFY_CONCURRENCY)) {
+      await Promise.allSettled(batch.map((id) => notifier.notifyConfigChange(`agent:${id}`)));
+    }
   }
 
   async function getDefinitionRow(templateId: string): Promise<AgentTemplateDbRow> {
@@ -505,7 +637,7 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
       try {
         await db.transaction(async (tx) => {
           const targetDb = tx as unknown as Database;
-          await lockTemplateCatalog(targetDb, publisherId);
+          await lockAgentTemplateCatalog(targetDb, publisherId);
           const resourceIds = canonicalResourceIds(input.resourceIds);
           const resourceRows = await lockAndValidateTemplateResources(targetDb, publisherId, resourceIds);
           await assertMcpNamesComposable(targetDb, publisherId, resourceRows, "");
@@ -543,7 +675,7 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
       let impacts: AgentTemplateImpact[] = [];
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
-        await lockTemplateCatalog(targetDb, publisherId);
+        await lockAgentTemplateCatalog(targetDb, publisherId);
         const [current] = await targetDb
           .select()
           .from(agentTemplates)
@@ -560,6 +692,14 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
         const resourceIds = canonicalResourceIds(input.resourceIds ?? current.resourceIds);
         const resourceRows = await lockAndValidateTemplateResources(targetDb, publisherId, resourceIds);
         await assertMcpNamesComposable(targetDb, publisherId, resourceRows, templateId);
+        impacts = await listAgentTemplateImpactsForTemplate(targetDb, templateId);
+        if (input.title !== undefined || input.customInstructions !== undefined) {
+          await assertTemplatePromptBudgetForSelections(targetDb, publisherId, impacts, {
+            id: current.id,
+            title: input.title ?? current.title,
+            customInstructions: input.customInstructions ?? current.customInstructions,
+          });
+        }
         [updated] = await targetDb
           .update(agentTemplates)
           .set({
@@ -576,7 +716,6 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
           .where(and(eq(agentTemplates.id, templateId), eq(agentTemplates.version, input.expectedVersion)))
           .returning();
         if (!updated) throw new ConflictError(`Agent Template "${templateId}" changed during update`);
-        impacts = await listAgentTemplateImpactsForTemplate(targetDb, templateId);
         await bumpAgentConfigsForTemplateImpacts(targetDb, impacts, publisherId, actorId);
       });
       await notifyAgents(impacts.map((impact) => impact.agentId));
@@ -590,7 +729,7 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
       let impacts: AgentTemplateImpact[] = [];
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
-        await lockTemplateCatalog(targetDb, publisherId);
+        await lockAgentTemplateCatalog(targetDb, publisherId);
         const [current] = await targetDb
           .select()
           .from(agentTemplates)
@@ -631,7 +770,7 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
     },
 
     async replaceAgentTemplates(agentId, input, actorId) {
-      let nextVersion = 0;
+      let output: AgentTemplatesForAgentOutput | undefined;
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
         const [agent] = await targetDb
@@ -649,6 +788,7 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
           .select({
             version: agentConfigs.version,
             templateIds: agentConfigs.templateIds,
+            payload: agentConfigs.payload,
           })
           .from(agentConfigs)
           .where(eq(agentConfigs.agentId, agentId))
@@ -659,11 +799,13 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
             `Agent Templates "${agentId}" version mismatch: expected ${input.expectedVersion}, got ${snapshot.version}`,
           );
         }
-        await lockAndValidateAgentTemplateSelection(
+        const inlinePromptLengths = await loadInlineAgentPromptLengths(targetDb, [agentId]);
+        const selectedTemplates = await lockAndValidateAgentTemplateSelection(
           targetDb,
           publisherOrganizationId,
           input.templateIds,
           new Set(snapshot.templateIds),
+          renderAgentPromptLength(snapshot.payload.prompt.append) + (inlinePromptLengths.get(agentId) ?? 0),
         );
 
         const [current] = await targetDb
@@ -689,11 +831,15 @@ export function createAgentTemplatesService(options: AgentTemplatesServiceOption
           .where(and(eq(agentConfigs.agentId, agentId), eq(agentConfigs.version, input.expectedVersion)))
           .returning({ version: agentConfigs.version });
         if (!updated) throw new ConflictError(`Agent Templates "${agentId}" changed during update`);
-        nextVersion = updated.version;
+        output = {
+          version: updated.version,
+          templateIds: [...input.templateIds],
+          templates: await catalogItemsForRows(targetDb, selectedTemplates),
+        };
       });
       await notifyAgents([agentId]);
-      const output = await getAgentTemplatesOutput(agentId);
-      return { ...output, version: nextVersion };
+      if (!output) throw new Error("Unexpected: Agent Template replacement produced no output");
+      return output;
     },
   };
 }

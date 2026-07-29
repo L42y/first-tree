@@ -223,6 +223,13 @@ function buttonByText(rootNode: ParentNode, text: string): HTMLButtonElement {
   return button;
 }
 
+function optionByText(rootNode: ParentNode, text: string): HTMLInputElement {
+  const label = [...rootNode.querySelectorAll("label")].find((item) => item.textContent?.includes(text));
+  const input = label?.querySelector<HTMLInputElement>("input[type='radio']");
+  if (!input) throw new Error(`Missing option ${text}`);
+  return input;
+}
+
 function inputById(id: string): HTMLInputElement {
   const input = document.body.querySelector<HTMLInputElement>(`#${id}`);
   if (!input) throw new Error(`Missing input ${id}`);
@@ -249,6 +256,16 @@ beforeEach(() => {
         summary: "Review changes with consistent engineering standards.",
         outcomes: ["Find correctness risks"],
         customInstructions: "Review the proposed changes.",
+        status: "active",
+        skills: [],
+        mcp: [],
+      },
+      {
+        id: "release-manager",
+        title: "Release manager",
+        summary: "Coordinate a reliable release.",
+        outcomes: ["Ship safely"],
+        customInstructions: "Track release risks.",
         status: "active",
         skills: [],
         mcp: [],
@@ -443,7 +460,7 @@ describe("NewAgentDialog extra branches", () => {
     const container = await renderDom(
       <NewAgentDialog
         open
-        initialTemplateIds={["code-reviewer"]}
+        initialTemplateIds={["release-manager", "code-reviewer"]}
         onOpenChange={onOpenChange}
         onCreated={() => undefined}
         onBrowseTemplates={onBrowseTemplates}
@@ -451,20 +468,47 @@ describe("NewAgentDialog extra branches", () => {
     );
 
     await waitForText(container, "Code reviewer");
-    expect(document.body.textContent).toContain("Template · Code reviewer");
+    expect(document.body.textContent).toContain("Template · Release manager, Code reviewer");
+    await setValue(inputById("new-agent-display-name"), "Review Bot");
+    await click(optionByText(document.body, "Visible to your team"));
+    await click(optionByText(document.body, "alice-linux"));
+    await waitForText(container, "Codex");
+    await click(optionByText(document.body, "Codex"));
     await click(buttonByText(document.body, "Browse"));
     expect(onOpenChange).toHaveBeenCalledWith(false);
-    expect(onBrowseTemplates).toHaveBeenCalledWith(["code-reviewer"]);
+    expect(onBrowseTemplates).toHaveBeenCalledWith({
+      displayName: "Review Bot",
+      visibility: "organization",
+      runtimeProvider: "codex",
+      clientId: "client-2",
+      templateIds: ["release-manager", "code-reviewer"],
+    });
 
-    await waitForText(container, "Claude Code");
-    await setValue(inputById("new-agent-display-name"), "Review Bot");
+    const draft = onBrowseTemplates.mock.calls[0]?.[0];
+    await act(async () => root?.unmount());
+    root = null;
+    container.remove();
+    const remounted = await renderDom(
+      <NewAgentDialog
+        open
+        initialDraft={draft}
+        onOpenChange={() => undefined}
+        onCreated={() => undefined}
+        onBrowseTemplates={() => undefined}
+      />,
+    );
+    await waitForText(remounted, "Code reviewer");
+    expect(inputById("new-agent-display-name").value).toBe("Review Bot");
     await waitForCondition(() => agentMocks.checkAgentNameAvailability.mock.calls.length > 0, "Expected probe");
     await click(buttonByText(document.body, "Create"));
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length > 0, "Expected createAgent");
     expect(agentMocks.createAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "review-bot",
-        templateIds: ["code-reviewer"],
+        visibility: "organization",
+        runtimeProvider: "codex",
+        clientId: "client-2",
+        templateIds: ["release-manager", "code-reviewer"],
       }),
     );
   });

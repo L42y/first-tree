@@ -203,12 +203,21 @@ function availabilityReasonMessage(reason: "invalid" | "reserved" | "taken"): st
   }
 }
 
+export type NewAgentDraft = {
+  displayName: string;
+  visibility: AgentVisibility;
+  runtimeProvider: RuntimeProvider;
+  clientId: string | null;
+  templateIds: string[];
+};
+
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (agent: Agent, runtimeProvider: RuntimeProvider) => void;
   initialTemplateIds?: string[];
-  onBrowseTemplates?: (selectedTemplateIds: string[]) => void;
+  initialDraft?: NewAgentDraft;
+  onBrowseTemplates?: (draft: NewAgentDraft) => void;
 };
 
 type AvailabilityState =
@@ -226,6 +235,7 @@ export function NewAgentDialog({
   onOpenChange,
   onCreated,
   initialTemplateIds = EMPTY_TEMPLATE_IDS,
+  initialDraft,
   onBrowseTemplates,
 }: Props) {
   const queryClient = useQueryClient();
@@ -279,17 +289,17 @@ export function NewAgentDialog({
 
   useEffect(() => {
     if (open) {
-      setDisplayName("");
-      setVisibility("private");
-      setRuntime("claude-code");
-      setTemplateIds(initialTemplateIds);
+      setDisplayName(initialDraft?.displayName ?? "");
+      setVisibility(initialDraft?.visibility ?? "private");
+      setRuntime(initialDraft?.runtimeProvider ?? "claude-code");
+      setTemplateIds(initialDraft?.templateIds ?? initialTemplateIds);
       setResolvedHandle("");
       setHandleState({ status: "idle" });
       setManualHandle("");
       setManualAvailability({ status: "idle" });
       setConnectedClients([]);
       setClientsLoaded(false);
-      setPickedClientId(null);
+      setPickedClientId(initialDraft?.clientId ?? null);
       setCapabilities(null);
       setCapabilitiesClientId(null);
       setConnectToken(null);
@@ -298,13 +308,14 @@ export function NewAgentDialog({
       resetTokenCopy();
       setClientErrors({});
     }
-  }, [initialTemplateIds, open, resetTokenCopy]);
+  }, [initialDraft, initialTemplateIds, open, resetTokenCopy]);
 
   const selectedTemplateTitles = useMemo(() => {
-    const selected = new Set(templateIds);
-    return (templatesQuery.data?.items ?? [])
-      .filter((template) => selected.has(template.id))
-      .map((template) => template.title);
+    const byId = new Map((templatesQuery.data?.items ?? []).map((template) => [template.id, template.title]));
+    return templateIds.flatMap((templateId) => {
+      const title = byId.get(templateId);
+      return title ? [title] : [];
+    });
   }, [templateIds, templatesQuery.data]);
 
   const baseSlug = useMemo(() => slugify(displayName), [displayName]);
@@ -434,14 +445,17 @@ export function NewAgentDialog({
   // user's manual choice as long as it's still in the list.
   useEffect(() => {
     if (connectedClients.length === 0) {
-      setPickedClientId(null);
+      // During a Browse → return remount, the saved client id is restored
+      // before the first listClients result arrives. Do not erase that draft
+      // choice merely because the loading placeholder uses an empty array.
+      if (clientsLoaded) setPickedClientId(null);
       return;
     }
     setPickedClientId((prev) => {
       if (prev && connectedClients.some((c) => c.id === prev)) return prev;
       return connectedClients[0]?.id ?? null;
     });
-  }, [connectedClients]);
+  }, [clientsLoaded, connectedClients]);
 
   // Capability fetch — exposed as a callback so an in-dialog Connect can force
   // an immediate refresh (otherwise the just-signed-in runtime only flips to ok
@@ -777,7 +791,13 @@ export function NewAgentDialog({
               className="shrink-0 text-label font-medium text-primary hover:underline"
               onClick={() => {
                 onOpenChange(false);
-                onBrowseTemplates?.(templateIds);
+                onBrowseTemplates?.({
+                  displayName,
+                  visibility,
+                  runtimeProvider: runtime,
+                  clientId: pickedClientId,
+                  templateIds,
+                });
               }}
             >
               Browse
