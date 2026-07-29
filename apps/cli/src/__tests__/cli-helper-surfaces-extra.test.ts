@@ -10,6 +10,7 @@ const doctorCoreMocks = vi.hoisted(() => ({
   checkAgentConfigs: vi.fn(),
   checkBackgroundService: vi.fn(),
   checkClientConfig: vi.fn(),
+  checkDaemonRuntimeOwnership: vi.fn(),
   checkNodeVersion: vi.fn(),
   checkServerReachable: vi.fn(),
   checkWebSocket: vi.fn(),
@@ -77,6 +78,7 @@ beforeEach(() => {
   doctorCoreMocks.checkAgentConfigs.mockReturnValue({ label: "Agents", ok: true, detail: "local" });
   doctorCoreMocks.checkBackgroundService.mockReturnValue({ label: "Service", ok: true, detail: "running" });
   doctorCoreMocks.checkClientConfig.mockReturnValue({ label: "Config", ok: true, detail: "ok" });
+  doctorCoreMocks.checkDaemonRuntimeOwnership.mockReturnValue({ label: "Owner", ok: true, detail: "pid 123" });
   doctorCoreMocks.checkNodeVersion.mockReturnValue({ label: "Node", ok: true, detail: "v24" });
   doctorCoreMocks.checkServerReachable.mockResolvedValue({ label: "Server", ok: true, detail: "ok" });
   doctorCoreMocks.checkWebSocket.mockResolvedValue({ label: "WebSocket", ok: true, detail: "ok" });
@@ -155,6 +157,7 @@ describe("doctor checks and agent resolver", () => {
       { label: "Agents", ok: true, detail: "reconciled" },
       { label: "WebSocket", ok: true, detail: "ok" },
       { label: "Service", ok: true, detail: "running" },
+      { label: "Owner", ok: true, detail: "pid 123" },
       { label: "codex", ok: true, detail: "ok — bundled" },
     ]);
     expect(configMocks.resetConfig).toHaveBeenCalled();

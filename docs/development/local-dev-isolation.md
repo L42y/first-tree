@@ -56,7 +56,21 @@ $ systemctl --user list-units 'first-tree*'
 ```
 
 Three independent unit files, three PIDs, three journald identifiers,
-three home dirs. No cross-contamination.
+three home dirs. No cross-contamination. Each daemon takes an atomic owner lock
+at `<resolved-home>/state/daemon-runtime.lock`; the home, rather than the
+channel/client/server tuple, is the mutual-exclusion boundary.
+
+Do not point a dev command at a live prod or staging home to test another
+channel. An explicit shared `FIRST_TREE_HOME` intentionally collapses the
+isolation boundary, so the second foreground or service runtime is refused even
+when its channel, client id, or server URL differs. Use another temporary dev
+home instead:
+
+```bash
+FIRST_TREE_HOME="$(mktemp -d)" first-tree-dev daemon start --foreground
+```
+
+Distinct temporary dev homes can run concurrently.
 
 ## How channel identity is wired
 
@@ -70,9 +84,9 @@ from this single value via `getChannelConfig` in
 `apps/cli/src/core/channel-env.ts` runs as the very first import in the
 CLI entry. It sets `process.env.FIRST_TREE_HOME` from the channel's
 default home (unless the operator already set the env explicitly),
-which the `@first-tree/shared/config` module then reads at load time.
-That's how every const-import of `DEFAULT_HOME_DIR` automatically picks
-up the right channel-aware path with zero refactoring at call sites.
+which the `@first-tree/shared/config` resolver reads lazily at each call.
+That keeps bundled ESM evaluation from freezing a staging/dev process onto the
+production fallback before channel initialization.
 
 The published-package `name` and `bin` get rewritten by the CI publish
 job alongside `CHANNEL` — the source-tree `apps/cli/package.json`

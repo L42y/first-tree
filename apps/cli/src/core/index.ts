@@ -124,6 +124,25 @@ export type {
 export { ContextTreeWritePreflightCliError, preflightContextTreeWrite } from "./context-tree-write.js";
 // User-owned daemon environment (proxy etc.) — read, never written by us
 export { daemonEnvPath, loadDaemonEnv, parseDaemonEnv } from "./daemon-env.js";
+export type {
+  DaemonRuntimeMode,
+  DaemonRuntimeOwner,
+  DaemonRuntimeOwnershipErrorCode,
+  DaemonRuntimeOwnershipInspection,
+  DaemonRuntimeOwnershipLease,
+} from "./daemon-runtime-ownership.js";
+// Authoritative per-home daemon runtime ownership. Runtime markers remain
+// lifecycle diagnostics; they are not a mutual-exclusion primitive.
+export {
+  acquireDaemonRuntimeOwnership,
+  DAEMON_RUNTIME_OWNERSHIP_ERROR_CODES,
+  DaemonRuntimeOwnershipError,
+  daemonRuntimeOwnershipPath,
+  formatDaemonRuntimeOwner,
+  formatDaemonRuntimeOwnerSummary,
+  inspectDaemonRuntimeOwnership,
+  isDaemonRuntimeOwnershipError,
+} from "./daemon-runtime-ownership.js";
 // Document review (docloop) CLI helpers
 export { slugFromFilename, titleFromMarkdown } from "./doc-review.js";
 // Diagnostics (doctor)
@@ -132,6 +151,7 @@ export {
   checkAgentConfigs,
   checkBackgroundService,
   checkClientConfig,
+  checkDaemonRuntimeOwnership,
   checkNodeVersion,
   checkServerReachable,
   checkWebSocket,
