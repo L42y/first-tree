@@ -7,7 +7,7 @@ import type {
 } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
 import { stratify, tree } from "d3-hierarchy";
-import { AlertTriangle, Network, RefreshCw } from "lucide-react";
+import { AlertTriangle, Info, Network, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { getContextTreeSnapshot } from "../api/context-tree.js";
@@ -679,11 +679,20 @@ function UnavailableState({
       : "Ask an admin to set up your team's Context Tree.";
   const syncDetail = teamNonActionableGitlabWebContext ? null : snapshot.contextStatus.detail;
   const repoLabel = snapshot.repo ? redactRepoForDisplay(snapshot.repo) : null;
+  const AvailabilityIcon = teamNonActionableGitlabWebContext ? Info : AlertTriangle;
   return (
     <Panel>
       <PanelBody>
-        <div className="flex items-start text-body" style={{ color: "var(--fg-2)", gap: "var(--sp-2)" }}>
-          <AlertTriangle size={18} style={{ color: "var(--warning)" }} />
+        <div
+          className="flex items-start text-body"
+          data-context-availability-tone={teamNonActionableGitlabWebContext ? "neutral" : "warning"}
+          style={{ color: "var(--fg-2)", gap: "var(--sp-2)" }}
+        >
+          <AvailabilityIcon
+            aria-hidden
+            size={18}
+            style={{ color: teamNonActionableGitlabWebContext ? "var(--fg-3)" : "var(--warning)" }}
+          />
           <div>
             <div className="font-semibold" style={{ color: "var(--fg)" }}>
               {title}

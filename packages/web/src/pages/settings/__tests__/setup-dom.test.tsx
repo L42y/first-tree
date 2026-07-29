@@ -665,7 +665,7 @@ describe("Settings Setup overview", () => {
     "gitlab_dns_unavailable",
     "gitlab_address_not_authorized",
     "gitlab_egress_denied",
-  ] as const)("keeps non-actionable GitLab Web Context neutral and role-consistent for %s", (reason) => {
+  ] as const)("keeps non-actionable GitLab preview status out of Setup for %s", (reason) => {
     const capabilities = capabilityFixture({
       binding: {
         state: "bound",
@@ -700,10 +700,11 @@ describe("Settings Setup overview", () => {
     );
 
     for (const row of [admin, member]) {
-      expect(row.status).toMatchObject({ label: "Web Context unavailable", kind: "neutral" });
-      expect(row.status.detail).toContain("First Tree can’t display this Context Tree in the web app");
-      expect(row.status.detail).toContain("Agents and Context Reviewer");
-      expect(row.status.detail).not.toContain("recover");
+      expect(row.status).toEqual({
+        label: "Connected",
+        kind: "ready",
+        detail: "acme/context-tree · Review on",
+      });
     }
     expect(admin.action?.label).toBe("Manage");
     expect(member.action).toEqual({ label: "View", to: "/context" });
@@ -1364,16 +1365,17 @@ describe("Settings Setup overview", () => {
     });
 
     const view = await renderSettingsSetupPage();
-    const row = await waitForRowText(view.host, "context-tree", "Web Context unavailable");
+    const row = await waitForRowText(view.host, "context-tree", "Connected");
     const manage = [...row.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Manage",
     );
 
     expect(row.textContent).not.toContain("Needs recovery");
+    expect(row.textContent).not.toContain("Web Context unavailable");
     expect(row.textContent).not.toContain("GitLab deployment allowlist diagnostic");
     await act(async () => manage?.click());
     const controls = await waitForSelector<HTMLElement>(row, '[data-setup-owner-controls="context-tree"]');
-    expect(controls.textContent).toContain("Open Context");
+    expect(controls.textContent).not.toContain("Open Context");
     expect(controls.textContent).toContain("Automatic review");
     expect(controls.textContent).not.toContain("Work on this in chat");
     await act(async () => view.root.unmount());

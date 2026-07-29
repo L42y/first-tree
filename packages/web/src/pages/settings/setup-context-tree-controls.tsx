@@ -120,10 +120,12 @@ export function SetupContextTreeControls({
           <span className="text-label min-w-0" style={{ color: "var(--fg-3)", overflowWrap: "anywhere" }}>
             {bindingSummary}
           </span>
-          <Button type="button" variant="link" className="h-auto shrink-0 p-0" onClick={() => navigate("/context")}>
-            <span>Open Context</span>
-            <ArrowRight className="h-4 w-4" />
-          </Button>
+          {!teamNonActionableGitlabWebContext ? (
+            <Button type="button" variant="link" className="h-auto shrink-0 p-0" onClick={() => navigate("/context")}>
+              <span>Open Context</span>
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

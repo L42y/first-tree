@@ -464,11 +464,12 @@ describe("ContextPage DOM behavior", () => {
       authMock.value = { organizationId: "org-1", role };
       const { container, root } = await renderDom(<ContextPage />);
 
-      await waitForText(container, "GitLab Web Context isn’t available for this repository");
-      expect(container.textContent).toContain(
-        "First Tree can’t display this Context Tree in the web app. Agents and Context Reviewer with repository access can continue using it as usual.",
-      );
+      await waitForText(container, "Web preview isn’t available for this repository");
+      expect(container.textContent).toContain("Agent access and Automatic Review are unaffected.");
       expect(container.textContent).not.toContain(serverDetail);
+      expect(container.querySelector('[data-context-availability-tone="neutral"]')).not.toBeNull();
+      expect(container.querySelector(".lucide-info")).not.toBeNull();
+      expect(container.querySelector(".lucide-triangle-alert")).toBeNull();
       expect(container.textContent).toContain(
         "Repo: https://[redacted]@gitlab.example/acme/private-context.git · Branch: main",
       );
