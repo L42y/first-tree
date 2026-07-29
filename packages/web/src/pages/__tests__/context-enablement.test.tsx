@@ -64,27 +64,49 @@ describe("personal Context access", () => {
     });
   }
 
-  it("copies one onboarding prompt without exposing raw commands or gating on this browser's Computer", async () => {
+  function buttonByText(root: ParentNode, text: string): HTMLButtonElement | undefined {
+    return [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === text);
+  }
+
+  function promptPreview(): HTMLTextAreaElement | null {
+    return document.body.querySelector<HTMLTextAreaElement>("[data-byo-setup-prompt-preview]");
+  }
+
+  async function clickAndFlush(button: HTMLButtonElement | undefined): Promise<void> {
+    await act(async () => {
+      button?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it("offers an optional onboarding preview without gating on this browser's Computer", async () => {
     await render(true);
     expect(host.textContent).toContain("Use Team Context in your coding agent");
     expect(host.textContent).toContain("Copy setup prompt");
+    expect(host.textContent).toContain("Preview prompt");
     expect(host.textContent).not.toContain("context enable --provider");
     expect(apiMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
 
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => {
-      copy?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await clickAndFlush(buttonByText(host, "Preview prompt"));
 
     expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
     expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    const preview = promptPreview();
+    expect(preview?.value).toContain("'first-tree-staging' login 'short-lived-code'");
+    expect(preview?.value).toContain("context enable --provider 'claude-code' --team 'org-1'");
+    expect(preview?.closest('[data-clarity-mask="true"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Nothing runs until you paste them into Claude Code or Codex.");
+    expect(document.body.textContent).toContain("Contains a temporary sign-in code. Don't share it.");
+
+    await clickAndFlush(buttonByText(document.body, "Copy prompt"));
     const copiedPrompt = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0];
     expect(copiedPrompt).toContain("'first-tree-staging' login 'short-lived-code'");
     expect(copiedPrompt).toContain("context enable --provider 'claude-code' --team 'org-1'");
-    expect(copiedPrompt).toContain("confirms that onboarding is complete");
+    expect(copiedPrompt).toContain("First Tree Web owns onboarding completion separately.");
+    expect(copiedPrompt).not.toContain("onboarding completion has been recorded");
+    expect(promptPreview()).toBeNull();
+    expect(host.textContent).toContain("Copied — paste it into the Claude Code or Codex chat you just opened.");
   });
 
   it("stays absent until Team Context prerequisites are ready", async () => {
@@ -110,13 +132,7 @@ describe("personal Context access", () => {
       (button) => button.textContent === "Codex",
     );
     await act(async () => codex?.click());
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => {
-      copy?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
 
     expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(1);
     expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
@@ -138,9 +154,7 @@ describe("personal Context access", () => {
     );
     await render(true);
 
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
+    const copy = buttonByText(host, "Copy setup prompt");
     await act(async () => copy?.click());
     await render(false);
     await act(async () => {
@@ -163,16 +177,23 @@ describe("personal Context access", () => {
     vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("clipboard denied"));
     await render(true);
 
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => {
-      copy?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
 
-    expect(host.textContent).toContain("Could not copy the setup prompt.");
-    expect(host.textContent).toContain("Copy failed");
+    expect(document.body.textContent).toContain("Could not copy the setup prompt.");
+    expect(promptPreview()).toBeNull();
+  });
+
+  it("lets the member cancel without copying or retaining the temporary prompt", async () => {
+    await render(true);
+
+    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    expect(promptPreview()).not.toBeNull();
+
+    await clickAndFlush(buttonByText(document.body, "Cancel"));
+
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(promptPreview()).toBeNull();
+    expect(host.textContent).not.toContain("Copied —");
   });
 
   it("rejects a server handoff for a different provider", async () => {
@@ -186,13 +207,7 @@ describe("personal Context access", () => {
     });
     await render(true);
 
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => {
-      copy?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
     for (let attempt = 0; attempt < 5 && !host.textContent?.includes("Could not prepare"); attempt += 1) {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -228,15 +243,15 @@ describe("personal Context access", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(host.textContent).toContain("Use in your coding agent");
+    expect(host.textContent).toContain("Use Team Context in Claude Code or Codex");
+    expect(host.textContent).toContain("Open the project you want to use with Team Context");
     expect(host.textContent).not.toContain("context enable --provider");
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => {
-      copy?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(promptPreview()?.value).toContain("If you are Claude Code:");
+    expect(promptPreview()?.value).toContain("If you are Codex:");
+
+    await clickAndFlush(buttonByText(document.body, "Copy prompt"));
 
     const copiedPrompt = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0];
     expect(copiedPrompt).toContain("'first-tree-staging' login 'short-lived-code'");
@@ -246,7 +261,7 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("--provider 'codex' --team 'org-1'");
     expect(copiedPrompt).toContain("Do not run both and do not add, remove, or change command flags.");
     expect(copiedPrompt).toContain("Do not mark onboarding complete.");
-    expect(host.textContent).toContain("Copied");
+    expect(host.textContent).toContain("Copied — paste it into the Claude Code or Codex chat you just opened.");
     expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
     expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(2);
   });
@@ -321,26 +336,49 @@ describe("personal Context access", () => {
       );
       await Promise.resolve();
     });
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => {
-      copy?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
 
-    const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Retry",
-    );
-    expect(retry).toBeTruthy();
-    await act(async () => {
-      retry?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    expect(host.textContent).toContain("Could not prepare the setup prompt.");
+    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
 
-    expect(host.textContent).toContain("Copied");
+    expect(promptPreview()).toBeNull();
+    expect(host.textContent).toContain("Copied — paste it into the Claude Code or Codex chat you just opened.");
     expect(preparePrompt).toHaveBeenCalledTimes(2);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("ready-prompt");
+  });
+
+  it("keeps a reopened prompt intact when an earlier clipboard write resolves late", async () => {
+    let resolveCopy: (() => void) | undefined;
+    vi.mocked(navigator.clipboard.writeText).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCopy = resolve;
+        }),
+    );
+    const preparePrompt = vi.fn().mockResolvedValueOnce("first-prompt").mockResolvedValueOnce("second-prompt");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ContextPersonalAccess organizationId="org-1" preparePrompt={preparePrompt} />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    await clickAndFlush(buttonByText(document.body, "Copy prompt"));
+    await clickAndFlush(buttonByText(document.body, "Cancel"));
+    await clickAndFlush(buttonByText(host, "Preview prompt"));
+
+    expect(promptPreview()?.value).toBe("second-prompt");
+    await act(async () => {
+      resolveCopy?.();
+      await Promise.resolve();
+    });
+
+    expect(promptPreview()?.value).toBe("second-prompt");
+    expect(host.textContent).not.toContain("Copied —");
   });
 
   it("does not copy a stale Team prompt after the Settings consumer switches Team", async () => {
@@ -360,10 +398,7 @@ describe("personal Context access", () => {
         </QueryClientProvider>,
       );
     });
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => copy?.click());
+    await act(async () => buttonByText(host, "Copy setup prompt")?.click());
 
     await act(async () => {
       root.render(
@@ -379,6 +414,7 @@ describe("personal Context access", () => {
 
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(host.textContent).toContain("Copy setup prompt");
+    expect(promptPreview()).toBeNull();
   });
 
   it("does not copy a prompt after the Settings consumer unmounts", async () => {
@@ -398,10 +434,7 @@ describe("personal Context access", () => {
         </QueryClientProvider>,
       );
     });
-    const copy = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
-    );
-    await act(async () => copy?.click());
+    await act(async () => buttonByText(host, "Copy setup prompt")?.click());
     await act(async () => root.render(null));
     await act(async () => {
       resolvePrompt?.("unmounted-prompt");

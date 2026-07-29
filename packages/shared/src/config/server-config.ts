@@ -230,9 +230,10 @@ export const serverConfigSchema = defineConfig({
     provider: field(z.enum(["docker", "external"]).default("docker")),
   },
   /**
-   * S3-compatible object storage for immutable attachment bytes. Optional at
-   * boot so existing installations can upgrade before provisioning a bucket;
-   * new uploads return a clear 503 until this block is configured.
+   * Transitional read/delete compatibility for attachment payloads written
+   * to S3 by #2062. New uploads are PostgreSQL-backed. This block can be
+   * removed in the contract release after the reverse backfill completes and
+   * every pre-transition Server replica has drained.
    */
   objectStorage: optional({
     bucket: field(z.string().trim().min(1), { env: "FIRST_TREE_OBJECT_STORAGE_BUCKET" }),

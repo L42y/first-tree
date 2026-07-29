@@ -15,6 +15,9 @@ services:
       timeout: 3s
       retries: 5
 
+  # Transitional compatibility for attachment rows written by #2062. New
+  # uploads use PostgreSQL; keep MinIO available until the S3 -> PostgreSQL
+  # backfill finishes and all pre-transition Server replicas have drained.
   minio:
     image: minio/minio:RELEASE.2025-07-23T15-54-02Z
     command: server /data --console-address ":9001"

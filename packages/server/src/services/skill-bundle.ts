@@ -42,8 +42,8 @@ export type ValidatedSkillBundle = {
 
 /**
  * Validate one complete Skill directory without executing or extracting any
- * uploaded file. The ZIP is streamed to a temporary file so entry validation
- * stays bounded and supporting files never enter PostgreSQL.
+ * uploaded file. The PostgreSQL-backed ZIP is streamed to a temporary file so
+ * entry validation stays bounded.
  */
 export async function validateSkillBundle(
   db: Database,
@@ -308,7 +308,7 @@ export async function backfillSkillResourceBundles(
           .limit(1);
         uploaderId = creator?.agentId ?? null;
       }
-      const attachment = await createAttachment(db, blobStore, {
+      const attachment = await createAttachment(db, {
         organizationId: row.organizationId,
         mimeType: "application/zip",
         filename: `${parsed.data.name}.zip`,

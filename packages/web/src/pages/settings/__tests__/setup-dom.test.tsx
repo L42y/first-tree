@@ -1036,21 +1036,32 @@ describe("Settings Setup overview", () => {
     const { controls } = await openContextTreeControls(view);
     const personalAccess = await waitForSelector<HTMLElement>(controls, "[data-setup-personal-access]");
 
-    expect(personalAccess.textContent).toContain("Use in your coding agent");
-    expect(personalAccess.textContent).toContain("Personal access");
+    expect(personalAccess.textContent).toContain("Use Team Context in Claude Code or Codex");
+    expect(personalAccess.textContent).toContain("Open the project you want to use with Team Context");
     expect(personalAccess.textContent).toContain("Copy setup prompt");
+    expect(personalAccess.textContent).toContain("Preview prompt");
     expect(personalAccess.textContent).not.toContain("context enable --provider");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
 
-    const copy = [...personalAccess.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Copy setup prompt",
+    const preview = [...personalAccess.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Preview prompt",
     );
-    await act(async () => copy?.click());
+    await act(async () => preview?.click());
     await flush();
 
     expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
     expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
     expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(document.body.querySelector<HTMLTextAreaElement>("[data-byo-setup-prompt-preview]")?.value).toContain(
+      "first-tree-dev login short-lived-code",
+    );
+
+    const copy = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Copy prompt",
+    );
+    await act(async () => copy?.click());
+    await flush();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       expect.stringContaining("first-tree-dev login short-lived-code"),
     );
@@ -1090,8 +1101,9 @@ describe("Settings Setup overview", () => {
     const openContext = [...controls.querySelectorAll<HTMLAnchorElement>("a")].find(
       (link) => link.textContent === "Open Context →",
     );
-    expect(personalAccess.textContent).toContain("Personal access");
+    expect(personalAccess.textContent).toContain("Use Team Context in Claude Code or Codex");
     expect(personalAccess.textContent).toContain("Copy setup prompt");
+    expect(personalAccess.textContent).toContain("Preview prompt");
     expect(openContext?.getAttribute("href")).toBe("/context");
     expect(controls.querySelector('[data-setup-owner-controls="automatic-review"]')).toBeNull();
     expect(controls.querySelector('[role="switch"]')).toBeNull();
@@ -1105,6 +1117,9 @@ describe("Settings Setup overview", () => {
     await flush();
     expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
     expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("first-tree-dev login short-lived-code"),
+    );
 
     await act(async () => view.root.unmount());
   });
