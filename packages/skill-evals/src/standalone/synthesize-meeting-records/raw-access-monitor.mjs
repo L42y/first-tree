@@ -1,4 +1,4 @@
-import { appendFileSync, close, open, watch } from "node:fs";
+import { appendFileSync, close, constants, open, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 
 import { isProtectedPathMutation } from "./raw-access-monitor-lib.mjs";
@@ -49,7 +49,7 @@ for (const { directory, protectedName } of watchTargets) {
 process.send?.({ locator, type: "partial_raw_monitor_ready" });
 
 function waitForReader() {
-  open(sentinelPath, "w", (error, descriptor) => {
+  open(sentinelPath, constants.O_WRONLY, (error, descriptor) => {
     if (error !== null) {
       record("partial_raw_path_mutation");
       setTimeout(waitForReader, 25);
