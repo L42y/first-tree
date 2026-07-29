@@ -22,10 +22,12 @@ import { agentMeRoutes } from "./api/agent/me.js";
 import { agentMessageRoutes } from "./api/agent/messages.js";
 import { clientWsRoutes } from "./api/agent/ws-client.js";
 import { agentActivityRoutes } from "./api/agent-activity.js";
+import { agentTemplateRoutes } from "./api/agent-templates.js";
 import { agentUsageRoutes } from "./api/agent-usage.js";
 import { agentRoutes, publicAgentAvatarRoutes } from "./api/agents.js";
 import { agentConfigRoutes } from "./api/agents-config.js";
 import { agentResourcesRoutes } from "./api/agents-resources.js";
+import { agentTemplatesRoutes } from "./api/agents-templates.js";
 import { attachmentRoutes } from "./api/attachments.js";
 import { githubOauthRoutes } from "./api/auth/github.js";
 import { googleOauthRoutes } from "./api/auth/google.js";
@@ -48,6 +50,7 @@ import { meRoutes } from "./api/me.js";
 import { meAuthProviderRoutes } from "./api/me-auth-providers.js";
 import { meDocsRoutes } from "./api/me-docs.js";
 import { orgActivityRoutes } from "./api/orgs/activity.js";
+import { orgAgentTemplateRoutes } from "./api/orgs/agent-templates.js";
 import { orgAgentRoutes } from "./api/orgs/agents.js";
 import { orgAttachmentRoutes } from "./api/orgs/attachments.js";
 import { orgChatRoutes } from "./api/orgs/chats.js";
@@ -96,6 +99,7 @@ import {
   rootLogger,
 } from "./observability/index.js";
 import { broadcastToAdmins } from "./services/admin-broadcast.js";
+import { createAgentTemplatesService } from "./services/agent-templates.js";
 import { backfillExternalAttachmentsToPostgres } from "./services/attachment.js";
 import {
   type AttachmentBlobStore,
@@ -360,7 +364,19 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     encryptionKey: config.secrets.encryptionKey,
   });
   app.decorate("configService", configService);
-  const resourcesService = createResourcesService({ db, notifier, attachmentBlobStore });
+  const publisherOrganizationId = config.agentTemplates?.publisherOrganizationId;
+  const agentTemplatesService = createAgentTemplatesService({
+    db,
+    notifier,
+    publisherOrganizationId,
+  });
+  app.decorate("agentTemplatesService", agentTemplatesService);
+  const resourcesService = createResourcesService({
+    db,
+    notifier,
+    attachmentBlobStore,
+    agentTemplatePublisherOrganizationId: publisherOrganizationId,
+  });
   app.decorate("resourcesService", resourcesService);
 
   // WebSocket plugin. `maxPayload` caps a single inbound frame so a hostile
@@ -576,6 +592,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
       await api.register(
         userScope("orgsScope", async (scope) => {
           await scope.register(orgIdentityRoutes);
+          await scope.register(orgAgentTemplateRoutes, { prefix: "/agent-templates" });
           await scope.register(orgAgentRoutes, { prefix: "/agents" });
           await scope.register(orgChatRoutes, { prefix: "/chats" });
           await scope.register(orgOverviewRoutes, { prefix: "/overview" });
@@ -613,6 +630,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
         userScope("resourcesScope", async (scope) => {
           await scope.register(agentRoutes, { prefix: "/agents" });
           await scope.register(agentConfigRoutes, { prefix: "/agents" });
+          await scope.register(agentTemplatesRoutes, { prefix: "/agents" });
           await scope.register(agentResourcesRoutes, { prefix: "/agents" });
           await scope.register(agentActivityRoutes, { prefix: "/agents" });
           await scope.register(agentUsageRoutes, { prefix: "/agents" });
@@ -622,6 +640,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
           await scope.register(cronJobRoutes, { prefix: "/cron-jobs" });
           await scope.register(clientRoutes, { prefix: "/clients" });
           await scope.register(resourceRoutes, { prefix: "/resources" });
+          await scope.register(agentTemplateRoutes, { prefix: "/agent-templates" });
           await scope.register(gitlabConnectionRoutes, { prefix: "/gitlab-connections" });
           await scope.register(gitlabIdentityLinkRoutes, { prefix: "/gitlab-identity-links" });
           if (config.docs.enabled) {

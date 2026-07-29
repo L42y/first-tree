@@ -214,6 +214,16 @@ export const serverConfigSchema = defineConfig({
       env: "FIRST_TREE_DOCS_ENABLED",
     }),
   },
+  agentTemplates: optional({
+    /**
+     * Organization that owns and publishes the official online Agent Template
+     * catalog. Its current admins are the only Template writers. Leaving this
+     * unset disables catalog mutation and returns an empty user catalog.
+     */
+    publisherOrganizationId: field(optionalTrimmedStringSchema, {
+      env: "FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID",
+    }),
+  }),
   database: {
     url: field(z.string(), {
       env: "FIRST_TREE_DATABASE_URL",

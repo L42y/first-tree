@@ -55,6 +55,7 @@ export type AgentResourceBindingMode = z.infer<typeof agentResourceBindingModeSc
 export const EFFECTIVE_RESOURCE_SOURCES = {
   TEAM_RECOMMENDED: "team_recommended",
   TEAM_AVAILABLE: "team_available",
+  AGENT_TEMPLATE: "agent_template",
   AGENT_EXTRA: "agent_extra",
   INLINE_PROMPT: "inline_prompt",
 } as const;
@@ -62,6 +63,7 @@ export const EFFECTIVE_RESOURCE_SOURCES = {
 export const effectiveResourceSourceSchema = z.enum([
   "team_recommended",
   "team_available",
+  "agent_template",
   "agent_extra",
   "inline_prompt",
 ]);

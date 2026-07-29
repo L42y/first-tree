@@ -73,6 +73,7 @@ export type CreateTestAppOptions = {
   landingCampaignMaxAgentTurns?: number;
   landingCampaignMaxEstimatedTokens?: number;
   landingCampaignMaxTrialsPerUserPer24Hours?: number;
+  agentTemplatePublisherOrganizationId?: string;
   commandVersion?: string;
   rateLimit?: Partial<NonNullable<Config["rateLimit"]>>;
   connectBootstrap?: Config["connectBootstrap"];
@@ -129,6 +130,13 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
       // the document routes are exercised without per-test wiring.
       enabled: opts.docsEnabled ?? true,
     },
+    ...(opts.agentTemplatePublisherOrganizationId
+      ? {
+          agentTemplates: {
+            publisherOrganizationId: opts.agentTemplatePublisherOrganizationId,
+          },
+        }
+      : {}),
     database: {
       url: process.env.DATABASE_URL ?? "",
       provider: "external",

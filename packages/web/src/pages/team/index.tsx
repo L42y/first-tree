@@ -3,7 +3,7 @@ import { MEMBER_ROLES } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link2, Plus, Search } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { listClients } from "../../api/activity.js";
 import {
   deleteAgent,
@@ -99,16 +99,26 @@ export function TeamPage() {
   const { role, memberId, refreshMe } = useAuth();
   const isAdmin = role === "admin";
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const resolveMember = useMemberNameMap();
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [initialTemplateIds, setInitialTemplateIds] = useState<string[]>([]);
   const [editTarget, setEditTarget] = useState<MemberEditTarget | null>(null);
   const [agentFilter, setAgentFilter] = useState<AgentFilter>(() => readAgentFilterPreference());
   const [suspendTarget, setSuspendTarget] = useState<AgentLifecycleTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentLifecycleTarget | null>(null);
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    const state = location.state as { openNewAgent?: boolean; templateIds?: string[] } | null;
+    if (!state?.openNewAgent) return;
+    setInitialTemplateIds(state.templateIds ?? []);
+    setCreateOpen(true);
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, [location.pathname, location.search, location.state, navigate]);
 
   const membersQuery = useQuery({ queryKey: ["members"], queryFn: listMembers });
 
@@ -302,7 +312,14 @@ export function TeamPage() {
           <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
             <SearchBar query={query} onQuery={setQuery} />
             {/* Brand-green cta is reserved for the one creation/hero action. */}
-            <Button size="sm" variant="cta" onClick={() => setCreateOpen(true)}>
+            <Button
+              size="sm"
+              variant="cta"
+              onClick={() => {
+                setInitialTemplateIds([]);
+                setCreateOpen(true);
+              }}
+            >
               <Plus className="h-3.5 w-3.5" />
               New agent
             </Button>
@@ -367,6 +384,16 @@ export function TeamPage() {
       <NewAgentDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
+        initialTemplateIds={initialTemplateIds}
+        onBrowseTemplates={(selectedTemplateIds) => {
+          setCreateOpen(false);
+          navigate("/agent-templates", {
+            state: {
+              fromNewAgent: true,
+              selectedTemplateIds,
+            },
+          });
+        }}
         onCreated={(_agent: Agent, _runtime: RuntimeProvider) => {
           setCreateOpen(false);
           queryClient.invalidateQueries({ queryKey: ["agents"] });

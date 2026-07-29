@@ -8,9 +8,10 @@ import {
   isRuntimeProviderEnabled,
   type RuntimeProvider,
 } from "@first-tree/shared";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ConnectTokenResponse, getClientCapabilities, type HubClient, listClients } from "../api/activity.js";
+import { listAgentTemplates } from "../api/agent-templates.js";
 import { checkAgentNameAvailability, createAgent } from "../api/agents.js";
 import { ApiError, api, type ValidationIssue } from "../api/client.js";
 import { useAuth } from "../auth/auth-context.js";
@@ -18,12 +19,13 @@ import { useCopyFeedback } from "../lib/use-copy-feedback.js";
 import { runVisibilityAwareInterval } from "../lib/visibility-interval.js";
 import { slugify } from "../utils/agent-naming.js";
 import { Button } from "./ui/button.js";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog.js";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog.js";
 import { Input } from "./ui/input.js";
 import { Label } from "./ui/label.js";
 import { OptionCard } from "./ui/option-card.js";
 
 const DISPLAY_NAME_MAX = 200;
+const EMPTY_TEMPLATE_IDS: string[] = [];
 
 // How many `-N` suffixes we try when auto-deduping a colliding handle before
 // giving up and asking the user to pick one (the manual fallback). Collisions
@@ -205,6 +207,8 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (agent: Agent, runtimeProvider: RuntimeProvider) => void;
+  initialTemplateIds?: string[];
+  onBrowseTemplates?: (selectedTemplateIds: string[]) => void;
 };
 
 type AvailabilityState =
@@ -217,7 +221,13 @@ type AvailabilityState =
 // derive a usable handle and the fallback input is shown.
 type HandleState = { status: "idle" } | { status: "checking" } | { status: "ok" } | { status: "manual" };
 
-export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
+export function NewAgentDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  initialTemplateIds = EMPTY_TEMPLATE_IDS,
+  onBrowseTemplates,
+}: Props) {
   const queryClient = useQueryClient();
   const { refreshMe, organizationId } = useAuth();
   const [displayName, setDisplayName] = useState("");
@@ -229,6 +239,12 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
   // personal until explicitly shared.
   const [visibility, setVisibility] = useState<AgentVisibility>("private");
   const [runtime, setRuntime] = useState<RuntimeProvider>("claude-code");
+  const [templateIds, setTemplateIds] = useState<string[]>(initialTemplateIds);
+  const templatesQuery = useQuery({
+    queryKey: ["agent-templates"],
+    queryFn: listAgentTemplates,
+    enabled: open && templateIds.length > 0,
+  });
 
   // Handle resolution. The slug follows the display name (auto-deduped on
   // collision); `resolvedHandle` is the winner. `manualHandle` is only used
@@ -266,6 +282,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
       setDisplayName("");
       setVisibility("private");
       setRuntime("claude-code");
+      setTemplateIds(initialTemplateIds);
       setResolvedHandle("");
       setHandleState({ status: "idle" });
       setManualHandle("");
@@ -281,7 +298,14 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
       resetTokenCopy();
       setClientErrors({});
     }
-  }, [open, resetTokenCopy]);
+  }, [initialTemplateIds, open, resetTokenCopy]);
+
+  const selectedTemplateTitles = useMemo(() => {
+    const selected = new Set(templateIds);
+    return (templatesQuery.data?.items ?? [])
+      .filter((template) => selected.has(template.id))
+      .map((template) => template.title);
+  }, [templateIds, templatesQuery.data]);
 
   const baseSlug = useMemo(() => slugify(displayName), [displayName]);
   const hasDisplay = displayName.trim().length > 0;
@@ -547,6 +571,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
         clientId: opts.clientId,
         runtimeProvider: runtime,
         visibility,
+        ...(templateIds.length > 0 ? { templateIds } : {}),
         // Pin the agent to the org the user is currently viewing in the
         // dropdown — the JWT default org is non-deterministic across logins
         // (auth.ts member pick) and creating into "wherever the JWT lands"
@@ -627,6 +652,9 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>New Agent</DialogTitle>
+          <DialogDescription className="sr-only">
+            Create an Agent and choose its optional Templates, visibility, computer, and runtime.
+          </DialogDescription>
         </DialogHeader>
         {/* min-w-0 lets the grid item (this form) shrink below its
             content's intrinsic width — without it, a long command/token in
@@ -729,6 +757,31 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
             {handleState.status !== "manual" && fieldErrors.name && (
               <p className="text-caption text-destructive">{fieldErrors.name}</p>
             )}
+          </div>
+
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate text-body">
+              <span className="font-medium">Template</span>
+              {templateIds.length > 0 ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  ·{" "}
+                  {selectedTemplateTitles.length > 0
+                    ? selectedTemplateTitles.join(", ")
+                    : `${templateIds.length} selected`}
+                </span>
+              ) : null}
+            </span>
+            <button
+              type="button"
+              className="shrink-0 text-label font-medium text-primary hover:underline"
+              onClick={() => {
+                onOpenChange(false);
+                onBrowseTemplates?.(templateIds);
+              }}
+            >
+              Browse
+            </button>
           </div>
 
           <div className="space-y-2">

@@ -25,6 +25,10 @@ const agentMocks = vi.hoisted(() => ({
   createAgent: vi.fn(),
 }));
 
+const agentTemplateMocks = vi.hoisted(() => ({
+  listAgentTemplates: vi.fn(),
+}));
+
 const clientMocks = vi.hoisted(() => ({
   post: vi.fn(),
 }));
@@ -41,6 +45,7 @@ vi.mock("../../api/agents.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/agents.js")>()),
   ...agentMocks,
 }));
+vi.mock("../../api/agent-templates.js", () => agentTemplateMocks);
 vi.mock("../../api/client.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/client.js")>();
   return { ...actual, api: { ...actual.api, post: clientMocks.post } };
@@ -236,6 +241,20 @@ beforeEach(() => {
   );
   agentMocks.checkAgentNameAvailability.mockResolvedValue({ available: true });
   agentMocks.createAgent.mockResolvedValue(agent());
+  agentTemplateMocks.listAgentTemplates.mockResolvedValue({
+    items: [
+      {
+        id: "code-reviewer",
+        title: "Code reviewer",
+        summary: "Review changes with consistent engineering standards.",
+        outcomes: ["Find correctness risks"],
+        customInstructions: "Review the proposed changes.",
+        status: "active",
+        skills: [],
+        mcp: [],
+      },
+    ],
+  });
   clientMocks.post.mockResolvedValue({
     token: "connect-token",
     expiresIn: 600,
@@ -415,5 +434,38 @@ describe("NewAgentDialog extra branches", () => {
     await click(buttonByText(document.body, "Create"));
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length > 0, "Expected create after failed probe");
     expect(agentMocks.createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: "probe-bot" }));
+  });
+
+  it("shows the selected Template inline, preserves it while browsing, and submits its id", async () => {
+    const { NewAgentDialog } = await import("../new-agent-dialog.js");
+    const onOpenChange = vi.fn();
+    const onBrowseTemplates = vi.fn();
+    const container = await renderDom(
+      <NewAgentDialog
+        open
+        initialTemplateIds={["code-reviewer"]}
+        onOpenChange={onOpenChange}
+        onCreated={() => undefined}
+        onBrowseTemplates={onBrowseTemplates}
+      />,
+    );
+
+    await waitForText(container, "Code reviewer");
+    expect(document.body.textContent).toContain("Template · Code reviewer");
+    await click(buttonByText(document.body, "Browse"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onBrowseTemplates).toHaveBeenCalledWith(["code-reviewer"]);
+
+    await waitForText(container, "Claude Code");
+    await setValue(inputById("new-agent-display-name"), "Review Bot");
+    await waitForCondition(() => agentMocks.checkAgentNameAvailability.mock.calls.length > 0, "Expected probe");
+    await click(buttonByText(document.body, "Create"));
+    await waitForCondition(() => agentMocks.createAgent.mock.calls.length > 0, "Expected createAgent");
+    expect(agentMocks.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "review-bot",
+        templateIds: ["code-reviewer"],
+      }),
+    );
   });
 });

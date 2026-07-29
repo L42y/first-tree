@@ -17,6 +17,7 @@ import { ResourcesTab } from "./pages/agent-detail/resources-tab.js";
 import { RuntimeTab } from "./pages/agent-detail/runtime-tab.js";
 import { UsageTab } from "./pages/agent-detail/usage-tab.js";
 import { AgentDetailPage } from "./pages/agent-detail.js";
+import { AgentTemplatesPage } from "./pages/agent-templates.js";
 import { ContextPage } from "./pages/context.js";
 import { DocPage } from "./pages/docs/doc-page.js";
 import { DocsListPage } from "./pages/docs/docs-list-page.js";
@@ -441,6 +442,7 @@ export function App() {
                   <Route path="context" element={<ContextPage />} />
                   <Route path="context/docs" element={<DocsListPage />} />
                   <Route path="context/docs/:slug" element={<DocPage />} />
+                  <Route path="agent-templates" element={<AgentTemplatesPage />} />
                   <Route path="agents/:uuid" element={<AgentDetailPage />}>
                     <Route index element={<Navigate to="profile" replace />} />
                     <Route path="profile" element={<ProfileTab />} />

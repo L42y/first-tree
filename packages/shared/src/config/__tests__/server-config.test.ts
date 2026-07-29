@@ -61,6 +61,14 @@ describe("server config", () => {
     expect(fieldSchema.parse(undefined)).toBeUndefined();
   });
 
+  it("trims the Agent Template publisher organization and leaves the catalog disabled by default", () => {
+    const fieldSchema = serverConfigSchema.agentTemplates.shape.publisherOrganizationId.schema;
+
+    expect(fieldSchema.parse("  org_templates  ")).toBe("org_templates");
+    expect(fieldSchema.parse("")).toBeUndefined();
+    expect(fieldSchema.parse(undefined)).toBeUndefined();
+  });
+
   it("keeps the cron polling cadence inside the dispatch-safe range", () => {
     const fieldSchema = serverConfigSchema.runtime.pollingIntervalSeconds.schema;
 

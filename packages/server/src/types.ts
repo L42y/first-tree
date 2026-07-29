@@ -1,5 +1,6 @@
 import type { Database } from "./db/connection.js";
 import type { UserScope } from "./scope/types.js";
+import type { AgentTemplatesService } from "./services/agent-templates.js";
 import type { AttachmentBlobStore } from "./services/attachment-blob-store.js";
 import type { ConfigService } from "./services/config-service.js";
 import type { Notifier } from "./services/notifier.js";
@@ -20,6 +21,7 @@ declare module "fastify" {
     attachmentBlobStore: AttachmentBlobStore;
     notifier: Notifier;
     configService: ConfigService;
+    agentTemplatesService: AgentTemplatesService;
     resourcesService: ResourcesService;
     /**
      * Command-package version advertised via the `server:welcome` WS frame.

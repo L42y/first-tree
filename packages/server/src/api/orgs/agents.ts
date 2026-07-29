@@ -159,7 +159,13 @@ export async function orgAgentRoutes(app: FastifyInstance): Promise<void> {
         source: body.source ?? "admin-api",
         managerId,
       },
-      { adoptAsDelegateIfFirst: managerId === scope.memberId },
+      {
+        adoptAsDelegateIfFirst: managerId === scope.memberId,
+        // Some embedded/test route harnesses provide the service decorations
+        // without a full server config object; no configured catalog simply
+        // means Template selection is unavailable.
+        templatePublisherOrganizationId: app.config?.agentTemplates?.publisherOrganizationId,
+      },
     );
     notifyClientAgentPinned(agent);
     return reply.status(201).send({

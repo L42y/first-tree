@@ -41,6 +41,14 @@ import { members } from "../db/schema/members.js";
 import { resources } from "../db/schema/resources.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
+import {
+  type AgentTemplateImpact,
+  assertAgentTemplateMcpResourceUpdateComposable,
+  assertResourceNotReferencedByAgentTemplate,
+  bumpAgentConfigsForTemplateImpacts,
+  listAgentTemplateImpactsForResource,
+  loadAgentTemplateRuntimeSelection,
+} from "./agent-templates.js";
 import { deleteAttachmentIfUnreferenced } from "./attachment.js";
 import { type AttachmentBlobStore, createUnavailableAttachmentBlobStore } from "./attachment-blob-store.js";
 import {
@@ -101,10 +109,12 @@ export type ResourcesServiceOptions = {
   db: Database;
   notifier: Notifier;
   attachmentBlobStore?: AttachmentBlobStore;
+  agentTemplatePublisherOrganizationId?: string;
 };
 
 export function createResourcesService(opts: ResourcesServiceOptions): ResourcesService {
   const { db, notifier } = opts;
+  const templatePublisherOrganizationId = opts.agentTemplatePublisherOrganizationId;
   const attachmentBlobStore = opts.attachmentBlobStore ?? createUnavailableAttachmentBlobStore();
 
   async function notifyAgents(agentIds: Iterable<string>): Promise<void> {
@@ -308,14 +318,14 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     return row;
   }
 
-  async function getConfigVersion(agentId: string): Promise<number> {
+  async function getConfigState(agentId: string): Promise<{ version: number; templateIds: string[] }> {
     const [row] = await db
-      .select({ version: agentConfigs.version })
+      .select({ version: agentConfigs.version, templateIds: agentConfigs.templateIds })
       .from(agentConfigs)
       .where(eq(agentConfigs.agentId, agentId))
       .limit(1);
     if (!row) throw new NotFoundError(`Agent config "${agentId}" not found`);
-    return row.version;
+    return row;
   }
 
   async function findOrCreateAgentRepoResource(
@@ -507,7 +517,12 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     simulation?: ResourceSimulation,
   ): Promise<EffectiveAgentResources> {
     const agent = await loadAgent(agentId);
-    const version = await getConfigVersion(agentId);
+    const configState = await getConfigState(agentId);
+    const templateSelection = await loadAgentTemplateRuntimeSelection(
+      db,
+      templatePublisherOrganizationId,
+      configState.templateIds,
+    );
     let resourceRows = await db
       .select()
       .from(resources)
@@ -640,14 +655,67 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       bucket(binding.type).push(row);
     }
 
+    const seenTemplateResourceIds = new Set(
+      [...skills, ...mcp].flatMap((row) => (row.resourceId ? [row.resourceId] : [])),
+    );
+    const enabledConsumerMcpByName = new Map<string, string>();
+    for (const row of mcp) {
+      if (row.mode !== "enabled" || !row.resourceId) continue;
+      const parsed = noSecretMcpServerSchema.safeParse(row.payload);
+      if (parsed.success) enabledConsumerMcpByName.set(parsed.data.name.toLowerCase(), row.resourceId);
+    }
+    const templateResourceById = new Map(templateSelection.resources.map((resource) => [resource.id, resource]));
+    for (const [templateOrder, template] of templateSelection.templates.entries()) {
+      prompts.push(
+        emptyRow({
+          id: `template:${template.id}:prompt`,
+          bindingId: null,
+          resource: null,
+          type: "prompt",
+          name: template.title,
+          source: "agent_template",
+          mode: "enabled",
+          order: templateOrder,
+          promptBody: template.customInstructions,
+        }),
+      );
+      for (const resourceId of template.resourceIds) {
+        if (seenTemplateResourceIds.has(resourceId)) continue;
+        const resource = templateResourceById.get(resourceId);
+        if (!resource || (resource.type !== "skill" && resource.type !== "mcp")) continue;
+        seenTemplateResourceIds.add(resourceId);
+
+        let mode: EffectiveResourceRow["mode"] = "enabled";
+        if (resource.type === "mcp") {
+          const parsed = noSecretMcpServerSchema.safeParse(resource.payload);
+          const consumerResourceId = parsed.success
+            ? enabledConsumerMcpByName.get(parsed.data.name.toLowerCase())
+            : undefined;
+          if (consumerResourceId && consumerResourceId !== resource.id) mode = "replaced";
+        }
+        bucket(resource.type).push(
+          emptyRow({
+            id: `template:${template.id}:resource:${resource.id}`,
+            bindingId: null,
+            resource,
+            type: resource.type,
+            name: resource.name,
+            source: "agent_template",
+            mode,
+            order: templateOrder,
+          }),
+        );
+      }
+    }
+
     const unavailable: EffectiveAgentResources["unavailable"] = [];
     applyPromptBudget(prompts, unavailable);
     applyRepoLocalPathDedup(repos, unavailable);
-    await applySkillBundleAvailability(skills, resourceRows, agent.organizationId, unavailable);
+    await applySkillBundleAvailability(skills, [...resourceRows, ...templateSelection.resources], unavailable);
     applyPayloadValidation(skills, mcp, unavailable);
 
     return {
-      version,
+      version: configState.version,
       repos,
       prompts,
       skills,
@@ -659,7 +727,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
   function applyPromptBudget(rows: EffectiveResourceRow[], unavailable: EffectiveAgentResources["unavailable"]): void {
     let combined = "";
     let overflow = false;
-    for (const row of rows.sort((a, b) => a.order - b.order)) {
+    for (const row of rows.sort(comparePromptRows)) {
       if (row.mode !== "enabled") continue;
       const body = row.promptBody ?? "";
       const rendered = renderPromptRow(row.name, row.source, body);
@@ -730,17 +798,16 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
   async function applySkillBundleAvailability(
     skillRows: EffectiveResourceRow[],
     resourceRows: ResourceDbRow[],
-    organizationId: string,
     unavailable: EffectiveAgentResources["unavailable"],
   ): Promise<void> {
     const bundleByResource = new Map(
       resourceRows.flatMap((resource) =>
         resource.type === "skill" && resource.bundleAttachmentId
-          ? [[resource.id, resource.bundleAttachmentId] as const]
+          ? [[resource.id, { id: resource.bundleAttachmentId, organizationId: resource.organizationId }] as const]
           : [],
       ),
     );
-    const bundleIds = Array.from(new Set(bundleByResource.values()));
+    const bundleIds = Array.from(new Set(Array.from(bundleByResource.values()).map((bundle) => bundle.id)));
     if (bundleIds.length === 0) return;
     const readyRows = await db
       .select({
@@ -751,17 +818,15 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       .from(attachments)
       .where(inArray(attachments.id, bundleIds));
     const ready = new Set(
-      readyRows
-        .filter((row) => row.organizationId === organizationId && row.lifecycleState === "ready")
-        .map((row) => row.id),
+      readyRows.filter((row) => row.lifecycleState === "ready").map((row) => `${row.organizationId}:${row.id}`),
     );
     for (const row of skillRows) {
       if (row.mode !== "enabled" || !row.resourceId) continue;
-      const bundleId = bundleByResource.get(row.resourceId);
+      const bundle = bundleByResource.get(row.resourceId);
       // A null bundle is a legacy inline Skill during rolling backfill and
       // remains valid. Once a Resource points at a bundle, that reference is
       // authoritative and must fail closed if its object is unavailable.
-      if (!bundleId || ready.has(bundleId)) continue;
+      if (!bundle || ready.has(`${bundle.organizationId}:${bundle.id}`)) continue;
       row.mode = "unavailable";
       row.unavailableReason = "skill_bundle_unavailable";
       unavailable.push({
@@ -778,14 +843,16 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         ? "Agent Prompt (this agent only)"
         : source === "agent_extra"
           ? `Agent Prompt Override: ${name}`
-          : `Team Prompt: ${name}`;
+          : source === "agent_template"
+            ? `Agent Template: ${name}`
+            : `Team Prompt: ${name}`;
     return `\n\n## ${title}\n\n${body.trim()}\n`;
   }
 
   function runtimePromptAppend(rows: EffectiveResourceRow[]): string {
     return rows
       .filter((row) => row.mode === "enabled" && row.promptBody)
-      .sort((a, b) => a.order - b.order)
+      .sort(comparePromptRows)
       .map((row) => renderPromptRow(row.name, row.source, row.promptBody ?? ""))
       .join("")
       .trim();
@@ -793,6 +860,16 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
 
   function promptSectionScope(source: EffectiveResourceRow["source"]): PromptSection["scope"] {
     return source === "inline_prompt" || source === "agent_extra" ? "agent" : "team";
+  }
+
+  function promptSourceRank(source: EffectiveResourceRow["source"]): number {
+    if (source === "team_recommended" || source === "team_available") return 0;
+    if (source === "agent_template") return 1;
+    return 2;
+  }
+
+  function comparePromptRows(a: EffectiveResourceRow, b: EffectiveResourceRow): number {
+    return promptSourceRank(a.source) - promptSourceRank(b.source) || a.order - b.order;
   }
 
   /**
@@ -811,7 +888,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
   function runtimePromptSections(rows: EffectiveResourceRow[]): PromptSection[] {
     return rows
       .filter((row) => row.mode === "enabled" && row.promptBody)
-      .sort((a, b) => a.order - b.order)
+      .sort(comparePromptRows)
       .map((row) => {
         const editable = row.source === "inline_prompt" && !row.replacesResourceId;
         return {
@@ -1133,9 +1210,17 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         for (const agentId of await listRuntimeAgentIds(current.organizationId)) impactedSet.add(agentId);
       }
       const impacted = Array.from(impactedSet);
+      let templateImpacts: AgentTemplateImpact[] = [];
       try {
         await db.transaction(async (tx) => {
           const targetDb = tx as unknown as Database;
+          const [locked] = await targetDb
+            .select({ id: resources.id })
+            .from(resources)
+            .where(eq(resources.id, resourceId))
+            .for("update")
+            .limit(1);
+          if (!locked) throw new NotFoundError(`Resource "${resourceId}" not found`);
           if (current.type === "repo") {
             await targetDb.execute(
               sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${current.organizationId}))`,
@@ -1148,6 +1233,13 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             }
             await assertTeamSkillNameAvailable(targetDb, current.organizationId, name, resourceId);
           }
+          if (input.status && input.status !== "active") {
+            await assertResourceNotReferencedByAgentTemplate(targetDb, templatePublisherOrganizationId, resourceId);
+          }
+          await assertAgentTemplateMcpResourceUpdateComposable(targetDb, templatePublisherOrganizationId, {
+            ...current,
+            payload,
+          });
           await targetDb
             .update(resources)
             .set({
@@ -1162,12 +1254,24 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             })
             .where(eq(resources.id, resourceId));
           await bumpAgentConfigVersions(targetDb, impacted, actorId);
+          const locallyImpacted = new Set(impacted);
+          templateImpacts = (
+            await listAgentTemplateImpactsForResource(targetDb, templatePublisherOrganizationId, resourceId)
+          ).filter((impact) => !locallyImpacted.has(impact.agentId));
+          if (templatePublisherOrganizationId) {
+            await bumpAgentConfigsForTemplateImpacts(
+              targetDb,
+              templateImpacts,
+              templatePublisherOrganizationId,
+              actorId,
+            );
+          }
         });
       } catch (err) {
         if (postgresErrorCode(err) === "23505") throw new ConflictError("A matching resource already exists");
         throw err;
       }
-      await notifyAgents(impacted);
+      await notifyAgents([...impacted, ...templateImpacts.map((impact) => impact.agentId)]);
       if (current.type === "skill" && current.bundleAttachmentId && current.bundleAttachmentId !== bundleAttachmentId) {
         await deleteAttachmentIfUnreferenced(db, attachmentBlobStore, current.bundleAttachmentId).catch(
           () => undefined,
@@ -1186,6 +1290,14 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${current.organizationId}))`,
           );
         }
+        const [locked] = await targetDb
+          .select({ id: resources.id })
+          .from(resources)
+          .where(eq(resources.id, resourceId))
+          .for("update")
+          .limit(1);
+        if (!locked) throw new NotFoundError(`Resource "${resourceId}" not found`);
+        await assertResourceNotReferencedByAgentTemplate(targetDb, templatePublisherOrganizationId, resourceId);
         await targetDb
           .update(resources)
           .set({ status: "retired", updatedBy: actorId, updatedAt: new Date() })

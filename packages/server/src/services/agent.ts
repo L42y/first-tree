@@ -37,6 +37,7 @@ import {
   agentNotLandingCampaignTrialCondition,
   agentVisibilityCondition,
 } from "./access-control.js";
+import { lockAndValidateAgentTemplateSelection } from "./agent-templates.js";
 import { resolveDefaultOrgId } from "./organization.js";
 import { recomputeWatchersForAgent } from "./watcher.js";
 
@@ -417,11 +418,19 @@ async function resolveFallbackManagerId(db: Database, orgId: string): Promise<st
 export async function createAgent(
   db: Database,
   data: CreateAgent & { managerId?: string },
-  options: { force?: boolean; adoptAsDelegateIfFirst?: boolean } = {},
+  options: {
+    force?: boolean;
+    adoptAsDelegateIfFirst?: boolean;
+    templatePublisherOrganizationId?: string;
+  } = {},
 ) {
   const uuid = uuidv7();
   const name = data.name ?? null;
   const runtimeProvider: RuntimeProvider = data.runtimeProvider ?? DEFAULT_RUNTIME_PROVIDER;
+  const templateIds = data.templateIds ?? [];
+  if (data.type === AGENT_TYPES.HUMAN && templateIds.length > 0) {
+    throw new BadRequestError("Human agents cannot use Agent Templates");
+  }
   assertUserAgentMetadataHasNoReservedKeys(data.metadata);
   if (name?.startsWith(RESERVED_AGENT_NAME_PREFIX)) {
     throw new BadRequestError(
@@ -588,6 +597,12 @@ export async function createAgent(
         }
       }
 
+      await lockAndValidateAgentTemplateSelection(
+        tx as unknown as Database,
+        options.templatePublisherOrganizationId,
+        templateIds,
+      );
+
       const [row] = await tx
         .insert(agents)
         .values({
@@ -616,6 +631,7 @@ export async function createAgent(
           agentId: row.uuid,
           version: 1,
           payload: initialPayload,
+          templateIds,
           updatedBy: "system",
         })
         .onConflictDoNothing();
