@@ -33,6 +33,7 @@ function repo(id: string): ResourceRow {
     ownerAgentId: null,
     name: id,
     repoCanonicalKey: `git.example.com/acme/${id}`,
+    bundleAttachmentId: null,
     defaultEnabled: "recommended",
     status: "active",
     payload: { url: `https://git.example.com/acme/${id}.git` },

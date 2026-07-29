@@ -35,6 +35,7 @@ function row(over: Partial<ResourceRow> & Pick<ResourceRow, "id" | "type" | "nam
     createdAt: NOW,
     updatedAt: NOW,
     ...over,
+    bundleAttachmentId: over.bundleAttachmentId ?? null,
   };
 }
 

@@ -20,9 +20,13 @@ const resourceMocks = vi.hoisted(() => ({
   previewOrgResourceImpact: vi.fn(),
   previewResourceImpact: vi.fn(),
 }));
+const attachmentMocks = vi.hoisted(() => ({
+  uploadAttachment: vi.fn(),
+}));
 
 vi.mock("../../auth/auth-context.js", () => ({ useAuth: () => authMock.value }));
 vi.mock("../../api/resources.js", () => resourceMocks);
+vi.mock("../../api/attachments.js", () => attachmentMocks);
 
 const NOW = "2026-06-03T00:00:00.000Z";
 
@@ -39,6 +43,7 @@ function row(over: Partial<ResourceRow> & Pick<ResourceRow, "id" | "type" | "nam
     createdAt: NOW,
     updatedAt: NOW,
     ...over,
+    bundleAttachmentId: over.bundleAttachmentId ?? null,
   };
 }
 
@@ -200,6 +205,14 @@ beforeEach(() => {
     promptOverflowAgentCount: 0,
     agents: [],
   });
+  attachmentMocks.uploadAttachment.mockResolvedValue({
+    id: "00000000-0000-4000-8000-000000000301",
+    mimeType: "application/zip",
+    filename: "skill.zip",
+    sizeBytes: 100,
+    uploadedBy: "human-1",
+    createdAt: NOW,
+  });
 });
 
 afterEach(() => {
@@ -327,26 +340,65 @@ describe("resource editors", () => {
     await act(async () => root.unmount());
   });
 
-  it("creates a skill with name + content, exposing no namespace/metadata inputs", async () => {
+  it("uploads pasted SKILL.md as a bundle and creates a bundle-backed skill", async () => {
     const { root } = await render();
     await click(byAria("Add Skill"));
-    await setInputValue(input("skill-name"), "rel");
-    const body = document.getElementById("skill-body");
-    if (!(body instanceof HTMLTextAreaElement)) throw new Error("skill-body");
+    const body = document.getElementById("skill-markdown");
+    if (!(body instanceof HTMLTextAreaElement)) throw new Error("skill-markdown");
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(body, "hello world");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        body,
+        "---\nname: rel\ndescription: Release helper\n---\n\nhello world",
+      );
       body.dispatchEvent(new InputEvent("input", { bubbles: true }));
     });
-    // Namespace + metadata were removed (schema-leaking, no guidance); the body
-    // field is now labelled "Content".
-    expect(document.getElementById("skill-namespace")).toBeNull();
-    expect(document.body.textContent).toContain("Content");
+    expect(document.getElementById("skill-name")).toBeNull();
+    expect(document.body.textContent).toContain("Skill source");
     expect(document.body.textContent).not.toContain("Metadata");
     await click(byText("Create"));
+    await flush();
 
-    const payload = resourceMocks.createTeamResource.mock.calls[0]?.[0]?.payload;
-    expect(payload).toEqual(expect.objectContaining({ name: "rel", body: "hello world", metadata: {} }));
-    expect("namespace" in payload).toBe(false);
+    expect(attachmentMocks.uploadAttachment).toHaveBeenCalledWith(expect.any(Blob), "skill.zip");
+    expect(resourceMocks.createTeamResource.mock.calls[0]?.[0]).toEqual({
+      type: "skill",
+      defaultEnabled: "available",
+      bundleAttachmentId: "00000000-0000-4000-8000-000000000301",
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("keeps an existing Skill bundle on edit and preserves metadata in the replacement draft", async () => {
+    const bundleAttachmentId = "00000000-0000-4000-8000-000000000302";
+    resourceMocks.listTeamResources.mockResolvedValue([
+      row({
+        id: "skill-1",
+        type: "skill",
+        name: "release",
+        bundleAttachmentId,
+        payload: {
+          name: "release",
+          namespace: "team",
+          description: "Release helper",
+          body: "Ship carefully.",
+          metadata: { owner: "platform", strict: true },
+        },
+      }),
+    ]);
+    const { root } = await render();
+    await click(byAria("Edit release"));
+    await click(byText("Replace bundle"));
+    const markdown = document.getElementById("skill-markdown");
+    if (!(markdown instanceof HTMLTextAreaElement)) throw new Error("skill-markdown");
+    expect(markdown.value).toContain('namespace: "team"');
+    expect(markdown.value).toContain('metadata: {"owner":"platform","strict":true}');
+
+    await click(byText("Keep current bundle"));
+    await click(byText("Save"));
+    expect(attachmentMocks.uploadAttachment).not.toHaveBeenCalled();
+    expect(resourceMocks.updateResource).toHaveBeenCalledWith("skill-1", {
+      defaultEnabled: "available",
+      bundleAttachmentId,
+    });
     await act(async () => root.unmount());
   });
 
