@@ -1,7 +1,7 @@
 import { imageAttachmentRefsFromMetadata, type Message, type NeedYouRequestItem } from "@first-tree/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ExternalLink, History, LoaderCircle } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { getChat, listChatMessages } from "../../../api/chats.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { sendAskAnswer } from "../../../components/chat/ask-answer-transport.js";
@@ -99,6 +99,10 @@ export function NeedYouPage({
     humanAgentId,
     askerAgentId: item?.asker.agentId ?? null,
   });
+  const reviewLocked = (requestId !== null && sendingRequestId === requestId) || askAgent.sending || askAgent.waiting;
+  const closeReview = useCallback(() => {
+    if (!reviewLocked) onClose();
+  }, [onClose, reviewLocked]);
   const { markdownComponents } = useGitlabEntityPresentation(organizationId);
 
   const resolveRequest = async (answer: AskAnswer): Promise<void> => {
@@ -144,10 +148,18 @@ export function NeedYouPage({
       >
         <button
           type="button"
-          onClick={onClose}
+          onClick={closeReview}
+          disabled={reviewLocked}
           aria-label="Back to Chat"
           className="inline-flex h-11 w-11 items-center justify-center"
-          style={{ border: 0, borderRadius: "var(--radius-input)", background: "transparent", color: "var(--fg-2)" }}
+          style={{
+            border: 0,
+            borderRadius: "var(--radius-input)",
+            background: "transparent",
+            color: "var(--fg-2)",
+            cursor: reviewLocked ? "default" : "pointer",
+            opacity: reviewLocked ? 0.5 : 1,
+          }}
         >
           <ArrowLeft aria-hidden className="h-5 w-5" />
         </button>
@@ -164,7 +176,10 @@ export function NeedYouPage({
         {item ? (
           <button
             type="button"
-            onClick={() => onOpenFullChat(item.chat.id)}
+            onClick={() => {
+              if (!reviewLocked) onOpenFullChat(item.chat.id);
+            }}
+            disabled={reviewLocked}
             className="text-label inline-flex items-center"
             style={{
               gap: "var(--sp-1)",
@@ -174,6 +189,8 @@ export function NeedYouPage({
               borderRadius: "var(--radius-input)",
               background: "var(--bg-raised)",
               color: "var(--fg-2)",
+              cursor: reviewLocked ? "default" : "pointer",
+              opacity: reviewLocked ? 0.5 : 1,
             }}
           >
             <span>{mobile ? "Full chat" : "Open full chat"}</span>
@@ -233,7 +250,7 @@ export function NeedYouPage({
               />
             }
             onRequestEarlierContext={!earlierRequested ? () => setEarlierRequested(true) : undefined}
-            onEscape={onClose}
+            onEscape={closeReview}
             askAgent={{
               exchanges: askAgent.exchanges,
               waiting: askAgent.waiting,

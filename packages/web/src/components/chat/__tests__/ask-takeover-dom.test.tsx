@@ -498,6 +498,8 @@ describe("AskTakeover", () => {
     const onReply = vi.fn();
     const onSkip = vi.fn();
     const onEscape = vi.fn();
+    const hostEscape = vi.fn();
+    document.addEventListener("keydown", hostEscape);
     const c = await renderDom(
       <AskTakeover
         body="# Pick"
@@ -519,12 +521,22 @@ describe("AskTakeover", () => {
     expect(btn(c, "Skip")?.disabled).toBe(true);
     expect(btn(c, "Submit")?.disabled).toBe(true);
 
-    await click(ship);
-    await keyDown(window, "Escape");
-    expect(ship.getAttribute("aria-checked")).toBe("false");
-    expect(onReply).not.toHaveBeenCalled();
-    expect(onSkip).not.toHaveBeenCalled();
-    expect(onEscape).not.toHaveBeenCalled();
+    try {
+      await click(ship);
+      const escapeEvent = await keyDown(textarea, "Escape");
+      expect(escapeEvent.defaultPrevented).toBe(true);
+      const composingEscapeEvent = await keyDown(textarea, "Escape", { isComposing: true });
+      expect(composingEscapeEvent.defaultPrevented).toBe(true);
+      expect(ship.getAttribute("aria-checked")).toBe("false");
+      expect(onReply).not.toHaveBeenCalled();
+      expect(onSkip).not.toHaveBeenCalled();
+      expect(onEscape).not.toHaveBeenCalled();
+      // The locked card fences Escape in capture phase, before a surrounding
+      // workspace/document handler can turn it into route navigation.
+      expect(hostEscape).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", hostEscape);
+    }
   });
 
   it("stays inert while a higher overlay owns the keystroke (aria-hidden region)", async () => {

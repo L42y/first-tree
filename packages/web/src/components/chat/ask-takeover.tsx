@@ -32,7 +32,7 @@
 import type { AskOption, AskRequest, AttachmentKind, MentionParticipant } from "@first-tree/shared";
 import { COMPOSER_ACCEPT_ATTRIBUTE, extractMentions } from "@first-tree/shared";
 import { AtSign, Paperclip, X } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { usePendingAttachments } from "../../lib/use-pending-attachments.js";
 import {
@@ -224,6 +224,25 @@ export function AskTakeover({
   // Keep the card (and its pinned footer) above the on-screen keyboard.
   const keyboardInset = useKeyboardInset();
   const interactionLocked = sending || askAgent?.sending === true || askAgent?.waiting === true;
+
+  // The normal shortcut listener below runs in the bubble phase so focused
+  // mention/autocomplete controls can claim their own keystrokes first. While
+  // a resolve or clarification is in flight, however, Escape must be frozen
+  // before any page/document-level handler can interpret it as navigation.
+  // Install this narrow capture-phase fence synchronously with the locked DOM:
+  // `preventDefault` alone is too late once a host listener has already closed
+  // the review surface.
+  useLayoutEffect(() => {
+    if (!interactionLocked) return;
+    const blockEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (cardRef.current?.closest('[aria-hidden="true"]')) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", blockEscape, true);
+    return () => window.removeEventListener("keydown", blockEscape, true);
+  }, [interactionLocked]);
 
   useEffect(() => {
     if (!askAgentOpen) return;
