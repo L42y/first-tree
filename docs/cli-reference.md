@@ -345,7 +345,7 @@ first-tree chat
 │     --options <json> / --multi-select            #   (with --request) 2–4 options {label,description,preview?}; allow multi-pick
 ├── send <name> [message]                            # wake a participant — agent or human (a send to a human is informational only; a question the next step depends on goes through `chat ask`)
 │     # body: [message] arg, or stdin (omit [message]), or -F <path>; prefer stdin/-F for rich bodies (shell-safe)
-│     -F, --message-file <path>                      #   read the body from <path> (`-` = stdin); content never hits the shell
+│     -F, --message-file <path>                      #   read only the body from <path> (`-` = stdin); this does not attach <path>
 │     --reply-to <messageId>                         #   thread a reply under a message (pure threading)
 ├── ask <name> [message]                             # ask a HUMAN a tracked question; the body IS the ask, decision-self-sufficient (why it exists + recent-context recap + question + recommendation)
 │     # body: [message] arg, or stdin (omit [message]), or -F <path>; prefer stdin/-F for rich bodies (shell-safe)
@@ -403,10 +403,11 @@ first-tree chat send code-agent "ship the PR"
 echo "long body" | first-tree chat send code-agent -f markdown
 
 # Rich / multi-line bodies: write to a file, then read it with --message-file
-# (or `-F`). This is the most robust form — the body never passes through the
-# shell, so backticks (`code`), quotes, apostrophes, and newlines are sent
-# byte-for-byte. Inlining such a body lets the shell run backticks as command
-# substitution and break on quotes, silently mangling the message.
+# (or `-F`). This supplies only the message body; it does not attach that file.
+# It is the most robust form — the body never passes through the shell, so
+# backticks (`code`), quotes, apostrophes, and newlines are sent byte-for-byte.
+# Inlining such a body lets the shell run backticks as command substitution and
+# break on quotes, silently mangling the message.
 first-tree chat send code-agent -f markdown --message-file reply.md
 first-tree chat send code-agent -f markdown -F -   < reply.md   # `-` = stdin
 
@@ -435,13 +436,21 @@ EOF
 # literal sample (an image written inside inline `code` is treated as a live
 # embed). Capture is best-effort and never blocks the send, and is skipped
 # entirely for a body longer than ~1 million characters (then sent verbatim). An image
-# that is too large (>10 MB), unreadable, or beyond the 20-per-message cap is
+# that is too large (>10 MiB), unreadable, or beyond the 20-per-message cap is
 # skipped: if no image in the message captured, the body is sent unchanged (the
 # skipped embed stays as text); if at least one sibling image did capture — so
 # the message becomes an image send — every workspace-image embed is removed
 # from the caption, so a skipped one is dropped rather than left as a path that
 # would render broken.
 echo 'Latest run: ![chart](reports/latency.png)' | first-tree chat send code-agent -f markdown
+
+# Reference a workspace Markdown document by its `.md` path in the body. During
+# an agent session, `chat send` best-effort captures eligible documents inside
+# the sending agent's own workspace and replaces each captured mention with an
+# attachment link. Capture never blocks the send; the limit is 10 MiB per
+# document and 10 documents per message. Other outbound file types are not
+# captured by `chat send`.
+echo 'Full report: reports/latest-run.md' | first-tree chat send code-agent -f markdown
 
 # Ask a human a tracked question (red-dot + blocks the chat for them until they
 # answer). `chat ask` targets a single human; the message body IS the ask and
