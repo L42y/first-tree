@@ -98,9 +98,9 @@ export function isContextReviewerMrCandidate(normalized: NormalizedGitlabWebhook
 }
 
 /**
- * Resolve repository-scoped GitLab webhook evidence against the live Context
- * Tree binding. This does not require Automatic Review to be enabled: a valid
- * MR may establish readiness before an admin flips the switch.
+ * Resolve a GitLab webhook repository against the live Context Tree binding.
+ * Automatic Review stores intent before traffic arrives; every MR event still
+ * has to pass this exact repository and connection check before dispatch.
  */
 export function resolveBoundGitlabContextTreeWebhookRepository(input: {
   runtime: OrgContextReviewRuntime;

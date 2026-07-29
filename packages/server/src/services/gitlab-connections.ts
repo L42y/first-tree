@@ -1,6 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
-  canonicalGitRepoUrl,
   GITLAB_CONNECTION_READINESS,
   type GitlabConnectionReadiness,
   type GitlabConnectionSummary,
@@ -219,8 +218,6 @@ export async function regenerateGitlabConnectionBearer(
         lastSystemHookInboundAt: null,
         lastProjectHookInboundAt: null,
         lastSystemHookMergeRequestInboundAt: null,
-        lastProjectHookContextTreeMergeRequestInboundAt: null,
-        lastProjectHookContextTreeRepository: null,
         lastProcessingFailureAt: null,
         lastProcessingFailureCode: null,
         stableDeliveryObservedAt: null,
@@ -354,30 +351,6 @@ export async function markGitlabSystemHookMergeRequestProcessed(
     .where(and(eq(gitlabConnections.id, connectionId), eq(gitlabConnections.tokenHash, tokenHash)));
 }
 
-/**
- * Record repository-scoped Reviewer readiness from a successfully processed
- * Project Hook MR. Context Tree setting mutations clear this evidence in the
- * same transaction as every binding change, so returning to an earlier
- * repository cannot reactivate an observation from a prior binding lifetime.
- */
-export async function markGitlabProjectHookContextTreeMergeRequestProcessed(
-  db: Database,
-  connectionId: string,
-  tokenHash: string,
-  canonicalRepository: string,
-): Promise<void> {
-  if (canonicalGitRepoUrl(`https://${canonicalRepository.replace(/^\/+/u, "")}`) !== canonicalRepository) return;
-  const now = new Date();
-  await db
-    .update(gitlabConnections)
-    .set({
-      lastProjectHookContextTreeMergeRequestInboundAt: now,
-      lastProjectHookContextTreeRepository: canonicalRepository,
-      updatedAt: now,
-    })
-    .where(and(eq(gitlabConnections.id, connectionId), eq(gitlabConnections.tokenHash, tokenHash)));
-}
-
 export async function markGitlabStableDeliveryObserved(db: Database, connectionId: string): Promise<void> {
   await db
     .update(gitlabConnections)
@@ -441,33 +414,6 @@ export function projectGitlabConnectionReadiness(
   if (connection.lastSystemHookMergeRequestInboundAt) return GITLAB_CONNECTION_READINESS.routingVerified;
   if (connection.lastValidInboundAt) return GITLAB_CONNECTION_READINESS.transportReceived;
   return GITLAB_CONNECTION_READINESS.waiting;
-}
-
-/**
- * Context Reviewer readiness is repository-scoped. A System Hook MR proves
- * instance-wide routing, while a Project Hook MR proves routing only for the
- * exact Context Tree repository observed when the event was processed.
- */
-export function projectGitlabContextReviewerReadiness(
-  connection: Pick<
-    typeof gitlabConnections.$inferSelect,
-    | "lastValidInboundAt"
-    | "lastSystemHookMergeRequestInboundAt"
-    | "lastProjectHookContextTreeMergeRequestInboundAt"
-    | "lastProjectHookContextTreeRepository"
-    | "lastProcessingFailureAt"
-  >,
-  repository: string,
-): GitlabConnectionReadiness {
-  const canonicalRepository = canonicalGitRepoUrl(repository);
-  if (
-    canonicalRepository &&
-    connection.lastProjectHookContextTreeMergeRequestInboundAt &&
-    connection.lastProjectHookContextTreeRepository === canonicalRepository
-  ) {
-    return GITLAB_CONNECTION_READINESS.routingVerified;
-  }
-  return projectGitlabConnectionReadiness(connection);
 }
 
 export async function getGitlabConnectionSummary(db: Database, connectionId: string): Promise<GitlabConnectionSummary> {

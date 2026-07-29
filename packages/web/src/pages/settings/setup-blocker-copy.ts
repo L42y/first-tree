@@ -10,8 +10,7 @@ const SETUP_BLOCKER_COPY = {
   gitlab_webhook_not_seen: "Waiting for the first valid GitLab webhook.",
   gitlab_hook_source_not_identified:
     "Webhook traffic was received before source-specific health was available. Trigger an enabled event from the configured Hook.",
-  gitlab_merge_request_event_not_seen:
-    "Waiting for a valid Merge Request event from the System Hook or a Project Hook on the bound Context Tree repository.",
+  gitlab_merge_request_event_not_seen: "Waiting for a valid Merge Request event from the System Hook.",
   gitlab_processing_failed: "Recent GitLab webhook processing failed.",
   context_tree_binding_invalid: "The Context Tree binding is invalid.",
   context_tree_provider_unresolved: "The Context Tree provider could not be resolved.",

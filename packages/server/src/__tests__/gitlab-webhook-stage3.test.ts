@@ -14,6 +14,7 @@ import { messages } from "../db/schema/messages.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
+import { putContextReviewerAssignment, putContextReviewerEnablement } from "../services/context-reviewer-settings.js";
 import {
   createGitlabConnection,
   deleteGitlabConnection,
@@ -122,7 +123,7 @@ describe("GitLab Stage 3 personnel routing", () => {
     return { admin, clientId, delegate, connection, link };
   }
 
-  it("dispatches one reserved Context Reviewer run for an old-GitLab MR without personnel routing", async () => {
+  it("enables before traffic and dispatches the first Project Hook MR without personnel routing", async () => {
     const app = getApp();
     const { admin, delegate, connection } = await setupTarget(app);
     await putOrgSetting(
@@ -139,13 +140,17 @@ describe("GitLab Stage 3 personnel routing", () => {
         memberId: admin.memberId,
       },
     );
-    await putOrgSetting(
-      app.db,
-      admin.organizationId,
-      "context_tree_features",
-      { contextReviewer: { enabled: true, agentUuid: delegate.uuid } },
-      { updatedBy: admin.userId, memberId: admin.memberId },
-    );
+    await putContextReviewerAssignment(app.db, admin.organizationId, delegate.uuid, {
+      updatedBy: admin.userId,
+    });
+    await expect(
+      putContextReviewerEnablement(app.db, admin.organizationId, true, {
+        updatedBy: admin.userId,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      contextReviewer: { enabled: true, agentUuid: delegate.uuid },
+    });
 
     const payload = mergeRequestPayload({ projectPath: "Acme/Reviews" });
     const projectHook = await app.inject({

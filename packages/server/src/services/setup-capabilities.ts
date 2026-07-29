@@ -21,7 +21,7 @@ import {
   mintInstallationToken,
 } from "./github-app.js";
 import { findInstallationByOrg, type InstallationRow } from "./github-app-installations.js";
-import { projectGitlabConnectionReadiness, projectGitlabContextReviewerReadiness } from "./gitlab-connections.js";
+import { projectGitlabConnectionReadiness } from "./gitlab-connections.js";
 import { getOrgContextReviewRuntime } from "./org-settings.js";
 
 export type GithubReviewProbeResult = "ready" | "permission_required" | "repo_not_covered" | "failed";
@@ -374,18 +374,6 @@ export async function getTeamSetupCapabilities(
         ),
       );
       reviewHealth = "unavailable";
-    } else {
-      const reviewerReadiness = projectGitlabContextReviewerReadiness(gitlabConnection, binding.repo);
-      if (reviewerReadiness === GITLAB_CONNECTION_READINESS.needsAttention) {
-        reviewBlockers.push(blocker("gitlab_processing_failed", "admin", "configure_gitlab_webhook"));
-        if (reviewHealth === "ready") reviewHealth = "degraded";
-      } else if (reviewerReadiness === GITLAB_CONNECTION_READINESS.waiting) {
-        reviewBlockers.push(blocker("gitlab_webhook_not_seen", "admin", "configure_gitlab_webhook"));
-        if (reviewHealth === "ready") reviewHealth = "pending_verification";
-      } else if (reviewerReadiness === GITLAB_CONNECTION_READINESS.transportReceived) {
-        reviewBlockers.push(blocker("gitlab_merge_request_event_not_seen", "admin", "configure_gitlab_webhook"));
-        if (reviewHealth === "ready") reviewHealth = "pending_verification";
-      }
     }
   }
 

@@ -139,7 +139,7 @@ export function SetupReviewerControls({
               ? `Reviewer · ${selectedLabel}${enabled ? "" : " · selection retained while off"}`
               : selectedLabel
                 ? enabled
-                  ? "Reviews Context Tree pull requests and merge requests."
+                  ? "Reviews eligible Context Tree pull requests and merge requests as webhook events arrive."
                   : "Reviewer selection retained while Automatic review is off."
                 : "Choose an existing eligible Team Agent. Setup never creates one."}
           </div>
@@ -189,8 +189,8 @@ export function SetupReviewerControls({
             searchable={candidates.length > 6}
           />
           <div className="text-caption" style={{ color: "var(--fg-4)" }}>
-            Changing the assignment turns Automatic Review off. Re-enable it separately after reviewing current provider
-            readiness.
+            Changing the assignment turns Automatic Review off. Re-enable it separately after confirming the selected
+            Agent.
           </div>
         </div>
       )}
