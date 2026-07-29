@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { classifyShellCommandIo } from "@first-tree/shared";
+import { classifyShellCommandIo, stripShellCommandDisplayWrapper } from "@first-tree/shared";
 
 import { runCommand } from "../../core/commands.js";
 import { isRecord } from "../../core/events.js";
@@ -14,16 +14,87 @@ const CONTENT_READ_COMMANDS = new Set(["cat", "grep", "head", "nl", "rg", "sed",
 const SOURCE_ROOT = "source-artifacts";
 const BUNDLE_PATH = `${SOURCE_ROOT}/bundle.json`;
 
+type ClaudeToolUse = {
+  id: string;
+  input: Record<string, unknown>;
+  name: string;
+};
+
 function eventType(event: Record<string, unknown>): string | null {
   return typeof event.type === "string" ? event.type : null;
 }
 
+function codexEventPayload(event: unknown): Record<string, unknown> | null {
+  if (!isRecord(event) || eventType(event) !== "codex_event" || !isRecord(event.event)) return null;
+  return event.event;
+}
+
 function nativeFileReadPaths(event: unknown): readonly string[] {
-  if (!isRecord(event) || eventType(event) !== "codex_event" || !isRecord(event.event)) return [];
-  const item = event.event.item;
+  const payload = codexEventPayload(event);
+  if (payload === null) return [];
+  const item = payload.item;
   if (!isRecord(item) || (item.type !== "file_read" && item.type !== "read_file")) return [];
   const path = typeof item.path === "string" ? item.path : typeof item.file_path === "string" ? item.file_path : null;
   return path === null ? [] : [path];
+}
+
+function claudeContentBlocks(event: unknown, envelopeType: "assistant" | "user"): readonly Record<string, unknown>[] {
+  const payload = codexEventPayload(event);
+  if (payload === null || payload.type !== envelopeType || !isRecord(payload.message)) return [];
+  const content = payload.message.content;
+  return Array.isArray(content) ? content.filter(isRecord) : [];
+}
+
+function claudeToolUses(events: readonly unknown[]): readonly ClaudeToolUse[] {
+  const uses: ClaudeToolUse[] = [];
+  for (const event of events) {
+    for (const block of claudeContentBlocks(event, "assistant")) {
+      if (
+        block.type === "tool_use" &&
+        typeof block.id === "string" &&
+        typeof block.name === "string" &&
+        isRecord(block.input)
+      ) {
+        uses.push({ id: block.id, input: block.input, name: block.name });
+      }
+    }
+  }
+  return uses;
+}
+
+function successfulClaudeToolUseIds(events: readonly unknown[]): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const event of events) {
+    for (const block of claudeContentBlocks(event, "user")) {
+      if (block.type === "tool_result" && typeof block.tool_use_id === "string" && block.is_error !== true) {
+        ids.add(block.tool_use_id);
+      }
+    }
+  }
+  return ids;
+}
+
+function successfulClaudeToolUses(events: readonly unknown[]): readonly ClaudeToolUse[] {
+  const successfulIds = successfulClaudeToolUseIds(events);
+  return claudeToolUses(events).filter((use) => successfulIds.has(use.id));
+}
+
+function normalizedClaudeToolName(value: string): string {
+  return value.split(/[:.]/u).at(-1)?.toLowerCase() ?? value.toLowerCase();
+}
+
+function claudeReadPath(use: ClaudeToolUse): string | null {
+  if (normalizedClaudeToolName(use.name) !== "read") return null;
+  return typeof use.input.file_path === "string"
+    ? use.input.file_path
+    : typeof use.input.path === "string"
+      ? use.input.path
+      : null;
+}
+
+function claudeBashCommand(use: ClaudeToolUse): string | null {
+  if (normalizedClaudeToolName(use.name) !== "bash") return null;
+  return typeof use.input.command === "string" ? use.input.command : null;
 }
 
 function normalizedPath(value: string): string {
@@ -48,28 +119,74 @@ function commandReadPaths(command: string): readonly string[] {
   return classification.pathArgs.filter((path) => path.pathKindHint !== "directory").map((path) => path.raw);
 }
 
-function containsSkillFileRead(event: unknown): boolean {
-  const command = successfulCommand(event);
-  if (
-    command !== null &&
-    commandReadPaths(command).some(
-      (path) =>
-        pathMatches(path, `.agents/skills/${SKILL_NAME}/SKILL.md`) ||
-        pathMatches(path, `.claude/skills/${SKILL_NAME}/SKILL.md`),
-    )
-  ) {
-    return true;
-  }
-  return nativeFileReadPaths(event).some(
-    (path) =>
-      pathMatches(path, `.agents/skills/${SKILL_NAME}/SKILL.md`) ||
-      pathMatches(path, `.claude/skills/${SKILL_NAME}/SKILL.md`),
+function isSkillPath(path: string): boolean {
+  return (
+    pathMatches(path, `.agents/skills/${SKILL_NAME}/SKILL.md`) ||
+    pathMatches(path, `.claude/skills/${SKILL_NAME}/SKILL.md`)
   );
 }
 
+function commandReadsSkill(command: string): boolean {
+  return commandReadPaths(command).some(isSkillPath);
+}
+
+function nativeSkillReadObserved(events: readonly unknown[]): boolean {
+  return events.some((event) => nativeFileReadPaths(event).some(isSkillPath));
+}
+
+function successfulCodexCommands(events: readonly unknown[]): readonly string[] {
+  return events.map(successfulCommand).filter((command): command is string => command !== null);
+}
+
+function successfulClaudeCommands(events: readonly unknown[]): readonly string[] {
+  return successfulClaudeToolUses(events)
+    .map(claudeBashCommand)
+    .filter((command): command is string => command !== null);
+}
+
+function successfulClaudeReadPaths(events: readonly unknown[]): readonly string[] {
+  return successfulClaudeToolUses(events)
+    .map(claudeReadPath)
+    .filter((path): path is string => path !== null);
+}
+
+function commandMentionsOnlyBundle(command: string): boolean {
+  const unwrapped = stripShellCommandDisplayWrapper(command).trim();
+  if (!unwrapped.includes(BUNDLE_PATH)) return false;
+  if (unwrapped.replaceAll(BUNDLE_PATH, "").includes(SOURCE_ROOT)) return false;
+  if (/[$`;&<>\n]/u.test(unwrapped)) return false;
+
+  const escapedBundlePath = BUNDLE_PATH.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const bundlePathPattern = `(?:[^\\s'"|]+\\/)?${escapedBundlePath}`;
+  const bundleWord = `(?:${bundlePathPattern}|'${bundlePathPattern}'|"${bundlePathPattern}")`;
+  const jqCommand = `(?:[^\\s|]+\\/)?jq(?:\\s+[^\\s|]+)*`;
+  if (new RegExp(`^${jqCommand}\\s+${bundleWord}$`, "u").test(unwrapped)) return true;
+
+  const pipeline = unwrapped.split("|").map((segment) => segment.trim());
+  return (
+    pipeline.length === 2 &&
+    new RegExp(`^(?:[^\\s|]+\\/)?cat\\s+${bundleWord}$`, "u").test(pipeline[0] ?? "") &&
+    new RegExp(`^${jqCommand}$`, "u").test(pipeline[1] ?? "")
+  );
+}
+
+function commandReadsRawSource(command: string): boolean {
+  if (!normalizedPath(command).includes(SOURCE_ROOT)) return false;
+  const classification = classifyShellCommandIo(command);
+  if (classification.supported) {
+    if (!CONTENT_READ_COMMANDS.has(classification.commandName)) return false;
+    const contentPaths = classification.pathArgs.filter((path) => path.pathKindHint !== "directory");
+    if (contentPaths.length === 0) return false;
+    return contentPaths.some((path) => !pathMatches(path.raw, BUNDLE_PATH));
+  }
+  if (commandMentionsOnlyBundle(command)) return false;
+  return !["echo", "printf", "test"].includes(classification.commandName ?? "");
+}
+
 function successfulCommand(event: unknown): string | null {
-  if (!isRecord(event) || eventType(event) !== "codex_event" || !isRecord(event.event)) return null;
-  const item = event.event.item;
+  const payload = codexEventPayload(event);
+  if (payload === null) return null;
+  const item = payload.item;
   if (!isRecord(item) || item.type !== "command_execution" || typeof item.command !== "string") return null;
   const exitCode =
     typeof item.exit_code === "number" ? item.exit_code : typeof item.exitCode === "number" ? item.exitCode : null;
@@ -79,14 +196,11 @@ function successfulCommand(event: unknown): string | null {
 
 export function rawArtifactReadObserved(events: readonly unknown[], evalCase: MeetingRecordsEvalCase): boolean {
   if (!evalCase.expected.blockBeforeRawRead) return false;
-  return events.some((event) => {
-    const command = successfulCommand(event);
-    if (command !== null && normalizedPath(command).includes(SOURCE_ROOT)) {
-      const paths = commandReadPaths(command);
-      if (paths.length === 0 || !paths.every((path) => pathMatches(path, BUNDLE_PATH))) return true;
-    }
-    return nativeFileReadPaths(event).some((path) => pathWithin(path, SOURCE_ROOT) && !pathMatches(path, BUNDLE_PATH));
-  });
+  const nativeOrClaudeRawRead = [...events.flatMap(nativeFileReadPaths), ...successfulClaudeReadPaths(events)].some(
+    (path) => pathWithin(path, SOURCE_ROOT) && !pathMatches(path, BUNDLE_PATH),
+  );
+  if (nativeOrClaudeRawRead) return true;
+  return [...successfulCodexCommands(events), ...successfulClaudeCommands(events)].some(commandReadsRawSource);
 }
 
 function isAssistantMessage(record: Record<string, unknown>): boolean {
@@ -116,11 +230,18 @@ function collectText(value: unknown): string[] {
   return texts;
 }
 
+function claudeAssistantText(event: unknown): readonly string[] {
+  return claudeContentBlocks(event, "assistant")
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string);
+}
+
 function assistantTexts(events: readonly unknown[]): readonly string[] {
   const texts: string[] = [];
   for (const event of events) {
     if (!isRecord(event) || eventType(event) !== "codex_event") continue;
     texts.push(...collectText(event.event));
+    texts.push(...claudeAssistantText(event));
   }
   return texts;
 }
@@ -130,7 +251,11 @@ export function assistantVisibleText(events: readonly unknown[]): string {
 }
 
 export function skillFileReadObserved(events: readonly unknown[]): boolean {
-  return events.some(containsSkillFileRead);
+  return (
+    nativeSkillReadObserved(events) ||
+    successfulClaudeReadPaths(events).some(isSkillPath) ||
+    [...successfulCodexCommands(events), ...successfulClaudeCommands(events)].some(commandReadsSkill)
+  );
 }
 
 function sourceBaselineHead(events: readonly unknown[]): string | null {

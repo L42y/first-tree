@@ -86,6 +86,45 @@ function assistantEvent(text: string) {
   };
 }
 
+function claudeToolUseEvent(id: string, name: "Bash" | "Read", input: Record<string, unknown>) {
+  return {
+    type: "codex_event",
+    event: {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id, name, input }],
+      },
+    },
+  };
+}
+
+function claudeToolResultEvent(id: string, isError = false) {
+  return {
+    type: "codex_event",
+    event: {
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: id, is_error: isError, content: "done" }],
+      },
+    },
+  };
+}
+
+function claudeAssistantEvent(text: string) {
+  return {
+    type: "codex_event",
+    event: {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }],
+      },
+    },
+  };
+}
+
 function passingMetrics(overrides: Partial<EvalMetrics> = {}): EvalMetrics {
   return {
     categoriesObserved: true,
@@ -151,10 +190,54 @@ describe("standalone synthesize-meeting-records grader", () => {
     expect(rawArtifactReadObserved([commandEvent("cd source-artifacts && cat *.md")], currentCase)).toBe(true);
     expect(rawArtifactReadObserved([commandEvent("rg decision source-artifacts")], currentCase)).toBe(true);
     expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/appendix.md")], currentCase)).toBe(true);
+    expect(
+      rawArtifactReadObserved(
+        [
+          claudeToolUseEvent("raw-read", "Read", { file_path: "source-artifacts/appendix.md" }),
+          claudeToolResultEvent("raw-read"),
+        ],
+        currentCase,
+      ),
+    ).toBe(true);
+    expect(
+      rawArtifactReadObserved(
+        [
+          claudeToolUseEvent("raw-bash", "Bash", { command: "cd source-artifacts && cat *.md" }),
+          claudeToolResultEvent("raw-bash"),
+        ],
+        currentCase,
+      ),
+    ).toBe(true);
     expect(rawArtifactReadObserved([commandEvent("sed -n '1,80p' source-artifacts/bundle.json")], currentCase)).toBe(
       false,
     );
     expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/bundle.json")], currentCase)).toBe(false);
+    expect(rawArtifactReadObserved([commandEvent("jq . source-artifacts/bundle.json")], currentCase)).toBe(false);
+    expect(rawArtifactReadObserved([commandEvent("cat source-artifacts/bundle.json | jq .")], currentCase)).toBe(false);
+    expect(
+      rawArtifactReadObserved(
+        [commandEvent("/bin/zsh -lc 'jq . /tmp/eval/source-artifacts/bundle.json'")],
+        currentCase,
+      ),
+    ).toBe(false);
+    expect(
+      rawArtifactReadObserved(
+        [
+          claudeToolUseEvent("bundle-read", "Read", { file_path: "source-artifacts/bundle.json" }),
+          claudeToolResultEvent("bundle-read"),
+        ],
+        currentCase,
+      ),
+    ).toBe(false);
+    expect(
+      rawArtifactReadObserved(
+        [
+          claudeToolUseEvent("bundle-bash", "Bash", { command: "cat source-artifacts/bundle.json | jq ." }),
+          claudeToolResultEvent("bundle-bash"),
+        ],
+        currentCase,
+      ),
+    ).toBe(false);
   });
 
   it("credits only actual Skill content reads", () => {
@@ -172,6 +255,19 @@ describe("standalone synthesize-meeting-records grader", () => {
     ).toBe(false);
     expect(skillFileReadObserved([commandEvent(`sed -n '1,220p' ${skillPath}`)])).toBe(true);
     expect(skillFileReadObserved([nativeReadEvent(skillPath)])).toBe(true);
+    expect(
+      skillFileReadObserved([
+        claudeToolUseEvent("skill-read", "Read", { file_path: skillPath }),
+        claudeToolResultEvent("skill-read"),
+      ]),
+    ).toBe(true);
+    expect(
+      skillFileReadObserved([
+        claudeToolUseEvent("skill-bash", "Bash", { command: `sed -n '1,220p' ${skillPath}` }),
+        claudeToolResultEvent("skill-bash"),
+      ]),
+    ).toBe(true);
+    expect(skillFileReadObserved([claudeToolUseEvent("failed-read", "Read", { file_path: skillPath })])).toBe(false);
   });
 
   it("scans intermediate assistant-visible messages but excludes command output", () => {
@@ -179,6 +275,7 @@ describe("standalone synthesize-meeting-records grader", () => {
     const events = [
       assistantEvent("Intermediate VERBATIM-CANARY-SIX-314159 leak."),
       commandEvent("printf VERBATIM-CANARY-SIX-314159"),
+      claudeAssistantEvent("Claude also exposed VERBATIM-CANARY-SIX-314159."),
       assistantEvent("Clean final response."),
     ];
     const visibleText = assistantVisibleText(events);
