@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findOpenCodeExecutableOnPath,
   formatOpenCodeBinaryMissingMessage,
+  isSupportedOpenCodeVersion,
   parseOpenCodeVersionOutput,
   resolveOpenCodeRuntimeBinary,
 } from "../runtime/opencode-binary.js";
@@ -26,6 +27,22 @@ describe("OpenCode binary resolution", () => {
     expect(
       findOpenCodeExecutableOnPath(
         { PATH: root },
+        { platform: "linux", wellKnownDirs: () => [], loginShellPathDirs: () => [] },
+      ),
+    ).toBe(binary);
+  });
+
+  it("finds the official OpenCode home even when the daemon PATH is empty", () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-home-"));
+    roots.push(root);
+    const binary = join(root, ".opencode", "bin", "opencode");
+    mkdirSync(join(root, ".opencode", "bin"), { recursive: true });
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n");
+    chmodSync(binary, 0o755);
+
+    expect(
+      findOpenCodeExecutableOnPath(
+        { HOME: root, PATH: "" },
         { platform: "linux", wellKnownDirs: () => [], loginShellPathDirs: () => [] },
       ),
     ).toBe(binary);
@@ -57,14 +74,65 @@ describe("OpenCode binary resolution", () => {
     ).toBe(native);
   });
 
+  it("resolves a global Windows npm prefix when the daemon PATH is empty", () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-win-prefix-"));
+    roots.push(root);
+    const native = join(root, "node_modules", "opencode-ai", "bin", "opencode.exe");
+    mkdirSync(join(root, "node_modules", "opencode-ai", "bin"), { recursive: true });
+    writeFileSync(native, "native");
+
+    expect(
+      findOpenCodeExecutableOnPath(
+        { USERPROFILE: root, PATH: "" },
+        {
+          platform: "win32",
+          pathDelimiter: ";",
+          wellKnownDirs: () => [root],
+          loginShellPathDirs: () => [],
+        },
+      ),
+    ).toBe(native);
+  });
+
+  it("resolves the official Windows home without a daemon PATH or cmd shim", () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-win-home-"));
+    roots.push(root);
+    const native = join(root, ".opencode", "bin", "opencode.exe");
+    mkdirSync(join(root, ".opencode", "bin"), { recursive: true });
+    writeFileSync(native, "native");
+
+    expect(
+      findOpenCodeExecutableOnPath(
+        { USERPROFILE: root, PATH: "" },
+        {
+          platform: "win32",
+          pathDelimiter: ";",
+          wellKnownDirs: () => [],
+          loginShellPathDirs: () => [],
+        },
+      ),
+    ).toBe(native);
+  });
+
   it("surfaces external install and provider-owned auth instructions", () => {
-    expect(formatOpenCodeBinaryMissingMessage("not found")).toContain("npm install -g opencode-ai@1.18.7");
+    expect(formatOpenCodeBinaryMissingMessage("not found")).toContain("npm install -g opencode-ai@^1.18.7");
     expect(formatOpenCodeBinaryMissingMessage("not found")).toContain("opencode auth login");
   });
 
-  it("parses the exact version gate output without executing a binary", () => {
+  it("parses a stable semver without accepting prerelease or partial versions", () => {
     expect(parseOpenCodeVersionOutput("opencode 1.18.7")).toBe("1.18.7");
+    expect(parseOpenCodeVersionOutput("opencode 1.18.9-beta.1")).toBeNull();
+    expect(parseOpenCodeVersionOutput("opencode 1.18")).toBeNull();
     expect(parseOpenCodeVersionOutput("not-a-version")).toBeNull();
     expect(parseOpenCodeVersionOutput(`${"0".repeat(100_000)}.x opencode 1.18.7`)).toBe("1.18.7");
+  });
+
+  it("accepts the supported major-one range and fails closed outside it", () => {
+    expect(isSupportedOpenCodeVersion("1.18.7")).toBe(true);
+    expect(isSupportedOpenCodeVersion("1.18.9")).toBe(true);
+    expect(isSupportedOpenCodeVersion("1.19.0")).toBe(true);
+    expect(isSupportedOpenCodeVersion("1.18.6")).toBe(false);
+    expect(isSupportedOpenCodeVersion("2.0.0")).toBe(false);
+    expect(isSupportedOpenCodeVersion(null)).toBe(false);
   });
 });

@@ -9,7 +9,7 @@ surfaces: [web, cli, server, client]
 
 ## Goal
 
-Confirm that an agent bound to `opencode` runs through the exact supported external CLI, reuses provider-owned
+Confirm that an agent bound to `opencode` runs through a supported external CLI, reuses provider-owned
 host-local authentication without giving First Tree token custody, and preserves First Tree's delivery, session,
 configuration, Context Tree I/O, and process-drain contracts.
 
@@ -20,7 +20,7 @@ surface, or provider supervisor changes.
 
 - Run in the isolated QA cell selected by the plan: Docker plus a temporary source worktree, with an explicit native
   bridge only where the OS process authority cannot live inside Docker. Never modify the operator checkout.
-- Install the exact OpenCode version surfaced by the product on the client host and complete provider-owned setup with
+- Install an OpenCode version in the product's supported `>=1.18.7 <2.0.0` range on the client host and complete provider-owned setup with
   `opencode auth login`. The test may prove the login by completing a real turn, but must not read, copy, print, or
   archive provider credential files.
 - Use disposable source, MCP, and Context Tree fixtures. Provider tool calls must not modify the product checkout.
@@ -34,20 +34,25 @@ surface, or provider supervisor changes.
 - Provider selection: Web and CLI expose OpenCode only on a client advertising the capability. The config defaults to
   an empty model, accepts an exact provider-native `provider/model` string, and exposes no separate reasoning-effort
   control.
-- Runtime gates: the first active use launches `opencode --version` through the provider supervisor and requires the
-  exact supported version. It then serially runs `opencode db "SELECT 1 AS ready" --format json` before concurrent
+- Runtime gates: the first active use launches `opencode --version` through the provider supervisor and requires a
+  stable release in `>=1.18.7 <2.0.0`; prerelease, older, major-two, and unparseable output fail closed. It then
+  serially runs `opencode db "SELECT 1 AS ready" --format json` before concurrent
   per-turn processes may use the same client data home.
-- Private projection: each turn supplies a caller-scoped `OPENCODE_CONFIG_CONTENT` containing the First Tree primary
-  agent, output/chat-context standing prompt, declared MCP servers, explicit model when configured, and managed
-  permissions. It must not rewrite the operator's global OpenCode config. Projected Skills live only under
+- Private projection: each handler supplies uniquely namespaced First Tree primary-agent and MCP keys so OpenCode's
+  deep merge cannot retain colliding operator fields. Small projections use caller-scoped `OPENCODE_CONFIG_CONTENT`;
+  large projections use a private runtime-owned config file that is removed after the turn. Current Chat Context and
+  the runtime output contract never enter persistent config; they ride stdin as one-shot context and survive
+  non-delivery. The projection must not rewrite the operator's global OpenCode config. Projected Skills live only under
   `.opencode/skills` and retain the shared ownership, lock, journal, rollback, and fail-closed reconciliation behavior.
 - Child boundary: observe the First Tree identity/drain envelope and runtime-session token-file path in the child
   environment. The token contents and provider credentials must not enter argv, logs, Server data, or retained
   evidence. Prompt text appears only on stdin followed by EOF.
 - Real turn: observe
-  `opencode run --format json --auto --agent first-tree --dir <workspace>` plus `--model` only when configured and
+  `opencode run --format json --auto --agent <unique-first-tree-agent> --dir <workspace>` plus `--model` only when configured and
   `--session` only for a confirmed resume. Verify normalized assistant, tool, token-usage, and successful terminal
-  events, and a deterministic disposable file tool effect.
+  events, exactly one non-`tool-calls` terminal event, and a deterministic disposable file tool effect. Every non-empty
+  stdout line must be a supported JSON object; malformed and unknown lines fail closed while official `reasoning`
+  events are explicitly ignored.
 - Session and queue: persist the unique session ID observed in JSONL. Suspend and resume the same chat with an explicit
   `--session`; reject a mismatch or missing terminal event. Inject a message during an active turn and prove it is
   queued for a subsequent process rather than sent to the current stdin.
@@ -77,7 +82,7 @@ process, global OpenCode config mutation, silent model fallback, synthetic or mi
 validation, active-turn steering, unsafe side-effect replay, terminal failure consumed before its durable notice, or a
 client switch authorized by child registry alone.
 
-`BLOCKED` means the exact CLI, provider login/entitlement/network, isolated platform bridge, owner-reviewed Windows
+`BLOCKED` means a compatible CLI, provider login/entitlement/network, isolated platform bridge, owner-reviewed Windows
 drain authority, or product Job supervisor is absent. Unit tests and the one-time protocol harness do not turn a
 blocked First Tree product branch into PASS. `INCONCLUSIVE` means a live turn ran but retained evidence cannot
 distinguish the claimed behavior.

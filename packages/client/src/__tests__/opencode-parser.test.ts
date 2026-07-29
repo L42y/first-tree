@@ -5,6 +5,7 @@ describe("OpenCode JSONL parser", () => {
   it("normalizes session, text, tool, usage, and terminal events", () => {
     const lines = [
       JSON.stringify({ type: "step_start", sessionID: "ses_1", part: { sessionID: "ses_1" } }),
+      JSON.stringify({ type: "reasoning", sessionID: "ses_1", part: { text: "private chain" } }),
       JSON.stringify({ type: "text", sessionID: "ses_1", part: { text: "hello" } }),
       JSON.stringify({
         type: "tool_use",
@@ -33,6 +34,7 @@ describe("OpenCode JSONL parser", () => {
       usage: { inputTokens: 10, cachedInputTokens: 3, outputTokens: 4 },
     });
     expect(events).toContainEqual({ kind: "terminal", reason: "stop" });
+    expect(events).toContainEqual({ kind: "reasoning" });
   });
 
   it("does not treat tool-calls as terminal", () => {
@@ -41,8 +43,13 @@ describe("OpenCode JSONL parser", () => {
     ).not.toContainEqual(expect.objectContaining({ kind: "terminal" }));
   });
 
-  it("tolerates malformed and unknown lines", () => {
+  it("classifies malformed, unknown, and malformed-known lines as protocol violations", () => {
     expect(parseOpenCodeStreamLine("not-json")[0]).toMatchObject({ kind: "unknown" });
-    expect(parseOpenCodeStreamLine(JSON.stringify({ type: "future" }))[0]).toMatchObject({ kind: "unknown" });
+    expect(parseOpenCodeStreamLine(JSON.stringify({ type: "future", sessionID: "ses_1" }))).toContainEqual(
+      expect.objectContaining({ kind: "unknown" }),
+    );
+    expect(parseOpenCodeStreamLine(JSON.stringify({ type: "text", sessionID: "ses_1", part: {} }))).toContainEqual(
+      expect.objectContaining({ kind: "unknown" }),
+    );
   });
 });
