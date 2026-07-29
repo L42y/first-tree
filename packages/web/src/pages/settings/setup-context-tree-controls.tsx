@@ -15,7 +15,7 @@ type ContextTreeAvailability = "active" | "stale" | "unavailable" | "checking" |
 export function SetupContextTreeControls({
   binding,
   availability,
-  privateGitlabContextUnavailable = false,
+  teamNonActionableGitlabWebContext = false,
   loadSetting = getRawContextTreeSetting,
   saveSetting = putContextTreeSetting,
   refreshFacts,
@@ -23,7 +23,7 @@ export function SetupContextTreeControls({
 }: {
   binding: SetupContextTreeBinding;
   availability: ContextTreeAvailability;
-  privateGitlabContextUnavailable?: boolean;
+  teamNonActionableGitlabWebContext?: boolean;
   loadSetting?: (organizationId: string) => Promise<OrgContextTreeOutput>;
   saveSetting?: (organizationId: string, input: OrgContextTreeInput) => Promise<OrgContextTreeOutput>;
   refreshFacts?: (organizationId: string) => Promise<void>;
@@ -88,7 +88,8 @@ export function SetupContextTreeControls({
   const hasBoundTree = binding.state === "bound";
   const chatIntent = hasBoundTree ? "recover" : "build";
   const shouldOfferChat =
-    binding.state === "unbound" || (hasBoundTree && availability === "unavailable" && !privateGitlabContextUnavailable);
+    binding.state === "unbound" ||
+    (hasBoundTree && availability === "unavailable" && !teamNonActionableGitlabWebContext);
   const bindingSummary = savedBinding?.repo
     ? `${repositoryLabel(savedBinding.repo)} · ${savedBinding.branch ?? "main"} branch · ${
         savedBinding.provider ?? "provider pending"
