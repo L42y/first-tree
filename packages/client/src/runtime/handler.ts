@@ -106,7 +106,10 @@ export type ResumeResult = ResumeReceipt | string;
 
 export type DeliveryToken = {
   processingStarted(messages: SessionMessage | readonly SessionMessage[]): void;
-  complete(messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome): Promise<unknown>;
+  complete(
+    messages: SessionMessage | readonly SessionMessage[],
+    outcome: TurnOutcome,
+  ): Promise<DeliveryCompletionResult>;
   retry(messages: SessionMessage | readonly SessionMessage[], reason: string): void;
   terminalRejected(
     messages: SessionMessage | readonly SessionMessage[],
@@ -125,6 +128,8 @@ export type DeliveryToken = {
  * production SessionManager tokens always return an explicit disposition.
  */
 export type DeliveryCompletionDisposition = "settled" | "retry";
+// biome-ignore lint/suspicious/noConfusingVoidType: legacy/test tokens intentionally resolve void.
+export type DeliveryCompletionResult = DeliveryCompletionDisposition | void;
 
 export function noopDeliveryToken(): DeliveryToken {
   return {
@@ -178,7 +183,10 @@ export type SessionContext = HandlerContext & {
    * The coordinator sends one ACK-through for the last message's
    * `inboxEntryId` and settles local ledger only after server confirmation.
    */
-  finishTurn: (messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome) => Promise<unknown>;
+  finishTurn: (
+    messages: SessionMessage | readonly SessionMessage[],
+    outcome: TurnOutcome,
+  ) => Promise<DeliveryCompletionResult>;
 
   /**
    * Mark a concrete message or batch as abandoned by a retryable path

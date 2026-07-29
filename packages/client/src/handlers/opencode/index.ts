@@ -31,6 +31,10 @@ import {
   parseOpenCodeVersionOutput,
   resolveOpenCodeRuntimeBinary,
 } from "../../runtime/opencode-binary.js";
+import {
+  acquireOpenCodePrivateConfigLease,
+  type OpenCodePrivateConfigLease,
+} from "../../runtime/opencode-private-config.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../runtime/provider-attempt.js";
 import {
   createDefaultProviderProcessSupervisor,
@@ -59,7 +63,8 @@ const FINAL_CLOSE_WAIT_MS = 2_000;
 const DB_GATE_TIMEOUT_MS = 30_000;
 const CONFIG_CONTENT_ENV_MAX_BYTES = 16 * 1024;
 const WINDOWS_ENV_BLOCK_MAX_CHARS = 30_000;
-const OPENCODE_CONFIG_RUNTIME_DIR = join(".first-tree-workspace", "opencode-config");
+const PROVIDER_ATTEMPT_WINDOW_TTL_MS = 30 * 60_000;
+const MAX_PROVIDER_ATTEMPT_WINDOWS = 512;
 
 export function isOpenCodePendingSessionId(sessionId: string): boolean {
   return sessionId.startsWith(OPENCODE_PENDING_SESSION_PREFIX);
@@ -265,11 +270,34 @@ type TurnState = {
 };
 
 const dbGatePromises = new Map<string, Promise<void>>();
-const providerTurnFailureAttempts = new Map<string, number>();
+const providerTurnFailureAttempts = new Map<string, { attempt: number; touchedAt: number }>();
 
 export function clearOpenCodeDbGateCacheForTests(): void {
   dbGatePromises.clear();
   providerTurnFailureAttempts.clear();
+}
+
+export function openCodeProviderAttemptWindowSizeForTests(): number {
+  return providerTurnFailureAttempts.size;
+}
+
+type OpenCodeRetrySleep = (delayMs: number, signal: AbortSignal) => Promise<boolean | undefined>;
+
+async function defaultOpenCodeRetrySleep(delayMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false;
+  return new Promise<boolean>((resolveDelay) => {
+    let settled = false;
+    const finish = (completed: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolveDelay(completed);
+    };
+    const onAbort = () => finish(false);
+    const timer = setTimeout(() => finish(true), delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export const createOpenCodeHandler: HandlerFactory = (config) => {
@@ -288,9 +316,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     typeof config.opencodeTurnTimeoutMs === "number" && config.opencodeTurnTimeoutMs > 0
       ? config.opencodeTurnTimeoutMs
       : DEFAULT_TURN_TIMEOUT_MS;
-  const retrySleep =
-    (config.opencodeRetrySleep as ((delayMs: number) => Promise<void>) | undefined) ??
-    ((delayMs: number) => new Promise<void>((resolveDelay) => setTimeout(resolveDelay, delayMs)));
+  const retrySleep = (config.opencodeRetrySleep as OpenCodeRetrySleep | undefined) ?? defaultOpenCodeRetrySleep;
   const configProjector =
     (config.opencodeConfigProjector as typeof projectOpenCodeConfig | undefined) ?? projectOpenCodeConfig;
   let cwd: string | null = null;
@@ -311,11 +337,34 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   let pendingChatContextPrompt: string | null = null;
   let projectionScope: string | null = null;
   let managedAgentName: string | null = null;
-  let privateConfigRuntimeRoot: string | null = null;
+  const handlerGenerationId = randomUUID().replaceAll("-", "");
+  let privateConfigLease: OpenCodePrivateConfigLease | null = null;
   const queue: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
 
   function deliveryAttemptKey(sessionCtx: SessionContext, messages: readonly SessionMessage[]): string {
-    return `${sessionCtx.agent.agentId}\0${sessionCtx.chatId}\0${messages.map((message) => message.id).join("\0")}`;
+    const deliveryHead = messages[0];
+    if (!deliveryHead) {
+      throw new Error("OpenCode provider attempt requires a delivery head");
+    }
+    return `${sessionCtx.agent.agentId}\0${sessionCtx.chatId}\0${deliveryHead.inboxEntryId}\0${deliveryHead.id}`;
+  }
+
+  function nextProviderAttempt(attemptKey: string): number {
+    const now = Date.now();
+    for (const [key, entry] of providerTurnFailureAttempts) {
+      if (now - entry.touchedAt >= PROVIDER_ATTEMPT_WINDOW_TTL_MS) {
+        providerTurnFailureAttempts.delete(key);
+      }
+    }
+    const attempt = (providerTurnFailureAttempts.get(attemptKey)?.attempt ?? 0) + 1;
+    providerTurnFailureAttempts.delete(attemptKey);
+    providerTurnFailureAttempts.set(attemptKey, { attempt, touchedAt: now });
+    while (providerTurnFailureAttempts.size > MAX_PROVIDER_ATTEMPT_WINDOWS) {
+      const oldest = providerTurnFailureAttempts.keys().next().value;
+      if (typeof oldest !== "string") break;
+      providerTurnFailureAttempts.delete(oldest);
+    }
+    return attempt;
   }
 
   function buildEnv(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): Record<string, string> {
@@ -728,6 +777,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     sessionCtx: SessionContext;
     messages: readonly SessionMessage[];
     token: DeliveryToken;
+    turnGeneration: number;
   }): Promise<boolean> {
     const attemptKey = deliveryAttemptKey(input.sessionCtx, input.messages);
     const replaySafety = input.state.sawUnsafeTool
@@ -751,8 +801,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       error: input.spawnError ?? input.failure,
       messagePreview: displayMessage,
     });
-    const attemptNumber = (providerTurnFailureAttempts.get(attemptKey) ?? 0) + 1;
-    providerTurnFailureAttempts.set(attemptKey, attemptNumber);
+    const attemptNumber = nextProviderAttempt(attemptKey);
     const settlement = attempt.settle({ attempt: attemptNumber });
     if (!settlement) {
       input.token.retry(input.messages, "opencode_unclassified_failure");
@@ -766,7 +815,20 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     });
     input.sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
     if (settlement.decision.action === "retry") {
-      await retrySleep(settlement.decision.delayMs);
+      const delayAbort = new AbortController();
+      if (generation === input.turnGeneration && sessionActive) {
+        currentAbort = delayAbort;
+      }
+      const completedDelay = await retrySleep(settlement.decision.delayMs, delayAbort.signal);
+      if (
+        completedDelay === false ||
+        delayAbort.signal.aborted ||
+        generation !== input.turnGeneration ||
+        !sessionActive
+      ) {
+        providerTurnFailureAttempts.delete(attemptKey);
+        return false;
+      }
       input.token.retry(input.messages, settlement.decision.reasonCode);
       if (input.state.sawProviderActivity) {
         input.sessionCtx.failSessionForRecovery?.("opencode_turn_retryable_failure", providerSessionId ?? undefined);
@@ -793,7 +855,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     const activeBinary = binary;
     const activeProjectionScope = projectionScope;
     const activeManagedAgentName = managedAgentName;
-    const activePrivateConfigRuntimeRoot = privateConfigRuntimeRoot;
+    const activePrivateConfigRuntimeRoot = privateConfigLease?.runtimeRoot ?? null;
     if (
       !workspaceCwd ||
       !activeBinary ||
@@ -893,6 +955,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
           sessionCtx,
           messages,
           token,
+          turnGeneration,
         });
       }
 
@@ -984,6 +1047,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         sessionCtx,
         messages,
         token,
+        turnGeneration,
       });
     })();
     currentTurnPromise = promise.then(
@@ -1001,6 +1065,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         sessionCtx,
         messages,
         token,
+        turnGeneration,
       });
     } finally {
       if (generation === turnGeneration) {
@@ -1022,14 +1087,6 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     cwd = acquireAgentHome(workspaceRoot);
     projectionScope = stableOpenCodeScope(sessionCtx.agent.agentId);
     managedAgentName = `first-tree-${projectionScope}`;
-    privateConfigRuntimeRoot = join(
-      cwd,
-      OPENCODE_CONFIG_RUNTIME_DIR,
-      stableOpenCodeScope(`${sessionCtx.agent.agentId}\0${sessionCtx.chatId}`),
-    );
-    rmSync(privateConfigRuntimeRoot, { recursive: true, force: true });
-    mkdirSync(privateConfigRuntimeRoot, { recursive: true, mode: 0o700 });
-    chmodSync(privateConfigRuntimeRoot, 0o700);
     const resolution = resolveBinary(process.env);
     if (!resolution.ok) {
       throw new Error(resolution.error);
@@ -1041,6 +1098,11 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     pendingChatContextPrompt = [renderRuntimeOutputContract(), renderChatContextPrompt(chatContext)]
       .filter(Boolean)
       .join("\n\n");
+    privateConfigLease ??= await acquireOpenCodePrivateConfigLease({
+      workspace: cwd,
+      callerScope: stableOpenCodeScope(`${sessionCtx.agent.agentId}\0${sessionCtx.chatId}`),
+      handlerId: handlerGenerationId,
+    });
     sessionActive = true;
     return { briefing, workspaceCwd: cwd };
   }
@@ -1225,12 +1287,10 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       providerSessionId = null;
       pendingSyntheticId = null;
       versionReady = false;
-      if (privateConfigRuntimeRoot) {
-        rmSync(privateConfigRuntimeRoot, { recursive: true, force: true });
-      }
+      await privateConfigLease?.close();
       projectionScope = null;
       managedAgentName = null;
-      privateConfigRuntimeRoot = null;
+      privateConfigLease = null;
       initialTurnPreparing = false;
       pendingChatContextPrompt = null;
       queue.length = 0;
