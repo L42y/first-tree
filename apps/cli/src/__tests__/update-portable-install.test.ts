@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childRegistryMocks = vi.hoisted(() => ({
@@ -20,6 +20,13 @@ let tmpDirs: string[] = [];
 const originalPlatform = process.platform;
 const originalArch = process.arch;
 const originalPath = process.env.PATH;
+
+function isolatedPortablePath(binDir: string): string {
+  const hostEntries = (originalPath ?? "")
+    .split(delimiter)
+    .filter((entry) => entry.length > 0 && !existsSync(join(entry, "first-tree")) && !existsSync(join(entry, "ft")));
+  return [binDir, ...hostEntries].join(delimiter);
+}
 
 function tempDir(name: string): string {
   const dir = mkdtempSync(join(tmpdir(), name));
@@ -211,6 +218,12 @@ async function importProdUpdateModule(
 beforeEach(() => {
   vi.clearAllMocks();
   childRegistryMocks.classify.mockReturnValue({ kind: "permanent", reasonCode: "classified" });
+  const binDir = tempDir("ft-portable-bin-");
+  writeFileSync(join(binDir, "first-tree"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  // Portable updates intentionally rewrite the first installed shim on PATH.
+  // Keep every test inside a disposable shim directory and exclude operator
+  // installs from the inherited PATH so a test can never rewrite them.
+  vi.stubEnv("PATH", isolatedPortablePath(binDir));
 });
 
 afterEach(() => {
@@ -413,7 +426,7 @@ describe("installPortableSpec", () => {
     vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", join(prefix, "current"));
     vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${fixture.root}`);
     vi.stubEnv("HOME", home);
-    vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
+    vi.stubEnv("PATH", `${binDir}${delimiter}${process.env.PATH ?? ""}`);
 
     const { installPortableSpec } = await importProdUpdateModule();
     await expect(installPortableSpec("latest")).resolves.toEqual({
