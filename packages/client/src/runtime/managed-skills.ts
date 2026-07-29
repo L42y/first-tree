@@ -31,17 +31,16 @@ import {
   writeManagedSkillsJournal,
   writeManagedState,
 } from "./managed-state.js";
+import { acquireWorkspaceFileLock, type WorkspaceFileLock } from "./workspace-file-lock.js";
 
 const OWNERSHIP_MARKER = ".first-tree-managed.json";
 const LEGACY_RESOURCE_SKILLS_ROOT = ".first-tree/resources/skills";
-const LOCK_OWNER_FILE = "owner.json";
 const MAX_SKILL_FILES = 512;
 const MAX_SKILL_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_DEPTH = 16;
 const MAX_SKILL_NAME_LENGTH = 63;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
-const DEFAULT_LOCK_STALE_MS = 5 * 60_000;
 
 const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = {
   "claude-code": ".claude/skills",
@@ -129,15 +128,12 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   /** Test/build override. Production resolves the bundled client skills directory. */
   bundledSkillsRoot?: string;
   lockTimeoutMs?: number;
-  lockStaleMs?: number;
   /** Fault-injection seam used by deterministic crash-recovery tests. */
   testCrashAt?: ManagedSkillsCheckpoint;
   /** Ordinary failure seam used to exercise in-process rollback paths. */
   testFailureAt?: ManagedSkillsCheckpoint;
   /** Forces the rollback path to preserve its journal and abort reconciliation. */
   testRecoveryFailure?: boolean;
-  /** Runs after the held lock is atomically detached, before it is removed. */
-  testAfterLockReleaseQuarantine?: (lockPath: string) => Promise<void>;
 }>;
 
 type DesiredManagedSkill = Readonly<{
@@ -163,22 +159,6 @@ type StagedManagedSkill = Readonly<{
   staging: string;
   entry: ManagedSkillEntry;
 }>;
-
-type LockOwner = Readonly<{
-  schemaVersion: 1;
-  pid: number;
-  token: string;
-  createdAt: string;
-}>;
-
-type WorkspaceLock = Readonly<{
-  release: () => Promise<void>;
-}>;
-
-type LockRecoveryDecision =
-  | Readonly<{ kind: "wait" }>
-  | Readonly<{ kind: "retry" }>
-  | Readonly<{ kind: "reclaim"; owner: LockOwner }>;
 
 type MutableReconcileResult = {
   installed: string[];
@@ -233,7 +213,7 @@ export async function reconcileManagedSkillsForConfig(
 export async function reconcileManagedSkills(
   options: ReconcileManagedSkillsOptions,
 ): Promise<ReconcileManagedSkillsResult> {
-  return withProcessMutex(resolve(options.workspace), async () => {
+  return withProcessMutex(processMutexKey(options.workspace), async () => {
     const mutable: MutableReconcileResult = {
       installed: [],
       skipped: [],
@@ -242,7 +222,7 @@ export async function reconcileManagedSkills(
       failures: [],
       staleTeamSnapshot: false,
     };
-    let lock: WorkspaceLock | null = null;
+    let lock: WorkspaceFileLock | null = null;
     try {
       assertManagedWorkspaceRootsSafe(options.workspace);
       lock = await acquireWorkspaceLock(options);
@@ -376,8 +356,8 @@ export async function reconcileManagedSkills(
         await lock?.release();
       } catch (error) {
         // A cleanup failure must not turn a settled provider preflight into a
-        // rejected handler start. Atomic detachment plus the token check keeps
-        // a successor's lock untouched; any quarantine residue fails closed.
+        // rejected handler start. Closing the descriptor releases only this
+        // process's kernel lock and never removes a successor's lock path.
         options.log?.(
           `Managed skills lock cleanup failed: ${error instanceof Error ? error.message.slice(0, 300) : String(error)}`,
         );
@@ -399,6 +379,16 @@ function freezeResult(resourceConfigVersion: number, result: MutableReconcileRes
   });
 }
 
+function processMutexKey(workspace: string): string {
+  try {
+    return realpathSync(resolve(workspace));
+  } catch {
+    // The guarded reconcile reports the original workspace error. The
+    // lexical fallback only keeps concurrent failing calls serialized.
+    return resolve(workspace);
+  }
+}
+
 async function withProcessMutex<T>(workspace: string, task: () => Promise<T>): Promise<T> {
   const previous = processMutexTails.get(workspace) ?? Promise.resolve();
   let releaseTail = (): void => {};
@@ -418,186 +408,14 @@ async function withProcessMutex<T>(workspace: string, task: () => Promise<T>): P
   }
 }
 
-async function acquireWorkspaceLock(options: ReconcileManagedSkillsOptions): Promise<WorkspaceLock> {
+async function acquireWorkspaceLock(options: ReconcileManagedSkillsOptions): Promise<WorkspaceFileLock> {
   const lockRel = toPortablePath(MANAGED_SKILLS_LOCK_REL);
   const lockPath = resolveWorkspacePath(options.workspace, lockRel, "lock");
-  const token = randomBytes(16).toString("hex");
   const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
-  const staleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
-  const startedAt = Date.now();
   await mkdir(dirname(lockPath), { recursive: true });
-  const candidatePath = lockSiblingPath(lockPath, token, "candidate");
-  const owner: LockOwner = {
-    schemaVersion: 1,
-    pid: process.pid,
-    token,
-    createdAt: new Date().toISOString(),
-  };
-  await mkdir(candidatePath, { mode: 0o700 });
-  try {
-    await writeFile(join(candidatePath, LOCK_OWNER_FILE), `${JSON.stringify(owner)}\n`, {
-      encoding: "utf-8",
-      flag: "wx",
-      mode: 0o600,
-    });
-  } catch (error) {
-    await rm(candidatePath, { recursive: true, force: true });
-    throw error;
-  }
-
-  try {
-    while (true) {
-      // Re-run the boundary check on every attempt so a replaced lock path is
-      // never inspected through a symlink.
-      resolveWorkspacePath(options.workspace, lockRel, "lock");
-      try {
-        await rename(candidatePath, lockPath);
-        return {
-          release: () => releaseWorkspaceLock(lockPath, token, options.testAfterLockReleaseQuarantine),
-        };
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        const targetExists =
-          code === "EEXIST" || code === "ENOTEMPTY" || code === "EPERM" ? await pathExists(lockPath) : false;
-        if (!targetExists) throw error;
-      }
-
-      if (await recoverWorkspaceLock(lockPath, staleMs)) continue;
-      if (Date.now() - startedAt >= timeoutMs) {
-        throw new Error(`timed out waiting for managed skills workspace lock after ${timeoutMs}ms`);
-      }
-      await delay(Math.min(250, 25 + Math.floor((Date.now() - startedAt) / 10)));
-    }
-  } finally {
-    await rm(candidatePath, { recursive: true, force: true });
-  }
-}
-
-async function readLockOwner(lockPath: string): Promise<LockOwner | null> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(join(lockPath, LOCK_OWNER_FILE), "utf-8"));
-    if (!isRecord(parsed)) return null;
-    if (
-      parsed.schemaVersion !== 1 ||
-      typeof parsed.pid !== "number" ||
-      !Number.isSafeInteger(parsed.pid) ||
-      parsed.pid <= 0 ||
-      typeof parsed.token !== "string" ||
-      parsed.token.length === 0 ||
-      typeof parsed.createdAt !== "string" ||
-      !Number.isFinite(Date.parse(parsed.createdAt))
-    ) {
-      return null;
-    }
-    return {
-      schemaVersion: 1,
-      pid: parsed.pid,
-      token: parsed.token,
-      createdAt: parsed.createdAt,
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function inspectLockRecovery(lockPath: string, staleMs: number): Promise<LockRecoveryDecision> {
-  try {
-    const lockStats = await lstat(lockPath);
-    if (lockStats.isSymbolicLink()) {
-      throw new ManagedSkillsFatalError("managed skills workspace lock is a symlink; refusing recovery");
-    }
-    if (!lockStats.isDirectory()) {
-      throw new ManagedSkillsFatalError("managed skills workspace lock is not a directory; refusing recovery");
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "retry" };
-    throw error;
-  }
-
-  const owner = await readLockOwner(lockPath);
-  if (!owner) {
-    const lockStat = await stat(lockPath);
-    if (Date.now() - lockStat.mtimeMs > staleMs) {
-      throw new ManagedSkillsFatalError("managed skills workspace lock has no valid owner; refusing age-only recovery");
-    }
-    return { kind: "wait" };
-  }
-  return processIsAlive(owner.pid) ? { kind: "wait" } : { kind: "reclaim", owner };
-}
-
-async function recoverWorkspaceLock(lockPath: string, staleMs: number): Promise<boolean> {
-  const decision = await inspectLockRecovery(lockPath, staleMs);
-  if (decision.kind === "retry") return true;
-  if (decision.kind === "wait") return false;
-
-  const quarantinePath = lockSiblingPath(lockPath, randomBytes(16).toString("hex"), "reclaim");
-  try {
-    await rename(lockPath, quarantinePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-    throw error;
-  }
-
-  const quarantinedOwner = await readLockOwner(quarantinePath);
-  if (
-    quarantinedOwner?.token !== decision.owner.token ||
-    quarantinedOwner.pid !== decision.owner.pid ||
-    processIsAlive(decision.owner.pid)
-  ) {
-    await restoreQuarantinedLock(quarantinePath, lockPath);
-    throw new ManagedSkillsFatalError("managed skills lock owner changed during recovery; refusing reclamation");
-  }
-  await rm(quarantinePath, { recursive: true, force: true });
-  return true;
-}
-
-async function releaseWorkspaceLock(
-  lockPath: string,
-  token: string,
-  afterQuarantine?: (lockPath: string) => Promise<void>,
-): Promise<void> {
-  const quarantinePath = lockSiblingPath(lockPath, token, "release");
-  try {
-    await rename(lockPath, quarantinePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-
-  await afterQuarantine?.(lockPath);
-  const quarantinedOwner = await readLockOwner(quarantinePath);
-  if (quarantinedOwner?.token !== token) {
-    await restoreQuarantinedLock(quarantinePath, lockPath);
-    throw new ManagedSkillsFatalError("managed skills lock token changed before release; lock was preserved");
-  }
-  await rm(quarantinePath, { recursive: true, force: true });
-}
-
-async function restoreQuarantinedLock(quarantinePath: string, lockPath: string): Promise<void> {
-  try {
-    await rename(quarantinePath, lockPath);
-  } catch (error) {
-    throw new ManagedSkillsFatalError(
-      `cannot restore quarantined managed skills lock ${basename(quarantinePath)}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-}
-
-function lockSiblingPath(lockPath: string, token: string, phase: "candidate" | "reclaim" | "release"): string {
-  return join(dirname(lockPath), `.${basename(lockPath)}.${token}.${phase}`);
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the process exists but this user cannot signal it. Any
-    // result other than an explicit ESRCH therefore fails closed as live.
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
+  // The file is deliberately permanent: removing or renaming a lock inode
+  // creates a publication race where two owners can hold different inodes.
+  return acquireWorkspaceFileLock(lockPath, { timeoutMs });
 }
 
 async function loadOrMigrateManagedState(options: ReconcileManagedSkillsOptions): Promise<ManagedState> {
@@ -1748,7 +1566,7 @@ function resolveWorkspacePath(
   assertExistingPathChainIsDirectory(
     workspaceRoot,
     absolute,
-    kind === "root" || kind === "lock" || kind === "temporary",
+    kind === "root" || kind === "temporary",
     kind,
     portablePath,
   );
@@ -1809,10 +1627,6 @@ async function pathExists(path: string): Promise<boolean> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 // Kept as a named constant so tests can assert journal placement without

@@ -1,6 +1,7 @@
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -648,97 +649,31 @@ describe("managed Skill reconciler", () => {
     expect(existsSync(target(workspace, "codex", "first-tree-write"))).toBe(false);
   });
 
-  it("recovers a stale cross-process lock but leaves no lock artifact after settlement", async () => {
+  it("keeps one persistent regular lock inode across reconciliations", async () => {
     const lockPath = join(workspace, MANAGED_SKILLS_LOCK_REL);
-    mkdirSync(lockPath, { recursive: true });
-    writeFileSync(
-      join(lockPath, "owner.json"),
-      JSON.stringify({
-        schemaVersion: 1,
-        pid: 999_999_999,
-        token: "dead-owner",
-        createdAt: new Date(0).toISOString(),
-      }),
-    );
 
-    const result = await reconcileManagedSkills({
+    const first = await reconcileManagedSkills({
       workspace,
       provider: "codex",
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
-      lockStaleMs: 0,
     });
 
-    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
-    expect(existsSync(lockPath)).toBe(false);
-  });
+    expect(first.ok, JSON.stringify(first.failures)).toBe(true);
+    const firstStats = lstatSync(lockPath);
+    expect(firstStats.isFile()).toBe(true);
 
-  it("never reclaims an old lock while its owner process is alive", async () => {
-    const lockPath = join(workspace, MANAGED_SKILLS_LOCK_REL);
-    mkdirSync(lockPath, { recursive: true });
-    writeFileSync(
-      join(lockPath, "owner.json"),
-      JSON.stringify({
-        schemaVersion: 1,
-        pid: process.pid,
-        token: "live-owner",
-        createdAt: new Date(0).toISOString(),
-      }),
-    );
-
-    const result = await reconcileManagedSkills({
+    const second = await reconcileManagedSkills({
       workspace,
       provider: "codex",
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
-      lockTimeoutMs: 30,
-      lockStaleMs: 0,
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.failures).toEqual([
-      expect.objectContaining({
-        key: "workspace",
-        reason: expect.stringContaining("timed out waiting for managed skills workspace lock"),
-      }),
-    ]);
-    expect(JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf-8"))).toMatchObject({
-      token: "live-owner",
-      pid: process.pid,
-    });
-  });
-
-  it("atomically detaches its lock before release and leaves a successor lock untouched", async () => {
-    const lockPath = join(workspace, MANAGED_SKILLS_LOCK_REL);
-    let releaseHookCalls = 0;
-    const result = await reconcileManagedSkills({
-      workspace,
-      provider: "codex",
-      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
-      bundledSkillsRoot,
-      testAfterLockReleaseQuarantine: async (detachedLockPath) => {
-        releaseHookCalls++;
-        mkdirSync(detachedLockPath);
-        writeFileSync(
-          join(detachedLockPath, "owner.json"),
-          JSON.stringify({
-            schemaVersion: 1,
-            pid: process.pid,
-            token: "successor-owner",
-            createdAt: new Date().toISOString(),
-          }),
-        );
-      },
-    });
-
-    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
-    expect(releaseHookCalls).toBe(1);
-    expect(
-      existsSync(lockPath),
-      `runtime entries: ${readdirSync(join(workspace, ".first-tree-workspace")).join(", ")}`,
-    ).toBe(true);
-    expect(JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf-8"))).toMatchObject({
-      token: "successor-owner",
-    });
+    expect(second.ok, JSON.stringify(second.failures)).toBe(true);
+    const secondStats = lstatSync(lockPath);
+    expect(secondStats.isFile()).toBe(true);
+    expect(secondStats.dev).toBe(firstStats.dev);
+    expect(secondStats.ino).toBe(firstStats.ino);
   });
 });

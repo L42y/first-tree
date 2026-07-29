@@ -42,7 +42,7 @@ known provider roots.
 | Workspace-relative path | Purpose |
 | --- | --- |
 | `.first-tree-workspace/managed.json` | Schema-v2 ledger, final installed digests, and monotonic Team Resource version fence. |
-| `.first-tree-workspace/managed-skills.lock/` | Cross-process workspace lock. `owner.json` carries the process id, token, and creation time. |
+| `.first-tree-workspace/managed-skills.lock` | Persistent regular file whose descriptor carries the cross-process kernel lock. The path is never renamed or removed; owner death releases the OS lock automatically, and file existence alone does not indicate ownership. |
 | `.first-tree-workspace/managed-skills-journal.json` | Single in-flight install or removal transaction used for crash recovery. |
 | `.first-tree-workspace/migrations-applied.json` | Applied one-shot workspace-layout migration ids. |
 

@@ -454,7 +454,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
       expect(readFileSync(join(legacyCwd, "AGENTS.md"), "utf-8")).toBe(refreshedClaudeMd);
       expect(existsSync(join(legacyCwd, ".claude", "skills", "first-tree-read", "SKILL.md"))).toBe(true);
       expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed.json"))).toBe(true);
-      expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed-skills.lock"))).toBe(false);
+      expect(lstatSync(join(legacyCwd, ".first-tree-workspace", "managed-skills.lock")).isFile()).toBe(true);
       expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed-skills-journal.json"))).toBe(false);
       expect(existsSync(join(legacyCwd, ".first-tree", "workspace.json"))).toBe(false);
 
