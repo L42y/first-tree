@@ -144,6 +144,68 @@ describe("standalone synthesize-meeting-records fixture", () => {
     }
   });
 
+  it("rejects a replaced source-artifacts root before required-file or bundle scans", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES[0];
+    if (evalCase === undefined) throw new Error("Missing eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-source-ancestor-replacement-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:00.680Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const outsideSourcePath = join(paths.runRoot, "outside-source-artifacts");
+      const outsideCanaryPath = join(outsideSourcePath, "outside-source-canary.txt");
+      mkdirSync(outsideSourcePath, { recursive: true });
+      writeFileSync(outsideCanaryPath, "", "utf8");
+      truncateSync(outsideCanaryPath, 21 * 1024 * 1024);
+      chmodSync(outsideCanaryPath, 0o000);
+
+      rmSync(sourceRepoPath, { force: true, recursive: true });
+      symlinkSync(outsideSourcePath, sourceRepoPath);
+
+      const validation = validateFixture(paths, sourceRepoPath);
+      expect(validation).toMatchObject({
+        errors: ["workspace fixture content changed after setup"],
+        ok: false,
+        requiredFilesOk: false,
+      });
+      expect(validation.errors.join("\n")).not.toContain("outside-source-canary");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a replaced model-receipt container before receipt metadata checks", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES[0];
+    if (evalCase === undefined) throw new Error("Missing eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-receipt-ancestor-replacement-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:00.685Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const outsideReceiptCanaryPath = join(paths.runRoot, "outside-receipt-canary");
+      writeFileSync(outsideReceiptCanaryPath, "host-only\n", "utf8");
+
+      const receiptContainerPath = dirname(paths.modelEventsPath);
+      rmSync(receiptContainerPath, { force: true, recursive: true });
+      symlinkSync(outsideReceiptCanaryPath, receiptContainerPath);
+
+      const validation = validateFixture(paths, sourceRepoPath);
+      expect(validation).toMatchObject({
+        errors: ["workspace fixture content changed after setup"],
+        ok: false,
+        requiredFilesOk: false,
+      });
+      expect(validation.errors.join("\n")).not.toContain("model event receipt is missing");
+      expect(validation.errors.join("\n")).not.toContain("outside-receipt-canary");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
   it("rejects symlinked packet and model event receipt paths", () => {
     const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES[0];
     if (evalCase === undefined) throw new Error("Missing eval case.");
