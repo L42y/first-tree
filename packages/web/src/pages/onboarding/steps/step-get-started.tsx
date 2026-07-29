@@ -365,6 +365,7 @@ function ByoSetupPromptCard({ provider, team, prompt }: { provider: string; team
 
       {prompt ? (
         <details
+          data-clarity-mask="true"
           className="group"
           style={{
             borderTop: "var(--hairline) solid var(--border-faint)",

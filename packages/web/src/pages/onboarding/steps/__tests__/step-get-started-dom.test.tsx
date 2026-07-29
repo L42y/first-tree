@@ -300,6 +300,7 @@ describe("StepGetStarted", () => {
     expect(container.textContent).toContain("context enable --provider 'claude-code'");
     expect(buttonByText(container, "Copy setup prompt")).toBeTruthy();
     expect(container.querySelector("details")?.open).toBe(false);
+    expect(container.querySelector("pre")?.closest('[data-clarity-mask="true"]')).not.toBeNull();
     expect(container.textContent).toContain("View full prompt");
     expect(container.textContent).not.toContain("Run this command in your terminal");
     expect(container.textContent).toContain("does not create a First Tree agent");
