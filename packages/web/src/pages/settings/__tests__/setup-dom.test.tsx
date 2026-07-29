@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../../api/client.js";
 import { buildSetupRows, SettingsSetupPage, type SetupFacts, SetupOverview } from "../setup.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -519,7 +520,9 @@ describe("Settings Setup overview", () => {
     expect(admin.status).toMatchObject({ label: "Verification pending", kind: "attention" });
     expect(admin.status.detail).toContain("GitLab Project Hook active");
     expect(admin.status.detail).toContain("GitLab System Hook waiting for an MR event");
-    expect(admin.status.detail).toContain("Waiting for the first valid GitLab merge request event.");
+    expect(admin.status.detail).toContain(
+      "Waiting for a valid Merge Request event from the System Hook or a Project Hook on the bound Context Tree repository.",
+    );
     expect(admin.action).toEqual({ label: "Set up GitLab", to: "/settings/integrations/gitlab" });
     expect(member.status).toMatchObject({ label: "Verification pending", kind: "pending" });
     expect(member.status.detail).toContain("Ask an admin");
@@ -1082,6 +1085,7 @@ describe("Settings Setup overview", () => {
     expect([...reviewerControls.querySelectorAll("a")].some((link) => link.textContent === "Manage Team Agents")).toBe(
       true,
     );
+    expect(reviewerControls.textContent).toContain("The configured reviewer's runtime is currently unavailable.");
     await act(async () => view.root.unmount());
   });
 
@@ -1107,6 +1111,77 @@ describe("Settings Setup overview", () => {
 
     expect(reviewerMocks.putContextReviewerEnablement).toHaveBeenCalledWith("org-1", true);
     expect(reviewerMocks.putContextReviewerAssignment).not.toHaveBeenCalled();
+    await act(async () => view.root.unmount());
+  });
+
+  it("surfaces the precise GitLab readiness blocker returned by enablement", async () => {
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
+      capabilityFixture({
+        review: {
+          adoption: "disabled",
+          health: "pending_verification",
+          reviewerAgent: { uuid: "reviewer-1", displayName: "Context Reviewer" },
+          blockers: [
+            {
+              code: "gitlab_merge_request_event_not_seen",
+              resolutionOwner: "admin",
+              actionKind: "configure_gitlab_webhook",
+            },
+          ],
+        },
+      }),
+    );
+    reviewerMocks.putContextReviewerEnablement.mockRejectedValue(
+      new ApiError(409, "Context Reviewer is not ready", undefined, "gitlab_merge_request_event_not_seen"),
+    );
+    const view = await renderSettingsSetupPage();
+    const { reviewerControls } = await openContextTreeControls(view);
+    const enablement = reviewerControls.querySelector<HTMLButtonElement>('[role="switch"]');
+
+    await act(async () => enablement?.click());
+    await waitForSelector(reviewerControls, '[role="alert"]');
+
+    expect(reviewerControls.textContent).toContain(
+      "Waiting for a valid Merge Request event from the System Hook or a Project Hook on the bound Context Tree repository.",
+    );
+    expect(reviewerControls.textContent).not.toContain("Context Reviewer is not ready");
+    await act(async () => view.root.unmount());
+  });
+
+  it("preserves precise mutation details for state changes and unknown blocker codes", async () => {
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValue(
+      capabilityFixture({
+        review: {
+          adoption: "disabled",
+          health: "ready",
+          reviewerAgent: { uuid: "reviewer-1", displayName: "Context Reviewer" },
+        },
+      }),
+    );
+    reviewerMocks.putContextReviewerEnablement
+      .mockRejectedValueOnce(
+        new ApiError(
+          409,
+          "Reviewer ownership or Computer binding changed; retry with current Team state",
+          undefined,
+          "context_review_state_changed",
+        ),
+      )
+      .mockRejectedValueOnce(new ApiError(409, "Precise future blocker detail", undefined, "future_blocker_code"));
+    const view = await renderSettingsSetupPage();
+    const { reviewerControls } = await openContextTreeControls(view);
+    const enablement = reviewerControls.querySelector<HTMLButtonElement>('[role="switch"]');
+
+    await act(async () => enablement?.click());
+    await waitForSelector(reviewerControls, '[role="alert"]');
+    expect(reviewerControls.textContent).toContain(
+      "Reviewer ownership or Computer binding changed; retry with current Team state",
+    );
+
+    await act(async () => enablement?.click());
+    await flush();
+    expect(reviewerControls.textContent).toContain("Precise future blocker detail");
+    expect(reviewerControls.textContent).not.toContain("Provider or Agent recovery is still required");
     await act(async () => view.root.unmount());
   });
 

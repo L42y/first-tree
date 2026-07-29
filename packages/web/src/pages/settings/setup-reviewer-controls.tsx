@@ -4,9 +4,11 @@ import type {
   SetupActionKind,
   SetupAutomaticReview,
 } from "@first-tree/shared";
+import { setupBlockerCodeSchema } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import { Link } from "react-router";
+import { ApiError } from "../../api/client.js";
 import {
   getContextReviewerCandidates,
   putContextReviewerAssignment,
@@ -16,6 +18,7 @@ import { setupCapabilitiesQueryKey } from "../../api/setup-capabilities.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Select } from "../../components/ui/select.js";
 import { Switch } from "../../components/ui/switch.js";
+import { setupBlockerCopy } from "./setup-blocker-copy.js";
 
 export function SetupReviewerControls({
   review,
@@ -199,7 +202,7 @@ export function SetupReviewerControls({
       ) : null}
       {recovery ? (
         <div className="text-label" style={{ color: "var(--fg-3)" }}>
-          Provider or Agent recovery is still required.{" "}
+          {recovery.detail}{" "}
           <Link to={recovery.to} className="font-medium" style={{ color: "var(--fg-2)" }}>
             {recovery.label}
           </Link>
@@ -207,18 +210,17 @@ export function SetupReviewerControls({
       ) : null}
       {assignmentMutation.error instanceof Error || enablementMutation.error instanceof Error ? (
         <div role="alert" className="text-label" style={{ color: "var(--state-error)" }}>
-          {(assignmentMutation.error ?? enablementMutation.error)?.message}
+          {reviewerMutationError(assignmentMutation.error ?? enablementMutation.error)}
         </div>
       ) : null}
     </div>
   );
 }
 
-function reviewerRecovery(review: SetupAutomaticReview): { label: string; to: string } | null {
-  const actionKind = review.blockers.find(
-    (blocker) => blocker.resolutionOwner === "admin" && blocker.actionKind,
-  )?.actionKind;
-  if (!actionKind) return null;
+function reviewerRecovery(review: SetupAutomaticReview): { detail: string; label: string; to: string } | null {
+  const blocker = review.blockers.find((blocker) => blocker.resolutionOwner === "admin" && blocker.actionKind);
+  const actionKind = blocker?.actionKind;
+  if (!blocker || !actionKind) return null;
 
   const recovery: Partial<Record<SetupActionKind, { label: string; to: string }>> = {
     connect_github: { label: "Connect GitHub", to: "/settings/integrations/github" },
@@ -227,7 +229,16 @@ function reviewerRecovery(review: SetupAutomaticReview): { label: string; to: st
     configure_gitlab_webhook: { label: "Configure GitLab", to: "/settings/integrations/gitlab" },
     open_agent_owner_flow: { label: "Manage Team Agents", to: "/team" },
   };
-  return recovery[actionKind] ?? null;
+  const destination = recovery[actionKind];
+  return destination ? { detail: setupBlockerCopy(blocker.code), ...destination } : null;
+}
+
+function reviewerMutationError(error: unknown): string {
+  if (error instanceof ApiError && error.code && error.message === "Context Reviewer is not ready") {
+    const code = setupBlockerCodeSchema.safeParse(error.code);
+    if (code.success) return setupBlockerCopy(code.data);
+  }
+  return error instanceof Error ? error.message : "Failed to update Context Reviewer";
 }
 
 function runtimeLabel(health: SetupAutomaticReview["health"]): string {

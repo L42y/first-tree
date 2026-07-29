@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
+import { clients } from "../db/schema/clients.js";
 import { githubAppInstallations } from "../db/schema/github-app-installations.js";
 import { messages } from "../db/schema/messages.js";
+import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
 import { bindAgentRuntimeSession } from "../services/agent-runtime-session.js";
 import { handleContextReviewerPrEvent as handleContextReviewerPrEventService } from "../services/context-reviewer-pr.js";
@@ -96,6 +98,34 @@ describe("Context Reviewer App publisher", () => {
       reviewerManagerHumanAgentId: fixture.admin.humanAgentUuid,
       reviewerClientId: fixture.admin.clientId,
     });
+  });
+
+  it("publishes through a user-owned Computer whose legacy organization placeholder differs", async () => {
+    const fixture = await createRunFixture(getApp());
+    const placeholderOrganizationId = `org-client-placeholder-${randomUUID().slice(0, 8)}`;
+    await fixture.app.db.insert(organizations).values({
+      id: placeholderOrganizationId,
+      name: `client-placeholder-${randomUUID().slice(0, 8)}`,
+      displayName: "Client Placeholder",
+    });
+    await fixture.app.db
+      .update(clients)
+      .set({ organizationId: placeholderOrganizationId })
+      .where(eq(clients.id, fixture.admin.clientId));
+
+    await expect(
+      submitContextReviewOutcome({
+        db: fixture.app.db,
+        chatId: fixture.chatId,
+        runId: fixture.runId,
+        callerAgentUuid: fixture.reviewer.uuid,
+        callerClientId: fixture.admin.clientId,
+        callerRuntimeSessionToken: fixture.runtimeToken,
+        request: { event: "COMMENT", body: "Cross-Team Computer remains authorized." },
+        appCredentials: fixture.app.config.oauth?.githubApp,
+        fetcher: successfulGithubFetcher(),
+      }),
+    ).resolves.toMatchObject({ action: "COMMENT" });
   });
 
   it("takes manager and Computer locks before the Reviewer Agent row", async () => {

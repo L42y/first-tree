@@ -13,6 +13,7 @@ import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agent.js";
+import { resolveBoundGitlabContextTreeWebhookRepository } from "../services/context-reviewer-mr.js";
 import {
   createGitlabConnection,
   deleteGitlabConnection,
@@ -26,6 +27,7 @@ import {
   withGitlabIngressFence,
 } from "../services/gitlab-connections.js";
 import * as gitlabEntityFollowService from "../services/gitlab-entity-follow.js";
+import { getOrgContextReviewRuntime } from "../services/org-settings.js";
 import { createOrganization } from "../services/organization.js";
 import * as scmCardDelivery from "../services/scm-card-delivery.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
@@ -217,6 +219,14 @@ describe("GitLab Stage 2A backend", () => {
         lastProcessingFailureAt: null,
         lastProcessingFailureCode: null,
       },
+    });
+    const [regeneratedRow] = await app.db
+      .select()
+      .from(gitlabConnections)
+      .where(eq(gitlabConnections.id, first.connectionId));
+    expect(regeneratedRow).toMatchObject({
+      lastProjectHookContextTreeMergeRequestInboundAt: null,
+      lastProjectHookContextTreeRepository: null,
     });
     const test = await postWebhook(app, regenerated.bearer, { event_name: "test" });
     expect(test.statusCode).toBe(200);
@@ -830,6 +840,155 @@ describe("GitLab Stage 2A backend", () => {
       lastSystemHookMergeRequestInboundAt: expect.any(String),
       lastProcessingFailureAt: null,
       lastProcessingFailureCode: null,
+    });
+  });
+
+  it("records Project Hook Reviewer readiness only for the bound Context Tree repository", async () => {
+    const app = getApp();
+    const first = await connection(app);
+    await app.db.insert(organizationSettings).values({
+      organizationId: first.admin.organizationId,
+      namespace: "context_tree",
+      value: {
+        provider: "gitlab",
+        repo: "https://gitlab.internal/Acme/Context-Tree.git",
+        branch: "main",
+      },
+      version: 1,
+      updatedBy: first.admin.userId,
+    });
+    const runtime = await getOrgContextReviewRuntime(app.db, first.admin.organizationId);
+    expect(
+      resolveBoundGitlabContextTreeWebhookRepository({
+        runtime,
+        connection: {
+          id: first.connectionId,
+          organizationId: first.admin.organizationId,
+          instanceOrigin: "https://gitlab.internal",
+        },
+        projectPath: "acme/context-tree",
+      }),
+    ).toBe("gitlab.internal/acme/context-tree");
+
+    expect(
+      (
+        await postWebhook(app, first.bearer, mergeRequestPayload(81, { projectPath: "Acme/Other" }), {
+          event: "Merge Request Hook",
+        })
+      ).statusCode,
+    ).toBe(200);
+    let [connectionRow] = await app.db
+      .select()
+      .from(gitlabConnections)
+      .where(eq(gitlabConnections.id, first.connectionId));
+    expect(connectionRow).toMatchObject({
+      lastProjectHookContextTreeMergeRequestInboundAt: null,
+      lastProjectHookContextTreeRepository: null,
+    });
+
+    expect(
+      (
+        await postWebhook(app, first.bearer, mergeRequestPayload(82, { projectPath: "acme/context-tree" }), {
+          event: "Merge Request Hook",
+        })
+      ).statusCode,
+    ).toBe(200);
+    [connectionRow] = await app.db.select().from(gitlabConnections).where(eq(gitlabConnections.id, first.connectionId));
+    expect(connectionRow).toMatchObject({
+      lastProjectHookContextTreeMergeRequestInboundAt: expect.any(Date),
+      lastProjectHookContextTreeRepository: "gitlab.internal/acme/context-tree",
+    });
+
+    await app.db
+      .update(gitlabConnections)
+      .set({
+        lastProjectHookContextTreeMergeRequestInboundAt: null,
+        lastProjectHookContextTreeRepository: null,
+      })
+      .where(eq(gitlabConnections.id, first.connectionId));
+    expect(
+      (await postWebhook(app, first.bearer, mergeRequestPayload(83, { projectPath: "acme/context-tree" }))).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await postWebhook(app, first.bearer, mergeRequestPayload(83, { projectPath: "acme/context-tree" }), {
+          event: "Merge Request Hook",
+        })
+      ).json(),
+    ).toMatchObject({ outcome: "cross_hook_duplicate" });
+    [connectionRow] = await app.db.select().from(gitlabConnections).where(eq(gitlabConnections.id, first.connectionId));
+    expect(connectionRow).toMatchObject({
+      lastProjectHookContextTreeMergeRequestInboundAt: expect.any(Date),
+      lastProjectHookContextTreeRepository: "gitlab.internal/acme/context-tree",
+    });
+
+    await app.db
+      .update(gitlabConnections)
+      .set({
+        lastProjectHookContextTreeMergeRequestInboundAt: null,
+        lastProjectHookContextTreeRepository: null,
+      })
+      .where(eq(gitlabConnections.id, first.connectionId));
+    const observationSpy = vi
+      .spyOn(gitlabEntityFollowService, "observeGitlabEntityAndResolveFollowers")
+      .mockRejectedValueOnce(new Error("entity observation unavailable"));
+    try {
+      expect(
+        (
+          await postWebhook(app, first.bearer, mergeRequestPayload(84, { projectPath: "acme/context-tree" }), {
+            event: "Merge Request Hook",
+          })
+        ).statusCode,
+      ).toBe(200);
+    } finally {
+      observationSpy.mockRestore();
+    }
+    [connectionRow] = await app.db.select().from(gitlabConnections).where(eq(gitlabConnections.id, first.connectionId));
+    expect(connectionRow).toMatchObject({
+      lastProjectHookContextTreeMergeRequestInboundAt: null,
+      lastProjectHookContextTreeRepository: null,
+    });
+
+    const followedChatId = `chat_${randomUUID()}`;
+    await app.db.insert(chats).values({
+      id: followedChatId,
+      organizationId: first.admin.organizationId,
+      type: "group",
+      metadata: {},
+    });
+    await app.db.insert(chatMembership).values({
+      chatId: followedChatId,
+      agentId: first.admin.humanAgentUuid,
+      role: "owner",
+      accessMode: "speaker",
+    });
+    await declareGitlabEntityFollow(app.db, {
+      organizationId: first.admin.organizationId,
+      connectionId: first.connectionId,
+      chatId: followedChatId,
+      declaredByAgentId: first.admin.humanAgentUuid,
+      humanAgentId: first.admin.humanAgentUuid,
+      delegateAgentId: first.admin.humanAgentUuid,
+      entityUrl: "https://gitlab.internal/acme/context-tree/-/merge_requests/85",
+    });
+    const deliverySpy = vi
+      .spyOn(scmCardDelivery, "sendScmSystemCard")
+      .mockRejectedValueOnce(new Error("chat unavailable"));
+    try {
+      expect(
+        (
+          await postWebhook(app, first.bearer, mergeRequestPayload(85, { projectPath: "acme/context-tree" }), {
+            event: "Merge Request Hook",
+          })
+        ).statusCode,
+      ).toBe(200);
+    } finally {
+      deliverySpy.mockRestore();
+    }
+    [connectionRow] = await app.db.select().from(gitlabConnections).where(eq(gitlabConnections.id, first.connectionId));
+    expect(connectionRow).toMatchObject({
+      lastProjectHookContextTreeMergeRequestInboundAt: null,
+      lastProjectHookContextTreeRepository: null,
     });
   });
 

@@ -57,7 +57,6 @@ export async function loadValidContextReviewerAgent(
       managerId: agents.managerId,
       runtimeProvider: agents.runtimeProvider,
       clientId: clients.id,
-      clientOrganizationId: clients.organizationId,
       clientUserId: clients.userId,
       clientRetiredAt: clients.retiredAt,
       managerUserId: members.userId,
@@ -86,7 +85,6 @@ export async function loadValidContextReviewerAgent(
     !runtimeProviderSchema.safeParse(agent.runtimeProvider).success ||
     !isRuntimeProviderEnabled(agent.runtimeProvider) ||
     !agent.clientId ||
-    agent.clientOrganizationId !== input.organizationId ||
     agent.clientUserId !== agent.managerUserId ||
     agent.clientRetiredAt !== null
   ) {

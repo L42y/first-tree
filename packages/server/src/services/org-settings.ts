@@ -93,6 +93,21 @@ function isCompleteContextTreeReplacement(input: OrgSettingInput<"context_tree">
   return input.repo !== undefined && input.branch !== undefined;
 }
 
+function sameContextTreeStorage(left: OrgContextTreeStorage, right: OrgContextTreeStorage): boolean {
+  return left.provider === right.provider && left.repo === right.repo && left.branch === right.branch;
+}
+
+async function clearGitlabProjectHookContextTreeReadiness(db: Database, orgId: string): Promise<void> {
+  await db
+    .update(gitlabConnections)
+    .set({
+      lastProjectHookContextTreeMergeRequestInboundAt: null,
+      lastProjectHookContextTreeRepository: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(gitlabConnections.organizationId, orgId));
+}
+
 /**
  * Merge a validated input into the current storage row for a namespace.
  *
@@ -477,6 +492,9 @@ export async function putOrgSetting<K extends OrgSettingNamespace>(
       } else {
         contextTreeActiveBindingSchema.parse(contextTree);
       }
+      if (!sameContextTreeStorage(current as OrgContextTreeStorage, contextTree)) {
+        await clearGitlabProjectHookContextTreeReadiness(txDb, orgId);
+      }
     }
 
     await tx
@@ -579,6 +597,7 @@ export async function putInitializedOrgContextTreeBinding(
     if (!row) {
       throw new ConflictError("Context Tree setting changed after tree initialization began");
     }
+    await clearGitlabProjectHookContextTreeReadiness(txDb, orgId);
     return contextTreeActiveBindingSchema.parse(row.value);
   });
 }
@@ -740,6 +759,9 @@ export async function deleteOrgSetting(db: Database, orgId: string, namespace: s
   await db.transaction(async (tx) => {
     const txDb = tx as unknown as Database;
     await lockOrganizationForSettingsMutation(txDb, orgId);
+    if (namespace === "context_tree") {
+      await clearGitlabProjectHookContextTreeReadiness(txDb, orgId);
+    }
     await tx
       .delete(organizationSettings)
       .where(and(eq(organizationSettings.organizationId, orgId), eq(organizationSettings.namespace, namespace)));
