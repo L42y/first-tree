@@ -219,7 +219,11 @@ function ConnectionSummary(props: {
 }) {
   const { connection } = props;
   const readiness = connection.health.readiness;
-  const status = CONNECTION_STATUS[readiness];
+  const systemHookObserved = connection.health.lastSystemHookInboundAt !== null;
+  const projectHookObserved = connection.health.lastProjectHookInboundAt !== null;
+  const legacyTransportObserved =
+    connection.health.lastValidInboundAt !== null && !systemHookObserved && !projectHookObserved;
+  const status = connectionStatus(connection);
   return (
     <div className="space-y-3 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -236,22 +240,20 @@ function ConnectionSummary(props: {
         </div>
         <span
           className="text-label"
-          style={{
-            color:
-              readiness === GITLAB_CONNECTION_READINESS.routingVerified
-                ? "var(--color-success)"
-                : readiness === GITLAB_CONNECTION_READINESS.needsAttention
-                  ? "var(--color-destructive)"
-                  : "var(--fg-3)",
-          }}
+          style={{ color: status.color }}
           data-testid="gitlab-connection-status"
           aria-live="polite"
         >
-          {status}
+          {status.label}
         </span>
       </div>
-      {props.isAdmin && readiness !== GITLAB_CONNECTION_READINESS.routingVerified ? (
+      <HookSourceStatus connection={connection} />
+      {props.isAdmin && systemHookObserved && readiness !== GITLAB_CONNECTION_READINESS.routingVerified ? (
         <SystemHookRecovery connection={connection} readiness={readiness} />
+      ) : null}
+      {props.isAdmin && legacyTransportObserved ? <LegacyHookSourceGuidance /> : null}
+      {props.isAdmin && !legacyTransportObserved && !systemHookObserved && !projectHookObserved ? (
+        <WebhookSetupGuidance connection={connection} />
       ) : null}
       <ConnectionDetails connection={connection} />
       {props.isAdmin ? (
@@ -275,12 +277,107 @@ function ConnectionSummary(props: {
   );
 }
 
-const CONNECTION_STATUS: Record<GitlabConnectionReadiness, string> = {
-  [GITLAB_CONNECTION_READINESS.waiting]: "Waiting for webhook",
-  [GITLAB_CONNECTION_READINESS.transportReceived]: "Webhook received · waiting for MR event",
-  [GITLAB_CONNECTION_READINESS.routingVerified]: "MR routing verified",
-  [GITLAB_CONNECTION_READINESS.needsAttention]: "Webhook needs attention",
-};
+function connectionStatus(connection: GitlabConnectionSummary): { label: string; color: string } {
+  const systemHookObserved = connection.health.lastSystemHookInboundAt !== null;
+  const projectHookObserved = connection.health.lastProjectHookInboundAt !== null;
+  const legacyTransportObserved =
+    connection.health.lastValidInboundAt !== null && !systemHookObserved && !projectHookObserved;
+  if (connection.health.readiness === GITLAB_CONNECTION_READINESS.needsAttention) {
+    return { label: "System Hook needs attention", color: "var(--color-destructive)" };
+  }
+  if (systemHookObserved && connection.health.readiness === GITLAB_CONNECTION_READINESS.routingVerified) {
+    return {
+      label: projectHookObserved ? "System and Project Hooks active" : "System Hook MR routing verified",
+      color: "var(--color-success)",
+    };
+  }
+  if (systemHookObserved) {
+    return {
+      label: projectHookObserved ? "Project Hook active · System Hook waiting for MR" : "System Hook waiting for MR",
+      color: "var(--fg-3)",
+    };
+  }
+  if (projectHookObserved) {
+    return { label: "Project Hook active", color: "var(--color-success)" };
+  }
+  if (legacyTransportObserved) {
+    return { label: "Webhook received · source not yet identified", color: "var(--fg-3)" };
+  }
+  return { label: "Waiting for webhook", color: "var(--fg-3)" };
+}
+
+function HookSourceStatus({ connection }: { connection: GitlabConnectionSummary }) {
+  const systemHookObserved = connection.health.lastSystemHookInboundAt !== null;
+  const projectHookObserved = connection.health.lastProjectHookInboundAt !== null;
+  const legacyTransportObserved =
+    connection.health.lastValidInboundAt !== null && !systemHookObserved && !projectHookObserved;
+  if (legacyTransportObserved) {
+    return (
+      <div
+        className="rounded-[var(--radius-panel)] border border-border px-3 py-2 text-label"
+        data-testid="gitlab-hook-source-status"
+      >
+        <p className="m-0 font-medium">Webhook traffic observed</p>
+        <p className="m-0 text-muted-foreground">
+          This connection received traffic before source-specific health was available.
+        </p>
+      </div>
+    );
+  }
+  if (!systemHookObserved && !projectHookObserved) return null;
+  return (
+    <div className="grid gap-2 sm:grid-cols-2" data-testid="gitlab-hook-source-status">
+      {systemHookObserved ? (
+        <div className="rounded-[var(--radius-panel)] border border-border px-3 py-2 text-label">
+          <p className="m-0 font-medium">System Hook observed</p>
+          <p className="m-0 text-muted-foreground">
+            {connection.health.lastSystemHookMergeRequestInboundAt
+              ? "Full-instance MR routing verified."
+              : "Waiting for a real MR event from this configured hook."}
+          </p>
+        </div>
+      ) : null}
+      {projectHookObserved ? (
+        <div className="rounded-[var(--radius-panel)] border border-border px-3 py-2 text-label">
+          <p className="m-0 font-medium">Project Hook observed</p>
+          <p className="m-0 text-muted-foreground">
+            Project Hook traffic is reaching First Tree; enabled event types can be delivered.
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LegacyHookSourceGuidance() {
+  return (
+    <div className="space-y-2 border-t border-border pt-3" data-testid="gitlab-legacy-hook-source-guidance">
+      <p className="m-0 text-body font-medium">Identify the configured Hook source</p>
+      <p className="m-0 text-label text-muted-foreground">
+        Trigger any enabled event from the GitLab Hook you already configured. First Tree will identify that source
+        without requiring a different Hook type.
+      </p>
+    </div>
+  );
+}
+
+function WebhookSetupGuidance({ connection }: { connection: GitlabConnectionSummary }) {
+  return (
+    <div className="space-y-2 border-t border-border pt-3" data-testid="gitlab-webhook-setup-guidance">
+      <p className="m-0 text-body font-medium">Finish webhook setup</p>
+      <p className="m-0 text-label text-muted-foreground">
+        Add the First Tree URL to the hook scope you need. System Hooks provide full-instance MR coverage; Project Hooks
+        provide project-level MR, Issue, and Note events. Either hook type can be used independently.
+      </p>
+      <Button asChild size="sm" variant="outline">
+        <a href={gitlabAdminHooksUrl(connection.instanceOrigin)} target="_blank" rel="noreferrer">
+          Open GitLab System hooks
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+        </a>
+      </Button>
+    </div>
+  );
+}
 
 function SystemHookRecovery(props: { connection: GitlabConnectionSummary; readiness: GitlabConnectionReadiness }) {
   const received = props.readiness === GITLAB_CONNECTION_READINESS.transportReceived;
@@ -333,12 +430,15 @@ function ConnectionDetails({ connection }: { connection: GitlabConnectionSummary
           Last valid inbound:{" "}
           {connection.health.lastValidInboundAt ? formatDate(connection.health.lastValidInboundAt) : "Never"}
         </span>
-        <span>
-          Last System Hook MR event:{" "}
-          {connection.health.lastSystemHookMergeRequestInboundAt
-            ? formatDate(connection.health.lastSystemHookMergeRequestInboundAt)
-            : "Never"}
-        </span>
+        {connection.health.lastSystemHookInboundAt ? (
+          <span>Last System Hook inbound: {formatDate(connection.health.lastSystemHookInboundAt)}</span>
+        ) : null}
+        {connection.health.lastProjectHookInboundAt ? (
+          <span>Last Project Hook inbound: {formatDate(connection.health.lastProjectHookInboundAt)}</span>
+        ) : null}
+        {connection.health.lastSystemHookMergeRequestInboundAt ? (
+          <span>Last System Hook MR event: {formatDate(connection.health.lastSystemHookMergeRequestInboundAt)}</span>
+        ) : null}
         <span>
           Stable delivery ID:{" "}
           {connection.stableDeliveryObserved ? "Observed" : "Not observed — repeats may duplicate or be lost"}
@@ -623,6 +723,9 @@ function OneTimeSecretDialog(props: {
   };
   const adminUrl = props.secret ? gitlabAdminHooksUrl(props.secret.connection.instanceOrigin) : null;
   const readiness = props.connection?.health.readiness ?? GITLAB_CONNECTION_READINESS.waiting;
+  const status = props.connection
+    ? connectionStatus(props.connection)
+    : { label: "Waiting for webhook", color: "var(--fg-2)" };
   return (
     <Dialog
       open={props.secret !== null}
@@ -641,9 +744,10 @@ function OneTimeSecretDialog(props: {
         </DialogHeader>
         <ol className="m-0 list-decimal space-y-4 pl-5 text-body">
           <li className="space-y-2 pl-1">
-            <p className="m-0 font-medium">Open GitLab Admin → System hooks</p>
+            <p className="m-0 font-medium">Choose the hook scope you need</p>
             <p className="m-0 text-label text-muted-foreground">
-              This instance-wide setup requires GitLab administrator access.
+              Use a System Hook for full-instance MR coverage, a Project Hook for project-level MR, Issue, and Note
+              events, or both. Each hook type works independently.
             </p>
             {adminUrl ? (
               <Button asChild size="sm" variant="outline">
@@ -677,14 +781,15 @@ function OneTimeSecretDialog(props: {
             </Button>
           </li>
           <li className="space-y-2 pl-1">
-            <p className="m-0 font-medium">Use the default payload and enable both triggers</p>
+            <p className="m-0 font-medium">Use the default payload and choose events for that source</p>
             <ul className="m-0 list-disc space-y-1 pl-5 text-label text-muted-foreground">
               <li>
-                <strong>Push events</strong> provide an early delivery-health signal. First Tree does not route Push
-                activity.
+                <strong>System Hook:</strong> enable Merge Request events for full-instance MR routing. Push events are
+                optional delivery-health evidence; First Tree does not route Push activity.
               </li>
               <li>
-                <strong>Merge request events</strong> enable full-instance MR routing.
+                <strong>Project Hook:</strong> enable only the project-level Merge Request, Issue, and Note events you
+                need.
               </li>
             </ul>
             <p className="m-0 text-label text-muted-foreground">
@@ -692,37 +797,21 @@ function OneTimeSecretDialog(props: {
             </p>
           </li>
           <li className="space-y-1 pl-1">
-            <p className="m-0 font-medium">Optionally add Project Hooks before closing</p>
+            <p className="m-0 font-medium">Add the hook, then trigger an enabled event</p>
             <p className="m-0 text-label text-muted-foreground">
-              Reuse this URL in trusted projects that need Issue or Note events. Merge Request events are also
-              supported; when both hook types send the same MR occurrence within one minute, First Tree suppresses the
-              second one on a best-effort basis.
-            </p>
-          </li>
-          <li className="space-y-1 pl-1">
-            <p className="m-0 font-medium">Add the hook, then create or update a merge request</p>
-            <p className="m-0 text-label text-muted-foreground">
-              A GitLab test or Push can prove the endpoint was reached. A real merge request event verifies routing.
+              First Tree reports the observed Hook source without treating an unconfigured Hook type as missing. If both
+              sources send the same MR occurrence within one minute, the second is suppressed on a best-effort basis.
             </p>
           </li>
         </ol>
         <div className="border-t border-border pt-3" aria-live="polite" data-testid="gitlab-one-time-setup-status">
-          <p
-            className="m-0 text-body font-medium"
-            style={{
-              color:
-                readiness === GITLAB_CONNECTION_READINESS.routingVerified
-                  ? "var(--color-success)"
-                  : readiness === GITLAB_CONNECTION_READINESS.needsAttention
-                    ? "var(--color-destructive)"
-                    : "var(--fg-2)",
-            }}
-          >
-            {CONNECTION_STATUS[readiness]}
+          <p className="m-0 text-body font-medium" style={{ color: status.color }}>
+            {status.label}
           </p>
-          {readiness === GITLAB_CONNECTION_READINESS.transportReceived ? (
+          {props.connection?.health.lastSystemHookInboundAt &&
+          readiness === GITLAB_CONNECTION_READINESS.transportReceived ? (
             <p className="m-0 mt-1 text-label text-muted-foreground">
-              Transport is working. First Tree is waiting for a routable merge request event.
+              The System Hook is working. First Tree is waiting for a routable merge request event from that hook.
             </p>
           ) : null}
         </div>

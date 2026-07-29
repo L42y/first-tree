@@ -686,11 +686,13 @@ describe("settings panels", () => {
           lastSchemaAnomalyCode: null,
         },
         health: {
-          readiness: "routing_verified",
+          readiness: "transport_received",
           lastValidInboundAt: "2026-05-28T11:00:00.000Z",
-          lastSystemHookMergeRequestInboundAt: "2026-05-28T11:00:00.000Z",
-          lastProcessingFailureAt: "2026-05-28T11:00:00.000Z",
-          lastProcessingFailureCode: "processing_failed",
+          lastSystemHookInboundAt: null,
+          lastProjectHookInboundAt: "2026-05-28T11:00:00.000Z",
+          lastSystemHookMergeRequestInboundAt: null,
+          lastProcessingFailureAt: null,
+          lastProcessingFailureCode: null,
         },
         createdAt: NOW,
         updatedAt: NOW,
@@ -699,16 +701,112 @@ describe("settings panels", () => {
 
     const { ContextTreeSettingsPanel } = await import("../context-tree-settings-panel.js");
     const { container, root } = await renderPanel(<ContextTreeSettingsPanel />);
-    await waitForText(container, "Healthy · MR routing observed");
+    await waitForText(container, "Healthy · Project Hook observed");
 
     expect(container.textContent).toContain("gitlab");
     expect(container.textContent).not.toContain("Provider unresolved");
     expect(container.textContent).toContain("GitLab Webhook");
     expect(container.textContent).toContain("Automatic MR review");
     expect(container.textContent).toContain("last valid inbound 2026-05-28T11:00:00.000Z");
-    expect(container.textContent).toContain("last System Hook MR event 2026-05-28T11:00:00.000Z");
+    expect(container.textContent).toContain("last Project Hook inbound 2026-05-28T11:00:00.000Z");
+    expect(container.textContent).not.toContain("waiting for an MR event");
+    expect(container.textContent).not.toContain("configure the System Hook");
     await click(buttonByText(container, "Edit"));
     expect(inputByLabel(container, "Repo URL")?.value).toBe("https://gitlab.internal/acme/platform/context-tree.git");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps Project Hook activity visible while an observed System Hook waits for an MR", async () => {
+    settingsMocks.getRawContextTreeSetting.mockResolvedValueOnce(
+      contextTree({ repo: "https://gitlab.internal/acme/platform/context-tree.git" }),
+    );
+    settingsMocks.getContextTreeSetting.mockResolvedValueOnce(
+      contextTree({
+        provider: "gitlab",
+        repo: "https://gitlab.internal/acme/platform/context-tree.git",
+      }),
+    );
+    gitlabConnectionMocks.listGitlabConnectionsAt.mockResolvedValueOnce([
+      {
+        id: "connection-1",
+        organizationId: "org-1",
+        displayName: "Private GitLab",
+        instanceOrigin: "https://gitlab.internal",
+        endpointSeen: true,
+        stableDeliveryObserved: true,
+        reviewerCapability: {
+          mode: "assignee",
+          lastObservedVersion: "13.12",
+          lastSchemaAnomalyAt: null,
+          lastSchemaAnomalyCode: null,
+        },
+        health: {
+          readiness: "transport_received",
+          lastValidInboundAt: "2026-05-28T11:00:00.000Z",
+          lastSystemHookInboundAt: "2026-05-28T10:00:00.000Z",
+          lastProjectHookInboundAt: "2026-05-28T11:00:00.000Z",
+          lastSystemHookMergeRequestInboundAt: null,
+          lastProcessingFailureAt: null,
+          lastProcessingFailureCode: null,
+        },
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    ]);
+
+    const { ContextTreeSettingsPanel } = await import("../context-tree-settings-panel.js");
+    const { container, root } = await renderPanel(<ContextTreeSettingsPanel />);
+    await waitForText(container, "Mixed · Project Hook active · System Hook waiting for an MR event");
+
+    expect(container.textContent).toContain("last System Hook inbound 2026-05-28T10:00:00.000Z");
+    expect(container.textContent).toContain("last Project Hook inbound 2026-05-28T11:00:00.000Z");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps pre-source GitLab transport neutral until the configured Hook sends another event", async () => {
+    settingsMocks.getRawContextTreeSetting.mockResolvedValueOnce(
+      contextTree({ repo: "https://gitlab.internal/acme/platform/context-tree.git" }),
+    );
+    settingsMocks.getContextTreeSetting.mockResolvedValueOnce(
+      contextTree({
+        provider: "gitlab",
+        repo: "https://gitlab.internal/acme/platform/context-tree.git",
+      }),
+    );
+    gitlabConnectionMocks.listGitlabConnectionsAt.mockResolvedValueOnce([
+      {
+        id: "connection-1",
+        organizationId: "org-1",
+        displayName: "Private GitLab",
+        instanceOrigin: "https://gitlab.internal",
+        endpointSeen: true,
+        stableDeliveryObserved: false,
+        reviewerCapability: {
+          mode: "assignee",
+          lastObservedVersion: null,
+          lastSchemaAnomalyAt: null,
+          lastSchemaAnomalyCode: null,
+        },
+        health: {
+          readiness: "transport_received",
+          lastValidInboundAt: "2026-05-28T11:00:00.000Z",
+          lastSystemHookInboundAt: null,
+          lastProjectHookInboundAt: null,
+          lastSystemHookMergeRequestInboundAt: null,
+          lastProcessingFailureAt: null,
+          lastProcessingFailureCode: null,
+        },
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    ]);
+
+    const { ContextTreeSettingsPanel } = await import("../context-tree-settings-panel.js");
+    const { container, root } = await renderPanel(<ContextTreeSettingsPanel />);
+    await waitForText(container, "Observed · Webhook source not yet identified");
+
+    expect(container.textContent).not.toContain("configure the System Hook");
+    expect(container.textContent).not.toContain("System Hook received");
     await act(async () => root.unmount());
   });
 
