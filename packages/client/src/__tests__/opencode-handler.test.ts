@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
@@ -11,6 +11,7 @@ import {
   clearOpenCodeDbGateCacheForTests,
   createOpenCodeHandler,
   mapOpenCodeMcpServers,
+  openCodeProviderAttemptWindowSizeForTests,
   projectOpenCodeConfig,
   stableOpenCodeScope,
 } from "../handlers/opencode/index.js";
@@ -26,6 +27,7 @@ import { mockEntry } from "./test-helpers.js";
 const roots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   clearOpenCodeDbGateCacheForTests();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -379,13 +381,10 @@ describe("OpenCode V1 handler", () => {
     expect(managedNames[2]).not.toBe(managedNames[0]);
   });
 
-  it("sweeps caller-owned stale private config state and removes the scope on shutdown", async () => {
+  it("uses a handler-owned private config generation and removes that generation on shutdown", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-recovery-"));
     roots.push(root);
     const scopeRoot = join(root, ".first-tree-workspace", "opencode-config", stableOpenCodeScope("agent-1\0chat-1"));
-    const stalePath = join(scopeRoot, "stale", "opencode.json");
-    mkdirSync(join(scopeRoot, "stale"), { recursive: true });
-    writeFileSync(stalePath, '{"stale":true}');
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
       runtimeProvider: "opencode",
@@ -395,10 +394,42 @@ describe("OpenCode V1 handler", () => {
     });
 
     await handler.start(message("m-private", "turn"), context([], []), deliveryToken());
-    expect(existsSync(stalePath)).toBe(false);
     expect(existsSync(scopeRoot)).toBe(true);
+    expect(readFileSync(join(scopeRoot, "handler-generations.json"), "utf8")).toContain('"handlerId"');
     await handler.shutdown();
-    expect(existsSync(scopeRoot)).toBe(false);
+    expect(existsSync(scopeRoot)).toBe(true);
+    expect(readFileSync(join(scopeRoot, "handler-generations.json"), "utf8")).toContain('"entries": []');
+  });
+
+  it("keeps a replacement handler usable after the older generation shuts down late", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-replacement-"));
+    roots.push(root);
+    const scopeRoot = join(root, ".first-tree-workspace", "opencode-config", stableOpenCodeScope("agent-1\0chat-1"));
+    const supervisor = createSyntheticSupervisor([]);
+    const makeHandler = () =>
+      createOpenCodeHandler({
+        workspaceRoot: root,
+        runtimeProvider: "opencode",
+        agentConfigCache: cache(runtimeConfig()),
+        opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+        providerProcessSupervisor: supervisor,
+      });
+    const older = makeHandler();
+    const replacement = makeHandler();
+
+    await older.start(message("m-private-old", "old"), context([], []), deliveryToken());
+    await replacement.start(message("m-private-new", "new"), context([], []), deliveryToken());
+    const generationNames = () => readdirSync(scopeRoot).filter((name) => /^handler-[a-f0-9]{32}$/.test(name));
+    expect(generationNames()).toHaveLength(2);
+
+    await older.shutdown();
+    expect(generationNames()).toHaveLength(1);
+    const replacementToken = deliveryToken();
+    replacement.inject(message("m-private-replacement", "still alive"), replacementToken);
+    await vi.waitFor(() => expect(replacementToken.complete).toHaveBeenCalled());
+
+    await replacement.shutdown();
+    expect(generationNames()).toEqual([]);
   });
 
   it("fails closed when even the file-backed projection cannot fit a Windows environment block", () => {
@@ -564,7 +595,12 @@ describe("OpenCode V1 handler", () => {
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const sleep = vi.fn<(delayMs: number) => Promise<void>>(async () => {});
-    const supervisor = createProtocolSupervisor(specs, ["not-json\n", "not-json\n", "not-json\n"]);
+    const inputs: string[] = [];
+    const supervisor = createProtocolSupervisor(
+      specs,
+      [`${successfulTurn()}\n`, "not-json\n", "not-json\n", "not-json\n"],
+      inputs,
+    );
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>(async () => {});
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>(async () => {});
     const sendMessage = vi.fn(async () => ({ id: "runtime-notice" }));
@@ -610,24 +646,100 @@ describe("OpenCode V1 handler", () => {
       recoverChat,
       agentConfigCache: cache(runtimeConfig()),
     });
-    const entry = mockEntry({
+    const seed = mockEntry({
       id: 801,
       chatId: "chat-sm-retry",
-      messageId: "msg-sm-retry",
-      content: "retry this delivery",
+      messageId: "msg-sm-seed",
+      content: "seed the provider session",
+    });
+    const deliveryHead = mockEntry({
+      id: 802,
+      chatId: "chat-sm-retry",
+      messageId: "msg-sm-head",
+      content: "retry delivery head",
+    });
+    const fusedTail = mockEntry({
+      id: 803,
+      chatId: "chat-sm-retry",
+      messageId: "msg-sm-tail",
+      content: "fused delivery tail",
     });
 
-    await manager.dispatch(entry);
+    await manager.dispatch(seed);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(801));
+    await Promise.all([manager.dispatch(deliveryHead), manager.dispatch(fusedTail)]);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
-    for (const expectedRuns of [2, 3]) {
-      await manager.dispatch(entry);
+    expect(inputs[1]).toContain("retry delivery head");
+    expect(inputs[1]).toContain("fused delivery tail");
+    for (const expectedRuns of [3, 4]) {
+      await manager.dispatch(deliveryHead);
       await vi.waitFor(() => expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(expectedRuns));
     }
 
     expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([5_000, 15_000]);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(ackEntry).toHaveBeenCalledWith(801);
+    expect(ackEntry).toHaveBeenCalledWith(802);
     await manager.shutdown();
+  });
+
+  it("abandons no custody mutation when suspend interrupts a provider retry delay", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-suspend-"));
+    roots.push(root);
+    let sleepStarted!: () => void;
+    const started = new Promise<void>((resolveStarted) => {
+      sleepStarted = resolveStarted;
+    });
+    const sleep = vi.fn(
+      async (_delayMs: number, signal: AbortSignal) =>
+        new Promise<boolean>((resolveDelay) => {
+          sleepStarted();
+          signal.addEventListener("abort", () => resolveDelay(false), { once: true });
+        }),
+    );
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor([], ["not-json\n"]),
+      opencodeRetrySleep: sleep,
+    });
+    const token = deliveryToken();
+    const startPromise = handler.start(message("m-delay", "first"), context([], []), token);
+    await started;
+
+    await handler.suspend("test suspend during provider delay");
+    await startPromise;
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).not.toHaveBeenCalled();
+    expect(openCodeProviderAttemptWindowSizeForTests()).toBe(0);
+    await handler.shutdown();
+  });
+
+  it("expires abandoned provider-attempt windows before admitting a new delivery head", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-expiry-"));
+    roots.push(root);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const runFailure = async (id: string) => {
+      const handler = createOpenCodeHandler({
+        workspaceRoot: root,
+        runtimeProvider: "opencode",
+        agentConfigCache: cache(runtimeConfig()),
+        opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+        providerProcessSupervisor: createProtocolSupervisor([], ["not-json\n"]),
+        opencodeRetrySleep: async () => {},
+      });
+      await handler.start(message(id, "delivery"), context([], []), deliveryToken());
+      await handler.shutdown();
+    };
+
+    await runFailure("m-old-window");
+    expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
+    clock.mockReturnValue(now + 31 * 60_000);
+    await runFailure("m-new-window");
+    expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
   });
 
   it("redelivers one-shot context through SessionManager when the durable failure notice post fails", async () => {
