@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeProvider, RuntimeResourceSkill } from "@first-tree/shared";
+import { strToU8, type ZipOptions, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CORE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
 import {
@@ -40,6 +41,72 @@ function teamSkill(overrides: Partial<RuntimeResourceSkill> = {}): RuntimeResour
     metadata: { owner: "platform" },
     ...overrides,
   };
+}
+
+const BUNDLE_ID_A = "11111111-1111-4111-8111-111111111111";
+const BUNDLE_ID_B = "22222222-2222-4222-8222-222222222222";
+
+type TestZipEntry = Uint8Array | [Uint8Array, ZipOptions];
+
+function makeSkillZip(
+  entries: Record<string, TestZipEntry> = {},
+  options: Readonly<{ wrapper?: string; name?: string }> = {},
+): Buffer {
+  const prefix = options.wrapper ? `${options.wrapper}/` : "";
+  return Buffer.from(
+    zipSync(
+      {
+        [`${prefix}SKILL.md`]: strToU8(
+          [
+            "---",
+            `name: ${options.name ?? "review"}`,
+            "description: Bundle review instructions.",
+            "metadata:",
+            "  owner: platform",
+            "  retained: true",
+            "---",
+            "",
+            "# Bundle review",
+            "",
+            "Keep this body byte-for-byte when only the name changes.",
+            "",
+          ].join("\n"),
+        ),
+        ...Object.fromEntries(Object.entries(entries).map(([path, value]) => [`${prefix}${path}`, value])),
+      },
+      { level: 6 },
+    ),
+  );
+}
+
+function bundleSkill(
+  bytes: Buffer,
+  overrides: Partial<RuntimeResourceSkill> = {},
+  attachmentId = BUNDLE_ID_A,
+): RuntimeResourceSkill {
+  return teamSkill({
+    name: "review",
+    body: "INLINE FALLBACK MUST NEVER BE MATERIALIZED",
+    bundle: {
+      attachmentId,
+      format: "zip",
+      sizeBytes: bytes.byteLength,
+    },
+    ...overrides,
+  });
+}
+
+function zipWithEncryptedFlag(bytes: Buffer): Buffer {
+  const patched = Buffer.from(bytes);
+  for (let offset = 0; offset <= patched.byteLength - 10; offset++) {
+    const signature = patched.readUInt32LE(offset);
+    if (signature === 0x04034b50) {
+      patched.writeUInt16LE(patched.readUInt16LE(offset + 6) | 0x1, offset + 6);
+    } else if (signature === 0x02014b50) {
+      patched.writeUInt16LE(patched.readUInt16LE(offset + 8) | 0x1, offset + 8);
+    }
+  }
+  return patched;
 }
 
 function writeCoreBundle(parent: string, version = "1.0.0", label = version): string {
@@ -259,6 +326,293 @@ describe("managed Skill reconciler", () => {
       bundledSkillsRoot,
     });
     expect(retry.teamSkills[0]?.name).toBe("review-first-tree");
+  });
+
+  it("installs complete root and wrapped Team ZIPs with nested, executable, and binary files", async () => {
+    const binary = Uint8Array.from([0, 255, 1, 128, 64]);
+    const rootZip = makeSkillZip({
+      "scripts/run.sh": [strToU8("#!/bin/sh\necho bundle\n"), { os: 3, attrs: 0o100777 << 16 }],
+      "references/guide.md": strToU8("# Guide\n"),
+      "references/nested/deep.md": strToU8("deep\n"),
+      "assets/pixel.bin": binary,
+    });
+    const resolver = async (): Promise<Buffer> => rootZip;
+    const rootResult = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(rootZip)]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+
+    expect(rootResult.ok, JSON.stringify(rootResult.failures)).toBe(true);
+    const installed = target(workspace, "codex", "review");
+    expect(readFileSync(join(installed, "scripts", "run.sh"), "utf-8")).toContain("echo bundle");
+    expect(lstatSync(join(installed, "scripts", "run.sh")).mode & 0o777).toBe(0o755);
+    expect(readFileSync(join(installed, "references", "nested", "deep.md"), "utf-8")).toBe("deep\n");
+    expect(readFileSync(join(installed, "assets", "pixel.bin"))).toEqual(Buffer.from(binary));
+    expect(readFileSync(join(installed, "SKILL.md"), "utf-8")).not.toContain("INLINE FALLBACK");
+
+    const wrappedZip = makeSkillZip(
+      {
+        "scripts/wrapped.sh": strToU8("echo wrapped\n"),
+        "assets/wrapped.bin": Uint8Array.from([9, 8, 7]),
+      },
+      { wrapper: "review-skill" },
+    );
+    const wrappedResult = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(wrappedZip, {}, BUNDLE_ID_B)]),
+      bundledSkillsRoot,
+      bundleResolver: async () => wrappedZip,
+    });
+    expect(wrappedResult.ok, JSON.stringify(wrappedResult.failures)).toBe(true);
+    expect(readFileSync(join(installed, "scripts", "wrapped.sh"), "utf-8")).toBe("echo wrapped\n");
+    expect(existsSync(join(installed, "review-skill"))).toBe(false);
+  });
+
+  it("rewrites only the manifest name for an allocated collision target", async () => {
+    const userTarget = target(workspace, "codex", "review");
+    mkdirSync(userTarget, { recursive: true });
+    writeFileSync(join(userTarget, "SKILL.md"), "user-owned review\n");
+    const bundle = makeSkillZip({
+      "scripts/run.sh": strToU8("echo retained\n"),
+      "assets/data.bin": Uint8Array.from([3, 1, 4]),
+    });
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+
+    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+    expect(result.teamSkills[0]?.name).toBe("review-first-tree");
+    const markdown = readFileSync(`${target(workspace, "codex", "review-first-tree")}/SKILL.md`, "utf-8");
+    expect(markdown).toContain("name: review-first-tree");
+    expect(markdown).toContain("owner: platform");
+    expect(markdown).toContain("retained: true");
+    expect(markdown).toContain("Keep this body byte-for-byte when only the name changes.");
+    expect(readFileSync(`${target(workspace, "codex", "review-first-tree")}/assets/data.bin`)).toEqual(
+      Buffer.from([3, 1, 4]),
+    );
+    expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("user-owned review\n");
+  });
+
+  it("uses immutable bundle revision identity, repairs drift, and preserves last-known-good on resolve failure", async () => {
+    const firstBundle = makeSkillZip({ "assets/version.txt": strToU8("one\n") });
+    let currentBytes = firstBundle;
+    let resolveError: Error | null = null;
+    let fetches = 0;
+    const resolver = async (): Promise<Buffer> => {
+      fetches++;
+      if (resolveError) throw resolveError;
+      return currentBytes;
+    };
+    const firstSkill = bundleSkill(firstBundle);
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [firstSkill]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    const installed = target(workspace, "codex", "review");
+    expect(fetches).toBe(1);
+
+    const unchanged = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [firstSkill]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(unchanged.skipped).toContain("resource:resource-review");
+    expect(fetches).toBe(1);
+
+    writeFileSync(join(installed, "assets", "version.txt"), "drift\n");
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [firstSkill]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(fetches).toBe(2);
+    expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("one\n");
+
+    const secondBundle = makeSkillZip({ "assets/version.txt": strToU8("two\n") });
+    currentBytes = secondBundle;
+    resolveError = new Error("temporary attachment download failure");
+    const failedUpdate = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(failedUpdate.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: "temporary attachment download failure",
+    });
+    expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("one\n");
+
+    resolveError = null;
+    const updated = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(updated.installed).toContain("resource:resource-review");
+    expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("two\n");
+  });
+
+  it("never invents an inline copy when a first bundle install cannot resolve", async () => {
+    const bundle = makeSkillZip();
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
+      bundledSkillsRoot,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContainEqual(
+      expect.objectContaining({
+        key: "resource:resource-review",
+        reason: expect.stringContaining("bundle resolver is unavailable"),
+      }),
+    );
+    expect(existsSync(target(workspace, "codex", "review"))).toBe(false);
+  });
+
+  it.each([
+    [
+      "traversal",
+      () =>
+        makeSkillZip({
+          "../escape.txt": strToU8("escape"),
+        }),
+      "invalid",
+    ],
+    [
+      "absolute path",
+      () =>
+        makeSkillZip({
+          "/absolute.txt": strToU8("escape"),
+        }),
+      "absolute",
+    ],
+    [
+      "backslash path",
+      () =>
+        makeSkillZip({
+          "scripts\\escape.sh": strToU8("escape"),
+        }),
+      "invalid",
+    ],
+    [
+      "case-folded duplicate",
+      () =>
+        makeSkillZip({
+          "assets/Icon.bin": Uint8Array.from([1]),
+          "assets/icon.bin": Uint8Array.from([2]),
+        }),
+      "duplicate case-folded",
+    ],
+    [
+      "reserved ownership marker",
+      () =>
+        makeSkillZip({
+          ".first-tree-managed.json": strToU8("{}"),
+        }),
+      "reserved",
+    ],
+    [
+      "ambiguous second manifest",
+      () =>
+        makeSkillZip({
+          "nested/SKILL.md": strToU8("---\nname: nested\ndescription: nested\n---\n"),
+        }),
+      "exactly one SKILL.md",
+    ],
+    [
+      "symlink",
+      () =>
+        makeSkillZip({
+          "scripts/link": [strToU8("../SKILL.md"), { os: 3, attrs: 0o120777 << 16 }],
+        }),
+      "symlinks",
+    ],
+    [
+      "special file",
+      () =>
+        makeSkillZip({
+          "scripts/fifo": [new Uint8Array(), { os: 3, attrs: 0o010644 << 16 }],
+        }),
+      "special files",
+    ],
+    ["encrypted entry", () => zipWithEncryptedFlag(makeSkillZip()), "encrypted"],
+    [
+      "excessive depth",
+      () =>
+        makeSkillZip({
+          [`${Array.from({ length: 18 }, (_, index) => `d${index}`).join("/")}/deep.txt`]: strToU8("deep"),
+        }),
+      "directory depth",
+    ],
+    [
+      "excessive file count",
+      () =>
+        makeSkillZip(
+          Object.fromEntries(
+            Array.from({ length: 256 }, (_, index) => [`assets/${index}.txt`, strToU8(String(index))]),
+          ),
+        ),
+      "file count",
+    ],
+    [
+      "oversized expansion",
+      () =>
+        makeSkillZip({
+          "assets/large.bin": new Uint8Array(25 * 1024 * 1024 + 1),
+        }),
+      "max size",
+    ],
+  ])("rejects a %s ZIP without escaping or corrupting the prior target", async (_label, buildZip, reason) => {
+    const prior = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    expect(prior.ok).toBe(true);
+    const priorMarkdown = readFileSync(`${target(workspace, "codex", "review")}/SKILL.md`, "utf-8");
+    const malicious = buildZip();
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(malicious, {}, BUNDLE_ID_B)]),
+      bundledSkillsRoot,
+      bundleResolver: async () => malicious,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContainEqual(
+      expect.objectContaining({
+        key: "resource:resource-review",
+        reason: expect.stringContaining(reason),
+      }),
+    );
+    expect(readFileSync(`${target(workspace, "codex", "review")}/SKILL.md`, "utf-8")).toBe(priorMarkdown);
+    expect(existsSync(join(workspace, "escape.txt"))).toBe(false);
+    expect(existsSync(join(workspace, "absolute.txt"))).toBe(false);
   });
 
   it("refuses unowned Core targets and case-insensitive Core collisions", async () => {

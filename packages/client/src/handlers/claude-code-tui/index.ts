@@ -19,6 +19,7 @@ import {
 } from "../../runtime/handler.js";
 import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { createToolCallProcessor, mapMcpServers } from "../claude-code.js";
 import { resolveClaudeCodeExecutable } from "../claude-executable.js";
@@ -680,6 +681,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
               runtimeProvider,
               agentConfigCache?.get(sessionCtx.agent.agentId),
               sessionCtx.log,
+              teamSkillBundleResolverFromSdk(sessionCtx.sdk),
             )
           ).teamSkills;
           const providerEnv = buildEnv(sessionCtx, payload);
@@ -746,6 +748,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
               runtimeProvider,
               agentConfigCache?.get(sessionCtx.agent.agentId),
               sessionCtx.log,
+              teamSkillBundleResolverFromSdk(sessionCtx.sdk),
             )
           ).teamSkills;
           const providerEnv = buildEnv(sessionCtx, payload);

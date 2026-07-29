@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig, AgentRuntimeConfigPayload, RuntimeResourceSkill } from "@first-tree/shared";
+import { strToU8, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatContext } from "../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../runtime/handler.js";
@@ -140,7 +141,7 @@ function makeMessage(id: string, content: string): SessionMessage {
   return { id, chatId: "chat-materialize", senderId: "sender-1", format: "text", content, metadata: {} };
 }
 
-function makeContext(): SessionContext {
+function makeContext(fetchAttachment = vi.fn()): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   return {
     agent: {
@@ -152,7 +153,7 @@ function makeContext(): SessionContext {
       delegateMention: null,
       metadata: {},
     },
-    sdk: { serverUrl: "http://test", sendMessage } as unknown as SessionContext["sdk"],
+    sdk: { serverUrl: "http://test", sendMessage, fetchAttachment } as unknown as SessionContext["sdk"],
     chatId: "chat-materialize",
     log: () => {},
     recordProviderActivity: () => {},
@@ -255,6 +256,65 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
 
     await waitFor(() => vi.mocked(writeAgentBriefing).mock.calls.length >= 1);
     expect(existsSync(skillPath())).toBe(true);
+
+    await handler.shutdown();
+  });
+
+  it("downloads and settles a newly attached complete bundle before the injected provider turn", async () => {
+    const bundle = Buffer.from(
+      zipSync({
+        "SKILL.md": strToU8(
+          [
+            "---",
+            "name: production-scan",
+            "description: Scan this repo from a complete bundle.",
+            "---",
+            "",
+            "# Scan",
+            "",
+            "BUNDLED RUBRIC BODY",
+            "",
+          ].join("\n"),
+        ),
+        "scripts/scan.sh": strToU8("#!/bin/sh\necho bundle-ready\n"),
+        "assets/proof.bin": Uint8Array.from([0, 255, 7]),
+      }),
+    );
+    const fetchAttachment = vi.fn().mockResolvedValue({
+      bytes: bundle,
+      mimeType: "application/zip",
+      filename: "production-scan.zip",
+      size: bundle.byteLength,
+    });
+    const bundledSkill: RuntimeResourceSkill = {
+      ...SCAN_SKILL,
+      body: "INLINE FALLBACK MUST NOT LAND",
+      bundle: {
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "zip",
+        sizeBytes: bundle.byteLength,
+      },
+    };
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({ workspaceRoot, agentConfigCache });
+    const ctx = makeContext(fetchAttachment);
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    cachedConfig = makeConfig(2, [bundledSkill]);
+    handler.inject(makeMessage("m2", "run the newly attached scan"));
+
+    await waitFor(() => state.observedInputs.length === 2);
+    expect(fetchAttachment).toHaveBeenCalledTimes(1);
+    expect(fetchAttachment).toHaveBeenCalledWith({ id: bundledSkill.bundle?.attachmentId });
+    expect(readFileSync(skillPath(), "utf-8")).toContain("BUNDLED RUBRIC BODY");
+    expect(readFileSync(skillPath(), "utf-8")).not.toContain("INLINE FALLBACK");
+    expect(
+      readFileSync(join(workspaceRoot, ".claude", "skills", "production-scan", "scripts", "scan.sh"), "utf-8"),
+    ).toContain("bundle-ready");
 
     await handler.shutdown();
   });

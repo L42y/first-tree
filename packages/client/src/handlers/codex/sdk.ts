@@ -64,6 +64,7 @@ import {
   writeSessionBriefingFingerprint,
 } from "../../runtime/session-briefing-fingerprint.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { chunkAssistantText } from "../assistant-text.js";
 import { formatAuthHint, isCodexAuthError } from "../auth-error-hint.js";
@@ -1444,7 +1445,13 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
       ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
@@ -1581,7 +1588,13 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       // source-repo paths the agent should know about.
       declareSourceRepos(payload, cwd);
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
       ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
@@ -1663,7 +1676,13 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
 
       declareSourceRepos(payload, cwd);
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
       ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);

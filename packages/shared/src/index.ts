@@ -165,7 +165,9 @@ export {
   promptSectionSchema,
   promptSectionScopeSchema,
   type RuntimeResourceSkill,
+  type RuntimeSkillBundle,
   runtimeResourceSkillSchema,
+  runtimeSkillBundleSchema,
   type UpdateAgentRuntimeConfig,
   updateAgentRuntimeConfigSchema,
 } from "./schemas/agent-runtime-config.js";

@@ -1066,8 +1066,68 @@ describe("Resources Phase 1", () => {
         description: "Review changes.",
         body: "# Reviewer\n\nCheck edge cases.",
         metadata: { source: "team" },
+        bundle: {
+          attachmentId: skill.bundleAttachmentId,
+          format: "zip",
+          sizeBytes: expect.any(Number),
+        },
       },
     ]);
+    expect(resolved.payload.resourceSkills[0]?.bundle?.sizeBytes).toBeGreaterThan(0);
+  });
+
+  it("fails closed instead of projecting inline fields when a bundle belongs to another organization", async () => {
+    const app = getApp();
+    const owner = await createOrgUser(app, "admin");
+    const other = await createOrgUser(app, "admin");
+    const agent = await createRuntimeAgent(app, owner);
+    const bundle = buildLegacySkillBundle({
+      name: "foreign-bundle",
+      description: "Must not project.",
+      body: "# Foreign",
+      metadata: {},
+    });
+    const foreignAttachment = await createAttachment(app.db, {
+      organizationId: other.organizationId,
+      mimeType: "application/zip",
+      filename: "foreign-bundle.zip",
+      body: bundle,
+      contentLength: bundle.byteLength,
+      uploadedBy: other.humanAgentUuid,
+    });
+    const skillId = uuidv7();
+    await app.db.insert(resources).values({
+      id: skillId,
+      organizationId: owner.organizationId,
+      type: "skill",
+      scope: "team",
+      ownerAgentId: null,
+      name: "foreign-bundle",
+      repoCanonicalKey: null,
+      defaultEnabled: "recommended",
+      status: "active",
+      payload: {
+        name: "foreign-bundle",
+        description: "Must not project.",
+        body: "# Inline fallback must not appear",
+        metadata: {},
+      },
+      bundleAttachmentId: foreignAttachment.id,
+      createdBy: owner.memberId,
+      updatedBy: owner.memberId,
+    });
+
+    const effective = await app.resourcesService.resolveEffectiveResources(agent.uuid);
+    expect(effective.skills).toContainEqual(
+      expect.objectContaining({
+        resourceId: skillId,
+        mode: "unavailable",
+        unavailableReason: "skill_bundle_unavailable",
+      }),
+    );
+
+    const resolved = await app.resourcesService.resolveRuntimeConfig(await app.configService.get(agent.uuid));
+    expect(resolved.payload.resourceSkills).toEqual([]);
   });
 
   it("validates resource create/update edge paths and bumps recommended updates", async () => {

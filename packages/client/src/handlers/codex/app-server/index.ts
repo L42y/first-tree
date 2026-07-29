@@ -43,6 +43,7 @@ import {
   writeSessionBriefingFingerprint,
 } from "../../../runtime/session-briefing-fingerprint.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../../runtime/workspace.js";
 import { chunkAssistantText } from "../../assistant-text.js";
 import { formatAuthHint, isCodexAuthError } from "../../auth-error-hint.js";
@@ -452,8 +453,15 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     const chatContext = await fetchChatContextOrLog(sessionCtx);
     pendingChatContextPrompt = renderChatContextPrompt(chatContext);
     declareSourceRepos(payload, cwd);
-    reconciledTeamSkills = (await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log))
-      .teamSkills;
+    reconciledTeamSkills = (
+      await reconcileManagedSkillsForConfig(
+        cwd,
+        runtimeProvider,
+        runtimeConfig,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+      )
+    ).teamSkills;
     let env = buildEnv(sessionCtx);
     if (workspaceOnly) {
       const { accessToken } = await sessionCtx.sdk.createAgentOutboxToken(sessionCtx.chatId);
@@ -1715,7 +1723,13 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
       ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);

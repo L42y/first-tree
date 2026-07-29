@@ -49,6 +49,7 @@ import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../ru
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../runtime/provider-retry-policy.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../runtime/workspace.js";
 import { chunkAssistantText } from "./assistant-text.js";
 import { formatAuthHint, isKimiCodeAuthError } from "./auth-error-hint.js";
@@ -671,7 +672,13 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
 
     sourceReposForPrompt = declaredSourceRepos(workspaceCwd, payload);
     reconciledTeamSkills = (
-      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      await reconcileManagedSkillsForConfig(
+        workspaceCwd,
+        runtimeProvider,
+        runtimeConfig,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+      )
     ).teamSkills;
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);
     ensureAgentBootstrap({

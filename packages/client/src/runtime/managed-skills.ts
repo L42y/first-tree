@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { createWriteStream, lstatSync, realpathSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -14,8 +14,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import type { AgentRuntimeConfig, RuntimeProvider, RuntimeResourceSkill } from "@first-tree/shared";
-import { parse as parseYaml } from "yaml";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { AgentRuntimeConfig, RuntimeProvider, RuntimeResourceSkill, RuntimeSkillBundle } from "@first-tree/shared";
+import { parseDocument, parse as parseYaml } from "yaml";
+import yauzl, { type Entry, type ZipFile } from "yauzl";
 import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
 import {
   clearManagedSkillsJournal,
@@ -39,6 +42,10 @@ const MAX_SKILL_FILES = 512;
 const MAX_SKILL_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_DEPTH = 16;
+const MAX_TEAM_ZIP_FILES = 256;
+const MAX_TEAM_ZIP_TOTAL_BYTES = 25 * 1024 * 1024;
+const MAX_TEAM_ZIP_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_TEAM_ZIP_MARKDOWN_BYTES = 256 * 1024;
 const MAX_SKILL_NAME_LENGTH = 63;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 
@@ -120,6 +127,8 @@ export type ManagedSkillsCheckpoint =
   | "state_committed"
   | "backup_cleaned";
 
+export type TeamSkillBundleResolver = (bundle: RuntimeSkillBundle) => Promise<Buffer>;
+
 export type ReconcileManagedSkillsOptions = Readonly<{
   workspace: string;
   provider: RuntimeProvider;
@@ -127,6 +136,8 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   log?: (message: string) => void;
   /** Test/build override. Production resolves the bundled client skills directory. */
   bundledSkillsRoot?: string;
+  /** Resolves immutable Team Skill ZIP bytes through the authenticated SDK. */
+  bundleResolver?: TeamSkillBundleResolver;
   lockTimeoutMs?: number;
   /** Fault-injection seam used by deterministic crash-recovery tests. */
   testCrashAt?: ManagedSkillsCheckpoint;
@@ -145,7 +156,12 @@ type DesiredManagedSkill = Readonly<{
   validationError: string | null;
   source:
     | Readonly<{ kind: "bundled-directory"; path: string }>
-    | Readonly<{ kind: "inline-skill"; skill: RuntimeResourceSkill }>;
+    | Readonly<{ kind: "inline-skill"; skill: RuntimeResourceSkill }>
+    | Readonly<{
+        kind: "attachment-zip";
+        bundle: RuntimeSkillBundle;
+        manifestName: string;
+      }>;
 }>;
 
 type AllocatedManagedSkill = Readonly<{
@@ -201,12 +217,14 @@ export async function reconcileManagedSkillsForConfig(
   provider: RuntimeProvider,
   config: AgentRuntimeConfig | null | undefined,
   log?: (message: string) => void,
+  bundleResolver?: TeamSkillBundleResolver,
 ): Promise<ReconcileManagedSkillsResult> {
   return reconcileManagedSkills({
     workspace,
     provider,
     teamSnapshot: teamSkillSnapshotFromConfig(config),
     log,
+    bundleResolver,
   });
 }
 
@@ -290,14 +308,16 @@ export async function reconcileManagedSkills(
                     allocated.desired.key,
                     allocated.desired.revision,
                   )
-                : existing.installedDigest;
+                : allocated.desired.source.kind === "inline-skill"
+                  ? existing.installedDigest
+                  : actualDigest;
             if (actualDigest === existing.installedDigest && expectedDigest === existing.installedDigest) {
               mutable.skipped.push(existing.key);
               successfulTargets.set(existing.key, existing.target);
               continue;
             }
           }
-          const staged = await stageManagedSkill(options.workspace, allocated);
+          const staged = await stageManagedSkill(options, allocated);
           state = await installStagedSkill(options, state, staged);
           mutable.installed.push(staged.entry.key);
           successfulTargets.set(staged.entry.key, staged.entry.target);
@@ -526,6 +546,7 @@ async function adoptLegacyResourceSkills(
 ): Promise<ManagedState> {
   const additions: ManagedSkillEntry[] = [];
   for (const skill of skills) {
+    if (skill.bundle) continue;
     if (!isSafeLegacyResourceId(skill.resourceId)) continue;
     const target = `${LEGACY_RESOURCE_SKILLS_ROOT}/${skill.resourceId}`;
     if (state.skills.some((entry) => entry.target === target)) continue;
@@ -608,6 +629,8 @@ async function buildDesiredSkills(
   const emittedDuplicateIds = new Set<string>();
   for (const skill of sorted) {
     const key = `resource:${skill.resourceId}` as const;
+    const source = teamSkillSource(skill);
+    const revision = teamSkillRevision(skill);
     if ((resourceIdCounts.get(skill.resourceId) ?? 0) > 1) {
       if (!emittedDuplicateIds.has(skill.resourceId)) {
         emittedDuplicateIds.add(skill.resourceId);
@@ -617,9 +640,9 @@ async function buildDesiredSkills(
           kind: "team",
           requestedSlug: "",
           description: skill.description || "No description",
-          revision: inlineSkillRevision(skill),
+          revision,
           validationError: "duplicate resourceId in authoritative snapshot",
-          source: { kind: "inline-skill", skill },
+          source,
         });
       }
       continue;
@@ -634,9 +657,9 @@ async function buildDesiredSkills(
         kind: "team",
         requestedSlug,
         description: skill.description || "No description",
-        revision: inlineSkillRevision(skill),
+        revision,
         validationError: null,
-        source: { kind: "inline-skill", skill },
+        source,
       });
     } catch (error) {
       options.log?.(`Managed Team Skill rejected (${key}): ${error instanceof Error ? error.message : String(error)}`);
@@ -647,9 +670,9 @@ async function buildDesiredSkills(
         kind: "team",
         requestedSlug: "",
         description: skill.description || "No description",
-        revision: inlineSkillRevision(skill),
+        revision,
         validationError: error instanceof Error ? error.message : String(error),
-        source: { kind: "inline-skill", skill },
+        source,
       });
     }
   }
@@ -794,7 +817,11 @@ async function ensureTargetOwnership(
   });
 }
 
-async function stageManagedSkill(workspace: string, allocated: AllocatedManagedSkill): Promise<StagedManagedSkill> {
+async function stageManagedSkill(
+  options: ReconcileManagedSkillsOptions,
+  allocated: AllocatedManagedSkill,
+): Promise<StagedManagedSkill> {
+  const workspace = options.workspace;
   const targetPath = resolveWorkspacePath(workspace, allocated.target, "target");
   await mkdir(dirname(targetPath), { recursive: true });
   const stagingName = `.${basename(targetPath)}.ft-${randomBytes(8).toString("hex")}.staging`;
@@ -805,11 +832,30 @@ async function stageManagedSkill(workspace: string, allocated: AllocatedManagedS
   try {
     if (allocated.desired.source.kind === "bundled-directory") {
       await copySanitizedSkillTree(allocated.desired.source.path, stagingPath);
-    } else {
+    } else if (allocated.desired.source.kind === "inline-skill") {
       await writeInlineSkillTree(stagingPath, allocated);
+    } else {
+      if (!options.bundleResolver) {
+        throw new Error(`Team Skill bundle resolver is unavailable for ${allocated.desired.key}`);
+      }
+      const bytes = await options.bundleResolver(allocated.desired.source.bundle);
+      if (bytes.byteLength !== allocated.desired.source.bundle.sizeBytes) {
+        throw new Error(
+          `Team Skill bundle ${allocated.desired.source.bundle.attachmentId} size mismatch: ` +
+            `expected ${allocated.desired.source.bundle.sizeBytes}, received ${bytes.byteLength}`,
+        );
+      }
+      await extractSkillZip(bytes, stagingPath);
+      if (allocated.effectiveName !== allocated.desired.requestedSlug) {
+        await rewriteSkillManifestName(stagingPath, allocated.effectiveName);
+      }
     }
     await writeOwnershipMarker(stagingPath, allocated.desired.key, allocated.desired.revision);
-    const metadata = await validateSkillManifest(stagingPath, allocated.effectiveName);
+    const expectedManifestName =
+      allocated.desired.source.kind === "attachment-zip" && allocated.effectiveName === allocated.desired.requestedSlug
+        ? allocated.desired.source.manifestName
+        : allocated.effectiveName;
+    const metadata = await validateSkillManifest(stagingPath, expectedManifestName);
     if (allocated.desired.kind === "core" && metadata.name !== allocated.desired.requestedSlug) {
       throw new Error(
         `bundled Core Skill manifest name "${metadata.name}" does not match "${allocated.desired.requestedSlug}"`,
@@ -1183,7 +1229,13 @@ async function validateSkillManifest(
   stagingPath: string,
   expectedName: string,
 ): Promise<Readonly<{ name: string; description: string }>> {
-  const markdown = await readFile(join(stagingPath, "SKILL.md"), "utf-8");
+  const raw = await readFile(join(stagingPath, "SKILL.md"));
+  let markdown: string;
+  try {
+    markdown = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    throw new Error("SKILL.md must be valid UTF-8");
+  }
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
   if (!match?.[1]) throw new Error("SKILL.md must contain YAML frontmatter");
   let parsed: unknown;
@@ -1200,6 +1252,297 @@ async function validateSkillManifest(
   }
   if (parsed.description.trim().length === 0) throw new Error("SKILL.md description must not be empty");
   return { name: parsed.name, description: parsed.description };
+}
+
+type ZipSkillEntry = Readonly<{
+  sourcePath: string;
+  targetPath: string;
+  kind: "directory" | "file";
+  mode: number;
+  size: number;
+}>;
+
+async function extractSkillZip(bytes: Buffer, destinationRoot: string): Promise<void> {
+  const entries = await inspectSkillZip(bytes);
+  const bySourcePath = new Map(entries.map((entry) => [entry.sourcePath, entry]));
+  const zipFile = await openZipBuffer(bytes);
+  try {
+    await forEachZipEntry(zipFile, async (zipEntry) => {
+      const planned = bySourcePath.get(zipEntry.fileName);
+      if (!planned) throw new Error(`Skill ZIP changed while extracting: ${zipEntry.fileName}`);
+      if (!planned.targetPath) return;
+      const targetPath = join(destinationRoot, ...planned.targetPath.split("/"));
+      if (planned.kind === "directory") {
+        await mkdir(targetPath, { recursive: true, mode: planned.mode });
+        await chmod(targetPath, planned.mode);
+        return;
+      }
+      await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+      await writeZipEntry(zipFile, zipEntry, targetPath, planned.mode, planned.size);
+    });
+  } finally {
+    zipFile.close();
+  }
+}
+
+async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
+  const zipFile = await openZipBuffer(bytes);
+  const rawEntries: Array<
+    Readonly<{
+      sourcePath: string;
+      normalizedPath: string;
+      kind: "directory" | "file";
+      mode: number;
+      size: number;
+    }>
+  > = [];
+  const seenRawPaths = new Set<string>();
+  let fileCount = 0;
+  let totalBytes = 0;
+  try {
+    await forEachZipEntry(zipFile, async (entry) => {
+      const normalizedPath = validateZipEntryPath(entry.fileName);
+      const folded = foldBundlePath(normalizedPath);
+      if (seenRawPaths.has(folded)) {
+        throw new Error(`Skill ZIP contains a duplicate case-folded path: ${normalizedPath}`);
+      }
+      seenRawPaths.add(folded);
+      if ((entry.generalPurposeBitFlag & 0x1) !== 0) {
+        throw new Error(`Skill ZIP contains an encrypted entry: ${normalizedPath}`);
+      }
+      const kind = zipEntryKind(entry, normalizedPath);
+      const size = entry.uncompressedSize;
+      if (!Number.isSafeInteger(size) || size < 0) {
+        throw new Error(`Skill ZIP entry has an invalid size: ${normalizedPath}`);
+      }
+      if (kind === "file") {
+        fileCount++;
+        totalBytes += size;
+        if (fileCount > MAX_TEAM_ZIP_FILES) {
+          throw new Error(`Skill ZIP exceeds max file count ${MAX_TEAM_ZIP_FILES}`);
+        }
+        if (size > MAX_TEAM_ZIP_FILE_BYTES) {
+          throw new Error(`Skill ZIP file exceeds max size ${MAX_TEAM_ZIP_FILE_BYTES}: ${normalizedPath}`);
+        }
+        if (totalBytes > MAX_TEAM_ZIP_TOTAL_BYTES) {
+          throw new Error(`Skill ZIP exceeds max total bytes ${MAX_TEAM_ZIP_TOTAL_BYTES}`);
+        }
+        if (basename(normalizedPath).toLocaleLowerCase("en-US") === "skill.md" && size > MAX_TEAM_ZIP_MARKDOWN_BYTES) {
+          throw new Error(`SKILL.md exceeds max size ${MAX_TEAM_ZIP_MARKDOWN_BYTES}`);
+        }
+      }
+      rawEntries.push({
+        sourcePath: entry.fileName,
+        normalizedPath,
+        kind,
+        mode: safeZipMode(entry, kind),
+        size,
+      });
+    });
+  } finally {
+    zipFile.close();
+  }
+
+  const manifestEntries = rawEntries.filter(
+    (entry) => entry.kind === "file" && basename(entry.normalizedPath).toLocaleLowerCase("en-US") === "skill.md",
+  );
+  if (manifestEntries.length !== 1) {
+    throw new Error("Skill ZIP must contain exactly one SKILL.md");
+  }
+  const manifest = manifestEntries[0];
+  if (!manifest) throw new Error("Skill ZIP must contain SKILL.md");
+  const manifestSegments = manifest.normalizedPath.split("/");
+  if (manifestSegments.length > 2 || manifestSegments.at(-1) !== "SKILL.md") {
+    throw new Error("SKILL.md must be at the ZIP root or inside one top-level directory");
+  }
+  const wrapper = manifestSegments.length === 2 ? manifestSegments[0] : null;
+  if (
+    wrapper &&
+    rawEntries.some((entry) => entry.normalizedPath !== wrapper && !entry.normalizedPath.startsWith(`${wrapper}/`))
+  ) {
+    throw new Error("A wrapped Skill ZIP cannot contain files outside its top-level directory");
+  }
+
+  const planned: ZipSkillEntry[] = [];
+  const outputKinds = new Map<string, "directory" | "file">();
+  for (const entry of rawEntries) {
+    const targetPath = wrapper
+      ? entry.normalizedPath === wrapper
+        ? ""
+        : entry.normalizedPath.slice(wrapper.length + 1)
+      : entry.normalizedPath;
+    if (!targetPath) {
+      planned.push({ ...entry, targetPath });
+      continue;
+    }
+    const segments = targetPath.split("/");
+    if (segments.length - 1 > MAX_SKILL_DEPTH) {
+      throw new Error(`Skill ZIP exceeds max directory depth ${MAX_SKILL_DEPTH}: ${targetPath}`);
+    }
+    for (const segment of segments) {
+      if (!isPortableBundleSegment(segment)) {
+        throw new Error(`Skill ZIP contains an unsafe path segment: ${segment}`);
+      }
+    }
+    if (segments.length === 1 && segments[0]?.toLocaleLowerCase("en-US") === OWNERSHIP_MARKER) {
+      throw new Error(`Skill ZIP may not provide reserved file ${OWNERSHIP_MARKER}`);
+    }
+    const folded = foldBundlePath(targetPath);
+    if (outputKinds.has(folded)) {
+      throw new Error(`Skill ZIP contains a duplicate extracted path: ${targetPath}`);
+    }
+    outputKinds.set(folded, entry.kind);
+    planned.push({ ...entry, targetPath });
+  }
+
+  for (const entry of planned) {
+    if (!entry.targetPath) continue;
+    const segments = entry.targetPath.split("/");
+    for (let index = 1; index < segments.length; index++) {
+      const ancestor = foldBundlePath(segments.slice(0, index).join("/"));
+      if (outputKinds.get(ancestor) === "file") {
+        throw new Error(`Skill ZIP file is used as a directory: ${entry.targetPath}`);
+      }
+    }
+  }
+  return planned;
+}
+
+function validateZipEntryPath(raw: string): string {
+  if (!raw || raw.includes("\0") || raw.includes("\\")) {
+    throw new Error("Skill ZIP contains an invalid path");
+  }
+  if (raw.startsWith("/") || /^[A-Za-z]:/.test(raw)) {
+    throw new Error(`Skill ZIP contains an absolute path: ${raw}`);
+  }
+  const normalized = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+  const segments = normalized.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error(`Skill ZIP contains an unsafe path: ${raw}`);
+  }
+  return normalized;
+}
+
+function foldBundlePath(path: string): string {
+  return path.normalize("NFC").toLocaleLowerCase("en-US");
+}
+
+function zipEntryKind(entry: Entry, normalizedPath: string): "directory" | "file" {
+  const unixMode = entry.versionMadeBy >>> 8 === 3 ? entry.externalFileAttributes >>> 16 : 0;
+  const unixType = unixMode & 0o170000;
+  if (unixType === 0o120000) throw new Error(`Skill ZIP cannot contain symlinks: ${normalizedPath}`);
+  if (unixType !== 0 && unixType !== 0o040000 && unixType !== 0o100000) {
+    throw new Error(`Skill ZIP cannot contain special files: ${normalizedPath}`);
+  }
+  const directory = entry.fileName.endsWith("/");
+  if (unixType === 0o040000 && !directory) {
+    throw new Error(`Skill ZIP directory entry must end with '/': ${normalizedPath}`);
+  }
+  if (unixType === 0o100000 && directory) {
+    throw new Error(`Skill ZIP regular file entry cannot end with '/': ${normalizedPath}`);
+  }
+  return directory || unixType === 0o040000 ? "directory" : "file";
+}
+
+function safeZipMode(entry: Entry, kind: "directory" | "file"): number {
+  if (entry.versionMadeBy >>> 8 !== 3) return kind === "directory" ? 0o700 : 0o600;
+  const mode = (entry.externalFileAttributes >>> 16) & 0o777;
+  // Keep safe read/execute intent while ensuring the owning Client can finish
+  // staging and never accepting group/other write bits from an uploaded ZIP.
+  return kind === "directory" ? 0o700 | (mode & 0o055) : 0o600 | (mode & 0o155);
+}
+
+function openZipBuffer(bytes: Buffer): Promise<ZipFile> {
+  return new Promise((resolvePromise, reject) => {
+    yauzl.fromBuffer(
+      bytes,
+      { lazyEntries: true, strictFileNames: true, validateEntrySizes: true },
+      (error, zipFile) => {
+        if (error || !zipFile) reject(error ?? new Error("Unable to open Skill ZIP"));
+        else resolvePromise(zipFile);
+      },
+    );
+  });
+}
+
+function forEachZipEntry(zipFile: ZipFile, visit: (entry: Entry) => Promise<void>): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    zipFile.once("error", fail);
+    zipFile.once("end", () => {
+      if (settled) return;
+      settled = true;
+      resolvePromise();
+    });
+    zipFile.on("entry", (entry) => {
+      void visit(entry).then(
+        () => zipFile.readEntry(),
+        (error) => {
+          zipFile.close();
+          fail(error);
+        },
+      );
+    });
+    zipFile.readEntry();
+  });
+}
+
+async function writeZipEntry(
+  zipFile: ZipFile,
+  entry: Entry,
+  targetPath: string,
+  mode: number,
+  expectedSize: number,
+): Promise<void> {
+  const stream = await new Promise<NodeJS.ReadableStream>((resolvePromise, reject) => {
+    zipFile.openReadStream(entry, (error, readable) => {
+      if (error || !readable) reject(error ?? new Error(`Unable to read ${entry.fileName}`));
+      else resolvePromise(readable);
+    });
+  });
+  let measured = 0;
+  const meter = new Transform({
+    transform(chunk: Buffer | Uint8Array, _encoding, callback) {
+      const size = Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.from(chunk).byteLength;
+      measured += size;
+      if (measured > expectedSize || measured > MAX_TEAM_ZIP_FILE_BYTES) {
+        callback(new Error(`Skill ZIP entry size is invalid: ${entry.fileName}`));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  await pipeline(stream, meter, createWriteStream(targetPath, { flags: "wx", mode }));
+  if (measured !== expectedSize) {
+    throw new Error(`Skill ZIP entry size is invalid: ${entry.fileName}`);
+  }
+  await chmod(targetPath, mode);
+}
+
+async function rewriteSkillManifestName(stagingPath: string, effectiveName: string): Promise<void> {
+  const path = join(stagingPath, "SKILL.md");
+  const raw = await readFile(path);
+  let markdown: string;
+  try {
+    markdown = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    throw new Error("SKILL.md must be valid UTF-8");
+  }
+  const match = /^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/.exec(markdown);
+  if (!match?.[2]) throw new Error("SKILL.md must contain YAML frontmatter");
+  const document = parseDocument(match[2]);
+  if (document.errors.length > 0) {
+    throw new Error(`SKILL.md frontmatter is invalid: ${document.errors[0]?.message ?? "unknown error"}`);
+  }
+  document.set("name", effectiveName);
+  const frontmatter = document.toString().trimEnd();
+  const rewritten = `${match[1]}${frontmatter}${match[3]}${markdown.slice(match[0].length)}`;
+  await writeFile(path, rewritten, { encoding: "utf-8", mode: 0o600 });
 }
 
 async function copySanitizedSkillTree(sourceRoot: string, destinationRoot: string): Promise<void> {
@@ -1442,6 +1785,22 @@ function suffixSkillName(base: string, suffix: string): string {
   const result = `${trimmed}${suffix}`;
   if (!isSafeSkillName(result)) throw new Error(`cannot allocate safe suffixed Skill name for ${base}`);
   return result;
+}
+
+function teamSkillSource(skill: RuntimeResourceSkill): DesiredManagedSkill["source"] {
+  return skill.bundle
+    ? {
+        kind: "attachment-zip",
+        bundle: skill.bundle,
+        manifestName: skill.name,
+      }
+    : { kind: "inline-skill", skill };
+}
+
+function teamSkillRevision(skill: RuntimeResourceSkill): string {
+  return skill.bundle
+    ? `attachment:${skill.bundle.attachmentId}:${skill.bundle.sizeBytes}`
+    : inlineSkillRevision(skill);
 }
 
 function inlineSkillRevision(skill: RuntimeResourceSkill): string {

@@ -747,13 +747,21 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         id: attachments.id,
         organizationId: attachments.organizationId,
         lifecycleState: attachments.lifecycleState,
+        sizeBytes: attachments.sizeBytes,
       })
       .from(attachments)
       .where(inArray(attachments.id, bundleIds));
-    const ready = new Set(
+    const ready = new Map(
       readyRows
-        .filter((row) => row.organizationId === organizationId && row.lifecycleState === "ready")
-        .map((row) => row.id),
+        .filter((row) => row.organizationId === organizationId && row.lifecycleState === "ready" && row.sizeBytes > 0)
+        .map((row) => [
+          row.id,
+          {
+            attachmentId: row.id,
+            format: "zip" as const,
+            sizeBytes: row.sizeBytes,
+          },
+        ]),
     );
     for (const row of skillRows) {
       if (row.mode !== "enabled" || !row.resourceId) continue;
@@ -761,7 +769,12 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       // A null bundle is a legacy inline Skill during rolling backfill and
       // remains valid. Once a Resource points at a bundle, that reference is
       // authoritative and must fail closed if its object is unavailable.
-      if (!bundleId || ready.has(bundleId)) continue;
+      if (!bundleId) continue;
+      const bundle = ready.get(bundleId);
+      if (bundle) {
+        row.skillBundle = bundle;
+        continue;
+      }
       row.mode = "unavailable";
       row.unavailableReason = "skill_bundle_unavailable";
       unavailable.push({
@@ -834,6 +847,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           description: payload.description,
           body: payload.body,
           metadata: payload.metadata,
+          ...(row.skillBundle ? { bundle: row.skillBundle } : {}),
         };
       });
   }

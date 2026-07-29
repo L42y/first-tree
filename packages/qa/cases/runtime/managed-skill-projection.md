@@ -26,9 +26,11 @@ degradation.
   plan, never an operator workspace.
 - Make at least one selected provider `one-turn-ready`. Cross-provider claims
   require each named provider to be independently ready.
-- Use disposable Team Skills with non-sensitive bodies and a disposable
-  user-authored Skill conflict. Do not inspect provider credentials or include
-  private Skill content in evidence.
+- Build and upload a disposable complete Team Skill ZIP with root `SKILL.md`,
+  an executable `scripts/` helper, a nested `references/` file, and a small
+  binary `assets/` attachment. Use only non-sensitive fixture content and a
+  disposable user-authored Skill conflict. Do not inspect provider credentials
+  or include private Skill content in evidence.
 - Preserve the tested product checkout; all workspace and Cloud Resource
   changes must be run-local fixtures.
 
@@ -38,13 +40,16 @@ degradation.
   under the native root: Claude `.claude/skills`, Codex `.agents/skills`,
   Cursor `.cursor/skills`, or Kimi `.kimi-code/skills`. A real turn must be
   able to discover and invoke a Core Skill without a cross-provider symlink.
-- Bind a disposable Team Skill in Cloud, start or inject the next turn, and
-  confirm the provider discovers its normalized effective name. The generated
-  briefing should list the Team Skill description without exposing a
-  filesystem path.
-- Change the Team Skill body and confirm the next reconciled turn observes the
-  new content. Remove the binding and confirm a later authoritative reconcile
-  revokes it before the provider turn begins.
+- Bind the uploaded complete Team Skill in Cloud, start or inject the next
+  turn, and confirm every ZIP entry lands under the provider-native root before
+  that turn. Ask the real Agent to read the binary attachment, consult the
+  nested reference, and execute the helper script through the discovered Skill
+  rather than by an absolute path. The generated briefing should list the Team
+  Skill description without exposing a filesystem path.
+- Replace the Team Skill attachment with a second complete ZIP and confirm the
+  next reconciled turn observes its new attachment/reference/script outputs.
+  Remove the binding and confirm a later authoritative reconcile revokes it
+  before the provider turn begins.
 - Plant a user-owned Skill at the requested Team name. The managed Team Skill
   must receive a deterministic First Tree suffix while the original directory
   remains byte-for-byte unchanged. Plant a conflicting Core name with
@@ -54,6 +59,10 @@ degradation.
   last-known-good Team directory must remain on disk, the Client must emit a
   bounded warning, and no empty fallback may revoke it. Once an authoritative
   newer snapshot returns, convergence resumes.
+- Exercise a transient attachment-download failure while replacing the bundle.
+  The prior owned Team directory must remain complete and usable, and the
+  Client must not reconstruct an inline-only copy. Once download recovers, the
+  full replacement ZIP must converge before the next affected provider turn.
 - If the environment can move one disposable agent workspace between provider
   runtimes, confirm the new provider projection is usable before recorded old
   targets disappear. Claude TUI and Claude SDK should share the Claude root
@@ -65,9 +74,10 @@ degradation.
 ## Expected Result
 
 `PASS` requires real provider evidence that every selected runtime discovers
-the reconciled Skill in its native root, Cloud update and revoke behavior
-settles before the relevant turn, unavailable config preserves
-last-known-good content, and user-owned conflicts are not overwritten.
+the reconciled Skill and uses its attachment, nested reference, and executable
+script in its native root; Cloud attachment replacement and revoke behavior
+settles before the relevant turn; unavailable config/download preserves
+last-known-good content; and user-owned conflicts are not overwritten.
 
 `FAIL` includes a provider missing a settled Skill, a Team Skill appearing in
 the wrong provider root, a stale/empty fallback revoking live content, user
@@ -83,7 +93,9 @@ discovery from prompt-only behavior.
 
 Keep sanitized Cloud Resource version/readback, provider start/resume logs,
 workspace-relative directory listings, ownership-marker keys and revisions,
-briefing excerpts, effective Skill names, and a short real-turn transcript
-showing discovery. Record warnings and timing around configuration failure and
-recovery. Do not retain absolute home paths, Skill bodies beyond disposable
-fixtures, credentials, tokens, or private provider state.
+briefing excerpts, effective Skill names, attachment ids/sizes (not bytes), and
+a short real-turn transcript showing the Agent reading the fixture attachment,
+consulting the nested reference, and running the helper script. Record warnings
+and timing around configuration/download failure and recovery. Do not retain
+absolute home paths, Skill bodies beyond disposable fixtures, credentials,
+tokens, or private provider state.
