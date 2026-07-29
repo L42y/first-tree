@@ -1,6 +1,6 @@
 ---
 name: sync-meeting-records-to-tree
-description: Turn exact meeting records that the user supplies into confirmed, durable Context Tree updates. Use when a user asks to sync meeting minutes, transcripts, AI notes, decision records, or related meeting artifacts into the team's Context Tree: read the exact sources, reconcile chronology, identify participants, map them to First Tree members, extract decisions, progress, plans, actions, blockers, and risks, confirm relevant points with those members, keep the raw transcript locally, and hand the confirmed source material to first-tree-write. Do not use for a summary-only request, calendar discovery, meeting search, provider authorization, or scheduled capture.
+description: Turn exact meeting records that the user supplies into durable Context Tree updates. Use when a user asks to sync meeting minutes, transcripts, AI notes, decision records, or related meeting artifacts into the team's Context Tree: read the exact sources, reconcile chronology, identify durable decisions and constraints, map relevant participants to First Tree members, confirm only unsettled claims, keep the raw transcript locally, and hand the meeting source material to first-tree-write. Do not use for a summary-only request, calendar discovery, meeting search, provider authorization, or scheduled capture.
 ---
 
 # Sync Meeting Records to the Context Tree
@@ -28,20 +28,19 @@ writer.
 - If an artifact is unreadable or incomplete, identify the gap. When the gap
   could contain a correction or later decision, do not call the affected point
   settled.
-- Keep any supplied raw transcript as a local task artifact and report where
-  it is retained. Never commit the raw transcript to the Context Tree or a
-  source repository.
+- Keep any supplied raw transcript as a local task artifact. Reuse a local file
+  produced by the reader instead of creating another copy when possible. Never
+  commit raw meeting content to the Context Tree or a source repository.
 
-## Reconcile the meeting record
+## Identify durable Tree candidates
 
-Read the available artifacts in order and extract:
+Read the available artifacts in order and identify claims that may change
+durable team context:
 
-- `decision` — a choice, agreement, or explicit non-choice;
-- `progress` — a meaningful result or state reached;
-- `plan` — intended future work or direction;
-- `action` — a concrete follow-up, with owner or timing when stated;
-- `blocker` — an impediment that needs resolution;
-- `risk` — a material uncertainty or downside.
+- a decision or explicit non-choice and its surviving rationale;
+- a constraint future work must respect;
+- a durable ownership or responsibility change;
+- a cross-domain relationship.
 
 For every candidate:
 
@@ -49,12 +48,13 @@ For every candidate:
 2. Scan all later material for correction, withdrawal, replacement,
    disagreement, completion, or cancellation.
 3. Keep only the surviving current statement.
-4. Preserve relevant rationale, qualifiers, and consequences.
-5. Attribute member-specific progress, plans, actions, blockers, and risks only
-   when the source supports that attribution.
-6. Keep meeting-level decisions and shared constraints separate from
-   member-specific updates.
-7. Distinguish supported conclusions from uncertain interpretations.
+4. Preserve the surviving rationale, qualifiers, and consequences.
+5. Distinguish supported conclusions from uncertain interpretations.
+
+Progress, plans, actions, blockers, risks, and other member-specific updates
+are signals, not required output categories. Consider them only when they
+establish or change a durable candidate above. Do not create a complete meeting
+summary before applying the Tree write bar.
 
 Evidence strength matters:
 
@@ -67,22 +67,35 @@ Evidence strength matters:
 - When provenance or wording is ambiguous, state the uncertainty instead of
   promoting it to a fact.
 
-## Match and confirm members
+Before mapping members or sending any confirmation, apply the Context Tree
+Double Test as a preliminary filter. Keep a claim only when it both establishes
+or changes context future agents must respect and would remain durable if the
+meeting's implementation work were rewritten. `first-tree-write` will reapply
+the normal write gate after any confirmation reply.
 
-- Identify participants only from the supplied meeting record. Match them to
-  First Tree members using the member context available in the current
-  environment. Do not guess when names or identities are ambiguous; leave the
-  mapping unresolved and ask the user or relevant member.
+## Match members and confirm unsettled claims
+
+- Identify participants only from the supplied meeting record. When routing a
+  confirmation or evaluating responsibility context, match them to First Tree
+  members using member context available in the current environment. Do not
+  guess when names or identities are ambiguous.
 - Treat member mapping as routing information, not permission to change Context
   Tree ownership.
-- Send each matched member a concise confirmation request containing only the
-  points attributed to them or requiring their decision. Use the runtime's
-  tracked question mechanism when the Tree write depends on the answer.
-- Apply corrections from confirmations before writing. Keep disputed,
-  unanswered, or ambiguously attributed points out of normal Tree content;
-  report them as unresolved instead.
-- If the current environment cannot contact the relevant members, return the
-  prepared confirmation prompts and stop before the Tree write.
+- Request confirmation only for a claim that is AI-only, ambiguous, disputed,
+  weakly attributed, changes ownership or durable responsibility, or is
+  otherwise not settled by the source. Do not repeat confirmation for a clear
+  human-confirmed minute or explicit decision record, except that an ownership
+  or durable responsibility change still requires confirmation from the
+  affected human.
+- Send the relevant member a concise claim-level question. Use the runtime's
+  tracked question mechanism when that claim's Tree write depends on the
+  answer, then incorporate any correction into the source bundle.
+- An unanswered, disputed, or unresolved claim blocks only itself. Keep it out
+  of normal Tree content and continue with independently settled durable
+  candidates.
+- If the environment cannot contact a needed member, report the unresolved
+  claim and prepared confirmation prompt. Stop before the Tree write only when
+  no independently settled durable candidate remains.
 
 ## Sync durable context
 
@@ -105,11 +118,10 @@ Evidence strength matters:
 
 Report:
 
-- the meeting artifacts processed and the local transcript location;
-- participant-to-member matches and unresolved identities;
-- confirmed, corrected, disputed, and unanswered points;
 - the Context Tree nodes changed and the Tree PR or MR, or why no Tree write
-  was warranted.
+  was warranted;
+- any durable candidate still blocked on identity, attribution, conflict, or
+  confirmation.
 
 Never maintain discovery watermarks, processed ledgers, provider profiles,
 organizer gates, schedules, or a parallel approval state.
