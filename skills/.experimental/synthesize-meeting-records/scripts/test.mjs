@@ -370,6 +370,13 @@ for (const [unsafePacket, pattern] of [
     }),
     /forbidden relative path/u,
   ],
+  [packet(completeBundle, { reason: "Stored at private/source-token" }), /forbidden relative path/u],
+  [
+    packet(completeBundle, {
+      items: [item({ context: "The confidential material is under records/confidential." })],
+    }),
+    /forbidden relative path/u,
+  ],
   [
     packet(completeBundle, {
       items: [item({ context: "The evidence is recorded in minutes.md." })],

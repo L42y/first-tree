@@ -266,6 +266,13 @@ function scanPrivateOutput(value, path = "packet") {
   for (const [pattern, label] of checks) {
     if (pattern.test(value)) fail(`${path} contains a forbidden ${label}.`);
   }
+  const slashScanValue = value
+    .replace(/\b[A-Z]\/[A-Z]\b/gu, "comparison")
+    .replace(/\band\/or\b/giu, "alternative")
+    .replace(/\b\d{4}\/\d{2}\/\d{2}\b/gu, "date");
+  if (/\b[\w.-]+[\\/][\w.-]+\b/u.test(slashScanValue)) {
+    fail(`${path} contains a forbidden relative path.`);
+  }
 }
 
 function validateItem(value, index, artifactRoles) {

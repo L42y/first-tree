@@ -1,25 +1,70 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { classifyShellCommandIo } from "@first-tree/shared";
+
 import { runCommand } from "../../core/commands.js";
-import { findStringValue, isRecord } from "../../core/events.js";
+import { isRecord } from "../../core/events.js";
 import type { RunPaths } from "../../core/types.js";
-import { rawArtifactNames, SKILL_NAME } from "./fixture.js";
+import { SKILL_NAME } from "./fixture.js";
 import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEvaluation } from "./types.js";
 
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
+const CONTENT_READ_COMMANDS = new Set(["cat", "grep", "head", "nl", "rg", "sed", "tail"]);
+const SOURCE_ROOT = "source-artifacts";
+const BUNDLE_PATH = `${SOURCE_ROOT}/bundle.json`;
 
 function eventType(event: Record<string, unknown>): string | null {
   return typeof event.type === "string" ? event.type : null;
 }
 
+function nativeFileReadPaths(event: unknown): readonly string[] {
+  if (!isRecord(event) || eventType(event) !== "codex_event" || !isRecord(event.event)) return [];
+  const item = event.event.item;
+  if (!isRecord(item) || (item.type !== "file_read" && item.type !== "read_file")) return [];
+  const path = typeof item.path === "string" ? item.path : typeof item.file_path === "string" ? item.file_path : null;
+  return path === null ? [] : [path];
+}
+
+function normalizedPath(value: string): string {
+  return value.replace(/\\/gu, "/").replace(/^(?:\.\/)+/u, "");
+}
+
+function pathMatches(value: string, expected: string): boolean {
+  const normalized = normalizedPath(value);
+  return normalized === expected || normalized.endsWith(`/${expected}`);
+}
+
+function pathWithin(value: string, expectedRoot: string): boolean {
+  const normalized = normalizedPath(value);
+  return (
+    normalized === expectedRoot || normalized.startsWith(`${expectedRoot}/`) || normalized.includes(`/${expectedRoot}/`)
+  );
+}
+
+function commandReadPaths(command: string): readonly string[] {
+  const classification = classifyShellCommandIo(command);
+  if (!classification.supported || !CONTENT_READ_COMMANDS.has(classification.commandName)) return [];
+  return classification.pathArgs.filter((path) => path.pathKindHint !== "directory").map((path) => path.raw);
+}
+
 function containsSkillFileRead(event: unknown): boolean {
-  if (!isRecord(event) || eventType(event) !== "codex_event") return false;
-  const nested = event.event;
-  if (!findStringValue(nested, (value) => value.includes(`${SKILL_NAME}/SKILL.md`))) return false;
-  const serialized = JSON.stringify(nested) ?? "";
-  if (serialized.includes("Available Skills")) return false;
-  return /tool|exec|command|cmd|read|cat|sed/iu.test(serialized);
+  const command = successfulCommand(event);
+  if (
+    command !== null &&
+    commandReadPaths(command).some(
+      (path) =>
+        pathMatches(path, `.agents/skills/${SKILL_NAME}/SKILL.md`) ||
+        pathMatches(path, `.claude/skills/${SKILL_NAME}/SKILL.md`),
+    )
+  ) {
+    return true;
+  }
+  return nativeFileReadPaths(event).some(
+    (path) =>
+      pathMatches(path, `.agents/skills/${SKILL_NAME}/SKILL.md`) ||
+      pathMatches(path, `.claude/skills/${SKILL_NAME}/SKILL.md`),
+  );
 }
 
 function successfulCommand(event: unknown): string | null {
@@ -33,10 +78,14 @@ function successfulCommand(event: unknown): string | null {
 }
 
 export function rawArtifactReadObserved(events: readonly unknown[], evalCase: MeetingRecordsEvalCase): boolean {
-  const paths = rawArtifactNames(evalCase.fixture.mode).map((name) => `source-artifacts/${name}`);
+  if (!evalCase.expected.blockBeforeRawRead) return false;
   return events.some((event) => {
     const command = successfulCommand(event);
-    return command !== null && paths.some((path) => command.includes(path));
+    if (command !== null && normalizedPath(command).includes(SOURCE_ROOT)) {
+      const paths = commandReadPaths(command);
+      if (paths.length === 0 || !paths.every((path) => pathMatches(path, BUNDLE_PATH))) return true;
+    }
+    return nativeFileReadPaths(event).some((path) => pathWithin(path, SOURCE_ROOT) && !pathMatches(path, BUNDLE_PATH));
   });
 }
 
@@ -67,13 +116,21 @@ function collectText(value: unknown): string[] {
   return texts;
 }
 
-function finalResponse(events: readonly unknown[]): string {
+function assistantTexts(events: readonly unknown[]): readonly string[] {
   const texts: string[] = [];
   for (const event of events) {
     if (!isRecord(event) || eventType(event) !== "codex_event") continue;
     texts.push(...collectText(event.event));
   }
-  return texts.at(-1) ?? "";
+  return texts;
+}
+
+export function assistantVisibleText(events: readonly unknown[]): string {
+  return assistantTexts(events).join("\n");
+}
+
+export function skillFileReadObserved(events: readonly unknown[]): boolean {
+  return events.some(containsSkillFileRead);
 }
 
 function sourceBaselineHead(events: readonly unknown[]): string | null {
@@ -163,16 +220,17 @@ export function deriveMetrics(
   const packetPath = join(paths.workspacePath, "meeting-analysis-output.json");
   const packet = parsePacket(packetPath);
   const packetText = existsSync(packetPath) ? readFileSync(packetPath, "utf8") : "";
-  const responseText = finalResponse(events);
+  const visibleAssistantText = assistantVisibleText(events);
+  const finalResponse = assistantTexts(events).at(-1) ?? "";
   return {
-    ...evaluatePacket(packet, evalCase, packetText, responseText),
+    ...evaluatePacket(packet, evalCase, packetText, visibleAssistantText),
     contextTreeCreated: existsSync(join(paths.workspacePath, "context-tree")),
-    finalResponse: responseText,
+    finalResponse,
     packetExists: packet !== null,
     packetText,
     rawArtifactReadObserved: rawArtifactReadObserved(events, evalCase),
     runnerExitCode,
-    skillFileReadObserved: events.some(containsSkillFileRead),
+    skillFileReadObserved: skillFileReadObserved(events),
     sourceRepoChanged: sourceRepoChanged(events, paths),
     validatorResult,
     validatorSucceeded: validatorResult.exitCode === 0,

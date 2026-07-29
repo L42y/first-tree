@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
-import { casePassed, evaluatePacket, rawArtifactReadObserved } from "../grader.js";
+import {
+  assistantVisibleText,
+  casePassed,
+  evaluatePacket,
+  rawArtifactReadObserved,
+  skillFileReadObserved,
+} from "../grader.js";
 import type { EvalMetrics, MeetingRecordsEvalCase } from "../types.js";
 
 function evalCase(mode: MeetingRecordsEvalCase["fixture"]["mode"]): MeetingRecordsEvalCase {
@@ -54,6 +60,28 @@ function commandEvent(command: string) {
         status: "completed",
         type: "command_execution",
       },
+    },
+  };
+}
+
+function nativeReadEvent(path: string) {
+  return {
+    type: "codex_event",
+    event: {
+      item: {
+        type: "file_read",
+        path,
+      },
+    },
+  };
+}
+
+function assistantEvent(text: string) {
+  return {
+    type: "codex_event",
+    event: {
+      type: "assistant_message",
+      text,
     },
   };
 }
@@ -115,14 +143,50 @@ describe("standalone synthesize-meeting-records grader", () => {
     expect(evaluation.requiredTermsObserved).toBe(true);
   });
 
-  it("detects raw artifact reads from the model command trace", () => {
+  it("detects direct, cwd/glob, directory, and structured raw artifact reads", () => {
     const currentCase = evalCase("partial-source");
     expect(rawArtifactReadObserved([commandEvent("sed -n '1,80p' source-artifacts/appendix.md")], currentCase)).toBe(
       true,
     );
+    expect(rawArtifactReadObserved([commandEvent("cd source-artifacts && cat *.md")], currentCase)).toBe(true);
+    expect(rawArtifactReadObserved([commandEvent("rg decision source-artifacts")], currentCase)).toBe(true);
+    expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/appendix.md")], currentCase)).toBe(true);
     expect(rawArtifactReadObserved([commandEvent("sed -n '1,80p' source-artifacts/bundle.json")], currentCase)).toBe(
       false,
     );
+    expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/bundle.json")], currentCase)).toBe(false);
+  });
+
+  it("credits only actual Skill content reads", () => {
+    const skillPath = ".agents/skills/synthesize-meeting-records/SKILL.md";
+    expect(skillFileReadObserved([commandEvent(`test -f ${skillPath}`)])).toBe(false);
+    expect(skillFileReadObserved([commandEvent(`echo ${skillPath}`)])).toBe(false);
+    expect(skillFileReadObserved([commandEvent(`rg --files ${skillPath}`)])).toBe(false);
+    expect(
+      skillFileReadObserved([
+        {
+          type: "codex_event",
+          event: { type: "tool_call", name: "search", arguments: { query: skillPath } },
+        },
+      ]),
+    ).toBe(false);
+    expect(skillFileReadObserved([commandEvent(`sed -n '1,220p' ${skillPath}`)])).toBe(true);
+    expect(skillFileReadObserved([nativeReadEvent(skillPath)])).toBe(true);
+  });
+
+  it("scans intermediate assistant-visible messages but excludes command output", () => {
+    const currentCase = evalCase("six-categories");
+    const events = [
+      assistantEvent("Intermediate VERBATIM-CANARY-SIX-314159 leak."),
+      commandEvent("printf VERBATIM-CANARY-SIX-314159"),
+      assistantEvent("Clean final response."),
+    ];
+    const visibleText = assistantVisibleText(events);
+    expect(visibleText).toContain("VERBATIM-CANARY-SIX-314159");
+    expect(visibleText).not.toContain("printf");
+    expect(
+      evaluatePacket(sixCategoryPacket(), currentCase, JSON.stringify(sixCategoryPacket()), visibleText).rawCanaries,
+    ).toContain("verbatim-canary-six-314159");
   });
 
   it("fails partial-source runs that read raw content before blocking", () => {
