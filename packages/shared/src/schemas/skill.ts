@@ -193,7 +193,10 @@ export function parseStrictTeamSkillMarkdown(markdown: string): StrictTeamSkillM
     }
     // Aliases can produce cyclic values or expand exponentially. Team Skill
     // metadata is persisted as JSONB and must therefore be a finite JSON tree.
-    parsed = document.toJS({ json: true, maxAliasCount: 0 });
+    // Keep native YAML values until after validation. `json: true` would
+    // silently coerce tagged binary values into plain `{ type, data }`
+    // objects, making a non-JSON manifest appear JSON-safe.
+    parsed = document.toJS({ json: false, maxAliasCount: 0 });
     assertFiniteJsonValue(parsed);
   } catch (error) {
     throw new Error(`SKILL.md frontmatter is invalid: ${error instanceof Error ? error.message : String(error)}`);

@@ -261,6 +261,9 @@ describe("Team Skill bundles", () => {
     ["non-exact closing delimiter", "---\nname: review\ndescription: Review\n---junk\nBody"],
     ["trim-dependent manifest name", '---\nname: " review "\ndescription: Review\n---\nBody'],
     ["YAML alias metadata", "---\nname: review\ndescription: Review\nmetadata: &self\n  nested: *self\n---\nBody"],
+    ["NaN metadata", "---\nname: review\ndescription: Review\nmetadata:\n  score: .nan\n---\nBody"],
+    ["infinite metadata", "---\nname: review\ndescription: Review\nmetadata:\n  score: .inf\n---\nBody"],
+    ["binary metadata", "---\nname: review\ndescription: Review\nmetadata:\n  payload: !!binary SGVsbG8=\n---\nBody"],
   ])("rejects a %s before Resource configuration", async (_label, manifest) => {
     const app = getApp();
     const admin = await createTestAdmin(app);

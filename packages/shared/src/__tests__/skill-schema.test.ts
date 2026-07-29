@@ -111,5 +111,10 @@ describe("portable Team Skill contract", () => {
     expect(() =>
       parseStrictTeamSkillMarkdown("---\nname: review\ndescription: Review\nmetadata:\n  score: .inf\n---\nBody"),
     ).toThrow(/finite/i);
+    expect(() =>
+      parseStrictTeamSkillMarkdown(
+        "---\nname: review\ndescription: Review\nmetadata:\n  payload: !!binary SGVsbG8=\n---\nBody",
+      ),
+    ).toThrow(/JSON-safe/i);
   });
 });

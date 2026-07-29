@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -14,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeProvider, RuntimeResourceSkill } from "@first-tree/shared";
 import { strToU8, type ZipOptions, zipSync } from "fflate";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CORE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
 import {
   authoritativeTeamSkillSnapshot,
@@ -416,6 +417,48 @@ describe("managed Skill reconciler", () => {
     expect(lstatSync(join(installed, "locked", "run.sh")).mode & 0o777).toBe(0o600);
     expect(lstatSync(join(installed, "group-exec.sh")).mode & 0o777).toBe(0o710);
     expect(readFileSync(join(installed, "locked", "run.sh"), "utf-8")).toBe("echo safe\n");
+  });
+
+  it("repairs chmod-only unsafe write drift without changing the legacy digest format", async () => {
+    const bundle = makeSkillZip({
+      "scripts/": [new Uint8Array(), { os: 3, attrs: 0o040755 << 16 }],
+      "scripts/run.sh": [strToU8("#!/bin/sh\necho safe\n"), { os: 3, attrs: 0o100755 << 16 }],
+    });
+    const resolver = vi.fn(async () => bundle);
+    const snapshot = authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]);
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    const installed = target(workspace, "codex", "review");
+    const scripts = join(installed, "scripts");
+    const script = join(scripts, "run.sh");
+
+    chmodSync(script, 0o777);
+    const fileRepair = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(fileRepair.installed).toContain("resource:resource-review");
+    expect(lstatSync(script).mode & 0o777).toBe(0o755);
+
+    chmodSync(scripts, 0o777);
+    const directoryRepair = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(directoryRepair.installed).toContain("resource:resource-review");
+    expect(lstatSync(scripts).mode & 0o777).toBe(0o755);
+    expect(resolver).toHaveBeenCalledTimes(3);
   });
 
   it("rewrites only the manifest name for an allocated collision target", async () => {

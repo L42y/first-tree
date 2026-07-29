@@ -866,7 +866,8 @@ async function stageManagedSkill(
   const stagingPath = join(dirname(targetPath), stagingName);
   const staging = portableRelative(workspace, stagingPath);
   await rm(stagingPath, { recursive: true, force: true });
-  await mkdir(stagingPath, { recursive: false });
+  await mkdir(stagingPath, { recursive: false, mode: 0o700 });
+  await chmod(stagingPath, 0o700);
   try {
     if (allocated.desired.source.kind === "bundled-directory") {
       await copySanitizedSkillTree(allocated.desired.source.path, stagingPath);
@@ -1763,6 +1764,9 @@ async function hashDirectoryRecursive(
 ): Promise<void> {
   if (depth > MAX_SKILL_DEPTH) throw new Error(`Skill tree exceeds max directory depth ${MAX_SKILL_DEPTH}`);
   const directory = relativeDir ? join(root, ...relativeDir.split("/")) : root;
+  const directoryStat = await lstat(directory);
+  if (!directoryStat.isDirectory()) throw new Error(`Skill tree directory is not a directory: ${relativeDir || "."}`);
+  assertManagedTreeModeSafe(directoryStat.mode, "directory", relativeDir || ".");
   const entries = await readdir(directory, { withFileTypes: true });
   const entryByName = new Map(entries.map((entry) => [entry.name, entry]));
   const names = entries.map((entry) => entry.name);
@@ -1777,6 +1781,7 @@ async function hashDirectoryRecursive(
     caseInsensitiveNames.add(folded);
     const relativePath = relativeDir ? `${relativeDir}/${name}` : name;
     if (!relativeDir && virtualRootFile?.name === name && !entryByName.has(name)) {
+      assertManagedTreeModeSafe(virtualRootFile.mode, "file", relativePath);
       treeStats.files++;
       treeStats.bytes += virtualRootFile.content.byteLength;
       if (
@@ -1802,6 +1807,7 @@ async function hashDirectoryRecursive(
       continue;
     }
     if (!entryStat.isFile()) throw new Error(`Skill tree special files are not allowed: ${relativePath}`);
+    assertManagedTreeModeSafe(entryStat.mode, "file", relativePath);
     treeStats.files++;
     treeStats.bytes += entryStat.size;
     if (
@@ -1814,6 +1820,12 @@ async function hashDirectoryRecursive(
     hash.update(`file\0${relativePath}\0${entryStat.mode & 0o111}\0${entryStat.size}\0`);
     hash.update(await readFile(path));
     hash.update("\0");
+  }
+}
+
+function assertManagedTreeModeSafe(mode: number, kind: "directory" | "file", relativePath: string): void {
+  if ((mode & 0o022) !== 0) {
+    throw new Error(`Skill tree ${kind} has unsafe group/other write permissions: ${relativePath}`);
   }
 }
 
