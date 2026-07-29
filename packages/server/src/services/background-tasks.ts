@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { createLogger } from "../observability/index.js";
+import { backfillLegacyAttachments, sweepOrphanAttachments } from "./attachment.js";
 import * as chatArchiveService from "./chat-archive.js";
 import * as clientService from "./client.js";
 import { createCronScheduler } from "./cron-scheduler.js";
 import * as inboxService from "./inbox.js";
 import * as notificationService from "./notification.js";
 import * as presenceService from "./presence.js";
+import { backfillSkillResourceBundles } from "./skill-bundle.js";
 
 const log = createLogger("BackgroundTasks");
 
@@ -18,7 +20,17 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
   let inboxTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let archiveSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let attachmentSweepTimer: ReturnType<typeof setInterval> | null = null;
   const cronScheduler = createCronScheduler(app);
+
+  async function maintainAttachments(): Promise<void> {
+    const legacyAttachments = await backfillLegacyAttachments(app.db, app.attachmentBlobStore);
+    const legacySkills = await backfillSkillResourceBundles(app.db, app.attachmentBlobStore);
+    const sweep = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
+    if (legacyAttachments.migrated > 0 || legacySkills.migrated > 0 || sweep.deleted > 0) {
+      log.info({ legacyAttachments, legacySkills, sweep }, "attachment maintenance completed");
+    }
+  }
 
   return {
     start() {
@@ -70,10 +82,24 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
         }, archiveSweepSeconds * 1000);
       }
 
+      attachmentSweepTimer = setInterval(
+        async () => {
+          try {
+            await maintainAttachments();
+          } catch (err) {
+            log.error({ err }, "attachment maintenance failed");
+          }
+        },
+        60 * 60 * 1000,
+      );
+
       cronScheduler.start();
 
       presenceService.heartbeatInstance(app.db, instanceId).catch((err) => {
         log.error({ err }, "failed initial heartbeat");
+      });
+      sweepOrphanAttachments(app.db, app.attachmentBlobStore).catch((err) => {
+        log.error({ err }, "initial orphan attachment sweep failed");
       });
     },
 
@@ -90,6 +116,10 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
       if (archiveSweepTimer) {
         clearInterval(archiveSweepTimer);
         archiveSweepTimer = null;
+      }
+      if (attachmentSweepTimer) {
+        clearInterval(attachmentSweepTimer);
+        attachmentSweepTimer = null;
       }
     },
   };

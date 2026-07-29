@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { NotFoundError } from "../errors.js";
-import { loadAttachmentData, loadAttachmentMeta } from "../services/attachment.js";
+import { loadAttachmentMeta, openAttachmentStream } from "../services/attachment.js";
 
 /**
  * Object-storage primitive — download surface.
@@ -39,8 +39,8 @@ export async function attachmentRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(304).send();
     }
 
-    const data = await loadAttachmentData(app.db, id);
-    if (!data) {
+    const stream = await openAttachmentStream(app.db, app.attachmentBlobStore, id);
+    if (!stream) {
       // Deleted between the metadata read and now — vanishingly rare, but
       // surface it honestly rather than streaming an empty body.
       throw new NotFoundError(`Attachment "${id}" not found`);
@@ -53,7 +53,7 @@ export async function attachmentRoutes(app: FastifyInstance): Promise<void> {
       .header("ETag", etag)
       .header("X-Content-Type-Options", "nosniff")
       .header("Content-Disposition", `inline; filename="${encodeRfc6266Filename(meta.filename)}"`);
-    return reply.send(data);
+    return reply.send(stream);
   });
 }
 

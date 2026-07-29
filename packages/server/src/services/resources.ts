@@ -36,16 +36,20 @@ import type { Database } from "../db/connection.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
 import { agents } from "../db/schema/agents.js";
+import { attachments } from "../db/schema/attachments.js";
 import { members } from "../db/schema/members.js";
 import { resources } from "../db/schema/resources.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
+import { deleteAttachmentIfUnreferenced } from "./attachment.js";
+import { type AttachmentBlobStore, createUnavailableAttachmentBlobStore } from "./attachment-blob-store.js";
 import {
   LANDING_CAMPAIGN_TRIAL_PROMPT,
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_DESCRIPTION,
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
 } from "./landing-campaigns/trial-prompt.js";
 import type { Notifier } from "./notifier.js";
+import { validateSkillBundle } from "./skill-bundle.js";
 
 type ResourceDbRow = typeof resources.$inferSelect;
 type BindingDbRow = typeof agentResourceBindings.$inferSelect;
@@ -96,10 +100,12 @@ export type ResourcesService = {
 export type ResourcesServiceOptions = {
   db: Database;
   notifier: Notifier;
+  attachmentBlobStore?: AttachmentBlobStore;
 };
 
 export function createResourcesService(opts: ResourcesServiceOptions): ResourcesService {
   const { db, notifier } = opts;
+  const attachmentBlobStore = opts.attachmentBlobStore ?? createUnavailableAttachmentBlobStore();
 
   async function notifyAgents(agentIds: Iterable<string>): Promise<void> {
     await Promise.allSettled(Array.from(new Set(agentIds)).map((id) => notifier.notifyConfigChange(`agent:${id}`)));
@@ -181,6 +187,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       ownerAgentId: row.ownerAgentId,
       name: row.name,
       repoCanonicalKey: row.repoCanonicalKey,
+      bundleAttachmentId: row.bundleAttachmentId,
       defaultEnabled: row.defaultEnabled,
       status: row.status,
       payload: row.payload,
@@ -204,6 +211,51 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     return canonicalizeResourceRepoUrl(repoPayload.url);
   }
 
+  async function lockReadySkillBundle(targetDb: Database, organizationId: string, attachmentId: string): Promise<void> {
+    const [row] = await targetDb
+      .select({ id: attachments.id })
+      .from(attachments)
+      .where(
+        and(
+          eq(attachments.id, attachmentId),
+          eq(attachments.organizationId, organizationId),
+          eq(attachments.lifecycleState, "ready"),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!row) {
+      throw new BadRequestError("Skill bundle attachment must be a ready attachment owned by this organization");
+    }
+  }
+
+  async function lockTeamSkillNames(targetDb: Database, organizationId: string): Promise<void> {
+    await targetDb.execute(sql`SELECT pg_advisory_xact_lock(hashtext('team_skill_name'), hashtext(${organizationId}))`);
+  }
+
+  async function assertTeamSkillNameAvailable(
+    targetDb: Database,
+    organizationId: string,
+    name: string,
+    excludeResourceId = "",
+  ): Promise<void> {
+    const [existing] = await targetDb
+      .select({ id: resources.id })
+      .from(resources)
+      .where(
+        and(
+          eq(resources.organizationId, organizationId),
+          eq(resources.scope, "team"),
+          eq(resources.type, "skill"),
+          inArray(resources.status, ["active", "stale"]),
+          ne(resources.id, excludeResourceId),
+          sql`lower(${resources.name}) = lower(${name})`,
+        ),
+      )
+      .limit(1);
+    if (existing) throw new ConflictError(`A Team Skill named "${name}" already exists`);
+  }
+
   function makePreviewTeamResource(args: {
     organizationId: string;
     id: string;
@@ -223,6 +275,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       ownerAgentId: args.ownerAgentId ?? null,
       name: args.name,
       repoCanonicalKey: canonicalKeyFor(args.type, args.payload),
+      bundleAttachmentId: null,
       defaultEnabled: args.defaultEnabled,
       status: "active",
       payload: args.payload,
@@ -590,6 +643,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     const unavailable: EffectiveAgentResources["unavailable"] = [];
     applyPromptBudget(prompts, unavailable);
     applyRepoLocalPathDedup(repos, unavailable);
+    await applySkillBundleAvailability(skills, resourceRows, agent.organizationId, unavailable);
     applyPayloadValidation(skills, mcp, unavailable);
 
     return {
@@ -670,6 +724,51 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       row.mode = "unavailable";
       row.unavailableReason = "invalid_mcp_payload";
       unavailable.push({ type: "mcp", id: row.resourceId ?? row.bindingId ?? row.id, reason: "invalid_mcp_payload" });
+    }
+  }
+
+  async function applySkillBundleAvailability(
+    skillRows: EffectiveResourceRow[],
+    resourceRows: ResourceDbRow[],
+    organizationId: string,
+    unavailable: EffectiveAgentResources["unavailable"],
+  ): Promise<void> {
+    const bundleByResource = new Map(
+      resourceRows.flatMap((resource) =>
+        resource.type === "skill" && resource.bundleAttachmentId
+          ? [[resource.id, resource.bundleAttachmentId] as const]
+          : [],
+      ),
+    );
+    const bundleIds = Array.from(new Set(bundleByResource.values()));
+    if (bundleIds.length === 0) return;
+    const readyRows = await db
+      .select({
+        id: attachments.id,
+        organizationId: attachments.organizationId,
+        lifecycleState: attachments.lifecycleState,
+      })
+      .from(attachments)
+      .where(inArray(attachments.id, bundleIds));
+    const ready = new Set(
+      readyRows
+        .filter((row) => row.organizationId === organizationId && row.lifecycleState === "ready")
+        .map((row) => row.id),
+    );
+    for (const row of skillRows) {
+      if (row.mode !== "enabled" || !row.resourceId) continue;
+      const bundleId = bundleByResource.get(row.resourceId);
+      // A null bundle is a legacy inline Skill during rolling backfill and
+      // remains valid. Once a Resource points at a bundle, that reference is
+      // authoritative and must fail closed if its object is unavailable.
+      if (!bundleId || ready.has(bundleId)) continue;
+      row.mode = "unavailable";
+      row.unavailableReason = "skill_bundle_unavailable";
+      unavailable.push({
+        type: "skill",
+        id: row.resourceId,
+        reason: "skill_bundle_unavailable",
+      });
     }
   }
 
@@ -942,8 +1041,18 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     },
 
     async createTeamResource(organizationId, input, actorId) {
-      const payload = parsePayload(input.type, input.payload);
+      let payload: ResourcePayload;
+      let name: string;
+      if (input.type === "skill") {
+        const validated = await validateSkillBundle(db, attachmentBlobStore, organizationId, input.bundleAttachmentId);
+        payload = validated.payload;
+        name = validated.name;
+      } else {
+        payload = parsePayload(input.type, input.payload);
+        name = input.name;
+      }
       const repoCanonicalKey = canonicalKeyFor(input.type, payload);
+      const bundleAttachmentId = input.type === "skill" ? input.bundleAttachmentId : null;
       const id = uuidv7();
       let impacted: string[] = [];
       try {
@@ -954,14 +1063,20 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
               sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${organizationId}))`,
             );
           }
+          if (input.type === "skill") {
+            await lockTeamSkillNames(targetDb, organizationId);
+            await lockReadySkillBundle(targetDb, organizationId, input.bundleAttachmentId);
+            await assertTeamSkillNameAvailable(targetDb, organizationId, name);
+          }
           await targetDb.insert(resources).values({
             id,
             organizationId,
             type: input.type,
             scope: "team",
             ownerAgentId: null,
-            name: input.name,
+            name,
             repoCanonicalKey,
+            bundleAttachmentId,
             defaultEnabled: input.defaultEnabled,
             status: "active",
             payload,
@@ -993,8 +1108,26 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       if (input.status === "retired") {
         throw new BadRequestError("Use DELETE /api/v1/resources/:resourceId to retire resources");
       }
-      const payload = input.payload === undefined ? current.payload : parsePayload(current.type, input.payload);
+      if (current.type !== "skill" && input.bundleAttachmentId !== undefined) {
+        throw new BadRequestError("Only Skill resources may set bundleAttachmentId");
+      }
+      if (current.type === "skill" && (input.name !== undefined || input.payload !== undefined)) {
+        throw new BadRequestError("Skill name and payload are derived from its bundle and cannot be edited separately");
+      }
+      const validatedSkill =
+        current.type === "skill" && input.bundleAttachmentId !== undefined
+          ? await validateSkillBundle(db, attachmentBlobStore, current.organizationId, input.bundleAttachmentId)
+          : null;
+      const payload =
+        current.type === "skill"
+          ? (validatedSkill?.payload ?? current.payload)
+          : input.payload === undefined
+            ? current.payload
+            : parsePayload(current.type, input.payload);
+      const name = current.type === "skill" ? (validatedSkill?.name ?? current.name) : (input.name ?? current.name);
       const repoCanonicalKey = canonicalKeyFor(current.type, payload);
+      const bundleAttachmentId =
+        current.type === "skill" ? (input.bundleAttachmentId ?? current.bundleAttachmentId) : null;
       const impactedSet = new Set(await impactForResource(current));
       if (input.defaultEnabled === "recommended") {
         for (const agentId of await listRuntimeAgentIds(current.organizationId)) impactedSet.add(agentId);
@@ -1008,14 +1141,22 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
               sql`SELECT pg_advisory_xact_lock(hashtext('team_repository_confirm'), hashtext(${current.organizationId}))`,
             );
           }
+          if (current.type === "skill") {
+            await lockTeamSkillNames(targetDb, current.organizationId);
+            if (input.bundleAttachmentId !== undefined) {
+              await lockReadySkillBundle(targetDb, current.organizationId, input.bundleAttachmentId);
+            }
+            await assertTeamSkillNameAvailable(targetDb, current.organizationId, name, resourceId);
+          }
           await targetDb
             .update(resources)
             .set({
-              ...(input.name ? { name: input.name } : {}),
+              name,
               ...(input.defaultEnabled ? { defaultEnabled: input.defaultEnabled } : {}),
               ...(input.status ? { status: input.status } : {}),
               payload,
               repoCanonicalKey,
+              bundleAttachmentId,
               updatedBy: actorId,
               updatedAt: new Date(),
             })
@@ -1027,6 +1168,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         throw err;
       }
       await notifyAgents(impacted);
+      if (current.type === "skill" && current.bundleAttachmentId && current.bundleAttachmentId !== bundleAttachmentId) {
+        await deleteAttachmentIfUnreferenced(db, attachmentBlobStore, current.bundleAttachmentId).catch(
+          () => undefined,
+        );
+      }
       return rowToResource(await loadResource(resourceId));
     },
 
@@ -1456,12 +1602,13 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       if (!isManager && !isOrgAdmin) throw new NotFoundError(`Agent "${agentId}" not found`);
 
       let needsNotify = false;
+      const releasedBundleAttachmentIds: string[] = [];
       await db.transaction(async (tx) => {
         const targetDb = tx as unknown as Database;
         await targetDb.select({ uuid: agents.uuid }).from(agents).where(eq(agents.uuid, agentId)).for("update");
 
         const legacy = await targetDb
-          .select({ id: resources.id })
+          .select({ id: resources.id, bundleAttachmentId: resources.bundleAttachmentId })
           .from(resources)
           .where(
             and(
@@ -1473,6 +1620,9 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           );
         if (legacy.length === 0) return;
         const legacyIds = legacy.map((row) => row.id);
+        releasedBundleAttachmentIds.push(
+          ...legacy.flatMap((row) => (row.bundleAttachmentId ? [row.bundleAttachmentId] : [])),
+        );
 
         // Delete bindings, then the resource. The binding FKs are ON DELETE
         // CASCADE, so the resource delete alone would clear them — this
@@ -1490,6 +1640,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         needsNotify = true;
       });
       if (needsNotify) await notifyAgents([agentId]);
+      await Promise.allSettled(
+        releasedBundleAttachmentIds.map((attachmentId) =>
+          deleteAttachmentIfUnreferenced(db, attachmentBlobStore, attachmentId),
+        ),
+      );
     },
 
     resolveRuntimeConfig,

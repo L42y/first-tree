@@ -1,8 +1,10 @@
 import { ATTACHMENT_FILENAME_HEADER, ATTACHMENT_MIME_HEADER, MAX_ATTACHMENT_BYTES } from "@first-tree/shared";
+import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
+import { attachments } from "../db/schema/attachments.js";
 import { organizations } from "../db/schema/organizations.js";
-import { createAttachment } from "../services/attachment.js";
+import { attachmentObjectKey, backfillLegacyAttachments, createAttachment } from "../services/attachment.js";
 import { ensureMembership } from "../services/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
@@ -60,6 +62,30 @@ describe("attachments route — upload + capability download", () => {
     expect(download.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
     expect(download.headers.etag).toBe(`"${body.id}"`);
     expect(download.headers["content-disposition"]).toBe('inline; filename="kitten.png"');
+    expect(download.rawPayload.equals(bytes)).toBe(true);
+  });
+
+  it("resumes an interrupted legacy object-store backfill", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `resume-${crypto.randomUUID().slice(0, 6)}` });
+    const id = crypto.randomUUID();
+    const bytes = Buffer.from("legacy");
+    await app.db.insert(attachments).values({
+      id,
+      organizationId: admin.organizationId,
+      objectKey: attachmentObjectKey(admin.organizationId, id),
+      lifecycleState: "uploading",
+      mimeType: "application/octet-stream",
+      filename: "legacy.bin",
+      sizeBytes: bytes.byteLength,
+      data: bytes,
+      uploadedBy: admin.humanAgentUuid,
+    });
+
+    await expect(backfillLegacyAttachments(app.db, app.attachmentBlobStore)).resolves.toMatchObject({ migrated: 1 });
+    const [stored] = await app.db.select().from(attachments).where(eq(attachments.id, id));
+    expect(stored).toMatchObject({ lifecycleState: "ready", data: null });
+    const download = await getAttachment(app, admin, id);
     expect(download.rawPayload.equals(bytes)).toBe(true);
   });
 
@@ -145,32 +171,29 @@ describe("attachments route — upload + capability download", () => {
     expect(blankMime.statusCode).toBe(400);
 
     await expect(
-      createAttachment(app.db, {
+      createAttachment(app.db, app.attachmentBlobStore, {
+        organizationId: admin.organizationId,
         mimeType: "image/png",
         filename: " ",
-        data: Buffer.from("filename"),
+        body: Buffer.from("filename"),
         uploadedBy: admin.humanAgentUuid,
       }),
     ).rejects.toThrow("Attachment filename is required");
   });
 
-  it("surfaces an empty insert-returning result from the attachment store", async () => {
-    const fakeDb = {
-      insert: () => ({
-        values: () => ({
-          returning: async () => [],
-        }),
-      }),
-    };
-
+  it("rejects a mismatched declared byte length", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `length-${crypto.randomUUID().slice(0, 6)}` });
     await expect(
-      createAttachment(fakeDb as never, {
-        mimeType: "image/png",
-        filename: "x.png",
-        data: Buffer.from("bytes"),
-        uploadedBy: "agent_1",
+      createAttachment(app.db, app.attachmentBlobStore, {
+        organizationId: admin.organizationId,
+        mimeType: "application/octet-stream",
+        filename: "length.bin",
+        body: Buffer.from("three"),
+        contentLength: 3,
+        uploadedBy: admin.humanAgentUuid,
       }),
-    ).rejects.toThrow("Attachment insert returned no row");
+    ).rejects.toThrow("Content-Length does not match");
   });
 
   it("rejects oversize at bodyLimit (413) or service cap (400)", async () => {
