@@ -7,7 +7,7 @@ import {
 import { apiFetchRaw, withOrg } from "./client.js";
 
 /**
- * Upload a file's bytes to the org-scoped object store and return its
+ * Upload a file's bytes to the org-scoped attachment store and return its
  * metadata — consumers persist the returned `id`. Targets the currently
  * viewed org via `withOrg`.
  *

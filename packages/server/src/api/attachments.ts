@@ -39,7 +39,7 @@ export async function attachmentRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(304).send();
     }
 
-    const stream = await openAttachmentStream(app.db, app.attachmentBlobStore, id);
+    const stream = await openAttachmentStream(app.db, id);
     if (!stream) {
       // Deleted between the metadata read and now — vanishingly rare, but
       // surface it honestly rather than streaming an empty body.

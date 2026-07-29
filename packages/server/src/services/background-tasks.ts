@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { createLogger } from "../observability/index.js";
-import { backfillLegacyAttachments, sweepOrphanAttachments } from "./attachment.js";
+import { sweepOrphanAttachments } from "./attachment.js";
 import * as chatArchiveService from "./chat-archive.js";
 import * as clientService from "./client.js";
 import { createCronScheduler } from "./cron-scheduler.js";
@@ -24,11 +24,10 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
   const cronScheduler = createCronScheduler(app);
 
   async function maintainAttachments(): Promise<void> {
-    const legacyAttachments = await backfillLegacyAttachments(app.db, app.attachmentBlobStore);
-    const legacySkills = await backfillSkillResourceBundles(app.db, app.attachmentBlobStore);
-    const sweep = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
-    if (legacyAttachments.migrated > 0 || legacySkills.migrated > 0 || sweep.deleted > 0) {
-      log.info({ legacyAttachments, legacySkills, sweep }, "attachment maintenance completed");
+    const legacySkills = await backfillSkillResourceBundles(app.db);
+    const sweep = await sweepOrphanAttachments(app.db);
+    if (legacySkills.migrated > 0 || sweep.deleted > 0) {
+      log.info({ legacySkills, sweep }, "attachment maintenance completed");
     }
   }
 
@@ -98,7 +97,7 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
       presenceService.heartbeatInstance(app.db, instanceId).catch((err) => {
         log.error({ err }, "failed initial heartbeat");
       });
-      sweepOrphanAttachments(app.db, app.attachmentBlobStore).catch((err) => {
+      sweepOrphanAttachments(app.db).catch((err) => {
         log.error({ err }, "initial orphan attachment sweep failed");
       });
     },

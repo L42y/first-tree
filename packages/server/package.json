@@ -28,7 +28,6 @@
   },
   "dependencies": {
     "@autotelic/fastify-opentelemetry": "^0.23.0",
-    "@aws-sdk/client-s3": "^3.1097.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/static": "^9.0.0",

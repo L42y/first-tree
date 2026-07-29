@@ -157,7 +157,7 @@ describe("Team Skill bundles", () => {
       .update(attachments)
       .set({ updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1_000) })
       .where(eq(attachments.id, bundleId));
-    const result = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
+    const result = await sweepOrphanAttachments(app.db);
     expect(result.deleted).toBe(1);
     expect(await app.db.select().from(attachments).where(eq(attachments.id, bundleId))).toHaveLength(0);
   });
@@ -170,7 +170,7 @@ describe("Team Skill bundles", () => {
     const stale = new Date(Date.now() - 25 * 60 * 60 * 1_000);
     await app.db.update(attachments).set({ updatedAt: stale }).where(eq(attachments.id, bundleId));
 
-    const result = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
+    const result = await sweepOrphanAttachments(app.db);
     const [stored] = await app.db
       .select({ updatedAt: attachments.updatedAt })
       .from(attachments)

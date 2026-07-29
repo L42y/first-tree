@@ -95,12 +95,6 @@ import {
   rootLogger,
 } from "./observability/index.js";
 import { broadcastToAdmins } from "./services/admin-broadcast.js";
-import { backfillLegacyAttachments } from "./services/attachment.js";
-import {
-  type AttachmentBlobStore,
-  createS3AttachmentBlobStore,
-  createUnavailableAttachmentBlobStore,
-} from "./services/attachment-blob-store.js";
 import { expiryToSeconds } from "./services/auth.js";
 import { type BackgroundTasks, createBackgroundTasks } from "./services/background-tasks.js";
 import { invalidateChatAudienceLocal, registerChatAudienceDispatcher } from "./services/chat-audience-cache.js";
@@ -165,11 +159,7 @@ function namePlugin<T extends FastifyPluginAsync>(name: string, fn: T): T {
   return fn;
 }
 
-export type BuildAppOptions = {
-  attachmentBlobStore?: AttachmentBlobStore;
-};
-
-export async function buildApp(config: Config, options: BuildAppOptions = {}) {
+export async function buildApp(config: Config) {
   // Validate token-lifetime config eagerly so a typo in
   // `FIRST_TREE_AUTH_*_EXPIRY` fails the boot, not the first
   // /connect-tokens call hours later.
@@ -310,10 +300,6 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
   const db = connectDatabase(config.database.url);
   app.decorate("db", db);
   app.decorate("config", config);
-  const attachmentBlobStore =
-    options.attachmentBlobStore ??
-    (config.objectStorage ? createS3AttachmentBlobStore(config.objectStorage) : createUnavailableAttachmentBlobStore());
-  app.decorate("attachmentBlobStore", attachmentBlobStore);
 
   // Advisory Command-package version broadcast to every Client via the
   // `server:welcome` WS frame. The poller refreshes the advertised value
@@ -359,7 +345,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     encryptionKey: config.secrets.encryptionKey,
   });
   app.decorate("configService", configService);
-  const resourcesService = createResourcesService({ db, notifier, attachmentBlobStore });
+  const resourcesService = createResourcesService({ db, notifier });
   app.decorate("resourcesService", resourcesService);
 
   // WebSocket plugin. `maxPayload` caps a single inbound frame so a hostile
@@ -726,10 +712,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     await backfillResourcesPhase1(db).catch((err) => {
       app.log.warn({ err }, "resources phase1 backfill failed");
     });
-    await backfillLegacyAttachments(db, attachmentBlobStore).catch((err) => {
-      app.log.warn({ err }, "legacy attachment object-store backfill failed");
-    });
-    await backfillSkillResourceBundles(db, attachmentBlobStore).catch((err) => {
+    await backfillSkillResourceBundles(db).catch((err) => {
       app.log.warn({ err }, "legacy Skill bundle backfill failed");
     });
     const gitlabAttentionBackfill = await backfillGitlabAttentionPairs(db);

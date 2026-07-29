@@ -28,7 +28,6 @@ import { createLogger, messageAttrs, withSpan } from "../observability/index.js"
 import { uuidv7 } from "../uuid.js";
 import { upsertSessionState } from "./activity.js";
 import { type AttachmentReader, deleteAttachmentIfUnreferenced, loadAttachmentMetaForReference } from "./attachment.js";
-import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 import { applyAfterFanOut, fireChatMessageKick } from "./chat-projection.js";
 import { validateDocumentContext, validateMessageAttachmentRefs } from "./doc-snapshots.js";
 import { hasRemainingLandingCampaignTrialBudget } from "./landing-campaigns/chat-state.js";
@@ -1096,7 +1095,6 @@ export async function editMessage(
   messageId: string,
   senderId: string,
   data: { format?: string; content?: unknown },
-  blobStore: AttachmentBlobStore,
 ) {
   const { updated, releasedAttachmentIds } = await db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Database;
@@ -1173,7 +1171,7 @@ export async function editMessage(
   await Promise.all(
     releasedAttachmentIds.map(async (id) => {
       try {
-        await deleteAttachmentIfUnreferenced(db, blobStore, id);
+        await deleteAttachmentIfUnreferenced(db, id);
       } catch (error) {
         log.warn({ err: error, attachmentId: id, messageId }, "post-edit attachment cleanup will retry");
       }

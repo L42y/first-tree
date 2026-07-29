@@ -754,21 +754,16 @@ describe("open-question (format=request) + open_request_count", () => {
       metadata: { mentions: [other.uuid] },
     });
 
-    await expect(
-      editMessage(app.db, chat.id, question.id, asker.agent.uuid, { format: "text" }, app.attachmentBlobStore),
-    ).rejects.toThrow(/format to or from 'request'/i);
-    await expect(
-      editMessage(app.db, chat.id, plain.id, asker.agent.uuid, { format: "request" }, app.attachmentBlobStore),
-    ).rejects.toThrow(/format to or from 'request'/i);
-    // A content-only edit of the request is still allowed.
-    const edited = await editMessage(
-      app.db,
-      chat.id,
-      question.id,
-      asker.agent.uuid,
-      { content: "ratio (clarified)?" },
-      app.attachmentBlobStore,
+    await expect(editMessage(app.db, chat.id, question.id, asker.agent.uuid, { format: "text" })).rejects.toThrow(
+      /format to or from 'request'/i,
     );
+    await expect(editMessage(app.db, chat.id, plain.id, asker.agent.uuid, { format: "request" })).rejects.toThrow(
+      /format to or from 'request'/i,
+    );
+    // A content-only edit of the request is still allowed.
+    const edited = await editMessage(app.db, chat.id, question.id, asker.agent.uuid, {
+      content: "ratio (clarified)?",
+    });
     expect(edited.format).toBe("request");
   });
 
@@ -787,33 +782,26 @@ describe("open-question (format=request) + open_request_count", () => {
       metadata: { mentions: [human.uuid], request: { question: "5% or 20%?" } },
     });
 
+    await expect(editMessage(app.db, chat.id, question.id, asker.agent.uuid, { content: "   " })).rejects.toThrow(
+      BadRequestError,
+    );
     await expect(
-      editMessage(app.db, chat.id, question.id, asker.agent.uuid, { content: "   " }, app.attachmentBlobStore),
+      editMessage(app.db, chat.id, question.id, asker.agent.uuid, { content: "PLACEHOLDER" }),
     ).rejects.toThrow(BadRequestError);
     await expect(
-      editMessage(app.db, chat.id, question.id, asker.agent.uuid, { content: "PLACEHOLDER" }, app.attachmentBlobStore),
-    ).rejects.toThrow(BadRequestError);
-    await expect(
-      editMessage(
-        app.db,
-        chat.id,
-        question.id,
-        asker.agent.uuid,
-        {
-          content: {
-            caption: "ratio?",
-            attachments: [
-              {
-                imageId: "11111111-1111-4111-8111-111111111111",
-                mimeType: "image/png",
-                filename: "ratio.png",
-                size: 42,
-              },
-            ],
-          },
+      editMessage(app.db, chat.id, question.id, asker.agent.uuid, {
+        content: {
+          caption: "ratio?",
+          attachments: [
+            {
+              imageId: "11111111-1111-4111-8111-111111111111",
+              mimeType: "image/png",
+              filename: "ratio.png",
+              size: 42,
+            },
+          ],
         },
-        app.attachmentBlobStore,
-      ),
+      }),
     ).rejects.toThrow(BadRequestError);
   });
 });

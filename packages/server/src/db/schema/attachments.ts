@@ -12,8 +12,8 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 });
 
 /**
- * Server-side blob metadata. Binary bytes live in S3-compatible object
- * storage; `data` remains nullable only for rolling migration compatibility.
+ * Server-side object storage. Immutable binary bytes and metadata live
+ * together in PostgreSQL.
  *
  * Independent blob — intentionally NO `chat_id` / `message_id` columns.
  * Upstream consumers (the `imageId` field inside `messages.content` jsonb,
@@ -27,9 +27,10 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
  * (`POST /api/v1/orgs/:orgId/attachments`) so `uploaded_by` resolves to a
  * stable member identity.
  *
- * Lifecycle: write-once. Uploads reserve quota as `uploading`, become `ready`
- * only after the object-store write succeeds, and pass through `deleting`
- * while reference-aware cleanup removes them.
+ * Lifecycle: write-once. Uploads reserve quota as `uploading` and become
+ * `ready` only after their `bytea` payload is published. `deleting` remains a
+ * compatibility state for rows created by the short-lived external-store
+ * implementation.
  */
 export type AttachmentLifecycleState = "uploading" | "ready" | "deleting";
 
@@ -40,7 +41,7 @@ export const attachments = pgTable(
     id: text("id").primaryKey(),
     /** Owning team. No FK so attachment cleanup is application-controlled. */
     organizationId: text("organization_id"),
-    /** Stable object-store key; never contains the user-supplied filename. */
+    /** Legacy recovery pointer. New PostgreSQL-backed writes leave this null. */
     objectKey: text("object_key"),
     lifecycleState: text("lifecycle_state").$type<AttachmentLifecycleState>().notNull().default("ready"),
     /** MIME as declared by the uploader. v1 does not restrict. */
@@ -48,11 +49,7 @@ export const attachments = pgTable(
     filename: text("filename").notNull(),
     /** Server-measured byte length; clients do not get to lie about this. */
     sizeBytes: integer("size_bytes").notNull(),
-    /**
-     * Legacy PostgreSQL payload. New writes always store NULL; old rows are
-     * copied to object storage by an application backfill before this column
-     * is removed in a later contract migration.
-     */
+    /** Immutable PostgreSQL payload; null only while uploading or for legacy external-store rows. */
     data: bytea("data"),
     /**
      * `agents.uuid` of the team member who uploaded these bytes. Humans

@@ -18,7 +18,6 @@ import {
   loadAttachmentMeta,
   openAttachmentStream,
 } from "./attachment.js";
-import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 
 const MAX_SKILL_FILES = 256;
 const MAX_SKILL_UNCOMPRESSED_BYTES = 25 * 1024 * 1024;
@@ -42,12 +41,11 @@ export type ValidatedSkillBundle = {
 
 /**
  * Validate one complete Skill directory without executing or extracting any
- * uploaded file. The ZIP is streamed to a temporary file so entry validation
- * stays bounded and supporting files never enter PostgreSQL.
+ * uploaded file. The PostgreSQL-backed ZIP is streamed to a temporary file so
+ * entry validation stays bounded.
  */
 export async function validateSkillBundle(
   db: Database,
-  blobStore: AttachmentBlobStore,
   organizationId: string,
   attachmentId: string,
 ): Promise<ValidatedSkillBundle> {
@@ -55,7 +53,7 @@ export async function validateSkillBundle(
   if (!meta || meta.organizationId !== organizationId) {
     throw new BadRequestError("Skill bundle attachment must be a ready attachment owned by this organization");
   }
-  const stream = await openAttachmentStream(db, blobStore, attachmentId);
+  const stream = await openAttachmentStream(db, attachmentId);
   if (!stream) throw new BadRequestError("Skill bundle attachment bytes are unavailable");
 
   const tempDir = await mkdtemp(join(tmpdir(), "first-tree-skill-"));
@@ -274,7 +272,6 @@ export function buildLegacySkillBundle(payload: SkillResourcePayload): Buffer {
  */
 export async function backfillSkillResourceBundles(
   db: Database,
-  blobStore: AttachmentBlobStore,
   batchSize = 50,
 ): Promise<{ migrated: number; skipped: number }> {
   const rows = await db
@@ -308,7 +305,7 @@ export async function backfillSkillResourceBundles(
           .limit(1);
         uploaderId = creator?.agentId ?? null;
       }
-      const attachment = await createAttachment(db, blobStore, {
+      const attachment = await createAttachment(db, {
         organizationId: row.organizationId,
         mimeType: "application/zip",
         filename: `${parsed.data.name}.zip`,
@@ -323,13 +320,13 @@ export async function backfillSkillResourceBundles(
         .where(and(eq(resources.id, row.id), isNull(resources.bundleAttachmentId)))
         .returning({ id: resources.id });
       if (updated.length === 0) {
-        await deleteAttachmentIfUnreferenced(db, blobStore, attachment.id);
+        await deleteAttachmentIfUnreferenced(db, attachment.id);
         skipped++;
       } else {
         migrated++;
       }
     } catch {
-      if (attachmentId) await deleteAttachmentIfUnreferenced(db, blobStore, attachmentId).catch(() => undefined);
+      if (attachmentId) await deleteAttachmentIfUnreferenced(db, attachmentId).catch(() => undefined);
       skipped++;
     }
   }
