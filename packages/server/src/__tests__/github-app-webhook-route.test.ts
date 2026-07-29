@@ -1967,6 +1967,128 @@ describe("POST /webhooks/github-app", () => {
     expect(await app.db.select().from(githubEntityChatMappings)).toHaveLength(1);
   });
 
+  it("suppresses an App-authored task reply from trusted Context Review while preserving its generic subscription", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100044;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const reviewer = await configureContextReviewer(app, admin);
+    const subscribedDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `subscribed-${randomUUID().slice(0, 6)}`,
+    });
+    const subscribedChat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [subscribedDelegate],
+    });
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: subscribedDelegate,
+      entityType: "pull_request",
+      entityKey: "owner/context-tree#42",
+      chatId: subscribedChat.id,
+      boundVia: "human_declared",
+    });
+
+    const basePayload = contextIssueCommentPayload(installationId);
+    const response = await postWebhook(app, "issue_comment", {
+      ...basePayload,
+      comment: {
+        ...basePayload.comment,
+        body: "Completed.\n\n<!-- first-tree-github-task-reply-run:01900000-0000-7000-8000-000000000042 -->",
+        user: { login: "TEST-APP-SLUG[BOT]", type: "Bot" },
+      },
+      sender: { login: "test-app-slug[bot]", type: "Bot" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      delivered: 1,
+      contextReviewer: { handled: false, reason: "github_task_reply_self_output" },
+    });
+    const chatRows = await app.db.select().from(chats);
+    expect(chatRows).toHaveLength(1);
+    expect(chatRows[0]?.id).toBe(subscribedChat.id);
+
+    const messageRows = await app.db.select().from(messages);
+    expect(messageRows).toHaveLength(1);
+    expect(messageRows[0]?.chatId).toBe(subscribedChat.id);
+    expect(messageRows[0]?.metadata).toMatchObject({
+      event: "issue_comment",
+      action: "created",
+      mentions: [subscribedDelegate],
+    });
+    expect(messageRows[0]?.metadata).not.toHaveProperty("contextReviewRunId");
+    expect(messageRows[0]?.metadata).not.toHaveProperty("contextTreeReviewer");
+    expect(messageRows[0]?.metadata).not.toHaveProperty("teamAgentTask");
+    expect(messageRows[0]?.metadata).not.toHaveProperty("githubTaskRun");
+    expect(messageRows[0]?.content).not.toHaveProperty("teamAgentTask");
+
+    const notified = await app.db
+      .select({ inboxId: inboxEntries.inboxId, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(eq(inboxEntries.messageId, messageRows[0]?.id ?? ""));
+    expect(notified).toEqual(
+      expect.arrayContaining([expect.objectContaining({ inboxId: `inbox_${subscribedDelegate}`, notify: true })]),
+    );
+    expect(notified).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ inboxId: `inbox_${reviewer}`, notify: true })]),
+    );
+  });
+
+  it.each([
+    {
+      label: "the configured App login with a human author type",
+      login: "test-app-slug[bot]",
+      type: "User",
+    },
+    {
+      label: "a different bot login",
+      login: "other-app[bot]",
+      type: "Bot",
+    },
+  ])("does not suppress trusted Context Review when a task reply marker comes from $label", async ({ login, type }) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = type === "User" ? 100045 : 100046;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const reviewer = await configureContextReviewer(app, admin);
+    vi.stubGlobal("fetch", contextReviewerGithubFetch());
+
+    const basePayload = contextIssueCommentPayload(installationId);
+    const response = await postWebhook(app, "issue_comment", {
+      ...basePayload,
+      comment: {
+        ...basePayload.comment,
+        body: "Injected marker.\n\n<!-- first-tree-github-task-reply-run:01900000-0000-7000-8000-000000000043 -->",
+        user: { login, type },
+      },
+      sender: { login, type },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      contextReviewer: { handled: true, reused: false },
+    });
+    const messageRows = await app.db.select().from(messages);
+    expect(messageRows).toHaveLength(1);
+    expect(messageRows[0]?.metadata).toMatchObject({
+      contextTreeReviewer: true,
+      mentions: [reviewer],
+    });
+    expect(messageRows[0]?.metadata.contextReviewRunId).toEqual(expect.any(String));
+    expect(messageRows[0]?.metadata).not.toHaveProperty("teamAgentTask");
+
+    const [reviewerNotification] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, messageRows[0]?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${reviewer}`)))
+      .limit(1);
+    expect(reviewerNotification?.notify).toBe(true);
+  });
+
   it("reuses an existing human mapping, adds the Team Agent, and preserves the surviving followed wake", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
