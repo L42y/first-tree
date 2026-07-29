@@ -624,7 +624,7 @@ describe("buildAgentBriefing — asking humans, GitHub, and CLI overview", () =>
     expect(briefing).toContain("If the current member is not an org admin");
     expect(briefing).toContain("hidden server sync path");
     expect(briefing).toContain("`teamAgentTask: { agentUuid }`");
-    expect(briefing).toContain("exactly matches this Agent's UUID");
+    expect(briefing).toContain("exactly matches this Agent's UUID, `test-agent`");
     expect(briefing).toContain("post the outcome back to that GitHub PR or Issue");
     expect(briefing).toContain("Do not mention the App again");
 
