@@ -20,6 +20,9 @@ export function registerDaemonRepairOwnershipCommand(daemon: Command): void {
           return;
         }
         print.line(`  Ownership: repaired ${result.lockPath}\n`);
+        if (result.reconciledState) {
+          print.line(`  Reconciled: ${result.reconciledState === "empty" ? "safe empty" : "trusted owner"}\n`);
+        }
         if (result.restoredFrom) print.line(`  Restored:  ${result.restoredFrom}\n`);
         for (const line of formatDaemonRuntimeRecoveryEvidence(result.evidence)) {
           print.line(`  Evidence:  ${line}\n`);

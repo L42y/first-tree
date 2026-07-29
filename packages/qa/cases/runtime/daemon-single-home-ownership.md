@@ -82,13 +82,21 @@ Exercise the following branches, resetting only run-cell state between them:
 - Pause one startup after its complete entrant temp is fsynced but before the
   non-overwriting publish. Let another process recover and acquire, then
   release the late publisher: it must reject against the fence or live owner.
-  Also hard-kill before and after entrant publish; later recovery must never
-  treat an incomplete temp as an authoritative entrant and must leave no
-  active fence, entrant, or repair slot.
+  For main owner, recovery guard, mutation fence, and entrant publication,
+  hard-kill once after the unique temp inode is opened but before JSON is
+  written, and once immediately after the hard-link publish. Before publish,
+  no canonical coordination record may exist; after publish, the canonical
+  record must already be complete. Later startup or supported repair must
+  recover without treating an incomplete `.publish-temp.*` file as authority.
 - Start two `daemon repair-ownership` processes together. The per-instance
-  repair ticket order must admit only one mutation owner; crashing a repair
-  before and after ticket publication must be evidence-recoverable, and an old
-  cleanup must never remove a newer instance's slot.
+  repair ticket order plus canonical repair guard must admit only one mutation
+  owner; crashing a repair after the guard publish, before exact fence removal,
+  and after fence removal must be evidence-recoverable and idempotent. Confirm
+  the post-fence crash cannot mutate main on retry, an old cleanup never removes
+  a newer instance's records, and no active fence, repair guard, entrant, slot,
+  or ticket leaks. Include a live canonical owner with a stale fence, PID reuse,
+  malformed/unverifiable fence evidence, hard-link aliases of one quarantine
+  inode, and copied or otherwise ambiguous quarantine candidates.
 - Replace the lock with malformed or incomplete content after proving no
   daemon owns the test home. Startup must refuse without deleting or rewriting
   the damaged file, and `daemon status` / `daemon doctor` must identify the

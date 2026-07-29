@@ -23,6 +23,8 @@ const originalWriteFileSync = fs.writeFileSync.bind(fs);
 originalMkdirSync(barrierDir, { recursive: true });
 const lockPath = join(originalRealpathSync(home), "state", "daemon-runtime.lock");
 const recoveryPath = `${lockPath}.recovery`;
+const fencePath = `${lockPath}.recovery-fence`;
+const repairPath = `${lockPath}.repair`;
 
 function waitAtBarrier(name: string): void {
   originalWriteFileSync(join(barrierDir, `${role}.${name}.ready`), `${process.pid}\n`, "utf8");
@@ -38,6 +40,27 @@ let ownerFd: number | undefined;
 let pausedAfterOwnerFsync = false;
 let pausedAfterRestoreCollision = false;
 
+function publicationKind(
+  path: string,
+): "main" | "recovery" | "fence" | "entrant" | "repair-slot" | "repair-ticket" | "repair-guard" | undefined {
+  for (const kind of [
+    "main",
+    "recovery",
+    "fence",
+    "entrant",
+    "repair-slot",
+    "repair-ticket",
+    "repair-guard",
+  ] as const) {
+    if (path.includes(`.lock.publish-temp.${kind}.`)) return kind;
+  }
+  return undefined;
+}
+
+function isRepairRole(value: string): boolean {
+  return value === "u" || value === "v" || value.startsWith("repair-crash-") || value.startsWith("publish-repair-");
+}
+
 Object.defineProperty(fs, "openSync", {
   configurable: true,
   value: (
@@ -46,6 +69,10 @@ Object.defineProperty(fs, "openSync", {
     mode?: import("node:fs").Mode,
   ): number => {
     const fd = originalOpenSync(path, flags, mode);
+    const kind = publicationKind(String(path));
+    if (flags === "wx" && role === `publish-${kind}-open`) {
+      waitAtBarrier(`${kind}-temp-after-open`);
+    }
     if (role === "t" && String(path) === lockPath && flags === "wx") ownerFd = fd;
     return fd;
   },
@@ -82,6 +109,16 @@ Object.defineProperty(fs, "renameSync", {
     if (role === "t" && oldName === lockPath && newName.includes(".lock.cleanup.")) {
       waitAtBarrier("cleanup-before-rename");
     }
+    if (
+      role === "repair-crash-before-fence-remove" &&
+      oldName === fencePath &&
+      newName.includes(".recovery-fence.cleanup.")
+    ) {
+      waitAtBarrier("repair-before-fence-remove");
+    }
+    if (role === "repair-crash-after-fence-remove" && oldName === repairPath && newName.includes(".repair.cleanup.")) {
+      waitAtBarrier("repair-after-fence-remove");
+    }
     originalRenameSync(oldPath, newPath);
   },
 });
@@ -91,9 +128,13 @@ Object.defineProperty(fs, "linkSync", {
   value: (existingPath: import("node:fs").PathLike, newPath: import("node:fs").PathLike): void => {
     const existingName = String(existingPath);
     const newName = String(newPath);
+    const kind = publicationKind(existingName);
+    if (kind && role === `publish-${kind}-before`) {
+      waitAtBarrier(`${kind}-before-publish`);
+    }
     if (
       (role === "e" || role === "f") &&
-      existingName.includes(".lock.entrant-temp.") &&
+      existingName.includes(".lock.publish-temp.entrant.") &&
       newName.includes(".lock.entrant.")
     ) {
       if (role === "e") waitAtBarrier("entrant-before-publish");
@@ -103,15 +144,23 @@ Object.defineProperty(fs, "linkSync", {
     }
     if (
       (role === "u" || role === "v") &&
-      existingName.includes(".lock.repair-ticket-temp.") &&
+      existingName.includes(".lock.publish-temp.repair-ticket.") &&
       newName.includes(".lock.repair-ticket.")
     ) {
       waitAtBarrier("repair-ticket-before-publish");
       originalLinkSync(existingPath, newPath);
       return;
     }
+    if (role === "repair-crash-after-guard" && newName === repairPath) {
+      originalLinkSync(existingPath, newPath);
+      waitAtBarrier("repair-after-guard");
+      return;
+    }
     try {
       originalLinkSync(existingPath, newPath);
+      if (kind && role === `publish-${kind}-after`) {
+        waitAtBarrier(`${kind}-after-publish`);
+      }
     } catch (error) {
       if (
         role === "r" &&
@@ -137,7 +186,7 @@ process.stdout.write(`${JSON.stringify({ event: "ready", pid: process.pid })}\n`
 
 lines.once("line", () => {
   try {
-    if (role === "u" || role === "v") {
+    if (isRepairRole(role)) {
       const result = repairDaemonRuntimeOwnership(home);
       process.stdout.write(
         `${JSON.stringify({ event: result.repaired ? "repaired" : "no-repair", pid: process.pid })}\n`,

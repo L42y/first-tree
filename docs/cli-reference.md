@@ -983,7 +983,7 @@ first-tree daemon
 | `restart` | Restart the service. |
 | `status` | Local service state + authoritative daemon owner + server binding + auth health. Runs in well under a second. |
 | `doctor` | Walk Node version, config, server reachability, WS, agent registrations, the installed service file, the authoritative daemon owner lock, **and the runtime providers** — each step reported. The runtime-provider rows run the real launch-verified probe (a 1-turn model call for `claude-code`, a `codex doctor` handshake for `codex`), so `doctor` makes live provider calls; it is a deliberate diagnostic, not a hot path. |
-| `repair-ownership` | Reconcile an interrupted fenced ownership mutation. The command elects one repair process through per-instance ticket slots, requires strict PID/start-identity proof that the fence owner is gone or reused, drains published startup entrants, and refuses live, malformed, unverifiable, or ambiguous evidence. It never blindly deletes a fence. |
+| `repair-ownership` | Reconcile an interrupted fenced ownership mutation. The command elects one repair process through per-instance ticket slots, atomically acquires a canonical repair guard, requires strict PID/start-identity proof that the exact fence owner is gone or reused, drains published startup entrants, and refuses live, malformed, unverifiable, changed, or ambiguous evidence. It never blindly deletes a fence. |
 | `probe` | Launch-probe the local runtime providers on demand and upload the result to the server (`PATCH /clients/:id/capabilities`). This is the manual refresh for a client's advertised capabilities after a provider is installed / logged in. Each probe really launches its provider. `--no-upload` runs a **credentials-free local-only** diagnostic (probe + print, no server auth needed). `--json` (or the global `--json`) emits the capability snapshot as the machine-readable `{ ok, data }` envelope on stdout. |
 | `install-codex` | Install the native Codex runtime engine on this machine (`npm install -g @openai/codex`). First Tree does not bundle the ~225MB native `codex` binary by default — the runtime resolves an external `codex` from PATH, known install locations, or the macOS ChatGPT/Codex desktop app — so this is the on-demand remediation when the `codex` capability probes as `missing`. Runs the same tracked-subprocess install path as self-update, then re-probes so the freshly installed binary is reflected. Purely local (no credentials). `--spec <spec>` picks an npm dist-tag or exact version (default `latest`); `--json` emits the post-install capability snapshot as the `{ ok, data }` envelope. |
 | `install-claude` | Install the native Claude Code runtime engine on this machine (`npm install -g @anthropic-ai/claude-code`). First Tree does not bundle the ~210MB native `claude` binary by default — the runtime resolves a system `claude` (env override / PATH / well-known install dirs) — so this is the on-demand remediation when the `claude-code` capability probes as `missing`. Runs the same tracked-subprocess install path as self-update, then re-probes so the freshly installed binary is reflected. Purely local (no credentials). `--spec <spec>` picks an npm dist-tag or exact version (default `latest`); `--json` emits the post-install capability snapshot as the `{ ok, data }` envelope. |
@@ -1028,6 +1028,12 @@ The fence stays authoritative across quarantine and restore, so no process can
 return a new lease through a temporarily empty main-lock path. Every startup
 publishes a complete per-instance entrant atomically before checking the fence;
 an incomplete temporary record is never visible to the drain protocol.
+The main owner, recovery guard, mutation fence, entrant, canonical repair guard,
+and repair election slot/ticket all use the same complete-publication rule:
+write and fsync a unique ignored same-directory temporary inode, close it, then
+hard-link it without overwriting the canonical path. A crash before that link
+cannot expose a partial canonical record; after the link, the canonical record
+is already complete. Publication temporaries are never ownership evidence.
 
 An interrupted or unresolved fenced mutation is deliberately not recovered by
 ordinary startup. `status` and `doctor` report the exact fence instance,
@@ -1036,21 +1042,34 @@ and entrant count. Run `first-tree daemon repair-ownership` to perform the
 supported repair. The command:
 
 1. elects one repair owner with non-destructive per-instance intent/ticket
-   slots, so simultaneous repairs have one ordered winner and stale unique
-   slots are removable only after PID/start-identity proof;
-2. refuses a live or unverifiable fence, drains pre-fence entrants, and
-   revalidates the exact stale fence;
-3. keeps a trusted canonical owner, or, when canonical is absent, restores the
-   unique trusted live quarantine candidate (preferred) or unique trusted
-   stale placeholder without overwriting another claimant;
-4. refuses malformed/unreadable evidence, different multiple live candidates,
-   or ambiguous stale candidates; and
-5. removes the matching stale recovery guard and exact fence only after one
-   trusted canonical owner record is established.
+   slots, then acquires a separate canonical repair guard; simultaneous repairs
+   therefore have one mutation owner, and stale unique records are removable
+   only after PID/start-identity proof;
+2. refuses a live, malformed, or process-identity-unverifiable fence, fixes the
+   target as an exact instance plus content fingerprint, drains pre-fence
+   entrants, and revalidates that exact stale fence before every main mutation;
+3. keeps a trusted canonical live or stale owner; when canonical is absent,
+   restores the unique trusted live quarantine candidate (preferred) or unique
+   trusted stale placeholder without overwriting another claimant; when no
+   candidate exists at all, records an explicit safe-empty reconciliation
+   without inventing a live owner;
+4. treats hard-link aliases as one candidate only when both instance and inode
+   match, and refuses unreadable evidence, changed file identity, different
+   live candidates, copied duplicates, or ambiguous stale candidates; and
+5. removes the matching stale recovery guard, revalidates the repair guard and
+   exact fence, then removes that fence. Fence removal is the repair opening
+   point: repair never changes main ownership afterward and only releases its
+   own repair records.
 
-The repair command therefore fails closed when evidence cannot prove a unique
-safe state. Do not manually delete `.recovery-fence`, `.recovery`, entrant,
-repair-slot, or owner/quarantine files.
+The repair command automatically handles a strictly stale fence with a trusted
+canonical owner, a unique trusted quarantine candidate, or a provably empty
+candidate set. It fails closed with the exact evidence when the fence/repair
+holder is live or unverifiable, any authoritative record is malformed or
+unreadable, the target fence changes, or candidates are ambiguous. An
+interrupted repair remains fenced and can be rerun: the next repair proves the
+old repair guard stale and resumes idempotently. Do not manually delete
+`.recovery-fence`, `.recovery`, `.repair`, entrant, repair-slot/ticket, owner,
+or quarantine files.
 
 Files under `<home>/state/client-runtimes/` remain runtime markers for
 diagnostics, account-switch drain checks, and Windows supervisor lifecycle
