@@ -1,5 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import {
+  type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
   deriveRepoLocalPath,
   encodeProviderRetryEventMessage,
@@ -53,9 +54,9 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../runtime/provider-attempt.js";
 import { classifyProviderFailure, maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
-import { materializeResourceSkills } from "../../runtime/resource-skills.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -503,6 +504,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider ?? "codex");
   const providerTurnMaxRetries = maxProviderTurnRetryAttempts();
   let activePayload: AgentRuntimeConfigPayload | null = null;
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
@@ -611,6 +613,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -1423,10 +1426,13 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
    * hot-switch reads). If it changed, rewrite AGENTS.md on disk and report the
    * change so the caller prepends the one-time re-read notice — the agent then
    * re-reads the now-current AGENTS.md before acting. Synchronous + `.get()` so
-   * it adds no await/race on the drain path. Model / MCP hot-switch (which would
-   * need a thread restart) stays out of scope; this targets the prompt.
+   * It awaits the managed Skill settlement before rewriting the briefing.
+   * Model / MCP hot-switch (which would need a thread restart) stays out of
+   * scope; this targets Skills plus the prompt.
    */
-  function refreshBriefingForActiveTurn(sessionCtx: SessionContext): { fingerprint: string; changed: boolean } | null {
+  async function refreshBriefingForActiveTurn(
+    sessionCtx: SessionContext,
+  ): Promise<{ fingerprint: string; changed: boolean } | null> {
     if (!agentConfigCache || !cwd || !threadId || !activeProviderEnv) return null;
     // Never throw: this runs on the inject drain path AFTER the batch has been
     // dequeued, so a thrown briefing rewrite would strand the message (no
@@ -1434,8 +1440,12 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     // turn — the message still delivers under the prior briefing, and the next
     // injected turn retries the refresh.
     try {
-      const payload = agentConfigCache.get(sessionCtx.agent.agentId)?.payload;
-      if (!payload) return null;
+      const runtimeConfig = agentConfigCache.get(sessionCtx.agent.agentId);
+      if (!runtimeConfig) return null;
+      const payload = runtimeConfig.payload;
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
       if (readSessionBriefingFingerprint(cwd, threadId) === fingerprint) return { fingerprint, changed: false };
@@ -1475,7 +1485,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     }
     // Active-session hot-switch: pick up a mid-session briefing change before
     // this injected turn and surface the re-read notice.
-    const refreshed = refreshBriefingForActiveTurn(sessionCtx);
+    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
     if (refreshed?.changed && cwd) {
       const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
       pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
@@ -1539,9 +1549,11 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       // by every chat session for this agent.
       cwd = acquireAgentHome(workspaceRoot);
 
+      let runtimeConfig: AgentRuntimeConfig | null = null;
       let payload: AgentRuntimeConfigPayload | null = null;
       if (agentConfigCache) {
-        payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+        runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+        payload = runtimeConfig.payload;
       }
       // Track whether the payload reflects a real config — used by the source-
       // repo state reconcile to distinguish "config has zero repos" from "we
@@ -1568,7 +1580,9 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       // gitRepos first so the shared briefing can list the predeclared
       // source-repo paths the agent should know about.
       declareSourceRepos(payload, cwd);
-      await materializeResourceSkills(cwd, payload, sessionCtx);
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
       const briefing = buildBriefing(sessionCtx, payload, cwd);
@@ -1621,9 +1635,11 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       ctx = sessionCtx;
       cwd = acquireAgentHome(workspaceRoot);
 
+      let runtimeConfig: AgentRuntimeConfig | null = null;
       let payload: AgentRuntimeConfigPayload | null = null;
       if (agentConfigCache) {
-        payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+        runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+        payload = runtimeConfig.payload;
       }
       const resumePayloadResolved = payload !== null;
       if (!payload) {
@@ -1646,7 +1662,9 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       pendingChatContextPrompt = renderChatContextPrompt(chatContext);
 
       declareSourceRepos(payload, cwd);
-      await materializeResourceSkills(cwd, payload, sessionCtx);
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
       const briefing = buildBriefing(sessionCtx, payload, cwd);

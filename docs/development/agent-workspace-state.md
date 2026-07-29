@@ -1,187 +1,198 @@
 # Agent Workspace State Files
 
-This page documents the CLI-owned state files that live inside an agent's
-home directory and the contract they enforce. If you're touching anything
-under `<workspace>/.first-tree-workspace/`, anything that calls
-`installFirstTreeSkills` or `ensureAgentBootstrap`, or you're proposing a
-new directory-structure migration — start here.
+This page documents the CLI-owned state under an agent workspace. Read it
+before changing managed Skill projection, session bootstrap, or workspace
+migrations.
 
-## Why these files exist
+## Ownership boundary
 
-Agent workspaces are long-running. The CLI installs skill payloads and
-writes a briefing into each one on every session start. (Source repos and
-the Context Tree clone are **agent-managed**: the runtime only declares
-their coordinates in the briefing; the agent itself clones, refreshes, and
-cleans them — the runtime never deletes a repo clone.) Over time, the
-CLI's CONFIG of what it materialises drifts:
+The Client owns only runtime projection and its bookkeeping:
 
-- A skill is dropped from the bundled `TREE_SKILL_NAMES`.
-- The layout itself changes between major releases (the per-chat-cwd ->
-  per-agent-home transition, the W1 workspace-rooted simplification, the
-  retired `first-tree-hub/` source repo, etc.).
+- Core and Team Skills in the active provider's native discovery root.
+- Stable agent identity and generated briefings.
+- Narrow transaction, lock, and migration records under
+  `.first-tree-workspace/`.
 
-Without a record of what the CLI previously installed, removed resources
-sit on disk forever. The state files below are that record.
+Source repositories and the Context Tree checkout remain agent-managed. The
+runtime declares their coordinates but never creates, updates, or deletes
+their clones.
 
-## The files
+## Managed Skill paths
 
-| Path (relative to workspace root) | Owner | What it is |
-| --- | --- | --- |
-| `.first-tree-workspace/managed.json` | `runtime/managed-state.ts` | Schema-versioned record of the CLI-managed resources currently materialised in this workspace. Holds one array — `skills` (skill names) — diffed on every session start to discover removals. (Source repos and the Context Tree clone are agent-managed; the runtime never deletes a repo clone, so they carry no entry here. A legacy record that still has the retired `sourceRepos` key is read-compatible — the reader ignores unknown keys.) |
-| `.first-tree-workspace/migrations-applied.json` | `runtime/workspace-migrations.ts` | Set of one-shot directory-structure migration ids that have already run in this workspace. Each migration runs at most once even if it's later removed from the registry; the marker stays as forward protection. |
+Each runtime discovers Skills from one workspace-relative root:
 
-Both files use atomic writes (temp + rename) so a crashed writer never
-leaves a half-formed JSON record on disk.
+| Runtime | Managed discovery root |
+| --- | --- |
+| Claude Code / Claude Code TUI | `.claude/skills/` |
+| Codex | `.agents/skills/` |
+| Cursor | `.cursor/skills/` |
+| Kimi Code | `.kimi-code/skills/` |
 
-### `.first-tree-workspace/managed.json` schema
+The reconciler projects both bundled Core Skills and Cloud-configured Team
+Skills into that one active root. It does not maintain cross-provider
+symlinks. On a provider switch, it installs and verifies the new projection
+before retiring targets recorded for the previous provider.
+
+Every installed directory contains `.first-tree-managed.json`. The marker and
+the state ledger are ownership evidence; neither authorizes writes outside the
+known provider roots.
+
+## State files
+
+| Workspace-relative path | Purpose |
+| --- | --- |
+| `.first-tree-workspace/managed.json` | Schema-v2 ledger, final installed digests, and monotonic Team Resource version fence. |
+| `.first-tree-workspace/managed-skills.lock/` | Cross-process workspace lock. `owner.json` carries the process id, token, and creation time. |
+| `.first-tree-workspace/managed-skills-journal.json` | Single in-flight install or removal transaction used for crash recovery. |
+| `.first-tree-workspace/migrations-applied.json` | Applied one-shot workspace-layout migration ids. |
+
+JSON state and journal writes use file fsync, atomic rename, and a best-effort
+parent-directory fsync. The lock and journal are absent after a settled
+reconcile.
+
+### `managed.json` schema v2
 
 ```json
 {
-  "schemaVersion": 1,
-  "cliVersion": "0.3.2",
-  "updatedAt": "2026-06-08T15:50:00.000Z",
-  "skills": ["first-tree-write", "first-tree-read", "first-tree-seed"]
+  "schemaVersion": 2,
+  "resourceConfigVersion": 18,
+  "updatedAt": "2026-07-29T08:00:00.000Z",
+  "skills": [
+    {
+      "key": "resource:019f-example",
+      "target": ".agents/skills/review",
+      "requestedSlug": "review",
+      "effectiveName": "review",
+      "revision": "sha256:...",
+      "installedDigest": "sha256:..."
+    }
+  ]
 }
 ```
 
-- **`skills`** — the names of skills installed under
-  `<workspace>/.agents/skills/<name>/` (with matching `.claude/skills/<name>`
-  symlinks).
-- **`schemaVersion`** — increment when the shape changes; readers reject
-  unknown versions and treat them as "no prior state".
+- `key` is the stable logical identity: `core:<bundled-name>` or
+  `resource:<resource-id>`.
+- `target` is a validated workspace-relative provider-native directory.
+- `requestedSlug` is the normalized Team name or fixed Core name.
+- `effectiveName` includes a deterministic suffix when an unmanaged Team
+  target already occupies the requested name.
+- `revision` identifies the source. Core Skills use bundled `VERSION`; inline
+  Team Skills use a stable DTO digest.
+- `installedDigest` hashes the final installed directory after runtime
+  transformations, including the effective manifest name, generated
+  `VERSION`, ownership marker, supporting files, file type, and executable
+  bits.
+- `resourceConfigVersion` is a monotonic fence. A lower authoritative Cloud
+  snapshot may not change Team Skill files or lower the persisted version.
 
-When the file is missing or malformed, the reconcile path treats it as
-"first run on this workspace" and performs no deletions — the safe
-default.
+Malformed state and future schema versions fail closed: the reconciler reports
+the problem and performs no managed target mutation. A missing state file is a
+first run. Schema v1 enters the conservative migration described below.
 
-### `.first-tree-workspace/migrations-applied.json` schema
+### Transaction journal
 
-```json
-{ "schemaVersion": 1, "applied": ["v1-uuid-snapshots", "v1-whitepaper-symlink"] }
-```
+The journal records `beforeState`, `afterState`, the target, optional staging
+and backup paths, expected final digest, and a phase:
 
-A migration whose `apply` raises is NOT recorded, so a future session
-retries it. The marker file is rewritten only when at least one migration
-newly applied this run.
+1. `prepared`
+2. `target_backed_up`
+3. `target_installed` (install only)
+4. `state_committed`
 
-## Reconcile flow on session start
+Each target change follows prepare → rename/swap → verify/commit → cleanup.
+Before starting new work, the reconciler resolves any journal by comparing the
+recorded phase with actual target, backup, staging, digest, and state facts. It
+either completes a proven install/removal or restores the proven prior state.
+Ambiguous facts fail closed instead of guessing.
 
-`ensureAgentBootstrap` (in `runtime/agent-bootstrap.ts`) runs migrations
-before any other bootstrap step:
+## Team snapshot semantics
 
-1. **`applyPendingMigrations`** — walk `MIGRATIONS_REGISTRY`, run each id
-   not already in the marker. Failures don't block siblings; ids are
-   persisted only after a clean run.
-2. The existing first-run-vs-steady-state sentinel logic continues.
+The handler passes one of two explicit inputs:
 
-### Two outcomes that block the marker
+- `authoritative(resourceConfigVersion, skills)` — the Cloud Resource catalog
+  is known for this start/resume/hot refresh.
+- `unavailable` — configuration could not be resolved.
 
-A migration's `apply` can finish in three ways:
+For an authoritative snapshot:
 
-- **clean return** (`undefined`) — migration ran; marker recorded; id
-  never re-runs.
-- **`"deferred"` return** — migration could not safely run this session
-  (typically because the live source-repo config is unresolved); marker
-  NOT recorded; the next session retries from scratch.
-- **`throw`** — unexpected I/O / git failure; marker NOT recorded;
-  logged via the `failed` channel; the next session retries.
+- A higher version advances the fence before Team target mutation.
+- The same version may retry an interrupted reconcile.
+- A lower version is stale and cannot install, update, or revoke Team Skills.
+- An omitted previously managed Team Skill is revoked only after the snapshot
+  passes the fence.
 
-The `deferred` outcome is specifically for migrations whose correctness
-depends on the live agent config (`MigrationContext.currentSourceRepoNames`).
-Those migrations call `hasResolvedConfig(ctx)` at the top and defer when
-the caller could not resolve a payload. Persisted `managed.json` is NOT a
-safe fallback — it proves a previous config, not the current one — so any
-deletion that relies on "what's missing from the current config" must
-wait for a session with a real payload.
+For an unavailable snapshot, Team Skills remain last-known-good on disk and a
+warning is logged. This is intentionally eventual consistency: revocation
+waits for the next authoritative snapshot. Core reconciliation can continue.
 
-Migrations whose check is purely local (e.g. `v1-whitepaper-symlink`'s
-"is this entry a symlink?") ignore the context and proceed unconditionally.
+The generated briefing consumes immutable Team rows returned by the same
+reconcile call. It never reconstructs rows by rereading a different state
+snapshot, and it does not expose filesystem paths.
 
-State-based skill cleanup runs from inside the installer that already
-operates per session:
+## Name and content safety
 
-- **`installFirstTreeSkills`** (`runtime/first-tree-skills/installer.ts`)
-  — diff `prev.skills` against `TREE_SKILL_NAMES`. Dropped skills lose
-  their `.agents/skills/<name>/` payload AND their `.claude/skills/<name>`
-  symlink.
+- Names containing path separators, control characters, empty normalized
+  slugs, or Windows device names are rejected.
+- Current Core names are reserved and cannot be shadowed by Team Skills.
+- An unmanaged Team name conflict receives `-first-tree`, then a stable numeric
+  suffix if needed.
+- An unowned Core target is not overwritten unless its entire directory
+  exactly matches the bundled payload.
+- Bundles reject symlinks, special files, case-insensitive path collisions,
+  a supplied ownership marker, excessive depth, excessive file count, and
+  excessive byte size.
+- Every managed and temporary path is containment-checked against the
+  workspace and an allow-listed discovery root.
 
-There is **no state-based source-repo cleanup**: source repos are
-agent-managed, and the runtime never deletes a repo clone (a clone removed
-from `gitRepos` simply stops being declared in the briefing; disposal is
-the operator's / agent's call). The `updateManagedState` helper
-read-modify-writes atomically so a write to one field cannot clobber the
-other.
+## Schema-v1 migration
 
-## No clone deletion, by design
+Schema v1 recorded only Skill names and previously relied on
+`.agents/skills/<name>` plus matching Claude symlinks. It cannot prove every
+same-name directory was CLI-owned, so migration adopts a target only with at
+least one conservative proof:
 
-The runtime deletes **no repo clone, ever** — neither state-based nor
-migration-driven. The former `tryRemoveCloneSafely` machinery (dirty /
-ahead-of-upstream / has-worktrees guards) was retired together with the
-runtime's git management: source repos and the Context Tree clone are
-agent-managed, and sibling chats may hold worktrees rooted in any clone,
-so removal is never safe to automate from the runtime. A repo dropped
-from `gitRepos` simply stops being declared in the briefing; its on-disk
-clone is left for the agent / operator to dispose of deliberately.
+- the name is in the v1 ledger;
+- the exact legacy `.claude/skills/<name>` symlink points to
+  `../../.agents/skills/<name>`;
+- the target has a valid First Tree ownership marker; or
+- the complete target digest exactly matches the current bundled Core payload.
 
-The migration path (`workspace-migrations.ts`) follows the same posture:
-the clone-deleting migrations (`v1-retired-source-repo-first-tree-hub`,
-`v1-orphan-ft-clones`) were retired; remaining migrations only sweep
-non-repo residue (legacy snapshots, symlinks, retired skill payloads).
+Anything else remains user-owned. After migration, the active provider
+projection is installed first and only proven old targets are retired.
 
-## What is NOT touched by this machinery
+Legacy per-chat Claude resumes use the same reconciler against their legacy
+cwd. That cwd gets only the narrow managed state/lock/journal and
+provider-native Skills; it does not run the broader agent-home bootstrap or
+source-repository declaration flow.
 
-- **`<workspace>/.first-tree/`** — active W1 workspace binding state
-  (`workspace.json`). The CLI never deletes this directory. A previously
-  proposed `v1-legacy-dot-first-tree` migration was withdrawn during
-  Codex review of PR #869 for exactly this reason.
-- **`<workspace>/worktrees/`** — agent-self-managed. The agent creates
-  per-task worktrees here and is responsible for cleaning them up. The
-  CLI never sweeps this directory.
-- **`<workspace>/notes/`** — agent's local implementation notes. CLI
-  never touches it.
-- **User-created files at workspace root** — third-party clones, custom
-  skill payloads under `.agents/skills/`, regular `WHITEPAPER.md` files,
-  anything else not in the recorded managed set. State-based cleanup is
-  path-precise; migrations match on origin URL pattern (not directory
-  name) for FT clones and on `lstat().isSymbolicLink()` for the
-  WHITEPAPER.md sweep.
+## Workspace migrations
 
-## Adding a new migration
+`ensureAgentBootstrap` runs `applyPendingMigrations` before stable identity and
+briefing work. A migration can:
 
-When a future layout change introduces stale residue that warrants a
-sweep:
+- return normally: record its id;
+- return `"deferred"`: do not record it, and retry on a later resolved start;
+- throw: log the failure, do not record it, and retry later.
 
-1. Add a new entry to `MIGRATIONS_REGISTRY` at the END of the array
-   with a fresh `vN-<short-name>` id. Old ids stay even when their
-   bodies are simplified, so workspaces that have already applied them
-   don't re-run.
-2. The `apply` function MUST be idempotent (re-running on an already-
-   clean workspace is a noop) and SHOULD short-circuit when there's
-   nothing to do.
-3. **Migrations no longer delete repo clones, period.** Source repos
-   and the Context Tree clone are agent-managed; sibling chats may hold
-   worktrees rooted in any clone, so a runtime-initiated deletion is
-   never safe. The retired `v1-retired-source-repo-first-tree-hub` and
-   `v1-orphan-ft-clones` migrations are the cautionary example — both
-   used to delete repo clones and both were removed with the
-   agent-managed-repos refactor. New migrations may sweep non-repo
-   residue (legacy snapshots, retired skill payloads, symlinks) only.
-4. If the migration deletes symlinks, use `lstat().isSymbolicLink()` to
-   confirm the entry type before unlinking — never delete a user-authored
-   regular file.
-5. Add unit tests covering the happy path AND the safety guards (a
-   pristine workspace, an already-applied workspace, and at least one
-   "blocked by safety" scenario).
-6. The marker is per-id, never per-workspace — bumping the id of an
-   existing migration would re-run it on every workspace.
+Workspace migrations do not delete Skill directories by name. Skill cleanup
+requires reconciler ownership evidence. They also never delete source or
+Context Tree clones.
+
+When adding a migration:
+
+1. Append a new stable id to `MIGRATIONS_REGISTRY`.
+2. Make the operation idempotent and narrowly shape-checked.
+3. Defer if deletion correctness depends on unresolved live config.
+4. Never delete repositories or broad Skill paths.
+5. Test the happy path, repeated run, and at least one protected user-owned
+   shape.
 
 ## See also
 
-- `runtime/managed-state.ts` — state-file I/O and read-modify-write helper
-- `runtime/workspace-migrations.ts` — migration registry and applier
-- `runtime/source-repos.ts` — pure declaration of `gitRepos` coordinates (no git side effects)
-- `runtime/first-tree-skills/installer.ts` — state-based skill reconcile
-- `runtime/agent-bootstrap.ts` — wires migrations into session start
-- `packages/shared/src/schemas/workspace-manifest.ts` — the W1 binding
-  manifest at `<workspace>/.first-tree/workspace.json` (distinct from
-  `.first-tree-workspace/`; never touched by this machinery)
+- `runtime/managed-skills.ts` — reconcile, locking, transactions, migration,
+  validation, and provider placement.
+- `runtime/managed-state.ts` — schema parsing and atomic state/journal I/O.
+- `runtime/agent-bootstrap.ts` — stable workspace bootstrap and briefing write.
+- `runtime/workspace-migrations.ts` — one-shot layout migrations.
+- `runtime/first-tree-skills/installer.ts` — bundled Core Skill catalog and
+  package payload resolver.

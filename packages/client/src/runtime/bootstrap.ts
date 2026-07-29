@@ -8,17 +8,13 @@ import {
   readlinkSync,
   renameSync,
   rmSync,
-  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { contextTreeActiveBindingSchema } from "@first-tree/shared";
 import type { FirstTreeHubSDK } from "../sdk.js";
-import { getCliBinding } from "./cli-binding.js";
-import { installCoreSkills as installCoreSkillsImpl, installFirstTreeSkills } from "./first-tree-skills/installer.js";
 import type { AgentIdentity } from "./handler.js";
 import { CONTEXT_TREE_DIRNAME } from "./workspace-manifest.js";
 
@@ -204,128 +200,6 @@ function isWindowsSymlinkPermissionError(err: unknown): boolean {
   return code === "EPERM" || code === "EACCES";
 }
 
-/**
- * Per-agent-home pin file for the CLI version that performed the last
- * bootstrap. The bundled skills payload ships with the CLI binary, so this
- * version is the content drift key: when the operator upgrades the CLI, the
- * next session re-runs the slow bootstrap and refreshes
- * `.agents/skills/*`. Without this trigger, agent homes would silently
- * keep stale skill payloads after an upgrade.
- */
-export const BUNDLED_CLI_VERSION_REL = join(FIRST_TREE_RUNTIME_DIR, "cli-version");
-
-/**
- * Resolve a stable identifier for the bundled CLI that the handler can
- * compare against the cached `.first-tree-workspace/cli-version` to detect
- * upgrades.
- *
- * Behaviour by channel:
- *
- *   - **prod / staging** — returns the bare `<pkgVersion>` from the
- *     closest ancestor `package.json`. CI bumps that manifest's `version`
- *     on every release, so version alone is the unique build identifier.
- *   - **dev** — returns `<pkgVersion>+build.<mtime>`, where `<mtime>` is
- *     the integer `mtimeMs` of the file backing `moduleUrl`. Dev iteration
- *     never bumps `apps/cli/package.json` (CLAUDE.md forbids touching
- *     `version` fields), so a bare version would be constant across every
- *     `scripts/dev-install.sh` cycle and `cliDrifted` would never fire.
- *     `pnpm build` rewrites `dist/cli/index.mjs` and updates its mtime,
- *     so the appended suffix changes on every build → handler triggers
- *     a full re-bootstrap and the agent home picks up the new
- *     AGENTS.md briefing and shipped skills payload.
- *
- * Channel is read from `getCliBinding().packageName`: `null` is the dev
- * channel (dev binaries are not published — see
- * `runtime/cli-binding.ts`), everything else is a published channel.
- *
- * If `getCliBinding()` has not been initialised yet (e.g. an early
- * bootstrap call before `apps/cli` wired the binding), we fall through
- * to the bare-version path so the caller still gets something
- * drift-comparable.
- *
- * Walk source: the closest ancestor `package.json` with a non-empty
- * `version`. For the **published bundle**, `bootstrap.ts` is inlined
- * into `apps/cli/dist/<chunk>.mjs`, so the walk lands on the CLI
- * manifest. For **source-tree `tsx` / vitest runs** it lands on the
- * private `@first-tree/client` manifest — that version is constant in
- * dev too, which is exactly why dev needs the mtime suffix.
- *
- * Imported from here (not from `apps/cli`) to keep the client → CLI
- * dependency direction one-way.
- *
- * Returns `null` only when the walk exhausts every parent without
- * finding any `version` — drift detection then falls back to "unknown",
- * never to "drifted".
- */
-export function resolveBundledCliVersion(moduleUrl: string = import.meta.url): string | null {
-  let dir = dirname(fileURLToPath(moduleUrl));
-  let version: string | null = null;
-  for (let i = 0; i < 10; i += 1) {
-    const candidate = resolve(dir, "package.json");
-    if (existsSync(candidate)) {
-      try {
-        const parsed = JSON.parse(readFileSync(candidate, "utf8")) as { version?: unknown };
-        if (typeof parsed.version === "string" && parsed.version.length > 0) {
-          version = parsed.version;
-          break;
-        }
-      } catch {
-        // Corrupt or unreadable — keep walking; finding *some* version is
-        // better than crashing the bootstrap path.
-      }
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (version === null) return null;
-
-  // Channel gate: only the dev channel needs the build fingerprint.
-  // packageName === null is the published-channel-absent marker (see
-  // CliBinding's docblock). Anywhere else (prod / staging / uninitialised)
-  // we keep the bare version — staging/prod have a release-bumped
-  // version that already changes per build, so a fingerprint would just
-  // be noise in the `.first-tree-workspace/cli-version` pin.
-  let isDevChannel = false;
-  try {
-    isDevChannel = getCliBinding().packageName === null;
-  } catch {
-    // Binding not initialised — treat as non-dev. Safer default: skip
-    // the suffix rather than emit a fingerprint into a sentinel that a
-    // later boot (with binding set) would reject as drifted.
-  }
-  if (!isDevChannel) return version;
-
-  // Wrapped in try/catch so a synthetic `moduleUrl` pointing at a
-  // non-existent path still produces a usable version string for callers
-  // (and tests) that hand in dummy URLs.
-  try {
-    const mtimeMs = Math.floor(statSync(fileURLToPath(moduleUrl)).mtimeMs);
-    return `${version}+build.${mtimeMs}`;
-  } catch {
-    return version;
-  }
-}
-
-/** Read the cached CLI version that last ran bootstrap, if any. */
-export function readCachedBundledCliVersion(workspacePath: string): string | null {
-  const path = join(workspacePath, BUNDLED_CLI_VERSION_REL);
-  if (!existsSync(path)) return null;
-  try {
-    return readFileSync(path, "utf-8").trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Persist the bundled CLI version alongside the sentinel. */
-export function writeBundledCliVersion(workspacePath: string, version: string | null): void {
-  if (!version) return;
-  const path = join(workspacePath, BUNDLED_CLI_VERSION_REL);
-  ensureWorkspaceRuntimeDir(workspacePath);
-  writeFileSync(path, version, "utf-8");
-}
-
 function lstatIfExists(path: string) {
   try {
     return lstatSync(path);
@@ -473,91 +347,6 @@ export function bootstrapWorkspace(options: BootstrapOptions): void {
     contextTreePath,
   };
   writeFileSync(join(agentDir, "identity.json"), JSON.stringify(identityData, null, 2), "utf-8");
-}
-
-export type InstallFirstTreeIntegrationOptions = {
-  workspacePath: string;
-  log: (msg: string) => void;
-  /**
-   * Override the bundled-skills lookup root. Tests use this to point at a
-   * fixture skills/ directory; production leaves it undefined and the
-   * installer walks up from its own module URL to the @first-tree/client
-   * package root.
-   */
-  bundledSkillsRoot?: string;
-};
-
-export type InstallCoreSkillsOptions = {
-  workspacePath: string;
-  log: (msg: string) => void;
-  /** See {@link InstallFirstTreeIntegrationOptions.bundledSkillsRoot}. */
-  bundledSkillsRoot?: string;
-};
-
-/**
- * Reconcile the historical tree-skill ledger for a tree-bound workspace.
- *
- * The current `TREE_SKILL_NAMES` set is empty because the default First Tree
- * skill family installs through `installCoreSkills`. This path remains as the
- * managed-state cleanup hook for names previous versions recorded as
- * tree-scoped skills; it removes genuinely retired entries and records the
- * current empty ledger.
- *
- * Returns `false` when reconciliation fails; caller logs the failure and
- * continues. The agent session still starts.
- *
- * Pre-2026-06 history: this used to shell out to `<binName> tree skill
- * install --root <workspacePath>`. The CLI dependency was removed when
- * the @first-tree/client package started bundling skill payloads
- * directly (see `scripts/copy-bundled-skills.mjs`). No more `npx -y
- * `first-tree@latest` cold-download on first run, no more `binName` PATH
- * resolution, no more channel-aware fallback dance.
- */
-export function installFirstTreeIntegration(options: InstallFirstTreeIntegrationOptions): boolean {
-  const { workspacePath, log, bundledSkillsRoot } = options;
-  try {
-    const result = installFirstTreeSkills({ workspacePath, bundledSkillsRoot });
-    const parts: string[] = [];
-    if (result.installed.length > 0) parts.push(`installed ${result.installed.join(", ")}`);
-    if (result.skipped.length > 0) parts.push(`up-to-date ${result.skipped.join(", ")}`);
-    if (result.failed.length > 0) parts.push(`failed ${result.failed.map((f) => f.name).join(", ")}`);
-    log(`First-tree skills: ${parts.join("; ") || "no skills configured"}`);
-    for (const f of result.failed) {
-      log(`First-tree skill install failed (${f.name}): ${f.reason.slice(0, 200)}`);
-    }
-    return result.ok;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`First-tree skills install skipped: ${msg.slice(0, 200)}`);
-    return false;
-  }
-}
-
-/**
- * Install the default First Tree skill payload family. The function name keeps
- * the old "core" API surface, but the installed set is now the full small
- * family: welcome, seed, bug reporting, read, and write.
- */
-export function installCoreSkills(options: InstallCoreSkillsOptions): boolean {
-  const { workspacePath, log, bundledSkillsRoot } = options;
-  try {
-    const result = installCoreSkillsImpl({ workspacePath, bundledSkillsRoot });
-    if (result.installed.length > 0 || result.skipped.length > 0 || result.failed.length > 0) {
-      const parts: string[] = [];
-      if (result.installed.length > 0) parts.push(`installed ${result.installed.join(", ")}`);
-      if (result.skipped.length > 0) parts.push(`up-to-date ${result.skipped.join(", ")}`);
-      if (result.failed.length > 0) parts.push(`failed ${result.failed.map((f) => f.name).join(", ")}`);
-      log(`First-tree skills: ${parts.join("; ")}`);
-    }
-    for (const f of result.failed) {
-      log(`First-tree skill install failed (${f.name}): ${f.reason.slice(0, 200)}`);
-    }
-    return result.ok;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(`First-tree skill install skipped: ${msg.slice(0, 200)}`);
-    return false;
-  }
 }
 
 /**

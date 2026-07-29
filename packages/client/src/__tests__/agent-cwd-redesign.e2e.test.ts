@@ -34,6 +34,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const capturedSdkOptions: Array<{ options?: Record<string, unknown> }> = [];
 
+// This suite owns the real workspace/bootstrap boundary, including managed
+// Skill placement. Opt out of the handler-unit default in vitest.setup.ts.
+vi.unmock("../runtime/managed-skills.js");
+
 vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   const fakeQuery = {
     [Symbol.asyncIterator]() {
@@ -93,6 +97,7 @@ function buildCache(gitRepos: AgentRuntimeConfig["payload"]["gitRepos"]) {
           mcpServers: [],
           env: [],
           gitRepos,
+          resourceSkills: [],
         },
         updatedAt: new Date().toISOString(),
         updatedBy: "test",
@@ -422,6 +427,11 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
       expect(refreshedClaudeMd).toContain("# Working in First Tree");
       expect(refreshedClaudeMd).toContain("## Working Directory");
       expect(readFileSync(join(legacyCwd, "AGENTS.md"), "utf-8")).toBe(refreshedClaudeMd);
+      expect(existsSync(join(legacyCwd, ".claude", "skills", "first-tree-read", "SKILL.md"))).toBe(true);
+      expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed.json"))).toBe(true);
+      expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed-skills.lock"))).toBe(false);
+      expect(existsSync(join(legacyCwd, ".first-tree-workspace", "managed-skills-journal.json"))).toBe(false);
+      expect(existsSync(join(legacyCwd, ".first-tree", "workspace.json"))).toBe(false);
 
       await handler.shutdown();
     } finally {

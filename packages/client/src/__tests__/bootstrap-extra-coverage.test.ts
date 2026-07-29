@@ -2,12 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  installCoreSkills,
-  installFirstTreeIntegration,
-  migrateLegacyRuntimeLayout,
-  resolveAgentContextTreeBinding,
-} from "../runtime/bootstrap.js";
+import { migrateLegacyRuntimeLayout, resolveAgentContextTreeBinding } from "../runtime/bootstrap.js";
 import type { FirstTreeHubSDK } from "../sdk.js";
 
 const originalPlatform = process.platform;
@@ -26,7 +21,6 @@ describe("bootstrap edge coverage", () => {
   afterEach(() => {
     setPlatform(originalPlatform);
     vi.doUnmock("node:fs");
-    vi.doUnmock("../runtime/first-tree-skills/installer.js");
     vi.resetModules();
     rmSync(tmpBase, { recursive: true, force: true });
   });
@@ -199,64 +193,5 @@ describe("bootstrap edge coverage", () => {
 
     expect(() => mod.ensureClaudeMdSymlink(workspace)).toThrow("fallback rename denied");
     expect(existsSync(join(workspace, "CLAUDE.md"))).toBe(false);
-  });
-
-  it("logs empty tree/core skill installer results without failure", async () => {
-    vi.resetModules();
-    vi.doMock("../runtime/first-tree-skills/installer.js", () => ({
-      installFirstTreeSkills: () => ({ ok: true, installed: [], skipped: [], failed: [] }),
-      installCoreSkills: () => ({ ok: true, installed: [], skipped: [], failed: [] }),
-    }));
-    const mod = await import("../runtime/bootstrap.js");
-    const logs: string[] = [];
-
-    expect(mod.installFirstTreeIntegration({ workspacePath: tmpBase, log: (msg) => logs.push(msg) })).toBe(true);
-    expect(mod.installCoreSkills({ workspacePath: tmpBase, log: (msg) => logs.push(msg) })).toBe(true);
-
-    expect(logs).toEqual(["First-tree skills: no skills configured"]);
-  });
-
-  it("logs thrown tree/core skill installer failures and returns false", async () => {
-    vi.resetModules();
-    vi.doMock("../runtime/first-tree-skills/installer.js", () => ({
-      installFirstTreeSkills: () => {
-        throw new Error("tree installer unavailable");
-      },
-      installCoreSkills: () => {
-        throw "core installer unavailable";
-      },
-    }));
-    const mod = await import("../runtime/bootstrap.js");
-    const logs: string[] = [];
-
-    expect(mod.installFirstTreeIntegration({ workspacePath: tmpBase, log: (msg) => logs.push(msg) })).toBe(false);
-    expect(mod.installCoreSkills({ workspacePath: tmpBase, log: (msg) => logs.push(msg) })).toBe(false);
-
-    expect(logs).toEqual([
-      "First-tree skills install skipped: tree installer unavailable",
-      "First-tree skill install skipped: core installer unavailable",
-    ]);
-  });
-
-  it("keeps real wrapper behaviour available after dynamic installer mocks are reset", () => {
-    const logs: string[] = [];
-
-    expect(
-      installFirstTreeIntegration({
-        workspacePath: tmpBase,
-        bundledSkillsRoot: join(tmpBase, "missing-skills"),
-        log: (msg) => logs.push(msg),
-      }),
-    ).toBe(true);
-    expect(
-      installCoreSkills({
-        workspacePath: tmpBase,
-        bundledSkillsRoot: join(tmpBase, "missing-skills"),
-        log: (msg) => logs.push(msg),
-      }),
-    ).toBe(false);
-    expect(logs.join("\n")).toContain("First-tree skills: no skills configured");
-    expect(logs.join("\n")).toContain("First-tree skill install failed (first-tree-read)");
-    expect(logs.join("\n")).toContain("First-tree skill install failed (first-tree-welcome)");
   });
 });

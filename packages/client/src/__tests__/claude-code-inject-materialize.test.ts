@@ -7,11 +7,13 @@ import type { ChatContext } from "../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../runtime/handler.js";
 import { mockCtxPlumbing } from "./test-helpers.js";
 
-// A resource skill bound to an agent that already has a live session only lands
-// on disk if the handler re-materializes it when the config version bumps —
-// see maybeSwitchConfig's restart path in claude-code.ts. This exercises that
-// path end-to-end against a real temp workspace (materializeResourceSkills is
-// NOT mocked): the SKILL.md must appear before the injected turn runs.
+// Use the real managed reconciler instead of the default handler-test double
+// installed by vitest.setup.ts.
+vi.unmock("../runtime/managed-skills.js");
+
+// A Team Skill bound to an agent that already has a live session only lands on
+// disk if the handler reconciles it before restarting on a config bump. This
+// exercises that path end-to-end against a real temp workspace.
 const state = vi.hoisted(() => ({
   chatContextPromise: null as Promise<ChatContext> | null,
   resolveChatContext: null as ((value: ChatContext) => void) | null,
@@ -171,15 +173,15 @@ function resolveChatContext(): void {
 }
 
 async function waitFor(assertion: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1500;
+  const deadline = Date.now() + 5000;
   while (!assertion()) {
     if (Date.now() > deadline) throw new Error("timed out waiting for assertion");
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
 
-function skillPath(resourceId: string): string {
-  return join(workspaceRoot, ".first-tree", "resources", "skills", resourceId, "SKILL.md");
+function skillPath(): string {
+  return join(workspaceRoot, ".claude", "skills", "production-scan", "SKILL.md");
 }
 
 beforeEach(() => {
@@ -200,7 +202,7 @@ afterEach(() => {
   wakeQuery();
 });
 
-describe("claude-code inject-time resource-skill materialization", () => {
+describe("claude-code inject-time managed Skill reconciliation", () => {
   it("materializes a skill bound mid-session so the injected turn finds it on disk", async () => {
     cachedConfig = makeConfig(1, []);
     const config = { workspaceRoot, agentConfigCache };
@@ -213,7 +215,7 @@ describe("claude-code inject-time resource-skill materialization", () => {
     await waitFor(() => state.observedInputs.length === 1);
 
     // Start ran with no skills, so nothing is on disk yet.
-    expect(existsSync(skillPath(SCAN_SKILL.resourceId))).toBe(false);
+    expect(existsSync(skillPath())).toBe(false);
 
     // Server binds the scan skill + bumps the config version; the cache now
     // reflects the newer version. An injected message drives the drain →
@@ -223,7 +225,7 @@ describe("claude-code inject-time resource-skill materialization", () => {
 
     // Wait for the body to actually land — existsSync alone can race the
     // create-then-write window and observe a still-empty file.
-    const target = skillPath(SCAN_SKILL.resourceId);
+    const target = skillPath();
     await waitFor(() => existsSync(target) && readFileSync(target, "utf-8").includes("SCAN RUBRIC BODY"));
     expect(readFileSync(target, "utf-8")).toContain("SCAN RUBRIC BODY");
 
@@ -241,7 +243,7 @@ describe("claude-code inject-time resource-skill materialization", () => {
     await startPromise;
     await waitFor(() => state.observedInputs.length === 1);
     // Start materialized the skill at version 2.
-    expect(existsSync(skillPath(SCAN_SKILL.resourceId))).toBe(true);
+    expect(existsSync(skillPath())).toBe(true);
 
     // A swallowed refresh failure leaves a version-0 empty fallback config.
     // maybeSwitchConfig still runs its restart path (writeAgentBriefing fires),
@@ -252,7 +254,7 @@ describe("claude-code inject-time resource-skill materialization", () => {
     handler.inject(makeMessage("m2", "another message"));
 
     await waitFor(() => vi.mocked(writeAgentBriefing).mock.calls.length >= 1);
-    expect(existsSync(skillPath(SCAN_SKILL.resourceId))).toBe(true);
+    expect(existsSync(skillPath())).toBe(true);
 
     await handler.shutdown();
   });

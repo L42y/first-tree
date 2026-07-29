@@ -3,33 +3,25 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// In-memory pin state shared with the bootstrap.js mock. Hoisted so it's
-// available inside the (hoisted) vi.mock factory.
-const state = vi.hoisted(() => ({ cachedTreeHead: null as string | null, cachedCli: null as string | null }));
+const bootstrapMocks = vi.hoisted(() => ({
+  bootstrapWorkspace: vi.fn(),
+  deepEqualIdentity: vi.fn(() => true),
+  writeAgentBriefing: vi.fn(),
+}));
+const migrationMocks = vi.hoisted(() => ({ applyPendingMigrations: vi.fn() }));
+const manifestMocks = vi.hoisted(() => ({ ensureWorkspaceManifest: vi.fn() }));
 
 vi.mock("../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   IDENTITY_JSON_REL: ".first-tree-workspace/identity.json",
-  bootstrapWorkspace: vi.fn(),
-  ensureWorkspaceRuntimeDir: vi.fn(),
-  installCoreSkills: vi.fn(),
-  installFirstTreeIntegration: vi.fn(),
-  deepEqualIdentity: vi.fn(() => false),
-  readContextTreeHead: vi.fn(() => "head1"),
-  readCachedContextTreeHead: vi.fn(() => state.cachedTreeHead),
-  resolveBundledCliVersion: vi.fn(() => "1.0.0"),
-  readCachedBundledCliVersion: vi.fn(() => state.cachedCli),
-  writeAgentBriefing: vi.fn(),
-  writeContextTreeHead: vi.fn((_w: string, h: string | null) => {
-    state.cachedTreeHead = h;
-  }),
-  writeBundledCliVersion: vi.fn((_w: string, v: string | null) => {
-    state.cachedCli = v;
-  }),
+  bootstrapWorkspace: bootstrapMocks.bootstrapWorkspace,
+  deepEqualIdentity: bootstrapMocks.deepEqualIdentity,
+  writeAgentBriefing: bootstrapMocks.writeAgentBriefing,
 }));
+vi.mock("../runtime/workspace-migrations.js", () => migrationMocks);
+vi.mock("../runtime/workspace-manifest.js", () => manifestMocks);
 
 import { ensureAgentBootstrap } from "../runtime/agent-bootstrap.js";
-import { installCoreSkills, installFirstTreeIntegration } from "../runtime/bootstrap.js";
 import type { SessionContext } from "../runtime/handler.js";
 import { INIT_COMPLETE_SENTINEL_REL } from "../runtime/workspace.js";
 
@@ -45,153 +37,87 @@ function fakeSessionCtx(): SessionContext {
       metadata: {},
     },
     sdk: { serverUrl: "https://hub.test" },
-    log: () => {},
+    log: vi.fn(),
   } as unknown as SessionContext;
 }
 
-/**
- * Regression for the integration-failure retry gate (PR #712 review round 2):
- * a tree-bound agent whose first `installFirstTreeIntegration` fails must NOT
- * be frozen behind the init-complete sentinel — the next ensureAgentBootstrap
- * has to retry, and only stop retrying once integration succeeds (CLI pin set).
- */
-describe("ensureAgentBootstrap — integration retry gate", () => {
+describe("ensureAgentBootstrap", () => {
   let workspace: string;
 
   beforeEach(() => {
     workspace = mkdtempSync(join(tmpdir(), "ft-agent-bootstrap-"));
-    // Simulate "already bootstrapped once" — the sentinel is present, which is
-    // exactly the state that previously let a failed integration coast on the
-    // fast path forever.
-    const sentinel = join(workspace, INIT_COMPLETE_SENTINEL_REL);
-    mkdirSync(dirname(sentinel), { recursive: true });
-    writeFileSync(sentinel, "1", "utf-8");
-
-    state.cachedTreeHead = null;
-    state.cachedCli = null;
-    vi.mocked(installFirstTreeIntegration).mockReset();
-    vi.mocked(installCoreSkills).mockReset();
+    vi.clearAllMocks();
+    bootstrapMocks.deepEqualIdentity.mockReturnValue(true);
   });
 
   afterEach(() => {
     rmSync(workspace, { recursive: true, force: true });
-    vi.clearAllMocks();
   });
 
-  it("retries integration after a first failure, then settles once it succeeds", () => {
-    // First integration attempt fails, second succeeds.
-    vi.mocked(installFirstTreeIntegration).mockReturnValueOnce(false).mockReturnValueOnce(true);
-
-    const params = {
-      workspace,
-      sessionCtx: fakeSessionCtx(),
-      contextTreePath: "/tree",
-      briefing: "# Agent Identity\n\nstub briefing\n",
-      // Tests that don't exercise migration / state-reconcile pass `null` —
-      // mirrors the cache-miss caller signal.
-      currentSourceRepoNames: null,
-    };
-
-    // Call 1: integration fails → CLI version NOT pinned.
-    ensureAgentBootstrap(params);
-    expect(installFirstTreeIntegration).toHaveBeenCalledTimes(1);
-    expect(state.cachedCli).toBeNull();
-
-    // Call 2: CLI pin still missing → slow path retries integration (succeeds).
-    ensureAgentBootstrap(params);
-    expect(installFirstTreeIntegration).toHaveBeenCalledTimes(2);
-    expect(state.cachedCli).toBe("1.0.0");
-
-    // Call 3: integration succeeded (CLI pinned), no drift → fast path, no retry.
-    ensureAgentBootstrap(params);
-    expect(installFirstTreeIntegration).toHaveBeenCalledTimes(2);
-  });
-
-  it("a tree-less session leaves the CLI pin unset so a later tree-bound session still runs integration", () => {
-    // Regression: a tree-less session used to pin the CLI version (because
-    // `integrationOk` defaults to true even when integration is skipped),
-    // which defeated `integrationNeverPinned` and made the eventual tree-bound
-    // upgrade (new-tree onboarding) take the fast path and never run tree
-    // integration.
-    vi.mocked(installFirstTreeIntegration).mockReturnValue(true);
+  it("keeps the sentinel fast path focused on identity and briefing state", () => {
     const sentinel = join(workspace, INIT_COMPLETE_SENTINEL_REL);
-    rmSync(sentinel, { force: true }); // start sentinel-absent → slow path
-
-    // Session 1: tree-less slow path. Integration is skipped (no tree) and —
-    // post-fix — the CLI version must NOT be pinned.
-    ensureAgentBootstrap({
-      workspace,
-      sessionCtx: fakeSessionCtx(),
-      contextTreePath: null,
-      briefing: "# Agent Identity\n\nstub briefing\n",
-      currentSourceRepoNames: null,
-    });
-    expect(installFirstTreeIntegration).not.toHaveBeenCalled();
-    expect(state.cachedCli).toBeNull();
-
-    // Simulate the completed session having written the init-complete sentinel.
     mkdirSync(dirname(sentinel), { recursive: true });
-    writeFileSync(sentinel, "1", "utf-8");
-
-    // Session 2: the org tree now exists → tree-bound. Sentinel is present, but
-    // because the tree-less session never pinned the CLI version,
-    // `integrationNeverPinned` fires and the slow path runs integration.
-    ensureAgentBootstrap({
-      workspace,
-      sessionCtx: fakeSessionCtx(),
-      contextTreePath: "/tree",
-      briefing: "# Agent Identity\n\nstub briefing\n",
-      currentSourceRepoNames: null,
-    });
-    expect(installFirstTreeIntegration).toHaveBeenCalledTimes(1);
-    expect(state.cachedCli).toBe("1.0.0");
-  });
-
-  it("non-tree agents take the fast path on the sentinel (no integration gate)", () => {
-    const params = {
-      workspace,
-      sessionCtx: fakeSessionCtx(),
-      contextTreePath: null,
-      briefing: "# Agent Identity\n\nstub briefing\n",
-      currentSourceRepoNames: null,
-    };
-    ensureAgentBootstrap(params);
-    // No Context Tree → installFirstTreeIntegration is never called regardless.
-    expect(installFirstTreeIntegration).not.toHaveBeenCalled();
-    expect(installCoreSkills).toHaveBeenLastCalledWith(expect.objectContaining({ workspacePath: workspace }));
-  });
-
-  it("tree-bound sentinel fast path still refreshes default skills without re-running integration", () => {
-    state.cachedCli = "1.0.0";
+    writeFileSync(sentinel, "1\n");
+    writeFileSync(join(workspace, ".first-tree-workspace", "identity.json"), JSON.stringify({ agentId: "agent-1" }));
 
     ensureAgentBootstrap({
       workspace,
       sessionCtx: fakeSessionCtx(),
-      contextTreePath: "/tree",
-      briefing: "# Agent Identity\n\nstub briefing\n",
+      contextTreePath: null,
+      briefing: "# Current briefing\n",
       currentSourceRepoNames: null,
     });
 
-    expect(installFirstTreeIntegration).not.toHaveBeenCalled();
-    expect(installCoreSkills).toHaveBeenLastCalledWith(expect.objectContaining({ workspacePath: workspace }));
+    expect(bootstrapMocks.bootstrapWorkspace).not.toHaveBeenCalled();
+    expect(bootstrapMocks.writeAgentBriefing).toHaveBeenCalledWith(workspace, "# Current briefing\n");
+    expect(migrationMocks.applyPendingMigrations).toHaveBeenCalledOnce();
   });
 
-  it("installs default First Tree skills even when an existing tree-less workspace takes the sentinel fast path", () => {
-    const params = {
+  it("refreshes stable identity when the sentinel is present but identity drifted", () => {
+    const sentinel = join(workspace, INIT_COMPLETE_SENTINEL_REL);
+    mkdirSync(dirname(sentinel), { recursive: true });
+    writeFileSync(sentinel, "1\n");
+    writeFileSync(join(workspace, ".first-tree-workspace", "identity.json"), "{}");
+    bootstrapMocks.deepEqualIdentity.mockReturnValue(false);
+    const sessionCtx = fakeSessionCtx();
+
+    ensureAgentBootstrap({
       workspace,
-      sessionCtx: fakeSessionCtx(),
-      contextTreePath: null,
-      briefing: "# Agent Identity\n\nstub briefing\n",
-      currentSourceRepoNames: null,
-    };
+      sessionCtx,
+      contextTreePath: "/tree",
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
 
-    ensureAgentBootstrap(params);
-
-    expect(installFirstTreeIntegration).not.toHaveBeenCalled();
-    expect(installCoreSkills).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspacePath: workspace,
-      }),
+    expect(bootstrapMocks.bootstrapWorkspace).toHaveBeenCalledWith({
+      workspacePath: workspace,
+      identity: sessionCtx.agent,
+      contextTreePath: "/tree",
+      serverUrl: "https://hub.test",
+    });
+    expect(manifestMocks.ensureWorkspaceManifest).toHaveBeenCalledWith(
+      workspace,
+      ["source-repos/first-tree"],
+      sessionCtx.log,
     );
+  });
+
+  it("runs the stable bootstrap when init is incomplete and always writes the latest briefing", () => {
+    const sessionCtx = fakeSessionCtx();
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      contextTreePath: null,
+      briefing: "fresh briefing\n",
+      currentSourceRepoNames: null,
+    });
+
+    expect(bootstrapMocks.bootstrapWorkspace).toHaveBeenCalledWith({
+      workspacePath: workspace,
+      identity: sessionCtx.agent,
+      contextTreePath: null,
+      serverUrl: "https://hub.test",
+    });
+    expect(bootstrapMocks.writeAgentBriefing).toHaveBeenCalledWith(workspace, "fresh briefing\n");
   });
 });
