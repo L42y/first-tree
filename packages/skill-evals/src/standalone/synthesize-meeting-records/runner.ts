@@ -135,12 +135,14 @@ export async function runSynthesizeMeetingRecordsCase(
   const initialFixtureValidation = validateFixture(paths, sourceRepoPath);
   const rawAccessMonitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
   let fixtureValidation = initialFixtureValidation;
+  let providerContained = false;
   const runnerResult = await (async () => {
     try {
       const exitCode = await runCodexProvider(
         {
           bin: options.codexBin,
           caseId: evalCase.id,
+          containProcessTree: true,
           model: options.model,
           prompt: evalCase.prompt,
           provider: "codex",
@@ -148,14 +150,19 @@ export async function runSynthesizeMeetingRecordsCase(
         },
         { paths, reporter },
       );
+      providerContained = true;
       return { exitCode };
     } finally {
-      fixtureValidation = finalizeFixtureValidationAfterAgent(
-        paths,
-        sourceRepoPath,
-        initialFixtureValidation,
-        rawAccessMonitors,
-      );
+      if (providerContained) {
+        fixtureValidation = finalizeFixtureValidationAfterAgent(
+          paths,
+          sourceRepoPath,
+          initialFixtureValidation,
+          rawAccessMonitors,
+        );
+      } else {
+        stopPartialRawAccessMonitors(rawAccessMonitors);
+      }
     }
   })();
   const validatorResult = runPacketValidator(paths, fixtureValidation);

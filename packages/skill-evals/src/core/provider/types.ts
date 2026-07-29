@@ -6,6 +6,7 @@ export type AgentProviderName = "codex" | "claude";
 export type ProviderRunOptions = {
   bin: string;
   caseId: string;
+  containProcessTree?: boolean;
   model: string | null;
   prompt: string;
   provider: AgentProviderName;

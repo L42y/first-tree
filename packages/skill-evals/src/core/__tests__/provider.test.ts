@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 
@@ -259,6 +259,73 @@ describe("codex provider runner hardening", () => {
       rmSync(packageRoot, { force: true, recursive: true });
     }
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "reaps a detached model descendant before returning to post-run validation",
+    async () => {
+      const packageRoot = tempPackageRoot();
+      try {
+        const codexBinDir = join(packageRoot, "operator-codex-bin");
+        mkdirSync(codexBinDir, { recursive: true });
+        const context = fakeContext(packageRoot);
+        const canaryPath = join(context.paths.workspacePath, ".agents", "late-descendant-canary");
+        const descendantPidPath = join(packageRoot, "detached-descendant.pid");
+        const descendantSource = [
+          `require("node:fs").writeFileSync(${JSON.stringify(descendantPidPath)}, String(process.pid));`,
+          `require("node:fs").mkdirSync(${JSON.stringify(dirname(canaryPath))}, { recursive: true });`,
+          `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(canaryPath)}, "late\\n"), 750);`,
+        ].join("");
+        const launcherSource = [
+          'const { existsSync } = require("node:fs");',
+          'const { spawn } = require("node:child_process");',
+          `const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendantSource)}], { detached: true, stdio: "ignore" });`,
+          "child.unref();",
+          "const deadline = Date.now() + 1000;",
+          `while (!existsSync(${JSON.stringify(descendantPidPath)}) && Date.now() < deadline) {`,
+          "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);",
+          "}",
+          `if (!existsSync(${JSON.stringify(descendantPidPath)})) process.exit(2);`,
+        ].join("");
+        const codexBin = join(codexBinDir, "codex");
+        writeFileSync(
+          codexBin,
+          `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} -e ${JSON.stringify(launcherSource)}\n`,
+          "utf8",
+        );
+        chmodSync(codexBin, 0o755);
+
+        const exitCode = await runCodexProvider(
+          {
+            bin: codexBin,
+            caseId: "provider-hardening-test",
+            containProcessTree: true,
+            model: null,
+            prompt: "Run the eval case.",
+            provider: "codex",
+            verbose: false,
+          },
+          context,
+        );
+
+        expect(exitCode).toBe(0);
+        const detachedPid = Number(readFileSync(descendantPidPath, "utf8"));
+        expect(() => process.kill(detachedPid, 0)).toThrow();
+        expect(existsSync(canaryPath)).toBe(false);
+
+        writeFileSync(join(packageRoot, "post-run-validation-complete"), "checked\n", "utf8");
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        expect(existsSync(canaryPath)).toBe(false);
+        expect(readEvents(context.paths.eventsPath)).toContainEqual(
+          expect.objectContaining({
+            exitCode: 0,
+            type: "codex_process_tree_reaped",
+          }),
+        );
+      } finally {
+        rmSync(packageRoot, { force: true, recursive: true });
+      }
+    },
+  );
 });
 
 describe("claude provider runner hardening", () => {

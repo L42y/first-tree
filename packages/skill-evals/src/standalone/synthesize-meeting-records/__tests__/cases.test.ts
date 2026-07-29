@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
-import { parseArgs } from "../index.js";
+import { assertSupportedPlatform, parseArgs } from "../index.js";
 
 describe("standalone synthesize-meeting-records cases", () => {
   it("covers each required model-owned behavior", () => {
@@ -44,5 +44,10 @@ describe("standalone synthesize-meeting-records cases", () => {
     expect(parseArgs([])).not.toHaveProperty("provider");
     expect(() => parseArgs(["--provider", "claude"])).toThrow("Unknown option: --provider");
     expect(() => parseArgs(["--claude-bin", "claude"])).toThrow("Unknown option: --claude-bin");
+  });
+
+  it("fails closed when Linux process-tree containment is unavailable", () => {
+    expect(() => assertSupportedPlatform("linux")).not.toThrow();
+    expect(() => assertSupportedPlatform("darwin")).toThrow("requires Linux process-tree containment");
   });
 });

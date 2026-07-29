@@ -12,7 +12,8 @@ function usage(): string {
   pnpm --filter @first-tree/skill-evals eval:standalone:synthesize-meeting-records -- --case <id>
 
 This is a human-directed model-backed evaluation. Do not run it implicitly.
-This standalone gate runs Codex only. The Skill contract itself remains
+This standalone gate runs Codex on Linux only because the host must contain
+and reap the complete model process tree. The Skill contract itself remains
 provider-agnostic.
 
 Options:
@@ -74,6 +75,12 @@ export function parseArgs(args: readonly string[]): CliOptions {
   return options;
 }
 
+export function assertSupportedPlatform(platform: NodeJS.Platform = process.platform): void {
+  if (platform !== "linux") {
+    throw new Error("The standalone synthesize-meeting-records gate requires Linux process-tree containment.");
+  }
+}
+
 function selectCases(caseId: string | null): readonly MeetingRecordsEvalCase[] {
   if (caseId === null) return SYNTHESIZE_MEETING_RECORDS_CASES;
   const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.id === caseId);
@@ -87,6 +94,7 @@ function selectCases(caseId: string | null): readonly MeetingRecordsEvalCase[] {
 
 export async function main(args: readonly string[]): Promise<number> {
   const options = parseArgs(args);
+  assertSupportedPlatform();
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
   const runStartedAt = new Date().toISOString();
   const summaries = [];

@@ -27,10 +27,11 @@ Run `node scripts/test.mjs`. Cover:
 The repository-local standalone harness installs this experimental Skill into
 an isolated workspace. It does not register the Skill as a First Tree
 Client/core payload and does not expose a Context Tree or downstream writer.
-The executable gate currently runs Codex only because its partial-source
-isolation depends on the Codex sandbox boundary. This does not narrow the
-provider-agnostic Skill contract or the meeting artifacts it can analyze.
-Run it only with explicit human instruction:
+The executable gate currently runs Codex on Linux only. Its partial-source
+isolation depends on the Codex sandbox boundary, and its post-run oracles
+depend on Linux subreaper containment for the complete model process tree.
+This does not narrow the provider-agnostic Skill contract or the meeting
+artifacts it can analyze. Run it only with explicit human instruction:
 
 ```sh
 pnpm --filter @first-tree/skill-evals \
@@ -85,6 +86,12 @@ parent descriptor. Bundle and packet content reaches the validator only
 through host-owned snapshots after fixture validation passes. Failed fixture
 validation skips packet validation entirely, so a rejected workspace path is
 never followed as a later validation input.
+
+Codex runs under a host supervisor marked as a Linux child subreaper. After
+the immediate Codex process exits, detached descendants are adopted,
+terminated, and reaped before the provider returns. Fixture validation,
+packet validation, grading, and summary publication begin only after this
+containment boundary reports that no model descendant remains.
 
 ## Model-backed cases
 
