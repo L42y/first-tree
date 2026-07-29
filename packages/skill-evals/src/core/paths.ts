@@ -23,12 +23,14 @@ export function createRunPaths(options: CreateRunPathsOptions): RunPaths {
   mkdirSync(modelEventDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   mkdirSync(shellEnvDir, { recursive: true });
+  const modelEventsPath = join(modelEventDir, "events.jsonl");
+  writeFileSync(modelEventsPath, "", { encoding: "utf8", flag: "wx" });
 
   return {
     binDir,
     eventsPath: join(runRoot, "events.jsonl"),
     gradingJsonPath: join(runRoot, "grading.json"),
-    modelEventsPath: join(modelEventDir, "events.jsonl"),
+    modelEventsPath,
     packageRoot: options.packageRoot,
     repoRoot,
     runRoot,

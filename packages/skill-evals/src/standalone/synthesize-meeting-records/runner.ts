@@ -5,7 +5,7 @@ import { appendEvent, readEvents } from "../../core/events.js";
 import { createRunPaths } from "../../core/paths.js";
 import { runCodexProvider } from "../../core/provider/codex.js";
 import { createEvalReporter } from "../../core/reporter.js";
-import { readNoFollowRegularText } from "../../core/safe-file.js";
+import { readNoFollowRegularTextBeneath } from "../../core/safe-file.js";
 import type { CommandResult } from "../../core/types.js";
 import {
   type PartialRawAccessMonitor,
@@ -44,9 +44,12 @@ export function runPacketValidator(
   try {
     writeText(
       bundleSnapshotPath,
-      readNoFollowRegularText(join(paths.workspacePath, "source-artifacts", "bundle.json")),
+      readNoFollowRegularTextBeneath(paths.workspacePath, join(paths.workspacePath, "source-artifacts", "bundle.json")),
     );
-    writeText(packetSnapshotPath, readNoFollowRegularText(join(paths.workspacePath, "meeting-analysis-output.json")));
+    writeText(
+      packetSnapshotPath,
+      readNoFollowRegularTextBeneath(paths.workspacePath, join(paths.workspacePath, "meeting-analysis-output.json")),
+    );
   } catch (error) {
     return skippedValidatorResult(
       paths,

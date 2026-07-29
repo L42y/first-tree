@@ -16,12 +16,14 @@ function tempPackageRoot(): string {
 }
 
 function fakeContext(packageRoot: string): ProviderRunContext {
+  const paths = createRunPaths({
+    caseId: "provider-hardening-test",
+    packageRoot,
+    startedAt: "2026-06-29T00:00:00.000Z",
+  });
+  writeFileSync(paths.modelEventsPath, "", "utf8");
   return {
-    paths: createRunPaths({
-      caseId: "provider-hardening-test",
-      packageRoot,
-      startedAt: "2026-06-29T00:00:00.000Z",
-    }),
+    paths,
     reporter: createEvalReporter("provider-hardening-test", false),
   };
 }
@@ -205,6 +207,54 @@ describe("codex provider runner hardening", () => {
       const events = readEvents(context.paths.eventsPath);
       expect(events).toContainEqual(expect.objectContaining({ type: "model_events_rejected" }));
       expect(events).not.toContainEqual(expect.objectContaining({ type: "forged-host-receipt" }));
+    } finally {
+      rmSync(packageRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not consume a receipt through a replaced ancestor directory", async () => {
+    const packageRoot = tempPackageRoot();
+    try {
+      const codexBinDir = join(packageRoot, "operator-codex-bin");
+      mkdirSync(codexBinDir, { recursive: true });
+      const codexBin = join(codexBinDir, "codex");
+      writeFileSync(
+        codexBin,
+        [
+          "#!/bin/sh",
+          'receipt_dir=$(dirname "$FIRST_TREE_EVAL_EVENTS")',
+          'rm -f "$FIRST_TREE_EVAL_EVENTS"',
+          'rmdir "$receipt_dir"',
+          'ln -s .. "$receipt_dir"',
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      chmodSync(codexBin, 0o755);
+
+      const context = fakeContext(packageRoot);
+      const exitCode = await runCodexProvider(
+        {
+          bin: codexBin,
+          caseId: "provider-hardening-test",
+          model: null,
+          prompt: "Run the eval case.",
+          provider: "codex",
+          verbose: false,
+        },
+        context,
+      );
+
+      expect(exitCode).toBe(0);
+      const events = readEvents(context.paths.eventsPath);
+      expect(events).toContainEqual(expect.objectContaining({ type: "model_events_rejected" }));
+      expect(events).not.toContainEqual(
+        expect.objectContaining({
+          eventProvenance: "model-writable",
+          type: "codex_run_started",
+        }),
+      );
     } finally {
       rmSync(packageRoot, { force: true, recursive: true });
     }

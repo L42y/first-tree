@@ -75,10 +75,15 @@ only the pre-created regular model-receipt file may change content. Index flags
 and writes hidden inside allowed container directories therefore cannot hide
 content, type, or mode changes.
 
-Before any unsandboxed host read, the model receipt, bundle, and packet are
-opened with no-follow regular-file checks and copied into host-owned snapshots.
-Failed fixture validation skips packet validation entirely, so a rejected
-workspace path is never followed as a later validation input.
+The host opens the pre-created model receipt before the model starts and reads
+only that fixed regular-file descriptor afterward; replacing its filename or
+an ancestor directory cannot redirect the host read. Other workspace reads are
+bounded to an exact trusted root, reject every symlinked/non-directory ancestor
+and a symlinked final file, and verify component/file identity around the
+snapshot. Bundle and packet content reaches the validator only through
+host-owned snapshots after fixture validation passes. Failed fixture
+validation skips packet validation entirely, so a rejected workspace path is
+never followed as a later validation input.
 
 ## Model-backed cases
 

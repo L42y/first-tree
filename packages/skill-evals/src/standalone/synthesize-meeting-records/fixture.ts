@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { assertCommandOk, runCommand, writeText } from "../../core/commands.js";
 import { appendEvent, isRecord, isStringArray, readEvents } from "../../core/events.js";
 import type { EvalReporter } from "../../core/reporter.js";
-import { readNoFollowRegularFile, readNoFollowRegularText } from "../../core/safe-file.js";
+import { readNoFollowRegularFileBeneath, readNoFollowRegularTextBeneath } from "../../core/safe-file.js";
 import { parseSkillDescription } from "../../core/skills/install.js";
 import type { RunPaths } from "../../core/types.js";
 import type { FixtureValidation, MeetingFixtureMode, MeetingRecordsEvalCase } from "./types.js";
@@ -69,8 +69,8 @@ verbatim source prose into the packet or final response.
 `;
 }
 
-function fileSha256(path: string): string {
-  return createHash("sha256").update(readNoFollowRegularFile(path)).digest("hex");
+function fileSha256(root: string, path: string): string {
+  return createHash("sha256").update(readNoFollowRegularFileBeneath(root, path)).digest("hex");
 }
 
 function pathExistsNoFollow(path: string): boolean {
@@ -115,7 +115,7 @@ function directoryManifest(root: string, options: DirectoryManifestOptions = {})
         entries.push(
           options.mutableRegularFiles?.has(locator)
             ? `file:${mode}:${locator}:mutable-content`
-            : `file:${mode}:${locator}:${fileSha256(path)}`,
+            : `file:${mode}:${locator}:${fileSha256(root, path)}`,
         );
       } else if (entry.isSymbolicLink()) {
         entries.push(`symlink:${mode}:${locator}:${readlinkSync(path)}`);
@@ -221,7 +221,9 @@ function validateInstalledInstructions(paths: RunPaths): readonly string[] {
   try {
     if (pathExistsNoFollow(agentsPath) && pathExistsNoFollow(sourceSkillMarkdownPath)) {
       const expected = agentsMarkdown(parseSkillDescription(readFileSync(sourceSkillMarkdownPath, "utf8")));
-      if (readNoFollowRegularText(agentsPath) !== expected) errors.push("workspace AGENTS.md changed after setup");
+      if (readNoFollowRegularTextBeneath(paths.workspacePath, agentsPath) !== expected) {
+        errors.push("workspace AGENTS.md changed after setup");
+      }
     }
   } catch (error) {
     errors.push(`workspace AGENTS.md cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
@@ -340,7 +342,7 @@ function initSourceRepo(sourceRepoPath: string): string {
 }
 
 function partialArtifactLocators(sourceRepoPath: string): readonly string[] {
-  const bundle = JSON.parse(readNoFollowRegularText(join(sourceRepoPath, "bundle.json"))) as {
+  const bundle = JSON.parse(readNoFollowRegularTextBeneath(sourceRepoPath, join(sourceRepoPath, "bundle.json"))) as {
     artifacts?: Array<{ completeness?: unknown; content_ref?: { locator?: unknown } }>;
   };
   if (!bundle.artifacts?.some((artifact) => artifact.completeness !== "complete")) return [];

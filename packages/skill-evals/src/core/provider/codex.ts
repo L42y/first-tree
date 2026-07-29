@@ -5,7 +5,12 @@ import { createInterface } from "node:readline";
 
 import { appendEvent, isRecord, parseEvents, previewText } from "../events.js";
 import { isShimTraceLine } from "../reporter.js";
-import { readNoFollowRegularText } from "../safe-file.js";
+import {
+  closeOpenedRegularFile,
+  type OpenedRegularFile,
+  openNoFollowRegularFile,
+  readOpenedRegularText,
+} from "../safe-file.js";
 import type { ProviderRunContext, ProviderRunOptions } from "./types.js";
 
 const ALLOWED_ENV_KEYS = new Set([
@@ -240,10 +245,10 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, context: Provid
   });
 }
 
-function appendModelEvents(context: ProviderRunContext): void {
+function appendModelEvents(context: ProviderRunContext, receipt: OpenedRegularFile): void {
   let modelEvents: readonly unknown[];
   try {
-    modelEvents = parseEvents(readNoFollowRegularText(context.paths.modelEventsPath));
+    modelEvents = parseEvents(readOpenedRegularText(receipt));
   } catch (error) {
     if (isRecord(error) && error.code === "ENOENT") return;
     appendEvent(context.paths.eventsPath, {
@@ -266,6 +271,7 @@ export async function runCodexProvider(options: ProviderRunOptions, context: Pro
   const command = codexProviderCommand(options);
   const env = codexProviderEnv(options, context);
   const args = codexProviderArgs(options, context.paths.workspacePath, env);
+  const modelEventsReceipt = openNoFollowRegularFile(context.paths.modelEventsPath);
   appendEvent(context.paths.eventsPath, {
     args,
     caseId: options.caseId,
@@ -276,25 +282,29 @@ export async function runCodexProvider(options: ProviderRunOptions, context: Pro
   });
   context.reporter.codexProcessStarted(args);
 
-  const child = spawn(command, args, {
-    cwd: context.paths.workspacePath,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  try {
+    const child = spawn(command, args, {
+      cwd: context.paths.workspacePath,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
-  const streamTasks: Promise<void>[] = [];
-  if (child.stdout) streamTasks.push(consumeCodexStdout(context.paths.eventsPath, child.stdout, context));
-  if (child.stderr) streamTasks.push(consumeStderr(context.paths.eventsPath, child.stderr, context));
+    const streamTasks: Promise<void>[] = [];
+    if (child.stdout) streamTasks.push(consumeCodexStdout(context.paths.eventsPath, child.stdout, context));
+    if (child.stderr) streamTasks.push(consumeStderr(context.paths.eventsPath, child.stderr, context));
 
-  const exitCode = await waitForChildExit(child, context);
-  await Promise.all(streamTasks);
-  appendModelEvents(context);
+    const exitCode = await waitForChildExit(child, context);
+    await Promise.all(streamTasks);
+    appendModelEvents(context, modelEventsReceipt);
 
-  appendEvent(context.paths.eventsPath, {
-    caseId: options.caseId,
-    exitCode,
-    type: "codex_run_finished",
-  });
+    appendEvent(context.paths.eventsPath, {
+      caseId: options.caseId,
+      exitCode,
+      type: "codex_run_finished",
+    });
 
-  return exitCode;
+    return exitCode;
+  } finally {
+    closeOpenedRegularFile(modelEventsReceipt);
+  }
 }

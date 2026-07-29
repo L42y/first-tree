@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { classifyShellCommandIo } from "@first-tree/shared";
 
 import { isRecord } from "../../core/events.js";
-import { readNoFollowRegularText } from "../../core/safe-file.js";
+import { readNoFollowRegularTextBeneath } from "../../core/safe-file.js";
 import type { RunPaths } from "../../core/types.js";
 import { SKILL_NAME, sourceArtifactManifest } from "./fixture.js";
 import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEvaluation } from "./types.js";
@@ -159,9 +159,12 @@ export function sourceRepoChanged(events: readonly unknown[], paths: RunPaths): 
   }
 }
 
-function readPacketSnapshot(path: string): { packet: Record<string, unknown> | null; text: string } {
+function readPacketSnapshot(
+  trustedRoot: string,
+  path: string,
+): { packet: Record<string, unknown> | null; text: string } {
   try {
-    const text = readNoFollowRegularText(path);
+    const text = readNoFollowRegularTextBeneath(trustedRoot, path);
     const parsed: unknown = JSON.parse(text);
     return { packet: isRecord(parsed) ? parsed : null, text };
   } catch {
@@ -224,7 +227,7 @@ export function deriveMetrics(
   paths: RunPaths,
 ): EvalMetrics {
   const packetPath = join(paths.workspacePath, "meeting-analysis-output.json");
-  const packetSnapshot = readPacketSnapshot(packetPath);
+  const packetSnapshot = readPacketSnapshot(paths.workspacePath, packetPath);
   const packet = packetSnapshot.packet;
   const packetText = packetSnapshot.text;
   const visibleAssistantText = assistantVisibleText(events);
