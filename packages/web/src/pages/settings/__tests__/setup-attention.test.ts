@@ -164,7 +164,6 @@ describe("Setup navigation attention", () => {
         currentOrgHasUsableAgent: false,
         onboardingDismissedAt: null,
         onboardingCompletedAt: null,
-        role: "member",
       }),
     ).toBe(true);
     expect(
@@ -172,7 +171,6 @@ describe("Setup navigation attention", () => {
         currentOrgHasUsableAgent: true,
         onboardingDismissedAt: OBSERVED_AT,
         onboardingCompletedAt: null,
-        role: "member",
       }),
     ).toBe(true);
     expect(
@@ -180,7 +178,6 @@ describe("Setup navigation attention", () => {
         currentOrgHasUsableAgent: true,
         onboardingDismissedAt: null,
         onboardingCompletedAt: OBSERVED_AT,
-        role: "member",
       }),
     ).toBe(false);
     expect(
@@ -188,16 +185,17 @@ describe("Setup navigation attention", () => {
         currentOrgHasUsableAgent: false,
         onboardingDismissedAt: OBSERVED_AT,
         onboardingCompletedAt: OBSERVED_AT,
-        role: "member",
-      }),
-    ).toBe(false);
-    expect(
-      personalSetupNeedsAttention({
-        currentOrgHasUsableAgent: false,
-        onboardingDismissedAt: null,
-        onboardingCompletedAt: OBSERVED_AT,
-        role: "admin",
       }),
     ).toBe(true);
+  });
+
+  it("does not show permanent personal setup attention for a completed admin with a usable agent", () => {
+    expect(
+      personalSetupNeedsAttention({
+        currentOrgHasUsableAgent: true,
+        onboardingDismissedAt: OBSERVED_AT,
+        onboardingCompletedAt: OBSERVED_AT,
+      }),
+    ).toBe(false);
   });
 });

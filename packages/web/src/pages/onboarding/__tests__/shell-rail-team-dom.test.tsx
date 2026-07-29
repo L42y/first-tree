@@ -221,7 +221,7 @@ describe("onboarding shell and team step", () => {
     const container = await renderDom(<OnboardingShell>Body</OnboardingShell>);
 
     expect(container.textContent).not.toContain("I'll finish later");
-    // Invite acceptance and the work-mode choice are not setup chores. Once
+    // Invite acceptance and the recommended entry are not setup chores. Once
     // the member chooses a personal agent, only two real tasks remain.
     expect(container.textContent).toContain("Step 1 of 2");
   });

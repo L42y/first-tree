@@ -294,8 +294,8 @@ function AdminStartChat() {
 function InviteeStartChat() {
   const { organizationId } = useOnboardingFlow();
   // This is the member's already-selected managed-agent path. Readiness here
-  // controls only the first First Tree chat; BYO was offered and completed
-  // separately in get-started.
+  // controls only the first First Tree chat; optional external Context access
+  // is not part of this managed-agent path.
   //
   // We use the dedicated /github-app-installation/exists endpoint here (returns
   // `{ exists: boolean }`, member-readable) rather than the full installation
@@ -368,8 +368,8 @@ function InviteeStartChat() {
  * Invitee · ready to launch. The team has a Context Tree and the provider
  * capability needed by the managed first chat, so the agent already inherits
  * the team's `recommended` repo resources automatically (they're enabled for
- * every org agent). This is the member's chosen First Tree path; BYO was an
- * explicit peer choice earlier, so it is not pitched again here.
+ * every org agent). This is the member's selected First Tree path; optional
+ * external Context access is not replayed here.
  */
 function InviteeReady() {
   const { organizationId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
@@ -431,7 +431,8 @@ function InviteeReady() {
  * Invitee · the managed first chat isn't ready yet. This can be an Admin-owned
  * Context/Team-repository gap or only the legacy GitHub capability gap.
  * Missing Team setup stays out of the finale because a member cannot fix it
- * here, and the BYO choice is not replayed after this First Tree path was selected.
+ * here, and optional external Context access is not replayed after this First
+ * Tree path was selected.
  *
  * The primary action starts a real first chat with the agent. Routing it through
  * `completeAndEnterChat` — not `finishLater` — means the button lands the user

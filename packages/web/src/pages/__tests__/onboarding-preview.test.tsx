@@ -117,22 +117,101 @@ describe("onboarding preview review surface", () => {
     );
 
     expect(inviteeFlow.map((scenario) => scenario.id)).toEqual([
-      "inv-link-signedout",
       "inv-fork-choose",
-      "inv-workspace-team-pick",
-      "inv-workspace-team-chat",
-      "inv-workspace-personal-choice",
       "inv-cc-waiting",
       "inv-ca-form",
       "inv-ko-ready",
       "inv-workspace-personal-chat",
-      "inv-byo-setup",
-      "inv-byo-complete",
+      "inv-workspace-team-pick",
+      "inv-workspace-team-chat",
+      "inv-progressive-no-team-agent",
     ]);
-    expect(inviteeFlow.filter((scenario) => scenario.group === "Agent Chat · Team agent")).toHaveLength(2);
-    expect(inviteeFlow.filter((scenario) => scenario.group === "Agent Chat · Personal agent")).toHaveLength(4);
-    expect(inviteeFlow.filter((scenario) => scenario.group === "Work-mode choice states")).toHaveLength(1);
-    expect(inviteeFlow.filter((scenario) => scenario.group === "Claude Code / Codex")).toHaveLength(2);
+    expect(inviteeFlow.filter((scenario) => scenario.group === "Recommended onboarding")).toHaveLength(5);
+    expect(inviteeFlow.filter((scenario) => scenario.group === "Continue without · Team agent available")).toHaveLength(
+      2,
+    );
+    expect(inviteeFlow.filter((scenario) => scenario.group === "Continue without · no Team agent")).toHaveLength(1);
+  });
+
+  it("keeps the member entry single-path and reveals alternatives only after continue without", async () => {
+    authMock.memberships = [{}];
+    window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=flow&scenario=inv-fork-choose");
+
+    const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
+    const entry = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+    const entryPanel = entry.container.querySelector("#onboarding-preview-root > main");
+    if (!entryPanel) throw new Error("Missing active preview panel");
+
+    expect(entryPanel.textContent).toContain("You've joined Gandy's team");
+    expect(entryPanel.textContent).toContain("Set up your First Tree agent");
+    expect(entryPanel.textContent).toContain("Set up my agent");
+    expect(entryPanel.textContent).toContain("Continue without my own agent");
+    expect(entryPanel.textContent).not.toContain("What happens next");
+    expect(entryPanel.textContent).not.toContain("You can set up or change your agent later in Settings.");
+    expect(entryPanel.textContent).not.toContain("Start with a Team agent");
+    expect(entryPanel.textContent).not.toContain("Claude Code or Codex");
+    await act(async () => entry.root.unmount());
+
+    window.history.replaceState(
+      null,
+      "",
+      "/preview/onboarding?role=invitee&view=flow&scenario=inv-workspace-team-pick",
+    );
+    const teamPicker = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+
+    expect(teamPicker.container.textContent).toContain("Pick a team agent");
+    expect(teamPicker.container.textContent).toContain("Dev Assistant");
+    expect(teamPicker.container.textContent).toContain("Run by Zhang Wei");
+    expect(teamPicker.container.textContent).toContain("Uses Zhang Wei's connected computer and coding plan");
+    expect(teamPicker.container.textContent).toContain("Use the Context Tree in Claude Code or Codex");
+    expect(teamPicker.container.textContent).toContain("Add this team's Context Tree to one local project");
+    expect(teamPicker.container.textContent).not.toContain("Copy setup prompt");
+    expect(
+      Array.from(teamPicker.container.querySelectorAll("button")).some((button) =>
+        button.textContent?.includes("Use the Context Tree in Claude Code or Codex"),
+      ),
+    ).toBe(true);
+    await act(async () => teamPicker.root.unmount());
+  });
+
+  it("adapts continue without when the Team has no available agent", async () => {
+    authMock.memberships = [{}];
+    window.history.replaceState(
+      null,
+      "",
+      "/preview/onboarding?role=invitee&view=flow&scenario=inv-progressive-no-team-agent",
+    );
+
+    const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
+    const { container, root } = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+
+    expect(container.textContent).toContain("Set up your First Tree agent");
+    expect(container.textContent).toContain("Use the Context Tree in Claude Code or Codex");
+    expect(container.textContent).toContain("Back");
+    expect(container.textContent).toContain("Continue without your own agent");
+    expect(container.textContent).not.toContain("Pick a team agent");
+    expect(container.textContent).not.toContain("Continue without my own agent");
+    expect(container.textContent).toContain("No Team agent is available right now");
+    expect(container.textContent).not.toContain("Copy setup prompt");
+    expect(
+      Array.from(container.querySelectorAll("button")).some((button) =>
+        button.textContent?.includes("Use the Context Tree in Claude Code or Codex"),
+      ),
+    ).toBe(true);
+
+    await act(async () => root.unmount());
   });
 
   it("renders the full production shell bootstrap without the removed Node.js recovery state", async () => {
@@ -208,6 +287,29 @@ describe("onboarding preview review surface", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the Team-agent destination honest about resumable personal setup", async () => {
+    authMock.memberships = [{}];
+    window.history.replaceState(
+      null,
+      "",
+      "/preview/onboarding?role=invitee&view=flow&scenario=inv-workspace-team-chat",
+    );
+
+    const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
+    const { container, root } = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+
+    expect(container.textContent).toContain("Personal agent setup remains available");
+    expect(container.textContent).toContain("Starting your first Team-agent conversation");
+    expect(container.textContent).not.toContain("Reading the team's shared context");
+    expect(container.textContent).not.toContain("Onboarding complete");
+
+    await act(async () => root.unmount());
+  });
+
   it("keeps GitHub preview states visually distinct", async () => {
     const { ONBOARDING_PREVIEW_SCENARIOS } = await import("../onboarding-preview.js");
 
@@ -275,14 +377,14 @@ describe("onboarding preview review surface", () => {
     await clickByText(container, "Flow");
     expect(window.location.search).toContain("role=invitee");
     expect(window.location.search).toContain("view=flow");
-    expect(window.location.search).toContain("scenario=inv-link-signedout");
+    expect(window.location.search).toContain("scenario=inv-fork-choose");
 
     await act(async () => root.unmount());
   });
 
   it("renders one self-contained BYO prompt without a First Tree agent step", async () => {
     authMock.memberships = [{}];
-    window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=flow&scenario=inv-byo-setup");
+    window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=states&scenario=inv-byo-setup");
 
     const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
     const { container, root } = await renderDom(
@@ -309,7 +411,7 @@ describe("onboarding preview review surface", () => {
 
   it("keeps the complete BYO setup inside the selected coding agent", async () => {
     authMock.memberships = [{}];
-    window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=flow&scenario=inv-byo-setup");
+    window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=states&scenario=inv-byo-setup");
 
     const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
     const { container, root } = await renderDom(

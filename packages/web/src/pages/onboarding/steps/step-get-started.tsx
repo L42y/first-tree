@@ -1,8 +1,7 @@
 import type { Agent, ContextIntegrationProvider } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowRight, Check, ChevronDown, Copy as CopyIcon, FileText } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleCheck, Copy as CopyIcon, FileText } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router";
 import { listAgents } from "../../../api/agents.js";
 import { getContextEnablementHandoff } from "../../../api/context-enablement.js";
 import { listMembers } from "../../../api/members.js";
@@ -44,23 +43,18 @@ async function listAllNonHumanAddressableAgents(): Promise<Agent[]> {
 }
 
 /**
- * Member work-mode choice. The personal First Tree agent is the recommended
- * path, while two lower-emphasis alternatives remain independently complete:
- * - an existing Team agent opens an install-free First Tree Chat;
- * - BYO gives Claude Code or Codex one self-contained setup prompt that
- *   connects the computer and enables Team Context without creating a First
- *   Tree agent.
- *
- * The Team-agent path reuses the ordinary kickoff pipeline and stamps completion
- * because a personal First Tree agent is optional. BYO completes only after the exact
- * provider/Team handoff is prepared. Team readiness stays read-only here:
- * members never receive Admin setup chores.
+ * Progressive member entry. The first screen recommends one standard journey:
+ * create a personal First Tree agent and start its first chat. Team-agent and
+ * external Context access appear only after the member explicitly continues
+ * without their own agent, so alternatives remain discoverable without
+ * competing with the product's primary onboarding path.
  */
-type GetStartedMode = "choose" | "pick" | "byo-setup";
+type GetStartedMode = "recommend" | "continue-without" | "byo-setup";
 type ByoContextState = "checking" | "error" | "ready" | "unavailable";
 
-export function StepGetStarted({ defaultMode = "choose" }: { defaultMode?: GetStartedMode } = {}) {
-  const { organizationId, sequence, goNext, goTo, offerTeamAgentStart: offer, computer } = useOnboardingFlow();
+export function StepGetStarted({ defaultMode = "recommend" }: { defaultMode?: GetStartedMode } = {}) {
+  const { organizationId, sequence, goNext, goTo, offerTeamAgentStart, computer, teamDisplayName, finishLater } =
+    useOnboardingFlow();
   const [mode, setMode] = useState<GetStartedMode>(defaultMode);
   const contextQuery = useQuery({
     queryKey: ["onboarding", "member-byo-readiness", organizationId],
@@ -76,7 +70,7 @@ export function StepGetStarted({ defaultMode = "choose" }: { defaultMode?: GetSt
         )
       );
     },
-    enabled: !!organizationId && (mode === "choose" || mode === "byo-setup"),
+    enabled: !!organizationId && mode !== "recommend",
     // The enable screen is a live authority boundary. Keep checking while it
     // is open so a Team switch or an Admin-side repository/Tree change
     // disables the setup artifact instead of leaving stale handoff data live.
@@ -92,17 +86,29 @@ export function StepGetStarted({ defaultMode = "choose" }: { defaultMode?: GetSt
         ? "ready"
         : "unavailable";
 
-  if (mode === "pick") {
-    return <PickTeamAgent onBack={() => setMode("choose")} />;
+  if (mode === "continue-without") {
+    return (
+      <PickTeamAgent
+        onBack={() => setMode("recommend")}
+        canUseTeamAgent={offerTeamAgentStart}
+        contextState={contextState}
+        onByo={() => {
+          if (contextQuery.isError) {
+            void contextQuery.refetch();
+            return;
+          }
+          setMode("byo-setup");
+        }}
+      />
+    );
   }
   if (mode === "byo-setup") {
-    return <ByoSetup onBack={() => setMode("choose")} contextState={contextState} />;
+    return <ByoSetup onBack={() => setMode("continue-without")} contextState={contextState} onFinish={finishLater} />;
   }
   return (
-    <ChooseStart
-      hasTeamAgent={offer}
+    <RecommendedStart
+      teamDisplayName={teamDisplayName}
       computerReady={managedComputerReady}
-      contextState={contextState}
       onOwnAgent={() => {
         if (managedComputerReady) {
           goTo(sequence.indexOf("create-agent"));
@@ -110,164 +116,64 @@ export function StepGetStarted({ defaultMode = "choose" }: { defaultMode?: GetSt
         }
         goNext();
       }}
-      onTeamAgent={() => setMode("pick")}
-      onByo={() => {
-        if (contextQuery.isError) {
-          void contextQuery.refetch();
-          return;
-        }
-        setMode("byo-setup");
-      }}
+      onContinueWithout={() => setMode("continue-without")}
     />
   );
 }
 
-// ── choose: recommended personal agent + two alternative paths ─────────
+// ── recommended personal agent ─────────────────────────────────────────
 
-function ChooseStart({
-  hasTeamAgent,
+function RecommendedStart({
+  teamDisplayName,
   computerReady,
-  contextState,
   onOwnAgent,
-  onTeamAgent,
-  onByo,
+  onContinueWithout,
 }: {
-  hasTeamAgent: boolean;
+  teamDisplayName: string | null;
   computerReady: boolean;
-  contextState: ByoContextState;
   onOwnAgent: () => void;
-  onTeamAgent: () => void;
-  onByo: () => void;
+  onContinueWithout: () => void;
 }) {
   const g = COPY.getStarted;
-  const byoEnabled = contextState === "ready" || contextState === "error";
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-6)" }}>
-      <StepHeading title={g.chooseTitle} why={g.chooseWhy} />
       <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
-        <ChoiceCard
-          primary
-          eyebrow={g.recommended}
-          title={g.personal.title}
-          description={g.personal.description}
-          detail={computerReady ? g.personal.readyDetail : g.personal.detail}
-          cta={computerReady ? g.personal.readyCta : g.personal.cta}
-          onSelect={onOwnAgent}
-        />
-        <div className="flex flex-col" style={{ gap: "var(--sp-2_5)", paddingTop: "var(--sp-1)" }}>
-          <p className="text-caption font-medium" style={{ margin: 0, color: "var(--fg-4)" }}>
-            {g.otherWays}
-          </p>
-          {hasTeamAgent ? (
-            <ChoiceCard
-              compact
-              title={g.team.title}
-              description={g.team.description}
-              detail={g.team.detail}
-              cta={g.team.cta}
-              onSelect={onTeamAgent}
-            />
-          ) : null}
-          <ChoiceCard
-            compact
-            title={g.byo.title}
-            description={
-              contextState === "checking"
-                ? g.byo.checking
-                : contextState === "error"
-                  ? g.byo.error
-                  : contextState === "unavailable"
-                    ? g.byo.unavailable
-                    : g.byo.description
-            }
-            detail={contextState === "ready" ? g.byo.detail : undefined}
-            cta={
-              contextState === "checking"
-                ? g.byo.checkingCta
-                : contextState === "error"
-                  ? g.byo.retry
-                  : contextState === "unavailable"
-                    ? g.byo.unavailableCta
-                    : g.byo.cta
-            }
-            onSelect={onByo}
-            disabled={!byoEnabled}
-          />
+        <p
+          className="inline-flex items-center self-start text-label font-medium"
+          role="status"
+          style={{ gap: "var(--sp-2)", margin: 0, color: "var(--fg-2)" }}
+        >
+          <CircleCheck className="h-4 w-4" style={{ color: "var(--success)" }} aria-hidden="true" />
+          <span>{g.joinedTeam(teamDisplayName ?? "your team")}</span>
+        </p>
+        <StepHeading title={g.recommendedTitle} why={g.recommendedWhy} />
+      </div>
+
+      {computerReady ? (
+        <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
+          {g.computerReady}
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-center text-label" style={{ gap: "var(--sp-2)", color: "var(--fg-3)" }}>
+          {g.personalSteps.map((step, index) => (
+            <span key={step} className="contents">
+              {index > 0 ? <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" /> : null}
+              <span>{step}</span>
+            </span>
+          ))}
         </div>
+      )}
+
+      <div className="flex flex-col items-start" style={{ gap: "var(--sp-3)" }}>
+        <Button type="button" variant="cta" size="lg" onClick={onOwnAgent}>
+          {computerReady ? g.personal.readyCta : g.personal.cta}
+          <ArrowRight className="h-4 w-4" aria-hidden="true" />
+        </Button>
+        <Button type="button" variant="link" className="h-auto p-0 text-label" onClick={onContinueWithout}>
+          {g.continueWithout}
+        </Button>
       </div>
     </div>
-  );
-}
-
-/**
- * A full-card action (not an OptionCard: there is no radio state — clicking
- * IS the decision). The primary card carries the stronger border so "set up
- * my own agent" reads as the default; the quick start is a parallel choice,
- * not an escape hatch.
- */
-function ChoiceCard({
-  eyebrow,
-  title,
-  description,
-  detail,
-  cta,
-  onSelect,
-  primary = false,
-  compact = false,
-  disabled = false,
-}: {
-  eyebrow?: string;
-  title: string;
-  description: string;
-  detail?: string;
-  cta: string;
-  onSelect: () => void;
-  primary?: boolean;
-  compact?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      disabled={disabled}
-      className="text-left transition-colors enabled:hover:bg-accent/50"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--sp-1)",
-        padding: compact ? "var(--sp-3) var(--sp-4)" : "var(--sp-5)",
-        borderRadius: "var(--radius-input)",
-        border: primary ? "var(--hairline) solid var(--fg)" : "var(--hairline) solid var(--border)",
-        background: primary ? "var(--bg-raised)" : "transparent",
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.6 : 1,
-      }}
-    >
-      {eyebrow ? (
-        <span className="text-eyebrow uppercase" style={{ color: "var(--fg-3)" }}>
-          {eyebrow}
-        </span>
-      ) : null}
-      <span className="text-body font-semibold" style={{ color: "var(--fg)" }}>
-        {title}
-      </span>
-      <span className="text-label" style={{ color: "var(--fg-3)" }}>
-        {description}
-      </span>
-      {detail ? (
-        <span className="text-caption" style={{ color: "var(--fg-4)", marginTop: "var(--sp-0_5)" }}>
-          {detail}
-        </span>
-      ) : null}
-      <span
-        className="text-label font-medium inline-flex items-center"
-        style={{ gap: "var(--sp-1)", color: "var(--fg)", marginTop: "var(--sp-2)" }}
-      >
-        {cta}
-        <ArrowRight className="h-3.5 w-3.5" />
-      </span>
-    </button>
   );
 }
 
@@ -282,12 +188,23 @@ function providerLabel(provider: ContextIntegrationProvider): string {
   return BYO_PROVIDERS.find((item) => item.id === provider)?.label ?? provider;
 }
 
-function ByoSetup({ onBack, contextState }: { onBack: () => void; contextState: ByoContextState }) {
+function ByoSetup({
+  onBack,
+  contextState,
+  onFinish,
+}: {
+  onBack: () => void;
+  contextState: ByoContextState;
+  onFinish: () => Promise<void>;
+}) {
   const g = COPY.getStarted;
-  const navigate = useNavigate();
-  const { organizationId, teamDisplayName, onboardingCompletedAt, refreshOnboarding, computer } = useOnboardingFlow();
+  const { organizationId, teamDisplayName, computer, prepareByoBootstrap } = useOnboardingFlow();
   const { cliCommand, tokenError, retry } = computer;
   const [provider, setProvider] = useState<ContextIntegrationProvider>("claude-code");
+
+  useEffect(() => {
+    prepareByoBootstrap();
+  }, [prepareByoBootstrap]);
 
   const handoff = useQuery({
     queryKey: ["onboarding", "member-byo-handoff", organizationId, provider, "onboarding"],
@@ -304,26 +221,6 @@ function ByoSetup({ onBack, contextState }: { onBack: () => void; contextState: 
           intent: "onboarding",
         })
       : null;
-
-  useEffect(() => {
-    if (!setupPrompt || onboardingCompletedAt) return;
-    let active = true;
-    const refresh = (): void => {
-      void refreshOnboarding().catch(() => undefined);
-    };
-    refresh();
-    const handle = window.setInterval(() => {
-      if (active) refresh();
-    }, 2500);
-    return () => {
-      active = false;
-      window.clearInterval(handle);
-    };
-  }, [onboardingCompletedAt, refreshOnboarding, setupPrompt]);
-
-  if (onboardingCompletedAt) {
-    return <ByoCompletion onContinue={() => navigate("/")} />;
-  }
 
   const preparingPrompt = handoffReady && !tokenError && !setupPrompt;
 
@@ -393,6 +290,13 @@ function ByoSetup({ onBack, contextState }: { onBack: () => void; contextState: 
           )}
           {provider === "codex" ? <FlowHint role="status">{g.byoCodexTrust}</FlowHint> : null}
           {preparingPrompt ? <StatusRow state="waiting" label={g.byoPreparingPrompt} /> : null}
+          {setupPrompt ? (
+            <div className="flex">
+              <Button type="button" variant="outline" onClick={() => void onFinish()}>
+                {g.byoReturnToFirstTree}
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : (
         <StatusRow state="waiting" label="Preparing your Team Context…" />
@@ -504,40 +408,6 @@ function ByoSetupPromptCard({ provider, team, prompt }: { provider: string; team
   );
 }
 
-/**
- * Completed BYO state. Kept as a small reusable production component so the
- * DEV onboarding gallery can show the real completion page directly instead
- * of requiring reviewers to run the handoff command and mutate preview state.
- */
-export function ByoCompletion({ onContinue = () => undefined }: { onContinue?: () => void } = {}) {
-  const g = COPY.getStarted;
-  return (
-    <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
-      <div
-        className="inline-flex items-center justify-center"
-        aria-hidden="true"
-        style={{
-          width: "var(--sp-10)",
-          height: "var(--sp-10)",
-          borderRadius: "var(--radius-full)",
-          background: "var(--color-success-soft)",
-          color: "var(--success)",
-        }}
-      >
-        <Check className="h-5 w-5" />
-      </div>
-      <StepHeading title={g.byoCompleteTitle} why={g.byoCompleteWhy} />
-      <FlowHint role="status">{g.byoCompleteNote}</FlowHint>
-      <div className="flex">
-        <Button type="button" onClick={onContinue}>
-          {g.byoGoToFirstTree}
-          <ArrowRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 function BackToChoices({ onBack }: { onBack: () => void }) {
   return (
     <div className="flex">
@@ -549,9 +419,19 @@ function BackToChoices({ onBack }: { onBack: () => void }) {
   );
 }
 
-// ── Workspace: choose a Team agent and start the kickoff chat ──────────
+// ── continue without a personal agent ──────────────────────────────────
 
-function PickTeamAgent({ onBack }: { onBack: () => void }) {
+function PickTeamAgent({
+  onBack,
+  canUseTeamAgent,
+  contextState,
+  onByo,
+}: {
+  onBack: () => void;
+  canUseTeamAgent: boolean;
+  contextState: ByoContextState;
+  onByo: () => void;
+}) {
   const g = COPY.getStarted;
   const { organizationId, memberId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
   const [phase, setPhase] = useState<"idle" | "starting">("idle");
@@ -565,19 +445,16 @@ function PickTeamAgent({ onBack }: { onBack: () => void }) {
   const agentsQuery = useQuery({
     queryKey: ["agents", "team-agent-picker", organizationId],
     queryFn: () => listAllNonHumanAddressableAgents(),
+    enabled: canUseTeamAgent,
     staleTime: 30_000,
   });
   const reportedAgentListFailureRef = useRef(false);
-  useEffect(() => {
-    if (!agentsQuery.isError || reportedAgentListFailureRef.current) return;
-    reportedAgentListFailureRef.current = true;
-    reportStepFailure("team_agent_list_failed", { step: "get-started" });
-  }, [agentsQuery.isError, reportStepFailure]);
   // Owner names for the "Run by X" tag. Member-readable route; cheap and
   // rarely-changing, so no polling.
   const membersQuery = useQuery({
     queryKey: ["members", "team-agent-picker", organizationId],
     queryFn: listMembers,
+    enabled: canUseTeamAgent,
     staleTime: 60_000,
   });
 
@@ -585,7 +462,21 @@ function PickTeamAgent({ onBack }: { onBack: () => void }) {
   // Exclude anything the member manages themselves (defensive — the fork
   // self-skips once they have a personal agent). Humans are already excluded
   // server-side by the `type=agent` filter.
-  const candidates = (agentsQuery.data ?? []).filter((a) => !(memberId && a.managerId === memberId));
+  const candidates = canUseTeamAgent
+    ? (agentsQuery.data ?? []).filter((a) => !(memberId && a.managerId === memberId))
+    : [];
+  const ownerLookupIncomplete =
+    canUseTeamAgent &&
+    !membersQuery.isPending &&
+    !membersQuery.isError &&
+    candidates.some((agent) => !agent.managerId || !ownerById.has(agent.managerId));
+  const rosterFailed = agentsQuery.isError || membersQuery.isError || ownerLookupIncomplete;
+
+  useEffect(() => {
+    if (!rosterFailed || reportedAgentListFailureRef.current) return;
+    reportedAgentListFailureRef.current = true;
+    reportStepFailure("team_agent_list_failed", { step: "get-started" });
+  }, [reportStepFailure, rosterFailed]);
 
   const handleStart = async (agent: Agent): Promise<void> => {
     setError(null);
@@ -598,12 +489,12 @@ function PickTeamAgent({ onBack }: { onBack: () => void }) {
         topic: "Get settled on First Tree",
         treeBindingPlan: "none",
         joinPath: "invite",
-        // Choosing an existing Team agent is a complete First Tree path. A
-        // personal First Tree agent remains optional.
-        stamp: "completed",
+        // Team-agent quick start suppresses automatic reopening but deliberately
+        // leaves personal-agent onboarding incomplete and resumable.
+        stamp: "invitee_skip",
         startChatType: "team-agent-quick-start",
       });
-      await completeAndEnterChat(chatId, "get-started");
+      await completeAndEnterChat(chatId, "get-started", "invitee_skip");
     } catch (err) {
       setError(startChatErrorMessage(err, COPY.errors.chatFailed));
       setPhase("idle");
@@ -616,15 +507,18 @@ function PickTeamAgent({ onBack }: { onBack: () => void }) {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
       <BackToChoices onBack={onBack} />
-      <StepHeading title={g.pickTitle} why={g.pickWhy} />
+      <StepHeading
+        title={canUseTeamAgent ? g.pickTitle : g.continueTitle}
+        why={canUseTeamAgent ? g.pickWhy : g.continueWhy}
+      />
       {error && (
         <FlowHint tone="error" role="alert">
           {error}
         </FlowHint>
       )}
-      {agentsQuery.isLoading ? (
+      {canUseTeamAgent && (agentsQuery.isLoading || membersQuery.isLoading) ? (
         <StatusRow state="waiting" label="Loading team agents…" />
-      ) : agentsQuery.isError ? (
+      ) : canUseTeamAgent && rosterFailed ? (
         // A failed roster read is NOT "no team agent": claiming emptiness on a
         // network/server error would be false and unrecoverable. Name the
         // failure and offer a retry.
@@ -633,7 +527,13 @@ function PickTeamAgent({ onBack }: { onBack: () => void }) {
             {g.pickError}
           </FlowHint>
           <div className="flex">
-            <Button type="button" onClick={() => void agentsQuery.refetch()}>
+            <Button
+              type="button"
+              onClick={() => {
+                reportedAgentListFailureRef.current = false;
+                void Promise.all([agentsQuery.refetch(), membersQuery.refetch()]);
+              }}
+            >
               {g.pickRetry}
             </Button>
           </div>
@@ -641,26 +541,50 @@ function PickTeamAgent({ onBack }: { onBack: () => void }) {
       ) : candidates.length === 0 ? (
         <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
           <FlowHint>{g.pickEmpty}</FlowHint>
-          <div className="flex">
-            <Button type="button" onClick={onBack}>
-              <ArrowLeft className="h-4 w-4" />
-              <span>{g.pickBack}</span>
-            </Button>
-          </div>
+          <ContextAccessAlternative contextState={contextState} onSelect={onByo} />
         </div>
       ) : (
-        <div className="flex flex-col">
-          {candidates.map((a, i) => (
-            <AgentRow
-              key={a.uuid}
-              agent={a}
-              owner={a.managerId ? (ownerById.get(a.managerId) ?? null) : null}
-              first={i === 0}
-              onStart={() => void handleStart(a)}
-            />
-          ))}
+        <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
+          <div className="surface-raised flex flex-col overflow-hidden">
+            {candidates.map((a, i) => (
+              <AgentRow
+                key={a.uuid}
+                agent={a}
+                owner={a.managerId ? (ownerById.get(a.managerId) ?? null) : null}
+                first={i === 0}
+                onStart={() => void handleStart(a)}
+              />
+            ))}
+          </div>
+          <ContextAccessAlternative contextState={contextState} onSelect={onByo} />
         </div>
       )}
+    </div>
+  );
+}
+
+function ContextAccessAlternative({ contextState, onSelect }: { contextState: ByoContextState; onSelect: () => void }) {
+  const g = COPY.getStarted;
+  if (contextState === "unavailable") return null;
+
+  return (
+    <div
+      className="flex flex-col items-start"
+      style={{ gap: "var(--sp-1)", borderTop: "var(--hairline) solid var(--border-faint)", paddingTop: "var(--sp-4)" }}
+    >
+      <Button
+        type="button"
+        variant="link"
+        className="h-auto p-0 text-label"
+        disabled={contextState === "checking"}
+        onClick={onSelect}
+      >
+        {contextState === "checking" ? g.byo.checkingCta : contextState === "error" ? g.byo.retry : g.byo.cta}
+        {contextState === "ready" ? <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" /> : null}
+      </Button>
+      <p className="text-caption" style={{ margin: 0, color: "var(--fg-4)" }}>
+        {contextState === "error" ? g.byo.error : g.byo.description}
+      </p>
     </div>
   );
 }
@@ -682,10 +606,10 @@ function AgentRow({
     .join(" · ");
   return (
     <div
-      className="flex items-center"
+      className="flex items-start"
       style={{
         gap: "var(--sp-3)",
-        padding: "var(--sp-3) 0",
+        padding: "var(--sp-3) var(--sp-4)",
         borderTop: first ? "none" : "var(--hairline) solid var(--border)",
       }}
     >
@@ -701,10 +625,13 @@ function AgentRow({
           {agent.displayName}
         </div>
         {detail ? (
-          <div className="text-caption truncate" style={{ color: "var(--fg-4)" }}>
+          <div className="text-caption break-words" style={{ color: "var(--fg-4)" }}>
             {detail}
           </div>
         ) : null}
+        <div className="text-caption break-words" style={{ color: "var(--fg-4)" }}>
+          {g.teamAgentExecution(owner)}
+        </div>
       </div>
       <Button type="button" onClick={onStart} className="shrink-0">
         {g.startChat}

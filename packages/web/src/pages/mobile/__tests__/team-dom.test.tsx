@@ -31,6 +31,7 @@ const authMock = vi.hoisted(() => {
       dismissOnboarding: vi.fn(async () => undefined),
       restoreOnboarding: vi.fn(async () => undefined),
       markOnboardingCompleted: vi.fn(async () => undefined),
+      applyOnboardingKickoffStamp: vi.fn(),
       login: vi.fn(async () => undefined),
       adoptTokens: vi.fn(async () => undefined),
       selectOrganization: vi.fn(async () => undefined),

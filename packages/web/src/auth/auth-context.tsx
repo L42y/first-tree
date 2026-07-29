@@ -129,6 +129,12 @@ type AuthContextValue = {
    * Continue, invitee Confirm / Continue).
    */
   markOnboardingCompleted: () => Promise<void>;
+  /**
+   * Mirror a membership stamp already written atomically by the successful
+   * onboarding kickoff request. This is local projection only: it must never
+   * be called before the server confirms the chat exists.
+   */
+  applyOnboardingKickoffStamp: (stamp: "completed" | "invitee_skip") => void;
   login: (username: string, password: string) => Promise<void>;
   /**
    * Adopt a token pair handed in from a non-login surface (OAuth fragment
@@ -452,7 +458,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Optimistic: stamp immediately so first-run routing reads the new state
     // on the very next render. The server stamp is canonical. Roll the local
     // projection back and propagate failures so terminal flows without an
-    // already-created chat (notably BYO) can remain on-screen and retry.
+    // already-created chat can remain on-screen and retry.
     const organizationId = currentMembership?.organizationId;
     const priorAccountCompletedAt = onboardingCompletedAt;
     const priorAccountDismissedAt = onboardingDismissedAt;
@@ -488,6 +494,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     currentMembership?.organizationId,
     patchMembershipOnboarding,
   ]);
+
+  const applyOnboardingKickoffStamp = useCallback(
+    (stamp: "completed" | "invitee_skip") => {
+      const stampedAt = new Date().toISOString();
+      setOnboardingDismissedAt((prev) => prev ?? stampedAt);
+      if (stamp === "completed") {
+        setOnboardingCompletedAt((prev) => prev ?? stampedAt);
+        patchMembershipOnboarding({
+          onboardingCompletedAt: currentMembership?.onboardingCompletedAt ?? stampedAt,
+          onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? stampedAt,
+          onboardingSuppressedReason: "completed",
+        });
+        return;
+      }
+      patchMembershipOnboarding({
+        onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? stampedAt,
+        onboardingSuppressedReason: currentMembership?.onboardingSuppressedReason ?? "invitee_skip",
+      });
+    },
+    [
+      currentMembership?.onboardingCompletedAt,
+      currentMembership?.onboardingSuppressedAt,
+      currentMembership?.onboardingSuppressedReason,
+      patchMembershipOnboarding,
+    ],
+  );
 
   // Fetch member info on initial load if already authenticated
   useEffect(() => {
@@ -526,6 +558,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         dismissOnboarding,
         restoreOnboarding,
         markOnboardingCompleted,
+        applyOnboardingKickoffStamp,
         login,
         adoptTokens,
         selectOrganization,

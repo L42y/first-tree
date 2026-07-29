@@ -39,6 +39,12 @@ export type UseComputerConnectionOptions = {
   /** Called once after the final automatic connect-token mint attempt fails. */
   onTokenMintFailed?: () => void;
   /**
+   * Whether this surface currently needs a bootstrap command. Detection stays
+   * live when false, but no short-lived connect code is minted until the user
+   * reaches a surface that can actually use it.
+   */
+  allowBootstrapMint?: boolean;
+  /**
    * Prepare a portable login fallback even when another Client is already
    * connected. BYO onboarding cannot assume the coding-agent conversation is
    * running on the same computer represented by the Web's global signal.
@@ -137,6 +143,7 @@ export function useComputerConnection(
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberate trigger dep
   useEffect(() => {
     if (!enabled) return;
+    if (options.allowBootstrapMint === false) return;
     if (connectedClient && !options.prepareBootstrapWhenConnected) return;
     if (connectToken && connectTokenExpiresAt && connectTokenExpiresAt > Date.now()) {
       const refreshAt = Math.max(connectTokenExpiresAt - Date.now(), 0);
@@ -188,6 +195,7 @@ export function useComputerConnection(
     connectedClient,
     connectToken,
     connectTokenExpiresAt,
+    options.allowBootstrapMint,
     options.prepareBootstrapWhenConnected,
     retryNonce,
   ]);

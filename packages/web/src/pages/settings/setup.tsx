@@ -506,8 +506,6 @@ function combineContextTreeAndReviewStatus(
 export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
   const isAdmin = facts.role === "admin";
   const reliesOnTeamAgent = facts.hasUsableAgent && !facts.hasPersonalAgent;
-  const completedMemberWithoutPersonalAgent =
-    !isAdmin && facts.onboardingCompletedAt !== null && !facts.hasPersonalAgent;
   const resumeSetup = facts.onboardingSuppressedAt !== null && facts.onboardingCompletedAt === null;
 
   const computerStatus =
@@ -575,7 +573,7 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
     {
       key: "work-access",
       title: "Work access",
-      description: "How you work with this Team's agents or Team Context.",
+      description: "Whether this team has an agent you can use.",
       icon: MessageCircle,
       status: facts.hasUsableAgent
         ? {
@@ -583,27 +581,19 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
             detail: facts.hasPersonalAgent ? "Your agent is available" : "A team agent is available",
             kind: "ready",
           }
-        : completedMemberWithoutPersonalAgent
-          ? {
-              label: "No First Tree agent available",
-              detail: "Review Team Context or set up your own agent",
-              kind: "optional",
-            }
-          : {
-              label: "Agent needed",
-              detail: "Set up an agent before starting work",
-              kind: "attention",
-            },
+        : {
+            label: "Agent needed",
+            detail: "Set up an agent before starting work",
+            kind: "attention",
+          },
       action: facts.hasUsableAgent
         ? { label: "Start a chat", to: facts.workspaceWillEnterOnboarding ? "/onboarding" : "/" }
-        : completedMemberWithoutPersonalAgent
-          ? { label: "Review options", to: "/settings/setup#context-access" }
-          : { label: "Set up", to: "/onboarding" },
+        : { label: "Set up", to: "/onboarding" },
     },
     {
       key: "computer",
       title: "Your computer",
-      description: "A computer connected for First Tree agents or Team Context.",
+      description: "A computer connected by you to run agents.",
       icon: Laptop,
       status: computerStatus,
       action: {
@@ -618,22 +608,18 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
       icon: Bot,
       status: facts.hasPersonalAgent
         ? { label: "Available", detail: "Managed by you", kind: "ready" }
-        : facts.hasUsableAgent
-          ? { label: "Not set up", detail: "Optional while a team agent is available", kind: "optional" }
-          : completedMemberWithoutPersonalAgent
-            ? { label: "Not set up", detail: "Optional — add one for your own workflows", kind: "optional" }
-            : resumeSetup
-              ? { label: "Setup paused", detail: "Resume to create your agent", kind: "attention" }
-              : {
-                  label: "Not set up",
-                  detail: "No agent managed by you",
-                  kind: "attention",
-                },
+        : resumeSetup
+          ? { label: "Setup paused", detail: "Resume to create your agent", kind: "attention" }
+          : {
+              label: "Not set up",
+              detail: facts.hasUsableAgent ? "Optional while a team agent is available" : "No agent managed by you",
+              kind: facts.hasUsableAgent ? "optional" : "attention",
+            },
       action: resumeSetup
         ? { label: "Resume setup", to: "/onboarding", intent: "resume-onboarding" }
         : facts.hasPersonalAgent
           ? { label: "View", to: "/team" }
-          : { label: "Set up my agent", to: "/team#new-agent" },
+          : { label: "Set up", to: "/onboarding" },
     },
     {
       key: "repositories",

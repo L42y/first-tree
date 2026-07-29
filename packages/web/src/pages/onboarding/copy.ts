@@ -5,12 +5,13 @@
  * vocabulary is deliberately small: "team", "a computer", "agent", "Context
  * Tree".
  *
- * Core framing: an invited member chooses between three independently complete
- * paths: a personal First Tree agent, a Team agent, or their existing Claude
- * Code / Codex. BYO gives the coding agent one self-contained prompt that connects the
- * computer and enables Team Context without creating a First Tree agent. A local coding agent is a provider,
- * never something silently added to First Tree Chat. Provider names are
- * first-class vocabulary while "runtime" stays out of user-facing copy.
+ * Core framing: an invited member first sees the standard personal First Tree
+ * agent journey. Only after they explicitly continue without one do Team-agent
+ * quick start and external Context access appear. BYO gives the coding agent
+ * one self-contained prompt that connects the computer and enables Team
+ * Context without creating a First Tree agent or completing onboarding. A
+ * local coding agent is a provider, never something silently added to First
+ * Tree Chat.
  * "repo" stays (GitHub access / start-chat can still involve repos, and
  * "project" is ambiguous next to GitHub's own "Projects"). "binding" and
  * other deep internals still never leak.
@@ -70,7 +71,7 @@ export const STEP_COPY: Record<StepId, StepCopy> = {
 };
 
 /** One plain launch line for every start-chat finale — admin or invitee, team
- *  ready or not. It teaches the Workspace value without leaking Team/Tree
+ *  ready or not. It teaches the product value without leaking Team/Tree
  *  readiness or implying that a personal Claude Code / Codex conversation is
  *  joining First Tree Chat. */
 const START_CHAT_LAUNCH_WHY = "Your agent is ready. Delegate work, follow progress, and review results with your team.";
@@ -310,50 +311,43 @@ export const COPY = {
     // instead of waiting on the team.
     startAnyway: "Start chat",
   },
-  /** Member choice: recommend a personal First Tree agent while preserving
-   *  install-free Team-agent and external coding-agent paths. */
+  /** Progressive Member entry: one recommended personal-agent path first,
+   *  then Team-agent and external Context access after explicit continuation. */
   getStarted: {
-    chooseTitle: "How do you want to get started?",
-    chooseWhy: "Choose a starting point. You can add another way later.",
-    recommended: "Recommended",
-    otherWays: "Other ways to start",
+    joinedTeam: (team: string) => `You've joined ${team}`,
+    recommendedTitle: "Set up your First Tree agent",
+    recommendedWhy: "Create your own agent for ongoing work with your team.",
+    computerReady: "Your computer is connected. Next, create your agent.",
+    personalSteps: ["Connect computer", "Create agent", "Start first chat"],
+    continueWithout: "Continue without my own agent",
     personal: {
-      title: "Set up my First Tree agent",
-      description: "Get your own agent to delegate work, follow progress, and review results.",
-      detail: "Uses the coding tools on this computer.",
-      readyDetail: "This computer is ready.",
       cta: "Set up my agent",
       readyCta: "Create my agent",
     },
-    team: {
-      title: "Start with a Team agent",
-      description: "Start immediately with an agent your team already runs.",
-      detail: "No setup on this computer.",
-      cta: "Choose a Team agent",
-    },
     byo: {
-      title: "Keep using Claude Code or Codex",
-      description: "Bring your team's First Tree context into your current coding agent.",
-      detail: "You'll keep working there, not in First Tree Chat.",
-      cta: "Set up in my coding agent",
-      checking: "Checking whether this option is available…",
-      checkingCta: "Checking…",
+      description: "Add this team's Context Tree to one local project in Claude Code or Codex.",
+      cta: "Use the Context Tree in Claude Code or Codex",
+      checkingCta: "Checking Context Tree access…",
       error: "Couldn't check this option just now.",
-      retry: "Try again",
-      unavailable: "Your team's context isn't ready for this option yet.",
-      unavailableCta: "Not available yet",
+      retry: "Try Context Tree access again",
     },
     pickTitle: "Pick a team agent",
-    pickWhy: "Choose an agent your team already runs. You'll start an Agent Chat together.",
+    pickWhy: "Team agents are already set up by your team. Choose one to start chatting—nothing to install.",
+    continueTitle: "Continue without your own agent",
+    continueWhy: "Use what your team has already set up, without creating a personal First Tree agent.",
     /** Ownership tag on each row — descriptive wording, not a new product concept. */
     runBy: (owner: string) => `Run by ${owner}`,
+    teamAgentExecution: (owner: string | null) =>
+      owner
+        ? `Uses ${owner}'s connected computer and coding plan`
+        : "Uses its owner's connected computer and coding plan",
     startChat: "Start chat",
     pickEmpty: "No Team agent is available right now.",
     /** Roster read failed — distinct from empty, so a network blip never
      *  becomes a false "no agent available" claim. */
     pickError: "Couldn't load your team's agents just now.",
     pickRetry: "Try again",
-    pickBack: "Back to choices",
+    pickBack: "Back",
     byoSetupTitle: "Set up in your coding agent",
     byoSetupWhy:
       "Open Claude Code or Codex in the code project you want to work on, then paste one prompt. Setup applies only to that local copy, which must come from a repository shared by your team.",
@@ -368,17 +362,13 @@ export const COPY = {
     byoCopyPrompt: "Copy setup prompt",
     byoViewPrompt: "View full prompt",
     byoPasteToContinue: (provider: string) =>
-      `Paste into ${provider} to continue. This page will finish automatically after setup is verified.`,
+      `Paste into ${provider} opened at the project you want to use. Setup and verification happen there.`,
     byoCopyFailed: "Couldn't copy automatically. Open the full prompt and copy it manually.",
     byoCodexTrust: "Codex may ask you to approve the First Tree hook in /hooks. Continue in Codex after approval.",
     byoUnavailable: "Needs Admin: your Team's repository or Context Tree setup is not ready yet.",
     byoHandoffError: "Couldn't prepare the setup prompt just now. Try again.",
     byoRetryPrompt: "Try again",
-    byoCompleteTitle: "You're ready to keep working in your coding agent",
-    byoCompleteWhy: "First Tree Team Context is enabled for this local project.",
-    byoCompleteNote:
-      "Start a new Claude Code or Codex session here to load Team Context. You can review or repeat setup later in Settings → Setup.",
-    byoGoToFirstTree: "Go to First Tree",
+    byoReturnToFirstTree: "Return to First Tree",
   },
   /** failure recovery, shared */
   errors: {

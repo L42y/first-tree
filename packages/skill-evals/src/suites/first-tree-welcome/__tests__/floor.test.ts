@@ -129,24 +129,7 @@ describe("first-tree-welcome floor invariants", () => {
   });
 
   it("keeps capability setup milestone-gated, role-aware, and owned by Setup", () => {
-    const normalizedSkillMarkdown = skillMarkdown.replace(/\s+/gu, " ");
-
-    expect(skillMarkdown).toContain(
-      "After a pre-existing Context Tree milestone: guide work modes and Review setup once",
-    );
-    expect(normalizedSkillMarkdown).toContain("Your Team Context is ready for Agent Chat");
-    expect(normalizedSkillMarkdown).toContain("active Team code-repository resource");
-    expect(normalizedSkillMarkdown).toContain("A readable local path, ad-hoc URL, or populated Tree is not evidence");
-    expect(normalizedSkillMarkdown).toContain("future option once Settings shows an active Team code repo");
-    expect(normalizedSkillMarkdown).toContain("Provider conversations remain outside First Tree Chat");
-    expect(normalizedSkillMarkdown).toContain("Keep Agent Chat as the primary continuation");
-    expect(normalizedSkillMarkdown).toContain("Never give this Admin handoff to a member");
-    expect(normalizedSkillMarkdown).toContain("Team-agent choice");
-    expect(normalizedSkillMarkdown).toContain(
-      "chose an existing Team agent after seeing BYO as another onboarding path",
-    );
-    expect(normalizedSkillMarkdown).toContain("do not pitch Claude Code/Codex again in Chat");
-    expect(normalizedSkillMarkdown).toContain("do not ask them to create a personal First Tree agent later");
+    expect(skillMarkdown).toContain("After a pre-existing Context Tree milestone: guide Review setup once");
     expect(skillMarkdown).toContain("first-tree org context-tree review-config --json");
     expect(skillMarkdown).toContain("its default Team can differ from this Agent/chat's Team");
     expect(skillMarkdown).toContain("JSON `enabled` and `agentUuid` fields");
@@ -157,20 +140,17 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).toContain("launcher performs no Team mutation");
     expect(skillMarkdown).toContain("This is not a health or readiness check");
     expect(skillMarkdown).toMatch(/infer debt when the read is invalid, fails, or is\s+ambiguous/u);
-    expect(skillMarkdown).toMatch(/dedicated tree task owns its own\s+post-PR\/MR handoff/u);
-    expect(skillMarkdown).toMatch(/consume that result and never\s+repeat it/u);
+    expect(skillMarkdown).toContain("dedicated tree task owns its own post-PR/MR handoff");
+    expect(skillMarkdown).toContain("consume that result and never repeat it");
     expect(skillMarkdown).toContain("must not\nsend the same Setup prompt again");
-    expect(normalizedSkillMarkdown).toContain("Never make either path an onboarding gate");
+    expect(skillMarkdown).toMatch(/Never make it an\s+onboarding gate/u);
     expect(skillMarkdown).not.toContain("Settings -> GitHub");
 
     const handoffRows = [
       "| GitHub value PR | Task chat reported missing App coverage | Summarize the blocked live updates; do not repeat its Setup handoff |",
-      "| Pre-existing populated tree after value | Confirmed admin; no selected Agent | Give the work-mode handoff once; also offer Review Agent selection and enablement in Settings → Setup |",
-      "| Pre-existing populated tree after value | Confirmed admin; Agent selected but Review off | Give the work-mode handoff once; also offer Automatic Review enablement in Settings → Setup |",
-      "| Pre-existing populated tree after value | Confirmed admin; Review enabled | Give only the work-mode handoff once |",
-      "| Pre-existing populated tree after value | Confirmed admin; Review read failed/ambiguous | Give only the work-mode handoff once |",
-      "| Pre-existing populated tree after value | Explicit Team-agent-choice member | Do not replay the work-mode choice; no Team mutation or Review setup |",
-      "| Pre-existing populated tree after value | Member or unclear role | No Admin Setup handoff |",
+      "| Pre-existing populated tree after value | Confirmed admin; no selected Agent | Hand off once to select and enable Automatic Review in Settings → Setup |",
+      "| Pre-existing populated tree after value | Confirmed admin; Agent selected but Review off | Hand off once to enable Automatic Review in Settings → Setup |",
+      "| Pre-existing populated tree after value | Review enabled, read failed/ambiguous, member, or unclear role | No Review setup handoff |",
       "| Dedicated tree task's first PR/MR | Any | Seed owns the handoff; consume its result and do not repeat |",
     ];
     for (const row of handoffRows) {
@@ -198,9 +178,6 @@ describe("first-tree-welcome floor invariants", () => {
       expect(skillMarkdown, `skill should reference the real kickoff opener: "${opener}"`).toContain(opener);
       expect(bootstrapProse, `bootstrap-prose.ts should still ship the kickoff opener: "${opener}"`).toContain(opener);
     }
-    const quickStartOpener = "I chose to start with a Team agent.";
-    expect(skillMarkdown.replace(/\s+/gu, " ")).toContain(quickStartOpener);
-    expect(bootstrapProse).toContain(quickStartOpener);
   });
 
   it("keeps the OpenAI/Codex routing metadata description in sync with SKILL.md", () => {

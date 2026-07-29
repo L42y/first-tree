@@ -29,7 +29,8 @@ import { resolveOnboardingPath, shouldLeaveOnboarding } from "./steps.js";
  * The ref freeze only protects the current component instance, so a full page
  * reload recomputes from `/me`. The membership completion stamp is therefore
  * the terminal gate: it stays null between create-agent and start-chat, while
- * Team-agent chat and BYO write it without requiring a personal agent.
+ * Team-agent quick start writes only a resumable suppressor; optional external
+ * Context access does not write onboarding completion.
  */
 export function OnboardingPage() {
   const { meLoaded, role, onboardingStep, onboardingDismissedAt, onboardingCompletedAt, currentOrgHasPersonalAgent } =

@@ -120,8 +120,9 @@ export type KickoffOnboardingArgs = {
    * How the membership's onboarding state is stamped once the chat exists:
    *   - "completed"    — terminal completion (audit stamp + suppressor,
    *     reason="completed"), the single-chat start-chat default;
-   *   - "invitee_skip" — legacy-client compatibility: suppress auto-open only
-   *     (reason="invitee_skip"), never completion;
+   *   - "invitee_skip" — team-agent start: suppress auto-open only
+   *     (reason="invitee_skip"), never completion, so the member's personal
+   *     agent setup stays pending and resumable;
    *   - "none"         — stamp nothing (support/background chats that defer
    *     completion until every required chat exists).
    */
@@ -302,9 +303,9 @@ export async function hasTreeSetupKickoffMessage(db: Database, organizationId: s
  *
  * Re-running it — a reopened tab, a network retry, or the tree setup recovery
  * surface — converges on the same chat. Single-chat onboarding paths pass
- * `stamp: "completed"` (including current Team-agent quick start);
- * support/background paths pass `"none"` and stamp completion only after all
- * required chats exist. `"invitee_skip"` remains a legacy-client value.
+ * `stamp: "completed"`; the team-agent quick start passes `"invitee_skip"`
+ * (suppress auto-open without completion); support/background paths pass
+ * `"none"` and stamp completion only after all required chats exist.
  */
 export async function kickoffOnboarding(db: Database, args: KickoffOnboardingArgs): Promise<KickoffOnboardingResult> {
   const initialMessage: SendMessage = {
@@ -330,9 +331,9 @@ export async function kickoffOnboarding(db: Database, args: KickoffOnboardingArg
   //    Multi-chat onboarding paths defer this until every required kickoff
   //    chat has succeeded ("none"). Completion mirrors POST
   //    /me/onboarding-completed: the audit stamp AND the suppressor
-  //    (reason="completed") are written together. "invitee_skip" writes only
-  //    the suppressor for legacy clients; current Team-agent quick start
-  //    requests "completed".
+  //    (reason="completed") are written together. A team-agent start writes
+  //    only the suppressor with reason="invitee_skip", keeping the member's
+  //    personal-agent journey pending and resumable.
   if (args.stamp === "completed") {
     const now = new Date();
     await db

@@ -26,7 +26,7 @@ describe("Context enablement handoff", () => {
     expect(response.body).not.toContain("--no-start");
   });
 
-  it("adds verified completion only to an onboarding handoff", async () => {
+  it("pre-accepts the local plan without completing onboarding", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const response = await app.inject({
@@ -43,7 +43,8 @@ describe("Context enablement handoff", () => {
       intent: "onboarding",
     });
     expect(response.json().command).toBe(
-      `'first-tree-staging' context enable --provider 'claude-code' --team '${admin.organizationId}' --yes --complete-onboarding`,
+      `'first-tree-staging' context enable --provider 'claude-code' --team '${admin.organizationId}' --yes`,
     );
+    expect(response.body).not.toContain("--complete-onboarding");
   });
 });

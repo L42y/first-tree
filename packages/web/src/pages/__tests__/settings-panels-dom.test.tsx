@@ -425,8 +425,8 @@ describe("settings panels", () => {
     expect(narrow.container.textContent).toContain("Repositories");
     expect(narrow.container.textContent).toContain("TEAM");
     expect(narrow.container.textContent).toContain("Integrations");
-    expect(narrow.container.textContent).toContain("Setup");
-    expect(narrow.container.querySelector('a[href="/settings/setup"]')).not.toBeNull();
+    expect(narrow.container.textContent).not.toContain("Setup");
+    expect(narrow.container.querySelector('a[href="/settings/setup"]')).toBeNull();
     await act(async () => narrow.root.unmount());
 
     viewportMock.value = "xl";

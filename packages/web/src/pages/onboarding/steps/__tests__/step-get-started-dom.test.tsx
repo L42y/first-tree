@@ -60,6 +60,7 @@ function flow(overrides: Partial<OnboardingFlowValue> = {}): OnboardingFlowValue
       tokenError: null,
       retry: vi.fn(),
     },
+    prepareByoBootstrap: vi.fn(),
     agentDisplayName: "Assistant",
     setAgentDisplayName: vi.fn(),
     visibility: "organization",
@@ -81,8 +82,6 @@ function flow(overrides: Partial<OnboardingFlowValue> = {}): OnboardingFlowValue
     treeAutoDetectDone: false,
     markTreeAutoDetectDone: vi.fn(),
     completeAndEnterChat: vi.fn(async () => undefined),
-    onboardingCompletedAt: null,
-    refreshOnboarding: vi.fn(async () => undefined),
     finishLater: vi.fn(async () => undefined),
     ...overrides,
   };
@@ -139,6 +138,17 @@ function buttonByText(container: HTMLElement, text: string): HTMLButtonElement |
   return Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
 }
 
+async function openContinueWithout(container: HTMLElement): Promise<void> {
+  await click(buttonByText(container, "Continue without my own agent"));
+  await flushQueries();
+}
+
+async function openByo(container: HTMLElement): Promise<void> {
+  await openContinueWithout(container);
+  await click(buttonByText(container, "Use the Context Tree in Claude Code or Codex"));
+  await flushQueries();
+}
+
 beforeEach(() => {
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -164,7 +174,7 @@ beforeEach(() => {
     role: "member",
     provider,
     intent: "onboarding",
-    command: `'first-tree' context enable --provider '${provider}' --team 'org-1' --yes --complete-onboarding`,
+    command: `'first-tree' context enable --provider '${provider}' --team 'org-1' --yes`,
     workingDirectoryInstruction: "Run this once from the root of the code repository.",
   }));
 });
@@ -177,14 +187,15 @@ afterEach(() => {
 });
 
 describe("StepGetStarted", () => {
-  it("keeps the recommended personal-agent and BYO paths but hides Team agent when none is available", async () => {
+  it("shows one personal-agent recommendation before revealing alternatives", async () => {
     const value = flow({ offerTeamAgentStart: false });
     const container = await renderStep(value);
-    await flushQueries();
-    expect(container.textContent).toContain("Recommended");
-    expect(container.textContent).toContain("Set up my First Tree agent");
-    expect(container.textContent).not.toContain("Start with a Team agent");
-    expect(container.textContent).toContain("Keep using Claude Code or Codex");
+    expect(container.textContent).toContain("You've joined Acme");
+    expect(container.textContent).toContain("Set up your First Tree agent");
+    expect(container.textContent).toContain("Connect computer");
+    expect(container.textContent).toContain("Start first chat");
+    expect(container.textContent).not.toContain("Pick a team agent");
+    expect(container.textContent).not.toContain("Use the Context Tree in Claude Code or Codex");
     expect(mocks.listAgents).not.toHaveBeenCalled();
     await click(buttonByText(container, "Set up my agent"));
     expect(value.goNext).toHaveBeenCalledTimes(1);
@@ -208,7 +219,7 @@ describe("StepGetStarted", () => {
     });
     const container = await renderStep(value);
     await flushQueries();
-    expect(container.textContent).toContain("This computer is ready");
+    expect(container.textContent).toContain("Your computer is connected");
     await click(buttonByText(container, "Create my agent"));
     expect(value.goTo).toHaveBeenCalledWith(2);
     expect(value.goNext).not.toHaveBeenCalled();
@@ -218,9 +229,7 @@ describe("StepGetStarted", () => {
     mocks.listAgents.mockRejectedValueOnce(new Error("boom"));
     const value = flow();
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Choose a Team agent"));
-    await flushQueries();
+    await openContinueWithout(container);
     expect(container.textContent).toContain("Couldn't load your team's agents");
     expect(container.textContent).not.toContain("No team agent is available");
     // Retry refetches and renders the roster.
@@ -229,27 +238,41 @@ describe("StepGetStarted", () => {
     expect(container.textContent).toContain("Dev Assistant");
   });
 
-  it("uses one recommended path and two lower-emphasis alternate paths", async () => {
+  it("does not expose a Team-agent start when owner disclosure cannot load", async () => {
+    mocks.listMembers.mockRejectedValueOnce(new Error("boom"));
     const value = flow();
     const container = await renderStep(value);
-    await flushQueries();
-    expect(container.textContent).toContain("Recommended");
-    expect(container.textContent).toContain("Set up my First Tree agent");
-    expect(container.textContent).toContain("Start with a Team agent");
-    expect(container.textContent).toContain("No setup on this computer");
-    expect(container.textContent).toContain("Keep using Claude Code or Codex");
-    expect(container.textContent).toContain("not in First Tree Chat");
+    await openContinueWithout(container);
+
+    expect(container.textContent).toContain("Couldn't load your team's agents");
+    expect(container.textContent).not.toContain("Uses its owner's connected computer");
+    expect(buttonByText(container, "Start chat")).toBeUndefined();
   });
 
-  it("Team-agent onboarding completes without requiring a personal agent", async () => {
+  it("reveals Team-agent and Context access only after explicit continuation", async () => {
     const value = flow();
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Choose a Team agent"));
-    await flushQueries();
+    expect(container.textContent).not.toContain("Pick a team agent");
+    expect(container.textContent).not.toContain("Use the Context Tree in Claude Code or Codex");
+    await openContinueWithout(container);
+    expect(container.textContent).toContain("Pick a team agent");
+    expect(container.textContent).toContain("Dev Assistant");
+    expect(container.textContent).toContain("Use the Context Tree in Claude Code or Codex");
+  });
+
+  it("Team-agent quick start stays resumable without requiring a personal Computer", async () => {
+    const value = flow();
+    const container = await renderStep(value);
+    await openContinueWithout(container);
     expect(container.textContent).toContain("Pick a team agent");
     expect(container.textContent).toContain("Dev Assistant");
     expect(container.textContent).toContain("Run by Zhang Wei");
+    expect(container.textContent).toContain("Uses Zhang Wei's connected computer and coding plan");
+    const ownerDisclosure = Array.from(container.querySelectorAll(".text-caption")).find((element) =>
+      element.textContent?.includes("Uses Zhang Wei's connected computer"),
+    );
+    expect(ownerDisclosure?.classList.contains("truncate")).toBe(false);
+    expect(ownerDisclosure?.classList.contains("break-words")).toBe(true);
     // The picker asks the server for non-human agents only, so human mirrors
     // can never crowd eligible agents off a page.
     expect(mocks.listAgents).toHaveBeenCalledWith(expect.objectContaining({ type: "agent", addressableOnly: true }));
@@ -257,17 +280,16 @@ describe("StepGetStarted", () => {
     expect(mocks.startOnboardingChat).toHaveBeenCalledTimes(1);
     const args = mocks.startOnboardingChat.mock.calls[0]?.[0];
     expect(args.agent.uuid).toBe("agent-1");
-    expect(args.stamp).toBe("completed");
+    expect(args.stamp).toBe("invitee_skip");
     expect(args.bootstrap).toContain("chose to start with a Team agent");
-    expect(value.completeAndEnterChat).toHaveBeenCalledWith("chat-quick-start", "get-started");
+    expect(value.completeAndEnterChat).toHaveBeenCalledWith("chat-quick-start", "get-started", "invitee_skip");
   });
 
   it("BYO gives the member one prompt for computer connection and Team Context", async () => {
     const value = flow({ offerTeamAgentStart: false });
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Set up in my coding agent"));
-    await flushQueries();
+    await openByo(container);
+    expect(value.prepareByoBootstrap).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Set up in your coding agent");
     expect(container.textContent).toContain("Setup prompt");
     expect(container.textContent).toContain("Claude Code for Acme");
@@ -289,7 +311,7 @@ describe("StepGetStarted", () => {
     await click(buttonByText(container, "Copy setup prompt"));
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("context enable --provider 'claude-code'"));
     expect(buttonByText(container, "Copied")).toBeTruthy();
-    expect(container.textContent).toContain("Paste into Claude Code to continue");
+    expect(container.textContent).toContain("Paste into Claude Code opened at the project");
     await flushQueries();
     expect(buttonByText(container, "Copied")).toBeTruthy();
   });
@@ -297,9 +319,7 @@ describe("StepGetStarted", () => {
   it("keeps the prompt available when automatic copy fails", async () => {
     writeText.mockRejectedValueOnce(new Error("clipboard denied"));
     const container = await renderStep(flow({ offerTeamAgentStart: false }));
-    await flushQueries();
-    await click(buttonByText(container, "Set up in my coding agent"));
-    await flushQueries();
+    await openByo(container);
     await click(buttonByText(container, "Copy setup prompt"));
 
     expect(container.textContent).toContain("Couldn't copy automatically");
@@ -325,18 +345,16 @@ describe("StepGetStarted", () => {
       },
     });
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Set up in my coding agent"));
-    await flushQueries();
+    await openByo(container);
     expect(container.textContent).toContain("Set up in your coding agent");
     expect(container.textContent).toContain("server-provided bootstrap");
     expect(container.textContent).toContain("first-tree login fresh-connect-token");
     expect(container.textContent).toContain("'first-tree' context enable");
-    expect(container.textContent).toContain("--complete-onboarding");
+    expect(container.textContent).not.toContain("--complete-onboarding");
+    expect(container.textContent).toContain("First Tree Web owns onboarding completion separately");
     expect(container.textContent).toContain("does not create a First Tree agent");
     expect(buttonByText(container, "Finish onboarding")).toBeUndefined();
     expect(container.textContent).toContain("verifies setup automatically");
-    expect(value.refreshOnboarding).toHaveBeenCalled();
     expect(value.createAgent).not.toHaveBeenCalled();
   });
 
@@ -357,9 +375,7 @@ describe("StepGetStarted", () => {
       },
     });
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Set up in my coding agent"));
-    await flushQueries();
+    await openByo(container);
 
     expect(buttonByText(container, "Codex")).toBeTruthy();
     expect(buttonByText(container, "Claude Code")).toBeTruthy();
@@ -387,9 +403,7 @@ describe("StepGetStarted", () => {
       },
     });
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Set up in my coding agent"));
-    await flushQueries();
+    await openByo(container);
 
     expect(buttonByText(container, "Claude Code")).toBeTruthy();
     expect(buttonByText(container, "Codex")).toBeTruthy();
@@ -397,29 +411,21 @@ describe("StepGetStarted", () => {
     expect(mocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code", "onboarding");
   });
 
-  it("shows completion only from the membership completion stamped by CLI", async () => {
-    const value = flow({
-      onboardingCompletedAt: "2026-07-29T09:00:00.000Z",
-    });
+  it("returns to First Tree without treating BYO as onboarding completion", async () => {
+    const value = flow({ offerTeamAgentStart: false });
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Set up in my coding agent"));
-    await flushQueries();
-
-    expect(container.textContent).toContain("You're ready to keep working in your coding agent");
-    expect(container.textContent).toContain("Team Context is enabled for this local project");
-    expect(buttonByText(container, "Finish onboarding")).toBeUndefined();
-    expect(buttonByText(container, "Go to First Tree")).toBeTruthy();
+    await openByo(container);
+    await click(buttonByText(container, "Return to First Tree"));
+    expect(value.finishLater).toHaveBeenCalledTimes(1);
+    expect(value.completeAndEnterChat).not.toHaveBeenCalled();
   });
 
   it("does not let the Browser stamp BYO completion", async () => {
     const value = flow();
     const container = await renderStep(value);
-    await flushQueries();
-    await click(buttonByText(container, "Set up in my coding agent"));
-    await flushQueries();
+    await openByo(container);
     await click(buttonByText(container, "Copy setup prompt"));
-    expect(container.textContent).toContain("Paste into Claude Code to continue");
+    expect(container.textContent).toContain("Paste into Claude Code opened at the project");
     expect(buttonByText(container, "Finish onboarding")).toBeUndefined();
   });
 
@@ -428,20 +434,19 @@ describe("StepGetStarted", () => {
     mocks.listTeamResourcesForOrg.mockResolvedValueOnce([]);
     const value = flow();
     const container = await renderStep(value);
-    await flushQueries();
-    expect(container.textContent).toContain("team's context isn't ready");
-    expect(buttonByText(container, "Not available yet")?.disabled).toBe(true);
+    await openContinueWithout(container);
+    expect(container.textContent).not.toContain("Use the Context Tree in Claude Code or Codex");
   });
 
   it("offers a retry when Team Context readiness cannot be checked", async () => {
     mocks.getContextTreeSetting.mockRejectedValueOnce(new Error("temporary"));
     const value = flow();
     const container = await renderStep(value);
-    await flushQueries();
+    await openContinueWithout(container);
     expect(container.textContent).toContain("Couldn't check this option");
-    await click(buttonByText(container, "Try again"));
+    await click(buttonByText(container, "Try Context Tree access again"));
     await flushQueries();
-    expect(buttonByText(container, "Set up in my coding agent")?.disabled).toBe(false);
+    expect(buttonByText(container, "Use the Context Tree in Claude Code or Codex")).toBeTruthy();
   });
 
   it("pages through every roster page so a later-page agent still shows", async () => {
@@ -456,8 +461,7 @@ describe("StepGetStarted", () => {
       });
     const value = flow();
     const container = await renderStep(value);
-    await click(buttonByText(container, "Choose a Team agent"));
-    await flushQueries();
+    await openContinueWithout(container);
     expect(mocks.listAgents).toHaveBeenCalledTimes(2);
     expect(mocks.listAgents.mock.calls[1]?.[0]).toMatchObject({ cursor: "2026-01-01T00:00:00.000Z" });
     expect(container.textContent).toContain("Dev Assistant");
@@ -474,8 +478,7 @@ describe("StepGetStarted", () => {
     });
     const value = flow();
     const container = await renderStep(value);
-    await click(buttonByText(container, "Choose a Team agent"));
-    await flushQueries();
+    await openContinueWithout(container);
     expect(container.textContent).toContain("Dev Assistant");
     expect(container.textContent).not.toContain("My Agent");
     expect(Array.from(container.querySelectorAll("button")).filter((b) => b.textContent === "Start chat")).toHaveLength(
@@ -487,12 +490,12 @@ describe("StepGetStarted", () => {
     mocks.listAgents.mockResolvedValue({ items: [], nextCursor: null });
     const value = flow();
     const container = await renderStep(value);
-    await click(buttonByText(container, "Choose a Team agent"));
-    await flushQueries();
+    await openContinueWithout(container);
     expect(container.textContent).toContain("No Team agent is available right now");
-    await click(buttonByText(container, "Back to choices"));
-    expect(container.textContent).toContain("Set up my First Tree agent");
-    expect(container.textContent).toContain("Keep using Claude Code or Codex");
+    expect(container.textContent).toContain("Use the Context Tree in Claude Code or Codex");
+    await click(buttonByText(container, "Back"));
+    expect(container.textContent).toContain("Set up your First Tree agent");
+    expect(container.textContent).not.toContain("Use the Context Tree in Claude Code or Codex");
     expect(value.goNext).not.toHaveBeenCalled();
   });
 });

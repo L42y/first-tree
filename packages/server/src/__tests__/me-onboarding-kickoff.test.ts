@@ -174,7 +174,7 @@ describe("POST /me/onboarding/kickoff", () => {
     expect(member?.onboardingSuppressedReason).toBe("completed");
   });
 
-  it("legacy invitee_skip suppresses auto-open without stamping completion", async () => {
+  it("team-agent start (stamp=invitee_skip) suppresses auto-open without stamping completion", async () => {
     const app = getApp();
     // The agent's manager: an ordinary teammate whose org-visible agent the
     // joining member starts with.
@@ -207,8 +207,8 @@ describe("POST /me/onboarding/kickoff", () => {
     const [chat] = await app.db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
     expect(chat?.onboardingKickoffKey).toBe(`${joiner.humanAgentUuid}:${agent.uuid}:onboarding`);
 
-    // Suppressor stamped with the legacy invitee_skip reason; completion is
-    // intentionally not stamped.
+    // Suppressor stamped with the invitee_skip reason; completion is not
+    // stamped, so personal-agent setup stays resumable.
     const [joinerMember] = await app.db.select().from(members).where(eq(members.id, joiner.memberId)).limit(1);
     expect(joinerMember?.onboardingSuppressedAt).not.toBeNull();
     expect(joinerMember?.onboardingSuppressedReason).toBe("invitee_skip");

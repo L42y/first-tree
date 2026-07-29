@@ -282,6 +282,7 @@ export function SetupPreviewPage() {
     onboardingDismissedAt: facts.onboardingSuppressedAt,
     onboardingCompletedAt: facts.onboardingCompletedAt,
   } as unknown as Parameters<typeof AuthContext.Provider>[0]["value"];
+
   const ownerControls =
     expandedOwnerControl !== "context-tree"
       ? {}

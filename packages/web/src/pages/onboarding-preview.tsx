@@ -1,8 +1,9 @@
 import type { AgentVisibility, GithubAppInstallationOutput } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Bot, CircleCheck, MessageSquare, Plus, SendHorizontal } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { HubClient } from "../api/activity.js";
+import { getApiSelectedOrganizationId, setApiSelectedOrganizationId } from "../api/client.js";
 import type { GithubRepo } from "../api/github.js";
 import { Avatar } from "../components/avatar.js";
 import type { ComputerConnection } from "../features/agent-setup/use-computer-connection.js";
@@ -14,7 +15,7 @@ import { OnboardingShell } from "./onboarding/onboarding-shell.js";
 import { StepConnectCode } from "./onboarding/steps/step-connect-code.js";
 import { StepConnectComputer } from "./onboarding/steps/step-connect-computer.js";
 import { StepCreateAgent } from "./onboarding/steps/step-create-agent.js";
-import { ByoCompletion, StepGetStarted } from "./onboarding/steps/step-get-started.js";
+import { StepGetStarted } from "./onboarding/steps/step-get-started.js";
 import { StepStartChat } from "./onboarding/steps/step-start-chat.js";
 import { StepTeam } from "./onboarding/steps/step-team.js";
 import { getStepSequence, type OnboardingPath, type StepId } from "./onboarding/steps.js";
@@ -493,7 +494,7 @@ function handleNet(rawUrl: string): Promise<Response> | Response | null {
       intent,
       command:
         `first-tree-dev context enable --provider '${selectedProvider}' --team '${ORG_ID}'` +
-        (intent === "onboarding" ? " --yes --complete-onboarding" : ""),
+        (intent === "onboarding" ? " --yes" : ""),
       workingDirectoryInstruction: "Run this once from the repository root.",
     });
   }
@@ -848,9 +849,8 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "inv-link-signedout",
     label: "Join team · signed out",
-    group: "Member entry",
+    group: "Join-team invite states",
     role: "invitee",
-    view: "flow",
     invite: (
       <InviteAcceptCard
         preview={PREVIEW}
@@ -929,8 +929,8 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
 
   {
     id: "inv-fork-choose",
-    label: "Choose how to work",
-    group: "Member entry",
+    label: "Set up your First Tree agent",
+    group: "Recommended onboarding",
     role: "invitee",
     view: "flow",
     wizard: {
@@ -945,42 +945,9 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     },
   },
   {
-    id: "inv-workspace-team-pick",
-    label: "Choose a Team agent",
-    group: "Agent Chat · Team agent",
-    role: "invitee",
-    view: "flow",
-    wizard: {
-      step: "get-started",
-      flow: { offerTeamAgentStart: true },
-      net: { orgAgents: TEAM_AGENTS, orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
-    },
-  },
-  {
-    id: "inv-workspace-team-chat",
-    label: "Destination · first Agent Chat",
-    group: "Agent Chat · Team agent",
-    role: "invitee",
-    view: "flow",
-    destination: <MemberChatDestination mode="team-agent" />,
-  },
-  {
-    id: "inv-workspace-personal-choice",
-    label: "Choice · computer ready",
-    group: "Work-mode choice states",
-    role: "invitee",
-    view: "flow",
-    wizard: {
-      step: "get-started",
-      flow: { offerTeamAgentStart: true, computer: COMPUTER.ready },
-      net: { contextTree: TREE_URL, hasCodeRepository: true },
-    },
-  },
-  {
     id: "inv-cc-waiting",
     label: "Connect computer",
-    group: "Agent Chat · Personal agent",
+    group: "Recommended onboarding",
     role: "invitee",
     view: "flow",
     wizard: { step: "connect-computer", flow: { computer: COMPUTER.waiting } },
@@ -988,7 +955,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "inv-ca-form",
     label: "Create agent",
-    group: "Agent Chat · Personal agent",
+    group: "Recommended onboarding",
     role: "invitee",
     view: "flow",
     wizard: { step: "create-agent", flow: { computer: COMPUTER.ready, agentPhase: "idle" } },
@@ -996,7 +963,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "inv-ko-ready",
     label: "Start first chat",
-    group: "Agent Chat · Personal agent",
+    group: "Recommended onboarding",
     role: "invitee",
     view: "flow",
     wizard: {
@@ -1008,17 +975,65 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "inv-workspace-personal-chat",
     label: "Destination · first Agent Chat",
-    group: "Agent Chat · Personal agent",
+    group: "Recommended onboarding",
     role: "invitee",
     view: "flow",
     destination: <MemberChatDestination mode="personal-agent" />,
   },
   {
-    id: "inv-byo-setup",
-    label: "One-paste setup",
-    group: "Claude Code / Codex",
+    id: "inv-workspace-team-pick",
+    label: "Continue without · choose a Team agent",
+    group: "Continue without · Team agent available",
     role: "invitee",
     view: "flow",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true },
+      net: {
+        orgAgents: TEAM_AGENTS,
+        orgMembers: true,
+        contextTree: TREE_URL,
+        hasCodeRepository: true,
+      },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+  {
+    id: "inv-workspace-team-chat",
+    label: "Destination · first Agent Chat",
+    group: "Continue without · Team agent available",
+    role: "invitee",
+    view: "flow",
+    destination: <MemberChatDestination mode="team-agent" />,
+  },
+  {
+    id: "inv-progressive-no-team-agent",
+    label: "Recommended · no Team agent",
+    group: "Continue without · no Team agent",
+    role: "invitee",
+    view: "flow",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: false },
+      net: { orgAgents: [], orgMembers: true, contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+  {
+    id: "inv-workspace-personal-choice",
+    label: "Recommended · computer already connected",
+    group: "Progressive entry states",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { computer: COMPUTER.ready },
+    },
+  },
+  {
+    id: "inv-byo-setup",
+    label: "External Context · one-paste setup",
+    group: "Claude Code / Codex states",
+    role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true, computer: COMPUTER.waiting },
@@ -1026,65 +1041,54 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
       body: <StepGetStarted defaultMode="byo-setup" />,
     },
   },
-  {
-    id: "inv-byo-complete",
-    label: "Complete · continue in coding agent",
-    group: "Claude Code / Codex",
-    role: "invitee",
-    view: "flow",
-    wizard: {
-      step: "get-started",
-      flow: { offerTeamAgentStart: true, computer: COMPUTER.ready },
-      net: { contextTree: TREE_URL, hasCodeRepository: true },
-      body: <ByoCompletion />,
-    },
-  },
-
-  // Choice readiness is member-readable and read-only. Missing Team resources
-  // disable BYO; a failed probe offers retry without pretending resources are
-  // absent.
+  // Context readiness is member-readable and read-only. It is checked only
+  // after the member explicitly continues without a personal agent.
   {
     id: "inv-choice-checking",
     label: "Choice · checking Team Context",
-    group: "Work-mode choice states",
+    group: "Continue without states",
     role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { contextTree: "pending", hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
     id: "inv-choice-no-team-agent",
     label: "Choice · no Team agent",
-    group: "Work-mode choice states",
+    group: "Continue without states",
     role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: false },
-      net: { contextTree: TREE_URL, hasCodeRepository: true },
+      net: { orgAgents: [], orgMembers: true, contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
     id: "inv-choice-context-unavailable",
     label: "Choice · BYO unavailable",
-    group: "Work-mode choice states",
+    group: "Continue without states",
     role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { contextTree: null, hasCodeRepository: false },
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
     id: "inv-choice-context-error",
     label: "Choice · readiness failed",
-    group: "Work-mode choice states",
+    group: "Continue without states",
     role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { contextTree: "error", hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
 
@@ -1097,7 +1101,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: TEAM_AGENTS, orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
@@ -1109,7 +1113,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: "pending", orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
@@ -1121,7 +1125,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: [], orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
@@ -1133,7 +1137,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: "error", orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
 
@@ -1366,10 +1370,14 @@ function MemberChatDestination({ mode }: { mode: "team-agent" | "personal-agent"
           </div>
           <div
             className="text-caption inline-flex items-center"
-            style={{ marginLeft: "auto", gap: "var(--sp-1)", color: "var(--success)" }}
+            style={{
+              marginLeft: "auto",
+              gap: "var(--sp-1)",
+              color: teamAgent ? "var(--fg-3)" : "var(--success)",
+            }}
           >
-            <CircleCheck className="h-3.5 w-3.5" />
-            Onboarding complete
+            {teamAgent ? null : <CircleCheck className="h-3.5 w-3.5" />}
+            {teamAgent ? "Personal agent setup remains available" : "Onboarding complete"}
           </div>
         </header>
 
@@ -1403,9 +1411,7 @@ function MemberChatDestination({ mode }: { mode: "team-agent" | "personal-agent"
                   style={{ gap: "var(--sp-2)", marginTop: "var(--sp-2)", color: "var(--fg-3)" }}
                 >
                   <Bot className="h-4 w-4" aria-hidden />
-                  {teamAgent
-                    ? "Reading the team's shared context and preparing your first options…"
-                    : "Getting your first Agent Chat ready…"}
+                  {teamAgent ? "Starting your first Team-agent conversation…" : "Getting your first Agent Chat ready…"}
                 </div>
               </div>
             </div>
@@ -1453,6 +1459,7 @@ function baseFlow(path: OnboardingPath): OnboardingFlowValue {
     teamDisplayName: TEAM_NAME,
     orgHasOtherMembers: path === "invitee",
     computer: COMPUTER.waiting,
+    prepareByoBootstrap: NOOP,
     agentDisplayName: DEFAULT_AGENT_NAME,
     setAgentDisplayName: NOOP,
     visibility: "organization",
@@ -1474,8 +1481,6 @@ function baseFlow(path: OnboardingPath): OnboardingFlowValue {
     markTreeAutoDetectDone: NOOP,
     offerTeamAgentStart: false,
     completeAndEnterChat: ASYNC_NOOP,
-    onboardingCompletedAt: null,
-    refreshOnboarding: ASYNC_NOOP,
     finishLater: ASYNC_NOOP,
   };
 }
@@ -1646,6 +1651,22 @@ function initialPreviewSelection(): { role: Role; scenarioId: string; view: Prev
 }
 
 export function OnboardingPreviewPage() {
+  const previousApiOrgRef = useRef(getApiSelectedOrganizationId());
+  // Production list APIs resolve their Team from the API client's selected-org
+  // projection before issuing a request. The preview supplies Auth context
+  // directly, so establish the same projection synchronously before a real
+  // step component mounts and restore the caller's value on unmount.
+  setApiSelectedOrganizationId(ORG_ID);
+  useEffect(() => {
+    // React Strict Mode replays the effect cleanup during development. Set the
+    // preview Team again on the replayed mount so interactions that start
+    // later (for example Continue without) keep using the fixture Team.
+    setApiSelectedOrganizationId(ORG_ID);
+    return () => {
+      setApiSelectedOrganizationId(previousApiOrgRef.current);
+    };
+  }, []);
+
   const initial = useMemo(() => initialPreviewSelection(), []);
   const [role, setRole] = useState<Role>(initial.role);
   const [view, setView] = useState<PreviewView>(initial.view);

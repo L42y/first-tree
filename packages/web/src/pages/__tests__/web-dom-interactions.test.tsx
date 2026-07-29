@@ -140,6 +140,7 @@ const authMock = vi.hoisted(() => {
       dismissOnboarding: vi.fn(async () => undefined),
       restoreOnboarding: vi.fn(async () => undefined),
       markOnboardingCompleted: vi.fn(async () => undefined),
+      applyOnboardingKickoffStamp: vi.fn(),
       login: vi.fn(async () => undefined),
       adoptTokens: vi.fn(async () => undefined),
       selectOrganization: vi.fn(async () => undefined),
@@ -495,6 +496,7 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
       tokenError: null,
       retry: vi.fn(),
     },
+    prepareByoBootstrap: vi.fn(),
     agentDisplayName: "Gandy's assistant",
     setAgentDisplayName: vi.fn(),
     visibility: "organization",
@@ -516,8 +518,6 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
     markTreeAutoDetectDone: vi.fn(),
     offerTeamAgentStart: false,
     completeAndEnterChat: vi.fn(async () => undefined),
-    onboardingCompletedAt: null,
-    refreshOnboarding: vi.fn(async () => undefined),
     finishLater: vi.fn(async () => undefined),
   };
   return {

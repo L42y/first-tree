@@ -47,16 +47,10 @@ export function personalSetupNeedsAttention({
   currentOrgHasUsableAgent,
   onboardingDismissedAt,
   onboardingCompletedAt,
-  role,
 }: {
   currentOrgHasUsableAgent: boolean;
   onboardingDismissedAt: string | null;
   onboardingCompletedAt: string | null;
-  role: string | null;
 }): boolean {
-  // A member may intentionally complete onboarding with a Team agent or an
-  // external coding agent. An admin's Setup attention still represents Team
-  // readiness, so member completion must not suppress missing admin setup.
-  if (role === "member" && onboardingCompletedAt !== null) return false;
-  return currentOrgHasUsableAgent === false || onboardingDismissedAt !== null;
+  return currentOrgHasUsableAgent === false || (onboardingDismissedAt !== null && onboardingCompletedAt === null);
 }

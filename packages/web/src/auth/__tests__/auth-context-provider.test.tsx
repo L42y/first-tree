@@ -399,6 +399,21 @@ describe("AuthProvider", () => {
     expect(latestAuth?.currentMembership?.onboardingSuppressedAt).toBeNull();
   });
 
+  it("mirrors a successful kickoff stamp locally without a duplicate completion request", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
+    await renderAuth();
+
+    act(() => latestAuth?.applyOnboardingKickoffStamp("invitee_skip"));
+    expect(latestAuth?.currentMembership?.onboardingSuppressedReason).toBe("invitee_skip");
+    expect(latestAuth?.currentMembership?.onboardingCompletedAt).toBeNull();
+    expect(onboardingCompletedMock).not.toHaveBeenCalled();
+
+    act(() => latestAuth?.applyOnboardingKickoffStamp("completed"));
+    expect(latestAuth?.currentMembership?.onboardingSuppressedReason).toBe("completed");
+    expect(latestAuth?.currentMembership?.onboardingCompletedAt).toBeTruthy();
+    expect(onboardingCompletedMock).not.toHaveBeenCalled();
+  });
+
   it("adopts external token pairs and falls back when /me fails", async () => {
     apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
     await renderAuth();

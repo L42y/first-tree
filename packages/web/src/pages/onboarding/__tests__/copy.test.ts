@@ -30,33 +30,29 @@ describe("STEP_COPY", () => {
   });
 });
 
-describe("get-started choice copy", () => {
-  it("recommends a personal First Tree agent without hiding the two alternate paths", () => {
+describe("get-started progressive copy", () => {
+  it("leads with personal setup and keeps alternatives behind explicit continuation", () => {
     const g = COPY.getStarted;
     for (const s of [
-      g.chooseTitle,
-      g.chooseWhy,
-      g.personal.title,
-      g.personal.description,
-      g.personal.detail,
-      g.team.title,
-      g.team.description,
-      g.team.detail,
-      g.byo.title,
+      g.recommendedTitle,
+      g.recommendedWhy,
+      g.continueWithout,
+      g.pickTitle,
+      g.pickWhy,
       g.byo.description,
-      g.byo.detail,
+      g.byo.cta,
     ]) {
       expect(s.toLowerCase()).not.toContain("no computer");
       expect(s.toLowerCase()).not.toContain("runtime");
     }
+    expect(g.joinedTeam("Acme")).toBe("You've joined Acme");
+    expect(g.recommendedTitle).toBe("Set up your First Tree agent");
+    expect(g.personalSteps).toEqual(["Connect computer", "Create agent", "Start first chat"]);
+    expect(g.continueWithout).toBe("Continue without my own agent");
     expect(g.runBy("Zhang Wei")).toBe("Run by Zhang Wei");
-    expect(g.recommended).toBe("Recommended");
-    expect(g.personal.title).toBe("Set up my First Tree agent");
-    expect(g.personal.description).toContain("delegate work");
-    expect(g.team.title).toBe("Start with a Team agent");
-    expect(g.team.detail).toBe("No setup on this computer.");
-    expect(g.byo.title).toBe("Keep using Claude Code or Codex");
-    expect(g.byo.detail).toContain("not in First Tree Chat");
+    expect(g.teamAgentExecution("Zhang Wei")).toContain("Zhang Wei's connected computer");
+    expect(g.byo.cta).toBe("Use the Context Tree in Claude Code or Codex");
+    expect(g.byo.description).toContain("one local project");
     expect(g.byoBoundary).toContain("does not create a First Tree agent");
     expect(g.byoBoundary).toContain("outside First Tree Chat");
     expect(g.byoSetupWhy).toContain("paste one prompt");

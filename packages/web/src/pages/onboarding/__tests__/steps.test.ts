@@ -46,7 +46,7 @@ describe("getStepSequence", () => {
     expect(getStepSequence("admin")).toEqual(ADMIN_STEPS);
     expect(ADMIN_STEPS).toEqual(["create-team", "connect-computer", "create-agent", "start-chat"]);
   });
-  it("invitee sequence starts at the work-mode choice after invite acceptance", () => {
+  it("invitee sequence starts with the recommended personal-agent path after invite acceptance", () => {
     expect(getStepSequence("invitee")).toEqual(INVITEE_STEPS);
     expect(INVITEE_STEPS).toEqual(["get-started", "connect-computer", "create-agent", "start-chat"]);
   });
@@ -89,7 +89,7 @@ describe("inferInitialStepIndex", () => {
       INVITEE_STEPS.indexOf("get-started"),
     );
   });
-  it("invitee always starts at the work-mode choice when no computer exists", () => {
+  it("invitee always starts at the recommendation screen when no computer exists", () => {
     expect(inferInitialStepIndex("invitee", { onboardingStep: "connect", teamSettled: true })).toBe(0);
     expect(inferInitialStepIndex("invitee", { onboardingStep: null, teamSettled: false })).toBe(0);
   });
@@ -222,7 +222,7 @@ describe("shouldLeaveOnboarding", () => {
       false,
     );
   });
-  it("leaves after BYO completion even though no personal First Tree agent exists", () => {
+  it("honors an existing terminal completion stamp even when the personal agent is later unavailable", () => {
     expect(
       shouldLeaveOnboarding({
         ...base,

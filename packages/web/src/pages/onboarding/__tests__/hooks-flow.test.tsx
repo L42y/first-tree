@@ -67,6 +67,7 @@ const authMock = vi.hoisted(() => ({
     dismissOnboarding: vi.fn(async () => undefined),
     restoreOnboarding: vi.fn(async () => undefined),
     markOnboardingCompleted: vi.fn(async () => undefined),
+    applyOnboardingKickoffStamp: vi.fn(),
     login: vi.fn(async () => undefined),
     adoptTokens: vi.fn(async () => undefined),
     selectOrganization: vi.fn(async () => undefined),
@@ -129,6 +130,7 @@ beforeEach(() => {
     currentOrgHasPersonalAgent: false,
     dismissOnboarding: vi.fn(async () => undefined),
     markOnboardingCompleted: vi.fn(async () => undefined),
+    applyOnboardingKickoffStamp: vi.fn(),
     refreshMe: vi.fn(async () => undefined),
   };
   root = null;
@@ -462,11 +464,11 @@ describe("onboarding hooks and flow", () => {
 
     await act(async () => expectHookValue(latest.current).goTo(3));
     await act(async () => expectHookValue(latest.current).completeAndEnterChat("chat 1"));
-    // Completing must stamp completed WITHOUT dismissing: the account-level
-    // dismissal would short-circuit shouldEnterOnboarding's org-level gate
-    // forever, so only the explicit finishLater above may have called it.
+    // Kickoff already stamped completion atomically with chat creation. The
+    // flow mirrors that confirmed result locally without a duplicate POST.
     expect(authMock.value.dismissOnboarding).toHaveBeenCalledTimes(1);
-    expect(authMock.value.markOnboardingCompleted).toHaveBeenCalled();
+    expect(authMock.value.applyOnboardingKickoffStamp).toHaveBeenCalledWith("completed");
+    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
     expect(eventMocks.reportOnboardingEvent).toHaveBeenCalledWith("step_completed", {
       step: "start-chat",
       path: "admin",
@@ -544,7 +546,7 @@ describe("onboarding hooks and flow", () => {
     expect(expectHookValue(latest.current).activeStep).toBe("create-team");
   });
 
-  it("lands on the work-mode choice for a returning invitee without a personal agent", async () => {
+  it("lands on the personal-agent recommendation for a returning invitee without a personal agent", async () => {
     const latest = { current: null as OnboardingFlowValue | null };
 
     function Probe() {
@@ -571,6 +573,77 @@ describe("onboarding hooks and flow", () => {
     // Invite redemption already created the membership and selected the Team,
     // so repeating a Join-team confirmation would add no decision or work.
     expect(expectHookValue(latest.current).activeStep).toBe("get-started");
+  });
+
+  it("does not mint a BYO connect code until the member opens that branch", async () => {
+    const latest = { current: null as OnboardingFlowValue | null };
+    clientMocks.api.post.mockResolvedValue({
+      token: "connect-token",
+      expiresIn: 300,
+      bootstrapCommand: "first-tree login connect-token",
+    });
+    authMock.value = {
+      ...authMock.value,
+      role: "member",
+      organizationId: "joined-org",
+      onboardingStep: "completed",
+      currentOrgHasUsableAgent: true,
+      currentOrgHasPersonalAgent: false,
+    };
+
+    function Probe() {
+      function Inner() {
+        latest.current = useOnboardingFlow();
+        return <div>{latest.current.activeStep}</div>;
+      }
+      return (
+        <OnboardingFlowProvider path="invitee">
+          <Inner />
+        </OnboardingFlowProvider>
+      );
+    }
+
+    await renderProbe(<Probe />);
+    expect(expectHookValue(latest.current).activeStep).toBe("get-started");
+    expect(clientMocks.api.post).not.toHaveBeenCalled();
+
+    await act(async () => expectHookValue(latest.current).prepareByoBootstrap());
+    await flush();
+    expect(clientMocks.api.post).toHaveBeenCalledWith("/me/connect-tokens", {});
+  });
+
+  it("ignores every pre-removal invitee v2 numeric index", async () => {
+    const latest = { current: null as OnboardingFlowValue | null };
+    authMock.value = {
+      ...authMock.value,
+      role: "member",
+      organizationId: "joined-org",
+      onboardingStep: "completed",
+      currentOrgHasUsableAgent: true,
+      currentOrgHasPersonalAgent: false,
+    };
+
+    function Probe() {
+      function Inner() {
+        latest.current = useOnboardingFlow();
+        return <div>{latest.current.activeStep}</div>;
+      }
+      return (
+        <OnboardingFlowProvider path="invitee">
+          <Inner />
+        </OnboardingFlowProvider>
+      );
+    }
+
+    for (const legacyIndex of ["1", "2", "3", "4"]) {
+      sessionStorage.clear();
+      sessionStorage.setItem("onboarding:v2:stepIndex:invitee:joined-org", legacyIndex);
+      await renderProbe(<Probe />);
+      expect(expectHookValue(latest.current).activeStep).toBe("get-started");
+      expect(sessionStorage.getItem("onboarding:v3:stepIndex:invitee:joined-org")).toBe("0");
+      await act(async () => root?.unmount());
+      root = null;
+    }
   });
 
   it("re-derives the step when the org changes on a still-mounted provider", async () => {

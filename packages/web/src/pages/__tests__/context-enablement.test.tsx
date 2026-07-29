@@ -320,7 +320,8 @@ describe("personal Context access", () => {
     expect(prompt).toContain("bootstrap-command");
     expect(prompt).toContain("claude-command");
     expect(prompt).not.toContain("Codex");
-    expect(prompt).toContain("confirms that onboarding is complete");
+    expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
+    expect(prompt).not.toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");
   });
 

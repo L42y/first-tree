@@ -10,8 +10,8 @@
  * Two paths:
  *   - "admin"   — the team creator (org admin). Creates/confirms the team,
  *                 connects a computer, creates the agent, and starts chat.
- *   - "invitee" — joining an existing team. Chooses a personal First Tree
- *                 agent, a Team agent, or BYO Claude Code/Codex.
+ *   - "invitee" — joining an existing team. Starts with the personal First
+ *                 Tree agent journey and can explicitly continue without one.
  *
  * Step ids are deliberately product-facing, jargon-free concepts — never
  * "tree" / "binding" / "runtime" / "installation". The user-facing strings
@@ -29,9 +29,10 @@
 export const ADMIN_STEPS = ["create-team", "connect-computer", "create-agent", "start-chat"] as const;
 // Invite acceptance already creates the membership and selects the joined
 // Team. Repeating "Join team" inside onboarding adds no decision or work, so
-// invited members land directly on the work-mode choice. Workspace starts with
-// a Team agent when available or continues to personal-agent setup; BYO
-// completes inline from one coding-agent prompt.
+// invited members land directly on the recommended personal-agent entry. The
+// product starts with
+// the personal-agent journey. Team-agent quick start and optional external
+// Context access are revealed only after explicit continuation.
 export const INVITEE_STEPS = ["get-started", "connect-computer", "create-agent", "start-chat"] as const;
 
 /**
@@ -42,7 +43,7 @@ export const INVITEE_STEPS = ["get-started", "connect-computer", "create-agent",
  * it is a decision screen, not a configuration chore. Invitee progress then
  * appears only on the recommended personal-agent branch, where the two real
  * setup tasks are connecting a computer and creating an agent. Team-agent and
- * BYO branches do not invent a fixed "Step 3".
+ * external Context-access branches do not invent a fixed "Step 3".
  */
 export const ADMIN_PROGRESS_STEPS = ["create-team", "connect-computer", "create-agent"] as const;
 export const INVITEE_PROGRESS_STEPS = ["connect-computer", "create-agent"] as const;
@@ -206,9 +207,8 @@ export function shouldEnterOnboarding(facts: OnboardingGateFacts): boolean {
  *
  * Only once the selected org's onboarding is terminally done: the user is
  * connected and this membership carries its completion stamp
- * (`onboardingCompletedAt`). A personal agent is intentionally not required:
- * Team-agent chat and BYO Team Context are both complete member paths.
- * The stamp is the load-bearing gate. Creating an agent can flip server
+ * (`onboardingCompletedAt`). The stamp is the load-bearing gate for completed
+ * personal-agent onboarding. Creating an agent can flip server
  * readiness before start-chat, but without the stamp that intermediate state
  * must remain in onboarding.
  * The in-page leave decision is frozen in a ref so an active session isn't
@@ -229,9 +229,8 @@ export function shouldLeaveOnboarding(facts: OnboardingGateFacts): boolean {
 }
 
 /**
- * Whether Workspace can start through an existing Team agent. The member
- * work-mode choice itself always appears because BYO is independent of this
- * fact.
+ * Whether a joining member can quick-start through an existing Team agent
+ * after explicitly continuing without their own agent.
  *
  * Offered only while BOTH hold:
  *   - the selected org has a usable agent this member did not create

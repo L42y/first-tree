@@ -1,82 +1,71 @@
 ---
 id: member-work-mode-onboarding
-description: Validate that an invited member can start with a personal First Tree agent, an existing Team agent, or BYO Claude Code/Codex.
+description: Validate progressive invited-member onboarding, Team-agent quick start, and optional external Team Context access.
 areas: [cross-surface]
 surfaces: [server, web, cli, client]
 ---
 
-# Member Work-Mode Onboarding
+# Progressive Member Onboarding
 
 ## Goal
 
-Confirm the three role-correct member paths across server and web:
+Confirm that an invited member sees one recommended personal-agent journey first, can deliberately continue without a
+personal agent, and only then sees the paths that are actually available:
 
-- **Personal First Tree agent** connects the member's computer, creates their agent, then starts an Agent Chat.
-- **Team agent** starts an Agent Chat with an agent the team already runs, without local setup.
-- **Claude Code or Codex** receives one self-contained prompt that connects the computer, enables Team Context, and
-  completes onboarding without creating a First Tree agent or Agent Chat.
+- an existing Team agent starts a First Tree Chat without installing anything on the member's computer;
+- Claude Code or Codex receives one self-contained prompt for external Team Context access;
+- only the personal First Tree agent plus first-chat journey writes terminal onboarding completion.
 
-Deterministic tests own rendering, readiness gates, picker filtering/pagination, and copy. This case owns the live
-boundaries those tests cannot prove: the real Team-agent kickoff, the real Computer connection, the exact context
-handoff for the selected Team/provider/checkout, completion stamps, reload behavior, and absence of accidental agent or
-chat creation on BYO.
+Deterministic tests own rendering, readiness gates, picker filtering, and copy. This case owns the live boundaries those
+tests cannot prove: the real Team-agent kickoff, exact membership stamps, the external Context handoff for one Team and
+checkout, reload behavior, and the absence of accidental personal-agent or Chat creation.
 
 ## Preconditions
 
-- An isolated server stack with two users in one organization that has an active code-repository Team resource and a
-  populated, bound Context Tree:
-  - **Owner**: admin or member with a connected client and an active org-visible (`visibility=organization`) non-human
-    agent bound to a live runtime.
-  - **Invitee**: a fresh member (joined via invite link) with no connected client and no personal agent, so
-    `currentOrgHasUsableAgent=true` and `currentOrgHasPersonalAgent=false` for the selected membership.
-- A second fresh member in a Team with no org-visible agent.
-- A third Team without a ready Context Tree/repository pair, for the BYO-readiness negative path.
+- An isolated server stack with an organization that has an active code-repository Team resource and a populated,
+  bound Context Tree.
+- **Owner**: an admin or member with a connected client and an active org-visible
+  (`visibility=organization`) non-human agent bound to a live runtime.
+- **Invitee**: a fresh invited member with no connected client and no personal agent.
+- A second organization with no org-visible agent.
+- A third organization whose Context Tree or active Team repository is not ready.
 
 ## Scenario
 
-1. **Choice always appears.** Accept the invite, sign in, and expect one recommended card, "Set up my First Tree
-   agent", followed by "Start with a Team agent" and "Keep using Claude Code or Codex". The copy distinguishes the
-   result and setup cost without introducing another product name. In a Team without ready Context, BYO remains
-   visible but non-actionable and says it is not available yet; there is no Admin setup CTA.
-2. **Team-agent path is complete.** Choose a Team agent. Expect the picker to list the owner's agent as
-   "Run by 〈owner display name〉". Start chat. Expect navigation to First Tree Chat with no Computer connection or personal
-   agent creation, the member-voice bootstrap, and a get-settled reply. Verify
-   `onboarding_suppressed_reason='completed'` and `onboarding_completed_at` set. Reload `/` and `/onboarding`; neither
-   reopens unfinished personal-agent setup. Re-running the same kickoff converges on the same chat without a duplicate
-   bootstrap.
-3. **BYO is independently complete.** With another fresh invitee, choose Claude Code or Codex. Expect one provider
-   picker and one copied artifact to paste into that coding agent. The artifact contains a server-authored portable
-   connection fallback plus the exact onboarding handoff
-   `first-tree context enable --provider … --team … --yes --complete-onboarding`; the member is never sent to Terminal,
-   a Connect Computer page, a second copy action, or a manual "Finish onboarding" button. Claude Code and Codex remain
-   selectable regardless of the Web's global Computer/capability snapshot, because the coding-agent conversation may
-   be on another computer.
-4. **Verified automatic completion.** Complete the copied artifact from the target checkout. The CLI must verify the
-   installed Plugin payload, exact provider + checkout + repository + Team binding, and a fresh connected activation
-   response before idempotently stamping that membership's completion. The Web polls membership facts and changes to
-   the completion state automatically; a Web refresh or a closed tab does not lose the server stamp. Verify reload
-   does not reopen onboarding and no personal First Tree agent, kickoff chat, or Agent Chat was created. Corrupt the
-   local Plugin or switch the exact Team/repository binding and verify completion is not stamped.
-5. **Live readiness boundary.** Remove the active Team repository or Context Tree after the artifact was copied but
-   before the CLI's final verification. The final live activation check must reject the stale handoff and the Web must
-   remain in its waiting state. Restore readiness and rerun from the same coding-agent conversation.
-6. **Provider-native trust.** Choose Codex. Expect the copied artifact and the page to explain that Codex may require
-   `/hooks` approval in the coding-agent conversation. The member is not redirected to Terminal; after approval they
-   continue in Codex and start a new session so Team Context loads.
-7. **Provider boundary.** Start a Claude Code/Codex session in the enabled checkout. Verify it can read the exact Team
-   Context snapshot according to policy, while the provider conversation does not appear in First Tree Chat.
-8. **Settings after completion.** On desktop and mobile, Settings → Setup remains reachable. It does not infer the
-   member's historical choice from current agent availability; it presents current Agent Chat access and Team Context
-   capabilities neutrally. "Set up my agent" opens the real Team agent-creation surface instead of bouncing through
-   completed onboarding.
-9. **Offline disclosure.** Stop the owner's runtime, send another message in the Team-agent chat.
-   Expect the offline notice to say the agent runs on a teammate's computer, with NO "Reconnect" action. As the owner
-   in one of their own chats, the notice keeps the Reconnect action.
-10. **No-Team-agent fallback.** In the Team without an org-visible agent, the Team-agent option is unavailable while
-   the recommended personal path continues to connect-computer → create-agent → start-chat. BYO remains a separate
-   choice when Team Context is ready and never traverses Create agent.
+1. Accept the invite and sign in. The first member screen says the member joined the Team and recommends setting up a
+   personal First Tree agent. It presents the connect-computer → create-agent → first-chat result without showing Team
+   agent or Claude Code/Codex as peer choices.
+2. Follow the recommended journey. Verify the existing personal-agent steps run unchanged, the first chat is created
+   once, and the membership receives `onboarding_suppressed_reason='completed'` plus
+   `onboarding_completed_at`. Reloading `/` does not reopen onboarding.
+3. Repeat with a fresh invitee and choose **Continue without my own agent**. Only now should the page load and show
+   eligible Team agents. Each agent discloses who manages it and that it uses that owner's connected computer and
+   coding plan.
+4. Start with the Team agent. Verify navigation to First Tree Chat without connecting the member's computer or creating
+   a personal agent. The kickoff is idempotent and writes `onboarding_suppressed_reason='invitee_skip'` while leaving
+   `onboarding_completed_at` null. Reloading `/` does not auto-open onboarding, but explicitly resuming setup still
+   reaches the personal-agent journey.
+5. Stop the owner's runtime and send another message in that Team-agent chat. The member sees that the agent runs on a
+   teammate's computer and receives no owner-only reconnect action.
+6. Repeat in the organization without an eligible Team agent. After **Continue without my own agent**, show that none is
+   available without exposing an Admin setup action. If external Context access is ready, keep its secondary entry
+   available; the recommended personal-agent journey remains resumable.
+7. Open the external Context entry. Select Claude Code or Codex and copy exactly one server-authored artifact. The UI
+   tells the member to paste it into the selected coding agent while that agent is open in the target repository
+   checkout; it never sends the member to a Terminal screen or creates a second copy step.
+8. Run the copied artifact from the target checkout. It may install or connect the normal First Tree Computer runtime
+   internally, then enables and verifies the exact Team/provider/repository/checkout binding. The provider conversation
+   remains outside First Tree Chat. No personal First Tree agent or onboarding kickoff chat is created, and
+   `onboarding_completed_at` remains null.
+9. Corrupt the local Plugin, change the checkout repository, remove the active Team repository, or unbind the Team
+   Context before final activation. The fail-closed verification rejects stale or mismatched authority and does not
+   claim success.
+10. Return to First Tree after external setup. The member can use the product normally because onboarding auto-open was
+    suppressed only by their explicit continue-without action, while the personal-agent journey remains resumable.
+11. Verify the Context Tree entry already present in Settings → Setup remains unchanged and can issue a fresh
+    settings-intent handoff without implying onboarding completion.
 
 ## Non-goals
 
-Provider output quality, the landing-campaign trial path, and Admin onboarding are out of scope. The picker's
->100-agent pagination is covered by deterministic tests; this case does not require a 100-agent org.
+Provider response quality, Admin onboarding, Settings information-architecture changes, the landing-campaign trial
+path, and large-agent pagination are out of scope.

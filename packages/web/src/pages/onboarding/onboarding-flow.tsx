@@ -58,6 +58,8 @@ export type OnboardingFlowValue = {
   orgHasOtherMembers: boolean;
 
   computer: ComputerConnection;
+  /** Start preparing the one-time BYO bootstrap only after the member opens it. */
+  prepareByoBootstrap: () => void;
 
   agentDisplayName: string;
   setAgentDisplayName: (next: string) => void;
@@ -101,12 +103,12 @@ export type OnboardingFlowValue = {
   treeAutoDetectDone: boolean;
   markTreeAutoDetectDone: () => void;
 
-  /** Mark setup finished and drop the user into their first chat. */
-  completeAndEnterChat: (chatId: string, sourceStep?: "start-chat" | "get-started") => Promise<void>;
-  /** Live membership completion stamped by Chat kickoff or verified BYO CLI setup. */
-  onboardingCompletedAt: string | null;
-  /** Refresh membership facts while an external coding agent completes BYO. */
-  refreshOnboarding: () => Promise<void>;
+  /** Enter a chat after the kickoff atomically wrote its requested membership stamp. */
+  completeAndEnterChat: (
+    chatId: string,
+    sourceStep?: "start-chat" | "get-started",
+    stamp?: "completed" | "invitee_skip",
+  ) => Promise<void>;
   /** Hide setup and go to the normal workspace (resumable via Settings). */
   finishLater: () => Promise<void>;
 };
@@ -129,7 +131,7 @@ export const OnboardingFlowContext = createContext<OnboardingFlowValue | null>(n
 // because the provider mounts only after `/me` loads (see onboarding-page.tsx),
 // so anyone actually in the flow already has a resolved org.
 const STEP_KEY = (path: OnboardingPath, orgId: string | null): string | null =>
-  orgId ? `onboarding:v2:stepIndex:${path}:${orgId}` : null;
+  orgId ? `onboarding:${path === "invitee" ? "v3" : "v2"}:stepIndex:${path}:${orgId}` : null;
 
 function readPersistedStep(path: OnboardingPath, orgId: string | null): number | null {
   if (typeof window === "undefined") return null;
@@ -183,12 +185,11 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
     teamDisplayName,
     orgHasOtherMembers,
     onboardingStep,
-    onboardingCompletedAt,
     currentOrgHasPersonalAgent,
     currentOrgHasUsableAgent,
     refreshMe,
     dismissOnboarding,
-    markOnboardingCompleted,
+    applyOnboardingKickoffStamp,
   } = useAuth();
 
   // Org-aware step. `onboardingStep` from /me is account-level: its
@@ -282,8 +283,12 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
     setActiveIndex(nextIndex);
   }, [activeIndex, activeStep, activeStepIsVisible, path, reportStepEvent, sequence]);
 
-  // The member choice step also owns the independent BYO connection flow, so
-  // it needs the same live computer state as the managed-agent steps.
+  const [byoBootstrapRequested, setByoBootstrapRequested] = useState(false);
+  const prepareByoBootstrap = useCallback(() => setByoBootstrapRequested(true), []);
+
+  // The member recommendation needs live Computer readiness, but it must not
+  // mint a short-lived connect code merely because the page opened. The BYO
+  // branch requests that artifact only when the member actually enters it.
   const computerEnabled =
     activeStep === "get-started" ||
     activeStep === "connect-computer" ||
@@ -291,7 +296,8 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
     activeStep === "start-chat";
   const computer = useComputerConnection(computerEnabled, {
     onTokenMintFailed: () => reportStepFailure("connect_token_mint_failed", { step: "connect-computer" }),
-    prepareBootstrapWhenConnected: activeStep === "get-started",
+    allowBootstrapMint: activeStep !== "get-started" || byoBootstrapRequested,
+    prepareBootstrapWhenConnected: activeStep === "get-started" && byoBootstrapRequested,
   });
 
   // A connected computer with a completed capability report but no usable
@@ -380,17 +386,15 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
   const markTreeAutoDetectDone = useCallback(() => setTreeAutoDetectDone(true), []);
 
   const completeAndEnterChat = useCallback(
-    async (chatId: string, sourceStep: "start-chat" | "get-started" = "start-chat") => {
-      // Single-chat start-chat paths may already have stamped completion inside
-      // POST /me/onboarding/kickoff. Support/background paths deliberately defer
-      // that stamp until every required side effect succeeds, then call this
-      // helper. The write stays idempotent and best-effort so a network blip
-      // does not strand the user after the required chat exists.
-      //
-      // Deliberately NOT `dismissOnboarding()`: completion writes a
-      // membership-scoped suppress stamp with reason="completed". Reusing the
-      // finish-later path here would blur the reason semantics that keep new
-      // memberships eligible for first-need onboarding.
+    async (
+      chatId: string,
+      sourceStep: "start-chat" | "get-started" = "start-chat",
+      stamp: "completed" | "invitee_skip" = "completed",
+    ) => {
+      // POST /me/onboarding/kickoff created the chat and wrote this stamp in
+      // one server transaction boundary. Mirror that confirmed result locally
+      // before navigating; issuing a second completion POST can fail after the
+      // chat already succeeded and roll the browser back into onboarding.
       clearPersistedStep(path, organizationId);
       // Clear the per-tab agent-uuid stash now that start-chat has resolved and
       // used it — so a later same-tab onboarding/recovery in a DIFFERENT org
@@ -403,18 +407,11 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       // completion clears it; `finishLater` deliberately keeps it so the user
       // resumes their selection.
       if (organizationId) writeOnboardingSelectedRepos(organizationId, null);
-      try {
-        await markOnboardingCompleted();
-      } catch {
-        // Intentionally swallowed: the completion stamp is best-effort at
-        // this point. The API helper already catches its own failures, but
-        // keep the always-navigate invariant local to this flow rather than
-        // depending on a callee's error handling.
-      }
+      applyOnboardingKickoffStamp(stamp);
       reportStepEvent("step_completed", sourceStep, { outcome: "chat_started" });
       navigate(`/?c=${encodeURIComponent(chatId)}`);
     },
-    [path, organizationId, markOnboardingCompleted, navigate, reportStepEvent],
+    [applyOnboardingKickoffStamp, navigate, organizationId, path, reportStepEvent],
   );
 
   const finishLater = useCallback(async () => {
@@ -439,6 +436,7 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       teamDisplayName,
       orgHasOtherMembers,
       computer,
+      prepareByoBootstrap,
       agentDisplayName,
       setAgentDisplayName,
       visibility,
@@ -460,8 +458,6 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       treeAutoDetectDone,
       markTreeAutoDetectDone,
       completeAndEnterChat,
-      onboardingCompletedAt,
-      refreshOnboarding: refreshMe,
       finishLater,
     }),
     [
@@ -479,6 +475,7 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       teamDisplayName,
       orgHasOtherMembers,
       computer,
+      prepareByoBootstrap,
       agentDisplayName,
       visibility,
       agentPhase,
@@ -496,8 +493,6 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       treeAutoDetectDone,
       markTreeAutoDetectDone,
       completeAndEnterChat,
-      onboardingCompletedAt,
-      refreshMe,
       finishLater,
     ],
   );

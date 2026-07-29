@@ -24,7 +24,7 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
         `${executable} context enable`,
         `--provider ${shellQuote(query.provider)}`,
         `--team ${shellQuote(scope.organizationId)}`,
-        ...(query.intent === "onboarding" ? ["--yes", "--complete-onboarding"] : []),
+        ...(query.intent === "onboarding" ? ["--yes"] : []),
       ].join(" "),
       workingDirectoryInstruction:
         "Run this once from the root of the code repository where this Team's Context should be enabled.",

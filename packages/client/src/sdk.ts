@@ -475,35 +475,6 @@ export class FirstTreeHubSDK {
   }
 
   /**
-   * Idempotently finish onboarding for one explicit membership. BYO callers
-   * use this only after local Plugin, exact-checkout binding, and live Team
-   * activation have all been verified.
-   */
-  async completeMemberOnboarding(organizationId: string): Promise<void> {
-    await this.requestVoid(
-      "/api/v1/me/onboarding-completed",
-      {
-        method: "POST",
-        body: JSON.stringify({ organizationId }),
-      },
-      { retry: false },
-    );
-  }
-
-  /** Read the server-authoritative live status of one Computer owned by the caller. */
-  async getOwnedClientStatus(clientId: string): Promise<{ status: "connected" | "disconnected" }> {
-    const response = await this.requestJson<{ status: unknown }>(
-      `/api/v1/clients/${encodeURIComponent(clientId)}`,
-      undefined,
-      { retry: false },
-    );
-    if (response.status !== "connected" && response.status !== "disconnected") {
-      throw new Error("First Tree returned an invalid Computer status.");
-    }
-    return { status: response.status };
-  }
-
-  /**
    * Atomically register the Admin-confirmed source repository set for one
    * explicit Team. The expected keys prevent a stale setup chat from silently
    * overwriting repository changes made by another Admin.
