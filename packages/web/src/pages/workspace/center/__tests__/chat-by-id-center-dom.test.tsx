@@ -279,6 +279,9 @@ describe("ChatByIdView and CenterPanel", () => {
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
     const allKey = ["me", "chats", "all", "active", false, null, null];
     const unreadKey = ["me", "chats", "unread", "active", false, null, null];
+    const mobileAllKey = ["me", "chats", "mobile", "work-list", "org-1", "active", false, "all"];
+    const mobileUnreadKey = ["me", "chats", "mobile", "work-list", "org-1", "active", false, "unread"];
+    const mobileSourceCountsKey = ["me", "chats", "mobile", "work-source-counts", "org-1", "active", false];
     const currentUnread = meChatRow({
       chatId: "chat-1",
       unreadMentionCount: 2,
@@ -318,6 +321,17 @@ describe("ChatByIdView and CenterPanel", () => {
       nextCursor: null,
       priorityRows: { attention: [currentUnread], pinned: [] },
     });
+    queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
+      mobileAllKey,
+      infinite([currentUnread, otherUnread], { attention: [currentUnread], pinned: [currentUnread] }),
+    );
+    queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
+      mobileUnreadKey,
+      infinite([currentUnread, otherUnread], { attention: [currentUnread], pinned: [currentUnread] }),
+    );
+    queryClient.setQueryData(mobileSourceCountsKey, {
+      counts: { manual: { chatCount: 2, unreadChatCount: 2 } },
+    });
 
     const { container, root } = await renderDom(
       <ChatByIdView chatId="chat-1" narrow onShowConversations={onShowConversations} />,
@@ -327,7 +341,9 @@ describe("ChatByIdView and CenterPanel", () => {
     await waitForText(container, "ChatView agent-1 chat-1");
     expect(chatMocks.getChat).toHaveBeenCalledWith("chat-1");
     expect(meChatMocks.markMeChatRead).toHaveBeenCalledTimes(1);
-    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["me", "chats", "mobile", "work-source-counts"],
+    });
     const allRows = queryClient.getQueryData<InfiniteData<ListMeChatsResponse>>(allKey)?.pages.flatMap((p) => p.rows);
     expect(allRows?.find((row) => row.chatId === "chat-1")).toMatchObject({
       unreadMentionCount: 0,
@@ -361,6 +377,21 @@ describe("ChatByIdView and CenterPanel", () => {
       unreadMentionCount: 0,
       chatHasExplicitMentionToMe: false,
     });
+    const mobileAll = queryClient.getQueryData<InfiniteData<ListMeChatsResponse>>(mobileAllKey)?.pages[0];
+    expect(mobileAll?.rows.find((row) => row.chatId === "chat-1")).toMatchObject({
+      unreadMentionCount: 0,
+      chatHasExplicitMentionToMe: false,
+    });
+    expect(mobileAll?.priorityRows.attention[0]).toMatchObject({ unreadMentionCount: 0 });
+    expect(mobileAll?.priorityRows.pinned[0]).toMatchObject({ unreadMentionCount: 0 });
+    const mobileUnread = queryClient.getQueryData<InfiniteData<ListMeChatsResponse>>(mobileUnreadKey)?.pages[0];
+    expect(mobileUnread?.rows.map((row) => row.chatId)).toEqual(["chat-2"]);
+    expect(mobileUnread?.priorityRows.attention).toEqual([]);
+    expect(mobileUnread?.priorityRows.pinned).toEqual([]);
+    expect(queryClient.getQueryData(mobileSourceCountsKey)).toEqual({
+      counts: { manual: { chatCount: 2, unreadChatCount: 2 } },
+    });
+    expect(queryClient.getQueryState(mobileSourceCountsKey)?.isInvalidated).toBe(true);
     expect(chatViewMocks.props.at(-1)).toMatchObject({
       agentId: "agent-1",
       chatId: "chat-1",
