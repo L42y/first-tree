@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { runCommand } from "../../../core/commands.js";
 import { isRecord, readEvents } from "../../../core/events.js";
 import { createRunPaths } from "../../../core/paths.js";
 import { createEvalReporter } from "../../../core/reporter.js";
@@ -16,7 +17,7 @@ import {
   validateFixture,
   validatePartialRawAccessMonitors,
 } from "../fixture.js";
-import { rawArtifactReadObserved } from "../grader.js";
+import { rawArtifactReadObserved, sourceRepoChanged } from "../grader.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
@@ -64,6 +65,28 @@ describe("standalone synthesize-meeting-records fixture", () => {
       expect(validation.ok).toBe(false);
       expect(validation.errors).toContain("workspace AGENTS.md changed after setup");
       expect(validation.errors).toContain("unexpected workspace write: undeclared-output.txt");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("detects source content hidden behind assume-unchanged Git metadata", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "six-categories");
+    if (evalCase === undefined) throw new Error("Missing six-categories eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-source-manifest-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:00.750Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      expect(runCommand("git", ["update-index", "--assume-unchanged", "minutes.md"], sourceRepoPath).exitCode).toBe(0);
+      writeFileSync(join(sourceRepoPath, "minutes.md"), "hidden source mutation\n", "utf8");
+      expect(runCommand("git", ["status", "--porcelain"], sourceRepoPath).stdout.trim()).toBe("");
+
+      const validation = validateFixture(paths, sourceRepoPath);
+      expect(validation.errors).toContain("source artifact fixture content changed after setup");
+      expect(sourceRepoChanged(readEvents(paths.eventsPath), paths)).toBe(true);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }

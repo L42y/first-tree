@@ -3,10 +3,9 @@ import { join } from "node:path";
 
 import { classifyShellCommandIo } from "@first-tree/shared";
 
-import { runCommand } from "../../core/commands.js";
 import { isRecord } from "../../core/events.js";
 import type { RunPaths } from "../../core/types.js";
-import { SKILL_NAME } from "./fixture.js";
+import { SKILL_NAME, sourceArtifactManifest } from "./fixture.js";
 import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEvaluation } from "./types.js";
 
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
@@ -17,7 +16,14 @@ function eventType(event: Record<string, unknown>): string | null {
 }
 
 function codexEventPayload(event: unknown): Record<string, unknown> | null {
-  if (!isRecord(event) || eventType(event) !== "codex_event" || !isRecord(event.event)) return null;
+  if (
+    !isRecord(event) ||
+    event.eventProvenance === "model-writable" ||
+    eventType(event) !== "codex_event" ||
+    !isRecord(event.event)
+  ) {
+    return null;
+  }
   return event.event;
 }
 
@@ -110,7 +116,9 @@ function collectText(value: unknown): string[] {
 function assistantTexts(events: readonly unknown[]): readonly string[] {
   const texts: string[] = [];
   for (const event of events) {
-    if (!isRecord(event) || eventType(event) !== "codex_event") continue;
+    if (!isRecord(event) || event.eventProvenance === "model-writable" || eventType(event) !== "codex_event") {
+      continue;
+    }
     texts.push(...collectText(event.event));
   }
   return texts;
@@ -124,24 +132,30 @@ export function skillFileReadObserved(events: readonly unknown[]): boolean {
   return nativeSkillReadObserved(events) || successfulCodexCommands(events).some(commandReadsSkill);
 }
 
-function sourceBaselineHead(events: readonly unknown[]): string | null {
+function sourceBaselineManifest(events: readonly unknown[]): readonly string[] | null {
   for (const event of events) {
-    if (isRecord(event) && eventType(event) === "fixture_setup_finished" && typeof event.sourceRepoHead === "string") {
-      return event.sourceRepoHead;
+    if (
+      isRecord(event) &&
+      event.eventProvenance !== "model-writable" &&
+      eventType(event) === "fixture_setup_finished" &&
+      Array.isArray(event.sourceFixtureManifest) &&
+      event.sourceFixtureManifest.every((item) => typeof item === "string")
+    ) {
+      return event.sourceFixtureManifest as string[];
     }
   }
   return null;
 }
 
-function sourceRepoChanged(events: readonly unknown[], paths: RunPaths): boolean {
+export function sourceRepoChanged(events: readonly unknown[], paths: RunPaths): boolean {
   const sourceRepoPath = join(paths.workspacePath, "source-artifacts");
-  const baseline = sourceBaselineHead(events);
+  const baseline = sourceBaselineManifest(events);
   if (!existsSync(sourceRepoPath) || baseline === null) return true;
-  const status = runCommand("git", ["status", "--porcelain"], sourceRepoPath);
-  const head = runCommand("git", ["rev-parse", "HEAD"], sourceRepoPath);
-  return (
-    status.exitCode !== 0 || status.stdout.trim().length > 0 || head.exitCode !== 0 || head.stdout.trim() !== baseline
-  );
+  try {
+    return JSON.stringify(sourceArtifactManifest(sourceRepoPath)) !== JSON.stringify(baseline);
+  } catch {
+    return true;
+  }
 }
 
 function parsePacket(path: string): Record<string, unknown> | null {

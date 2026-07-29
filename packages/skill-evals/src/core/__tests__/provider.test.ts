@@ -148,12 +148,14 @@ describe("codex provider runner hardening", () => {
           }),
           expect.objectContaining({
             argv: ["github", "issue", "list"],
+            eventProvenance: "model-writable",
             phase: "model",
             type: "first_tree_call",
           }),
           expect.objectContaining({
             argv: ["github", "issue", "list"],
             blockedByEval: true,
+            eventProvenance: "model-writable",
             exitCode: 1,
             phase: "model",
             type: "first_tree_result",

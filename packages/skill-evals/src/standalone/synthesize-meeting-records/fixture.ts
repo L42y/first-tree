@@ -15,7 +15,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assertCommandOk, runCommand, writeText } from "../../core/commands.js";
-import { appendEvent } from "../../core/events.js";
+import { appendEvent, isRecord, isStringArray, readEvents } from "../../core/events.js";
 import type { EvalReporter } from "../../core/reporter.js";
 import { parseSkillDescription } from "../../core/skills/install.js";
 import type { RunPaths } from "../../core/types.js";
@@ -72,7 +72,7 @@ function fileSha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function directoryManifest(root: string): readonly string[] {
+function directoryManifest(root: string, excludedRootNames: ReadonlySet<string> = new Set()): readonly string[] {
   const entries: string[] = [];
   const rootIdentity = lstatSync(root);
   const rootMode = (rootIdentity.mode & 0o777).toString(8).padStart(3, "0");
@@ -87,6 +87,7 @@ function directoryManifest(root: string): readonly string[] {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
       left.name.localeCompare(right.name),
     )) {
+      if (directory === root && excludedRootNames.has(entry.name)) continue;
       const path = join(directory, entry.name);
       const locator = relative(root, path).split(sep).join("/");
       const identity = lstatSync(path);
@@ -105,6 +106,24 @@ function directoryManifest(root: string): readonly string[] {
   };
   visit(root);
   return entries;
+}
+
+export function sourceArtifactManifest(sourceRepoPath: string): readonly string[] {
+  return directoryManifest(sourceRepoPath, new Set([".git"]));
+}
+
+function sourceArtifactBaseline(paths: RunPaths): readonly string[] | null {
+  for (const event of readEvents(paths.eventsPath)) {
+    if (
+      isRecord(event) &&
+      event.type === "fixture_setup_finished" &&
+      event.eventProvenance !== "model-writable" &&
+      isStringArray(event.sourceFixtureManifest)
+    ) {
+      return event.sourceFixtureManifest;
+    }
+  }
+  return null;
 }
 
 function validateInstalledInstructions(paths: RunPaths): readonly string[] {
@@ -413,6 +432,7 @@ export function setupFixture(evalCase: MeetingRecordsEvalCase, paths: RunPaths, 
 
   appendEvent(paths.eventsPath, {
     caseId: evalCase.id,
+    sourceFixtureManifest: sourceArtifactManifest(sourceRepoPath),
     sourceRepoHead,
     sourceRepoPath,
     type: "fixture_setup_finished",
@@ -448,9 +468,19 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
       errors.push(`partial-source fixture exposed non-sentinel raw artifact: ${locator}`);
     }
   }
-  const status = runCommand("git", ["status", "--porcelain"], sourceRepoPath);
-  if (status.exitCode !== 0 || status.stdout.trim().length > 0) {
-    errors.push("source artifact fixture is not clean after setup");
+  const baseline = sourceArtifactBaseline(paths);
+  if (baseline === null) {
+    errors.push("source artifact fixture baseline is missing");
+  } else {
+    try {
+      if (JSON.stringify(sourceArtifactManifest(sourceRepoPath)) !== JSON.stringify(baseline)) {
+        errors.push("source artifact fixture content changed after setup");
+      }
+    } catch (error) {
+      errors.push(
+        `source artifact fixture cannot be verified: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   return {
     errors,

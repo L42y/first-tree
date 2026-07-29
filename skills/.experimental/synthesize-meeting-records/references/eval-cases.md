@@ -66,6 +66,11 @@ packet paths as data arguments. The installed Skill tree and generated
 `AGENTS.md` must remain content- and mode-identical to their setup sources, and
 no undeclared top-level workspace write is permitted.
 
+Model-writable shim receipts stay provenance-marked when promoted into the
+host event log and cannot satisfy the Skill-read oracle. Source immutability is
+checked against a host-recorded direct filesystem manifest that excludes Git
+metadata, so index flags cannot hide content, type, or mode changes.
+
 ## Model-backed cases
 
 ### G1 — Six-category synthesis

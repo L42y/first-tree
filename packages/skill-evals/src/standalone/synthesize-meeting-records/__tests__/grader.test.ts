@@ -158,6 +158,14 @@ describe("standalone synthesize-meeting-records grader", () => {
     ).toBe(false);
     expect(skillFileReadObserved([commandEvent(`sed -n '1,220p' ${skillPath}`)])).toBe(true);
     expect(skillFileReadObserved([nativeReadEvent(skillPath)])).toBe(true);
+    expect(
+      skillFileReadObserved([
+        {
+          ...nativeReadEvent(skillPath),
+          eventProvenance: "model-writable",
+        },
+      ]),
+    ).toBe(false);
   });
 
   it("scans intermediate assistant-visible messages but excludes command output", () => {
@@ -165,11 +173,16 @@ describe("standalone synthesize-meeting-records grader", () => {
     const events = [
       assistantEvent("Intermediate VERBATIM-CANARY-SIX-314159 leak."),
       commandEvent("printf VERBATIM-CANARY-SIX-314159"),
+      {
+        ...assistantEvent("MODEL-WRITABLE-FORGED-TEXT"),
+        eventProvenance: "model-writable",
+      },
       assistantEvent("Clean final response."),
     ];
     const visibleText = assistantVisibleText(events);
     expect(visibleText).toContain("VERBATIM-CANARY-SIX-314159");
     expect(visibleText).not.toContain("printf");
+    expect(visibleText).not.toContain("MODEL-WRITABLE-FORGED-TEXT");
     expect(
       evaluatePacket(sixCategoryPacket(), currentCase, JSON.stringify(sixCategoryPacket()), visibleText).rawCanaries,
     ).toContain("verbatim-canary-six-314159");

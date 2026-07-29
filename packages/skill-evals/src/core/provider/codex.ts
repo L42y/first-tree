@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 
-import { appendEvent, previewText } from "../events.js";
+import { appendEvent, isRecord, previewText, readEvents } from "../events.js";
 import { isShimTraceLine } from "../reporter.js";
 import type { ProviderRunContext, ProviderRunOptions } from "./types.js";
 
@@ -241,9 +241,14 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, context: Provid
 
 function appendModelEvents(context: ProviderRunContext): void {
   if (!existsSync(context.paths.modelEventsPath)) return;
-  const modelEvents = readFileSync(context.paths.modelEventsPath, "utf8");
-  if (!modelEvents.trim()) return;
-  appendFileSync(context.paths.eventsPath, modelEvents.endsWith("\n") ? modelEvents : `${modelEvents}\n`, "utf8");
+  for (const modelEvent of readEvents(context.paths.modelEventsPath)) {
+    appendEvent(
+      context.paths.eventsPath,
+      isRecord(modelEvent)
+        ? { ...modelEvent, eventProvenance: "model-writable" }
+        : { event: modelEvent, eventProvenance: "model-writable", type: "model_event" },
+    );
+  }
 }
 
 export async function runCodexProvider(options: ProviderRunOptions, context: ProviderRunContext): Promise<number> {
