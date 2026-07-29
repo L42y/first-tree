@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,11 +9,50 @@ import { createRunPaths } from "../../../core/paths.js";
 import { createEvalReporter } from "../../../core/reporter.js";
 import { SYNTHESIZE_MEETING_RECORDS_CASES } from "../cases.js";
 import { setupFixture, startPartialRawAccessMonitors, validateFixture } from "../fixture.js";
-import { finalizeFixtureValidationAfterAgent } from "../runner.js";
+import { finalizeFixtureValidationAfterAgent, runPacketValidator } from "../runner.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 describe("standalone synthesize-meeting-records runner cleanup", () => {
+  it("rejects a modified installed validator without executing model-controlled code", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "six-categories");
+    if (evalCase === undefined) throw new Error("Missing six-categories eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-validator-integrity-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:02.500Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      const initialValidation = validateFixture(paths, sourceRepoPath);
+      const markerPath = join(paths.workspacePath, "model-validator-ran");
+      const installedValidatorPath = join(
+        paths.workspacePath,
+        ".agents",
+        "skills",
+        "synthesize-meeting-records",
+        "scripts",
+        "validate-output.mjs",
+      );
+      writeFileSync(
+        installedValidatorPath,
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(markerPath)}, "unsafe\\n");\n`,
+        "utf8",
+      );
+      writeFileSync(join(paths.workspacePath, "meeting-analysis-output.json"), "{}\n", "utf8");
+
+      const validatorResult = runPacketValidator(paths);
+      const finalValidation = finalizeFixtureValidationAfterAgent(paths, sourceRepoPath, initialValidation, []);
+
+      expect(validatorResult.exitCode).not.toBe(0);
+      expect(existsSync(markerPath)).toBe(false);
+      expect(finalValidation.ok).toBe(false);
+      expect(finalValidation.errors).toContain("post-run installed standalone Skill changed after setup");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
   it.each([
     {
       changeBundle: (bundlePath: string) => rmSync(bundlePath),

@@ -1,5 +1,16 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +66,91 @@ only permitted workspace write is the sanitized packet \`${OUTPUT_NAME}\`.
 Do not call external providers or downstream publication systems. Do not copy
 verbatim source prose into the packet or final response.
 `;
+}
+
+function fileSha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function directoryManifest(root: string): readonly string[] {
+  const entries: string[] = [];
+  const rootIdentity = lstatSync(root);
+  const rootMode = (rootIdentity.mode & 0o777).toString(8).padStart(3, "0");
+  if (!rootIdentity.isDirectory()) {
+    entries.push(
+      rootIdentity.isSymbolicLink() ? `root:symlink:${rootMode}:${readlinkSync(root)}` : `root:other:${rootMode}`,
+    );
+    return entries;
+  }
+  entries.push(`root:directory:${rootMode}`);
+  const visit = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      const path = join(directory, entry.name);
+      const locator = relative(root, path).split(sep).join("/");
+      const identity = lstatSync(path);
+      const mode = (identity.mode & 0o777).toString(8).padStart(3, "0");
+      if (entry.isDirectory()) {
+        entries.push(`directory:${mode}:${locator}`);
+        visit(path);
+      } else if (entry.isFile()) {
+        entries.push(`file:${mode}:${locator}:${fileSha256(path)}`);
+      } else if (entry.isSymbolicLink()) {
+        entries.push(`symlink:${mode}:${locator}:${readlinkSync(path)}`);
+      } else {
+        entries.push(`other:${mode}:${locator}`);
+      }
+    }
+  };
+  visit(root);
+  return entries;
+}
+
+function validateInstalledInstructions(paths: RunPaths): readonly string[] {
+  const sourceSkillPath = join(paths.repoRoot, "skills", ".experimental", SKILL_NAME);
+  const installedSkillPath = join(paths.workspacePath, ".agents", "skills", SKILL_NAME);
+  const errors: string[] = [];
+  try {
+    if (
+      existsSync(sourceSkillPath) &&
+      existsSync(installedSkillPath) &&
+      JSON.stringify(directoryManifest(sourceSkillPath)) !== JSON.stringify(directoryManifest(installedSkillPath))
+    ) {
+      errors.push("installed standalone Skill changed after setup");
+    }
+  } catch (error) {
+    errors.push(
+      `installed standalone Skill cannot be verified: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  const agentsPath = join(paths.workspacePath, "AGENTS.md");
+  const sourceSkillMarkdownPath = join(sourceSkillPath, "SKILL.md");
+  try {
+    if (existsSync(agentsPath) && existsSync(sourceSkillMarkdownPath)) {
+      const expected = agentsMarkdown(parseSkillDescription(readFileSync(sourceSkillMarkdownPath, "utf8")));
+      if (readFileSync(agentsPath, "utf8") !== expected) errors.push("workspace AGENTS.md changed after setup");
+    }
+  } catch (error) {
+    errors.push(`workspace AGENTS.md cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const allowedWorkspaceEntries = new Set([
+    ".agents",
+    ".first-tree-eval",
+    "AGENTS.md",
+    OUTPUT_NAME,
+    "source-artifacts",
+  ]);
+  try {
+    for (const entry of readdirSync(paths.workspacePath)) {
+      if (!allowedWorkspaceEntries.has(entry)) errors.push(`unexpected workspace write: ${entry}`);
+    }
+  } catch (error) {
+    errors.push(`workspace writes cannot be verified: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return errors;
 }
 
 function artifact(
@@ -334,7 +430,10 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
     join(sourceRepoPath, "bundle.json"),
   ];
   const missingFiles = required.filter((path) => !existsSync(path));
-  const errors = missingFiles.map((path) => `missing required file: ${path}`);
+  const errors = [
+    ...missingFiles.map((path) => `missing required file: ${path}`),
+    ...validateInstalledInstructions(paths),
+  ];
   let partialLocators: readonly string[] = [];
   try {
     partialLocators = partialArtifactLocators(sourceRepoPath);

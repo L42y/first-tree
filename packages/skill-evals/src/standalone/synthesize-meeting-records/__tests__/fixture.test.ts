@@ -43,6 +43,32 @@ describe("standalone synthesize-meeting-records fixture", () => {
     }
   });
 
+  it("allows only the packet write and rejects modified installed instructions", () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES[0];
+    if (evalCase === undefined) throw new Error("Missing eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-instruction-integrity-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:00.500Z",
+    });
+    try {
+      const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      writeFileSync(join(paths.workspacePath, "meeting-analysis-output.json"), "{}\n", "utf8");
+      expect(validateFixture(paths, sourceRepoPath).ok).toBe(true);
+
+      const agentsPath = join(paths.workspacePath, "AGENTS.md");
+      writeFileSync(agentsPath, `${readFileSync(agentsPath, "utf8")}\nmodel change\n`, "utf8");
+      writeFileSync(join(paths.workspacePath, "undeclared-output.txt"), "unexpected\n", "utf8");
+      const validation = validateFixture(paths, sourceRepoPath);
+
+      expect(validation.ok).toBe(false);
+      expect(validation.errors).toContain("workspace AGENTS.md changed after setup");
+      expect(validation.errors).toContain("unexpected workspace write: undeclared-output.txt");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
   it("makes partial-source raw artifacts unavailable before semantic analysis", async () => {
     const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
     if (evalCase === undefined) throw new Error("Missing partial-source eval case.");

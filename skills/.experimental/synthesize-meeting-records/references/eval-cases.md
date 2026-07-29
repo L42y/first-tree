@@ -60,6 +60,12 @@ without a filename fail closed. Missing or malformed bundle state becomes a
 failed fixture result, and monitor teardown runs unconditionally even if
 post-agent validation encounters an error.
 
+The post-agent validator always executes from the immutable repository Skill
+source outside the model-writable workspace and receives workspace bundle and
+packet paths as data arguments. The installed Skill tree and generated
+`AGENTS.md` must remain content- and mode-identical to their setup sources, and
+no undeclared top-level workspace write is permitted.
+
 ## Model-backed cases
 
 ### G1 — Six-category synthesis

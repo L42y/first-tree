@@ -17,17 +17,17 @@ import { casePassed, deriveMetrics } from "./grader.js";
 import { writeCaseSummaries } from "./summary.js";
 import type { CaseRunSummary, CliOptions, MeetingRecordsEvalCase } from "./types.js";
 
-function runPacketValidator(workspacePath: string) {
+export function runPacketValidator(paths: Parameters<typeof validateFixture>[0]) {
   return runCommand(
     "node",
     [
-      join(".agents", "skills", "synthesize-meeting-records", "scripts", "validate-output.mjs"),
+      join(paths.repoRoot, "skills", ".experimental", "synthesize-meeting-records", "scripts", "validate-output.mjs"),
       "--bundle",
-      join("source-artifacts", "bundle.json"),
+      join(paths.workspacePath, "source-artifacts", "bundle.json"),
       "--output",
-      "meeting-analysis-output.json",
+      join(paths.workspacePath, "meeting-analysis-output.json"),
     ],
-    workspacePath,
+    paths.workspacePath,
   );
 }
 
@@ -119,7 +119,7 @@ export async function runSynthesizeMeetingRecordsCase(
       );
     }
   })();
-  const validatorResult = runPacketValidator(paths.workspacePath);
+  const validatorResult = runPacketValidator(paths);
   appendEvent(paths.eventsPath, {
     args: validatorResult.args,
     caseId: evalCase.id,
