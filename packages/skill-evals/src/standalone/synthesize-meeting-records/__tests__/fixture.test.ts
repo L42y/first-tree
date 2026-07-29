@@ -154,4 +154,82 @@ describe("standalone synthesize-meeting-records fixture", () => {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }
   });
+
+  it("records a source directory move-away and move-back before a failed protected path read", async () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
+    if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-source-directory-continuity-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:05.000Z",
+    });
+    const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+    const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
+    try {
+      const movedSourceRepoPath = join(paths.workspacePath, "source-artifacts.moved");
+      renameSync(sourceRepoPath, movedSourceRepoPath);
+      try {
+        expect(() => readFileSync(join(sourceRepoPath, "appendix.md"), "utf8")).toThrow();
+      } finally {
+        renameSync(movedSourceRepoPath, sourceRepoPath);
+      }
+
+      await expect
+        .poll(
+          () =>
+            readEvents(paths.eventsPath).some(
+              (event) =>
+                isRecord(event) &&
+                event.type === "partial_raw_path_mutation" &&
+                event.locator === "source-artifacts/appendix.md",
+            ),
+          { timeout: 1_000 },
+        )
+        .toBe(true);
+      expect(validatePartialRawAccessMonitors(paths, monitors)).toEqual([]);
+      expect(rawArtifactReadObserved(readEvents(paths.eventsPath), evalCase)).toBe(true);
+    } finally {
+      stopPartialRawAccessMonitors(monitors);
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("records a workspace move-away and move-back across the full protected pathname", async () => {
+    const evalCase = SYNTHESIZE_MEETING_RECORDS_CASES.find((candidate) => candidate.fixture.mode === "partial-source");
+    if (evalCase === undefined) throw new Error("Missing partial-source eval case.");
+    const paths = createRunPaths({
+      caseId: "standalone-meeting-workspace-continuity-test",
+      packageRoot,
+      startedAt: "2026-07-29T00:00:06.000Z",
+    });
+    const sourceRepoPath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+    const monitors = await startPartialRawAccessMonitors(paths, sourceRepoPath);
+    try {
+      const movedWorkspacePath = join(paths.runRoot, "workspace.moved");
+      renameSync(paths.workspacePath, movedWorkspacePath);
+      try {
+        expect(() => readFileSync(join(sourceRepoPath, "appendix.md"), "utf8")).toThrow();
+      } finally {
+        renameSync(movedWorkspacePath, paths.workspacePath);
+      }
+
+      await expect
+        .poll(
+          () =>
+            readEvents(paths.eventsPath).some(
+              (event) =>
+                isRecord(event) &&
+                event.type === "partial_raw_path_mutation" &&
+                event.locator === "source-artifacts/appendix.md",
+            ),
+          { timeout: 1_000 },
+        )
+        .toBe(true);
+      expect(validatePartialRawAccessMonitors(paths, monitors)).toEqual([]);
+      expect(rawArtifactReadObserved(readEvents(paths.eventsPath), evalCase)).toBe(true);
+    } finally {
+      stopPartialRawAccessMonitors(monitors);
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
 });

@@ -1,9 +1,11 @@
 import { appendFileSync, close, open, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 
-const [sentinelPath, eventsPath, locator] = process.argv.slice(2);
-if (!sentinelPath || !eventsPath || !locator) {
-  throw new Error("Usage: raw-access-monitor.mjs <sentinel-path> <events-path> <locator>");
+import { isProtectedPathMutation } from "./raw-access-monitor-lib.mjs";
+
+const [sentinelPath, workspacePath, eventsPath, locator] = process.argv.slice(2);
+if (!sentinelPath || !workspacePath || !eventsPath || !locator) {
+  throw new Error("Usage: raw-access-monitor.mjs <sentinel-path> <workspace-path> <events-path> <locator>");
 }
 
 function record(type) {
@@ -18,17 +20,31 @@ function record(type) {
   );
 }
 
-const sentinelName = basename(sentinelPath);
-const watcher = watch(dirname(sentinelPath), (eventType, filename) => {
-  if (eventType === "rename" && filename?.toString() === sentinelName) {
-    record("partial_raw_path_mutation");
+const watchTargets = [];
+let protectedPath = sentinelPath;
+while (true) {
+  watchTargets.push({ directory: dirname(protectedPath), protectedName: basename(protectedPath) });
+  if (protectedPath === workspacePath) break;
+  const parent = dirname(protectedPath);
+  if (parent === protectedPath) {
+    throw new Error(`Sentinel path is outside the workspace boundary: ${sentinelPath}`);
   }
-});
-watcher.on("error", () => {
-  record("partial_raw_monitor_error");
-  watcher.close();
-  process.exit(1);
-});
+  protectedPath = parent;
+}
+const watchers = [];
+for (const { directory, protectedName } of watchTargets) {
+  const watcher = watch(directory, (eventType, filename) => {
+    if (isProtectedPathMutation(eventType, filename, protectedName)) {
+      record("partial_raw_path_mutation");
+    }
+  });
+  watchers.push(watcher);
+  watcher.on("error", () => {
+    record("partial_raw_monitor_error");
+    for (const candidate of watchers) candidate.close();
+    process.exit(1);
+  });
+}
 
 process.send?.({ locator, type: "partial_raw_monitor_ready" });
 

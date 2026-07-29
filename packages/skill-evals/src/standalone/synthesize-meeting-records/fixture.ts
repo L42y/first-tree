@@ -252,7 +252,7 @@ export async function startPartialRawAccessMonitors(
     const path = artifactPath(paths, locator);
     const identity = lstatSync(path);
     const monitor = {
-      child: spawn(process.execPath, [RAW_ACCESS_MONITOR_PATH, path, paths.eventsPath, locator], {
+      child: spawn(process.execPath, [RAW_ACCESS_MONITOR_PATH, path, paths.workspacePath, paths.eventsPath, locator], {
         stdio: ["ignore", "ignore", "ignore", "ipc"],
       }),
       device: identity.dev,
