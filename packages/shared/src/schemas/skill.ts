@@ -87,6 +87,25 @@ export function foldPortableTeamSkillPath(path: string): string {
   return path.normalize("NFC").toLocaleLowerCase("en-US");
 }
 
+/**
+ * Record every explicit path and implicit ancestor using the spelling that
+ * will reach disk. Portable filesystems may merge NFC/case-fold equivalent
+ * directory names even when the complete leaf paths differ.
+ */
+export function recordPortableTeamSkillPath(canonicalPaths: Map<string, string>, path: string): string | null {
+  const segments = path.split("/");
+  for (let index = 1; index <= segments.length; index++) {
+    const candidate = segments.slice(0, index).join("/");
+    const folded = foldPortableTeamSkillPath(candidate);
+    const existing = canonicalPaths.get(folded);
+    if (existing !== undefined && existing !== candidate) {
+      return `portable path spelling collision between "${existing}" and "${candidate}"`;
+    }
+    canonicalPaths.set(folded, candidate);
+  }
+  return null;
+}
+
 export function getPortableTeamSkillSegmentError(segment: string): string | null {
   if (
     segment.length === 0 ||

@@ -327,6 +327,51 @@ describe("managed Skill reconciler", () => {
     expect(existsSync(target(workspace, "codex", "review"))).toBe(true);
   });
 
+  it.each([
+    ["unavailable", { kind: "unavailable" } as const],
+    ["stale", authoritativeTeamSkillSnapshot(9, [])],
+  ])("quarantines a tampered Team LKG under a %s snapshot", async (_label, snapshot) => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(10, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+    writeFileSync(join(installed, "SKILL.md"), "tampered\n");
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+    });
+    expect(result.staleTeamSnapshot).toBe(_label === "stale");
+    expect(existsSync(installed)).toBe(false);
+  });
+
+  it("blocks an unavailable-snapshot preflight when a tampered Team LKG cannot be quarantined", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(10, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+    writeFileSync(join(installed, "SKILL.md"), "tampered\n");
+
+    await expect(
+      reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: { kind: "unavailable" },
+        bundledSkillsRoot,
+        testFailureAt: "quarantine_rename",
+      }),
+    ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(existsSync(installed)).toBe(true);
+  });
+
   it("uses a deterministic suffix for Team Skill conflicts and never overwrites the user target", async () => {
     const userTarget = target(workspace, "codex", "review");
     mkdirSync(userTarget, { recursive: true });
@@ -632,6 +677,51 @@ describe("managed Skill reconciler", () => {
     expect(lstatSync(join(installed, "scripts", "run.sh")).isFile()).toBe(true);
   });
 
+  it("recovers after interruption immediately after quarantine leaves discovery", async () => {
+    const bundle = makeSkillZip({ "scripts/run.sh": strToU8("#!/bin/sh\necho safe\n") });
+    const skill = bundleSkill(bundle);
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    const installed = target(workspace, "codex", "review");
+    writeFileSync(join(installed, "scripts", "run.sh"), "tampered\n");
+
+    const interrupted = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+      testCrashAt: "quarantine_moved",
+    });
+    expect(interrupted.ok).toBe(false);
+    expect(existsSync(installed)).toBe(false);
+    expect(
+      readdirSync(join(workspace, ".first-tree-workspace")).filter((name) =>
+        name.startsWith(".managed-skill-quarantine-"),
+      ),
+    ).toHaveLength(1);
+
+    const recovered = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    expect(recovered.installed).toContain("resource:resource-review");
+    expect(readFileSync(join(installed, "scripts", "run.sh"), "utf-8")).toContain("safe");
+    expect(
+      readdirSync(join(workspace, ".first-tree-workspace")).filter((name) =>
+        name.startsWith(".managed-skill-quarantine-"),
+      ),
+    ).toHaveLength(0);
+  });
+
   it("blocks provider preflight when authoritative removal cannot leave discovery", async () => {
     await reconcileManagedSkills({
       workspace,
@@ -758,6 +848,15 @@ describe("managed Skill reconciler", () => {
           "assets/Cafe\u0301.bin": Uint8Array.from([2]),
         }),
       "duplicate case-folded",
+    ],
+    [
+      "implicit ancestor spelling collision",
+      () =>
+        makeSkillZip({
+          "A/x.txt": strToU8("one"),
+          "a/y.txt": strToU8("two"),
+        }),
+      "spelling collision",
     ],
     [
       "reserved ownership marker",

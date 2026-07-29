@@ -9,6 +9,7 @@ import {
   getPortableTeamSkillSegmentError,
   normalizeTeamSkillTargetSlug,
   parseStrictTeamSkillMarkdown,
+  recordPortableTeamSkillPath,
   SKILL_NAME_REGEX,
   type SkillResourcePayload,
   skillResourcePayloadSchema,
@@ -143,6 +144,7 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   }
 
   const outputKinds = new Map<string, "directory" | "file">();
+  const canonicalOutputPaths = new Map<string, string>();
   for (const entry of entries) {
     const targetPath = wrapper ? (entry.path === wrapper ? "" : entry.path.slice(rootPrefix.length)) : entry.path;
     if (!targetPath) continue;
@@ -151,6 +153,10 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
     const firstSegment = targetPath.split("/", 1)[0] ?? "";
     if (foldPortableTeamSkillPath(firstSegment) === foldPortableTeamSkillPath(TEAM_SKILL_OWNERSHIP_MARKER)) {
       throw new BadRequestError(`Skill ZIP may not provide reserved file ${TEAM_SKILL_OWNERSHIP_MARKER}`);
+    }
+    const spellingCollision = recordPortableTeamSkillPath(canonicalOutputPaths, targetPath);
+    if (spellingCollision) {
+      throw new BadRequestError(`Skill ZIP contains ${spellingCollision}`);
     }
     const folded = foldPortableTeamSkillPath(targetPath);
     if (outputKinds.has(folded)) {

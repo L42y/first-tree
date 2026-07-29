@@ -204,6 +204,14 @@ describe("Team Skill bundles", () => {
           "assets/Cafe\u0301.bin": Uint8Array.from([2]),
         }),
     ],
+    [
+      "implicit ancestor spelling collision",
+      () =>
+        skillZip("portable", {
+          "A/x.txt": strToU8("one"),
+          "a/y.txt": strToU8("two"),
+        }),
+    ],
     ["overlong path segment", () => skillZip("portable", { [`assets/${"a".repeat(241)}`]: strToU8("bad") })],
     [
       "raw overlong Unicode path segment",

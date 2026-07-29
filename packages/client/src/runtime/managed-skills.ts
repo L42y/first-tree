@@ -26,6 +26,7 @@ import {
   type RuntimeProvider,
   type RuntimeResourceSkill,
   type RuntimeSkillBundle,
+  recordPortableTeamSkillPath,
   TEAM_SKILL_BUNDLE_LIMITS,
   TEAM_SKILL_OWNERSHIP_MARKER,
 } from "@first-tree/shared";
@@ -134,6 +135,7 @@ export type ManagedSkillsCheckpoint =
   | "state_committed"
   | "backup_cleaned"
   | "quarantine_rename"
+  | "quarantine_moved"
   | "remove_target";
 
 export type TeamSkillBundleResolver = (bundle: RuntimeSkillBundle) => Promise<Buffer>;
@@ -291,6 +293,9 @@ export async function reconcileManagedSkills(
         options.log?.(
           "Managed skills Team Resource snapshot unavailable; preserving last-known-good Team Skills until control-plane recovery",
         );
+      }
+      if (!authoritative) {
+        await verifyPreservedTeamTargets(options, state);
       }
 
       const desiredSkills = await buildDesiredSkills(options, authoritative);
@@ -918,18 +923,30 @@ async function quarantineDriftedManagedTarget(
   options: ReconcileManagedSkillsOptions,
   entry: ManagedSkillEntry,
 ): Promise<void> {
-  const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
-  if (!(await pathExists(targetPath))) return;
   const quarantineKey = createHash("sha256").update(entry.target).digest("hex").slice(0, 24);
   const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${quarantineKey}`;
   try {
+    const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
     const quarantinePath = resolveWorkspacePath(options.workspace, quarantine, "quarantine");
+    if (!(await pathExists(targetPath))) {
+      try {
+        await rm(quarantinePath, { recursive: true, force: true });
+      } catch (error) {
+        options.log?.(
+          `Managed skill stale quarantine cleanup deferred (${entry.target}): ${
+            error instanceof Error ? error.message.slice(0, 300) : String(error)
+          }`,
+        );
+      }
+      return;
+    }
     // One stable slot per ledger target prevents repeated drift from growing
     // an unbounded quarantine set. A stale slot must be removed before reuse.
     await rm(quarantinePath, { recursive: true, force: true });
     maybeFault(options, "quarantine_rename");
     await rename(targetPath, quarantinePath);
     options.log?.(`Managed skill quarantined unverified target ${entry.target}`);
+    maybeFault(options, "quarantine_moved");
     try {
       await rm(quarantinePath, { recursive: true, force: true });
     } catch (error) {
@@ -940,10 +957,31 @@ async function quarantineDriftedManagedTarget(
       );
     }
   } catch (error) {
+    if (error instanceof ManagedSkillsSimulatedCrash) throw error;
     throw new ManagedSkillsUnsafeDiscoveryError(
       `Managed Skill target ${entry.target} cannot be verified or quarantined outside provider discovery`,
       { cause: error },
     );
+  }
+}
+
+async function verifyPreservedTeamTargets(options: ReconcileManagedSkillsOptions, state: ManagedState): Promise<void> {
+  const providerRoot = `${providerSkillRoot(options.provider)}/`;
+  for (const entry of state.skills) {
+    if (!entry.key.startsWith("resource:") || !entry.target.startsWith(providerRoot)) continue;
+    let actualDigest: `sha256:${string}` | null = null;
+    try {
+      actualDigest = await digestManagedTarget(options.workspace, entry.target);
+    } catch (error) {
+      options.log?.(
+        `Preserved Team Skill target cannot be verified (${entry.key}): ${
+          error instanceof Error ? error.message.slice(0, 300) : String(error)
+        }`,
+      );
+    }
+    if (actualDigest !== entry.installedDigest) {
+      await quarantineDriftedManagedTarget(options, entry);
+    }
   }
 }
 
@@ -1452,6 +1490,7 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
 
   const planned: ZipSkillEntry[] = [];
   const outputKinds = new Map<string, "directory" | "file">();
+  const canonicalOutputPaths = new Map<string, string>();
   for (const entry of rawEntries) {
     const targetPath = wrapper
       ? entry.normalizedPath === wrapper
@@ -1469,6 +1508,10 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
     }
     if (foldPortableTeamSkillPath(segments[0] ?? "") === foldPortableTeamSkillPath(OWNERSHIP_MARKER)) {
       throw new Error(`Skill ZIP may not provide reserved file ${OWNERSHIP_MARKER}`);
+    }
+    const spellingCollision = recordPortableTeamSkillPath(canonicalOutputPaths, targetPath);
+    if (spellingCollision) {
+      throw new Error(`Skill ZIP contains ${spellingCollision}`);
     }
     const folded = foldPortableTeamSkillPath(targetPath);
     if (outputKinds.has(folded)) {

@@ -5,6 +5,7 @@ import {
   getPortableTeamSkillSegmentError,
   normalizeTeamSkillTargetSlug,
   parseStrictTeamSkillMarkdown,
+  recordPortableTeamSkillPath,
   skillDescriptorSchema,
   TEAM_SKILL_BUNDLE_LIMITS,
 } from "../schemas/skill.js";
@@ -59,6 +60,16 @@ describe("portable Team Skill contract", () => {
 
   it("folds Unicode-equivalent paths before collision checks", () => {
     expect(foldPortableTeamSkillPath("references/Café.md")).toBe(foldPortableTeamSkillPath("references/Cafe\u0301.md"));
+  });
+
+  it("detects portable spelling collisions in implicit ancestors", () => {
+    const canonical = new Map<string, string>();
+    expect(recordPortableTeamSkillPath(canonical, "A/x.txt")).toBeNull();
+    expect(recordPortableTeamSkillPath(canonical, "a/y.txt")).toContain("spelling collision");
+
+    const unicodeCanonical = new Map<string, string>();
+    expect(recordPortableTeamSkillPath(unicodeCanonical, "Café/x.txt")).toBeNull();
+    expect(recordPortableTeamSkillPath(unicodeCanonical, "Cafe\u0301/y.txt")).toContain("spelling collision");
   });
 
   it("rejects non-portable and overlong path components", () => {
