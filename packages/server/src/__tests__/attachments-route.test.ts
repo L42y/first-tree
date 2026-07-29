@@ -9,10 +9,12 @@ import { chats } from "../db/schema/chats.js";
 import { messages } from "../db/schema/messages.js";
 import { organizations } from "../db/schema/organizations.js";
 import {
+  backfillExternalAttachmentsToPostgres,
   createAttachment,
   deleteAttachmentIfUnreferenced,
   MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER,
 } from "../services/attachment.js";
+import { MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
 import { validateMessageAttachmentRefs } from "../services/doc-snapshots.js";
 import { ensureMembership } from "../services/membership.js";
 import { editMessage, lockFileAttachmentRefsIfPresent, sendMessage } from "../services/message.js";
@@ -81,6 +83,129 @@ describe("attachments route — upload + capability download", () => {
       lifecycleState: "ready",
       data: bytes,
     });
+  });
+
+  it("dual-reads and reverse-backfills a pre-existing S3-only row", async () => {
+    const app = getApp();
+    const store = app.attachmentBlobStore as MemoryAttachmentBlobStore;
+    const admin = await createTestAdmin(app, { username: `s3-reverse-${crypto.randomUUID().slice(0, 6)}` });
+    const id = crypto.randomUUID();
+    const objectKey = `attachments/${admin.organizationId}/${id}`;
+    const bytes = Buffer.from("legacy-s3-payload");
+    store.objects.set(objectKey, bytes);
+    await app.db.insert(attachments).values({
+      id,
+      organizationId: admin.organizationId,
+      objectKey,
+      lifecycleState: "ready",
+      mimeType: "application/octet-stream",
+      filename: "legacy.bin",
+      sizeBytes: bytes.byteLength,
+      data: null,
+      uploadedBy: admin.humanAgentUuid,
+    });
+
+    const beforeBackfill = await getAttachment(app, admin, id);
+    expect(beforeBackfill.statusCode).toBe(200);
+    expect(beforeBackfill.rawPayload).toEqual(bytes);
+
+    await expect(backfillExternalAttachmentsToPostgres(app.db, store)).resolves.toEqual({
+      migrated: 1,
+      skipped: 0,
+    });
+    const [stored] = await app.db.select().from(attachments).where(eq(attachments.id, id));
+    expect(stored).toMatchObject({ data: bytes, objectKey, lifecycleState: "ready" });
+
+    // The pointer and S3 copy stay available to pre-transition replicas, but
+    // this version reads PostgreSQL first.
+    store.objects.delete(objectKey);
+    const afterBackfill = await getAttachment(app, admin, id);
+    expect(afterBackfill.statusCode).toBe(200);
+    expect(afterBackfill.rawPayload).toEqual(bytes);
+  });
+
+  it("database-fences the old PostgreSQL-to-S3 backfill during a rolling deploy", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `storage-fence-${crypto.randomUUID().slice(0, 6)}` });
+    const stored = await createAttachment(app.db, {
+      organizationId: admin.organizationId,
+      mimeType: "application/octet-stream",
+      filename: "postgres.bin",
+      body: Buffer.from("postgres-authoritative"),
+      uploadedBy: admin.humanAgentUuid,
+    });
+    const legacyObjectKey = `attachments/${admin.organizationId}/${stored.id}`;
+
+    // This is the claim UPDATE issued by #2062's old replica before it would
+    // upload the bytes and clear `data`.
+    const claimError = await app.db
+      .update(attachments)
+      .set({ objectKey: legacyObjectKey, lifecycleState: "uploading", updatedAt: new Date() })
+      .where(eq(attachments.id, stored.id))
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(claimError).toBeInstanceOf(Error);
+    const wrapped = claimError as Error & { cause?: unknown };
+    const causeMessage = wrapped.cause instanceof Error ? wrapped.cause.message : String(wrapped.cause ?? "");
+    expect(`${wrapped.message} ${causeMessage}`).toContain("attachment payload externalization is disabled");
+
+    const [afterClaim] = await app.db.select().from(attachments).where(eq(attachments.id, stored.id));
+    expect(afterClaim).toMatchObject({
+      objectKey: null,
+      lifecycleState: "ready",
+      data: Buffer.from("postgres-authoritative"),
+    });
+  });
+
+  it("does not overwrite a concurrent S3-to-PostgreSQL backfill winner", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `reverse-cas-${crypto.randomUUID().slice(0, 6)}` });
+    const id = crypto.randomUUID();
+    const objectKey = `attachments/${admin.organizationId}/${id}`;
+    const legacyBytes = Buffer.from("legacy-copy");
+    const winningBytes = Buffer.from("winning-copy");
+    let signalReadStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      signalReadStarted = resolve;
+    });
+    let releaseRead!: () => void;
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    class BlockingLegacyStore extends MemoryAttachmentBlobStore {
+      override async get(key: string): Promise<Readable> {
+        signalReadStarted();
+        await readReleased;
+        return super.get(key);
+      }
+    }
+    const store = new BlockingLegacyStore();
+    store.objects.set(objectKey, legacyBytes);
+    await app.db.insert(attachments).values({
+      id,
+      organizationId: admin.organizationId,
+      objectKey,
+      lifecycleState: "ready",
+      mimeType: "application/octet-stream",
+      filename: "legacy-race.bin",
+      sizeBytes: legacyBytes.byteLength,
+      data: null,
+      uploadedBy: admin.humanAgentUuid,
+    });
+
+    const staleBackfill = backfillExternalAttachmentsToPostgres(app.db, store);
+    await readStarted;
+    await app.db
+      .update(attachments)
+      .set({ data: winningBytes, sizeBytes: winningBytes.byteLength, updatedAt: new Date() })
+      .where(eq(attachments.id, id));
+    releaseRead();
+
+    await expect(staleBackfill).resolves.toEqual({ migrated: 0, skipped: 1 });
+    const [stored] = await app.db.select().from(attachments).where(eq(attachments.id, id));
+    expect(stored).toMatchObject({ data: winningBytes, objectKey, lifecycleState: "ready" });
   });
 
   it("bounds simultaneous PostgreSQL upload reservations for one caller", async () => {
@@ -203,7 +328,7 @@ describe("attachments route — upload + capability download", () => {
       });
     });
 
-    await expect(deleteAttachmentIfUnreferenced(app.db, stored.id)).resolves.toBe(false);
+    await expect(deleteAttachmentIfUnreferenced(app.db, app.attachmentBlobStore, stored.id)).resolves.toBe(false);
     expect(await app.db.select().from(attachments).where(eq(attachments.id, stored.id))).toHaveLength(1);
   });
 
@@ -259,7 +384,7 @@ describe("attachments route — upload + capability download", () => {
       });
     }
 
-    await expect(deleteAttachmentIfUnreferenced(app.db, stored.id)).resolves.toBe(false);
+    await expect(deleteAttachmentIfUnreferenced(app.db, app.attachmentBlobStore, stored.id)).resolves.toBe(false);
   });
 
   it("keeps legacy single and batch file references shape-only", async () => {
@@ -321,14 +446,28 @@ describe("attachments route — upload + capability download", () => {
       content: "before edit",
       source: "web",
     });
-    await editMessage(app.db, chatId, existingId, admin.humanAgentUuid, {
-      format: "file",
-      content: missingRef,
-    });
-    const edited = await editMessage(app.db, chatId, existingId, admin.humanAgentUuid, {
-      format: "file",
-      content: { attachments: [missingRef] },
-    });
+    await editMessage(
+      app.db,
+      chatId,
+      existingId,
+      admin.humanAgentUuid,
+      {
+        format: "file",
+        content: missingRef,
+      },
+      app.attachmentBlobStore,
+    );
+    const edited = await editMessage(
+      app.db,
+      chatId,
+      existingId,
+      admin.humanAgentUuid,
+      {
+        format: "file",
+        content: { attachments: [missingRef] },
+      },
+      app.attachmentBlobStore,
+    );
 
     expect(edited).toMatchObject({ format: "file", content: { attachments: [missingRef] } });
     expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(4);
@@ -368,23 +507,37 @@ describe("attachments route — upload + capability download", () => {
       source: "web",
     });
 
-    await editMessage(app.db, chatId, messageId, admin.humanAgentUuid, {
-      content: {
-        caption: "replacement",
-        attachments: [
-          {
-            imageId: replacement.id,
-            mimeType: "image/png",
-            filename: replacement.filename,
-            size: replacement.sizeBytes,
-          },
-        ],
+    await editMessage(
+      app.db,
+      chatId,
+      messageId,
+      admin.humanAgentUuid,
+      {
+        content: {
+          caption: "replacement",
+          attachments: [
+            {
+              imageId: replacement.id,
+              mimeType: "image/png",
+              filename: replacement.filename,
+              size: replacement.sizeBytes,
+            },
+          ],
+        },
       },
-    });
+      app.attachmentBlobStore,
+    );
     expect(await app.db.select().from(attachments).where(eq(attachments.id, previous.id))).toHaveLength(0);
     expect(await app.db.select().from(attachments).where(eq(attachments.id, replacement.id))).toHaveLength(1);
 
-    await editMessage(app.db, chatId, messageId, admin.humanAgentUuid, { format: "text", content: "images removed" });
+    await editMessage(
+      app.db,
+      chatId,
+      messageId,
+      admin.humanAgentUuid,
+      { format: "text", content: "images removed" },
+      app.attachmentBlobStore,
+    );
     expect(await app.db.select().from(attachments).where(eq(attachments.id, replacement.id))).toHaveLength(0);
   });
 

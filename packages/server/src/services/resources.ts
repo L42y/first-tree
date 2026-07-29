@@ -42,6 +42,7 @@ import { resources } from "../db/schema/resources.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
 import { deleteAttachmentIfUnreferenced } from "./attachment.js";
+import { type AttachmentBlobStore, createUnavailableAttachmentBlobStore } from "./attachment-blob-store.js";
 import {
   LANDING_CAMPAIGN_TRIAL_PROMPT,
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_DESCRIPTION,
@@ -99,10 +100,12 @@ export type ResourcesService = {
 export type ResourcesServiceOptions = {
   db: Database;
   notifier: Notifier;
+  attachmentBlobStore?: AttachmentBlobStore;
 };
 
 export function createResourcesService(opts: ResourcesServiceOptions): ResourcesService {
   const { db, notifier } = opts;
+  const attachmentBlobStore = opts.attachmentBlobStore ?? createUnavailableAttachmentBlobStore();
 
   async function notifyAgents(agentIds: Iterable<string>): Promise<void> {
     await Promise.allSettled(Array.from(new Set(agentIds)).map((id) => notifier.notifyConfigChange(`agent:${id}`)));
@@ -1041,7 +1044,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       let payload: ResourcePayload;
       let name: string;
       if (input.type === "skill") {
-        const validated = await validateSkillBundle(db, organizationId, input.bundleAttachmentId);
+        const validated = await validateSkillBundle(db, attachmentBlobStore, organizationId, input.bundleAttachmentId);
         payload = validated.payload;
         name = validated.name;
       } else {
@@ -1113,7 +1116,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       }
       const validatedSkill =
         current.type === "skill" && input.bundleAttachmentId !== undefined
-          ? await validateSkillBundle(db, current.organizationId, input.bundleAttachmentId)
+          ? await validateSkillBundle(db, attachmentBlobStore, current.organizationId, input.bundleAttachmentId)
           : null;
       const payload =
         current.type === "skill"
@@ -1166,7 +1169,9 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       }
       await notifyAgents(impacted);
       if (current.type === "skill" && current.bundleAttachmentId && current.bundleAttachmentId !== bundleAttachmentId) {
-        await deleteAttachmentIfUnreferenced(db, current.bundleAttachmentId).catch(() => undefined);
+        await deleteAttachmentIfUnreferenced(db, attachmentBlobStore, current.bundleAttachmentId).catch(
+          () => undefined,
+        );
       }
       return rowToResource(await loadResource(resourceId));
     },
@@ -1636,7 +1641,9 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       });
       if (needsNotify) await notifyAgents([agentId]);
       await Promise.allSettled(
-        releasedBundleAttachmentIds.map((attachmentId) => deleteAttachmentIfUnreferenced(db, attachmentId)),
+        releasedBundleAttachmentIds.map((attachmentId) =>
+          deleteAttachmentIfUnreferenced(db, attachmentBlobStore, attachmentId),
+        ),
       );
     },
 

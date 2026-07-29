@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { MAX_ATTACHMENT_BYTES } from "@first-tree/shared";
-import { and, eq, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { attachments } from "../db/schema/attachments.js";
 import { messages } from "../db/schema/messages.js";
 import { resources } from "../db/schema/resources.js";
-import { BadRequestError, ConflictError } from "../errors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { createLogger } from "../observability/index.js";
+import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 
 const log = createLogger("attachment");
 
@@ -219,7 +220,13 @@ export async function loadAttachmentMeta(db: AttachmentReader, id: string): Prom
       updatedAt: attachments.updatedAt,
     })
     .from(attachments)
-    .where(and(eq(attachments.id, id), eq(attachments.lifecycleState, "ready"), isNotNull(attachments.data)))
+    .where(
+      and(
+        eq(attachments.id, id),
+        eq(attachments.lifecycleState, "ready"),
+        or(isNotNull(attachments.data), isNotNull(attachments.objectKey)),
+      ),
+    )
     .limit(1);
   return row ?? null;
 }
@@ -243,24 +250,45 @@ export async function loadAttachmentMetaForReference(db: AttachmentReader, id: s
       updatedAt: attachments.updatedAt,
     })
     .from(attachments)
-    .where(and(eq(attachments.id, id), eq(attachments.lifecycleState, "ready"), isNotNull(attachments.data)))
+    .where(
+      and(
+        eq(attachments.id, id),
+        eq(attachments.lifecycleState, "ready"),
+        or(isNotNull(attachments.data), isNotNull(attachments.objectKey)),
+      ),
+    )
     .for("key share")
     .limit(1);
   return row ?? null;
 }
 
-/** Open the immutable PostgreSQL `bytea` payload as a readable stream. */
-export async function openAttachmentStream(db: Database, id: string): Promise<Readable | null> {
+/**
+ * Prefer the authoritative PostgreSQL payload. The legacy object-store read
+ * path remains only for rows that have not completed the reverse backfill.
+ */
+export async function openAttachmentStream(
+  db: Database,
+  blobStore: AttachmentBlobStore,
+  id: string,
+): Promise<Readable | null> {
   const [row] = await db
     .select({
+      objectKey: attachments.objectKey,
       lifecycleState: attachments.lifecycleState,
       data: attachments.data,
     })
     .from(attachments)
     .where(eq(attachments.id, id))
     .limit(1);
-  if (!row?.data || row.lifecycleState !== "ready") return null;
-  return Readable.from([row.data]);
+  if (!row || row.lifecycleState !== "ready") return null;
+  if (row.data) return Readable.from([row.data]);
+  if (!row.objectKey) return null;
+  try {
+    return await blobStore.get(row.objectKey);
+  } catch (error) {
+    if (error instanceof NotFoundError) return null;
+    throw error;
+  }
 }
 
 export async function isAttachmentReferenced(db: Database, id: string): Promise<boolean> {
@@ -291,55 +319,64 @@ export async function isAttachmentReferenced(db: Database, id: string): Promise<
 /** Delete an immutable PostgreSQL row only after every known consumer releases it. */
 export async function deleteAttachmentIfUnreferenced(
   db: Database,
+  blobStore: AttachmentBlobStore,
   id: string,
   options: { orphanCutoff?: Date } = {},
 ): Promise<boolean> {
-  return db.transaction(async (tx) => {
+  let legacyObjectKey: string | null = null;
+  let deletePostgresRow = false;
+  await db.transaction(async (tx) => {
     const targetDb = tx as unknown as Database;
     const [row] = await targetDb
       .select({
         id: attachments.id,
         objectKey: attachments.objectKey,
         lifecycleState: attachments.lifecycleState,
-        data: attachments.data,
         updatedAt: attachments.updatedAt,
       })
       .from(attachments)
       .where(eq(attachments.id, id))
       .for("update")
       .limit(1);
-    if (!row) return false;
+    if (!row) return;
     if (
       options.orphanCutoff &&
       row.lifecycleState !== "deleting" &&
       !((row.lifecycleState === "uploading" || row.lifecycleState === "ready") && row.updatedAt < options.orphanCutoff)
     ) {
-      return false;
+      return;
     }
     if (await isAttachmentReferenced(targetDb, id)) {
       if (row.lifecycleState !== "deleting") {
         await targetDb.update(attachments).set({ updatedAt: new Date() }).where(eq(attachments.id, id));
       }
-      return false;
+      return;
     }
-    // Preserve the recovery pointer for any object-store row produced during
-    // the short-lived #2062 deployment window. New PostgreSQL-backed writes
-    // always have `data` and never set `objectKey`.
-    if (!row.data && row.objectKey) return false;
-    const [deleted] = await targetDb
-      .delete(attachments)
-      .where(eq(attachments.id, id))
-      .returning({ id: attachments.id });
-    return !!deleted;
+    legacyObjectKey = row.objectKey;
+    deletePostgresRow = true;
+    if (legacyObjectKey) {
+      await targetDb
+        .update(attachments)
+        .set({ lifecycleState: "deleting", updatedAt: new Date() })
+        .where(eq(attachments.id, id));
+      return;
+    }
+    await targetDb.delete(attachments).where(eq(attachments.id, id));
   });
+  if (!deletePostgresRow) return false;
+  if (!legacyObjectKey) return true;
+  await blobStore.delete(legacyObjectKey);
+  await db.delete(attachments).where(and(eq(attachments.id, id), eq(attachments.lifecycleState, "deleting")));
+  return true;
 }
 
 /**
- * Remove PostgreSQL uploads that stayed unreferenced for the 24-hour grace
- * period. Bounded batches keep the maintenance tick cheap.
+ * Remove uploads that stayed unreferenced for the 24-hour grace period.
+ * Transitional S3 copies are deleted before their PostgreSQL lifecycle row.
  */
 export async function sweepOrphanAttachments(
   db: Database,
+  blobStore: AttachmentBlobStore,
   now = new Date(),
   batchSize = 100,
 ): Promise<{ examined: number; deleted: number }> {
@@ -350,19 +387,73 @@ export async function sweepOrphanAttachments(
     .where(
       or(
         eq(attachments.lifecycleState, "deleting"),
-        and(eq(attachments.lifecycleState, "uploading"), lt(attachments.updatedAt, cutoff)),
-        and(eq(attachments.lifecycleState, "ready"), isNotNull(attachments.data), lt(attachments.updatedAt, cutoff)),
+        and(inArray(attachments.lifecycleState, ["uploading", "ready"]), lt(attachments.updatedAt, cutoff)),
       ),
     )
     .limit(batchSize);
   let deleted = 0;
   for (const candidate of candidates) {
     try {
-      if (await deleteAttachmentIfUnreferenced(db, candidate.id, { orphanCutoff: cutoff })) deleted++;
+      if (await deleteAttachmentIfUnreferenced(db, blobStore, candidate.id, { orphanCutoff: cutoff })) deleted++;
     } catch (error) {
       // Keep the row for the next retry.
       log.warn({ err: error, attachmentId: candidate.id }, "orphan attachment cleanup will retry");
     }
   }
   return { examined: candidates.length, deleted };
+}
+
+/**
+ * Expand phase for reverting #2062: copy S3-only payloads back into
+ * PostgreSQL with a compare-and-set update. Keep `objectKey` and the S3 copy
+ * until every pre-transition replica has drained, because those replicas
+ * still prefer S3 whenever the pointer is present.
+ */
+export async function backfillExternalAttachmentsToPostgres(
+  db: Database,
+  blobStore: AttachmentBlobStore,
+  batchSize = 25,
+): Promise<{ migrated: number; skipped: number }> {
+  const rows = await db
+    .select({
+      id: attachments.id,
+      objectKey: attachments.objectKey,
+      sizeBytes: attachments.sizeBytes,
+    })
+    .from(attachments)
+    .where(and(eq(attachments.lifecycleState, "ready"), isNull(attachments.data), isNotNull(attachments.objectKey)))
+    .limit(batchSize);
+  let migrated = 0;
+  let skipped = 0;
+  for (const row of rows) {
+    if (!row.objectKey) {
+      skipped++;
+      continue;
+    }
+    try {
+      const stream = await blobStore.get(row.objectKey);
+      const bytes = await readAttachmentBody(stream, row.sizeBytes);
+      const [updated] = await db
+        .update(attachments)
+        .set({ data: bytes, updatedAt: new Date() })
+        .where(
+          and(
+            eq(attachments.id, row.id),
+            eq(attachments.lifecycleState, "ready"),
+            eq(attachments.objectKey, row.objectKey),
+            isNull(attachments.data),
+          ),
+        )
+        .returning({ id: attachments.id });
+      if (updated) migrated++;
+      else skipped++;
+    } catch (error) {
+      skipped++;
+      log.warn(
+        { err: error, attachmentId: row.id, objectKey: row.objectKey },
+        "legacy S3 attachment reverse backfill will retry",
+      );
+    }
+  }
+  return { migrated, skipped };
 }

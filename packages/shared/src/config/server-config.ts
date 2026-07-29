@@ -14,6 +14,12 @@ const optionalTrimmedStringSchema = z.preprocess((value) => {
   return trimmed.length > 0 ? trimmed : undefined;
 }, z.string().min(1).optional());
 
+const optionalUrlSchema = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}, z.string().url().optional());
+
 const landingCampaignRuntimeProviderSchema = runtimeProviderSchema
   .refine((provider) => provider === "codex" || provider === "claude-code", {
     message: "Landing campaign runtime provider must be codex or claude-code",
@@ -223,6 +229,34 @@ export const serverConfigSchema = defineConfig({
     }),
     provider: field(z.enum(["docker", "external"]).default("docker")),
   },
+  /**
+   * Transitional read/delete compatibility for attachment payloads written
+   * to S3 by #2062. New uploads are PostgreSQL-backed. This block can be
+   * removed in the contract release after the reverse backfill completes and
+   * every pre-transition Server replica has drained.
+   */
+  objectStorage: optional({
+    bucket: field(z.string().trim().min(1), { env: "FIRST_TREE_OBJECT_STORAGE_BUCKET" }),
+    region: field(z.string().trim().min(1).default("us-east-1"), {
+      env: "FIRST_TREE_OBJECT_STORAGE_REGION",
+    }),
+    endpoint: field(optionalUrlSchema, { env: "FIRST_TREE_OBJECT_STORAGE_ENDPOINT" }),
+    forcePathStyle: field(z.boolean().default(false), {
+      env: "FIRST_TREE_OBJECT_STORAGE_FORCE_PATH_STYLE",
+    }),
+    accessKeyId: field(optionalTrimmedStringSchema, {
+      env: "FIRST_TREE_OBJECT_STORAGE_ACCESS_KEY_ID",
+      secret: true,
+    }),
+    secretAccessKey: field(optionalTrimmedStringSchema, {
+      env: "FIRST_TREE_OBJECT_STORAGE_SECRET_ACCESS_KEY",
+      secret: true,
+    }),
+    sessionToken: field(optionalTrimmedStringSchema, {
+      env: "FIRST_TREE_OBJECT_STORAGE_SESSION_TOKEN",
+      secret: true,
+    }),
+  }),
   server: {
     port: field(z.number().default(8000), { env: "FIRST_TREE_PORT" }),
     host: field(z.string().default("127.0.0.1"), { env: "FIRST_TREE_HOST" }),

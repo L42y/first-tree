@@ -41,7 +41,11 @@ export const attachments = pgTable(
     id: text("id").primaryKey(),
     /** Owning team. No FK so attachment cleanup is application-controlled. */
     organizationId: text("organization_id"),
-    /** Legacy recovery pointer. New PostgreSQL-backed writes leave this null. */
+    /**
+     * Transitional pointer for payloads written by #2062. New writes leave it
+     * null; reverse-backfilled rows retain it until pre-transition replicas
+     * have drained.
+     */
     objectKey: text("object_key"),
     lifecycleState: text("lifecycle_state").$type<AttachmentLifecycleState>().notNull().default("ready"),
     /** MIME as declared by the uploader. v1 does not restrict. */
@@ -49,7 +53,7 @@ export const attachments = pgTable(
     filename: text("filename").notNull(),
     /** Server-measured byte length; clients do not get to lie about this. */
     sizeBytes: integer("size_bytes").notNull(),
-    /** Immutable PostgreSQL payload; null only while uploading or for legacy external-store rows. */
+    /** Immutable PostgreSQL payload; null only while uploading or before the reverse backfill. */
     data: bytea("data"),
     /**
      * `agents.uuid` of the team member who uploaded these bytes. Humans
