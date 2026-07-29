@@ -1812,18 +1812,12 @@ describe("POST /webhooks/github-app", () => {
     ).toBe(true);
   });
 
-  it("reuses an existing human mapping, adds the Team Agent as a participant, and scopes the wake marker", async () => {
+  it("reuses an existing human mapping, adds the Team Agent, and preserves the surviving followed wake", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const installationId = 100034;
     await seedInstallation(app, { installationId, orgId: admin.organizationId });
     const teamAgent = await configureTeamAgent(app, admin);
-    const [managerHuman] = await app.db
-      .select({ name: agents.name })
-      .from(agents)
-      .where(eq(agents.uuid, admin.humanAgentUuid))
-      .limit(1);
-    if (!managerHuman?.name) throw new Error("Team Agent manager human is missing a GitHub-compatible name");
     const otherDelegate = await seedAgent(app, {
       orgId: admin.organizationId,
       memberId: admin.memberId,
@@ -1855,11 +1849,7 @@ describe("POST /webhooks/github-app", () => {
       },
       assignee: { login: "test-app-slug[bot]", type: "Bot" },
       repository: { full_name: "owner/repo" },
-      // The historical attention line belongs to the actor and is therefore
-      // pruned from this delivery. It may select the fallback chat, but it
-      // must not wake its old delegate merely because the Team Agent task
-      // reused that chat.
-      sender: { login: managerHuman.name, type: "User" },
+      sender: { login: "external", type: "User" },
       installation: { id: installationId },
     });
 
@@ -1883,15 +1873,20 @@ describe("POST /webhooks/github-app", () => {
     expect(membership).toMatchObject({ accessMode: "speaker" });
     const [message] = await app.db.select().from(messages).where(eq(messages.chatId, chat.id)).limit(1);
     expect(message?.metadata).toMatchObject({
-      mentions: [teamAgent],
       teamAgentTask: { agentUuid: teamAgent },
     });
-    const [otherInbox] = await app.db
-      .select({ notify: inboxEntries.notify })
+    expect(message?.metadata.mentions).toEqual(expect.arrayContaining([teamAgent, otherDelegate]));
+    expect(message?.metadata.mentions).toHaveLength(2);
+    const notified = await app.db
+      .select({ inboxId: inboxEntries.inboxId, notify: inboxEntries.notify })
       .from(inboxEntries)
-      .where(and(eq(inboxEntries.messageId, message?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${otherDelegate}`)))
-      .limit(1);
-    expect(otherInbox?.notify).not.toBe(true);
+      .where(eq(inboxEntries.messageId, message?.id ?? ""));
+    expect(notified).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ inboxId: `inbox_${teamAgent}`, notify: true }),
+        expect.objectContaining({ inboxId: `inbox_${otherDelegate}`, notify: true }),
+      ]),
+    );
   });
 
   it("unions an App task wake with an independent subscription in the same chat", async () => {

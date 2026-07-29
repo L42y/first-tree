@@ -27,6 +27,14 @@ export function extractMentions(text: string | null | undefined): string[] {
   return [...names];
 }
 
+function extractNewMentionsFromBodyEdit(payload: Record<string, unknown>, currentBody: string): string[] {
+  const changes = isRecord(payload.changes) ? payload.changes : null;
+  const bodyChange = isRecord(changes?.body) ? changes.body : null;
+  if (!bodyChange || typeof bodyChange.from !== "string") return [];
+  const previousMentions = new Set(extractMentions(bodyChange.from));
+  return extractMentions(currentBody).filter((login) => !previousMentions.has(login));
+}
+
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -359,7 +367,7 @@ function buildPullRequestRule(
       };
     }
     case "edited": {
-      const mentionLogins = extractMentions(body);
+      const mentionLogins = extractNewMentionsFromBodyEdit(payload, body);
       return {
         entity,
         kind: "edited",
@@ -456,10 +464,16 @@ function buildPullRequestReviewRule(action: string | null, payload: Record<strin
   if (!entity) return null;
   const number = readNumber(pr.number);
   const body = readString(review.body) ?? "";
+  const mentionLogins =
+    action === "submitted"
+      ? extractMentions(body)
+      : action === "edited"
+        ? extractNewMentionsFromBodyEdit(payload, body)
+        : [];
   return {
     entity,
     kind: "reviewed",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,
@@ -481,10 +495,11 @@ function buildPullRequestReviewCommentRule(
   if (!entity) return null;
   const number = readNumber(pr.number);
   const body = readString(comment.body) ?? "";
+  const mentionLogins = action === "edited" ? extractNewMentionsFromBodyEdit(payload, body) : extractMentions(body);
   return {
     entity,
     kind: "review_comment",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,
@@ -508,10 +523,11 @@ function buildIssueCommentRule(action: string | null, payload: Record<string, un
   if (!entity) return null;
   const number = readNumber(issue.number);
   const body = readString(comment.body) ?? "";
+  const mentionLogins = action === "edited" ? extractNewMentionsFromBodyEdit(payload, body) : extractMentions(body);
   return {
     entity,
     kind: "commented",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,
@@ -547,7 +563,7 @@ function buildIssuesRule(action: string | null, payload: Record<string, unknown>
       };
     }
     case "edited": {
-      const mentionLogins = extractMentions(body);
+      const mentionLogins = extractNewMentionsFromBodyEdit(payload, body);
       return {
         entity,
         kind: "edited",
@@ -622,7 +638,7 @@ function buildDiscussionRule(action: string | null, payload: Record<string, unkn
       return {
         entity,
         kind: "edited",
-        involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+        involves: buildInvolves([{ logins: extractNewMentionsFromBodyEdit(payload, body), reason: "mentioned" }]),
         surface: { title, body, url },
         relatedRefs: [],
       };
@@ -665,10 +681,11 @@ function buildDiscussionCommentRule(action: string | null, payload: Record<strin
   if (!entity) return null;
   const number = readNumber(disc.number);
   const body = readString(comment.body) ?? "";
+  const mentionLogins = action === "edited" ? extractNewMentionsFromBodyEdit(payload, body) : extractMentions(body);
   return {
     entity,
     kind: "commented",
-    involves: buildInvolves([{ logins: extractMentions(body), reason: "mentioned" }]),
+    involves: buildInvolves([{ logins: mentionLogins, reason: "mentioned" }]),
     surface: {
       title: entitySurfaceTitle(entity, number),
       body,

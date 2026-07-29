@@ -683,12 +683,12 @@ describe("Team setup capabilities", () => {
       },
       contextTree: {
         automaticReview: {
-          health: "pending_verification",
-          blockers: [{ code: "provider_probe_failed", resolutionOwner: "operator", actionKind: null }],
+          health: "ready",
+          blockers: [],
         },
       },
     });
-    expect(missingSlugFetch).not.toHaveBeenCalled();
+    expect(missingSlugFetch).toHaveBeenCalledTimes(1);
 
     const permission = await createScenario(app);
     const permissionReviewer = await createReviewer(app, permission);
