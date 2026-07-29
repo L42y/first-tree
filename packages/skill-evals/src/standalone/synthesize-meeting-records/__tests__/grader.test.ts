@@ -189,6 +189,21 @@ describe("standalone synthesize-meeting-records grader", () => {
     );
     expect(rawArtifactReadObserved([commandEvent("cd source-artifacts && cat *.md")], currentCase)).toBe(true);
     expect(rawArtifactReadObserved([commandEvent("rg decision source-artifacts")], currentCase)).toBe(true);
+    expect(rawArtifactReadObserved([commandEvent('echo "$(cat source-artifacts/appendix.md)"')], currentCase)).toBe(
+      true,
+    );
+    expect(
+      rawArtifactReadObserved([commandEvent('test "$(cat source-artifacts/appendix.md)" = expected')], currentCase),
+    ).toBe(true);
+    expect(
+      rawArtifactReadObserved([commandEvent("printf '%s' \"$(cat source-artifacts/appendix.md)\"")], currentCase),
+    ).toBe(true);
+    expect(rawArtifactReadObserved([commandEvent("echo `cat source-artifacts/appendix.md`")], currentCase)).toBe(true);
+    expect(rawArtifactReadObserved([commandEvent("echo source-artifacts/appendix.md")], currentCase)).toBe(false);
+    expect(rawArtifactReadObserved([commandEvent("test -f source-artifacts/appendix.md")], currentCase)).toBe(false);
+    expect(rawArtifactReadObserved([commandEvent("printf '%s' 'source-artifacts/appendix.md'")], currentCase)).toBe(
+      false,
+    );
     expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/appendix.md")], currentCase)).toBe(true);
     expect(
       rawArtifactReadObserved(
@@ -213,7 +228,16 @@ describe("standalone synthesize-meeting-records grader", () => {
     );
     expect(rawArtifactReadObserved([nativeReadEvent("source-artifacts/bundle.json")], currentCase)).toBe(false);
     expect(rawArtifactReadObserved([commandEvent("jq . source-artifacts/bundle.json")], currentCase)).toBe(false);
+    expect(
+      rawArtifactReadObserved([commandEvent("jq '.artifacts | length' source-artifacts/bundle.json")], currentCase),
+    ).toBe(false);
     expect(rawArtifactReadObserved([commandEvent("cat source-artifacts/bundle.json | jq .")], currentCase)).toBe(false);
+    expect(
+      rawArtifactReadObserved(
+        [commandEvent("cat source-artifacts/bundle.json | jq '.artifacts | length'")],
+        currentCase,
+      ),
+    ).toBe(false);
     expect(
       rawArtifactReadObserved(
         [commandEvent("/bin/zsh -lc 'jq . /tmp/eval/source-artifacts/bundle.json'")],

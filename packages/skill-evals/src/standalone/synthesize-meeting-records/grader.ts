@@ -11,6 +11,7 @@ import type { EvalMetrics, FixtureValidation, MeetingRecordsEvalCase, PacketEval
 
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 const CONTENT_READ_COMMANDS = new Set(["cat", "grep", "head", "nl", "rg", "sed", "tail"]);
+const NON_CONTENT_COMMANDS = new Set(["[", "echo", "printf", "test"]);
 const SOURCE_ROOT = "source-artifacts";
 const BUNDLE_PATH = `${SOURCE_ROOT}/bundle.json`;
 
@@ -150,37 +151,162 @@ function successfulClaudeReadPaths(events: readonly unknown[]): readonly string[
     .filter((path): path is string => path !== null);
 }
 
-function commandMentionsOnlyBundle(command: string): boolean {
-  const unwrapped = stripShellCommandDisplayWrapper(command).trim();
-  if (!unwrapped.includes(BUNDLE_PATH)) return false;
-  if (unwrapped.replaceAll(BUNDLE_PATH, "").includes(SOURCE_ROOT)) return false;
-  if (/[$`;&<>\n]/u.test(unwrapped)) return false;
+type ParsedShellExecution = {
+  segments: string[];
+  substitutions: string[];
+};
 
-  const escapedBundlePath = BUNDLE_PATH.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const bundlePathPattern = `(?:[^\\s'"|]+\\/)?${escapedBundlePath}`;
-  const bundleWord = `(?:${bundlePathPattern}|'${bundlePathPattern}'|"${bundlePathPattern}")`;
-  const jqCommand = `(?:[^\\s|]+\\/)?jq(?:\\s+[^\\s|]+)*`;
-  if (new RegExp(`^${jqCommand}\\s+${bundleWord}$`, "u").test(unwrapped)) return true;
+function unwrapShellDisplayCommand(command: string): string {
+  let current = command;
+  for (let depth = 0; depth < 2; depth++) {
+    const unwrapped = stripShellCommandDisplayWrapper(current);
+    if (unwrapped === current) break;
+    current = unwrapped;
+  }
+  return current;
+}
 
-  const pipeline = unwrapped.split("|").map((segment) => segment.trim());
-  return (
-    pipeline.length === 2 &&
-    new RegExp(`^(?:[^\\s|]+\\/)?cat\\s+${bundleWord}$`, "u").test(pipeline[0] ?? "") &&
-    new RegExp(`^${jqCommand}$`, "u").test(pipeline[1] ?? "")
-  );
+function findDollarSubstitutionEnd(command: string, contentStart: number): number | null {
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+
+  for (let index = contentStart; index < command.length; index++) {
+    const character = command[index];
+    if (character === undefined) break;
+    if (character === "\\") {
+      index++;
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null;
+        continue;
+      }
+      if (character === "$" && command[index + 1] === "(") return null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "$" && command[index + 1] === "(") {
+      depth++;
+      index++;
+      continue;
+    }
+    if (character === ")") {
+      depth--;
+      if (depth === 0) return index;
+    }
+  }
+
+  return null;
+}
+
+function findBacktickEnd(command: string, contentStart: number): number | null {
+  for (let index = contentStart; index < command.length; index++) {
+    const character = command[index];
+    if (character === undefined) break;
+    if (character === "\\") {
+      index++;
+      continue;
+    }
+    if (character === "`") return index;
+  }
+  return null;
+}
+
+function parseShellExecution(command: string): ParsedShellExecution | null {
+  const input = unwrapShellDisplayCommand(command);
+  const segments: string[] = [];
+  const substitutions: string[] = [];
+  let segment = "";
+  let quote: "'" | '"' | null = null;
+
+  const flushSegment = (): void => {
+    const trimmed = segment.trim();
+    if (trimmed.length > 0) segments.push(trimmed);
+    segment = "";
+  };
+
+  for (let index = 0; index < input.length; index++) {
+    const character = input[index];
+    if (character === undefined) break;
+    if (character === "\\") {
+      const next = input[index + 1];
+      if (next === undefined) return null;
+      segment += `${character}${next}`;
+      index++;
+      continue;
+    }
+    if (quote === "'") {
+      segment += character;
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      segment += character;
+      if (quote === character) quote = null;
+      else if (quote === null) quote = character;
+      continue;
+    }
+    if (character === "$" && input[index + 1] === "(") {
+      const end = findDollarSubstitutionEnd(input, index + 2);
+      if (end === null) return null;
+      substitutions.push(input.slice(index + 2, end));
+      segment += "__command_substitution__";
+      index = end;
+      continue;
+    }
+    if (character === "`") {
+      const end = findBacktickEnd(input, index + 1);
+      if (end === null) return null;
+      substitutions.push(input.slice(index + 1, end));
+      segment += "__command_substitution__";
+      index = end;
+      continue;
+    }
+    if (quote === null && (character === "|" || character === "&" || character === ";" || character === "\n")) {
+      flushSegment();
+      if (input[index + 1] === character) index++;
+      continue;
+    }
+    segment += character;
+  }
+
+  if (quote !== null) return null;
+  flushSegment();
+  return { segments, substitutions };
+}
+
+function onlyExactBundleReference(command: string): boolean {
+  return command.includes(BUNDLE_PATH) && !command.replaceAll(BUNDLE_PATH, "").includes(SOURCE_ROOT);
+}
+
+function shellSegmentReadsRawSource(segment: string): boolean {
+  if (!normalizedPath(segment).includes(SOURCE_ROOT)) return false;
+  const classification = classifyShellCommandIo(segment);
+  if (classification.supported) {
+    return classification.pathArgs.some(
+      (path) => pathWithin(path.raw, SOURCE_ROOT) && !pathMatches(path.raw, BUNDLE_PATH),
+    );
+  }
+  if (NON_CONTENT_COMMANDS.has(classification.commandName ?? "")) return false;
+  return !onlyExactBundleReference(segment);
 }
 
 function commandReadsRawSource(command: string): boolean {
   if (!normalizedPath(command).includes(SOURCE_ROOT)) return false;
-  const classification = classifyShellCommandIo(command);
-  if (classification.supported) {
-    if (!CONTENT_READ_COMMANDS.has(classification.commandName)) return false;
-    const contentPaths = classification.pathArgs.filter((path) => path.pathKindHint !== "directory");
-    if (contentPaths.length === 0) return false;
-    return contentPaths.some((path) => !pathMatches(path.raw, BUNDLE_PATH));
-  }
-  if (commandMentionsOnlyBundle(command)) return false;
-  return !["echo", "printf", "test"].includes(classification.commandName ?? "");
+  const execution = parseShellExecution(command);
+  if (execution === null) return true;
+  return (
+    execution.substitutions.some(commandReadsRawSource) ||
+    execution.segments.some((segment) => shellSegmentReadsRawSource(segment))
+  );
 }
 
 function successfulCommand(event: unknown): string | null {
