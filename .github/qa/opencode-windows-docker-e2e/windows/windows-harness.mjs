@@ -208,17 +208,18 @@ function processAlive(pid) {
 
 function processRecord(pid) {
   const script = [
-    `$item = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${pid}"`,
-    "if (-not $item) { exit 3 }",
-    `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
-    "[ordered]@{",
-    `pid = ${pid};`,
-    "parentPid = [int]$item.ParentProcessId;",
-    "startedAt = $process.StartTime.ToUniversalTime().ToString('o');",
-    "executablePath = [string]$item.ExecutablePath;",
+    `$item = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${pid}";`,
+    "if (-not $item) { exit 3 };",
+    `$process = Get-Process -Id ${pid} -ErrorAction Stop;`,
+    "$record = [ordered]@{",
+    `pid = ${pid}`,
+    "parentPid = [int]$item.ParentProcessId",
+    "startedAt = $process.StartTime.ToUniversalTime().ToString('o')",
+    "executablePath = [string]$item.ExecutablePath",
     "commandLine = [string]$item.CommandLine",
-    "} | ConvertTo-Json -Compress",
-  ].join(" ");
+    "};",
+    "$record | ConvertTo-Json -Compress",
+  ].join("\r\n");
   return JSON.parse(
     execFileSync(
       "powershell.exe",
@@ -687,7 +688,10 @@ try {
     }
   }
   for (const name of readdirSync(evidence)) {
-    if (name.startsWith("windows-")) {
+    const currentRunIdentity =
+      name === "windows-actions-runner-identity.json" ||
+      name === "windows-runner-identity.json";
+    if (name.startsWith("windows-") && !currentRunIdentity) {
       rmSync(path.join(evidence, name), { recursive: true, force: true });
     }
   }

@@ -143,6 +143,7 @@ jobs:
           if ($receipt.status -ne "PASS") {
             throw "Scoped Windows Docker cleanup failed"
           }
+          exit 0
 
       - name: Prepare redacted evidence
         if: always()

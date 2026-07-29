@@ -110,6 +110,11 @@ includesEvery(
     "requiredArgumentsPresent: true",
     "background pid identity changed across OpenCode root exit",
     "background pid no longer identifies the child that wrote the evidence record",
+    '$record = [ordered]@{',
+    '.join("\\r\\n")',
+    "windows-actions-runner-identity.json",
+    "windows-runner-identity.json",
+    "!currentRunIdentity",
     "providerCleanup",
     "harnessSupport",
   ],
@@ -120,6 +125,41 @@ assert(!harness.includes("@opencode-ai/sdk"), "Windows candidate still imports t
 assert(
   !harness.includes('execFileSync(binary, ["--version"]'),
   "OpenCode version probe bypasses Job pre-admission",
+);
+const processRecordSource = harness.slice(
+  harness.indexOf("function processRecord(pid)"),
+  harness.indexOf("async function jobRequest(action)"),
+);
+includesEvery(
+  processRecordSource,
+  [
+    '";`,',
+    '"if (-not $item) { exit 3 };",',
+    "-ErrorAction Stop;`",
+    '"$record = [ordered]@{",',
+    '"};",',
+    '"$record | ConvertTo-Json -Compress",',
+    '.join("\\r\\n")',
+  ],
+  "processRecord PowerShell statement boundaries",
+);
+assert(
+  !processRecordSource.includes('.join(" ")') &&
+    !processRecordSource.includes("[ordered]@{;"),
+  "processRecord still emits ambiguous PowerShell statement boundaries",
+);
+const evidenceCleanupSource = harness.slice(
+  harness.indexOf("for (const name of readdirSync(evidence))"),
+  harness.indexOf("rmSync(workRoot"),
+);
+includesEvery(
+  evidenceCleanupSource,
+  [
+    'name === "windows-actions-runner-identity.json"',
+    'name === "windows-runner-identity.json"',
+    "name.startsWith(\"windows-\") && !currentRunIdentity",
+  ],
+  "current-run identity evidence preserve allowlist",
 );
 assert(
   harness.match(/const windowsBase\s*=\s*\n?\s*"([^"]+)"/u)?.[1] ===
@@ -275,12 +315,18 @@ if (existsSync(workflowPath)) {
       "serviceImageIDAlive",
       "serviceImageReferenceAlive",
       "--rmi local",
+      "exit 0",
     ],
     ".github/workflows/opencode-windows-docker-e2e.yml",
   );
   assert(
     !/^\s*images\s*`\s*$[\s\S]{0,80}^\s*-q\s*`/mu.test(workflow),
     "workflow cleanup still uses compose images -q",
+  );
+  assert(
+    workflow.indexOf('if ($receipt.status -ne "PASS")') <
+      workflow.indexOf("exit 0"),
+    "workflow cleanup PASS does not explicitly exit zero after the fail-closed guard",
   );
 }
 
@@ -331,11 +377,14 @@ const result = {
     "Job membership and termination",
     "double-zero interval",
     "local provider cleanup receipt",
+    "valid PowerShell process observer statement boundaries",
+    "current-run runner identity evidence preserve allowlist",
     "runner and Docker identity receipt",
     "Compose image-reference resolution and ID/reference cleanup readback",
     "redacted evidence allowlist",
     "fail-closed result",
     "one-command scoped Windows cleanup and readback",
+    "explicit zero exit after Actions cleanup PASS",
   ],
   runtimeExecuted: false,
 };
