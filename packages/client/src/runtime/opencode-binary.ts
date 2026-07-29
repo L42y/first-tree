@@ -108,7 +108,34 @@ function openCodeExecutableCandidates(base: string, platform: NodeJS.Platform): 
 }
 
 export function parseOpenCodeVersionOutput(output: string): string | null {
-  return output.match(/\d+\.\d+(?:\.\d+)?/)?.[0] ?? null;
+  for (let start = 0; start < output.length; start++) {
+    if (!isAsciiDigit(output.charCodeAt(start))) continue;
+    let end = start;
+    while (end < output.length) {
+      const code = output.charCodeAt(end);
+      if (!isAsciiDigit(code) && code !== 46) break;
+      end++;
+    }
+    const candidate = output.slice(start, end);
+    const parts = candidate.split(".");
+    if ((parts.length === 2 || parts.length === 3) && parts.every(isBoundedNumericVersionPart)) {
+      return candidate;
+    }
+    start = end - 1;
+  }
+  return null;
+}
+
+function isAsciiDigit(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isBoundedNumericVersionPart(part: string): boolean {
+  if (part.length < 1 || part.length > 6) return false;
+  for (let index = 0; index < part.length; index++) {
+    if (!isAsciiDigit(part.charCodeAt(index))) return false;
+  }
+  return true;
 }
 
 function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean {

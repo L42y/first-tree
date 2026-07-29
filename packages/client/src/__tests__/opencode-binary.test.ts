@@ -65,5 +65,6 @@ describe("OpenCode binary resolution", () => {
   it("parses the exact version gate output without executing a binary", () => {
     expect(parseOpenCodeVersionOutput("opencode 1.18.7")).toBe("1.18.7");
     expect(parseOpenCodeVersionOutput("not-a-version")).toBeNull();
+    expect(parseOpenCodeVersionOutput(`${"0".repeat(100_000)}.x opencode 1.18.7`)).toBe("1.18.7");
   });
 });
