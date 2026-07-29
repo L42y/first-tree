@@ -356,8 +356,9 @@ export async function markGitlabSystemHookMergeRequestProcessed(
 
 /**
  * Record repository-scoped Reviewer readiness from a successfully processed
- * Project Hook MR. The canonical repository is compared with the live binding
- * at read time, so a later Context Tree rebind cannot reuse stale evidence.
+ * Project Hook MR. Context Tree setting mutations clear this evidence in the
+ * same transaction as every binding change, so returning to an earlier
+ * repository cannot reactivate an observation from a prior binding lifetime.
  */
 export async function markGitlabProjectHookContextTreeMergeRequestProcessed(
   db: Database,
