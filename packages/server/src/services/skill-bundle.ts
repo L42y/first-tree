@@ -146,7 +146,7 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   for (const entry of entries) {
     const targetPath = wrapper ? (entry.path === wrapper ? "" : entry.path.slice(rootPrefix.length)) : entry.path;
     if (!targetPath) continue;
-    const portableError = getPortableTeamSkillRelativePathError(targetPath);
+    const portableError = getPortableTeamSkillRelativePathError(targetPath, entry.kind);
     if (portableError) throw new BadRequestError(`Skill ZIP contains ${portableError}`);
     const firstSegment = targetPath.split("/", 1)[0] ?? "";
     if (foldPortableTeamSkillPath(firstSegment) === foldPortableTeamSkillPath(TEAM_SKILL_OWNERSHIP_MARKER)) {

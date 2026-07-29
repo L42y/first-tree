@@ -1,4 +1,4 @@
-import { parse as parseYaml } from "yaml";
+import { parseDocument } from "yaml";
 import { z } from "zod";
 
 export const SKILL_SOURCES = {
@@ -30,6 +30,11 @@ export const TEAM_SKILL_BUNDLE_LIMITS = {
   maxFiles: 256,
   maxEntries: 512,
   maxUncompressedBytes: 25 * 1024 * 1024,
+  // The installed tree adds First Tree's ownership marker and may rewrite the
+  // manifest name to its normalized/collision-safe target. Keep that bounded
+  // overhead inside the same portable contract used by Client digests.
+  maxMaterializedBytes: 25 * 1024 * 1024 + 64 * 1024,
+  maxMaterializedFiles: 257,
   maxSkillMarkdownBytes: 256 * 1024,
   maxDepth: 16,
   maxSegmentUtf8Bytes: 240,
@@ -112,7 +117,10 @@ export function getPortableTeamSkillSegmentError(segment: string): string | null
   return null;
 }
 
-export function getPortableTeamSkillRelativePathError(path: string): string | null {
+export function getPortableTeamSkillRelativePathError(
+  path: string,
+  kind: "file" | "directory" = "file",
+): string | null {
   const normalized = path.normalize("NFC");
   if (
     new TextEncoder().encode(path).byteLength > TEAM_SKILL_BUNDLE_LIMITS.maxRelativePathUtf8Bytes ||
@@ -123,7 +131,8 @@ export function getPortableTeamSkillRelativePathError(path: string): string | nu
     return `relative path exceeds portable length limits: ${path}`;
   }
   const segments = path.split("/");
-  if (segments.length - 1 > TEAM_SKILL_BUNDLE_LIMITS.maxDepth) {
+  const directoryDepth = kind === "directory" ? segments.length : segments.length - 1;
+  if (directoryDepth > TEAM_SKILL_BUNDLE_LIMITS.maxDepth) {
     return `relative path exceeds max directory depth ${TEAM_SKILL_BUNDLE_LIMITS.maxDepth}: ${path}`;
   }
   for (const segment of segments) {
@@ -174,7 +183,18 @@ export function parseStrictTeamSkillMarkdown(markdown: string): StrictTeamSkillM
   if (!match?.[1]) throw new Error("SKILL.md must contain YAML frontmatter");
   let parsed: unknown;
   try {
-    parsed = parseYaml(match[1]);
+    const document = parseDocument(match[1], {
+      strict: true,
+      stringKeys: true,
+      uniqueKeys: true,
+    });
+    if (document.errors.length > 0) {
+      throw document.errors[0] ?? new Error("unknown YAML parse error");
+    }
+    // Aliases can produce cyclic values or expand exponentially. Team Skill
+    // metadata is persisted as JSONB and must therefore be a finite JSON tree.
+    parsed = document.toJS({ json: true, maxAliasCount: 0 });
+    assertFiniteJsonValue(parsed);
   } catch (error) {
     throw new Error(`SKILL.md frontmatter is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -185,6 +205,35 @@ export function parseStrictTeamSkillMarkdown(markdown: string): StrictTeamSkillM
     frontmatter: parsed as Record<string, unknown>,
     body: markdown.slice(match[0].length),
   };
+}
+
+function assertFiniteJsonValue(value: unknown): void {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  let nodes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    nodes++;
+    if (nodes > 4_096) throw new Error("frontmatter exceeds the maximum JSON value count");
+    if (current.depth > 32) throw new Error("frontmatter exceeds the maximum JSON nesting depth");
+    if (current.value === null || typeof current.value === "string" || typeof current.value === "boolean") {
+      continue;
+    }
+    if (typeof current.value === "number") {
+      if (!Number.isFinite(current.value)) throw new Error("frontmatter numbers must be finite");
+      continue;
+    }
+    if (Array.isArray(current.value)) {
+      for (const item of current.value) stack.push({ value: item, depth: current.depth + 1 });
+      continue;
+    }
+    if (typeof current.value !== "object" || Object.getPrototypeOf(current.value) !== Object.prototype) {
+      throw new Error("frontmatter must contain only JSON-safe values");
+    }
+    for (const item of Object.values(current.value as Record<string, unknown>)) {
+      stack.push({ value: item, depth: current.depth + 1 });
+    }
+  }
 }
 
 function containsControlCharacter(value: string): boolean {

@@ -164,6 +164,16 @@ describe("Team Skill bundles", () => {
           [`${Array.from({ length: 18 }, (_, index) => `d${index}`).join("/")}/file.txt`]: strToU8("deep"),
         }),
     ],
+    [
+      "excessive empty-directory depth",
+      () =>
+        skillZip("deep-empty", {
+          [`${Array.from({ length: 17 }, (_, index) => `d${index}`).join("/")}/`]: [
+            new Uint8Array(),
+            { os: 3, attrs: 0o040755 << 16 },
+          ],
+        }),
+    ],
     ["Windows-reserved segment", () => skillZip("portable", { "references/CON/file.txt": strToU8("bad") })],
     ["Windows superscript-device segment", () => skillZip("portable", { "references/COM¹.txt": strToU8("bad") })],
     ["trailing-dot segment", () => skillZip("portable", { "references/bad./file.txt": strToU8("bad") })],
@@ -250,11 +260,26 @@ describe("Team Skill bundles", () => {
   it.each([
     ["non-exact closing delimiter", "---\nname: review\ndescription: Review\n---junk\nBody"],
     ["trim-dependent manifest name", '---\nname: " review "\ndescription: Review\n---\nBody'],
+    ["YAML alias metadata", "---\nname: review\ndescription: Review\nmetadata: &self\n  nested: *self\n---\nBody"],
   ])("rejects a %s before Resource configuration", async (_label, manifest) => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const bundleId = await upload(app, admin, rawZip({ "SKILL.md": strToU8(manifest) }));
     expect((await createSkill(app, admin, bundleId)).statusCode).toBe(400);
+  });
+
+  it("admits bundles whose safe projected files exceed the legacy digest limits", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const bundleId = await upload(
+      app,
+      admin,
+      skillZip("large-assets", {
+        "assets/single.bin": new Uint8Array(5 * 1024 * 1024),
+        "assets/remaining.bin": new Uint8Array(12 * 1024 * 1024),
+      }),
+    );
+    expect((await createSkill(app, admin, bundleId)).statusCode).toBe(201);
   });
 
   it.each([

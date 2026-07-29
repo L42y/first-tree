@@ -19,6 +19,7 @@ import { CORE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
 import {
   authoritativeTeamSkillSnapshot,
   type ManagedSkillsCheckpoint,
+  ManagedSkillsUnsafeDiscoveryError,
   providerSkillRoot,
   reconcileManagedSkills,
 } from "../runtime/managed-skills.js";
@@ -165,6 +166,29 @@ describe("managed Skill reconciler", () => {
       ["cursor", ".cursor/skills"],
       ["kimi-code", ".kimi-code/skills"],
     ]);
+  });
+
+  it("keeps every provider reconcile call on the unsafe-discovery throwing contract", () => {
+    const handlerSources = [
+      "src/handlers/claude-code.ts",
+      "src/handlers/claude-code-tui/index.ts",
+      "src/handlers/codex/sdk.ts",
+      "src/handlers/codex/app-server/index.ts",
+      "src/handlers/cursor/index.ts",
+      "src/handlers/kimi-code.ts",
+    ].map((path) => readFileSync(join(process.cwd(), path), "utf-8"));
+    expect(
+      handlerSources.reduce(
+        (count, source) => count + (source.match(/reconcileManagedSkillsForConfig\(/g)?.length ?? 0),
+        0,
+      ),
+    ).toBe(14);
+    expect(handlerSources.every((source) => !source.includes("reconcileManagedSkills({"))).toBe(true);
+    for (const source of [handlerSources[2] ?? "", handlerSources[3] ?? "", handlerSources[4] ?? ""]) {
+      expect(source).toContain("if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;");
+    }
+    expect(handlerSources[0]).toContain('failFatalSessionForRecovery(sessionCtx, "claude_config_restart_failed")');
+    expect(handlerSources[3]).toContain('retryBatch(batch, "codex_managed_skills_unsafe")');
   });
 
   it.each(PROVIDERS)("projects Core Skills only into the active %s discovery root", async (provider) => {
@@ -512,7 +536,7 @@ describe("managed Skill reconciler", () => {
       reason: "temporary attachment download failure",
     });
     expect(existsSync(installed)).toBe(false);
-    expect(runtimeEntries()).toHaveLength(quarantinesBeforeFailedRepair + 1);
+    expect(runtimeEntries()).toHaveLength(quarantinesBeforeFailedRepair);
 
     resolveError = null;
     const repaired = await reconcileManagedSkills({
@@ -524,6 +548,110 @@ describe("managed Skill reconciler", () => {
     });
     expect(repaired.installed).toContain("resource:resource-review");
     expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("two\n");
+  });
+
+  it("blocks provider preflight when an unverifiable target cannot be quarantined", async () => {
+    const bundle = makeSkillZip({ "scripts/run.sh": strToU8("#!/bin/sh\necho safe\n") });
+    const skill = bundleSkill(bundle);
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    const installed = target(workspace, "codex", "review");
+    rmSync(join(installed, "scripts", "run.sh"));
+    symlinkSync("../../SKILL.md", join(installed, "scripts", "run.sh"));
+
+    await expect(
+      reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+        bundledSkillsRoot,
+        bundleResolver: async () => {
+          throw new Error("download must not make an unsafe target runnable");
+        },
+        testFailureAt: "quarantine_rename",
+      }),
+    ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(existsSync(installed)).toBe(true);
+
+    const recovered = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    expect(recovered.installed).toContain("resource:resource-review");
+    expect(lstatSync(join(installed, "scripts", "run.sh")).isFile()).toBe(true);
+  });
+
+  it("blocks provider preflight when authoritative removal cannot leave discovery", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+
+    await expect(
+      reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
+        bundledSkillsRoot,
+        testFailureAt: "remove_target",
+      }),
+    ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(existsSync(installed)).toBe(true);
+
+    const removed = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
+      bundledSkillsRoot,
+    });
+    expect(removed.removed).toContain("resource:resource-review@.agents/skills/review");
+    expect(existsSync(installed)).toBe(false);
+  });
+
+  it("projects files above the legacy digest limits within the shared admission budget", async () => {
+    const bundle = makeSkillZip({
+      "assets/single.bin": new Uint8Array(5 * 1024 * 1024),
+      "assets/remaining.bin": new Uint8Array(12 * 1024 * 1024),
+    });
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+    expect(lstatSync(join(target(workspace, "codex", "review"), "assets", "single.bin")).size).toBe(5 * 1024 * 1024);
+  });
+
+  it.each([
+    ["Review", "review"],
+    ["my_skill", "my-skill"],
+  ])("aligns attachment manifest %s with target and briefing name %s", async (manifestName, effectiveName) => {
+    const bundle = makeSkillZip({}, { name: manifestName });
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [
+        bundleSkill(bundle, { name: manifestName, resourceId: `resource-${effectiveName}` }),
+      ]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+    expect(result.teamSkills).toContainEqual(expect.objectContaining({ name: effectiveName }));
+    const manifest = readFileSync(join(target(workspace, "codex", effectiveName), "SKILL.md"), "utf-8");
+    expect(manifest).toMatch(new RegExp(`^---\\nname: ${effectiveName}$`, "m"));
   });
 
   it("never invents an inline copy when a first bundle install cannot resolve", async () => {
@@ -634,6 +762,17 @@ describe("managed Skill reconciler", () => {
       () =>
         makeSkillZip({
           [`${Array.from({ length: 18 }, (_, index) => `d${index}`).join("/")}/deep.txt`]: strToU8("deep"),
+        }),
+      "directory depth",
+    ],
+    [
+      "excessive empty-directory depth",
+      () =>
+        makeSkillZip({
+          [`${Array.from({ length: 17 }, (_, index) => `d${index}`).join("/")}/`]: [
+            new Uint8Array(),
+            { os: 3, attrs: 0o040755 << 16 },
+          ],
         }),
       "directory depth",
     ],

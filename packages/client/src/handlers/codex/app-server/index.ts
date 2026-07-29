@@ -34,7 +34,11 @@ import type {
   TurnConsumedErrorReason,
 } from "../../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../../runtime/handler.js";
-import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../../runtime/managed-skills.js";
+import {
+  isManagedSkillsUnsafeDiscoveryError,
+  type ReconciledTeamSkill,
+  reconcileManagedSkillsForConfig,
+} from "../../../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../../runtime/provider-attempt.js";
 import {
   buildBriefingUpdateNotice,
@@ -1737,6 +1741,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       writeAgentBriefing(cwd, briefing);
       return { fingerprint, changed: true };
     } catch (err) {
+      if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;
       sessionCtx.log(
         `active-session briefing refresh failed, delivering under prior briefing: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -1761,7 +1766,15 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     if (!token) return;
     // Active-session hot-switch: pick up a mid-session briefing change before
     // this injected turn and surface the re-read notice.
-    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
+    let refreshed: { fingerprint: string; changed: boolean } | null;
+    try {
+      refreshed = await refreshBriefingForActiveTurn(sessionCtx);
+    } catch (error) {
+      if (!isManagedSkillsUnsafeDiscoveryError(error)) throw error;
+      retryBatch(batch, "codex_managed_skills_unsafe");
+      sessionCtx.log(`blocked provider turn: ${error.message}`);
+      return;
+    }
     if (refreshed?.changed && cwd) {
       const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
       pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;

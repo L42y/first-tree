@@ -41,7 +41,11 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
-import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
+import {
+  isManagedSkillsUnsafeDiscoveryError,
+  type ReconciledTeamSkill,
+  reconcileManagedSkillsForConfig,
+} from "../../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
 import {
@@ -1532,6 +1536,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       writeAgentBriefing(cwd, briefing);
       return { fingerprint, changed: true };
     } catch (err) {
+      if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;
       sessionCtx.log(
         `active-session briefing refresh failed, delivering under prior briefing: ${err instanceof Error ? err.message : String(err)}`,
       );

@@ -79,11 +79,13 @@ describe("portable Team Skill contract", () => {
 
   it("bounds normalized relative path depth and length", () => {
     const tooDeep = `${Array.from({ length: TEAM_SKILL_BUNDLE_LIMITS.maxDepth + 1 }, () => "d").join("/")}/x`;
+    const deepestEmptyDirectory = Array.from({ length: TEAM_SKILL_BUNDLE_LIMITS.maxDepth + 1 }, () => "d").join("/");
     const tooLong = `${Array.from({ length: 4 }, () => "a".repeat(200)).join("/")}/x`;
     const rawTooLong = Array.from({ length: 4 }, () => "e\u0301".repeat(80)).join("/");
     expect(getPortableTeamSkillRelativePathError(tooDeep)).toContain("depth");
     expect(getPortableTeamSkillRelativePathError(tooLong)).toContain("length");
     expect(getPortableTeamSkillRelativePathError(rawTooLong)).toContain("length");
+    expect(getPortableTeamSkillRelativePathError(deepestEmptyDirectory, "directory")).toContain("depth");
     expect(getPortableTeamSkillRelativePathError("references/guide.md")).toBeNull();
   });
 
@@ -98,5 +100,16 @@ describe("portable Team Skill contract", () => {
     expect(parseStrictTeamSkillMarkdown('---\nname: " review "\ndescription: Review\n---\n').frontmatter.name).toBe(
       " review ",
     );
+  });
+
+  it("rejects YAML aliases and non-finite metadata before JSON persistence", () => {
+    expect(() =>
+      parseStrictTeamSkillMarkdown(
+        "---\nname: review\ndescription: Review\nmetadata: &self\n  nested: *self\n---\nBody",
+      ),
+    ).toThrow(/alias|resource exhaustion/i);
+    expect(() =>
+      parseStrictTeamSkillMarkdown("---\nname: review\ndescription: Review\nmetadata:\n  score: .inf\n---\nBody"),
+    ).toThrow(/finite/i);
   });
 });

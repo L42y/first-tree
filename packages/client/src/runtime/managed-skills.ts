@@ -50,10 +50,10 @@ import { acquireWorkspaceFileLock, type WorkspaceFileLock } from "./workspace-fi
 
 const OWNERSHIP_MARKER = TEAM_SKILL_OWNERSHIP_MARKER;
 const LEGACY_RESOURCE_SKILLS_ROOT = ".first-tree/resources/skills";
-const MAX_SKILL_FILES = 512;
-const MAX_SKILL_TOTAL_BYTES = 16 * 1024 * 1024;
-const MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_SKILL_DEPTH = 16;
+const MAX_SKILL_FILES = TEAM_SKILL_BUNDLE_LIMITS.maxMaterializedFiles;
+const MAX_SKILL_TOTAL_BYTES = TEAM_SKILL_BUNDLE_LIMITS.maxMaterializedBytes;
+const MAX_SKILL_FILE_BYTES = TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes;
+const MAX_SKILL_DEPTH = TEAM_SKILL_BUNDLE_LIMITS.maxDepth;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 const MANAGED_SKILLS_QUARANTINE_PREFIX = ".managed-skill-quarantine-";
 
@@ -132,7 +132,9 @@ export type ManagedSkillsCheckpoint =
   | "target_backed_up"
   | "target_installed"
   | "state_committed"
-  | "backup_cleaned";
+  | "backup_cleaned"
+  | "quarantine_rename"
+  | "remove_target";
 
 export type TeamSkillBundleResolver = (bundle: RuntimeSkillBundle) => Promise<Buffer>;
 
@@ -198,7 +200,14 @@ type SkillTreeStats = {
 };
 
 class ManagedSkillsFatalError extends Error {}
+export class ManagedSkillsUnsafeDiscoveryError extends Error {
+  override readonly name = "ManagedSkillsUnsafeDiscoveryError";
+}
 class ManagedSkillsSimulatedCrash extends Error {}
+
+export function isManagedSkillsUnsafeDiscoveryError(error: unknown): error is ManagedSkillsUnsafeDiscoveryError {
+  return error instanceof ManagedSkillsUnsafeDiscoveryError;
+}
 
 const processMutexTails = new Map<string, Promise<void>>();
 
@@ -316,7 +325,7 @@ export async function reconcileManagedSkills(
               );
             }
             if (actualDigest !== current.installedDigest) {
-              await quarantineDriftedManagedTarget(options.workspace, current, options.log);
+              await quarantineDriftedManagedTarget(options, current);
             } else if (existing) {
               const expectedDigest =
                 allocated.desired.source.kind === "bundled-directory"
@@ -340,7 +349,13 @@ export async function reconcileManagedSkills(
           mutable.installed.push(staged.entry.key);
           successfulTargets.set(staged.entry.key, staged.entry.target);
         } catch (error) {
-          if (error instanceof ManagedSkillsSimulatedCrash || error instanceof ManagedSkillsFatalError) throw error;
+          if (
+            error instanceof ManagedSkillsSimulatedCrash ||
+            error instanceof ManagedSkillsFatalError ||
+            error instanceof ManagedSkillsUnsafeDiscoveryError
+          ) {
+            throw error;
+          }
           const reason = error instanceof Error ? error.message : String(error);
           mutable.failures.push({ key: desired.key, reason });
           options.log?.(`Managed skill reconcile failed (${desired.key}): ${reason.slice(0, 300)}`);
@@ -364,7 +379,14 @@ export async function reconcileManagedSkills(
           state = await removeManagedEntry(options, state, entry);
           mutable.removed.push(`${entry.key}@${entry.target}`);
         } catch (error) {
-          if (error instanceof ManagedSkillsSimulatedCrash || error instanceof ManagedSkillsFatalError) throw error;
+          if (error instanceof ManagedSkillsSimulatedCrash) throw error;
+          if (await managedTargetExistsAfterFailedRemoval(options.workspace, entry.target)) {
+            throw new ManagedSkillsUnsafeDiscoveryError(
+              `Managed Skill target ${entry.target} could not be removed from provider discovery`,
+              { cause: error },
+            );
+          }
+          if (error instanceof ManagedSkillsFatalError) throw error;
           const reason = error instanceof Error ? error.message : String(error);
           mutable.failures.push({ key: entry.key, reason: `cleanup ${entry.target}: ${reason}` });
           options.log?.(`Managed skill cleanup failed (${entry.key} at ${entry.target}): ${reason.slice(0, 300)}`);
@@ -376,6 +398,7 @@ export async function reconcileManagedSkills(
       }
       return freezeResult(state.resourceConfigVersion, mutable);
     } catch (error) {
+      if (error instanceof ManagedSkillsUnsafeDiscoveryError) throw error;
       const reason = error instanceof Error ? error.message : String(error);
       mutable.failures.push({ key: "workspace", reason });
       options.log?.(`Managed skills reconcile skipped: ${reason.slice(0, 300)}`);
@@ -861,16 +884,11 @@ async function stageManagedSkill(
         );
       }
       await extractSkillZip(bytes, stagingPath);
-      if (allocated.effectiveName !== allocated.desired.requestedSlug) {
-        await rewriteSkillManifestName(stagingPath, allocated.effectiveName);
-      }
+      await validateSkillManifest(stagingPath, allocated.desired.source.manifestName);
+      await rewriteSkillManifestName(stagingPath, allocated.effectiveName);
     }
     await writeOwnershipMarker(stagingPath, allocated.desired.key, allocated.desired.revision);
-    const expectedManifestName =
-      allocated.desired.source.kind === "attachment-zip" && allocated.effectiveName === allocated.desired.requestedSlug
-        ? allocated.desired.source.manifestName
-        : allocated.effectiveName;
-    const metadata = await validateSkillManifest(stagingPath, expectedManifestName);
+    const metadata = await validateSkillManifest(stagingPath, allocated.effectiveName);
     if (allocated.desired.kind === "core" && metadata.name !== allocated.desired.requestedSlug) {
       throw new Error(
         `bundled Core Skill manifest name "${metadata.name}" does not match "${allocated.desired.requestedSlug}"`,
@@ -896,16 +914,46 @@ async function stageManagedSkill(
 }
 
 async function quarantineDriftedManagedTarget(
-  workspace: string,
+  options: ReconcileManagedSkillsOptions,
   entry: ManagedSkillEntry,
-  log?: (message: string) => void,
 ): Promise<void> {
-  const targetPath = resolveWorkspacePath(workspace, entry.target, "target");
+  const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
   if (!(await pathExists(targetPath))) return;
-  const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${basename(entry.target)}-${randomBytes(12).toString("hex")}`;
-  const quarantinePath = resolveWorkspacePath(workspace, quarantine, "quarantine");
-  await rename(targetPath, quarantinePath);
-  log?.(`Managed skill quarantined unverified target ${entry.target}`);
+  const quarantineKey = createHash("sha256").update(entry.target).digest("hex").slice(0, 24);
+  const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${quarantineKey}`;
+  try {
+    const quarantinePath = resolveWorkspacePath(options.workspace, quarantine, "quarantine");
+    // One stable slot per ledger target prevents repeated drift from growing
+    // an unbounded quarantine set. A stale slot must be removed before reuse.
+    await rm(quarantinePath, { recursive: true, force: true });
+    maybeFault(options, "quarantine_rename");
+    await rename(targetPath, quarantinePath);
+    options.log?.(`Managed skill quarantined unverified target ${entry.target}`);
+    try {
+      await rm(quarantinePath, { recursive: true, force: true });
+    } catch (error) {
+      options.log?.(
+        `Managed skill quarantine cleanup deferred (${entry.target}): ${
+          error instanceof Error ? error.message.slice(0, 300) : String(error)
+        }`,
+      );
+    }
+  } catch (error) {
+    throw new ManagedSkillsUnsafeDiscoveryError(
+      `Managed Skill target ${entry.target} cannot be verified or quarantined outside provider discovery`,
+      { cause: error },
+    );
+  }
+}
+
+async function managedTargetExistsAfterFailedRemoval(workspace: string, target: string): Promise<boolean> {
+  try {
+    return await pathExists(resolveWorkspacePath(workspace, target, "target"));
+  } catch {
+    // An unsafe/unresolvable discovery path is not proof that the provider
+    // cannot see it, so provider preflight must fail closed.
+    return true;
+  }
 }
 
 async function installStagedSkill(
@@ -989,6 +1037,7 @@ async function removeManagedEntry(
   writeManagedSkillsJournal(options.workspace, journal);
   maybeFault(options, "prepared");
   try {
+    maybeFault(options, "remove_target");
     await rename(targetPath, backupPath);
     journal = writeJournalPhase(options.workspace, journal, "target_backed_up");
     maybeFault(options, "target_backed_up");
@@ -1413,7 +1462,7 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
       continue;
     }
     const segments = targetPath.split("/");
-    const portableError = getPortableTeamSkillRelativePathError(targetPath);
+    const portableError = getPortableTeamSkillRelativePathError(targetPath, entry.kind);
     if (portableError) {
       throw new Error(`Skill ZIP contains ${portableError}`);
     }
