@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
 import { agents } from "../db/schema/agents.js";
+import { attachments } from "../db/schema/attachments.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
@@ -1126,6 +1127,56 @@ describe("Resources Phase 1", () => {
       }),
     );
 
+    const resolved = await app.resourcesService.resolveRuntimeConfig(await app.configService.get(agent.uuid));
+    expect(resolved.payload.resourceSkills).toEqual([]);
+  });
+
+  it("fails closed when a ready bundle row has no readable payload", async () => {
+    const app = getApp();
+    const owner = await createOrgUser(app, "admin");
+    const agent = await createRuntimeAgent(app, owner);
+    const attachmentId = uuidv7();
+    await app.db.insert(attachments).values({
+      id: attachmentId,
+      organizationId: owner.organizationId,
+      objectKey: null,
+      lifecycleState: "ready",
+      mimeType: "application/zip",
+      filename: "missing-payload.zip",
+      sizeBytes: 128,
+      data: null,
+      uploadedBy: owner.humanAgentUuid,
+    });
+    const skillId = uuidv7();
+    await app.db.insert(resources).values({
+      id: skillId,
+      organizationId: owner.organizationId,
+      type: "skill",
+      scope: "team",
+      ownerAgentId: null,
+      name: "missing-payload",
+      repoCanonicalKey: null,
+      defaultEnabled: "recommended",
+      status: "active",
+      payload: {
+        name: "missing-payload",
+        description: "Must not project.",
+        body: "# Inline fallback must not appear",
+        metadata: {},
+      },
+      bundleAttachmentId: attachmentId,
+      createdBy: owner.memberId,
+      updatedBy: owner.memberId,
+    });
+
+    const effective = await app.resourcesService.resolveEffectiveResources(agent.uuid);
+    expect(effective.skills).toContainEqual(
+      expect.objectContaining({
+        resourceId: skillId,
+        mode: "unavailable",
+        unavailableReason: "skill_bundle_unavailable",
+      }),
+    );
     const resolved = await app.resourcesService.resolveRuntimeConfig(await app.configService.get(agent.uuid));
     expect(resolved.payload.resourceSkills).toEqual([]);
   });

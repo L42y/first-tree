@@ -21,6 +21,147 @@ export type SkillSource = z.infer<typeof skillSourceSchema>;
 export const SKILL_NAME_REGEX = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
+ * Static portability contract shared by Team Skill upload validation and
+ * Client materialization. A bundle admitted by the Server must fit every
+ * supported provider root before any attachment bytes reach an Agent.
+ */
+export const TEAM_SKILL_BUNDLE_LIMITS = {
+  maxFiles: 256,
+  maxEntries: 512,
+  maxUncompressedBytes: 25 * 1024 * 1024,
+  maxSkillMarkdownBytes: 256 * 1024,
+  maxDepth: 16,
+  maxSegmentUtf8Bytes: 240,
+  maxSegmentUtf16CodeUnits: 240,
+  maxRelativePathUtf8Bytes: 768,
+  maxRelativePathUtf16CodeUnits: 768,
+  maxTargetNameLength: 63,
+} as const;
+
+export const TEAM_SKILL_OWNERSHIP_MARKER = ".first-tree-managed.json";
+
+export const FIRST_TREE_CORE_SKILL_NAMES = [
+  "first-tree-welcome",
+  "first-tree-seed",
+  "first-tree-file-bug",
+  "first-tree-qa",
+  "first-tree-read",
+  "first-tree-write",
+  "context-tree-review",
+  "context-tree-audit",
+] as const;
+
+const RESERVED_CORE_SKILL_SLUGS = new Set<string>(FIRST_TREE_CORE_SKILL_NAMES);
+const WINDOWS_RESERVED_NAMES = new Set<string>([
+  "con",
+  "prn",
+  "aux",
+  "nul",
+  "com1",
+  "com2",
+  "com3",
+  "com4",
+  "com5",
+  "com6",
+  "com7",
+  "com8",
+  "com9",
+  "lpt1",
+  "lpt2",
+  "lpt3",
+  "lpt4",
+  "lpt5",
+  "lpt6",
+  "lpt7",
+  "lpt8",
+  "lpt9",
+]);
+
+export function foldPortableTeamSkillPath(path: string): string {
+  return path.normalize("NFC").toLocaleLowerCase("en-US");
+}
+
+export function getPortableTeamSkillSegmentError(segment: string): string | null {
+  if (
+    segment.length === 0 ||
+    segment === "." ||
+    segment === ".." ||
+    segment.includes("/") ||
+    segment.includes("\\") ||
+    containsControlCharacter(segment) ||
+    /[<>:"|?*]/u.test(segment) ||
+    segment.endsWith(".") ||
+    segment.endsWith(" ")
+  ) {
+    return `unsafe path segment: ${segment}`;
+  }
+  const normalized = segment.normalize("NFC");
+  if (
+    new TextEncoder().encode(normalized).byteLength > TEAM_SKILL_BUNDLE_LIMITS.maxSegmentUtf8Bytes ||
+    normalized.length > TEAM_SKILL_BUNDLE_LIMITS.maxSegmentUtf16CodeUnits
+  ) {
+    return `path segment exceeds portable length limits: ${segment}`;
+  }
+  const windowsBase = normalized.split(".", 1)[0]?.toLocaleLowerCase("en-US") ?? "";
+  if (WINDOWS_RESERVED_NAMES.has(windowsBase)) {
+    return `Windows-reserved path segment: ${segment}`;
+  }
+  return null;
+}
+
+export function getPortableTeamSkillRelativePathError(path: string): string | null {
+  const normalized = path.normalize("NFC");
+  if (
+    new TextEncoder().encode(normalized).byteLength > TEAM_SKILL_BUNDLE_LIMITS.maxRelativePathUtf8Bytes ||
+    normalized.length > TEAM_SKILL_BUNDLE_LIMITS.maxRelativePathUtf16CodeUnits
+  ) {
+    return `relative path exceeds portable length limits: ${path}`;
+  }
+  const segments = path.split("/");
+  if (segments.length - 1 > TEAM_SKILL_BUNDLE_LIMITS.maxDepth) {
+    return `relative path exceeds max directory depth ${TEAM_SKILL_BUNDLE_LIMITS.maxDepth}: ${path}`;
+  }
+  for (const segment of segments) {
+    const error = getPortableTeamSkillSegmentError(segment);
+    if (error) return error;
+  }
+  return null;
+}
+
+export function normalizeTeamSkillTargetSlug(input: string): string {
+  if (input.includes("/") || input.includes("\\") || containsControlCharacter(input)) {
+    throw new Error("Skill name contains a path separator or control character");
+  }
+  const slug = input
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (
+    slug.length === 0 ||
+    slug.length > TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength ||
+    !/^[a-z0-9][a-z0-9-]*$/.test(slug) ||
+    WINDOWS_RESERVED_NAMES.has(slug)
+  ) {
+    throw new Error(`Skill name "${input}" does not produce a portable target slug`);
+  }
+  if (RESERVED_CORE_SKILL_SLUGS.has(slug)) {
+    throw new Error(`Skill name "${input}" is reserved by First Tree`);
+  }
+  return slug;
+}
+
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
  * Descriptor for a single agent skill (a.k.a. slash command) discovered by
  * the client. Mirrors the YAML frontmatter of a `SKILL.md` file plus a
  * source tag so the web UI can group / annotate. The recipe is intentionally

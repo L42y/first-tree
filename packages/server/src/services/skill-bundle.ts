@@ -3,7 +3,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { SKILL_NAME_REGEX, type SkillResourcePayload, skillResourcePayloadSchema } from "@first-tree/shared";
+import {
+  foldPortableTeamSkillPath,
+  getPortableTeamSkillRelativePathError,
+  getPortableTeamSkillSegmentError,
+  normalizeTeamSkillTargetSlug,
+  SKILL_NAME_REGEX,
+  type SkillResourcePayload,
+  skillResourcePayloadSchema,
+  TEAM_SKILL_BUNDLE_LIMITS,
+  TEAM_SKILL_OWNERSHIP_MARKER,
+} from "@first-tree/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import { strToU8, zipSync } from "fflate";
 import matter from "gray-matter";
@@ -19,21 +29,6 @@ import {
   openAttachmentStream,
 } from "./attachment.js";
 import type { AttachmentBlobStore } from "./attachment-blob-store.js";
-
-const MAX_SKILL_FILES = 256;
-const MAX_SKILL_UNCOMPRESSED_BYTES = 25 * 1024 * 1024;
-const MAX_SKILL_MARKDOWN_BYTES = 256 * 1024;
-
-const RESERVED_SKILL_NAMES = new Set([
-  "first-tree-welcome",
-  "first-tree-seed",
-  "first-tree-file-bug",
-  "first-tree-qa",
-  "first-tree-read",
-  "first-tree-write",
-  "context-tree-review",
-  "context-tree-audit",
-]);
 
 export type ValidatedSkillBundle = {
   name: string;
@@ -74,14 +69,20 @@ export async function validateSkillBundle(
 async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   const zipFile = await openZip(path);
   const seenPaths = new Set<string>();
-  const files: string[] = [];
+  const entries: Array<{ path: string; kind: "directory" | "file" }> = [];
   const skillMarkdown = new Map<string, Buffer>();
+  let entryCount = 0;
+  let fileCount = 0;
   let totalUncompressed = 0;
 
   try {
     await forEachEntry(zipFile, async (entry) => {
       const normalized = validateEntryPath(entry.fileName);
-      const collisionKey = normalized.toLocaleLowerCase("en-US");
+      entryCount++;
+      if (entryCount > TEAM_SKILL_BUNDLE_LIMITS.maxEntries) {
+        throw new BadRequestError(`Skill ZIP cannot contain more than ${TEAM_SKILL_BUNDLE_LIMITS.maxEntries} entries`);
+      }
+      const collisionKey = foldPortableTeamSkillPath(normalized);
       if (seenPaths.has(collisionKey)) {
         throw new BadRequestError(`Skill ZIP contains a duplicate path: ${normalized}`);
       }
@@ -89,25 +90,33 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
       if ((entry.generalPurposeBitFlag & 0x1) !== 0) {
         throw new BadRequestError(`Skill ZIP contains an encrypted entry: ${normalized}`);
       }
-      if (isSymlink(entry)) {
-        throw new BadRequestError(`Skill ZIP cannot contain symlinks: ${normalized}`);
+      const kind = zipEntryKind(entry, normalized);
+      if (kind === "directory" && entry.uncompressedSize !== 0) {
+        throw new BadRequestError(`Skill ZIP directory entry contains data: ${normalized}`);
       }
-      if (entry.fileName.endsWith("/")) return;
+      entries.push({ path: normalized, kind });
+      if (kind === "directory") return;
 
-      files.push(normalized);
-      if (files.length > MAX_SKILL_FILES) {
-        throw new BadRequestError(`Skill ZIP cannot contain more than ${MAX_SKILL_FILES} files`);
+      fileCount++;
+      if (fileCount > TEAM_SKILL_BUNDLE_LIMITS.maxFiles) {
+        throw new BadRequestError(`Skill ZIP cannot contain more than ${TEAM_SKILL_BUNDLE_LIMITS.maxFiles} files`);
       }
       totalUncompressed += entry.uncompressedSize;
-      if (totalUncompressed > MAX_SKILL_UNCOMPRESSED_BYTES) {
-        throw new BadRequestError(`Skill ZIP exceeds ${MAX_SKILL_UNCOMPRESSED_BYTES} uncompressed bytes`);
+      if (totalUncompressed > TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes) {
+        throw new BadRequestError(
+          `Skill ZIP exceeds ${TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes} uncompressed bytes`,
+        );
       }
 
       const isSkillMarkdown = basename(normalized).toLocaleLowerCase("en-US") === "skill.md";
-      if (isSkillMarkdown && entry.uncompressedSize > MAX_SKILL_MARKDOWN_BYTES) {
-        throw new BadRequestError(`SKILL.md exceeds ${MAX_SKILL_MARKDOWN_BYTES} bytes`);
+      if (isSkillMarkdown && entry.uncompressedSize > TEAM_SKILL_BUNDLE_LIMITS.maxSkillMarkdownBytes) {
+        throw new BadRequestError(`SKILL.md exceeds ${TEAM_SKILL_BUNDLE_LIMITS.maxSkillMarkdownBytes} bytes`);
       }
-      const bytes = await readEntry(zipFile, entry, isSkillMarkdown ? MAX_SKILL_MARKDOWN_BYTES : 0);
+      const bytes = await readEntry(
+        zipFile,
+        entry,
+        isSkillMarkdown ? TEAM_SKILL_BUNDLE_LIMITS.maxSkillMarkdownBytes : 0,
+      );
       if (isSkillMarkdown) skillMarkdown.set(normalized, bytes);
     });
   } finally {
@@ -121,12 +130,41 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   if (!skillEntry) throw new BadRequestError("Skill ZIP must contain SKILL.md");
   const [skillPath, bytes] = skillEntry;
   const segments = skillPath.split("/");
-  if (segments.length > 2 || segments.at(-1)?.toLocaleLowerCase("en-US") !== "skill.md") {
+  if (segments.length > 2 || segments.at(-1) !== "SKILL.md") {
     throw new BadRequestError("SKILL.md must be at the ZIP root or inside one top-level directory");
   }
-  const rootPrefix = segments.length === 2 ? `${segments[0]}/` : "";
-  if (rootPrefix && files.some((file) => !file.startsWith(rootPrefix))) {
+  const wrapper = segments.length === 2 ? segments[0] : null;
+  const rootPrefix = wrapper ? `${wrapper}/` : "";
+  if (wrapper && entries.some((entry) => entry.path !== wrapper && !entry.path.startsWith(rootPrefix))) {
     throw new BadRequestError("A wrapped Skill ZIP cannot contain files outside its top-level directory");
+  }
+  if (wrapper && entries.some((entry) => entry.path === wrapper && entry.kind !== "directory")) {
+    throw new BadRequestError("A wrapped Skill ZIP anchor must be a directory");
+  }
+
+  const outputKinds = new Map<string, "directory" | "file">();
+  for (const entry of entries) {
+    const targetPath = wrapper ? (entry.path === wrapper ? "" : entry.path.slice(rootPrefix.length)) : entry.path;
+    if (!targetPath) continue;
+    const portableError = getPortableTeamSkillRelativePathError(targetPath);
+    if (portableError) throw new BadRequestError(`Skill ZIP contains ${portableError}`);
+    const firstSegment = targetPath.split("/", 1)[0] ?? "";
+    if (foldPortableTeamSkillPath(firstSegment) === foldPortableTeamSkillPath(TEAM_SKILL_OWNERSHIP_MARKER)) {
+      throw new BadRequestError(`Skill ZIP may not provide reserved file ${TEAM_SKILL_OWNERSHIP_MARKER}`);
+    }
+    const folded = foldPortableTeamSkillPath(targetPath);
+    if (outputKinds.has(folded)) {
+      throw new BadRequestError(`Skill ZIP contains a duplicate extracted path: ${targetPath}`);
+    }
+    outputKinds.set(folded, entry.kind);
+  }
+  for (const [path, kind] of outputKinds) {
+    if (kind !== "file") continue;
+    for (const candidate of outputKinds.keys()) {
+      if (candidate.startsWith(`${path}/`)) {
+        throw new BadRequestError(`Skill ZIP file is used as a directory: ${candidate}`);
+      }
+    }
   }
 
   let markdown: string;
@@ -147,8 +185,10 @@ async function inspectZip(path: string): Promise<ValidatedSkillBundle> {
   if (!name || name.length > 100 || !SKILL_NAME_REGEX.test(name)) {
     throw new BadRequestError("SKILL.md name must start with an alphanumeric and contain only letters, digits, _ or -");
   }
-  if (RESERVED_SKILL_NAMES.has(name.toLocaleLowerCase("en-US"))) {
-    throw new BadRequestError(`Skill name "${name}" is reserved by First Tree`);
+  try {
+    normalizeTeamSkillTargetSlug(name);
+  } catch (error) {
+    throw new BadRequestError(error instanceof Error ? error.message : "Skill name is not portable");
   }
   if (!description || description.length > 1_000) {
     throw new BadRequestError("SKILL.md description is required and must be at most 1000 characters");
@@ -183,14 +223,28 @@ function validateEntryPath(raw: string): string {
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     throw new BadRequestError(`Skill ZIP contains an unsafe path: ${raw}`);
   }
+  for (const segment of segments) {
+    const portableError = getPortableTeamSkillSegmentError(segment);
+    if (portableError) throw new BadRequestError(`Skill ZIP contains ${portableError}`);
+  }
   return withoutTrailingSlash;
 }
 
-function isSymlink(entry: Entry): boolean {
-  const madeByUnix = entry.versionMadeBy >>> 8 === 3;
-  if (!madeByUnix) return false;
-  const mode = entry.externalFileAttributes >>> 16;
-  return (mode & 0o170000) === 0o120000;
+function zipEntryKind(entry: Entry, normalizedPath: string): "directory" | "file" {
+  const unixMode = entry.versionMadeBy >>> 8 === 3 ? entry.externalFileAttributes >>> 16 : 0;
+  const unixType = unixMode & 0o170000;
+  if (unixType === 0o120000) throw new BadRequestError(`Skill ZIP cannot contain symlinks: ${normalizedPath}`);
+  if (unixType !== 0 && unixType !== 0o040000 && unixType !== 0o100000) {
+    throw new BadRequestError(`Skill ZIP cannot contain special files: ${normalizedPath}`);
+  }
+  const directory = entry.fileName.endsWith("/");
+  if (unixType === 0o040000 && !directory) {
+    throw new BadRequestError(`Skill ZIP directory entry must end with '/': ${normalizedPath}`);
+  }
+  if (unixType === 0o100000 && directory) {
+    throw new BadRequestError(`Skill ZIP regular file entry cannot end with '/': ${normalizedPath}`);
+  }
+  return directory || unixType === 0o040000 ? "directory" : "file";
 }
 
 function openZip(path: string): Promise<ZipFile> {
@@ -293,6 +347,12 @@ export async function backfillSkillResourceBundles(
   for (const row of rows) {
     const parsed = skillResourcePayloadSchema.safeParse(row.payload);
     if (!parsed.success) {
+      skipped++;
+      continue;
+    }
+    try {
+      normalizeTeamSkillTargetSlug(parsed.data.name);
+    } catch {
       skipped++;
       continue;
     }

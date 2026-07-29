@@ -1,21 +1,13 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { FIRST_TREE_CORE_SKILL_NAMES } from "@first-tree/shared";
 
 /**
  * The bundled First Tree Skill family. Runtime installation, update, provider
  * placement, migration, and cleanup are owned by `managed-skills.ts`.
  */
-export const CORE_SKILL_NAMES = [
-  "first-tree-welcome",
-  "first-tree-seed",
-  "first-tree-file-bug",
-  "first-tree-qa",
-  "first-tree-read",
-  "first-tree-write",
-  "context-tree-review",
-  "context-tree-audit",
-] as const;
+export const CORE_SKILL_NAMES = FIRST_TREE_CORE_SKILL_NAMES;
 
 export type CoreSkillName = (typeof CORE_SKILL_NAMES)[number];
 

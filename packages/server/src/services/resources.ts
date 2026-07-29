@@ -12,6 +12,7 @@ import {
   findAssembledBriefingFingerprint,
   type GitRepo,
   getRepoLocalPathSafetyError,
+  MAX_ATTACHMENT_BYTES,
   type NoSecretMcpServer,
   normalizeRepoLocalPath,
   noSecretMcpServerSchema,
@@ -748,12 +749,20 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         organizationId: attachments.organizationId,
         lifecycleState: attachments.lifecycleState,
         sizeBytes: attachments.sizeBytes,
+        payloadPresent: sql<boolean>`${attachments.data} is not null or ${attachments.objectKey} is not null`,
       })
       .from(attachments)
       .where(inArray(attachments.id, bundleIds));
     const ready = new Map(
       readyRows
-        .filter((row) => row.organizationId === organizationId && row.lifecycleState === "ready" && row.sizeBytes > 0)
+        .filter(
+          (row) =>
+            row.organizationId === organizationId &&
+            row.lifecycleState === "ready" &&
+            row.payloadPresent &&
+            row.sizeBytes > 0 &&
+            row.sizeBytes <= MAX_ATTACHMENT_BYTES,
+        )
         .map((row) => [
           row.id,
           {

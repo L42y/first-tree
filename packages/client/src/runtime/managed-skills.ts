@@ -16,7 +16,18 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { AgentRuntimeConfig, RuntimeProvider, RuntimeResourceSkill, RuntimeSkillBundle } from "@first-tree/shared";
+import {
+  type AgentRuntimeConfig,
+  foldPortableTeamSkillPath,
+  getPortableTeamSkillRelativePathError,
+  getPortableTeamSkillSegmentError,
+  normalizeTeamSkillTargetSlug,
+  type RuntimeProvider,
+  type RuntimeResourceSkill,
+  type RuntimeSkillBundle,
+  TEAM_SKILL_BUNDLE_LIMITS,
+  TEAM_SKILL_OWNERSHIP_MARKER,
+} from "@first-tree/shared";
 import { parseDocument, parse as parseYaml } from "yaml";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
 import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
@@ -36,17 +47,12 @@ import {
 } from "./managed-state.js";
 import { acquireWorkspaceFileLock, type WorkspaceFileLock } from "./workspace-file-lock.js";
 
-const OWNERSHIP_MARKER = ".first-tree-managed.json";
+const OWNERSHIP_MARKER = TEAM_SKILL_OWNERSHIP_MARKER;
 const LEGACY_RESOURCE_SKILLS_ROOT = ".first-tree/resources/skills";
 const MAX_SKILL_FILES = 512;
 const MAX_SKILL_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_SKILL_DEPTH = 16;
-const MAX_TEAM_ZIP_FILES = 256;
-const MAX_TEAM_ZIP_TOTAL_BYTES = 25 * 1024 * 1024;
-const MAX_TEAM_ZIP_FILE_BYTES = 25 * 1024 * 1024;
-const MAX_TEAM_ZIP_MARKDOWN_BYTES = 256 * 1024;
-const MAX_SKILL_NAME_LENGTH = 63;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 
 const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = {
@@ -61,7 +67,6 @@ const ALLOWED_TARGET_ROOTS = new Set<string>([...Object.values(PROVIDER_SKILL_RO
 
 const RETIRED_CORE_SKILL_NAMES = ["first-tree-guide", "first-tree-kickoff", "first-tree-gitlab"] as const;
 const ALL_KNOWN_CORE_SKILL_NAMES = [...CORE_SKILL_NAMES, ...RETIRED_CORE_SKILL_NAMES] as const;
-const RESERVED_CORE_SLUGS = new Set<string>(CORE_SKILL_NAMES);
 const WINDOWS_RESERVED_NAMES = new Set<string>([
   "con",
   "prn",
@@ -561,7 +566,7 @@ async function adoptLegacyResourceSkills(
     if (!digest) continue;
     let requestedSlug: string;
     try {
-      requestedSlug = normalizeRequestedSlug(skill.name);
+      requestedSlug = normalizeTeamSkillTargetSlug(skill.name);
     } catch {
       continue;
     }
@@ -648,10 +653,7 @@ async function buildDesiredSkills(
       continue;
     }
     try {
-      const requestedSlug = normalizeRequestedSlug(skill.name);
-      if (RESERVED_CORE_SLUGS.has(requestedSlug)) {
-        throw new Error(`Team Skill name "${skill.name}" is reserved by First Tree`);
-      }
+      const requestedSlug = normalizeTeamSkillTargetSlug(skill.name);
       desired.push({
         key,
         kind: "team",
@@ -1297,12 +1299,17 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
     }>
   > = [];
   const seenRawPaths = new Set<string>();
+  let entryCount = 0;
   let fileCount = 0;
   let totalBytes = 0;
   try {
     await forEachZipEntry(zipFile, async (entry) => {
       const normalizedPath = validateZipEntryPath(entry.fileName);
-      const folded = foldBundlePath(normalizedPath);
+      entryCount++;
+      if (entryCount > TEAM_SKILL_BUNDLE_LIMITS.maxEntries) {
+        throw new Error(`Skill ZIP exceeds max entry count ${TEAM_SKILL_BUNDLE_LIMITS.maxEntries}`);
+      }
+      const folded = foldPortableTeamSkillPath(normalizedPath);
       if (seenRawPaths.has(folded)) {
         throw new Error(`Skill ZIP contains a duplicate case-folded path: ${normalizedPath}`);
       }
@@ -1315,20 +1322,28 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
       if (!Number.isSafeInteger(size) || size < 0) {
         throw new Error(`Skill ZIP entry has an invalid size: ${normalizedPath}`);
       }
+      if (kind === "directory" && size !== 0) {
+        throw new Error(`Skill ZIP directory entry contains data: ${normalizedPath}`);
+      }
       if (kind === "file") {
         fileCount++;
         totalBytes += size;
-        if (fileCount > MAX_TEAM_ZIP_FILES) {
-          throw new Error(`Skill ZIP exceeds max file count ${MAX_TEAM_ZIP_FILES}`);
+        if (fileCount > TEAM_SKILL_BUNDLE_LIMITS.maxFiles) {
+          throw new Error(`Skill ZIP exceeds max file count ${TEAM_SKILL_BUNDLE_LIMITS.maxFiles}`);
         }
-        if (size > MAX_TEAM_ZIP_FILE_BYTES) {
-          throw new Error(`Skill ZIP file exceeds max size ${MAX_TEAM_ZIP_FILE_BYTES}: ${normalizedPath}`);
+        if (size > TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes) {
+          throw new Error(
+            `Skill ZIP file exceeds max size ${TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes}: ${normalizedPath}`,
+          );
         }
-        if (totalBytes > MAX_TEAM_ZIP_TOTAL_BYTES) {
-          throw new Error(`Skill ZIP exceeds max total bytes ${MAX_TEAM_ZIP_TOTAL_BYTES}`);
+        if (totalBytes > TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes) {
+          throw new Error(`Skill ZIP exceeds max total bytes ${TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes}`);
         }
-        if (basename(normalizedPath).toLocaleLowerCase("en-US") === "skill.md" && size > MAX_TEAM_ZIP_MARKDOWN_BYTES) {
-          throw new Error(`SKILL.md exceeds max size ${MAX_TEAM_ZIP_MARKDOWN_BYTES}`);
+        if (
+          basename(normalizedPath).toLocaleLowerCase("en-US") === "skill.md" &&
+          size > TEAM_SKILL_BUNDLE_LIMITS.maxSkillMarkdownBytes
+        ) {
+          throw new Error(`SKILL.md exceeds max size ${TEAM_SKILL_BUNDLE_LIMITS.maxSkillMarkdownBytes}`);
         }
       }
       rawEntries.push({
@@ -1362,6 +1377,9 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
   ) {
     throw new Error("A wrapped Skill ZIP cannot contain files outside its top-level directory");
   }
+  if (wrapper && rawEntries.some((entry) => entry.normalizedPath === wrapper && entry.kind !== "directory")) {
+    throw new Error("A wrapped Skill ZIP anchor must be a directory");
+  }
 
   const planned: ZipSkillEntry[] = [];
   const outputKinds = new Map<string, "directory" | "file">();
@@ -1376,18 +1394,14 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
       continue;
     }
     const segments = targetPath.split("/");
-    if (segments.length - 1 > MAX_SKILL_DEPTH) {
-      throw new Error(`Skill ZIP exceeds max directory depth ${MAX_SKILL_DEPTH}: ${targetPath}`);
+    const portableError = getPortableTeamSkillRelativePathError(targetPath);
+    if (portableError) {
+      throw new Error(`Skill ZIP contains ${portableError}`);
     }
-    for (const segment of segments) {
-      if (!isPortableBundleSegment(segment)) {
-        throw new Error(`Skill ZIP contains an unsafe path segment: ${segment}`);
-      }
-    }
-    if (segments.length === 1 && segments[0]?.toLocaleLowerCase("en-US") === OWNERSHIP_MARKER) {
+    if (foldPortableTeamSkillPath(segments[0] ?? "") === foldPortableTeamSkillPath(OWNERSHIP_MARKER)) {
       throw new Error(`Skill ZIP may not provide reserved file ${OWNERSHIP_MARKER}`);
     }
-    const folded = foldBundlePath(targetPath);
+    const folded = foldPortableTeamSkillPath(targetPath);
     if (outputKinds.has(folded)) {
       throw new Error(`Skill ZIP contains a duplicate extracted path: ${targetPath}`);
     }
@@ -1399,7 +1413,7 @@ async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
     if (!entry.targetPath) continue;
     const segments = entry.targetPath.split("/");
     for (let index = 1; index < segments.length; index++) {
-      const ancestor = foldBundlePath(segments.slice(0, index).join("/"));
+      const ancestor = foldPortableTeamSkillPath(segments.slice(0, index).join("/"));
       if (outputKinds.get(ancestor) === "file") {
         throw new Error(`Skill ZIP file is used as a directory: ${entry.targetPath}`);
       }
@@ -1420,11 +1434,11 @@ function validateZipEntryPath(raw: string): string {
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
     throw new Error(`Skill ZIP contains an unsafe path: ${raw}`);
   }
+  for (const segment of segments) {
+    const portableError = getPortableTeamSkillSegmentError(segment);
+    if (portableError) throw new Error(`Skill ZIP contains ${portableError}`);
+  }
   return normalized;
-}
-
-function foldBundlePath(path: string): string {
-  return path.normalize("NFC").toLocaleLowerCase("en-US");
 }
 
 function zipEntryKind(entry: Entry, normalizedPath: string): "directory" | "file" {
@@ -1510,7 +1524,7 @@ async function writeZipEntry(
     transform(chunk: Buffer | Uint8Array, _encoding, callback) {
       const size = Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.from(chunk).byteLength;
       measured += size;
-      if (measured > expectedSize || measured > MAX_TEAM_ZIP_FILE_BYTES) {
+      if (measured > expectedSize || measured > TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes) {
         callback(new Error(`Skill ZIP entry size is invalid: ${entry.fileName}`));
         return;
       }
@@ -1573,7 +1587,7 @@ async function copySanitizedDirectory(
       throw new Error(`Skill bundle contains a case-insensitive path collision at ${relativeDir || "."}`);
     }
     caseInsensitiveNames.add(folded);
-    if (!isPortableBundleSegment(entry.name)) {
+    if (getPortableTeamSkillSegmentError(entry.name)) {
       throw new Error(`Skill bundle contains an unsafe path segment: ${entry.name}`);
     }
     if (!relativeDir && entry.name === OWNERSHIP_MARKER) {
@@ -1602,24 +1616,6 @@ async function copySanitizedDirectory(
     await writeFile(destinationPath, content, { mode: entryStat.mode & 0o777 });
     await chmod(destinationPath, entryStat.mode & 0o777);
   }
-}
-
-function isPortableBundleSegment(name: string): boolean {
-  if (
-    name.length === 0 ||
-    name === "." ||
-    name === ".." ||
-    name.includes("/") ||
-    name.includes("\\") ||
-    containsControlCharacter(name) ||
-    /[<>:"|?*]/u.test(name) ||
-    name.endsWith(".") ||
-    name.endsWith(" ")
-  ) {
-    return false;
-  }
-  const windowsBase = name.split(".", 1)[0]?.toLocaleLowerCase("en-US") ?? "";
-  return !WINDOWS_RESERVED_NAMES.has(windowsBase);
 }
 
 async function digestManagedTarget(
@@ -1751,37 +1747,14 @@ async function hashDirectoryRecursive(
   }
 }
 
-function normalizeRequestedSlug(input: string): string {
-  if (input.includes("/") || input.includes("\\") || containsControlCharacter(input)) {
-    throw new Error("Skill name contains a path separator or control character");
-  }
-  const slug = input
-    .normalize("NFKC")
-    .trim()
-    .toLocaleLowerCase("en-US")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  if (!isSafeSkillName(slug)) throw new Error(`Skill name "${input}" does not produce a safe slug`);
-  return slug;
-}
-
-function containsControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index++) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
-}
-
 function isSafeSkillName(name: string): boolean {
-  if (name.length === 0 || name.length > MAX_SKILL_NAME_LENGTH) return false;
+  if (name.length === 0 || name.length > TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength) return false;
   if (name === "." || name === ".." || WINDOWS_RESERVED_NAMES.has(name.toLocaleLowerCase("en-US"))) return false;
   return /^[a-z0-9][a-z0-9-]*$/.test(name);
 }
 
 function suffixSkillName(base: string, suffix: string): string {
-  const trimmed = base.slice(0, MAX_SKILL_NAME_LENGTH - suffix.length).replace(/-+$/g, "");
+  const trimmed = base.slice(0, TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength - suffix.length).replace(/-+$/g, "");
   const result = `${trimmed}${suffix}`;
   if (!isSafeSkillName(result)) throw new Error(`cannot allocate safe suffixed Skill name for ${base}`);
   return result;

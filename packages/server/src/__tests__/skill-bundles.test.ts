@@ -1,7 +1,7 @@
 import { ATTACHMENT_FILENAME_HEADER, ATTACHMENT_MIME_HEADER } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { strToU8, zipSync } from "fflate";
+import { strToU8, type ZipOptions, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { attachments } from "../db/schema/attachments.js";
@@ -13,16 +13,24 @@ import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedAgentFactory, useTestApp } from "./helpers.js";
 
 type Admin = Awaited<ReturnType<typeof createTestAdmin>>;
+type TestZipEntry = Uint8Array | [Uint8Array, ZipOptions];
 
-function skillZip(name: string, entries: Record<string, Uint8Array> = {}, wrapper = ""): Buffer {
-  const prefix = wrapper ? `${wrapper}/` : "";
-  const markdown = `---\nname: ${name}\ndescription: ${name} description\nmetadata:\n  owner: platform\n---\n\n# ${name}\n\nRun carefully.`;
-  return Buffer.from(
-    zipSync({
-      [`${prefix}SKILL.md`]: strToU8(markdown),
-      ...entries,
-    }),
+function skillMarkdown(name: string): Uint8Array {
+  return strToU8(
+    `---\nname: ${name}\ndescription: ${name} description\nmetadata:\n  owner: platform\n---\n\n# ${name}\n\nRun carefully.`,
   );
+}
+
+function rawZip(entries: Record<string, TestZipEntry>): Buffer {
+  return Buffer.from(zipSync(entries));
+}
+
+function skillZip(name: string, entries: Record<string, TestZipEntry> = {}, wrapper = ""): Buffer {
+  const prefix = wrapper ? `${wrapper}/` : "";
+  return rawZip({
+    [`${prefix}SKILL.md`]: skillMarkdown(name),
+    ...entries,
+  });
 }
 
 async function upload(app: FastifyInstance, admin: Admin, bytes: Buffer, organizationId = admin.organizationId) {
@@ -145,6 +153,112 @@ describe("Team Skill bundles", () => {
       Buffer.from(zipSync({ "../SKILL.md": strToU8("---\nname: unsafe\ndescription: unsafe\n---\n") })),
     );
     expect((await createSkill(app, admin, unsafe)).statusCode).toBe(400);
+  });
+
+  it.each([
+    ["non-exact manifest filename", () => rawZip({ "skill.md": skillMarkdown("lowercase") })],
+    [
+      "excessive directory depth",
+      () =>
+        skillZip("deep", {
+          [`${Array.from({ length: 18 }, (_, index) => `d${index}`).join("/")}/file.txt`]: strToU8("deep"),
+        }),
+    ],
+    ["Windows-reserved segment", () => skillZip("portable", { "references/CON/file.txt": strToU8("bad") })],
+    ["trailing-dot segment", () => skillZip("portable", { "references/bad./file.txt": strToU8("bad") })],
+    [
+      "reserved ownership marker tree",
+      () => skillZip("portable", { ".first-tree-managed.json/child": strToU8("bad") }),
+    ],
+    [
+      "Unix special file",
+      () =>
+        skillZip("portable", {
+          "scripts/fifo": [new Uint8Array(), { os: 3, attrs: 0o010644 << 16 }],
+        }),
+    ],
+    [
+      "regular-file wrapper anchor",
+      () =>
+        rawZip({
+          wrapper: strToU8("not a directory"),
+          "wrapper/SKILL.md": skillMarkdown("wrapped"),
+        }),
+    ],
+    [
+      "Unicode-normalized path collision",
+      () =>
+        skillZip("portable", {
+          "assets/Café.bin": Uint8Array.from([1]),
+          "assets/Cafe\u0301.bin": Uint8Array.from([2]),
+        }),
+    ],
+    ["overlong path segment", () => skillZip("portable", { [`assets/${"a".repeat(241)}`]: strToU8("bad") })],
+    [
+      "overlong relative path",
+      () =>
+        skillZip("portable", {
+          [`${Array.from({ length: 4 }, () => "a".repeat(200)).join("/")}/file.txt`]: strToU8("bad"),
+        }),
+    ],
+    [
+      "excessive file count",
+      () =>
+        skillZip(
+          "too-many-files",
+          Object.fromEntries(
+            Array.from({ length: 256 }, (_, index) => [`assets/${index}.txt`, strToU8(String(index))]),
+          ),
+        ),
+    ],
+    [
+      "excessive entry count",
+      () =>
+        skillZip(
+          "too-many-entries",
+          Object.fromEntries(
+            Array.from({ length: 512 }, (_, index) => [
+              `empty/${index}/`,
+              [new Uint8Array(), { os: 3, attrs: 0o040755 << 16 }] as TestZipEntry,
+            ]),
+          ),
+        ),
+    ],
+    [
+      "excessive total uncompressed size",
+      () => skillZip("too-large", { "assets/large.bin": new Uint8Array(25 * 1024 * 1024 + 1) }),
+    ],
+  ])("rejects a %s bundle before Resource configuration", async (_label, build) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const bundleId = await upload(app, admin, build());
+    expect((await createSkill(app, admin, bundleId)).statusCode).toBe(400);
+  });
+
+  it.each([
+    "first_tree_read",
+    "first-tree-read-",
+    "CON",
+    "a".repeat(64),
+  ])("rejects manifest name %s when its normalized provider target is not portable", async (name) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const bundleId = await upload(app, admin, skillZip(name));
+    expect((await createSkill(app, admin, bundleId)).statusCode).toBe(400);
+  });
+
+  it("accepts owner-inaccessible uploaded modes because the Client normalizes them safely", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const bundleId = await upload(
+      app,
+      admin,
+      skillZip("mode-safe", {
+        "locked/": [new Uint8Array(), { os: 3, attrs: 0o040000 << 16 }],
+        "locked/run.sh": [strToU8("echo safe"), { os: 3, attrs: 0o100000 << 16 }],
+      }),
+    );
+    expect((await createSkill(app, admin, bundleId)).statusCode).toBe(201);
   });
 
   it("keeps an uploaded bundle orphaned on validation failure and sweeps it after 24 hours", async () => {

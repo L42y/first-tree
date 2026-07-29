@@ -372,6 +372,26 @@ describe("managed Skill reconciler", () => {
     expect(existsSync(join(installed, "review-skill"))).toBe(false);
   });
 
+  it("normalizes uploaded Unix modes so owner access is always usable and unsafe writes are removed", async () => {
+    const bundle = makeSkillZip({
+      "locked/": [new Uint8Array(), { os: 3, attrs: 0o040000 << 16 }],
+      "locked/run.sh": [strToU8("echo safe\n"), { os: 3, attrs: 0o100000 << 16 }],
+    });
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+
+    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+    const installed = target(workspace, "codex", "review");
+    expect(lstatSync(join(installed, "locked")).mode & 0o777).toBe(0o700);
+    expect(lstatSync(join(installed, "locked", "run.sh")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(installed, "locked", "run.sh"), "utf-8")).toBe("echo safe\n");
+  });
+
   it("rewrites only the manifest name for an allocated collision target", async () => {
     const userTarget = target(workspace, "codex", "review");
     mkdirSync(userTarget, { recursive: true });
@@ -526,10 +546,27 @@ describe("managed Skill reconciler", () => {
       "duplicate case-folded",
     ],
     [
+      "Unicode-normalized duplicate",
+      () =>
+        makeSkillZip({
+          "assets/Café.bin": Uint8Array.from([1]),
+          "assets/Cafe\u0301.bin": Uint8Array.from([2]),
+        }),
+      "duplicate case-folded",
+    ],
+    [
       "reserved ownership marker",
       () =>
         makeSkillZip({
           ".first-tree-managed.json": strToU8("{}"),
+        }),
+      "reserved",
+    ],
+    [
+      "reserved ownership marker tree",
+      () =>
+        makeSkillZip({
+          ".first-tree-managed.json/child": strToU8("{}"),
         }),
       "reserved",
     ],
@@ -567,6 +604,30 @@ describe("managed Skill reconciler", () => {
       "directory depth",
     ],
     [
+      "Windows-reserved segment",
+      () =>
+        makeSkillZip({
+          "references/CON/file.txt": strToU8("unsafe"),
+        }),
+      "Windows-reserved",
+    ],
+    [
+      "overlong segment",
+      () =>
+        makeSkillZip({
+          [`assets/${"a".repeat(241)}`]: strToU8("unsafe"),
+        }),
+      "portable length",
+    ],
+    [
+      "overlong relative path",
+      () =>
+        makeSkillZip({
+          [`${Array.from({ length: 4 }, () => "a".repeat(200)).join("/")}/file.txt`]: strToU8("unsafe"),
+        }),
+      "relative path exceeds portable length",
+    ],
+    [
       "excessive file count",
       () =>
         makeSkillZip(
@@ -575,6 +636,40 @@ describe("managed Skill reconciler", () => {
           ),
         ),
       "file count",
+    ],
+    [
+      "excessive entry count",
+      () =>
+        makeSkillZip(
+          Object.fromEntries(
+            Array.from({ length: 512 }, (_, index) => [
+              `empty/${index}/`,
+              [new Uint8Array(), { os: 3, attrs: 0o040755 << 16 }] as TestZipEntry,
+            ]),
+          ),
+        ),
+      "entry count",
+    ],
+    [
+      "regular-file wrapper anchor",
+      () =>
+        Buffer.from(
+          zipSync({
+            wrapper: strToU8("not a directory"),
+            "wrapper/SKILL.md": strToU8("---\nname: review\ndescription: review\n---\n"),
+          }),
+        ),
+      "anchor must be a directory",
+    ],
+    [
+      "non-exact manifest filename",
+      () =>
+        Buffer.from(
+          zipSync({
+            "skill.md": strToU8("---\nname: review\ndescription: review\n---\n"),
+          }),
+        ),
+      "root or inside one top-level directory",
     ],
     [
       "oversized expansion",

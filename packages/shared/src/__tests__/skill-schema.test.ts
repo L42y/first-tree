@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { skillDescriptorSchema } from "../schemas/skill.js";
+import {
+  foldPortableTeamSkillPath,
+  getPortableTeamSkillRelativePathError,
+  getPortableTeamSkillSegmentError,
+  normalizeTeamSkillTargetSlug,
+  skillDescriptorSchema,
+  TEAM_SKILL_BUNDLE_LIMITS,
+} from "../schemas/skill.js";
 
 describe("skillDescriptorSchema", () => {
   const baseValid = { name: "review", description: "Pre-landing PR review", source: "user" as const };
@@ -38,5 +45,33 @@ describe("skillDescriptorSchema", () => {
 
   it("rejects an empty name", () => {
     expect(() => skillDescriptorSchema.parse({ ...baseValid, name: "" })).toThrow();
+  });
+});
+
+describe("portable Team Skill contract", () => {
+  it("normalizes provider target slugs and rejects reserved or oversized results", () => {
+    expect(normalizeTeamSkillTargetSlug("Review_Check")).toBe("review-check");
+    for (const name of ["first_tree_read", "first-tree-read-", "CON", "a".repeat(64)]) {
+      expect(() => normalizeTeamSkillTargetSlug(name)).toThrow();
+    }
+  });
+
+  it("folds Unicode-equivalent paths before collision checks", () => {
+    expect(foldPortableTeamSkillPath("references/Café.md")).toBe(foldPortableTeamSkillPath("references/Cafe\u0301.md"));
+  });
+
+  it("rejects non-portable and overlong path components", () => {
+    for (const segment of ["CON", "trailing.", "trailing ", "bad:name", "a".repeat(241)]) {
+      expect(getPortableTeamSkillSegmentError(segment)).not.toBeNull();
+    }
+    expect(getPortableTeamSkillSegmentError("guide.md")).toBeNull();
+  });
+
+  it("bounds normalized relative path depth and length", () => {
+    const tooDeep = `${Array.from({ length: TEAM_SKILL_BUNDLE_LIMITS.maxDepth + 1 }, () => "d").join("/")}/x`;
+    const tooLong = `${Array.from({ length: 4 }, () => "a".repeat(200)).join("/")}/x`;
+    expect(getPortableTeamSkillRelativePathError(tooDeep)).toContain("depth");
+    expect(getPortableTeamSkillRelativePathError(tooLong)).toContain("length");
+    expect(getPortableTeamSkillRelativePathError("references/guide.md")).toBeNull();
   });
 });
