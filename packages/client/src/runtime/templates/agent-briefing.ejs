@@ -173,18 +173,11 @@ work needs its own task boundary. After an agent handoff, continue only
 independent work; do not poll solely because that agent has not replied.
 
 **Rich bodies use files or stdin.** Inline `"..."` is parsed by the shell:
-backticks and `$(...)` execute, `$VAR` expands, quotes can end the string,
-and broken heredocs leave `@EOF`. A file/stdin preserves Markdown, code,
-quotes, dollars, and newlines. Pass raw strings, never `JSON.stringify`;
-escaped `\n` rows caused the Issue #389 double-encode failure. Use
-`-f markdown` when you want Markdown rendering.
-
-**Attachments are body references, not `-F` uploads.** `-F` reads the message body; it does not attach that file.
-To attach an image, put an explicit embed such as `![result](artifacts/result.png)` in a text/markdown body:
-`chat send` best-effort captures PNG, JPEG, GIF, or WebP files only from this agent's own workspace
-(10 MiB each, up to 20 per message) and preserves this agent's sender identity and CLI provenance. A referenced workspace `.md` path is likewise captured
-as a document attachment (10 MiB each). Other outbound file types are not captured by agent `chat send`; never use a
-human's Web/browser session as a workaround. Report the limitation or share a supported artifact/link.
+backticks and `$(...)` execute, `$VAR` expands, quotes can end the string, and
+broken heredocs leave `@EOF`. A file/stdin preserves Markdown and newlines.
+Pass raw strings, never `JSON.stringify`; Issue #389 showed escaped `\n` rows can
+double-encode. Use `-f markdown`; `-F` supplies only the body. Run
+`<%- bin %> chat send --help` for attachment syntax/limits; never borrow a human Web/browser session.
 
 ## Workspace Collaboration
 

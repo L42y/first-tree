@@ -187,12 +187,12 @@ describe("buildAgentBriefing — generated skeleton", () => {
     );
 
     expect(lineCount(topLevelSection(briefing, "# Working in First Tree (First Tree Managed)"))).toBeLessThanOrEqual(
-      230,
+      220,
     );
     expect(briefing).not.toContain("# Required Reading (First Tree Managed)");
     expect(lineCount(topLevelSection(briefing, "# Context Tree (First Tree Managed)"))).toBeLessThanOrEqual(210);
     expect(lineCount(topLevelSection(briefing, "# Skills (First Tree Managed)"))).toBeLessThanOrEqual(20);
-    expect(lineCount(briefing)).toBeLessThanOrEqual(590);
+    expect(lineCount(briefing)).toBeLessThanOrEqual(580);
   });
 
   it("renders identity from visibility", () => {
@@ -506,21 +506,9 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
     expect(communication).toContain("@EOF");
     expect(communication).toContain("Issue #389");
     expect(communication).toMatch(/Use\s+`-f markdown`/);
-  });
-
-  it("explains agent-owned chat attachment capture and its format boundary", () => {
-    const briefing = buildAgentBriefing(makeOpts());
-    const communication = briefing.slice(briefing.indexOf("## Communication"));
-
-    expect(communication).toContain("Attachments are body references, not `-F` uploads");
-    expect(communication).toContain("it does not attach that file");
-    expect(communication).toContain("![result](artifacts/result.png)");
-    expect(communication).toContain("PNG, JPEG, GIF, or WebP files only from this agent's own workspace");
-    expect(communication).toContain("10 MiB each, up to 20 per message");
-    expect(communication).toContain("sender identity and CLI provenance");
-    expect(communication).toContain("referenced workspace `.md` path");
-    expect(communication).toContain("Other outbound file types are not captured");
-    expect(communication).toContain("never use a\nhuman's Web/browser session as a workaround");
+    expect(communication).toMatch(/`-F` supplies only\s+the body/);
+    expect(communication).toContain("chat send --help");
+    expect(communication).toContain("never borrow a human Web/browser session");
   });
 
   it("uses one channel-resolved binary name across prompt, chat, GitHub, and tree commands", () => {
