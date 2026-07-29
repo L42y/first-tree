@@ -13,7 +13,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { foldPortableTeamSkillPath, type RuntimeProvider, type RuntimeResourceSkill } from "@first-tree/shared";
+import {
+  foldPortableTeamSkillPath,
+  type RuntimeProvider,
+  type RuntimeResourceSkill,
+  type RuntimeSkillBundle,
+} from "@first-tree/shared";
 import { strToU8, type ZipOptions, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CORE_SKILL_NAMES } from "../runtime/first-tree-skills/installer.js";
@@ -524,6 +529,54 @@ describe("managed Skill reconciler", () => {
     expect(resolver).toHaveBeenCalledTimes(4);
   });
 
+  it("accepts Windows-synthesized write bits through a fresh install and clean LKG reconcile", async () => {
+    const bundle = makeSkillZip({
+      "scripts/run.sh": [strToU8("#!/bin/sh\necho safe\n"), { os: 3, attrs: 0o100644 << 16 }],
+    });
+    const resolver = vi.fn(async () => bundle);
+    const snapshot = authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]);
+    const installedResult = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+      testModePlatform: "win32",
+    });
+    expect(installedResult.installed).toContain("resource:resource-review");
+    const installed = target(workspace, "codex", "review");
+    chmodSync(installed, 0o777);
+    chmodSync(join(installed, "scripts", "run.sh"), 0o666);
+
+    const clean = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+      testModePlatform: "win32",
+    });
+    expect(clean.skipped).toContain("resource:resource-review");
+    expect(clean.installed).not.toContain("resource:resource-review");
+    expect(resolver).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates bundled Core nested directories with explicit owner-safe modes", async () => {
+    for (const name of CORE_SKILL_NAMES) {
+      chmodSync(join(bundledSkillsRoot, name, "references"), 0o777);
+    }
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+    for (const name of CORE_SKILL_NAMES) {
+      expect(lstatSync(join(target(workspace, "codex", name), "references")).mode & 0o777).toBe(0o700);
+    }
+  });
+
   it("rewrites only the manifest name for an allocated collision target", async () => {
     const userTarget = target(workspace, "codex", "review");
     mkdirSync(userTarget, { recursive: true });
@@ -656,6 +709,38 @@ describe("managed Skill reconciler", () => {
     expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("two\n");
   });
 
+  it("keeps repeated drift and repair quarantine storage bounded to the stable slot", async () => {
+    const bundle = makeSkillZip({ "assets/version.txt": strToU8("safe\n") });
+    const resolver = vi.fn(async () => bundle);
+    const snapshot = authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]);
+    const runtimeEntries = (): string[] =>
+      readdirSync(join(workspace, ".first-tree-workspace")).filter((name) =>
+        name.startsWith(".managed-skill-quarantine-"),
+      );
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: snapshot,
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    const installed = target(workspace, "codex", "review");
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      writeFileSync(join(installed, "assets", "version.txt"), `tampered ${attempt}\n`);
+      const repaired = await reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: snapshot,
+        bundledSkillsRoot,
+        bundleResolver: resolver,
+      });
+      expect(repaired.installed).toContain("resource:resource-review");
+      expect(readFileSync(join(installed, "assets", "version.txt"), "utf-8")).toBe("safe\n");
+      expect(runtimeEntries()).toHaveLength(0);
+    }
+  });
+
   it("blocks provider preflight when an unverifiable target cannot be quarantined", async () => {
     const bundle = makeSkillZip({ "scripts/run.sh": strToU8("#!/bin/sh\necho safe\n") });
     const skill = bundleSkill(bundle);
@@ -764,6 +849,82 @@ describe("managed Skill reconciler", () => {
       }),
     ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
     expect(existsSync(installed)).toBe(true);
+  });
+
+  it("quarantines Core drift introduced after the main loop at the universal publication gate", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "first-tree-read");
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+      testBeforePublication: () => {
+        writeFileSync(join(installed, "references", "guide.md"), "late Core tamper\n");
+      },
+    });
+
+    expect(result.failures).toContainEqual({
+      key: "core:first-tree-read",
+      reason: "managed Skill changed during final provider publication verification and was quarantined",
+    });
+    expect(result.skipped).not.toContain("core:first-tree-read");
+    expect(existsSync(installed)).toBe(false);
+  });
+
+  it("rechecks unavailable-snapshot Team LKG at publication and blocks when late drift cannot be quarantined", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+
+    await expect(
+      reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: { kind: "unavailable" },
+        bundledSkillsRoot,
+        testBeforePublication: () => {
+          writeFileSync(join(installed, "SKILL.md"), "late unavailable-snapshot tamper\n");
+        },
+        testFailureAt: "quarantine_rename",
+      }),
+    ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(existsSync(installed)).toBe(true);
+  });
+
+  it("quarantines unavailable-snapshot Team drift introduced only at the publication gate", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: { kind: "unavailable" },
+      bundledSkillsRoot,
+      testBeforePublication: () => {
+        writeFileSync(join(installed, "SKILL.md"), "late unavailable-snapshot tamper\n");
+      },
+    });
+    expect(result.failures).toContainEqual({
+      key: "resource:resource-review",
+      reason: "managed Skill changed during final provider publication verification and was quarantined",
+    });
+    expect(existsSync(installed)).toBe(false);
   });
 
   it("recovers after interruption immediately after quarantine leaves discovery", async () => {
@@ -920,6 +1081,96 @@ describe("managed Skill reconciler", () => {
     expect(manifest).toMatch(new RegExp(`^---\\nname: ${effectiveName}$`, "m"));
   });
 
+  it("rejects an attachment whose valid raw manifest name differs from its snapshot descriptor", async () => {
+    const bundle = makeSkillZip({}, { name: "different" });
+    const result = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle, { name: "review" })]),
+      bundledSkillsRoot,
+      bundleResolver: async () => bundle,
+    });
+
+    expect(result.failures).toContainEqual(
+      expect.objectContaining({
+        key: "resource:resource-review",
+        reason: expect.stringContaining('name "different" does not match effective name "review"'),
+      }),
+    );
+    expect(existsSync(target(workspace, "codex", "review"))).toBe(false);
+  });
+
+  it("never downgrades persisted attachment authority when an old Server omits the bundle descriptor", async () => {
+    const firstBundle = makeSkillZip({ "references/guide.md": strToU8("complete attachment\n") });
+    const replacementBundle = makeSkillZip(
+      { "references/guide.md": strToU8("replacement attachment\n") },
+      { name: "review" },
+    );
+    const resolver = vi.fn(async (bundle: RuntimeSkillBundle) =>
+      bundle.attachmentId === BUNDLE_ID_A ? firstBundle : replacementBundle,
+    );
+    const bundled = bundleSkill(firstBundle);
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundled]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    const installed = target(workspace, "codex", "review");
+    const installedRevision = readManagedState(workspace)?.skills.find(
+      (entry) => entry.key === "resource:resource-review",
+    )?.revision;
+    expect(installedRevision).toBe(`attachment:${BUNDLE_ID_A}:${firstBundle.byteLength}`);
+
+    const oldServerSkill = teamSkill({
+      name: "review",
+      body: "INLINE FALLBACK MUST NOT REPLACE THE BUNDLE",
+    });
+    for (const version of [1, 2]) {
+      const preserved = await reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(version, [oldServerSkill]),
+        bundledSkillsRoot,
+        bundleResolver: resolver,
+      });
+      expect(preserved.skipped).toContain("resource:resource-review");
+      expect(preserved.teamSkills).toContainEqual(
+        expect.objectContaining({
+          key: "resource:resource-review",
+          revision: installedRevision,
+        }),
+      );
+      expect(readFileSync(join(installed, "references", "guide.md"), "utf-8")).toBe("complete attachment\n");
+      expect(readFileSync(join(installed, "SKILL.md"), "utf-8")).not.toContain("INLINE FALLBACK");
+      expect(
+        readManagedState(workspace)?.skills.find((entry) => entry.key === "resource:resource-review")?.revision,
+      ).toBe(installedRevision);
+    }
+    expect(resolver).toHaveBeenCalledTimes(1);
+
+    const restored = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(3, [bundleSkill(replacementBundle, {}, BUNDLE_ID_B)]),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(restored.installed).toContain("resource:resource-review");
+    expect(readFileSync(join(installed, "references", "guide.md"), "utf-8")).toBe("replacement attachment\n");
+
+    const revoked = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(4, []),
+      bundledSkillsRoot,
+      bundleResolver: resolver,
+    });
+    expect(revoked.removed).toContain("resource:resource-review@.agents/skills/review");
+    expect(existsSync(installed)).toBe(false);
+  });
+
   it("never invents an inline copy when a first bundle install cannot resolve", async () => {
     const bundle = makeSkillZip();
     const result = await reconcileManagedSkills({
@@ -997,6 +1248,15 @@ describe("managed Skill reconciler", () => {
         makeSkillZip({
           "Straße/x.txt": strToU8("one"),
           "STRASSE/y.txt": strToU8("two"),
+        }),
+      "spelling collision",
+    ],
+    [
+      "uppercase sharp-S case-fold ancestor collision",
+      () =>
+        makeSkillZip({
+          "ẞ/x.txt": strToU8("one"),
+          "SS/y.txt": strToU8("two"),
         }),
       "spelling collision",
     ],
@@ -1258,7 +1518,7 @@ describe("managed Skill reconciler", () => {
     expect(existsSync(target(workspace, "codex", "skill-first-tree"))).toBe(true);
   });
 
-  it("repairs installed-tree drift containing expanded Unicode case-fold collisions", async () => {
+  it("repairs installed-tree drift containing uppercase sharp-S case-fold collisions", async () => {
     const skill = teamSkill();
     await reconcileManagedSkills({
       workspace,
@@ -1268,10 +1528,10 @@ describe("managed Skill reconciler", () => {
     });
     const installed = target(workspace, "codex", "review");
     const references = join(installed, "references");
-    mkdirSync(join(references, "ſkill"), { recursive: true });
-    writeFileSync(join(references, "ſkill", "long-s.txt"), "long s\n");
-    mkdirSync(join(references, "skill"), { recursive: true });
-    writeFileSync(join(references, "skill", "ascii-s.txt"), "ascii s\n");
+    mkdirSync(join(references, "ẞ"), { recursive: true });
+    writeFileSync(join(references, "ẞ", "sharp-s.txt"), "sharp s\n");
+    mkdirSync(join(references, "SS"), { recursive: true });
+    writeFileSync(join(references, "SS", "ascii-ss.txt"), "ascii ss\n");
     const preservedSpellings = readdirSync(references);
     const logs: string[] = [];
 
@@ -1285,13 +1545,13 @@ describe("managed Skill reconciler", () => {
 
     expect(repaired.installed).toContain("resource:resource-review");
     expect(existsSync(references)).toBe(false);
-    if (preservedSpellings.includes("ſkill") && preservedSpellings.includes("skill")) {
+    if (preservedSpellings.includes("ẞ") && preservedSpellings.includes("SS")) {
       expect(logs.some((message) => message.includes("case-insensitive path collision"))).toBe(true);
     } else {
       // Case-insensitive APFS merges the spellings before Node can enumerate
       // both; the shared key still proves the same collision contract used by
       // the digest path on case-sensitive hosts.
-      expect(foldPortableTeamSkillPath("ſkill")).toBe(foldPortableTeamSkillPath("skill"));
+      expect(foldPortableTeamSkillPath("ẞ")).toBe(foldPortableTeamSkillPath("SS"));
     }
   });
 
@@ -1514,6 +1774,55 @@ describe("managed Skill reconciler", () => {
       }),
     ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
     expect(existsSync(installed)).toBe(true);
+  });
+
+  it("blocks provider preflight when the existing discovery root cannot be enumerated before final verification", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+
+    await expect(
+      reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+        bundledSkillsRoot,
+        testFailureAt: "provider_root_read",
+      }),
+    ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(existsSync(target(workspace, "codex", "review"))).toBe(true);
+  });
+
+  it("blocks provider preflight when startup journal recovery hits an ordinary filesystem ambiguity", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+    const v2Root = writeCoreBundle(sandbox, "2.0.0", "journal-ambiguity");
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
+      bundledSkillsRoot: v2Root,
+      testCrashAt: "prepared",
+    });
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(true);
+
+    await expect(
+      reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
+        bundledSkillsRoot: v2Root,
+        testFailureAt: "journal_recovery",
+      }),
+    ).rejects.toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(existsSync(join(workspace, MANAGED_SKILLS_JOURNAL_REL))).toBe(true);
   });
 
   it.each([

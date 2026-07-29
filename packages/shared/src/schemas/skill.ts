@@ -84,12 +84,18 @@ const WINDOWS_RESERVED_NAMES = new Set<string>([
 ]);
 
 export function foldPortableTeamSkillPath(path: string): string {
-  // JavaScript has no native Unicode case-fold primitive. Uppercase followed
-  // by lowercase is a deterministic conservative key that also expands folds
-  // such as ß -> SS -> ss and normalizes final sigma variants. False-positive
-  // collisions are safer than admitting two paths that a supported
+  // JavaScript has no native Unicode case-fold primitive. Compatibility
+  // normalization followed by lower/upper/lower is a deterministic,
+  // conservative key that expands both lowercase and uppercase sharp-S
+  // variants (ß/ẞ -> SS -> ss), long-s, and final sigma variants. False
+  // positives are safer than admitting two paths that a supported
   // case-insensitive filesystem later merges.
-  return path.normalize("NFC").toLocaleUpperCase("en-US").toLocaleLowerCase("en-US").normalize("NFC");
+  return path
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .toLocaleUpperCase("en-US")
+    .toLocaleLowerCase("en-US")
+    .normalize("NFC");
 }
 
 /**
@@ -214,6 +220,9 @@ export function parseStrictTeamSkillMarkdown(markdown: string): StrictTeamSkillM
     });
     if (document.errors.length > 0) {
       throw document.errors[0] ?? new Error("unknown YAML parse error");
+    }
+    if (document.warnings.length > 0) {
+      throw document.warnings[0] ?? new Error("unknown YAML warning");
     }
     // Aliases can produce cyclic values or expand exponentially. Team Skill
     // metadata is persisted as JSONB and must therefore be a finite JSON tree.

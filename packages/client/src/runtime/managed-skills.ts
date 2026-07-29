@@ -47,7 +47,11 @@ import {
   writeManagedSkillsJournal,
   writeManagedState,
 } from "./managed-state.js";
-import { acquireWorkspaceFileLock, type WorkspaceFileLock } from "./workspace-file-lock.js";
+import {
+  acquireWorkspaceFileLock,
+  type WorkspaceFileLock,
+  WorkspaceFileLockTimeoutError,
+} from "./workspace-file-lock.js";
 
 const OWNERSHIP_MARKER = TEAM_SKILL_OWNERSHIP_MARKER;
 const LEGACY_RESOURCE_SKILLS_ROOT = ".first-tree/resources/skills";
@@ -136,7 +140,9 @@ export type ManagedSkillsCheckpoint =
   | "backup_cleaned"
   | "quarantine_rename"
   | "quarantine_moved"
-  | "remove_target";
+  | "remove_target"
+  | "journal_recovery"
+  | "provider_root_read";
 
 export type TeamSkillBundleResolver = (bundle: RuntimeSkillBundle) => Promise<Buffer>;
 
@@ -156,7 +162,11 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   testFailureAt?: ManagedSkillsCheckpoint;
   /** Forces the rollback path to preserve its journal and abort reconciliation. */
   testRecoveryFailure?: boolean;
-  /** Mutates test state immediately before the final provider-publication digest gate. */
+  /** Test-only platform override for the POSIX mode-safety gate. */
+  testModePlatform?: NodeJS.Platform;
+  /** Mutates test state immediately before the universal provider-publication digest gate. */
+  testBeforePublication?: () => void | Promise<void>;
+  /** @deprecated Use testBeforePublication. */
   testBeforeTeamRows?: () => void | Promise<void>;
 }>;
 
@@ -170,6 +180,7 @@ type DesiredManagedSkill = Readonly<{
   source:
     | Readonly<{ kind: "bundled-directory"; path: string }>
     | Readonly<{ kind: "inline-skill"; skill: RuntimeResourceSkill }>
+    | Readonly<{ kind: "preserved-attachment"; entry: ManagedSkillEntry }>
     | Readonly<{
         kind: "attachment-zip";
         bundle: RuntimeSkillBundle;
@@ -264,7 +275,7 @@ export async function reconcileManagedSkills(
     try {
       assertManagedWorkspaceRootsSafe(options.workspace);
       lock = await acquireWorkspaceLock(options);
-      await recoverPendingJournal(options.workspace, options.log);
+      await recoverPendingJournal(options);
       let state = await loadOrMigrateManagedState(options);
 
       const authoritative =
@@ -300,8 +311,8 @@ export async function reconcileManagedSkills(
         await verifyPreservedTeamTargets(options, state);
       }
 
-      const desiredSkills = await buildDesiredSkills(options, authoritative);
-      const allocations = await allocateTargets(options.workspace, options.provider, state, desiredSkills);
+      const desiredSkills = await buildDesiredSkills(options, state, authoritative);
+      const allocations = await allocateTargets(options, state, desiredSkills);
       const successfulTargets = new Map<ManagedSkillEntry["key"], string>();
       const desiredKeys = new Set<ManagedSkillEntry["key"]>(desiredSkills.map((skill) => skill.key));
 
@@ -323,7 +334,9 @@ export async function reconcileManagedSkills(
           if (current) {
             let actualDigest: `sha256:${string}` | null = null;
             try {
-              actualDigest = await digestManagedTarget(options.workspace, current.target);
+              actualDigest = await digestManagedTarget(options.workspace, current.target, {
+                modePlatform: options.testModePlatform,
+              });
             } catch (error) {
               options.log?.(
                 `Managed skill target cannot be verified (${current.key}): ${
@@ -340,8 +353,10 @@ export async function reconcileManagedSkills(
                       allocated.desired.source.path,
                       allocated.desired.key,
                       allocated.desired.revision,
+                      options.testModePlatform,
                     )
-                  : allocated.desired.source.kind === "inline-skill"
+                  : allocated.desired.source.kind === "inline-skill" ||
+                      allocated.desired.source.kind === "preserved-attachment"
                     ? existing.installedDigest
                     : actualDigest;
               if (expectedDigest === existing.installedDigest) {
@@ -400,25 +415,34 @@ export async function reconcileManagedSkills(
         }
       }
 
+      await (options.testBeforePublication ?? options.testBeforeTeamRows)?.();
+      const publication = await verifyLedgerTargetsForPublication(options, state);
+      for (const invalidated of publication.invalidated) {
+        mutable.installed = mutable.installed.filter((key) => key !== invalidated.key);
+        mutable.skipped = mutable.skipped.filter((key) => key !== invalidated.key);
+        mutable.failures.push({
+          key: invalidated.key,
+          reason: "managed Skill changed during final provider publication verification and was quarantined",
+        });
+      }
       if (authoritative && options.teamSnapshot.kind === "authoritative") {
-        await options.testBeforeTeamRows?.();
-        const publication = await buildReconciledTeamRows(options, state, desiredSkills, successfulTargets);
-        mutable.teamSkills = publication.rows;
-        for (const invalidated of publication.invalidated) {
-          mutable.installed = mutable.installed.filter((key) => key !== invalidated);
-          mutable.skipped = mutable.skipped.filter((key) => key !== invalidated);
-          mutable.failures.push({
-            key: invalidated,
-            reason: "managed Skill changed during final provider publication verification and was quarantined",
-          });
-        }
+        mutable.teamSkills = buildReconciledTeamRows(
+          state,
+          desiredSkills,
+          successfulTargets,
+          publication.verifiedTargets,
+        );
       }
       return freezeResult(state.resourceConfigVersion, mutable);
     } catch (error) {
       if (error instanceof ManagedSkillsUnsafeDiscoveryError) throw error;
-      if (error instanceof ManagedSkillsFatalError && (await providerDiscoveryMayContainManagedContent(options))) {
+      if (
+        !(error instanceof WorkspaceFileLockTimeoutError) &&
+        !(error instanceof ManagedSkillsSimulatedCrash) &&
+        (await providerDiscoveryMayContainManagedContent(options))
+      ) {
         throw new ManagedSkillsUnsafeDiscoveryError(
-          "Managed Skill state or transaction authority is unsafe while provider discovery may contain managed content",
+          "Managed Skill reconciliation did not reach verified publication while provider discovery may contain managed content",
           { cause: error },
         );
       }
@@ -651,6 +675,7 @@ function isSafeLegacyResourceId(resourceId: string): boolean {
 
 async function buildDesiredSkills(
   options: ReconcileManagedSkillsOptions,
+  state: ManagedState,
   authoritativeTeamSnapshot: boolean,
 ): Promise<DesiredManagedSkill[]> {
   let bundledRoot: string;
@@ -693,8 +718,13 @@ async function buildDesiredSkills(
   const emittedDuplicateIds = new Set<string>();
   for (const skill of sorted) {
     const key = `resource:${skill.resourceId}` as const;
-    const source = teamSkillSource(skill);
-    const revision = teamSkillRevision(skill);
+    const priorAttachment = !skill.bundle
+      ? state.skills.find((entry) => entry.key === key && entry.revision.startsWith("attachment:"))
+      : undefined;
+    const source: DesiredManagedSkill["source"] = priorAttachment
+      ? { kind: "preserved-attachment", entry: priorAttachment }
+      : teamSkillSource(skill);
+    const revision = priorAttachment?.revision ?? teamSkillRevision(skill);
     if ((resourceIdCounts.get(skill.resourceId) ?? 0) > 1) {
       if (!emittedDuplicateIds.has(skill.resourceId)) {
         emittedDuplicateIds.add(skill.resourceId);
@@ -712,7 +742,12 @@ async function buildDesiredSkills(
       continue;
     }
     try {
-      const requestedSlug = normalizeTeamSkillTargetSlug(skill.name);
+      const requestedSlug = priorAttachment?.requestedSlug ?? normalizeTeamSkillTargetSlug(skill.name);
+      if (priorAttachment) {
+        options.log?.(
+          `Managed Team Skill preserved attachment authority (${key}); current snapshot omitted its bundle descriptor`,
+        );
+      }
       desired.push({
         key,
         kind: "team",
@@ -741,15 +776,16 @@ async function buildDesiredSkills(
 }
 
 async function allocateTargets(
-  workspace: string,
-  provider: RuntimeProvider,
+  options: ReconcileManagedSkillsOptions,
   state: ManagedState,
   desired: readonly DesiredManagedSkill[],
 ): Promise<Map<ManagedSkillEntry["key"], AllocatedManagedSkill>> {
+  const { workspace, provider } = options;
   const root = providerSkillRoot(provider);
   const occupied = new Map<string, ManagedSkillEntry["key"] | "unmanaged">();
   const onDiskSpellings = new Map<string, string>();
   try {
+    maybeFault(options, "provider_root_read");
     for (const entry of await readdir(resolveWorkspacePath(workspace, root, "root"), { withFileTypes: true })) {
       const folded = foldPortableTeamSkillPath(entry.name);
       occupied.set(folded, "unmanaged");
@@ -896,6 +932,10 @@ async function stageManagedSkill(
       await copySanitizedSkillTree(allocated.desired.source.path, stagingPath);
     } else if (allocated.desired.source.kind === "inline-skill") {
       await writeInlineSkillTree(stagingPath, allocated);
+    } else if (allocated.desired.source.kind === "preserved-attachment") {
+      throw new Error(
+        `Team Skill bundle descriptor is unavailable for previously bundle-backed ${allocated.desired.key}`,
+      );
     } else {
       if (!options.bundleResolver) {
         throw new Error(`Team Skill bundle resolver is unavailable for ${allocated.desired.key}`);
@@ -918,7 +958,7 @@ async function stageManagedSkill(
         `bundled Core Skill manifest name "${metadata.name}" does not match "${allocated.desired.requestedSlug}"`,
       );
     }
-    const installedDigest = await digestDirectory(stagingPath);
+    const installedDigest = await digestDirectory(stagingPath, options.testModePlatform);
     return {
       allocated,
       staging,
@@ -997,7 +1037,9 @@ async function verifyPreservedTeamTargets(options: ReconcileManagedSkillsOptions
     if (!entry.key.startsWith("resource:") || !entry.target.startsWith(providerRoot)) continue;
     let actualDigest: `sha256:${string}` | null = null;
     try {
-      actualDigest = await digestManagedTarget(options.workspace, entry.target);
+      actualDigest = await digestManagedTarget(options.workspace, entry.target, {
+        modePlatform: options.testModePlatform,
+      });
     } catch (error) {
       options.log?.(
         `Preserved Team Skill target cannot be verified (${entry.key}): ${
@@ -1152,7 +1194,7 @@ async function recoverFailedTransaction(
     if (options.testRecoveryFailure) {
       throw new Error("simulated managed skills recovery failure");
     }
-    await recoverPendingJournal(options.workspace, options.log);
+    await recoverPendingJournal(options);
     const recovered = readManagedStateResult(options.workspace);
     if (recovered.kind !== "current") {
       throw new Error("managed state unavailable after transaction recovery");
@@ -1166,7 +1208,8 @@ async function recoverFailedTransaction(
   }
 }
 
-async function recoverPendingJournal(workspace: string, log?: (message: string) => void): Promise<void> {
+async function recoverPendingJournal(options: ReconcileManagedSkillsOptions): Promise<void> {
+  const { workspace, log } = options;
   const result = readManagedSkillsJournal(workspace);
   if (result.kind === "missing") return;
   if (result.kind === "future") {
@@ -1177,6 +1220,7 @@ async function recoverPendingJournal(workspace: string, log?: (message: string) 
   if (result.kind === "invalid") {
     throw new ManagedSkillsFatalError(`managed skills journal is invalid: ${result.reason}`);
   }
+  maybeFault(options, "journal_recovery");
   const journal = result.journal;
   assertManagedTarget(journal.target);
   if (journal.staging) assertTemporaryTarget(journal.staging, ".staging");
@@ -1198,7 +1242,9 @@ async function recoverPendingJournal(workspace: string, log?: (message: string) 
   const backupExists = backupPath ? await pathExists(backupPath) : false;
 
   if (journal.operation === "install") {
-    const actualDigest = targetExists ? await digestManagedTarget(workspace, journal.target) : null;
+    const actualDigest = targetExists
+      ? await digestManagedTarget(workspace, journal.target, { modePlatform: options.testModePlatform })
+      : null;
     if (actualDigest === journal.expectedInstalledDigest) {
       persistStateMonotonic(workspace, journal.afterState);
       if (stagingPath) await rm(stagingPath, { recursive: true, force: true });
@@ -1292,26 +1338,25 @@ function maybeFault(options: ReconcileManagedSkillsOptions, checkpoint: ManagedS
   }
 }
 
-async function buildReconciledTeamRows(
+async function verifyLedgerTargetsForPublication(
   options: ReconcileManagedSkillsOptions,
   state: ManagedState,
-  desired: readonly DesiredManagedSkill[],
-  successfulTargets: ReadonlyMap<ManagedSkillEntry["key"], string>,
-): Promise<Readonly<{ rows: ReconciledTeamSkill[]; invalidated: ManagedSkillEntry["key"][] }>> {
-  const rows: ReconciledTeamSkill[] = [];
-  const invalidated: ManagedSkillEntry["key"][] = [];
-  for (const skill of desired) {
-    if (skill.kind !== "team") continue;
-    const target = successfulTargets.get(skill.key);
-    if (!target) continue;
-    const entry = state.skills.find(
-      (candidate) =>
-        candidate.key === skill.key && candidate.target === target && candidate.revision === skill.revision,
-    );
-    if (!entry) continue;
+): Promise<
+  Readonly<{
+    verifiedTargets: ReadonlySet<string>;
+    invalidated: readonly ManagedSkillEntry[];
+  }>
+> {
+  const providerRoot = `${providerSkillRoot(options.provider)}/`;
+  const verifiedTargets = new Set<string>();
+  const invalidated: ManagedSkillEntry[] = [];
+  for (const entry of state.skills) {
+    if (!entry.target.startsWith(providerRoot)) continue;
     let actualDigest: `sha256:${string}` | null = null;
     try {
-      actualDigest = await digestManagedTarget(options.workspace, target);
+      actualDigest = await digestManagedTarget(options.workspace, entry.target, {
+        modePlatform: options.testModePlatform,
+      });
     } catch (error) {
       options.log?.(
         `Managed skill final publication target cannot be verified (${entry.key}): ${
@@ -1321,9 +1366,30 @@ async function buildReconciledTeamRows(
     }
     if (actualDigest !== entry.installedDigest) {
       await quarantineDriftedManagedTarget(options, entry);
-      invalidated.push(entry.key);
+      invalidated.push(entry);
       continue;
     }
+    verifiedTargets.add(entry.target);
+  }
+  return { verifiedTargets, invalidated };
+}
+
+function buildReconciledTeamRows(
+  state: ManagedState,
+  desired: readonly DesiredManagedSkill[],
+  successfulTargets: ReadonlyMap<ManagedSkillEntry["key"], string>,
+  verifiedTargets: ReadonlySet<string>,
+): ReconciledTeamSkill[] {
+  const rows: ReconciledTeamSkill[] = [];
+  for (const skill of desired) {
+    if (skill.kind !== "team") continue;
+    const target = successfulTargets.get(skill.key);
+    if (!target || !verifiedTargets.has(target)) continue;
+    const entry = state.skills.find(
+      (candidate) =>
+        candidate.key === skill.key && candidate.target === target && candidate.revision === skill.revision,
+    );
+    if (!entry) continue;
     rows.push({
       key: skill.key as `resource:${string}`,
       name: entry.effectiveName,
@@ -1333,7 +1399,7 @@ async function buildReconciledTeamRows(
       installedDigest: entry.installedDigest,
     });
   }
-  return { rows, invalidated };
+  return rows;
 }
 
 async function writeInlineSkillTree(stagingPath: string, allocated: AllocatedManagedSkill): Promise<void> {
@@ -1749,7 +1815,8 @@ async function copySanitizedDirectory(
   if (depth > MAX_SKILL_DEPTH) throw new Error(`Skill bundle exceeds max directory depth ${MAX_SKILL_DEPTH}`);
   const sourceDir = relativeDir ? join(sourceRoot, ...relativeDir.split("/")) : sourceRoot;
   const destinationDir = relativeDir ? join(destinationRoot, ...relativeDir.split("/")) : destinationRoot;
-  await mkdir(destinationDir, { recursive: true });
+  await mkdir(destinationDir, { recursive: true, mode: 0o700 });
+  await chmod(destinationDir, 0o700);
   const entries = (await readdir(sourceDir, { withFileTypes: true })).sort((left, right) =>
     left.name.localeCompare(right.name),
   );
@@ -1794,13 +1861,16 @@ async function copySanitizedDirectory(
 async function digestManagedTarget(
   workspace: string,
   target: string,
-  options?: Readonly<{ followExpectedLegacySymlink?: boolean }>,
+  options?: Readonly<{
+    followExpectedLegacySymlink?: boolean;
+    modePlatform?: NodeJS.Platform;
+  }>,
 ): Promise<`sha256:${string}` | null> {
   assertManagedTarget(target);
   const path = resolveWorkspacePath(workspace, target, "target");
   try {
     const targetStat = await lstat(path);
-    if (targetStat.isDirectory()) return await digestDirectory(path);
+    if (targetStat.isDirectory()) return await digestDirectory(path, options?.modePlatform);
     if (targetStat.isSymbolicLink() && options?.followExpectedLegacySymlink) {
       const linked = resolve(dirname(path), await readlink(path));
       const [workspaceRealPath, linkedRealPath] = await Promise.all([realpath(workspace), realpath(linked)]);
@@ -1809,7 +1879,7 @@ async function digestManagedTarget(
       }
       const linkedStat = await stat(linkedRealPath);
       if (!linkedStat.isDirectory()) return null;
-      return await digestDirectory(linkedRealPath);
+      return await digestDirectory(linkedRealPath, options?.modePlatform);
     }
     return null;
   } catch (error) {
@@ -1818,20 +1888,26 @@ async function digestManagedTarget(
   }
 }
 
-async function digestDirectoryIfPresent(path: string): Promise<`sha256:${string}` | null> {
+async function digestDirectoryIfPresent(
+  path: string,
+  modePlatform?: NodeJS.Platform,
+): Promise<`sha256:${string}` | null> {
   try {
     const pathStat = await lstat(path);
     if (!pathStat.isDirectory()) return null;
-    return await digestDirectory(path);
+    return await digestDirectory(path, modePlatform);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
 }
 
-async function digestDirectory(root: string): Promise<`sha256:${string}`> {
+async function digestDirectory(
+  root: string,
+  modePlatform: NodeJS.Platform = process.platform,
+): Promise<`sha256:${string}`> {
   const hash = createHash("sha256");
-  await hashDirectoryRecursive(root, "", hash, 0, { files: 0, bytes: 0 }, null);
+  await hashDirectoryRecursive(root, "", hash, 0, { files: 0, bytes: 0 }, null, modePlatform);
   return `sha256:${hash.digest("hex")}`;
 }
 
@@ -1839,6 +1915,7 @@ async function digestBundledFinalTree(
   root: string,
   key: ManagedSkillEntry["key"],
   revision: string,
+  modePlatform: NodeJS.Platform = process.platform,
 ): Promise<`sha256:${string}`> {
   const hash = createHash("sha256");
   await hashDirectoryRecursive(
@@ -1852,6 +1929,7 @@ async function digestBundledFinalTree(
       content: Buffer.from(ownershipMarkerContent(key, revision), "utf-8"),
       mode: 0o600,
     },
+    modePlatform,
   );
   return `sha256:${hash.digest("hex")}`;
 }
@@ -1863,12 +1941,13 @@ async function hashDirectoryRecursive(
   depth: number,
   treeStats: SkillTreeStats,
   virtualRootFile: Readonly<{ name: string; content: Buffer; mode: number }> | null,
+  modePlatform: NodeJS.Platform,
 ): Promise<void> {
   if (depth > MAX_SKILL_DEPTH) throw new Error(`Skill tree exceeds max directory depth ${MAX_SKILL_DEPTH}`);
   const directory = relativeDir ? join(root, ...relativeDir.split("/")) : root;
   const directoryStat = await lstat(directory);
   if (!directoryStat.isDirectory()) throw new Error(`Skill tree directory is not a directory: ${relativeDir || "."}`);
-  assertManagedTreeModeSafe(directoryStat.mode, "directory", relativeDir || ".");
+  assertManagedTreeModeSafe(directoryStat.mode, "directory", relativeDir || ".", modePlatform);
   const entries = await readdir(directory, { withFileTypes: true });
   const entryByName = new Map(entries.map((entry) => [entry.name, entry]));
   const names = entries.map((entry) => entry.name);
@@ -1883,7 +1962,7 @@ async function hashDirectoryRecursive(
     caseInsensitiveNames.add(folded);
     const relativePath = relativeDir ? `${relativeDir}/${name}` : name;
     if (!relativeDir && virtualRootFile?.name === name && !entryByName.has(name)) {
-      assertManagedTreeModeSafe(virtualRootFile.mode, "file", relativePath);
+      assertManagedTreeModeSafe(virtualRootFile.mode, "file", relativePath, modePlatform);
       treeStats.files++;
       treeStats.bytes += virtualRootFile.content.byteLength;
       if (
@@ -1905,11 +1984,11 @@ async function hashDirectoryRecursive(
     if (entryStat.isSymbolicLink()) throw new Error(`Skill tree symlinks are not allowed: ${relativePath}`);
     if (entryStat.isDirectory()) {
       hash.update(`directory\0${relativePath}\0`);
-      await hashDirectoryRecursive(root, relativePath, hash, depth + 1, treeStats, virtualRootFile);
+      await hashDirectoryRecursive(root, relativePath, hash, depth + 1, treeStats, virtualRootFile, modePlatform);
       continue;
     }
     if (!entryStat.isFile()) throw new Error(`Skill tree special files are not allowed: ${relativePath}`);
-    assertManagedTreeModeSafe(entryStat.mode, "file", relativePath);
+    assertManagedTreeModeSafe(entryStat.mode, "file", relativePath, modePlatform);
     treeStats.files++;
     treeStats.bytes += entryStat.size;
     if (
@@ -1925,8 +2004,13 @@ async function hashDirectoryRecursive(
   }
 }
 
-function assertManagedTreeModeSafe(mode: number, kind: "directory" | "file", relativePath: string): void {
-  if (hasUnsafeManagedWriteMode(mode)) {
+function assertManagedTreeModeSafe(
+  mode: number,
+  kind: "directory" | "file",
+  relativePath: string,
+  platform: NodeJS.Platform,
+): void {
+  if (hasUnsafeManagedWriteMode(mode, platform)) {
     throw new Error(`Skill tree ${kind} has unsafe group/other write permissions: ${relativePath}`);
   }
 }

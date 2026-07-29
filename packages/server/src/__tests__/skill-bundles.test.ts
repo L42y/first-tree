@@ -220,6 +220,14 @@ describe("Team Skill bundles", () => {
           "STRASSE/y.txt": strToU8("two"),
         }),
     ],
+    [
+      "uppercase sharp-S case-fold ancestor collision",
+      () =>
+        skillZip("portable", {
+          "ẞ/x.txt": strToU8("one"),
+          "SS/y.txt": strToU8("two"),
+        }),
+    ],
     ["overlong path segment", () => skillZip("portable", { [`assets/${"a".repeat(241)}`]: strToU8("bad") })],
     [
       "raw overlong Unicode path segment",
@@ -280,6 +288,15 @@ describe("Team Skill bundles", () => {
     ["NaN metadata", "---\nname: review\ndescription: Review\nmetadata:\n  score: .nan\n---\nBody"],
     ["infinite metadata", "---\nname: review\ndescription: Review\nmetadata:\n  score: .inf\n---\nBody"],
     ["binary metadata", "---\nname: review\ndescription: Review\nmetadata:\n  payload: !!binary SGVsbG8=\n---\nBody"],
+    ["set metadata", "---\nname: review\ndescription: Review\nmetadata:\n  choices: !!set\n    one: null\n---\nBody"],
+    [
+      "ordered-map metadata",
+      "---\nname: review\ndescription: Review\nmetadata:\n  pairs: !!omap\n    - one: 1\n---\nBody",
+    ],
+    [
+      "unresolved-tag metadata",
+      "---\nname: review\ndescription: Review\nmetadata:\n  custom: !first-tree value\n---\nBody",
+    ],
   ])("rejects a %s before Resource configuration", async (_label, manifest) => {
     const app = getApp();
     const admin = await createTestAdmin(app);

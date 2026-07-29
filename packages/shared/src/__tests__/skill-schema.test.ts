@@ -60,6 +60,8 @@ describe("portable Team Skill contract", () => {
 
   it("folds Unicode-equivalent paths before collision checks", () => {
     expect(foldPortableTeamSkillPath("references/Café.md")).toBe(foldPortableTeamSkillPath("references/Cafe\u0301.md"));
+    expect(foldPortableTeamSkillPath("ẞ")).toBe(foldPortableTeamSkillPath("SS"));
+    expect(foldPortableTeamSkillPath("ſkill")).toBe(foldPortableTeamSkillPath("skill"));
   });
 
   it("detects portable spelling collisions in implicit ancestors", () => {
@@ -74,6 +76,10 @@ describe("portable Team Skill contract", () => {
     const expandedFoldCanonical = new Map<string, string>();
     expect(recordPortableTeamSkillPath(expandedFoldCanonical, "Straße/x.txt")).toBeNull();
     expect(recordPortableTeamSkillPath(expandedFoldCanonical, "STRASSE/y.txt")).toContain("spelling collision");
+
+    const uppercaseSharpSCanonical = new Map<string, string>();
+    expect(recordPortableTeamSkillPath(uppercaseSharpSCanonical, "ẞ/x.txt")).toBeNull();
+    expect(recordPortableTeamSkillPath(uppercaseSharpSCanonical, "SS/y.txt")).toContain("spelling collision");
   });
 
   it("rejects non-portable and overlong path components", () => {
@@ -131,5 +137,20 @@ describe("portable Team Skill contract", () => {
         "---\nname: review\ndescription: Review\nmetadata:\n  payload: !!binary SGVsbG8=\n---\nBody",
       ),
     ).toThrow(/JSON-safe/i);
+    expect(() =>
+      parseStrictTeamSkillMarkdown(
+        "---\nname: review\ndescription: Review\nmetadata:\n  choices: !!set\n    one: null\n---\nBody",
+      ),
+    ).toThrow(/JSON-safe/i);
+    expect(() =>
+      parseStrictTeamSkillMarkdown(
+        "---\nname: review\ndescription: Review\nmetadata:\n  pairs: !!omap\n    - one: 1\n---\nBody",
+      ),
+    ).toThrow(/JSON-safe/i);
+    expect(() =>
+      parseStrictTeamSkillMarkdown(
+        "---\nname: review\ndescription: Review\nmetadata:\n  custom: !first-tree value\n---\nBody",
+      ),
+    ).toThrow(/tag|warning/i);
   });
 });
