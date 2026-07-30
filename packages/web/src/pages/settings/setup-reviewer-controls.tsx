@@ -27,6 +27,7 @@ export function SetupReviewerControls({
   assignReviewer = putContextReviewerAssignment,
   setReviewerEnabled = putContextReviewerEnablement,
   refreshFacts,
+  label = "Automatic review",
 }: {
   review: SetupAutomaticReview;
   embedded?: boolean;
@@ -34,6 +35,7 @@ export function SetupReviewerControls({
   assignReviewer?: (organizationId: string, agentUuid: string | null) => Promise<OrgContextTreeFeaturesOutput>;
   setReviewerEnabled?: (organizationId: string, enabled: boolean) => Promise<OrgContextTreeFeaturesOutput>;
   refreshFacts?: (organizationId: string) => Promise<void>;
+  label?: string;
 }) {
   const { organizationId, role } = useAuth();
   const queryClient = useQueryClient();
@@ -132,7 +134,7 @@ export function SetupReviewerControls({
       <div className="flex items-center justify-between" style={{ gap: "var(--sp-3)" }}>
         <div className="min-w-0">
           <span id={switchLabelId} className="text-body font-medium" style={{ color: "var(--fg)" }}>
-            Automatic review
+            {label}
           </span>
           <div className="text-label" style={{ marginTop: "var(--sp-0_5)", color: "var(--fg-3)" }}>
             {selectedLabel && !selectedCandidate
@@ -141,7 +143,7 @@ export function SetupReviewerControls({
                 ? enabled
                   ? "Reviews eligible Context Tree pull requests and merge requests as webhook events arrive."
                   : "Reviewer selection retained while Automatic review is off."
-                : "Choose an existing eligible Team Agent. Setup never creates one."}
+                : "Choose an existing eligible Team Agent."}
           </div>
         </div>
         <Switch
@@ -189,7 +191,7 @@ export function SetupReviewerControls({
             searchable={candidates.length > 6}
           />
           <div className="text-caption" style={{ color: "var(--fg-4)" }}>
-            Changing the assignment turns Automatic Review off. Re-enable it separately after confirming the selected
+            Changing the assignment turns automatic review off. Re-enable it separately after confirming the selected
             Agent.
           </div>
         </div>

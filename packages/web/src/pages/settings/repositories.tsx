@@ -8,8 +8,8 @@ const CONTEXT_TREE_HASH = "#context-tree";
 
 /**
  * Settings → Repositories is the provider-neutral catalog of code available to
- * agents. Context Tree binding and Automatic Review owner controls live in the
- * canonical Settings → Setup surface.
+ * agents. Context Tree binding and Automatic Review live in the dedicated
+ * Settings → Context Tree surface.
  */
 export function SettingsRepositoriesPage() {
   const { role } = useAuth();
@@ -27,7 +27,7 @@ export function SettingsRepositoriesPage() {
   }, [location.hash, role]);
 
   if (location.hash === CONTEXT_TREE_HASH) {
-    return <Navigate to="/settings/setup#context-tree" replace />;
+    return <Navigate to="/settings/context#binding" replace />;
   }
 
   if (role === null) {

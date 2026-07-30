@@ -192,7 +192,7 @@ export async function preflightContextTreeWriteAuthority(
       "Automatic Review is not configured for the selected Team.",
       {
         message: "Ask a Team Admin to assign and enable a Context Reviewer.",
-        settingsUrl: "/settings/setup#automatic-review",
+        settingsUrl: "/settings/context#automatic-review",
       },
     );
   }
@@ -203,7 +203,7 @@ export async function preflightContextTreeWriteAuthority(
       "Automatic Review is disabled for the selected Team.",
       {
         message: "Ask a Team Admin to enable Automatic Review.",
-        settingsUrl: "/settings/setup#automatic-review",
+        settingsUrl: "/settings/context#automatic-review",
       },
     );
   }
@@ -222,7 +222,7 @@ export async function preflightContextTreeWriteAuthority(
       "Automatic Review prerequisites are incomplete for the selected Team.",
       {
         message: "Ask a Team Admin to repair the assigned Reviewer Agent, Computer, or provider.",
-        settingsUrl: "/settings/setup#automatic-review",
+        settingsUrl: "/settings/context#automatic-review",
       },
     );
   }
@@ -233,7 +233,7 @@ export async function preflightContextTreeWriteAuthority(
       "The selected Team's Reviewer is configured but currently offline or degraded.",
       {
         message: "Restore the Reviewer Computer and Agent, then retry this Write preflight.",
-        settingsUrl: "/settings/setup#automatic-review",
+        settingsUrl: "/settings/context#automatic-review",
       },
     );
   }

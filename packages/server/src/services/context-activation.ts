@@ -13,7 +13,7 @@ import { getOrgContextTreeSettingState } from "./org-settings.js";
 import { getOrganization } from "./organization.js";
 
 const REPOSITORIES_SETTINGS_URL = "/settings/repositories#code-repositories";
-const SETUP_SETTINGS_URL = "/settings/setup#context-tree";
+const CONTEXT_TREE_SETTINGS_URL = "/settings/context#binding";
 
 export async function validateExternalContextActivation(
   db: Database,
@@ -114,7 +114,7 @@ function needsAdmin(
     reasonCode,
     nextAction: {
       message,
-      settingsUrl: SETUP_SETTINGS_URL,
+      settingsUrl: CONTEXT_TREE_SETTINGS_URL,
     },
   };
 }

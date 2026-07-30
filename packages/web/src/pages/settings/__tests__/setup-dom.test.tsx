@@ -4,9 +4,10 @@ import type { TeamSetupCapabilities } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../../api/client.js";
+import { SettingsContextTreePage } from "../context-tree.js";
 import { buildSetupRows, SettingsSetupPage, type SetupFacts, SetupOverview } from "../setup.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -174,8 +175,13 @@ async function renderSettingsSetupPage(initialEntry = "/") {
     root.render(
       <MemoryRouter initialEntries={[initialEntry]}>
         <QueryClientProvider client={queryClient}>
-          <SettingsSetupPage />
           <LocationProbe />
+          <Routes>
+            <Route path="/" element={<SettingsSetupPage />} />
+            <Route path="/settings/setup" element={<SettingsSetupPage />} />
+            <Route path="/settings/context" element={<SettingsContextTreePage />} />
+            <Route path="/settings/integrations/github" element={<div>GitHub settings</div>} />
+          </Routes>
         </QueryClientProvider>
       </MemoryRouter>,
     );
@@ -225,16 +231,12 @@ async function waitForText(host: ParentNode, expected: string, timeoutMs = 3000)
 
 async function openContextTreeControls(view: Awaited<ReturnType<typeof renderSettingsSetupPage>>) {
   const tree = await waitForRowText(view.host, "context-tree", "Available");
-  const manage = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
-    (button) => button.textContent === "Manage",
-  );
+  const manage = tree.querySelector<HTMLAnchorElement>('a[href="/settings/context"]');
   await act(async () => manage?.click());
-  const controls = await waitForSelector<HTMLElement>(tree, '[data-setup-owner-controls="context-tree"]');
-  const reviewerControls = await waitForSelector<HTMLElement>(
-    controls,
-    '[data-setup-owner-controls="automatic-review"]',
-  );
-  return { tree, manage, controls, reviewerControls };
+  const page = await waitForSelector<HTMLElement>(view.host, '[data-context-tree-settings="admin"]');
+  const controls = await waitForSelector<HTMLElement>(page, '[data-setup-owner-controls="context-tree"]');
+  const reviewerControls = await waitForSelector<HTMLElement>(page, '[data-setup-owner-controls="automatic-review"]');
+  return { tree, manage, page, controls, reviewerControls };
 }
 
 beforeEach(() => {
@@ -439,7 +441,7 @@ describe("Settings Setup overview", () => {
     expect(rowFor("agent", input).status.detail).toBe("Optional while a team agent is available");
     expect(view.host.textContent).not.toContain("Action required");
     expect(view.host.textContent).not.toContain("Manage");
-    expect(rowFor("context-tree", input).action).toBeUndefined();
+    expect(rowFor("context-tree", input).action).toEqual({ label: "View", to: "/settings/context" });
     expect(view.host.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
 
     await act(async () => view.root.unmount());
@@ -620,9 +622,8 @@ describe("Settings Setup overview", () => {
     });
     expect(rowFor("repository-automation", memberFacts).action).toBeUndefined();
     expect(rowFor("context-tree", memberFacts).action).toEqual({
-      label: "Access",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      label: "View",
+      to: "/context",
     });
   });
 
@@ -735,9 +736,8 @@ describe("Settings Setup overview", () => {
     }
     expect(admin.action?.label).toBe("Manage");
     expect(member.action).toEqual({
-      label: "Access",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      label: "View",
+      to: "/context",
     });
   });
 
@@ -791,21 +791,19 @@ describe("Settings Setup overview", () => {
     expect(unbound.status).toEqual({ label: "Not set up", detail: "Optional", kind: "optional" });
     expect(unbound.action).toEqual({
       label: "Set up",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      to: "/settings/context#binding",
     });
     expect(unboundMember.status).toMatchObject({ label: "Not set up", kind: "optional" });
     expect(unboundMember.status.detail).toContain("Ask an admin");
-    expect(unboundMember.action).toBeUndefined();
+    expect(unboundMember.action).toEqual({ label: "View", to: "/settings/context" });
     expect(invalidAdmin.status).toMatchObject({ label: "Needs repair", kind: "attention" });
     expect(invalidAdmin.action).toEqual({
       label: "Repair",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      to: "/settings/context#binding",
     });
     expect(invalidMember.status).toMatchObject({ label: "Unavailable", kind: "blocked" });
     expect(invalidMember.status.detail).toContain("Ask an admin");
-    expect(invalidMember.action).toEqual({ label: "View", to: "/context" });
+    expect(invalidMember.action).toEqual({ label: "View", to: "/settings/context" });
   });
 
   it("keeps Team recovery read-only while preserving Member personal Context access", () => {
@@ -820,9 +818,8 @@ describe("Settings Setup overview", () => {
     expect(row.status).toMatchObject({ label: "Unavailable", kind: "blocked" });
     expect(row.status.detail).toContain("Ask an admin to recover");
     expect(row.action).toEqual({
-      label: "Access",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      label: "View",
+      to: "/context",
     });
   });
 
@@ -832,8 +829,7 @@ describe("Settings Setup overview", () => {
     expect(row.status).toMatchObject({ label: "Status unknown", kind: "unknown" });
     expect(row.action).toEqual({
       label: "Manage",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      to: "/settings/context",
     });
   });
 
@@ -933,9 +929,8 @@ describe("Settings Setup overview", () => {
     expect(member.status.detail).toContain("Ask an admin to resolve this: The configured reviewer is missing.");
     expect(member.status.detail).toContain("Context Tree available");
     expect(member.action).toEqual({
-      label: "Access",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      label: "View",
+      to: "/context",
     });
   });
 
@@ -951,26 +946,22 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("opens Context Tree and Reviewer owner controls only for an Admin", async () => {
+  it("routes an Admin from the Setup summary to Context Tree owner controls", async () => {
     const view = await renderSettingsSetupPage();
     const tree = await waitForRowText(view.host, "context-tree", "Available");
-    const manage = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Manage",
-    );
+    const manage = tree.querySelector<HTMLAnchorElement>('a[href="/settings/context"]');
 
-    expect(manage?.getAttribute("aria-expanded")).toBe("false");
+    expect(tree.querySelector("[data-setup-owner-controls]")).toBeNull();
     const { controls, reviewerControls } = await openContextTreeControls(view);
-    expect(manage?.getAttribute("aria-expanded")).toBe("true");
-    expect(controls.textContent).toContain("acme/context-tree · main branch · github");
+    expect(view.host.querySelector("[data-location]")?.textContent).toBe("/settings/context");
+    expect(controls.textContent).toContain("acme/context-tree · main branch · GitHub");
     expect(orgSettingsMocks.getRawContextTreeSetting).toHaveBeenCalledWith("org-1");
     await waitForSelector(reviewerControls, '[aria-label="Automatic review Agent"]');
     expect(reviewerControls.textContent).toContain("Context Reviewer");
     expect(reviewerControls.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
     expect(reviewerMocks.getContextReviewerCandidates).toHaveBeenCalledWith("org-1");
 
-    await act(async () => manage?.click());
-    expect(manage?.getAttribute("aria-expanded")).toBe("false");
-    expect(view.host.querySelector('[data-setup-owner-controls="context-tree"]')).toBeNull();
+    expect(manage?.textContent).toBe("Manage");
 
     await act(async () => view.root.unmount());
   });
@@ -995,8 +986,8 @@ describe("Settings Setup overview", () => {
 
     const view = await renderSettingsSetupPage();
     expect(view.host.querySelector("#context-access")).toBeNull();
-    const { controls } = await openContextTreeControls(view);
-    const personalAccess = await waitForSelector<HTMLElement>(controls, "[data-setup-personal-access]");
+    const { page } = await openContextTreeControls(view);
+    const personalAccess = await waitForSelector<HTMLElement>(page, "[data-setup-personal-access]");
 
     expect(personalAccess.textContent).toContain("Use with Claude Code or Codex");
     expect(personalAccess.textContent).toContain(
@@ -1033,7 +1024,7 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("lets a Member expand personal Context access without loading Admin Tree or Reviewer controls", async () => {
+  it("lets a Member use personal Context access without loading Admin Tree or Reviewer controls", async () => {
     authMock.value = { ...authMock.value, role: "member" };
     resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
       {
@@ -1052,25 +1043,15 @@ describe("Settings Setup overview", () => {
       }),
     );
 
-    const view = await renderSettingsSetupPage();
-    const tree = await waitForRowText(view.host, "context-tree", "Available");
-    const access = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Access",
-    );
-    expect(access?.getAttribute("aria-expanded")).toBe("false");
-
-    await act(async () => access?.click());
-    const controls = await waitForSelector<HTMLElement>(tree, '[data-setup-owner-controls="context-tree"]');
-    const personalAccess = await waitForSelector<HTMLElement>(controls, "[data-setup-personal-access]");
-    const openContext = [...controls.querySelectorAll<HTMLAnchorElement>("a")].find(
-      (link) => link.textContent === "Open Context →",
-    );
+    const view = await renderSettingsSetupPage("/settings/context");
+    const page = await waitForSelector<HTMLElement>(view.host, '[data-context-tree-settings="member"]');
+    const personalAccess = await waitForSelector<HTMLElement>(page, "[data-setup-personal-access]");
     expect(personalAccess.textContent).toContain("Use with Claude Code or Codex");
     expect(personalAccess.textContent).toContain("Copy setup prompt");
     expect(personalAccess.textContent).toContain("Preview prompt");
-    expect(openContext?.getAttribute("href")).toBe("/context");
-    expect(controls.querySelector('[data-setup-owner-controls="automatic-review"]')).toBeNull();
-    expect(controls.querySelector('[role="switch"]')).toBeNull();
+    expect(page.querySelector<HTMLAnchorElement>('a[href="/context"]')?.textContent).toContain("Open Context");
+    expect(page.querySelector("[data-setup-owner-controls]")).toBeNull();
+    expect(page.querySelector('[role="switch"]')).toBeNull();
     expect(reviewerMocks.getContextReviewerCandidates).not.toHaveBeenCalled();
     expect(orgSettingsMocks.getRawContextTreeSetting).not.toHaveBeenCalled();
 
@@ -1101,13 +1082,7 @@ describe("Settings Setup overview", () => {
 
   it("keeps the binding editor open and reflects the saved Server response immediately", async () => {
     const view = await renderSettingsSetupPage();
-    const tree = await waitForRowText(view.host, "context-tree", "Available");
-    const manage = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Manage",
-    );
-
-    await act(async () => manage?.click());
-    const controls = await waitForSelector<HTMLElement>(tree, '[data-setup-owner-controls="context-tree"]');
+    const { controls } = await openContextTreeControls(view);
     const edit = [...controls.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Change repository or branch",
     );
@@ -1165,12 +1140,7 @@ describe("Settings Setup overview", () => {
     );
 
     const view = await renderSettingsSetupPage();
-    const tree = await waitForRowText(view.host, "context-tree", "Available");
-    const manage = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Manage",
-    );
-    await act(async () => manage?.click());
-    const controls = await waitForSelector<HTMLElement>(tree, '[data-setup-owner-controls="context-tree"]');
+    const { controls } = await openContextTreeControls(view);
     const edit = [...controls.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Change repository or branch",
     );
@@ -1192,22 +1162,22 @@ describe("Settings Setup overview", () => {
       repo: nextRepo,
       branch: "main",
     });
-    expect(controls.textContent).toContain(`main branch · ${nextProvider}`);
+    expect(controls.textContent).toContain(`main branch · ${nextProvider === "github" ? "GitHub" : "GitLab"}`);
     expect(controls.textContent).toContain("Saved");
     await act(async () => view.root.unmount());
   });
 
   it.each([
-    ["#context-tree", "context-tree"],
-    ["#automatic-review", "context-tree"],
-  ] as const)("opens and focuses the canonical owner control for legacy hash %s", async (hash, key) => {
+    ["#context-tree", "/settings/context#binding", "binding"],
+    ["#automatic-review", "/settings/context#automatic-review", "automatic-review"],
+  ] as const)("redirects legacy hash %s to and focuses %s", async (hash, destination, targetId) => {
     const view = await renderSettingsSetupPage(`/settings/setup${hash}`);
-    const row = await waitForSelector<HTMLElement>(view.host, `[data-setup-row="${key}"]`);
-    await waitForSelector(row, `[data-setup-owner-controls="${key}"]`);
-    await waitForSelector(row, '[data-setup-owner-controls="automatic-review"]');
+    await waitForText(view.host, destination);
+    const target = await waitForSelector<HTMLElement>(view.host, `#${targetId}`);
+    await waitForSelector(view.host, '[data-context-tree-settings="admin"]');
 
-    expect(row.id).toBe(key);
-    expect(document.activeElement).toBe(row);
+    expect(view.host.querySelector("[data-location]")?.textContent).toBe(destination);
+    expect(document.activeElement).toBe(target);
     await act(async () => view.root.unmount());
   });
 
@@ -1222,12 +1192,13 @@ describe("Settings Setup overview", () => {
   it("keeps Member Setup read-only without loading owner-only settings", async () => {
     authMock.value = { ...authMock.value, role: "member" };
     const view = await renderSettingsSetupPage("/settings/setup#automatic-review");
-    await waitForRowText(view.host, "context-tree", "Review on");
+    await waitForText(view.host, "/settings/context#automatic-review");
+    const page = await waitForSelector<HTMLElement>(view.host, '[data-context-tree-settings="member"]');
 
-    expect(view.host.getAttribute("data-setup-overview")).toBeNull();
-    expect(view.host.querySelector('[data-setup-overview="member"]')).not.toBeNull();
-    expect(view.host.querySelector("[data-setup-owner-controls]")).toBeNull();
-    expect(view.host.querySelector('[role="switch"]')).toBeNull();
+    expect(view.host.querySelector("[data-location]")?.textContent).toBe("/settings/context#automatic-review");
+    expect(page.textContent).toContain("Context Reviewer");
+    expect(page.querySelector("[data-setup-owner-controls]")).toBeNull();
+    expect(page.querySelector('[role="switch"]')).toBeNull();
     expect(reviewerMocks.getContextReviewerCandidates).not.toHaveBeenCalled();
     expect(orgSettingsMocks.getRawContextTreeSetting).not.toHaveBeenCalled();
     await act(async () => view.root.unmount());
@@ -1326,15 +1297,18 @@ describe("Settings Setup overview", () => {
   });
 
   it("changes assignment through its split endpoint and keeps an offline candidate selectable", async () => {
-    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockResolvedValueOnce(capabilityFixture()).mockResolvedValue(
-      capabilityFixture({
-        review: {
-          adoption: "disabled",
-          health: "degraded",
-          reviewerAgent: { uuid: "reviewer-2", displayName: "Offline Reviewer" },
-        },
-      }),
-    );
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt
+      .mockResolvedValueOnce(capabilityFixture())
+      .mockResolvedValueOnce(capabilityFixture())
+      .mockResolvedValue(
+        capabilityFixture({
+          review: {
+            adoption: "disabled",
+            health: "degraded",
+            reviewerAgent: { uuid: "reviewer-2", displayName: "Offline Reviewer" },
+          },
+        }),
+      );
     reviewerMocks.getContextReviewerCandidates.mockResolvedValue({
       items: [
         {
@@ -1463,12 +1437,13 @@ describe("Settings Setup overview", () => {
     );
     const view = await renderSettingsSetupPage();
     const tree = await waitForRowText(view.host, "context-tree", "Needs repair");
-    const repair = [...tree.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Repair",
-    );
+    const repair = tree.querySelector<HTMLAnchorElement>('a[href="/settings/context#binding"]');
 
     await act(async () => repair?.click());
-    const controls = await waitForSelector<HTMLElement>(tree, '[data-setup-owner-controls="context-tree"]');
+    const controls = await waitForSelector<HTMLElement>(
+      view.host,
+      '[data-context-tree-settings="admin"] [data-setup-owner-controls="context-tree"]',
+    );
     expect(controls.textContent).toContain("Bind it manually");
     expect(controls.textContent).not.toContain("Build your Context Tree");
     await act(async () => view.root.unmount());
@@ -1522,17 +1497,17 @@ describe("Settings Setup overview", () => {
 
     const view = await renderSettingsSetupPage();
     const row = await waitForRowText(view.host, "context-tree", "Connected");
-    const manage = [...row.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Manage",
-    );
 
     expect(row.textContent).not.toContain("Needs recovery");
     expect(row.textContent).not.toContain("Web Context unavailable");
     expect(row.textContent).not.toContain("GitLab deployment allowlist diagnostic");
+    const manage = row.querySelector<HTMLAnchorElement>('a[href="/settings/context"]');
     await act(async () => manage?.click());
-    const controls = await waitForSelector<HTMLElement>(row, '[data-setup-owner-controls="context-tree"]');
+    const page = await waitForSelector<HTMLElement>(view.host, '[data-context-tree-settings="admin"]');
+    const controls = await waitForSelector<HTMLElement>(page, '[data-setup-owner-controls="context-tree"]');
+    const reviewerControls = await waitForSelector<HTMLElement>(page, '[data-setup-owner-controls="automatic-review"]');
     expect(controls.textContent).not.toContain("Open Context");
-    expect(controls.textContent).toContain("Automatic review");
+    expect(reviewerControls.textContent).toContain("Enable automatic review");
     expect(controls.textContent).not.toContain("Work on this in chat");
     await act(async () => view.root.unmount());
   });

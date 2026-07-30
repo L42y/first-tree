@@ -160,6 +160,14 @@ const SetupPreviewPage = import.meta.env.DEV
   ? lazy(() => import("./pages/setup-preview.js").then((module) => ({ default: module.SetupPreviewPage })))
   : null;
 
+const SettingsContextTreePreviewPage = import.meta.env.DEV
+  ? lazy(() =>
+      import("./pages/settings-context-tree-preview.js").then((module) => ({
+        default: module.SettingsContextTreePreviewPage,
+      })),
+    )
+  : null;
+
 // Public fixture preview for the BYO Context Tree handoff. It is compiled into
 // hosted builds so staging can expose it, but the route gate below fails closed
 // on production and unknown channels. It has no auth or backend mutations.
@@ -354,6 +362,16 @@ export function App() {
                   element={
                     <Suspense fallback={null}>
                       <SetupPreviewPage />
+                    </Suspense>
+                  }
+                />
+              ) : null}
+              {SettingsContextTreePreviewPage ? (
+                <Route
+                  path="/preview/settings-context-tree"
+                  element={
+                    <Suspense fallback={null}>
+                      <SettingsContextTreePreviewPage />
                     </Suspense>
                   }
                 />

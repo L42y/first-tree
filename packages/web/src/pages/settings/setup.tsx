@@ -11,8 +11,6 @@ import type {
 import { useQuery } from "@tanstack/react-query";
 import {
   Bot,
-  ChevronDown,
-  ChevronUp,
   CircleAlert,
   CircleCheck,
   CircleHelp,
@@ -26,7 +24,7 @@ import {
   MessageCircle,
   Webhook,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router";
 import { listClients } from "../../api/activity.js";
 import { getContextTreeSnapshot } from "../../api/context-tree.js";
@@ -38,10 +36,7 @@ import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { cn } from "../../lib/utils.js";
 import { isTeamNonActionableGitlabWebContext } from "../context-tree-availability.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
-import { ContextPersonalAccess } from "./context-enablement.js";
 import { setupBlockerCopy } from "./setup-blocker-copy.js";
-import { SetupContextTreeControls } from "./setup-context-tree-controls.js";
-import { SetupReviewerControls } from "./setup-reviewer-controls.js";
 
 type Fact<T> =
   | { state: "loading" }
@@ -96,7 +91,7 @@ export type SetupRowModel = {
   action?: {
     label: string;
     to: string;
-    intent?: "resume-onboarding" | "open-context-tree-controls";
+    intent?: "resume-onboarding";
   };
 };
 
@@ -175,12 +170,12 @@ const ACTION_DESTINATIONS = {
   manage_github_installation: "/settings/integrations/github",
   connect_gitlab: "/settings/integrations/gitlab",
   configure_gitlab_webhook: "/settings/integrations/gitlab",
-  repair_tree_binding: "/settings/setup#context-tree",
-  open_tree_setup_chat: "/context",
-  select_review_agent: "/settings/setup#context-tree",
-  replace_review_agent: "/settings/setup#context-tree",
+  repair_tree_binding: "/settings/context#binding",
+  open_tree_setup_chat: "/settings/context#binding",
+  select_review_agent: "/settings/context#automatic-review",
+  replace_review_agent: "/settings/context#automatic-review",
   open_agent_owner_flow: "/team",
-  manage_review_agent: "/settings/setup#context-tree",
+  manage_review_agent: "/settings/context#automatic-review",
   configure_github_app: "/settings/integrations/github",
   select_team_agent: "/settings/integrations/github#task-routing",
 } satisfies Record<SetupActionKind, string>;
@@ -379,39 +374,22 @@ function contextTreeStatus(
   return { label: "Status unknown", detail, kind: "unknown" };
 }
 
-function contextTreeAction(
-  contextTree: Fact<ContextTreeFact>,
-  isAdmin: boolean,
-  personalContextAccessReady: boolean,
-): SetupRowModel["action"] | undefined {
+function contextTreeAction(contextTree: Fact<ContextTreeFact>, isAdmin: boolean): SetupRowModel["action"] | undefined {
   if (contextTree.state !== "ready") return undefined;
   const { binding, availability, teamNonActionableGitlabWebContext } = contextTree.value;
   if (binding.state === "unbound") {
-    return isAdmin
-      ? { label: "Set up", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
-      : undefined;
+    return isAdmin ? { label: "Set up", to: "/settings/context#binding" } : { label: "View", to: "/settings/context" };
   }
   if (binding.state === "invalid") {
-    return isAdmin
-      ? { label: "Repair", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
-      : { label: "View", to: "/context" };
-  }
-  if (!isAdmin && personalContextAccessReady) {
-    return { label: "Access", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" };
+    return isAdmin ? { label: "Repair", to: "/settings/context#binding" } : { label: "View", to: "/settings/context" };
   }
   if (teamNonActionableGitlabWebContext) {
-    return isAdmin
-      ? { label: "Manage", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
-      : { label: "View", to: "/context" };
+    return isAdmin ? { label: "Manage", to: "/settings/context" } : { label: "View", to: "/context" };
   }
   if (availability === "unavailable") {
-    return isAdmin
-      ? { label: "Recover", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
-      : { label: "View", to: "/context" };
+    return isAdmin ? { label: "Recover", to: "/settings/context#binding" } : { label: "View", to: "/context" };
   }
-  return isAdmin
-    ? { label: "Manage", to: "/settings/setup#context-tree", intent: "open-context-tree-controls" }
-    : { label: "View", to: "/context" };
+  return isAdmin ? { label: "Manage", to: "/settings/context" } : { label: "View", to: "/context" };
 }
 
 function reviewDiagnosticDetail(review: SetupAutomaticReview, isAdmin: boolean): string | undefined {
@@ -554,12 +532,6 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
 
   const capabilities = facts.capabilities.state === "ready" ? facts.capabilities.value : null;
   const contextTree = contextTreeFact(facts.capabilities, facts.contextTreeSnapshot);
-  const personalContextAccessReady =
-    (facts.role === "admin" || facts.role === "member") &&
-    facts.repositories.state === "ready" &&
-    facts.repositories.value > 0 &&
-    contextTree.state === "ready" &&
-    contextTree.value.binding.state === "bound";
   const repositoryAutomationStatus =
     facts.capabilities.state === "loading"
       ? loadingStatus()
@@ -658,7 +630,7 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
         automaticReviewStatus,
         capabilities ? reviewDiagnosticDetail(capabilities.contextTree.automaticReview, isAdmin) : undefined,
       ),
-      action: contextTreeAction(contextTree, isAdmin, personalContextAccessReady),
+      action: contextTreeAction(contextTree, isAdmin),
     },
   ];
 }
@@ -666,12 +638,6 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
 export function SettingsSetupPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [expandedOwnerControl, setExpandedOwnerControl] = useState<{
-    organizationId: string | null;
-    key: SetupRowModel["key"];
-  } | null>(null);
-  const previousOrganizationId = useRef<string | null>(null);
-  const handledOwnerHash = useRef<string | null>(null);
   const {
     role,
     organizationId,
@@ -770,148 +736,30 @@ export function SettingsSetupPage() {
     navigate("/onboarding");
   };
 
-  const contextTree = contextTreeFact(capabilities, contextTreeSnapshot);
-  const personalContextAccessReady =
-    (role === "admin" || role === "member") &&
-    facts.repositories.state === "ready" &&
-    facts.repositories.value > 0 &&
-    contextTree.state === "ready" &&
-    contextTree.value.binding.state === "bound";
-  const expandedOwnerControlKey =
-    expandedOwnerControl?.organizationId === organizationId ? expandedOwnerControl.key : null;
-
   useEffect(() => {
     if (location.hash === "#team-agent") {
       navigate("/settings/integrations/github#task-routing", { replace: true });
+      return;
+    }
+    if (location.hash === "#context-tree") {
+      navigate("/settings/context#binding", { replace: true });
+      return;
+    }
+    if (location.hash === "#automatic-review") {
+      navigate("/settings/context#automatic-review", { replace: true });
     }
   }, [location.hash, navigate]);
 
-  useEffect(() => {
-    if (previousOrganizationId.current !== null && previousOrganizationId.current !== organizationId) {
-      setExpandedOwnerControl(null);
-      handledOwnerHash.current = null;
-    }
-    previousOrganizationId.current = organizationId;
-  }, [organizationId]);
-
-  useEffect(() => {
-    const key = location.hash === "#context-tree" || location.hash === "#automatic-review" ? "context-tree" : null;
-    if (!key || !organizationId || facts.capabilities.state !== "ready") return;
-
-    const hashKey = `${organizationId}:${location.hash}`;
-    if (handledOwnerHash.current === hashKey) return;
-    const canOpenForHash = role === "admin" || (location.hash === "#context-tree" && personalContextAccessReady);
-    if (!canOpenForHash) return;
-    handledOwnerHash.current = hashKey;
-    setExpandedOwnerControl({ organizationId, key });
-  }, [facts.capabilities.state, location.hash, organizationId, personalContextAccessReady, role]);
-
-  useEffect(() => {
-    const key = location.hash === "#context-tree" || location.hash === "#automatic-review" ? "context-tree" : null;
-    if (!key || facts.capabilities.state !== "ready") return;
-    const canOpenForHash = role === "admin" || (location.hash === "#context-tree" && personalContextAccessReady);
-    if (canOpenForHash && expandedOwnerControlKey !== key) return;
-
-    const row = document.getElementById(key);
-    row?.scrollIntoView?.({ block: "start" });
-    row?.focus();
-  }, [expandedOwnerControlKey, facts.capabilities.state, location.hash, personalContextAccessReady, role]);
-
-  const ownerControls: Partial<Record<SetupRowModel["key"], ReactNode>> =
-    facts.capabilities.state !== "ready"
-      ? {}
-      : {
-          ...(expandedOwnerControlKey === "context-tree" && contextTree.state === "ready"
-            ? {
-                "context-tree":
-                  role === "admin" ? (
-                    <SetupContextTreeControls
-                      key={`context-tree-${organizationId}`}
-                      binding={contextTree.value.binding}
-                      availability={contextTree.value.availability}
-                      teamNonActionableGitlabWebContext={contextTree.value.teamNonActionableGitlabWebContext}
-                    >
-                      {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ||
-                      personalContextAccessReady ? (
-                        <div className="flex flex-col">
-                          {facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable" ? (
-                            <SetupReviewerControls
-                              key={`automatic-review-${organizationId}`}
-                              review={facts.capabilities.value.contextTree.automaticReview}
-                              embedded
-                            />
-                          ) : null}
-                          {personalContextAccessReady && organizationId ? (
-                            <div
-                              style={{
-                                marginTop:
-                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
-                                    ? "var(--sp-4)"
-                                    : undefined,
-                                paddingTop:
-                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
-                                    ? "var(--sp-4)"
-                                    : undefined,
-                                borderTop:
-                                  facts.capabilities.value.contextTree.automaticReview.adoption !== "unavailable"
-                                    ? "var(--hairline) solid var(--border-faint)"
-                                    : undefined,
-                              }}
-                            >
-                              <ContextPersonalAccess organizationId={organizationId} />
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </SetupContextTreeControls>
-                  ) : role === "member" && personalContextAccessReady && organizationId ? (
-                    <div
-                      data-setup-owner-controls="context-tree"
-                      style={{
-                        padding: "var(--sp-4)",
-                        border: "var(--hairline) solid var(--border)",
-                        borderRadius: "var(--radius-panel)",
-                        background: "var(--bg-sunken)",
-                      }}
-                    >
-                      <div className="flex justify-end" style={{ marginBottom: "var(--sp-3)" }}>
-                        <Link className="text-label font-medium text-primary hover:underline" to="/context">
-                          Open Context →
-                        </Link>
-                      </div>
-                      <ContextPersonalAccess organizationId={organizationId} />
-                    </div>
-                  ) : null,
-              }
-            : {}),
-        };
-
-  return (
-    <SetupOverview
-      facts={facts}
-      rows={buildSetupRows(facts)}
-      ownerControls={ownerControls}
-      onToggleOwnerControl={(key) => {
-        setExpandedOwnerControl((current) =>
-          current?.organizationId === organizationId && current.key === key ? null : { organizationId, key },
-        );
-      }}
-      onResumeOnboarding={resumeOnboarding}
-    />
-  );
+  return <SetupOverview facts={facts} rows={buildSetupRows(facts)} onResumeOnboarding={resumeOnboarding} />;
 }
 
 export function SetupOverview({
   facts,
   rows,
-  ownerControls = {},
-  onToggleOwnerControl,
   onResumeOnboarding,
 }: {
   facts: Pick<SetupFacts, "role" | "teamName">;
   rows: SetupRowModel[];
-  ownerControls?: Partial<Record<SetupRowModel["key"], ReactNode>>;
-  onToggleOwnerControl?: (key: SetupRowModel["key"]) => void;
   onResumeOnboarding?: () => Promise<void>;
 }) {
   const viewport = useWorkspaceViewport();
@@ -931,14 +779,7 @@ export function SetupOverview({
 
       <div style={{ borderTop: "var(--hairline) solid var(--border)" }}>
         {rows.map((row) => (
-          <SetupRow
-            key={row.key}
-            row={row}
-            narrow={narrow}
-            ownerControl={ownerControls[row.key]}
-            onToggleOwnerControl={onToggleOwnerControl}
-            onResumeOnboarding={onResumeOnboarding}
-          />
+          <SetupRow key={row.key} row={row} narrow={narrow} onResumeOnboarding={onResumeOnboarding} />
         ))}
       </div>
     </div>
@@ -971,14 +812,10 @@ function SetupStatusMark({ kind }: { kind: SetupStatusKind }) {
 function SetupRow({
   row,
   narrow,
-  ownerControl,
-  onToggleOwnerControl,
   onResumeOnboarding,
 }: {
   row: SetupRowModel;
   narrow: boolean;
-  ownerControl?: ReactNode;
-  onToggleOwnerControl?: (key: SetupRowModel["key"]) => void;
   onResumeOnboarding?: () => Promise<void>;
 }) {
   const Icon = row.icon;
@@ -1043,27 +880,7 @@ function SetupRow({
         className={cn("flex", !narrow && "justify-end")}
         style={narrow ? { paddingLeft: "var(--sp-11)" } : undefined}
       >
-        {row.action?.intent === "open-context-tree-controls" && onToggleOwnerControl ? (
-          <button
-            type="button"
-            aria-expanded={Boolean(ownerControl)}
-            aria-controls={`setup-${row.key}-owner-controls`}
-            onClick={() => onToggleOwnerControl(row.key)}
-            className={cn(
-              "text-label inline-flex items-center font-medium text-fg-2 transition-colors",
-              "rounded-[var(--radius-input)] hover:bg-bg-hover hover:text-foreground",
-              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1",
-            )}
-            style={{ minHeight: "var(--sp-8)", gap: "var(--sp-1)", padding: "0 var(--sp-2)" }}
-          >
-            {row.action.label}
-            {ownerControl ? (
-              <ChevronUp className="h-4 w-4" aria-hidden />
-            ) : (
-              <ChevronDown className="h-4 w-4" aria-hidden />
-            )}
-          </button>
-        ) : row.action ? (
+        {row.action ? (
           <Link
             to={row.action.to}
             onClick={
@@ -1089,17 +906,6 @@ function SetupRow({
           </Link>
         ) : null}
       </div>
-      {ownerControl ? (
-        <div
-          id={`setup-${row.key}-owner-controls`}
-          style={{
-            gridColumn: "1 / -1",
-            paddingLeft: narrow ? "var(--sp-4)" : "var(--sp-11)",
-          }}
-        >
-          {ownerControl}
-        </div>
-      ) : null}
     </section>
   );
 }
