@@ -9,7 +9,7 @@ import { updateOrganization } from "../api/organizations.js";
 import { useAuth } from "../auth/auth-context.js";
 import { cn } from "../lib/utils.js";
 import { Avatar } from "./avatar.js";
-import { isAskAgentNavLocked, runAfterAskAgentNavUnlock, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
+import { isAskAgentNavLocked, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 import { InviteDialog } from "./invite-dialog.js";
 import { TeamSetupModal } from "./team-setup-modal.js";
 import { Button } from "./ui/button.js";
@@ -77,8 +77,6 @@ export function TeamSwitcher({
   const menuRef = useRef<HTMLDivElement>(null);
   const initialMenuFocusRef = useRef<"first" | "last">("first");
   const renameInputRef = useRef<HTMLInputElement>(null);
-  // This timer clears AuthProvider's global switching state and must survive a
-  // TeamSwitcher unmount during cross-shell navigation.
   const switchTimerRef = useRef<number | null>(null);
 
   // Shared `me-organizations` cache: the rename dialog updates this key,
@@ -144,6 +142,15 @@ export function TeamSwitcher({
     target?.focus();
   }, [open]);
 
+  useEffect(() => {
+    return () => {
+      if (switchTimerRef.current !== null) {
+        window.clearTimeout(switchTimerRef.current);
+        switchTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const renameMutation = useMutation({
     mutationFn: (displayName: string) => {
       if (!organizationId) throw new Error("organization not loaded");
@@ -161,6 +168,7 @@ export function TeamSwitcher({
   });
 
   const switchAfterLeave = async (org: OrgBrief) => {
+    if (isAskAgentNavLocked()) return;
     setSwitchError(null);
     setSwitchingOrg(org);
     const startedAt = Date.now();
@@ -189,32 +197,15 @@ export function TeamSwitcher({
       const nextOrg = others[0] ?? null;
       setLeaveConfirmOpen(false);
       setOpen(false);
-      // Membership deletion is already durable. Preserve the Ask surface, then
-      // complete exactly one client transition after unlock instead of
-      // dropping the success or navigating through the lock.
-      await runAfterAskAgentNavUnlock(async () => {
-        if (nextOrg) {
-          await switchAfterLeave(nextOrg);
-          return;
-        }
-        await refreshMe();
-        await runAfterAskAgentNavUnlock(() => {
-          queryClient.clear();
-          if (redirectHomeOnSwitch) navigate("/onboarding", { replace: true });
-        });
-      });
+      await refreshMe();
+      if (nextOrg) {
+        await switchAfterLeave(nextOrg);
+      } else {
+        queryClient.clear();
+        if (redirectHomeOnSwitch) navigate("/onboarding", { replace: true });
+      }
     },
   });
-
-  // A pending Ask agent attempt owns the current surface. If the lock engages
-  // after a navigation-capable dialog opened, dismiss that stale exit before
-  // it can change teams or routes. An already-running leave is allowed to
-  // settle because the server mutation cannot be cancelled here.
-  useEffect(() => {
-    if (!askAgentNavLocked) return;
-    setSetupAction(null);
-    if (!leaveMutation.isPending) setLeaveConfirmOpen(false);
-  }, [askAgentNavLocked, leaveMutation.isPending]);
 
   const handleSwitch = async (org: OrgBrief) => {
     if (isAskAgentNavLocked()) return;
@@ -249,7 +240,6 @@ export function TeamSwitcher({
   };
 
   const startRenaming = () => {
-    if (isAskAgentNavLocked()) return;
     renameMutation.reset();
     setRenameDraft(currentOrg?.displayName ?? "");
     setOpen(false);
@@ -672,7 +662,7 @@ export function TeamSwitcher({
                 if (isAskAgentNavLocked()) return;
                 leaveMutation.mutate();
               }}
-              disabled={leaveMutation.isPending || askAgentNavLocked}
+              disabled={leaveMutation.isPending}
             >
               {leaveMutation.isPending ? "Leaving…" : "Leave team"}
             </Button>

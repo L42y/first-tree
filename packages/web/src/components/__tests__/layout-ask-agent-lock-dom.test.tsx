@@ -398,31 +398,6 @@ describe("Layout Ask agent navigation lock", () => {
     await act(async () => root.unmount());
   });
 
-  it("dismisses TeamSwitcher navigation dialogs that were already open when the lock engages", async () => {
-    const { container, root } = await renderLayout("/?review=need-you");
-    const trigger = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Switch team"]');
-
-    await click(trigger());
-    await click(menuItemByText(container, "Leave team"));
-    await waitForText("Leave Team One?");
-    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
-
-    await engageLock();
-    expect(document.body.textContent).not.toContain("Leave Team One?");
-
-    await releaseLock();
-    await click(trigger());
-    await click(menuItemByText(container, "Create team"));
-    await waitForText("Create a new team");
-    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
-
-    await engageLock();
-    expect(document.body.textContent).not.toContain("Create a new team");
-    expect(locationText(container)).toBe("/?review=need-you");
-
-    await act(async () => root.unmount());
-  });
-
   it("keeps the real UserMenu inert while locked: no account settings, no sign out", async () => {
     const { container, root } = await renderLayout("/?review=need-you");
     const trigger = () => container.querySelector<HTMLButtonElement>('button[aria-label^="User menu"]');

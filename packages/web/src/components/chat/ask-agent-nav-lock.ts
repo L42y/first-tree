@@ -102,40 +102,6 @@ export function isAskAgentNavLocked(): boolean {
   return locks.size > 0;
 }
 
-/**
- * Run a deferred navigation continuation as soon as every pending Ask attempt
- * releases the current surface.
- *
- * Navigation-capable mutations can finish on the server after the lock starts.
- * Their successful client continuation must wait rather than disappear: the
- * membership change is already durable and cannot safely be retried.
- *
- * The continuation starts synchronously inside the unlock notification. This
- * makes "observe unlocked → start the transition" one atomic JavaScript step:
- * another subscriber can add a newer lock first (and this gate keeps waiting),
- * but no later task or Promise continuation can slip a lock into the handoff.
- */
-export function runAfterAskAgentNavUnlock<T>(continuation: () => T | PromiseLike<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    let unsubscribe: () => void = () => undefined;
-    let started = false;
-    const startIfUnlocked = () => {
-      if (started || isAskAgentNavLocked()) return;
-      started = true;
-      unsubscribe();
-      try {
-        resolve(continuation());
-      } catch (error) {
-        reject(error);
-      }
-    };
-    unsubscribe = subscribe(startIfUnlocked);
-    // Also covers the common already-unlocked path and closes the
-    // subscribe-after-check race without yielding to another task.
-    startIfUnlocked();
-  });
-}
-
 /** The pinned owning-surface entry while any attempt is pending. */
 export function getAskAgentNavTarget(): AskAgentNavTarget | null {
   return activeTarget;

@@ -14,7 +14,6 @@ import {
   installAskAgentNavGuard,
   isAskAgentNavLocked,
   removeAskAgentNavLock,
-  runAfterAskAgentNavUnlock,
   subscribeAskAgentNavLock,
   uninstallAskAgentNavGuardForTest,
   useAskAgentNavLocked,
@@ -150,51 +149,6 @@ describe("ask-agent nav lock store", () => {
     expect(getAskAgentNavTarget()).toBe(target);
     removeAskAgentNavLock(first);
     expect(getAskAgentNavTarget()).toBeNull();
-  });
-
-  it("resolves deferred navigation only after the final lock is released", async () => {
-    const first = { chatId: "chat-1", requestId: "req-1" };
-    const second = { chatId: "chat-2", requestId: "req-2" };
-    addAskAgentNavLock(first);
-    addAskAgentNavLock(second);
-    let released = false;
-    const waiting = runAfterAskAgentNavUnlock(() => {
-      released = true;
-    });
-
-    removeAskAgentNavLock(first);
-    await flush();
-    expect(released).toBe(false);
-
-    removeAskAgentNavLock(second);
-    await waiting;
-    expect(released).toBe(true);
-  });
-
-  it("keeps waiting when an earlier unlock subscriber installs a newer lock in the handoff", async () => {
-    const first = { chatId: "chat-1", requestId: "req-1" };
-    const newer = { chatId: "chat-2", requestId: "req-2" };
-    addAskAgentNavLock(first);
-    let installedNewer = false;
-    const unsubscribe = subscribeAskAgentNavLock(() => {
-      if (isAskAgentNavLocked() || installedNewer) return;
-      installedNewer = true;
-      addAskAgentNavLock(newer);
-    });
-    let started = false;
-    const running = runAfterAskAgentNavUnlock(() => {
-      started = true;
-    });
-
-    removeAskAgentNavLock(first);
-    expect(installedNewer).toBe(true);
-    expect(isAskAgentNavLocked()).toBe(true);
-    expect(started).toBe(false);
-
-    unsubscribe();
-    removeAskAgentNavLock(newer);
-    await running;
-    expect(started).toBe(true);
   });
 });
 
