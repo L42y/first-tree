@@ -1,5 +1,6 @@
 import {
   AGENT_FINAL_TEXT_METADATA_KEY,
+  ASK_AGENT_METADATA_KEY,
   attachmentRefsFromMetadata,
   CLI_BODY_ORIGIN_METADATA_KEY,
   CLI_BODY_ORIGINS,
@@ -66,15 +67,23 @@ function stripUntrustedMetadataKeys(
   }
   const shouldStripSystemSender = !options.allowSystemSender && "systemSender" in meta;
   const shouldStripAddressedAgentIds = ADDRESSED_AGENT_IDS_METADATA_KEY in meta;
+  const shouldStripAskAgent = ASK_AGENT_METADATA_KEY in meta;
   const shouldStripCliBodyOrigin = CLI_BODY_ORIGIN_METADATA_KEY in meta;
   const shouldStripEditedAt = "editedAt" in meta;
-  if (!shouldStripSystemSender && !shouldStripAddressedAgentIds && !shouldStripCliBodyOrigin && !shouldStripEditedAt) {
+  if (
+    !shouldStripSystemSender &&
+    !shouldStripAddressedAgentIds &&
+    !shouldStripAskAgent &&
+    !shouldStripCliBodyOrigin &&
+    !shouldStripEditedAt
+  ) {
     return meta;
   }
   return Object.fromEntries(
     Object.entries(meta).filter(
       ([key]) =>
         key !== ADDRESSED_AGENT_IDS_METADATA_KEY &&
+        key !== ASK_AGENT_METADATA_KEY &&
         key !== CLI_BODY_ORIGIN_METADATA_KEY &&
         key !== "editedAt" &&
         (options.allowSystemSender || key !== "systemSender"),
@@ -308,6 +317,14 @@ export type DeferredSendMessagePostCommitEffects = {
 };
 
 export type SendMessageOptions = {
+  /**
+   * Trusted request-scoped Ask agent send. The route supplies only the
+   * original request id; this service re-validates the still-open request,
+   * target human, and original active asker inside the message transaction,
+   * then stamps the server-owned metadata marker. Ordinary HTTP sends cannot
+   * mint the marker because `stripUntrustedMetadataKeys` always removes it.
+   */
+  askAgentRequestId?: string;
   /**
    * Trusted-internal opt-out from the default explicit-recipient guard.
    *
@@ -752,7 +769,69 @@ async function sendMessageInner(
       participants,
     });
     const { content: outboundContent, metadata: preparedMetadata, mentionedAgentIds: mergedMentions } = prepared;
-    const metadataToStore = preparedMetadata;
+    let metadataToStore = preparedMetadata;
+
+    // Ask agent is a constrained clarification turn under an existing open
+    // request. Re-check every relation under the same transaction that stores
+    // the clarification; the browser-supplied route param is never treated as
+    // trusted metadata.
+    if (options.askAgentRequestId) {
+      const requestId = options.askAgentRequestId;
+      if (senderRow.type !== "human") {
+        throw new ForbiddenError("Only the question's target human may ask the agent for clarification.");
+      }
+      if (data.inReplyTo !== requestId || (data.format !== "text" && data.format !== "markdown")) {
+        throw new BadRequestError("Ask agent must be a text reply to the open question.");
+      }
+
+      const [parent] = await tx
+        .select({ format: messages.format, metadata: messages.metadata, senderId: messages.senderId })
+        .from(messages)
+        .where(and(eq(messages.id, requestId), eq(messages.chatId, chatId)))
+        .for("update")
+        .limit(1);
+      const parentMentions = Array.isArray(parent?.metadata?.mentions) ? parent.metadata.mentions : [];
+      if (
+        !parent ||
+        parent.format !== MESSAGE_FORMATS.REQUEST ||
+        parentMentions.length !== 1 ||
+        parentMentions[0] !== senderId
+      ) {
+        throw new ForbiddenError("This question is not an open request directed at you.");
+      }
+
+      const asker = participants.find((participant) => participant.agentId === parent.senderId);
+      if (!asker || asker.type === "human" || asker.status !== "active") {
+        throw new BadRequestError("The agent that asked this question is not available for clarification.");
+      }
+      if (mergedMentions.length !== 1 || mergedMentions[0] !== asker.agentId) {
+        throw new BadRequestError("Ask agent must be routed only to the agent that asked the question.");
+      }
+
+      const priorResolution = await tx
+        .select({ id: messages.id })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.chatId, chatId),
+            sql`${messages.metadata} -> 'resolves' ->> 'request' = ${requestId}`,
+            sql`${messages.metadata} -> 'resolves' ->> 'kind' IN ('answered', 'closed')`,
+            inArray(messages.senderId, [senderId, parent.senderId]),
+          ),
+        )
+        .limit(1);
+      if (priorResolution.length > 0) {
+        throw new BadRequestError("This question has already been handled.");
+      }
+
+      metadataToStore = {
+        ...preparedMetadata,
+        [ASK_AGENT_METADATA_KEY]: {
+          requestId,
+          agentId: asker.agentId,
+        },
+      };
+    }
 
     assertLandingCampaignTrialMessageAllowed({
       chat: chatRow,

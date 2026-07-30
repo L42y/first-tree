@@ -10,16 +10,14 @@
  *     free-text "Other" input, or a single free-text box when the ask carries no
  *     options — share ONE scrolling region, so a long ask plus many options can
  *     never push the controls off-screen;
- *   - the Skip / Reply actions are pinned in a fixed footer below that scroll
- *     region, so Reply stays reachable at any viewport height (notably on phones,
+ *   - Skip / Ask agent / Submit are pinned in a fixed footer below that scroll
+ *     region, so Submit stays reachable at any viewport height (notably on phones,
  *     where the card is short and the answer surface used to overflow past the
- *     bottom edge with no way to scroll to it). Both RESOLVE the question: Reply
- *     sends the composed answer; Skip sends a "skipped" answer (the caller's
- *     `onSkip` writes the resolving reply) so the asking agent unblocks rather
- *     than waiting on a never-answered question. There is no "dismiss but keep it
- *     open" path in the blocking chat view — skip is an answer, not a deferral.
- *     A feed-level shortcut may supply `onDismiss` so the user can lower the
- *     sheet and keep triaging without resolving the question.
+ *     bottom edge with no way to scroll to it). Submit and Skip both RESOLVE the
+ *     question; Ask agent adds a constrained clarification message while keeping
+ *     it open. Chat may supply `onDismiss` to enter read-only inspect mode
+ *     without resolving, while the Need you review surface intentionally has no
+ *     close control on the card itself.
  *
  * The free-text answer surface mirrors the chat composer: it supports `@mention`
  * autocomplete (against chat speakers plus host-supplied inviteable agents) and
@@ -34,7 +32,7 @@
 import type { AskOption, AskRequest, AttachmentKind, MentionParticipant } from "@first-tree/shared";
 import { COMPOSER_ACCEPT_ATTRIBUTE, extractMentions } from "@first-tree/shared";
 import { AtSign, Paperclip, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
 import { usePendingAttachments } from "../../lib/use-pending-attachments.js";
 import {
@@ -46,6 +44,7 @@ import {
 import { MentionHighlightOverlay } from "../mention-highlight-overlay.js";
 import { FileChip } from "../ui/file-chip.js";
 import { Markdown, type MarkdownProps } from "../ui/markdown.js";
+import type { AskAgentExchange } from "./ask-agent-state.js";
 import { ImageRefGallery, type ReferencedImage } from "./image-ref-gallery.js";
 import { allRequiredAnswered, buildResolveAnswer } from "./request-state.js";
 
@@ -78,6 +77,33 @@ export type AskAnswer = {
   attachments?: AskAnswerAttachment[];
 };
 
+type AskTakeoverDraft = {
+  selected: string[];
+  freeText: string;
+  attachments: AskAnswerAttachment[];
+};
+
+const askTakeoverDrafts = new Map<string, AskTakeoverDraft>();
+const MAX_ASK_TAKEOVER_DRAFTS = 20;
+
+function saveAskTakeoverDraft(requestId: string, draft: AskTakeoverDraft): void {
+  // Files can be large, so keep this cross-route in-memory cache bounded. The
+  // current request is refreshed to the newest position before old drafts are
+  // evicted.
+  askTakeoverDrafts.delete(requestId);
+  askTakeoverDrafts.set(requestId, draft);
+  while (askTakeoverDrafts.size > MAX_ASK_TAKEOVER_DRAFTS) {
+    const oldest = askTakeoverDrafts.keys().next().value;
+    if (typeof oldest !== "string") break;
+    askTakeoverDrafts.delete(oldest);
+  }
+}
+
+/** Drop the request-scoped draft after a successful Submit/Skip resolution. */
+export function clearAskTakeoverDraft(requestId: string): void {
+  askTakeoverDrafts.delete(requestId);
+}
+
 /**
  * Height (px) the on-screen keyboard currently steals from the bottom of the
  * layout viewport, via the `visualViewport` API. Zero on desktop and whenever
@@ -108,6 +134,7 @@ function useKeyboardInset(): number {
 }
 
 export function AskTakeover({
+  requestId,
   body,
   images = [],
   payload,
@@ -116,12 +143,18 @@ export function AskTakeover({
   mentionCandidates = [],
   markdownComponents,
   error,
+  contextBefore,
+  onRequestEarlierContext,
+  askAgent,
   onReply,
   onSkip,
   onDismiss,
+  onEscape,
   isTrial = false,
   mobile = false,
 }: {
+  /** Stable request id used to preserve answer text/options across inspect close/reopen. */
+  requestId?: string;
   /** Trial surface: match the minimal trial composer — no @mention / attach
    *  affordances in the answer input, just plain text. */
   isTrial?: boolean;
@@ -145,19 +178,42 @@ export function AskTakeover({
   /** A host-side send failure to surface in the card (the composer is covered,
    *  so a failed resolve must show here or it looks like nothing happened). */
   error?: string;
+  /** Lazy earlier-chat preview rendered above the current request. */
+  contextBefore?: ReactNode;
+  /** Mobile pull-down at the top of the card lazily requests earlier chat. */
+  onRequestEarlierContext?: () => void;
+  /** Optional request clarification controller shared by Chat and Need you. */
+  askAgent?: {
+    exchanges: AskAgentExchange[];
+    waiting: boolean;
+    sending: boolean;
+    error: string | null;
+    onAsk: (question: string) => Promise<void>;
+  };
   /** Resolve the question with the composed answer. */
   onReply: (answer: AskAnswer) => void;
   /** Resolve the question with a "skipped" answer (caller sends the reply). */
   onSkip: () => void;
-  /** Optional feed-sheet close: leaves the question open. Blocking chat views
-   *  intentionally omit this so their existing must-answer contract remains. */
+  /** Optional non-resolving close. Chat uses it to enter read-only inspect
+   *  mode; Need you omits it because page navigation owns leaving review. */
   onDismiss?: () => void;
+  /** Optional non-resolving Escape action. Need you uses it to return to the
+   *  queue; without a handler Escape is intentionally inert. */
+  onEscape?: () => void;
 }) {
   const options = payload.options;
   const multi = payload.multiSelect === true;
-  const [selected, setSelected] = useState<string[]>([]);
-  const [freeText, setFreeText] = useState("");
+  const initialDraft = requestId ? askTakeoverDrafts.get(requestId) : undefined;
+  const [selected, setSelected] = useState<string[]>(initialDraft?.selected ?? []);
+  const [freeText, setFreeText] = useState(initialDraft?.freeText ?? "");
   const [cursor, setCursor] = useState(0);
+  const [askAgentOpen, setAskAgentOpen] = useState(false);
+  const [askAgentDraft, setAskAgentDraft] = useState("");
+  const [askAgentLocalError, setAskAgentLocalError] = useState<string | null>(null);
+  const scrollRegionRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const askAgentInputRef = useRef<HTMLTextAreaElement>(null);
+  const earlierPullStartY = useRef<number | null>(null);
   // Tighten the horizontal padding on phone widths so the card uses the
   // available width instead of burning it on gutters. Note this keys off the
   // measured *viewport width*, whereas the touch-target / Enter behavior keys
@@ -167,6 +223,36 @@ export function AskTakeover({
   const padX = viewport === "narrow" ? "var(--sp-4)" : "var(--sp-6)";
   // Keep the card (and its pinned footer) above the on-screen keyboard.
   const keyboardInset = useKeyboardInset();
+  const interactionLocked = sending || askAgent?.sending === true || askAgent?.waiting === true;
+
+  // The normal shortcut listener below runs in the bubble phase so focused
+  // mention/autocomplete controls can claim their own keystrokes first. While
+  // a resolve or clarification is in flight, however, Escape must be frozen
+  // before any page/document-level handler can interpret it as navigation.
+  // Install this narrow capture-phase fence synchronously with the locked DOM:
+  // `preventDefault` alone is too late once a host listener has already closed
+  // the review surface.
+  useLayoutEffect(() => {
+    if (!interactionLocked) return;
+    const blockEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (cardRef.current?.closest('[aria-hidden="true"]')) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    window.addEventListener("keydown", blockEscape, true);
+    return () => window.removeEventListener("keydown", blockEscape, true);
+  }, [interactionLocked]);
+
+  useEffect(() => {
+    if (!askAgentOpen) return;
+    const timer = window.setTimeout(() => askAgentInputRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [askAgentOpen]);
+
+  useEffect(() => {
+    cardRef.current?.focus({ preventScroll: true });
+  }, []);
 
   // Staged attachments — same hook (and same allowlist + attachment-cap rules
   // + object-URL lifecycle) the chat composer uses. A local validation error
@@ -175,9 +261,19 @@ export function AskTakeover({
   const { pendingAttachments, addFiles, removeAttachment } = usePendingAttachments({
     onError: setAttachmentError,
     onChange: () => setAttachmentError(null),
+    initialAttachments: initialDraft?.attachments,
   });
   const pendingImages = useMemo(() => pendingAttachments.filter((att) => att.kind === "image"), [pendingAttachments]);
   const pendingDocs = useMemo(() => pendingAttachments.filter((att) => att.kind !== "image"), [pendingAttachments]);
+
+  useEffect(() => {
+    if (!requestId) return;
+    saveAskTakeoverDraft(requestId, {
+      selected,
+      freeText,
+      attachments: pendingAttachments.map(({ file, kind }) => ({ file, kind })),
+    });
+  }, [freeText, pendingAttachments, requestId, selected]);
 
   // Self-excluded membership projection for `@` resolution + the mirror overlay.
   const mentionParticipants = useMemo<MentionParticipant[]>(
@@ -192,7 +288,7 @@ export function AskTakeover({
     value: freeText,
     cursor,
     candidates: mentionCandidates,
-    disabled: sending,
+    disabled: interactionLocked,
     onSelect: (update) => {
       setFreeText(update.text);
       setCursor(update.cursor);
@@ -208,6 +304,7 @@ export function AskTakeover({
   });
 
   const toggle = (label: string) => {
+    if (interactionLocked) return;
     setSelected((prev) => {
       if (multi) return prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label];
       return prev.includes(label) ? [] : [label];
@@ -216,7 +313,8 @@ export function AskTakeover({
 
   // An attachment is itself an answer, so it lifts the "must select or type"
   // gate even on a free-text ask with an empty box.
-  const canReply = (allRequiredAnswered(payload, selected, freeText) || pendingAttachments.length > 0) && !sending;
+  const canReply =
+    (allRequiredAnswered(payload, selected, freeText) || pendingAttachments.length > 0) && !interactionLocked;
   // Memoized so the window-level keydown effect below has a stable dep (it would
   // otherwise re-bind the listener every render).
   const reply = useCallback(() => {
@@ -233,6 +331,7 @@ export function AskTakeover({
   // autocomplete picks it up from the resulting value/cursor, same path as
   // typing `@`. Mirrors the composer's explicit `@` button.
   const insertMentionTrigger = () => {
+    if (interactionLocked) return;
     const el = taRef.current;
     const start = el?.selectionStart ?? freeText.length;
     const end = el?.selectionEnd ?? start;
@@ -247,10 +346,9 @@ export function AskTakeover({
 
   // Keyboard shortcuts, mirroring the chat composer: Enter (no Shift, and not
   // mid-IME-composition) resolves with Reply, while Shift+Enter stays a newline
-  // in the free-text box. Esc resolves with Skip. Bound at the window because
-  // the card does not autofocus, so a keydown handler on the dialog subtree
-  // would miss the shortcuts until the user first clicks into the card.
-  const cardRef = useRef<HTMLDivElement>(null);
+  // in the free-text box. Escape may close the clarification editor or invoke
+  // an explicitly non-resolving host action; it never resolves the request.
+  // Bound at the window as a backstop for card-level focus.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.isComposing) return;
@@ -266,10 +364,14 @@ export function AskTakeover({
       // the ask underneath it.
       if (cardRef.current?.closest('[aria-hidden="true"]')) return;
       if (e.key === "Escape") {
-        if (sending) return;
         e.preventDefault();
-        if (onDismiss) onDismiss();
-        else onSkip();
+        if (interactionLocked) return;
+        if (askAgentOpen) {
+          setAskAgentOpen(false);
+          setAskAgentLocalError(null);
+          return;
+        }
+        (onEscape ?? onDismiss)?.();
         return;
       }
       // Mobile soft keyboards have no Shift+Enter, so Enter must insert a
@@ -286,7 +388,7 @@ export function AskTakeover({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [sending, canReply, onSkip, onDismiss, reply, mobile]);
+  }, [interactionLocked, canReply, onDismiss, onEscape, reply, mobile, askAgentOpen]);
 
   // Visible chrome (border + fill + radius) lives on the WRAPPER, not the
   // textarea: the textarea is painted transparent so the mention overlay
@@ -375,6 +477,7 @@ export function AskTakeover({
         // color cascades to the placeholder and it renders invisible.
         className="mention-composer-textarea placeholder:text-muted-foreground"
         value={freeText}
+        disabled={interactionLocked}
         onChange={(e) => {
           setFreeText(e.target.value);
           setCursor(e.target.selectionStart ?? e.target.value.length);
@@ -383,7 +486,7 @@ export function AskTakeover({
         onPaste={(e) => {
           // No attachments on the trial answer input — let text paste
           // fall through to the default handler.
-          if (isTrial) return;
+          if (isTrial || interactionLocked) return;
           const files = Array.from(e.clipboardData.files);
           if (files.length > 0) {
             e.preventDefault();
@@ -395,8 +498,8 @@ export function AskTakeover({
           if (e.nativeEvent.isComposing) return;
           // Mention autocomplete gets first crack: when the caret is inside an
           // active `@trigger`, Enter/Tab/Arrows/Escape drive the popover (and
-          // are preventDefaulted, so the window-level Enter→Reply / Esc→Skip
-          // backstop sees `defaultPrevented` and stays out of the way).
+          // are preventDefaulted, so the window-level Enter→Reply / non-resolving
+          // Escape backstop sees `defaultPrevented` and stays out of the way).
           // Disabled on trial (no mention), so Enter always resolves the ask.
           if (!isTrial) mention.handleKey(e);
         }}
@@ -440,6 +543,7 @@ export function AskTakeover({
               <button
                 type="button"
                 onClick={() => removeAttachment(att.id)}
+                disabled={interactionLocked}
                 aria-label="Remove image"
                 style={{
                   position: "absolute",
@@ -455,7 +559,8 @@ export function AskTakeover({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  cursor: "pointer",
+                  cursor: interactionLocked ? "default" : "pointer",
+                  opacity: interactionLocked ? 0.5 : 1,
                   padding: 0,
                 }}
               >
@@ -470,6 +575,7 @@ export function AskTakeover({
                 <button
                   type="button"
                   onClick={() => removeAttachment(att.id)}
+                  disabled={interactionLocked}
                   aria-label={`Remove ${att.file.name}`}
                   style={{
                     // Mobile: a roomier tap target on the file chip's remove ×.
@@ -482,7 +588,8 @@ export function AskTakeover({
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    cursor: "pointer",
+                    cursor: interactionLocked ? "default" : "pointer",
+                    opacity: interactionLocked ? 0.5 : 1,
                     padding: 0,
                   }}
                 >
@@ -503,13 +610,15 @@ export function AskTakeover({
         <button
           type="button"
           onClick={insertMentionTrigger}
+          disabled={interactionLocked}
           title="Mention an agent (or type @)"
           aria-label="Mention an agent"
           style={{
             background: "none",
             border: "none",
-            cursor: "pointer",
+            cursor: interactionLocked ? "default" : "pointer",
             color: "var(--fg-3)",
+            opacity: interactionLocked ? 0.5 : 1,
             padding: 0,
             display: "inline-flex",
             alignItems: "center",
@@ -522,13 +631,15 @@ export function AskTakeover({
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
+          disabled={interactionLocked}
           title="Attach file"
           aria-label="Attach file"
           style={{
             background: "none",
             border: "none",
-            cursor: "pointer",
+            cursor: interactionLocked ? "default" : "pointer",
             color: "var(--fg-3)",
+            opacity: interactionLocked ? 0.5 : 1,
             padding: 0,
             display: "inline-flex",
             alignItems: "center",
@@ -543,6 +654,7 @@ export function AskTakeover({
           type="file"
           accept={COMPOSER_ACCEPT_ATTRIBUTE}
           multiple
+          disabled={interactionLocked}
           style={{ display: "none" }}
           onChange={(e) => {
             if (e.target.files) {
@@ -577,7 +689,9 @@ export function AskTakeover({
         ref={cardRef}
         role="dialog"
         aria-modal="true"
+        aria-busy={interactionLocked || undefined}
         aria-label={askerName ? `Question from ${askerName}` : "Question awaiting your answer"}
+        tabIndex={-1}
         style={{
           // Slightly wider than the message reading column; height fits the
           // content and is capped to the area (50rem cap).
@@ -598,7 +712,7 @@ export function AskTakeover({
             type="button"
             aria-label="Close question"
             onClick={onDismiss}
-            disabled={sending}
+            disabled={interactionLocked}
             className="absolute inline-flex items-center justify-center"
             style={{
               top: "var(--sp-2)",
@@ -610,7 +724,7 @@ export function AskTakeover({
               borderRadius: "var(--radius-input)",
               background: "var(--bg-raised)",
               color: "var(--fg-3)",
-              opacity: sending ? 0.5 : 1,
+              opacity: interactionLocked ? 0.5 : 1,
             }}
           >
             <X aria-hidden className="h-5 w-5" />
@@ -622,12 +736,30 @@ export function AskTakeover({
             content, this whole region clips and scrolls while the footer below
             stays pinned. The only scroller; the card itself never scrolls. */}
         <div
+          ref={scrollRegionRef}
           style={{
             flex: "1 1 auto",
             minHeight: 0,
             overflowY: "auto",
           }}
+          onTouchStart={(event) => {
+            if (!mobile || !onRequestEarlierContext || (scrollRegionRef.current?.scrollTop ?? 1) > 0) {
+              earlierPullStartY.current = null;
+              return;
+            }
+            earlierPullStartY.current = event.touches[0]?.clientY ?? null;
+          }}
+          onTouchEnd={(event) => {
+            const startY = earlierPullStartY.current;
+            earlierPullStartY.current = null;
+            if (startY === null || !onRequestEarlierContext) return;
+            const endY = event.changedTouches[0]?.clientY ?? startY;
+            if (endY - startY >= 64) onRequestEarlierContext();
+          }}
         >
+          {contextBefore ? (
+            <div style={{ borderBottom: "var(--hairline) solid var(--border-faint)" }}>{contextBefore}</div>
+          ) : null}
           {/* The ask — markdown body. */}
           <div
             className="text-body"
@@ -641,6 +773,78 @@ export function AskTakeover({
             <ImageRefGallery images={images} hasLeadingContent={body.trim().length > 0} />
           </div>
 
+          {askAgent && askAgent.exchanges.length > 0 ? (
+            <section
+              className="flex flex-col"
+              style={{
+                gap: "var(--sp-3)",
+                padding: `0 ${padX} var(--sp-5)`,
+              }}
+              aria-label="Ask agent clarification"
+            >
+              {askAgent.exchanges.map((exchange) => (
+                <div
+                  key={exchange.clarification.id}
+                  style={{
+                    padding: "var(--sp-3)",
+                    border: "var(--hairline) solid var(--border)",
+                    borderRadius: "var(--radius-input)",
+                    background: "var(--bg-sunken)",
+                  }}
+                >
+                  <div className="text-label" style={{ color: "var(--fg-4)", marginBottom: "var(--sp-1)" }}>
+                    You asked the agent
+                  </div>
+                  <Markdown>
+                    {typeof exchange.clarification.content === "string" ? exchange.clarification.content : ""}
+                  </Markdown>
+                  {exchange.reply ? (
+                    <div
+                      style={{
+                        marginTop: "var(--sp-3)",
+                        paddingTop: "var(--sp-3)",
+                        borderTop: "var(--hairline) solid var(--border-faint)",
+                      }}
+                    >
+                      <div className="text-label" style={{ color: "var(--fg-4)", marginBottom: "var(--sp-1)" }}>
+                        Agent response
+                      </div>
+                      <Markdown>
+                        {typeof exchange.reply.content === "string"
+                          ? exchange.reply.content
+                          : JSON.stringify(exchange.reply.content)}
+                      </Markdown>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+              {askAgent.waiting ? (
+                <div
+                  role="status"
+                  className="inline-flex items-center text-label"
+                  style={{ gap: "var(--sp-2)", color: "var(--fg-3)" }}
+                >
+                  <span>Waiting for agent</span>
+                  <span className="inline-flex" style={{ gap: 3 }} aria-hidden>
+                    {[0, 1, 2].map((index) => (
+                      <span
+                        key={index}
+                        className="animate-pulse"
+                        style={{
+                          width: 4,
+                          height: 4,
+                          borderRadius: "50%",
+                          background: "currentColor",
+                          animationDelay: `${index * 160}ms`,
+                        }}
+                      />
+                    ))}
+                  </span>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
           {/* Answer surface — options + Other (or a single free-text box),
               both with `@mention` + attachments. Drop anywhere here to
               stage attachments, matching the composer. */}
@@ -653,7 +857,7 @@ export function AskTakeover({
             onDragOver={(e) => (isTrial ? undefined : e.preventDefault())}
             onDrop={(e) => {
               // No drag-and-drop attachments on the trial answer surface.
-              if (isTrial) return;
+              if (isTrial || interactionLocked) return;
               e.preventDefault();
               addFiles(Array.from(e.dataTransfer.files));
             }}
@@ -667,6 +871,7 @@ export function AskTakeover({
                       opt={opt}
                       multi={multi}
                       selected={selected.includes(opt.label)}
+                      disabled={interactionLocked}
                       onToggle={() => toggle(opt.label)}
                     />
                   ))}
@@ -694,10 +899,102 @@ export function AskTakeover({
               </p>
             )}
           </div>
+
+          {askAgentOpen && askAgent ? (
+            <div
+              style={{
+                padding: `var(--sp-4) ${padX}`,
+                borderTop: "var(--hairline) solid var(--border-faint)",
+                background: "var(--bg-raised)",
+              }}
+            >
+              <label className="text-label font-medium" htmlFor={`ask-agent-${requestId ?? "request"}`}>
+                What would you like the agent to clarify?
+              </label>
+              <textarea
+                ref={askAgentInputRef}
+                id={`ask-agent-${requestId ?? "request"}`}
+                value={askAgentDraft}
+                disabled={interactionLocked}
+                onChange={(event) => {
+                  setAskAgentDraft(event.currentTarget.value);
+                  setAskAgentLocalError(null);
+                }}
+                placeholder="Ask a focused question about the context above…"
+                className="text-body"
+                style={{
+                  width: "100%",
+                  minHeight: 88,
+                  marginTop: "var(--sp-2)",
+                  padding: "var(--sp-2_5) var(--sp-3)",
+                  resize: "vertical",
+                  border: "var(--hairline) solid var(--border-strong)",
+                  borderRadius: "var(--radius-input)",
+                  background: "var(--bg)",
+                  color: "var(--fg)",
+                  outline: "none",
+                }}
+              />
+              {askAgentLocalError || askAgent.error ? (
+                <p className="mono text-label" style={{ color: "var(--state-error)", margin: "var(--sp-2) 0 0" }}>
+                  {askAgentLocalError ?? askAgent.error}
+                </p>
+              ) : null}
+              <div className="flex items-center justify-end" style={{ gap: "var(--sp-2)", marginTop: "var(--sp-3)" }}>
+                <button
+                  type="button"
+                  disabled={interactionLocked}
+                  onClick={() => {
+                    setAskAgentOpen(false);
+                    setAskAgentLocalError(null);
+                  }}
+                  className="text-label"
+                  style={{
+                    height: mobile ? 44 : 34,
+                    padding: "0 var(--sp-3)",
+                    border: 0,
+                    background: "transparent",
+                    color: "var(--fg-3)",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={interactionLocked || askAgentDraft.trim().length === 0}
+                  onClick={() => {
+                    const question = askAgentDraft.trim();
+                    if (!question || interactionLocked) return;
+                    setAskAgentLocalError(null);
+                    void askAgent
+                      .onAsk(question)
+                      .then(() => {
+                        setAskAgentDraft("");
+                        setAskAgentOpen(false);
+                      })
+                      .catch((cause: unknown) => {
+                        setAskAgentLocalError(cause instanceof Error ? cause.message : "Failed to ask the agent");
+                      });
+                  }}
+                  className="text-label"
+                  style={{
+                    height: mobile ? 44 : 34,
+                    padding: "0 var(--sp-4)",
+                    borderRadius: "var(--radius-input)",
+                    border: "var(--hairline) solid var(--border-strong)",
+                    background: "var(--bg-raised)",
+                    color: "var(--fg)",
+                    opacity: interactionLocked || askAgentDraft.trim().length === 0 ? 0.5 : 1,
+                  }}
+                >
+                  {askAgent.sending ? "Asking…" : "Ask agent"}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
 
-        {/* Pinned footer — Skip / Reply. Fixed (flex 0 0 auto) so it never
-            scrolls out of view: Reply is reachable at any viewport height. */}
+        {/* Pinned footer — Skip / Ask agent / Submit. */}
         <div
           data-ask-takeover-footer
           className={mobile ? "pb-safe-bottom" : undefined}
@@ -716,27 +1013,55 @@ export function AskTakeover({
             <button
               type="button"
               onClick={onSkip}
-              disabled={sending}
-              title="Skip (Esc)"
+              disabled={interactionLocked}
+              title="Skip"
               className="text-label"
               style={{
                 // Mobile: 44 height clears the touch minimum.
                 height: mobile ? 44 : 34,
                 padding: "0 var(--sp-4)",
                 borderRadius: "var(--radius-input)",
-                border: "var(--hairline) solid transparent",
+                borderWidth: "var(--hairline)",
+                borderStyle: "solid",
+                borderColor: "transparent",
                 background: "transparent",
                 color: "var(--fg-2)",
-                cursor: sending ? "default" : "pointer",
+                cursor: interactionLocked ? "default" : "pointer",
               }}
             >
               Skip
             </button>
+            {askAgent ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setAskAgentOpen(true);
+                  setAskAgentLocalError(null);
+                }}
+                disabled={interactionLocked}
+                title="Ask the agent to clarify"
+                className="text-label"
+                style={{
+                  height: mobile ? 44 : 34,
+                  padding: "0 var(--sp-4)",
+                  borderRadius: "var(--radius-input)",
+                  borderWidth: "var(--hairline)",
+                  borderStyle: "solid",
+                  borderColor: "var(--border-strong)",
+                  background: "transparent",
+                  color: "var(--fg)",
+                  cursor: interactionLocked ? "default" : "pointer",
+                  opacity: interactionLocked ? 0.5 : 1,
+                }}
+              >
+                {askAgent.waiting ? "Waiting…" : "Ask agent"}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={reply}
               disabled={!canReply}
-              title={mobile ? "Reply" : "Reply (Enter)"}
+              title={mobile ? "Submit" : "Submit (Enter)"}
               className="text-label"
               style={{
                 // Mobile: 44 height clears the touch minimum (Reply is the only
@@ -751,7 +1076,7 @@ export function AskTakeover({
                 opacity: canReply ? 1 : 0.5,
               }}
             >
-              {sending ? "Replying…" : "Reply"}
+              {sending ? "Submitting…" : "Submit"}
             </button>
           </div>
         </div>
@@ -764,11 +1089,13 @@ function OptionRow({
   opt,
   multi,
   selected,
+  disabled,
   onToggle,
 }: {
   opt: AskOption;
   multi: boolean;
   selected: boolean;
+  disabled: boolean;
   onToggle: () => void;
 }) {
   return (
@@ -777,6 +1104,7 @@ function OptionRow({
       type="button"
       role={multi ? "checkbox" : "radio"}
       aria-checked={selected}
+      disabled={disabled}
       onClick={onToggle}
       style={{
         position: "relative",
@@ -787,7 +1115,8 @@ function OptionRow({
         textAlign: "left",
         border: `var(--hairline) solid ${selected ? "var(--border-strong)" : "var(--border)"}`,
         borderRadius: "var(--radius-panel)",
-        cursor: "pointer",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.6 : 1,
         background: selected ? "color-mix(in oklch, var(--fg) 8%, var(--bg-raised))" : "var(--bg)",
         fontWeight: selected ? 500 : 400,
         width: "100%",

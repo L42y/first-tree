@@ -325,16 +325,14 @@ export const meChatRowSchema = z.object({
   /**
    * True iff there exists at least one unread message in this chat whose
    * `messages.metadata.mentions` array explicitly contains the caller's
-   * human-agent UUID. Drives the chat-list "Needs attention" mention rule on
-   * the front-end after the explicit-mention narrowing (Phase 1 of the
-   * three-rule simplification).
+   * human-agent UUID. This is a row-level unread signal only: it never changes
+   * chat ordering or feeds the request-level Need you queue.
    *
    * Distinguishes explicit `@<me>` from the v1 1-on-1 implicit DM
    * auto-mention (`services/message.ts:282 dmAutoProjection`): the latter
    * still bumps `unreadMentionCount` for the red dot but never writes the
    * recipient into `metadata.mentions`, so a 1-on-1 agent → human plain
-   * final message correctly leaves `chatHasExplicitMentionToMe = false` and
-   * stops pinning the chat into Needs attention.
+   * final message correctly leaves `chatHasExplicitMentionToMe = false`.
    *
    * Unread window = `(cus.last_read_at, NOW()]`; NULL `last_read_at` means
    * "never read", treated as "every message counts".
@@ -366,35 +364,46 @@ export const meChatRowSchema = z.object({
 });
 export type MeChatRow = z.infer<typeof meChatRowSchema>;
 
+function sortMeChatRowsByActivity(rows: readonly MeChatRow[]): MeChatRow[] {
+  return [...rows].sort((a, b) => {
+    const aAt = Date.parse(a.activityAt ?? a.lastMessageAt ?? "") || 0;
+    const bAt = Date.parse(b.activityAt ?? b.lastMessageAt ?? "") || 0;
+    return bAt - aAt || b.chatId.localeCompare(a.chatId);
+  });
+}
+
 /**
- * Priority groups extracted server-side across the *full matching set* (the same
- * engagement / origin / participant / unread / watch filters as the ordinary
- * list, just without the loaded-page boundary), rendered above the ordinary
- * list. Populated on the FIRST page only (a request with no `cursor`); empty on
- * load-more pages, which the client reads from page 0.
- *   - `attention`: chats needing the viewer now — a *caller-managed* non-human
- *     speaker in `failed`, or an open request addressed to the viewer — ordered
- *     failed-first, then by `activityAt` DESC. (A peer's failed agent / another
- *     human's request stays in the ordinary stream.)
- *   - `pinned`: the viewer's pinned chats (private per-user state), ordered by
- *     `pinnedAt` DESC, excluding any already surfaced in `attention`.
+ * The viewer's complete pin projection across the full matching set, populated
+ * on the first page only and ordered by real-work activity DESC. Ordinary `rows` remain
+ * additive for rolling compatibility, so clients de-duplicate pinned ids before
+ * rendering the recency stream.
  *
- * `attention` and `pinned` are server-DISJOINT (a chat is in at most one of the
- * two). The ordinary `rows`, however, are ADDITIVE: a priority chat is NOT
- * removed from `rows` (that keeps the response backward-compatible with a client
- * that ignores these groups). A client that renders the groups must therefore
- * de-duplicate `rows` against the priority chat ids so each chat shows once
- * (attention > pinned > recency).
+ * Open asks and recovery are row status signals, not list tiers. Open asks have
+ * their own request-level Need you queue; recovery never changes chat ordering.
  *
- * `.default({...})` for version skew: a web bundle ahead of a server that
- * predates these groups reads them as empty rather than `undefined`.
+ * A web-ahead rolling deploy can still receive the retired `attention` bucket
+ * from an older server. That server made Attention win over Pinned, so a pinned
+ * chat with an open request was absent from `pinned` even though its row still
+ * carried `pinnedAt`. Treat that legacy bucket only as a transport fallback:
+ * recover its pinned rows into the canonical pin projection, then discard the
+ * bucket. Unpinned Attention rows stay in additive `rows` and retain ordinary
+ * activity ordering; the retired tier never reappears in the parsed contract.
  */
 export const meChatPriorityRowsSchema = z
   .object({
-    attention: z.array(meChatRowSchema),
-    pinned: z.array(meChatRowSchema),
+    pinned: z.array(meChatRowSchema).default([]),
+    attention: z.array(meChatRowSchema).default([]),
   })
-  .default({ attention: [], pinned: [] });
+  .default({ pinned: [], attention: [] })
+  .transform(({ pinned, attention }) => {
+    const canonicalByChatId = new Map(pinned.map((row) => [row.chatId, row]));
+    for (const row of attention) {
+      if (row.pinnedAt !== null && !canonicalByChatId.has(row.chatId)) {
+        canonicalByChatId.set(row.chatId, row);
+      }
+    }
+    return { pinned: sortMeChatRowsByActivity([...canonicalByChatId.values()]) };
+  });
 export type MeChatPriorityRows = z.infer<typeof meChatPriorityRowsSchema>;
 
 export const listMeChatsResponseSchema = z.object({

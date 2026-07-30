@@ -75,7 +75,7 @@ function renderShell(harness: DomHarness, path: string) {
       <QueryClientProvider client={queryClient}>
         <Routes>
           <Route element={<MobileShell />}>
-            <Route path="/m/work" element={<div>work content</div>} />
+            <Route path="/m/chat" element={<div>work content</div>} />
           </Route>
         </Routes>
       </QueryClientProvider>
@@ -86,11 +86,11 @@ function renderShell(harness: DomHarness, path: string) {
 function renderUnifiedWorkShell(harness: DomHarness) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   harness.render(
-    <MemoryRouter initialEntries={["/m/work"]}>
+    <MemoryRouter initialEntries={["/m/chat"]}>
       <QueryClientProvider client={queryClient}>
         <Routes>
           <Route element={<MobileShell />}>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Route>
         </Routes>
       </QueryClientProvider>
@@ -113,14 +113,14 @@ describe("MobileShell", () => {
   });
 
   it("keeps bottom tabs on primary tabs and hides them for chat detail", async () => {
-    renderShell(harness, "/m/work");
+    renderShell(harness, "/m/chat");
     await harness.flush();
     expect(harness.container.querySelector('nav[aria-label="Mobile"]')).not.toBeNull();
 
     harness.cleanup();
     harness = createDomHarness();
 
-    renderShell(harness, "/m/work?c=chat-1");
+    renderShell(harness, "/m/chat?c=chat-1");
     await harness.flush();
     expect(harness.container.textContent).toContain("work content");
     expect(harness.container.querySelector('nav[aria-label="Mobile"]')).toBeNull();
@@ -128,17 +128,17 @@ describe("MobileShell", () => {
   });
 
   it("omits duplicate root-tab top titles and keeps team switching out of mobile chrome", async () => {
-    renderShell(harness, "/m/work");
+    renderShell(harness, "/m/chat");
     await harness.flush();
 
     expect(harness.container.querySelector("header")).toBeNull();
-    expect(harness.container.textContent).toContain("Work");
-    expect(harness.container.textContent).not.toContain("Chat");
+    expect(harness.container.textContent).toContain("Chat");
+    expect(harness.container.textContent).not.toContain("Work");
     expect(harness.container.textContent).not.toContain("Current team");
   });
 
   it("uses the mobile viewport utility and reserves the top safe area", async () => {
-    renderShell(harness, "/m/work");
+    renderShell(harness, "/m/chat");
     await harness.flush();
 
     // Viewport height comes from the .h-dvh-screen utility: dynamic viewport
@@ -156,7 +156,7 @@ describe("MobileShell", () => {
     authMock.value.onboardingStep = "create_agent";
     authMock.value.onboardingCompletedAt = null;
     authMock.value.currentOrgHasPersonalAgent = false;
-    renderShell(harness, "/m/work");
+    renderShell(harness, "/m/chat");
     await harness.flush();
 
     expect(harness.container.textContent).toContain("Finish setup on desktop");
@@ -165,15 +165,15 @@ describe("MobileShell", () => {
     expect(harness.container.textContent).not.toContain("work content");
   });
 
-  it("shares one active-list poller and one source-count poller between shell and Work", async () => {
+  it("shares one active-list poller and one source-count poller between shell and Chat", async () => {
     meChatMocks.listMeChats.mockResolvedValue({
       rows: [],
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       nextCursor: null,
     });
     renderUnifiedWorkShell(harness);
 
-    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active work"));
+    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active chats"));
     expect(meChatMocks.listMeChats).toHaveBeenCalledTimes(1);
     expect(meChatMocks.listMeChatSourceCounts).toHaveBeenCalledTimes(1);
     expect(meChatMocks.listMeChatSourceCounts).toHaveBeenCalledWith(

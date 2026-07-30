@@ -1,4 +1,4 @@
-// Legacy import compatibility. The product route is now `/m/work`; keeping
+// Legacy import compatibility. The product route is now `/m/chat`; keeping
 // this named export prevents downstream previews/tests from breaking while
-// `/m/now` redirects to the unified Work surface.
+// `/m/now` redirects to the canonical Chat surface.
 export { MobileWorkPage as MobileNowPage } from "./work.js";

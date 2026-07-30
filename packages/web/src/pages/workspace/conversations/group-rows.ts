@@ -198,36 +198,28 @@ function groupBySource(rows: ReadonlyArray<MeChatRow>): ReadonlyArray<GroupBucke
 }
 
 // ---------------------------------------------------------------------------
-// attention pinning (failed + request)
+// row-level status precedence (failed + request)
 // ---------------------------------------------------------------------------
 //
-// Chat-granularity predicate — see docs/development/needs-attention-scoping.20260526.md.
-// A chat enters the "Needs attention" bucket when ANY of:
+// Chat-granularity predicate used only to choose a row's strongest status icon:
 //
 //   R1. `failedAgentIds.length > 0`
 //       — A non-human agent I MANAGE is `failed` in this chat. Server
 //         narrows `failedAgentIds` to `agents.manager_id = caller` so a
-//         peer's broken agent never pins my row. A broken agent is stuck
-//         until I intervene, so recovery is a legitimate attention signal
-//         and it still pins.
+//         peer's broken agent never marks my row.
 //
 //   R2. `openRequestCount > 0`
 //       — An agent raised a structured question (`format=request`) at me
 //         that I have not answered yet. The counter is ANSWER-cleared, not
 //         read-cleared (`chat_user_state.open_request_count` only decrements
-//         on my clean web-UI answer — an agent cannot resolve), so merely
-//         opening the chat does NOT drop the row out of the attention
-//         bucket — the asking agent is still blocked on me until I actually
-//         answer the question.
+//         on my clean web-UI answer — an agent cannot resolve), so the `?`
+//         remains until I actually answer the question.
 //
-// Deliberately NOT a pinning rule — a plain unread mention / red dot. An
-// `@<me>` mention bumps `unreadMentionCount` (and still renders the red
-// dot) but no longer hoists the chat to the top. The chat list is kept as
-// stable as possible: only an explicit ask (R2) or a broken agent needing
-// recovery (R1) reorders it. A red dot is awareness, not a demand for
-// judgment, so it must not churn the ordering. (`chatHasExplicitMentionToMe`
-// stays on the row as a precise signal for the red dot / a future
-// explicit-@me affordance, but no longer feeds pinning.)
+// None of these statuses changes chat ordering. The list has two ordering
+// layers only: pinned chats first, then all other chats, with real-work
+// activity descending inside both. A plain unread mention remains its own red
+// dot. `chatHasExplicitMentionToMe` stays on the row as the precise unread
+// signal but likewise never affects ordering.
 //
 // Sort priority: `failed > request`. Both demand action; `failed` outranks
 // because a stuck agent needs recovery before its chat can make progress
@@ -241,9 +233,9 @@ const ATTENTION_PRIORITY = ["failed", "request"] as const;
 type AttentionReason = (typeof ATTENTION_PRIORITY)[number];
 
 /**
- * Highest-priority attention reason for this row, or `null` when the row is
- * NOT in the attention bucket. Order matters: a row that satisfies multiple
- * rules sorts under its highest tier (e.g. failed + request → failed).
+ * Highest-priority actionable status for this row, or `null` when neither
+ * applies. Order matters only for icon selection: a row satisfying both shows
+ * failed rather than request. It never changes the row's list position.
  */
 export function rowAttentionReason(r: MeChatRow): AttentionReason | null {
   if (r.failedAgentIds.length > 0) return "failed";
@@ -257,9 +249,9 @@ export function rowAttentionReason(r: MeChatRow): AttentionReason | null {
 }
 
 /**
- * The row's "failed" indicator (red `!` / left border). Lights ONLY for
+ * The row's "failed" indicator (red `!`). Lights ONLY for
  * caller-managed failed agents — server already narrows `failedAgentIds`.
- * Equivalent to "this row is in the failed tier of the attention bucket".
+ * Equivalent to "failed is this row's strongest actionable status".
  */
 export function rowIsFailed(r: MeChatRow): boolean {
   return r.failedAgentIds.length > 0;

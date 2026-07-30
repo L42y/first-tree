@@ -36,7 +36,7 @@ function row(overrides: Partial<MeChatRow> & { chatId: string }): MeChatRow {
 
 function page(over: Partial<ListMeChatsResponse> = {}): ListMeChatsResponse {
   return {
-    priorityRows: over.priorityRows ?? { attention: [], pinned: [] },
+    priorityRows: over.priorityRows ?? { pinned: [] },
     rows: over.rows ?? [],
     nextCursor: over.nextCursor ?? null,
   };
@@ -66,21 +66,23 @@ describe("applyOptimisticPin", () => {
     expect(pageAt(next, 0).rows.find((r) => r.chatId === "b")?.pinnedAt).toBe(NOW);
   });
 
-  it("prepends the newest pin ahead of existing pins (pinnedAt DESC)", () => {
+  it("inserts a new pin by real-work activity rather than pin time", () => {
     const data = infinite([
       page({
-        priorityRows: { attention: [], pinned: [row({ chatId: "y", pinnedAt: EARLIER })] },
-        rows: [row({ chatId: "x" })],
+        priorityRows: {
+          pinned: [row({ chatId: "y", pinnedAt: EARLIER, activityAt: "2026-07-10T00:00:00.000Z" })],
+        },
+        rows: [row({ chatId: "x", activityAt: "2026-07-01T00:00:00.000Z" })],
       }),
     ]);
     const next = applyOptimisticPin(data, "x", true, NOW);
-    expect(pageAt(next, 0).priorityRows.pinned.map((r) => r.chatId)).toEqual(["x", "y"]);
+    expect(pageAt(next, 0).priorityRows.pinned.map((r) => r.chatId)).toEqual(["y", "x"]);
   });
 
   it("removes a chat from the Pinned group on unpin and clears pinnedAt everywhere", () => {
     const data = infinite([
       page({
-        priorityRows: { attention: [], pinned: [row({ chatId: "p", pinnedAt: EARLIER })] },
+        priorityRows: { pinned: [row({ chatId: "p", pinnedAt: EARLIER })] },
         rows: [row({ chatId: "p", pinnedAt: EARLIER }), row({ chatId: "q" })],
       }),
     ]);
@@ -97,7 +99,7 @@ describe("applyOptimisticPin", () => {
     // end state is correct — this only documents the transient.
     const data = infinite([
       page({
-        priorityRows: { attention: [], pinned: [row({ chatId: "p", pinnedAt: EARLIER })] },
+        priorityRows: { pinned: [row({ chatId: "p", pinnedAt: EARLIER })] },
         rows: [row({ chatId: "other" })],
       }),
     ]);
@@ -106,19 +108,15 @@ describe("applyOptimisticPin", () => {
     expect(pageAt(next, 0).rows.map((r) => r.chatId)).toEqual(["other"]);
   });
 
-  it("keeps an attention chat in attention when pinned (attention wins) and only flips pinnedAt", () => {
-    const data = infinite([
-      page({ priorityRows: { attention: [row({ chatId: "f" })], pinned: [] }, rows: [row({ chatId: "g" })] }),
-    ]);
+  it("promotes a status-bearing ordinary chat into pinned without changing its status", () => {
+    const data = infinite([page({ rows: [row({ chatId: "f", failedAgentIds: ["agent-1"] })] })]);
     const next = applyOptimisticPin(data, "f", true, NOW);
-    expect(pageAt(next, 0).priorityRows.pinned).toHaveLength(0);
-    expect(pageAt(next, 0).priorityRows.attention[0]?.pinnedAt).toBe(NOW);
+    expect(pageAt(next, 0).priorityRows.pinned[0]?.pinnedAt).toBe(NOW);
+    expect(pageAt(next, 0).priorityRows.pinned[0]?.failedAgentIds).toEqual(["agent-1"]);
   });
 
   it("is idempotent — re-pinning an already-pinned chat does not duplicate it", () => {
-    const data = infinite([
-      page({ priorityRows: { attention: [], pinned: [row({ chatId: "p", pinnedAt: EARLIER })] } }),
-    ]);
+    const data = infinite([page({ priorityRows: { pinned: [row({ chatId: "p", pinnedAt: EARLIER })] } })]);
     const next = applyOptimisticPin(data, "p", true, NOW);
     expect(pageAt(next, 0).priorityRows.pinned.map((r) => r.chatId)).toEqual(["p"]);
     expect(pageAt(next, 0).priorityRows.pinned[0]?.pinnedAt).toBe(NOW);

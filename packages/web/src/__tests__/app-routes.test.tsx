@@ -398,22 +398,34 @@ describe("App routes", () => {
   it("opens the mobile experience on prod", async () => {
     setViewportWidth(390);
     expect(await renderAppAt("/")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
     expect(document.head.querySelector('link[rel="manifest"]')?.getAttribute("href")).toBe("/manifest.webmanifest");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 
     setViewportWidth(390);
     expect(await renderAppAt("/m")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
+    await act(async () => root?.unmount());
+    document.body.innerHTML = "";
+
+    setViewportWidth(390);
+    expect(await renderAppAt("/m/work?c=chat-1#latest")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
+    expect(window.location.search).toBe("?c=chat-1");
+    expect(window.location.hash).toBe("#latest");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 
     setViewportWidth(390);
     expect(await renderAppAt("/m/now")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 
     setViewportWidth(390);
     expect(await renderAppAt("/m/chat")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
   });
 
   it("waits for the server channel before choosing the mobile or desktop shell", async () => {
@@ -456,17 +468,20 @@ describe("App routes", () => {
     serverChannelStateMock.channel = "staging";
     setViewportWidth(390);
     expect(await renderAppAt("/")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
     expect(document.head.querySelector('link[rel="manifest"]')?.getAttribute("href")).toBe("/manifest.webmanifest");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 
     setViewportWidth(390);
     expect(await renderAppAt("/m")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 
     setViewportWidth(390);
     expect(await renderAppAt("/m/chat")).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 

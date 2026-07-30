@@ -46,9 +46,8 @@ describe("pinMeChat + chats.activity_at", () => {
         engagement: "all",
       },
     );
-    // A chat can surface in any group now (attention > pinned > ordinary rows) —
-    // a pinned chat lives in `priorityRows.pinned`, so search all three.
-    return [...priorityRows.attention, ...priorityRows.pinned, ...rows].find((r) => r.chatId === chatId) ?? null;
+    // A pinned chat lives in `priorityRows.pinned`; rows stays additive.
+    return [...priorityRows.pinned, ...rows].find((r) => r.chatId === chatId) ?? null;
   }
 
   async function activityAtOf(app: App, chatId: string): Promise<Date | null> {
@@ -81,10 +80,10 @@ describe("pinMeChat + chats.activity_at", () => {
     expect(pinnedRow?.pinnedAt).not.toBeNull();
     expect(new Date(pinnedRow?.pinnedAt ?? 0).getTime()).toBe(new Date(pinned.pinnedAt ?? 0).getTime());
 
-    // Idempotent on the timestamp too: re-pinning keeps a single row AND the
-    // original pinned_at anchor (a retry / double-click must not reorder the
-    // chat, since pinned_at is the within-group sort key). The intervening DB
-    // round-trips guarantee a later wall-clock, so an overwrite would differ.
+    // Idempotent on the timestamp too: re-pinning keeps a single row and the
+    // original pinned_at anchor rather than rewriting private pin state. The
+    // intervening DB round-trips guarantee a later wall-clock, so an overwrite
+    // would differ.
     const repinned = await pinMeChat(app.db, chatId, admin.humanAgentUuid, true);
     expect(new Date(repinned.pinnedAt ?? 0).getTime()).toBe(new Date(pinned.pinnedAt ?? 0).getTime());
     const callerRows = (await app.db.select().from(chatUserState).where(eq(chatUserState.chatId, chatId))).filter(
