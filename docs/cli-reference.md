@@ -1197,7 +1197,8 @@ disabled states. It also checks the Plugin manifest and the actual
 provider-installed Skill/Policy/hook bytes. `context repair` revalidates and reinstalls only First Tree's
 Plugin through the durable outer operation journal used by enable and repair,
 with rollback to the prior provider cache on failure. Binding-only disable uses
-that journal only to preserve and atomically update binding state; it never
+the account/context mutation lock, an expected-config comparison, and atomic
+config replacement; it does not create an outer operation journal and never
 captures, removes, or restores provider Plugin state. Context mutations and local
 Client account switching are mutually exclusive; incomplete operations retain
 the exact Computer identity and must be recovered under that same account.

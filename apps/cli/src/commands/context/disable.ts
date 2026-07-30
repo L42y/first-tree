@@ -9,7 +9,7 @@ import {
 } from "../../core/context-integration/context-binding-store.js";
 import { disableContextIntegrationOperation } from "../../core/context-integration/operation.js";
 import { print } from "../../core/output.js";
-import { shellQuote } from "../../core/supervisor/shared.js";
+import { quotePosixShellArg } from "../../core/posix-shell.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
 import { parseContextProvider } from "./shared.js";
 
@@ -73,7 +73,7 @@ export async function runContextDisable(context: CommandContext): Promise<void> 
     print.status(
       "Next action",
       `${channelConfig.binName} context disable --provider ${provider} ${
-        project.kind === "path" ? `--project-root ${shellQuote(project.root)}` : "--pathless"
+        project.kind === "path" ? `--project-root ${quotePosixShellArg(project.root)}` : "--pathless"
       }`,
     );
     print.status("Current session", "already injected Context cannot be removed");

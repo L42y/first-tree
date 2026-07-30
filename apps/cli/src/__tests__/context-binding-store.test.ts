@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -159,6 +159,65 @@ describe("context binding store v2", () => {
     expect(readFileSync(storePaths.legacyBackupPath ?? "", "utf8")).toBe(legacy);
     expect(statSync(storePaths.legacyBackupPath ?? "").mode & 0o777).toBe(0o600);
     expect(readFileSync(storePaths.configPath, "utf8")).not.toContain("repositoryKey");
+  });
+
+  it.each([
+    "directory",
+    "malformed",
+    "wrong permissions",
+  ] as const)("fails closed when the fixed v1 backup is %s", (backupState) => {
+    const storePaths = temporaryPaths("context-binding-invalid-backup-");
+    mkdirSync(dirname(storePaths.configPath), { recursive: true });
+    const legacy = [
+      "schemaVersion: 1",
+      "bindings:",
+      "  - provider: codex",
+      "    checkoutRoot: /work/plain-project",
+      "    repositoryKey: github.com/acme/repo",
+      "    organizationId: org_acme",
+      "",
+    ].join("\n");
+    writeFileSync(storePaths.configPath, legacy);
+    const backupPath = storePaths.legacyBackupPath ?? "";
+    if (backupState === "directory") {
+      mkdirSync(backupPath);
+    } else if (backupState === "malformed") {
+      writeFileSync(backupPath, "not: a-valid-v1-config\n", { mode: 0o600 });
+    } else {
+      writeFileSync(backupPath, legacy, { mode: 0o600 });
+      chmodSync(backupPath, 0o644);
+    }
+
+    expect(() => readContextIntegrationConfig(storePaths)).toThrow();
+    expect(readFileSync(storePaths.configPath, "utf8")).toBe(legacy);
+  });
+
+  it("does not overwrite an existing valid fixed v1 backup during migration", () => {
+    const storePaths = temporaryPaths("context-binding-existing-backup-");
+    mkdirSync(dirname(storePaths.configPath), { recursive: true });
+    const currentLegacy = [
+      "schemaVersion: 1",
+      "bindings:",
+      "  - provider: codex",
+      "    checkoutRoot: /work/current",
+      "    repositoryKey: github.com/acme/current",
+      "    organizationId: org_current",
+      "",
+    ].join("\n");
+    const existingBackup = [
+      "schemaVersion: 1",
+      "bindings:",
+      "  - provider: codex",
+      "    checkoutRoot: /work/prior",
+      "    repositoryKey: github.com/acme/prior",
+      "    organizationId: org_prior",
+      "",
+    ].join("\n");
+    writeFileSync(storePaths.configPath, currentLegacy);
+    writeFileSync(storePaths.legacyBackupPath ?? "", existingBackup, { mode: 0o600 });
+
+    expect(readContextIntegrationConfig(storePaths).schemaVersion).toBe(2);
+    expect(readFileSync(storePaths.legacyBackupPath ?? "", "utf8")).toBe(existingBackup);
   });
 
   it("fails closed on malformed config without overwriting it", () => {

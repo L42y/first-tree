@@ -158,20 +158,7 @@ export function preserveLegacyContextIntegrationBackup(
   config: LegacyContextIntegrationConfig,
   paths: ContextBindingStorePaths = defaultContextBindingStorePaths(),
 ): void {
-  withContextIntegrationLock(() => {
-    const backupPath = paths.legacyBackupPath ?? `${paths.configPath}.v1.bak`;
-    if (existsSync(backupPath)) {
-      const existing = statSync(backupPath);
-      if (!existing.isFile() || (existing.mode & 0o777) !== 0o600) {
-        throw new Error(`Invalid First Tree Context v1 backup at ${backupPath}.`);
-      }
-      legacyContextIntegrationConfigSchema.parse(parse(readFileSync(backupPath, "utf8")));
-      return;
-    }
-    const validated = legacyContextIntegrationConfigSchema.parse(config);
-    mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
-    writeFileSync(backupPath, stringify(validated), { mode: 0o600, flag: "wx" });
-  }, paths);
+  withContextIntegrationLock(() => preserveLegacyBackup(config, paths), paths);
 }
 
 export function assertContextIntegrationConfig(
@@ -280,11 +267,7 @@ function migrateLegacyContextIntegrationConfig(paths: ContextBindingStorePaths):
   const current = contextIntegrationConfigSchema.safeParse(parsed);
   if (current.success) return current.data;
   const legacy = legacyContextIntegrationConfigSchema.parse(parsed);
-  const backupPath = paths.legacyBackupPath ?? `${paths.configPath}.v1.bak`;
-  if (!existsSync(backupPath)) {
-    mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
-    writeFileSync(backupPath, raw, { mode: 0o600, flag: "wx" });
-  }
+  preserveLegacyBackup(legacy, paths, raw);
   const migrated: ContextIntegrationConfig = {
     schemaVersion: 2,
     bindings: legacy.bindings.map((binding) => ({
@@ -295,6 +278,25 @@ function migrateLegacyContextIntegrationConfig(paths: ContextBindingStorePaths):
   };
   writeContextIntegrationConfig(migrated, paths);
   return migrated;
+}
+
+function preserveLegacyBackup(
+  config: LegacyContextIntegrationConfig,
+  paths: ContextBindingStorePaths,
+  originalBytes?: string,
+): void {
+  const backupPath = paths.legacyBackupPath ?? `${paths.configPath}.v1.bak`;
+  if (existsSync(backupPath)) {
+    const existing = statSync(backupPath);
+    if (!existing.isFile() || (existing.mode & 0o777) !== 0o600) {
+      throw new Error(`Invalid First Tree Context v1 backup at ${backupPath}.`);
+    }
+    legacyContextIntegrationConfigSchema.parse(parse(readFileSync(backupPath, "utf8")));
+    return;
+  }
+  const validated = legacyContextIntegrationConfigSchema.parse(config);
+  mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
+  writeFileSync(backupPath, originalBytes ?? stringify(validated), { mode: 0o600, flag: "wx" });
 }
 
 function sameProject(left: ContextIntegrationProject, right: ContextIntegrationProject): boolean {

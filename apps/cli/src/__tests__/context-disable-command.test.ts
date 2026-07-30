@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandContext } from "../commands/types.js";
+import { channelConfig } from "../core/channel.js";
 
 const output = vi.hoisted(() => ({
   result: vi.fn(),
@@ -117,6 +119,61 @@ describe("context disable command", () => {
       fallback: parent,
     });
   });
+
+  it.skipIf(process.platform === "win32")(
+    "quotes a fallback command as literal POSIX argv without command substitution",
+    async () => {
+      const { home, project } = setup();
+      const dangerousRoot = join(
+        project,
+        "danger with ' $(touch dollar-substitution-marker) `touch backtick-substitution-marker`",
+      );
+      const nested = join(dangerousRoot, "src");
+      mkdirSync(nested, { recursive: true });
+      writeContextBinding({
+        provider: "codex",
+        project: { kind: "path", root: project },
+        organizationId: "org_parent",
+      });
+      writeContextBinding({
+        provider: "codex",
+        project: { kind: "path", root: dangerousRoot },
+        organizationId: "org_deepest",
+      });
+
+      await runContextDisable(context({ provider: "codex", projectRoot: nested, yes: true }));
+
+      const nextAction = output.status.mock.calls.find(([label]) => label === "Next action")?.[1];
+      expect(typeof nextAction).toBe("string");
+      const shimDir = join(home, "bin");
+      const capturedArgs = join(home, "captured-args");
+      const shimPath = join(shimDir, channelConfig.binName);
+      mkdirSync(shimDir, { recursive: true });
+      writeFileSync(shimPath, '#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURED_ARGS"\n');
+      chmodSync(shimPath, 0o755);
+      const executed = spawnSync("/bin/sh", ["-c", String(nextAction)], {
+        cwd: home,
+        env: {
+          ...process.env,
+          PATH: `${shimDir}:${process.env.PATH ?? ""}`,
+          CAPTURED_ARGS: capturedArgs,
+        },
+        encoding: "utf8",
+      });
+
+      expect(executed.status).toBe(0);
+      expect(readFileSync(capturedArgs, "utf8").trimEnd().split("\n")).toEqual([
+        "context",
+        "disable",
+        "--provider",
+        "codex",
+        "--project-root",
+        nested,
+      ]);
+      expect(existsSync(join(home, "dollar-substitution-marker"))).toBe(false);
+      expect(existsSync(join(home, "backtick-substitution-marker"))).toBe(false);
+    },
+  );
 
   it("reports disabled when removing a path binding leaves no fallback", async () => {
     const { project, nested } = setup();
