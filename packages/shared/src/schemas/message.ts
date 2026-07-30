@@ -97,9 +97,9 @@ export const MESSAGE_FORMATS = {
    * Lifecycle is driven by an EXPLICIT resolution signal: a question is
    * answered/closed only by a later message carrying `metadata.resolves` (see
    * `requestResolutionSchema`), which drives `chat_user_state.open_request_count`
-   * down. The target's answer ALWAYS resolves it — picking an option OR typing
-   * free text both write `resolves` (kind="answered"). NEW resolutions are
-   * human-only — the server accepts a `resolves` write only from the target. An
+   * down. The target's Submit resolves it with `kind="answered"`; Skip resolves
+   * it with `kind="closed"`. NEW resolutions are human-only — the server accepts
+   * a `resolves` write only from the target. An
    * agent CAN post a plain `chat send <human>` follow-up (an informational free
    * reply; it carries no `resolves`, raises no red dot, and never resolves the
    * question), but it cannot answer/close the question itself. Lifecycle readers
@@ -164,9 +164,10 @@ export type AskRequest = z.infer<typeof askRequestSchema>;
  * `format="request"` message. This is the ONLY thing that answers or closes
  * an open question — `inReplyTo` no longer does (it is pure threading now).
  *
- * Written ONLY by the target human's web answer — picking an option OR typing
- * free text both attach `resolves` (kind="answered"); the blocking answer
- * surface has no "reply without resolving" path, so every human answer resolves.
+ * Written ONLY by the target human's web answer surface — picking an option OR
+ * typing free text attaches `resolves` (kind="answered"), while Skip attaches
+ * `resolves` (kind="closed"). The surface has no "reply without resolving"
+ * path, so every action completes the request lifecycle.
  * An agent (including the asker) **cannot** write a resolution: the server
  * authorizes a NEW resolution only from the question's target, so an agent
  * answers nothing and closes nothing. (Pre-refinement history may still hold
@@ -177,10 +178,9 @@ export type AskRequest = z.infer<typeof askRequestSchema>;
  *
  *   - kind="answered" — the question is answered. The readable answer stays in
  *     the message `content`.
- *   - kind="closed"   — the question is withdrawn. Retained as a server-honored
- *     resolution kind for compatibility; no current surface produces it (the
- *     human web answer only ever writes "answered"). `reason` optionally explains
- *     why.
+ *   - kind="closed"   — the target human skipped the question without providing
+ *     an answer. The readable Skip note stays in `content`; `reason` optionally
+ *     explains why.
  *
  * Server-opaque except for the `open_request_count` counter, whose −1 keys
  * off `resolves.request`. The web parses it with `safeParse`.

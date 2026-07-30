@@ -241,7 +241,8 @@ describe("mobile Chat card behavior", () => {
   it("opens Chat actions from the keyboard and archives only a settled chat with Undo", async () => {
     const settled = { ...row, openRequestCount: 0 };
     listResponse = { rows: [settled], priorityRows: { pinned: [] }, nextCursor: null };
-    renderPage(harness);
+    const queryClient = renderPage(harness);
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
     await harness.waitFor(() => expect(harness.container.textContent).toContain(row.title));
     const card = harness.container.querySelector('[data-mobile-card="work"]');
 
@@ -253,9 +254,11 @@ describe("mobile Chat card behavior", () => {
     expect(buttonWithText("Archive")?.disabled).toBe(false);
     await click(buttonWithText("Archive"));
     await harness.waitFor(() => expect(chatMocks.patchChatEngagement).toHaveBeenCalledWith(row.chatId, "archived"));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["need-you"] });
     await harness.waitFor(() => expect(buttonWithText("Undo")).not.toBeNull());
     await click(buttonWithText("Undo"));
     await harness.waitFor(() => expect(chatMocks.patchChatEngagement).toHaveBeenCalledWith(row.chatId, "active"));
+    expect(invalidateSpy.mock.calls.filter(([options]) => options?.queryKey?.[0] === "need-you")).toHaveLength(2);
   });
 
   it("offers the inverse read action through the context-menu path", async () => {

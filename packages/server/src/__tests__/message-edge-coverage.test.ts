@@ -64,6 +64,51 @@ describe("message service edge coverage", () => {
     ).toThrow(/Deleted agents cannot receive new messages/);
   });
 
+  it("allows only a human closed resolution to degrade after its declared target is missing", () => {
+    const human = {
+      agentId: "human-1",
+      name: "human",
+      displayName: "Human",
+      status: "active",
+      type: "human",
+    } satisfies SendIntentParticipant;
+    const closed = preflightMessageSendIntent({
+      chatId: "chat-1",
+      senderId: human.agentId,
+      senderType: "human",
+      data: {
+        source: "web",
+        format: "text",
+        content: "(Skipped — no answer provided.)",
+        metadata: {
+          mentions: ["missing-asker"],
+          resolves: { request: "request-1", kind: "closed" },
+        },
+      },
+      participants: [human],
+    });
+    expect(closed.mentionedAgentIds).toEqual([]);
+    expect(closed.metadata.mentions).toEqual([]);
+
+    expect(() =>
+      preflightMessageSendIntent({
+        chatId: "chat-1",
+        senderId: human.agentId,
+        senderType: "human",
+        data: {
+          source: "web",
+          format: "text",
+          content: "Answer",
+          metadata: {
+            mentions: ["missing-asker"],
+            resolves: { request: "request-1", kind: "answered" },
+          },
+        },
+        participants: [human],
+      }),
+    ).toThrow(/requires an explicit recipient/i);
+  });
+
   it("returns null when a double-encoded string candidate is not valid JSON", () => {
     expect(maybeUnwrapDoubleEncoded('"bad\\n\\x"')).toBeNull();
   });

@@ -429,6 +429,10 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       const { scope } = await requireChatAccess(request, app.db);
       const body = patchChatEngagementSchema.parse(request.body);
       await setChatEngagement(app.db, request.params.chatId, scope.humanAgentId, body.status);
+      // Engagement is private per user, so notify only this viewer's sockets.
+      // Other tabs/devices use the frame to refresh both their conversation
+      // projection and the Active-scoped Need you queue.
+      void app.notifier.notifyMeChatsChanged(scope.humanAgentId, scope.organizationId);
       return reply.status(200).send({ chatId: request.params.chatId, engagementStatus: body.status });
     },
   );

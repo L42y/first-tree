@@ -11,8 +11,7 @@ import { askRequestSchema, MENTION_REGEX, requestResolutionSchema } from "@first
  *   - `resolved`   — a `metadata.resolves` with `kind="answered"` from the
  *                    target human (the web answer) — or a legacy asker-authored
  *                    row (compat; see below).
- *   - `closed`     — same, `kind="closed"` (legacy/server-only; no surface
- *                    produces it now).
+ *   - `closed`     — same, `kind="closed"` from the target human's Skip action.
  * NEW resolutions are human-only: the server accepts a `resolves` write only
  * from the target, and an agent (including the asker) cannot answer or close a
  * question. The reader additionally honors a resolution authored by the asker

@@ -293,11 +293,13 @@ function broadcast(msg: WsMessage) {
       }
     } else if (msg.type === "me-chats:changed") {
       // The viewer's OWN private me-chats projection changed on another device
-      // (a pin / unpin). The server sends this frame only to this user's own
-      // sockets (never broadcast — pin state is private), so a bare list
-      // invalidation regroups the rail across their devices in realtime. No
-      // chatId; nothing chat-specific to touch.
+      // (pin or engagement). The server sends this frame only to this user's own
+      // sockets, so refresh both private projections across their devices.
+      // Engagement controls whether a chat belongs to the Active-scoped Need
+      // you queue. Pin reuses the same bare event; its extra queue refetch is
+      // intentionally harmless.
       meChatsInvalidator.invalidate(latestQc);
+      needYouInvalidator.invalidate(latestQc);
     } else if (msg.type === "pulse:tick") {
       // Per-org runtime-state aggregate (pulse-aggregator broadcasts every 5s).
       // The composite `offline` (client_id → null) and runtime-`error` → failed

@@ -15,19 +15,24 @@ export type AskAnswerRequestRef = {
  * Surface components own pending/error state and their post-send effects. This
  * unit owns the invariants that unblock the requester: route to the asker plus
  * explicit mentions, upload staged files, choose text vs image-batch transport,
- * and attach the same in-reply-to + resolving metadata in either path.
+ * and attach the same in-reply-to + resolving metadata in either path. Submit
+ * defaults to `answered`; Skip explicitly selects `closed`. Both still declare
+ * the asker so an active agent is notified, while the server may drop that one
+ * route for a closed resolution when the asker is inactive or missing.
  */
 export async function sendAskAnswer({
   chatId,
   request,
   answer,
+  resolutionKind = "answered",
 }: {
   chatId: string;
   request: AskAnswerRequestRef;
   answer: AskAnswer;
+  resolutionKind?: RequestResolution["kind"];
 }): Promise<void> {
   const routedMentions = [...new Set([request.senderId, ...answer.mentions])];
-  const resolves: RequestResolution = { request: request.id, kind: "answered" };
+  const resolves: RequestResolution = { request: request.id, kind: resolutionKind };
   const documentRefs: AttachmentRef[] = [];
 
   for (const attachment of answer.attachments ?? []) {

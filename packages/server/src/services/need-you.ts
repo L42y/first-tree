@@ -1,5 +1,6 @@
 import {
   ASK_AGENT_METADATA_KEY,
+  CHAT_ENGAGEMENT_STATUSES,
   type ListNeedYouRequestsQuery,
   type ListNeedYouRequestsResponse,
   MESSAGE_FORMATS,
@@ -68,7 +69,8 @@ export async function listNeedYouRequests(
     eq(chats.organizationId, organizationId),
     sql`${chats.parentChatId} IS NULL`,
     eq(chatMembership.agentId, viewerAgentId),
-    sql`COALESCE(${chatUserState.engagementStatus}, 'active') <> 'deleted'`,
+    sql`COALESCE(${chatUserState.engagementStatus}, ${CHAT_ENGAGEMENT_STATUSES.ACTIVE})
+        = ${CHAT_ENGAGEMENT_STATUSES.ACTIVE}`,
     openRequestPredicate(viewerAgentId),
   );
   const cursorPredicate = cursor

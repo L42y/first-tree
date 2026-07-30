@@ -64,6 +64,24 @@ describe("sendAskAnswer", () => {
     expect(chatMocks.sendFileMessageBatch).not.toHaveBeenCalled();
   });
 
+  it("routes an explicit Skip close to the asker without inferring lifecycle from its body", async () => {
+    await sendAskAnswer({
+      chatId: "chat-1",
+      request,
+      answer: {
+        content: "(Skipped — no answer provided.)",
+        mentions: [],
+        images: [],
+      },
+      resolutionKind: "closed",
+    });
+
+    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "(Skipped — no answer provided.)", ["asker-1"], {
+      inReplyTo: "request-1",
+      resolves: { request: "request-1", kind: "closed" },
+    });
+  });
+
   it("uses file transport for image answers and keeps cache warming best-effort", async () => {
     const image = new File(["image"], "proof.png", { type: "image/png" });
     imageStoreMocks.putImage.mockRejectedValueOnce(new Error("IndexedDB unavailable"));
