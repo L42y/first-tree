@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { chats } from "../db/schema/chats.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat } from "../services/me-chat.js";
+import { createMeChat, setChatEngagement } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
 import { listNeedYouRequests, listRequestThread } from "../services/need-you.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -81,6 +81,32 @@ describe("Need you request queue and Ask agent protocol", () => {
     });
     expect(next.total).toBe(2);
     expect(next.items.map((item) => item.request.id)).toEqual([secondRequest.id]);
+  });
+
+  it("projects only the viewer's active chats into both queue rows and exact total", async () => {
+    const input = await setup("engagement-filter");
+    const request = await ask(input, "Which active rollout?");
+
+    const queue = async () =>
+      listNeedYouRequests(input.app.db, input.owner.humanAgentUuid, input.owner.organizationId, { limit: 50 });
+
+    // A missing user-state row has the lazy default `active`.
+    await expect(queue()).resolves.toMatchObject({
+      total: 1,
+      items: [{ request: { id: request.id } }],
+    });
+
+    await setChatEngagement(input.app.db, input.chatId, input.owner.humanAgentUuid, "archived");
+    await expect(queue()).resolves.toMatchObject({ total: 0, items: [] });
+
+    await setChatEngagement(input.app.db, input.chatId, input.owner.humanAgentUuid, "deleted");
+    await expect(queue()).resolves.toMatchObject({ total: 0, items: [] });
+
+    await setChatEngagement(input.app.db, input.chatId, input.owner.humanAgentUuid, "active");
+    await expect(queue()).resolves.toMatchObject({
+      total: 1,
+      items: [{ request: { id: request.id } }],
+    });
   });
 
   it("keeps Ask agent clarification and reply in a durable thread without resolving the request", async () => {

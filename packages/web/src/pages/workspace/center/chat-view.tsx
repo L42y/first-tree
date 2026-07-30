@@ -2540,6 +2540,7 @@ export function ChatView({
   const restoreMut = useMutation({
     mutationFn: () => patchChatEngagement(chatId, CHAT_ENGAGEMENT_STATUSES.ACTIVE),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["need-you"] });
       queryClient.invalidateQueries({ queryKey: ["me", "chats"] });
       queryClient.invalidateQueries({ queryKey: ["chat-detail", chatId] });
     },

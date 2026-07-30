@@ -135,11 +135,13 @@ afterEach(async () => {
 
 describe("RowEngagementMenu schedule warnings", () => {
   it("archives immediately when the chat has no schedules (pre-change behavior)", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
     await renderMenu("active");
     await selectMenuItem("Archive");
 
     expect(cronApiMocks.listChatCronJobs).toHaveBeenCalledWith("chat-1");
     expect(chatApiMocks.patchChatEngagement).toHaveBeenCalledWith("chat-1", "archived");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["need-you"] });
     expect(document.body.textContent).not.toContain("Archive this chat?");
   });
 

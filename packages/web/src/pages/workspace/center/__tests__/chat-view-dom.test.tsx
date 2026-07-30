@@ -1130,13 +1130,18 @@ describe("ChatView", () => {
     const { ChatView } = await import("../chat-view.js");
     const deleted = chatDetail({ engagementStatus: "deleted", title: "Deleted launch" });
     chatMocks.getChat.mockResolvedValue(deleted);
+    let deletedQueryClient: QueryClient | null = null;
     const deletedView = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (queryClient) => {
+      deletedQueryClient = queryClient;
       seedChat(queryClient, deleted);
     });
+    if (!deletedQueryClient) throw new Error("Missing deleted chat query client");
+    const invalidateSpy = vi.spyOn(deletedQueryClient, "invalidateQueries");
     await waitForText(deletedView.container, "Restore");
     await click(buttonByText(deletedView.container, "Restore"));
     await waitForCondition(() => chatMocks.patchChatEngagement.mock.calls.length > 0, "Expected restore");
     expect(chatMocks.patchChatEngagement).toHaveBeenCalledWith("chat-1", "active");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["need-you"] });
     await act(async () => deletedView.root.unmount());
 
     const onJoin = vi.fn();
