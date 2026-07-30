@@ -130,6 +130,7 @@ export const contextIntegrationInstallManifestSchema = z
     adapterDigest: sha256DigestSchema,
     marketplaceName: z.string().min(1),
     pluginName: z.string().min(1),
+    materializedInvocation: z.string().min(1).optional(),
     installedAt: z.string().datetime(),
   })
   .strict();

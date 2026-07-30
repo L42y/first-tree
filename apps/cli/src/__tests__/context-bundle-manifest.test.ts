@@ -418,9 +418,13 @@ describe("context integration bundle", () => {
     };
 
     const plan = planContextIntegrationInstall(driver, { releaseRoot });
-    installContextIntegration(driver, plan);
+    const installed = installContextIntegration(driver, plan);
     const marketplaceSource = contextIntegrationMarketplaceSourcePath("codex");
     expect(existsSync(join(marketplaceSource, "plugins", "first-tree-context"))).toBe(true);
+    expect(installed.manifest.materializedInvocation).toBeTruthy();
+    expect(
+      readFileSync(join(marketplaceSource, "plugins", "first-tree-context", "bin", "context-session-start"), "utf8"),
+    ).toContain(installed.manifest.materializedInvocation);
 
     uninstallContextIntegration(driver);
     expect(existsSync(marketplaceSource)).toBe(false);

@@ -62,6 +62,7 @@ export function planContextIntegrationInstall(
     join(contextIntegrationMarketplaceSourcePath(driver.provider), "plugins", PLUGIN_NAME),
     release,
     driver.provider,
+    previous?.materializedInvocation,
   );
   const incomplete = readContextIntegrationInstallJournal();
   const operation =
@@ -134,7 +135,7 @@ function installContextIntegrationLocked(
     rollbackMarketplaceRoot =
       plan.previous && plan.probe.installed ? prepareRollbackMarketplace(stagingRoot, driver.provider, plan) : null;
     cpSync(providerReleaseRoot, stagedMarketplaceRoot, { recursive: true });
-    materializeContextPluginPayload(
+    const materializedInvocation = materializeContextPluginPayload(
       join(stagedMarketplaceRoot, "plugins", PLUGIN_NAME),
       plan.release.manifest.providers[driver.provider].adapterDigest,
     );
@@ -152,6 +153,7 @@ function installContextIntegrationLocked(
       join(stableMarketplaceRoot, "plugins", PLUGIN_NAME),
       plan.release,
       driver.provider,
+      materializedInvocation,
     );
     verifyProviderInstalledContextPlugin(probe, installedPayloadDigest);
     writeInstallJournal({ ...journal, phase: "provider_installed" });
@@ -166,6 +168,7 @@ function installContextIntegrationLocked(
       adapterDigest: plan.release.manifest.providers[driver.provider].adapterDigest,
       marketplaceName: plan.marketplaceName,
       pluginName: PLUGIN_NAME,
+      materializedInvocation,
       installedAt: new Date().toISOString(),
     };
     writeContextIntegrationInstallManifest(manifest);
