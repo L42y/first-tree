@@ -8,6 +8,26 @@ import {
 } from "../schemas/resource.js";
 
 describe("resource schemas", () => {
+  it("accepts only an immutable bundle reference for Team Skill creation", () => {
+    expect(
+      createTeamResourceSchema.parse({
+        type: "skill",
+        bundleAttachmentId: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toEqual({
+      type: "skill",
+      bundleAttachmentId: "00000000-0000-4000-8000-000000000001",
+      defaultEnabled: "available",
+    });
+    expect(
+      createTeamResourceSchema.safeParse({
+        type: "skill",
+        name: "legacy",
+        payload: { name: "legacy", description: "legacy", body: "", metadata: {} },
+      }).success,
+    ).toBe(false);
+  });
+
   it("canonicalizes common GitHub repo URL forms to the same key", () => {
     const expected = "github.com/agent-team-foundation/first-tree";
     expect(canonicalizeResourceRepoUrl("https://github.com/Agent-Team-Foundation/First-Tree.git")).toBe(expected);

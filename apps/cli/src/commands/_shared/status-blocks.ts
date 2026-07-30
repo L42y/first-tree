@@ -1,8 +1,20 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { agentConfigSchema, defaultConfigDir, loadAgents, readConfigFile } from "@first-tree/shared/config";
+import {
+  agentConfigSchema,
+  defaultConfigDir,
+  defaultHome,
+  loadAgents,
+  readConfigFile,
+} from "@first-tree/shared/config";
 import { loadCredentials } from "../../core/bootstrap.js";
 import { channelConfig } from "../../core/channel.js";
+import {
+  formatDaemonRuntimeOwnerSummary,
+  formatDaemonRuntimeRecoveryEvidence,
+  inspectDaemonRuntimeOwnership,
+  inspectDaemonRuntimeRecoveryEvidence,
+} from "../../core/daemon-runtime-ownership.js";
 import { print } from "../../core/output.js";
 import { getClientServiceStatus, isServiceSupported } from "../../core/service-install.js";
 import { COMMAND_VERSION } from "../../core/version.js";
@@ -35,6 +47,25 @@ export function renderServiceBlock(): void {
     print.line(`  Service:  not installed — run \`${channelConfig.binName} login <code>\`\n`);
   } else {
     print.line(`  Service:  unknown (${svc.platform}${svc.detail ? `, ${svc.detail}` : ""})\n`);
+  }
+}
+
+export function renderDaemonRuntimeOwnerBlock(): void {
+  const ownership = inspectDaemonRuntimeOwnership(defaultHome());
+  if (ownership.state === "absent") {
+    print.line("  Owner:    not held\n");
+  } else if (ownership.state === "live") {
+    print.line(`  Owner:    ✓ ${formatDaemonRuntimeOwnerSummary(ownership.owner)}\n`);
+  } else if (ownership.state === "stale") {
+    print.line(`  Owner:    ⚠ stale ${formatDaemonRuntimeOwnerSummary(ownership.owner)} (${ownership.reason})\n`);
+  } else {
+    print.line(`  Owner:    ✗ untrusted lock (${ownership.reason})\n`);
+    const evidence = inspectDaemonRuntimeRecoveryEvidence(defaultHome());
+    if (evidence.fence.state !== "absent") {
+      for (const line of formatDaemonRuntimeRecoveryEvidence(evidence)) {
+        print.line(`            ${line}\n`);
+      }
+    }
   }
 }
 

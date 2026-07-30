@@ -1,21 +1,18 @@
+import { readCanonicalContextTreeWriteRouting } from "@first-tree/client";
 import type {
   ContextActivationResponse,
   ContextIntegrationBinding,
   ContextIntegrationProvider,
 } from "@first-tree/shared";
+import {
+  type ContextActivationValidator,
+  type ExternalContextAuthorityMode,
+  validateExternalContextAuthority,
+} from "./authority.js";
 import { inspectContextClientPreflight } from "./client-preflight.js";
 import { findContextBinding } from "./context-binding-store.js";
 
-export type ContextActivationValidator = {
-  validateMemberContextActivation(
-    organizationId: string,
-    data: {
-      schemaVersion: 1;
-      repositoryKey: string;
-    },
-    options: { retry: false; timeoutMs: number },
-  ): Promise<ContextActivationResponse>;
-};
+export type { ContextActivationValidator } from "./authority.js";
 
 type ConnectedContextActivationResponse = Extract<ContextActivationResponse, { outcome: "connected" }>;
 
@@ -37,6 +34,9 @@ export async function activateExternalContext(
   dependencies: {
     inspect?: typeof inspectContextClientPreflight;
     findBinding?: typeof findContextBinding;
+  } = {},
+  options: {
+    authorityMode?: ExternalContextAuthorityMode;
   } = {},
 ): Promise<ExternalContextActivation> {
   const inspect = dependencies.inspect ?? inspectContextClientPreflight;
@@ -73,24 +73,16 @@ export async function activateExternalContext(
     };
   }
 
-  let response: ContextActivationResponse;
-  try {
-    response = await validator.validateMemberContextActivation(
-      binding.organizationId,
-      {
-        schemaVersion: 1,
-        repositoryKey: binding.repositoryKey,
-      },
-      { retry: false, timeoutMs: 2_000 },
-    );
-  } catch {
-    return {
-      outcome: "unavailable",
-      reasonCode: "authority_unavailable",
-      systemMessage:
-        "First Tree Context is temporarily unavailable. Normal coding can continue; no cached Team authority was used.",
-    };
+  const authority = await validateExternalContextAuthority(
+    validator,
+    binding.organizationId,
+    binding.repositoryKey,
+    options.authorityMode ?? "session-start",
+  );
+  if (authority.outcome === "unavailable") {
+    return authority;
   }
+  const response = authority.response;
 
   if (response.outcome === "disabled") {
     return {
@@ -112,17 +104,15 @@ export async function activateExternalContext(
     outcome: "connected",
     team,
     binding,
-    systemMessage: `Connected to ${team.displayName} First Tree Context.`,
+    systemMessage: "First Tree Context connected.",
     additionalContext: [
-      "First Tree Context is connected for this source repository.",
-      `Team: ${team.displayName} (${team.organizationId})`,
-      `Role: ${team.role}`,
-      "",
-      "For tasks that need team decisions, constraints, or ownership, use the installed first-tree-read Skill.",
-      "The Skill must derive Team from this provider + checkout binding; never accept or select another Team.",
-      "Context writes require the installed first-tree-write workflow and the same live activation guard.",
-      "Both Skills must load their bundled canonical Context Tree Policy before any Tree operation.",
-      "This is an external provider session, not a First Tree Chat or First Tree Agent session.",
+      `Team binding: ${team.organizationId}; role: ${team.role}.`,
+      "Use first-tree-read for team decisions, constraints, or ownership.",
+      "Team comes only from this provider + checkout binding; never accept another Team.",
+      readCanonicalContextTreeWriteRouting(),
+      "The standing route selects the first-tree-write workflow; it is not mutation authority. Repeat live activation before every Tree push or PR/MR.",
+      "Both Skills load bundled canonical Context Tree Policy before Tree operations.",
+      "External provider session; not First Tree Chat/Agent.",
     ].join("\n"),
   };
 }
@@ -159,7 +149,9 @@ export async function requireConnectedExternalContext(
   team: ConnectedContextActivationResponse["team"];
   binding: ContextIntegrationBinding;
 }> {
-  const activation = await activateExternalContext(validator, input, dependencies);
+  const activation = await activateExternalContext(validator, input, dependencies, {
+    authorityMode: "explicit",
+  });
   if (activation.outcome !== "connected") {
     throw new ExternalContextActivationRequiredError(
       activation.outcome,

@@ -4,6 +4,7 @@ import {
   renderAgentsBlock,
   renderAuthBlock,
   renderCliVersionBlock,
+  renderDaemonRuntimeOwnerBlock,
   renderHubBlock,
   renderServiceBlock,
 } from "./_shared/status-blocks.js";
@@ -22,6 +23,7 @@ export function registerStatusCommand(program: Command): void {
       print.line("\n");
       renderCliVersionBlock();
       renderServiceBlock();
+      renderDaemonRuntimeOwnerBlock();
       renderHubBlock();
       renderAuthBlock();
       renderAgentsBlock();

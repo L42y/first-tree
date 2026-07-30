@@ -48,6 +48,7 @@ import {
 } from "../runtime/handler.js";
 import { findImagePath } from "../runtime/image-store.js";
 import { InputController } from "../runtime/input-controller.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../runtime/provider-attempt.js";
 import {
   buildProviderRetryEvent,
@@ -58,7 +59,6 @@ import {
   type ProviderRetryDecision,
 } from "../runtime/provider-retry-policy.js";
 import { redactErrorPreview } from "../runtime/redact-error-preview.js";
-import { materializeResourceSkills } from "../runtime/resource-skills.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -66,6 +66,7 @@ import {
   writeSessionBriefingFingerprint,
 } from "../runtime/session-briefing-fingerprint.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../runtime/workspace.js";
 import { chunkAssistantText } from "./assistant-text.js";
 import { formatAuthHint, isClaudeAuthError } from "./auth-error-hint.js";
@@ -822,6 +823,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
   let appliedConfigVersion = 0;
   let appliedModel = "";
   let appliedPayload: AgentRuntimeConfigPayload | null = null;
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   /**
    * Briefing-staleness tracking for the active session (see
    * session-briefing-fingerprint.ts). `current` is the fingerprint of the
@@ -1574,17 +1576,14 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     // at the old version until the next session restart.
     const providerEnv = buildEnv(sessionCtx);
     if (cwd) {
-      // A resource skill bound mid-session (config version bumped, model
-      // unchanged) reaches the active session on this restart path. Materialize
-      // it BEFORE rewriting the briefing so the "## Team Skills" entries the
-      // briefing lists point at real SKILL.md files on disk — without this the
-      // restarted turn sees the skill named but no file to load (the reused /
-      // already-running agent bug). Guard on a genuine version increase so a
-      // transient empty fallback config (swallowed refresh failure) can't prune
-      // skills the running turn is about to load.
-      if (cached.version > appliedConfigVersion) {
-        await materializeResourceSkills(cwd, newPayload, sessionCtx);
-      }
+      const reconcileResult = await reconcileManagedSkillsForConfig(
+        cwd,
+        runtimeProvider,
+        cached,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+      );
+      reconciledTeamSkills = reconcileResult.teamSkills;
       const switchedBriefing = currentBriefing(sessionCtx, cwd, newPayload);
       writeAgentBriefing(cwd, switchedBriefing);
       // Refresh the on-disk briefing fingerprint so the NEXT delivered message
@@ -2115,6 +2114,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -2172,20 +2172,29 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       // Resolve chat-context and source repos before spawning the SDK:
       // source repos are rendered into the shared briefing, while chat-context
       // is appended through the SDK system prompt channel in buildQuery().
-      const payload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload;
+      const runtimeConfig = agentConfigCache?.get(sessionCtx.agent.agentId);
+      const payload = runtimeConfig?.payload;
       const chatContext = await fetchChatContextOrLog(sessionCtx);
       chatContextForPrompt = chatContext;
       // Declare gitRepos coordinates before computing the briefing so the
       // source-repo list names the paths + upstreams the agent manages.
       declareSourceRepos(cwd, payload);
-      await materializeResourceSkills(cwd, payload, sessionCtx);
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
+      ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
       const briefing = currentBriefing(sessionCtx, cwd, payload);
       ensureAgentBootstrap(cwd, sessionCtx, briefing, payload);
 
       // Stage-2 sentinel: written once per agent home. Future starts short-
-      // circuit the expensive integrate path on its presence.
+      // circuit the heavier stable workspace bootstrap on its presence.
       markWorkspaceInitComplete(cwd);
 
       // Seed the briefing baseline: a fresh session starts in sync with the
@@ -2239,7 +2248,8 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           `Resume: detected pre-redesign SDK transcript at legacy cwd ${legacyCwd}; ` +
             "running this session under the legacy per-chat layout to preserve agent memory",
         );
-        const payload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload;
+        const runtimeConfig = agentConfigCache?.get(sessionCtx.agent.agentId);
+        const payload = runtimeConfig?.payload;
         const chatContext = await fetchChatContextOrLog(sessionCtx);
         chatContextForPrompt = chatContext;
         // Intentionally NOT calling ensureAgentBootstrap / declareSourceRepos /
@@ -2247,12 +2257,11 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         // `.first-tree-workspace/` agent-home layout, which would pollute the
         // legacy chat dir's v1.x `.agent/` and `<localPath>/` source repos.
         //
-        // We DO refresh the briefing (writeAgentBriefing only touches the
-        // AGENTS.md file + CLAUDE.md symlink, not `.first-tree-workspace/`,
-        // the legacy `.agent/`, or source repos) because under the
-        // unified-briefing redesign AGENTS.md carries the current agent-level
-        // prompt and resource-skill briefing. Current Chat Context is delivered
-        // separately via `systemPrompt.append`.
+        // We DO refresh the briefing and reconcile Skills in this legacy cwd.
+        // The reconciler owns a narrowly scoped `.first-tree-workspace/`
+        // state/lock/journal there; it does not run the broader workspace
+        // bootstrap, source-repo declaration, or init-complete flow. Current
+        // Chat Context remains separate in `systemPrompt.append`.
         // `sourceReposForPrompt` stays `[]` here on purpose: the declared
         // paths are derived against the agent home, not the legacy cwd, so
         // the briefing's Source Repositories section is omitted for legacy
@@ -2260,13 +2269,18 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         // original `<localPath>/` — just without a top-level enumeration in
         // the prompt.
         //
-        // Materialize resource skills to the legacy cwd as well. Unlike start()
-        // and the normal-design resume path, this pre-redesign branch never
-        // wrote them, so a skill bound to a reused legacy-layout agent (the
-        // gandy-coder reuse case) never reached disk. `cwd` is `legacyCwd` here
-        // (set above), NOT the agent home, so the files land where this
-        // session's briefing paths and the SDK cwd resolve them.
-        await materializeResourceSkills(cwd, payload, sessionCtx);
+        // Project Core and Team Skills to the legacy cwd as well. `cwd` is
+        // `legacyCwd` here (set above), NOT the agent home, so provider-native
+        // discovery and its managed transaction state are session-local.
+        reconciledTeamSkills = (
+          await reconcileManagedSkillsForConfig(
+            cwd,
+            runtimeProvider,
+            runtimeConfig,
+            sessionCtx.log,
+            teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+          )
+        ).teamSkills;
         const providerEnv = buildEnv(sessionCtx);
         writeAgentBriefing(legacyCwd, currentBriefing(sessionCtx, legacyCwd, payload));
         // Same convert-stash-then-spawn ordering as `start()` so a stream
@@ -2291,14 +2305,23 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       cwd = acquireAgentHome(workspaceRoot);
 
       // Identical control flow to start(): bootstrap is idempotent and the
-      // sentinel gates the expensive integrate. The cheap stable-identity
-      // hash check runs every time so agent rename / inboxId changes
-      // propagate even after the sentinel is set (R5 in the proposal).
-      const payload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload;
+      // The sentinel gates the heavier stable workspace bootstrap. The cheap
+      // identity hash check still runs so agent rename / inboxId changes
+      // propagate after initialization.
+      const runtimeConfig = agentConfigCache?.get(sessionCtx.agent.agentId);
+      const payload = runtimeConfig?.payload;
       const chatContext = await fetchChatContextOrLog(sessionCtx);
       chatContextForPrompt = chatContext;
       declareSourceRepos(cwd, payload);
-      await materializeResourceSkills(cwd, payload, sessionCtx);
+      reconciledTeamSkills = (
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
+      ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
       const briefing = currentBriefing(sessionCtx, cwd, payload);

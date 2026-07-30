@@ -14,6 +14,8 @@ export type PendingAttachment = {
   previewUrl?: string;
 };
 
+export type PendingAttachmentSeed = Pick<PendingAttachment, "file" | "kind">;
+
 export type UsePendingAttachments = {
   pendingAttachments: PendingAttachment[];
   /** Classify, validate, and stage the given files. Disallowed types and
@@ -46,9 +48,23 @@ const MAX_MB = MAX_ATTACHMENT_BYTES / 1024 / 1024;
  * identities regardless of what the caller passes inline.
  */
 export function usePendingAttachments(
-  opts: { onError?: (message: string) => void; onChange?: () => void } = {},
+  opts: {
+    onError?: (message: string) => void;
+    onChange?: () => void;
+    /** Restore already-validated files when a request-scoped draft remounts. */
+    initialAttachments?: readonly PendingAttachmentSeed[];
+  } = {},
 ): UsePendingAttachments {
-  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>(() =>
+    (opts.initialAttachments ?? []).map(({ file, kind }) => ({
+      id: crypto.randomUUID(),
+      file,
+      kind,
+      ...(kind === "image" && typeof URL.createObjectURL === "function"
+        ? { previewUrl: URL.createObjectURL(file) }
+        : {}),
+    })),
+  );
 
   const optsRef = useRef(opts);
   useEffect(() => {

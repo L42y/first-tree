@@ -94,6 +94,21 @@ function verify(options) {
     const packageJson = readJson(join(root, "app", "package.json"));
     if (packageJson.name !== manifest.packageName) fail("app/package.json package name mismatch");
     if (packageJson.version !== manifest.version) fail("app/package.json version mismatch");
+    if (!packageJson.dependencies?.["fs-native-extensions"]) {
+      fail("app/package.json is missing the external native workspace-lock dependency");
+    }
+    const nativeLockPrebuild = join(
+      root,
+      "app",
+      "node_modules",
+      "fs-native-extensions",
+      "prebuilds",
+      options.platform,
+      "fs-native-extensions.node",
+    );
+    if (!existsSync(nativeLockPrebuild)) {
+      fail(`portable artifact is missing native workspace-lock prebuild for ${options.platform}`);
+    }
     const versionRes = run(join(root, "bin", manifest.binName), ["--version"], {
       env: { ...process.env, FIRST_TREE_HOME: join(root, "home") },
     });

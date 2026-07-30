@@ -9,13 +9,37 @@
 // their own `afterEach` — see `__tests__/bootstrap.test.ts` for the
 // staging/dev channel cases.
 //
-// Pre-2026-06: this file also called `__setTestInstallExec(() => {})` to
-// neuter the shell-out to `first-tree tree skill install`. That shell-out
-// is gone — Client now installs skill payloads in-process from the bundled
-// `packages/client/skills/` directory (see `runtime/first-tree-skills/
-// installer.ts`). The skills/ directory is materialised by the `pretest`
-// hook in `package.json`, so every test file has bundled skills on disk
-// without any per-suite setup.
+// Handler unit suites exercise provider transport timing with fake clocks and
+// tiny wait budgets. Keep managed filesystem reconciliation at that boundary
+// as a default test double; `managed-skills.test.ts` exercises the real
+// reconciler directly, and integration suites can `vi.unmock` it explicitly.
+// This prevents eight fsync-backed Core Skill transactions from becoming an
+// unrelated timing dependency in every provider transport test.
+
+import { vi } from "vitest";
 import { setCliBinding } from "./src/runtime/cli-binding.js";
+
+vi.mock("./src/runtime/managed-skills.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./src/runtime/managed-skills.js")>();
+  return {
+    ...actual,
+    reconcileManagedSkillsForConfig: vi.fn(
+      async (
+        _workspace: string,
+        _provider: import("@first-tree/shared").RuntimeProvider,
+        config: import("@first-tree/shared").AgentRuntimeConfig | null | undefined,
+      ) => ({
+        ok: true,
+        resourceConfigVersion: config?.version ?? 0,
+        installed: [],
+        skipped: [],
+        removed: [],
+        teamSkills: [],
+        failures: [],
+        staleTeamSnapshot: false,
+      }),
+    ),
+  };
+});
 
 setCliBinding({ binName: "first-tree", packageName: "first-tree" });

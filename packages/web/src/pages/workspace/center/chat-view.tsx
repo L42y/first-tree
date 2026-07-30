@@ -18,6 +18,7 @@ import {
   parseProviderRetryEventMessage,
   type RequestResolution,
   type RuntimeProvider,
+  readAskAgentMessageMetadata,
   statusReasonFromProviderRetryEvent,
 } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +30,7 @@ import {
   Download,
   ExternalLink,
   Eye,
+  LoaderCircle,
   Menu,
   MessageSquare,
   PanelRight,
@@ -88,7 +90,7 @@ import { AddParticipantDropdown } from "../../../components/add-participant-drop
 import { Avatar as RealAvatar } from "../../../components/avatar.js";
 import { AgentHovercard } from "../../../components/chat/agent-hovercard.js";
 import { sendAskAnswer } from "../../../components/chat/ask-answer-transport.js";
-import { type AskAnswer, AskTakeover } from "../../../components/chat/ask-takeover.js";
+import { type AskAnswer, AskTakeover, clearAskTakeoverDraft } from "../../../components/chat/ask-takeover.js";
 import { awaitedAgentsFromMessage, ChatOfflineNotice } from "../../../components/chat/chat-offline-notice.js";
 import { ComposeStatusBar } from "../../../components/chat/compose-status-bar.js";
 import {
@@ -107,11 +109,14 @@ import {
 } from "../../../components/chat/gitlab-event-card.js";
 import { ImageRefGallery } from "../../../components/chat/image-ref-gallery.js";
 import {
+  contentStartsWithMention,
   findBlockingRequest,
   findThreadableRequestId,
   readMentions,
   readRequestPayload,
+  readResolution,
 } from "../../../components/chat/request-state.js";
+import { useAskAgent } from "../../../components/chat/use-ask-agent.js";
 import { WorkingTurn } from "../../../components/chat/working-turn.js";
 import { HistoryGapBanner } from "../../../components/history-gap-banner.js";
 import {
@@ -549,6 +554,10 @@ function Avatar({
 
 type MessageRowProps = {
   msg: MessageWithDelivery;
+  /** Participant explicitly tagged by a request action (Ask agent,
+   *  its reply, or a resolving answer). Ordinary routed chat messages do not
+   *  receive a synthetic tag. */
+  requestTagAgentId: string | null;
   myAgentId: string | null;
   agentNameFn: (id: string) => string;
   agentAvatarFn: (id: string) => string | null;
@@ -564,6 +573,7 @@ const GitlabInstanceOriginContext = createContext<string | null>(null);
 
 type MessageBodyProps = {
   msg: MessageWithDelivery;
+  requestTagAgentId: string | null;
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
 };
@@ -574,6 +584,51 @@ type MessageMarkdownProps = {
   rehypePlugins: MarkdownProps["rehypePlugins"];
 };
 
+/**
+ * Render the request action's routing target with the same visual and copy
+ * contract as an inline `@mention`. Web request actions intentionally keep the
+ * user's visible body unchanged, so the persisted routing metadata is the only
+ * place their target lives. This tag makes that relationship visible without
+ * rewriting chat history.
+ */
+function RequestAgentTag({
+  participant,
+  participants,
+  isSelf,
+}: {
+  participant: RenderedMentionParticipant;
+  participants: readonly RenderedMentionParticipant[];
+  isSelf: boolean;
+}) {
+  const canonicalName = participant.name?.trim();
+  if (!canonicalName) return null;
+  const displayName = participant.displayName?.trim() || canonicalName;
+  const duplicateDisplayName =
+    participants.filter((candidate) => {
+      const candidateDisplayName = candidate.displayName?.trim() || candidate.name?.trim();
+      if (!candidateDisplayName) return false;
+      return candidateDisplayName.toLowerCase() === displayName.toLowerCase();
+    }).length > 1;
+  const disambiguate = duplicateDisplayName && displayName !== canonicalName;
+  const displayLabel = `@${displayName}`;
+  const identityLabel = disambiguate ? `${displayLabel} (@${canonicalName})` : displayLabel;
+
+  return (
+    <div data-request-agent-tag className="flex flex-wrap" style={{ marginBottom: "var(--sp-1)" }}>
+      <span
+        className={cn("mention-chip", isSelf && "is-self")}
+        data-mention-agent-id={participant.agentId}
+        data-mention-name={canonicalName}
+        data-mention-display-name={displayName}
+        title={identityLabel}
+      >
+        <span className="mention-chip-display">{displayLabel}</span>
+        {disambiguate ? <span className="mention-chip-handle">(@{canonicalName})</span> : null}
+      </span>
+    </div>
+  );
+}
+
 const MessageMarkdown = memo(function MessageMarkdown({ children, components, rehypePlugins }: MessageMarkdownProps) {
   return (
     <Markdown components={components} rehypePlugins={rehypePlugins}>
@@ -582,7 +637,12 @@ const MessageMarkdown = memo(function MessageMarkdown({ children, components, re
   );
 });
 
-const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipants }: MessageBodyProps) {
+const MessageBody = memo(function MessageBody({
+  msg,
+  requestTagAgentId,
+  myAgentId,
+  mentionParticipants,
+}: MessageBodyProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const gitlabInstanceOrigin = useContext(GitlabInstanceOriginContext);
@@ -654,6 +714,20 @@ const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipa
     }
     return msg.content;
   }, [msg.format, msg.content, msg.source, failedDocMentions]);
+  const requestTagParticipant = useMemo(
+    () => mentionParticipants.find((participant) => participant.agentId === requestTagAgentId) ?? null,
+    [mentionParticipants, requestTagAgentId],
+  );
+  const requestTagAlreadyInline = useMemo(() => {
+    if (!requestTagParticipant?.name) return false;
+    const visibleContent =
+      typeof msg.content === "string"
+        ? msg.content
+        : isImageBatchRefContent(msg.content)
+          ? (msg.content.caption ?? "")
+          : "";
+    return contentStartsWithMention(visibleContent, [requestTagParticipant.name]);
+  }, [msg.content, requestTagParticipant]);
   // Highlight `@<participant>` tokens in sent messages with the same
   // chip styling the composer's mirror overlay uses. Code blocks and
   // link text are skipped by the plugin itself, so a message containing
@@ -792,6 +866,13 @@ const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipa
         marginTop: 2,
       }}
     >
+      {requestTagParticipant && !requestTagAlreadyInline ? (
+        <RequestAgentTag
+          participant={requestTagParticipant}
+          participants={mentionParticipants}
+          isSelf={requestTagParticipant.agentId === myAgentId}
+        />
+      ) : null}
       {msg.format === "file" && isImageBatchRefContent(msg.content) ? (
         <ImageBatchFromRef
           content={msg.content}
@@ -854,6 +935,7 @@ const MessageBody = memo(function MessageBody({ msg, myAgentId, mentionParticipa
 
 const MessageRow = memo(function MessageRow({
   msg,
+  requestTagAgentId,
   myAgentId,
   agentNameFn,
   agentAvatarFn,
@@ -951,7 +1033,12 @@ const MessageRow = memo(function MessageRow({
             <ReadReceipt msg={msg} myAgentId={myAgentId} />
           </span>
         </div>
-        <MessageBody msg={msg} myAgentId={myAgentId} mentionParticipants={mentionParticipants} />
+        <MessageBody
+          msg={msg}
+          requestTagAgentId={requestTagAgentId}
+          myAgentId={myAgentId}
+          mentionParticipants={mentionParticipants}
+        />
       </div>
     </div>
   );
@@ -960,6 +1047,7 @@ const MessageRow = memo(function MessageRow({
 function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): boolean {
   return (
     messageRenderFieldsEqual(prev.msg, next.msg) &&
+    prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
     prev.agentNameFn === next.agentNameFn &&
     prev.agentAvatarFn === next.agentAvatarFn &&
@@ -972,6 +1060,7 @@ function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): 
 function areMessageBodyPropsEqual(prev: MessageBodyProps, next: MessageBodyProps): boolean {
   return (
     messageBodyFieldsEqual(prev.msg, next.msg) &&
+    prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
     mentionParticipantsEqual(prev.mentionParticipants, next.mentionParticipants)
   );
@@ -1189,6 +1278,40 @@ type TimelineItem =
   | { kind: "event"; at: string; key: string; data: SessionEventRow }
   | { kind: "workgroup"; at: string; key: string; events: SessionEventRow[] };
 
+/**
+ * Resolve the one participant whose tag must remain visible on request-action
+ * history rows:
+ *   - a trusted Ask agent clarification targets the original asker;
+ *   - its matching agent reply targets the human who asked for clarification;
+ *   - a resolving Submit/Skip answer targets the agent that raised the request.
+ *
+ * The relation is derived from trusted metadata plus the loaded parent row.
+ * Agent replies normally already start with a server-normalized mention; the
+ * target is still returned so MessageBody can guarantee the pill without
+ * duplicating that inline chip.
+ */
+function requestTagTargetAgentId(
+  message: MessageWithDelivery,
+  messagesById: ReadonlyMap<string, MessageWithDelivery>,
+): string | null {
+  const askAgent = readAskAgentMessageMetadata(message.metadata);
+  if (askAgent) return askAgent.agentId;
+
+  const resolution = readResolution(message.metadata);
+  if (resolution) {
+    const request = messagesById.get(resolution.request);
+    if (request?.format === "request") return request.senderId;
+    return readMentions(message.metadata)[0] ?? null;
+  }
+
+  if (!message.inReplyTo) return null;
+  const clarification = messagesById.get(message.inReplyTo);
+  if (!clarification) return null;
+  const clarificationMarker = readAskAgentMessageMetadata(clarification.metadata);
+  if (!clarificationMarker || clarificationMarker.agentId !== message.senderId) return null;
+  return readMentions(message.metadata)[0] ?? clarification.senderId;
+}
+
 type ChatTimelineProps = {
   mobile: boolean;
   currentState: ReactNode;
@@ -1253,6 +1376,13 @@ const ChatTimeline = memo(function ChatTimeline({
   pillCount,
   onPillClick,
 }: ChatTimelineProps) {
+  const messagesById = useMemo(() => {
+    const map = new Map<string, MessageWithDelivery>();
+    for (const item of visibleItems) {
+      if (item.kind === "message") map.set(item.data.id, item.data);
+    }
+    return map;
+  }, [visibleItems]);
   // Which non-human agents this turn awaits a reply from — routing-derived from
   // the latest message's persisted recipients (metadata.addressedAgentIds, which
   // includes the system addressedToAgentIds routing the onboarding bootstrap uses
@@ -1325,6 +1455,7 @@ const ChatTimeline = memo(function ChatTimeline({
                   <MessageRow
                     key={item.key}
                     msg={msg}
+                    requestTagAgentId={requestTagTargetAgentId(msg, messagesById)}
                     myAgentId={myAgentId}
                     agentNameFn={agentNameFn}
                     agentAvatarFn={agentAvatarFn}
@@ -1463,7 +1594,7 @@ export function ChatView({
    *  rail with a participants sheet. */
   narrow?: boolean;
   /** Generic narrow Workspace keeps the full details rail, including GitHub
-   * state. `/m/work` opts into the smaller mobile participants sheet. */
+   * state. `/m/chat` opts into the smaller mobile participants sheet. */
   presentation?: "workspace" | "mobile";
   /** Non-null only in narrow mode. Invoking it summons the conversation-
    *  list overlay (which lives in `WorkspacePage`). */
@@ -1472,6 +1603,7 @@ export function ChatView({
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
+  const inspectAskMode = searchParams.get("showAsk") === "false";
   const agentName = useAgentNameMap();
   const agentIdentity = useAgentIdentityMap();
   /**
@@ -1693,6 +1825,11 @@ export function ChatView({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const readOnlyComposerRef = useRef<HTMLDivElement | null>(null);
+  const blockedComposerRef = useRef<HTMLDivElement | null>(null);
+  // Shared focus target for every inspect-mode composer branch (the reopen
+  // button, the fail-closed pending/error panel) and ComposeStatusBar's
+  // fallback — typed as HTMLElement so both element kinds can attach.
+  const inspectComposerRef = useRef<HTMLElement | null>(null);
   // The composer footer band — wraps BOTH the request dock (with its option
   // radios) and the composer. The Enter-to-resolve backstop binds its keydown
   // listener here, not on `window`, so it only sees keys from inside the
@@ -1801,11 +1938,15 @@ export function ChatView({
   // these into its derivation (`blockingMessages`) so an open ask that has
   // scrolled past the latest page still surfaces. Same 5s poll + WS
   // invalidation as the timeline; the query usually returns 0–1 rows.
-  const { data: openRequestsData } = useQuery({
+  // The composer also gates on this query's mount-scoped confirmation: until
+  // a fetch completes in this mount, an empty derivation is unknown, not
+  // "no requests" — see `openRequestsUnverified` below.
+  const openRequestsQuery = useQuery({
     queryKey: ["chat-open-requests", chatId],
     queryFn: () => listChatOpenRequests(chatId),
     refetchInterval: 5_000,
   });
+  const { data: openRequestsData } = openRequestsQuery;
 
   const {
     data: chatDetail,
@@ -2078,6 +2219,14 @@ export function ChatView({
 
   const handleSend = async () => {
     if (isLandingCampaignTrialChatLocked(chatDetail?.metadata)) return;
+    // A request can arrive while the old composer still owns keyboard focus.
+    // Fail closed at the mutation boundary as well as replacing that composer
+    // in the render tree below, so a queued Enter/click cannot bypass takeover.
+    if (askOverlayActive) return;
+    // An unverified open-requests source fails closed on every route
+    // (`openRequestsUnverified`): the chat's open-request state is unknown,
+    // so no ordinary send may reach the mutation.
+    if (openRequestsUnverified) return;
     const text = draft.trim();
     // Images ride `content` as ImageRefContent (unchanged); documents/files ride
     // `metadata.attachments[]` as generic AttachmentRefs. A mixed send carries
@@ -2333,13 +2482,22 @@ export function ChatView({
   // the card nor drops the typed answer / staged images — the user just sees
   // the error and retries. On success `askBusy` stays true so the card is inert
   // during the refetch window (no double-submit) and clears when it unmounts.
-  const submitAskAnswer = async (request: { id: string; senderId: string }, answer: AskAnswer) => {
+  const submitAskAnswer = async (
+    request: { id: string; senderId: string },
+    answer: AskAnswer,
+    resolutionKind: RequestResolution["kind"] = "answered",
+  ) => {
     if (askBusy) return;
     setAskError(null);
     setAskBusy(true);
     try {
-      await sendAskAnswer({ chatId, request, answer });
+      await sendAskAnswer({ chatId, request, answer, resolutionKind });
+      clearAskTakeoverDraft(request.id);
       queryClient.invalidateQueries({ queryKey: messagesQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["chat-open-requests", chatId] });
+      queryClient.invalidateQueries({ queryKey: ["request-thread", chatId, request.id] });
+      queryClient.invalidateQueries({ queryKey: ["need-you"] });
+      queryClient.invalidateQueries({ queryKey: ["me", "chats"] });
       queryClient.invalidateQueries({ queryKey: agentSessionsQueryKey(agentId) });
       scrollToBottom("smooth");
       // Leave `askBusy` true: the overlay disables itself until the resolved
@@ -2386,6 +2544,7 @@ export function ChatView({
   const restoreMut = useMutation({
     mutationFn: () => patchChatEngagement(chatId, CHAT_ENGAGEMENT_STATUSES.ACTIVE),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["need-you"] });
       queryClient.invalidateQueries({ queryKey: ["me", "chats"] });
       queryClient.invalidateQueries({ queryKey: ["chat-detail", chatId] });
     },
@@ -2433,9 +2592,9 @@ export function ChatView({
   // `answerSelections` (kept here as state, NEVER written into the composer, so
   // a click only highlights the option and leaves typed text untouched), and
   // the composer holds free text only. Sending merges both into one canonical
-  // reply that ALWAYS carries `metadata.resolves` (kind="answered") — clicking
-  // an option or typing free text both resolve the question; there is no
-  // separate "leave it open for the asker to judge" path on this surface.
+  // reply that ALWAYS carries `metadata.resolves`: Submit uses `kind="answered"`
+  // and Skip uses `kind="closed"`. There is no separate "leave it open for the
+  // asker to judge" path on this surface.
   // Watchers never block — the read-only branch renders no composer.
   // `readRequestPayload` always yields an answer affordance (a well-formed
   // payload, or a free-text fallback for an absent / legacy / malformed one), so
@@ -2460,12 +2619,73 @@ export function ChatView({
     [readOnly, blockingMessages, myAgentId],
   );
   const dockPayload = useMemo(() => (dockRequest ? readRequestPayload(dockRequest.metadata) : null), [dockRequest]);
-  // The full-coverage ask card is active (and owns answering) iff a question
-  // blocks me. Both Reply and Skip resolve the question (Skip sends a "skipped"
-  // answer — see the `onSkip` handler), so the overlay clears the moment the
-  // resolving reply lands; there is no "dismiss but keep it open" path.
-  const askOverlayActive = dockRequest != null && dockPayload != null;
+  // `showAsk=false` is a viewer-local inspect mode: all currently loaded
+  // messages (plus every open ask) remain readable and the composer becomes a
+  // reopen affordance. It never changes request lifecycle or permits an
+  // ordinary send while questions remain open.
+  const askOverlayActive = dockRequest != null && dockPayload != null && !inspectAskMode;
   const dockRequestId = askOverlayActive ? dockRequest.id : undefined;
+  const openRequestCount = Math.max(openRequestsData?.items.length ?? 0, dockRequest ? 1 : 0);
+  // Mount-scoped confirmation for the open-requests source, keyed on TanStack
+  // Query's own observer state — no wall-clock comparisons. In v5
+  // `isFetchedAfterMount` stays false while the FIRST fetch of this observer
+  // is in flight (including a background refetch riding a stale cached
+  // success, and after the queryKey switches chats), and flips true once any
+  // fetch completes; `status` lands on "error" for ANY failed fetch — even a
+  // background refetch that keeps serving stale data. So a cached empty
+  // success from an earlier visit can never pass as this mount's
+  // confirmation. Deliberately not `isFetching`: the 5s poll must not
+  // flicker an already-confirmed composer.
+  //
+  // The single-slot latch below preserves that confirmation for the REST of
+  // this viewing: once this chat's snapshot has been confirmed, a later
+  // transient 5s poll failure must not re-block the composer. Every viewing
+  // confirms its own snapshot, so the latch resets on chat switch — in a
+  // layout effect, so a stale latch from an earlier visit to this chat can
+  // never paint the composer before the reset lands.
+  const [openRequestsConfirmedChatId, setOpenRequestsConfirmedChatId] = useState<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed intentionally on chatId — the latch resets on every chat switch, not when the effect body changes.
+  useLayoutEffect(() => {
+    setOpenRequestsConfirmedChatId(null);
+  }, [chatId]);
+  useEffect(() => {
+    if (openRequestsQuery.isFetchedAfterMount && openRequestsQuery.status === "success") {
+      setOpenRequestsConfirmedChatId(chatId);
+    }
+  }, [chatId, openRequestsQuery.isFetchedAfterMount, openRequestsQuery.status]);
+  const openRequestsMountConfirmed =
+    openRequestsConfirmedChatId === chatId ||
+    (openRequestsQuery.isFetchedAfterMount && openRequestsQuery.status === "success");
+  const openRequestsMountFailed = !openRequestsMountConfirmed && openRequestsQuery.isError;
+  // The ordinary composer must fail closed on BOTH the normal route and
+  // `showAsk=false` inspect mode while the window-independent open-requests
+  // source has not CONFIRMED this chat's open-request state in this mount.
+  // Pending, background-refetching from a stale cache, and mount-scope
+  // failure all derive the same empty count as "no open requests" — and a
+  // request that scrolled past the latest-50 timeline is invisible to
+  // `blockingMessages` until this query lands, so treating the empty
+  // derivation as confirmed lets a fast send bypass a still-open request:
+  // precisely the contract the blocking takeover exists to preserve. Only a
+  // mount-scope successful fetch, or a blocking request found in the
+  // already-loaded timeline (count > 0 above), lifts this gate. Watchers
+  // (`readOnly`) never send, so they never gate.
+  const openRequestsUnverified = !readOnly && openRequestCount === 0 && !openRequestsMountConfirmed;
+  const askAgent = useAskAgent({
+    chatId,
+    requestId: dockRequest?.id ?? null,
+    humanAgentId: myAgentId,
+    askerAgentId: dockRequest?.senderId ?? null,
+  });
+  const enterAskInspectMode = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.set("showAsk", "false");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+  const reopenAskTakeover = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("showAsk");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   // Reset the ask card's send state whenever the blocking question changes (a
   // resolved one unmounts the card; a different FIFO ask takes over): a stale
   // error or a stuck "Replying…" from the previous question must not bleed into
@@ -2499,6 +2719,7 @@ export function ChatView({
   // Answer state lives in the AskTakeover overlay (remounted per request via
   // `key`), so chat-view no longer resets per-question selections here.
 
+  const timelineMessages = inspectAskMode ? blockingMessages : mergedMessages;
   const items: TimelineItem[] = useMemo(() => {
     // mergedMessages (IDB cache ∪ server) feeds the timeline, not the raw server
     // window — otherwise cached messages outside the "last 50" window would
@@ -2506,7 +2727,7 @@ export function ChatView({
     // hide toggle is active, mergedMessages is already the filtered visible set
     // (see its useMemo), so the timeline, pill, divider, and read-tracker all
     // share one source.
-    const out: TimelineItem[] = mergedMessages.map((m) => ({
+    const out: TimelineItem[] = timelineMessages.map((m) => ({
       kind: "message" as const,
       at: m.createdAt,
       key: `m-${m.id}`,
@@ -2556,7 +2777,7 @@ export function ChatView({
 
     out.sort((a, b) => a.at.localeCompare(b.at));
     return out;
-  }, [mergedMessages, eventFeedsData]);
+  }, [timelineMessages, eventFeedsData]);
 
   const itemCount = items.length;
 
@@ -3393,9 +3614,9 @@ export function ChatView({
   );
 
   // Group-chat mention gate, shared by the send button (dimming / title) and
-  // handleSend's guard. A blocking question lifts the gate: the pinned question
-  // makes its asker the default recipient, so no typed @mention is required
-  // while a question blocks me.
+  // handleSend's guard. The ask overlay owns all answering while active, so the
+  // ordinary composer cannot reach this gate until the viewer enters inspect
+  // mode or resolves the request.
   const sendBlockedByMentionGate = requiresMention && draftMentions.length === 0 && !askOverlayActive;
 
   // Once the gate lifts (a member gets @mentioned, or a dock/overlay takes over)
@@ -3404,16 +3625,20 @@ export function ChatView({
     if (!sendBlockedByMentionGate) dismissMentionTip();
   }, [sendBlockedByMentionGate, dismissMentionTip]);
 
-  // Unified send-disabled gate for the composer. While the AskTakeover overlay
-  // is active it covers the composer (answering is owned there), so the composer
-  // only ever sends ordinary messages: need text or an image. NOTE: the mention
+  // Unified send-disabled gate for the composer. The overlay replaces the
+  // editable composer and also disables the mutation path defensively. NOTE: the mention
   // gate is deliberately NOT part of `sendDisabled` — a truly disabled button
   // swallows clicks, so we keep the button clickable when only the mention is
   // missing and let handleSend pop the tip. `sendDimmed` carries the greyed-out
   // look for that state.
   const landingCampaignChatLocked = isLandingCampaignTrialChatLocked(chatDetail?.metadata);
   const sendDisabled =
-    landingCampaignChatLocked || sendMut.isPending || uploading || (!draft.trim() && pendingAttachments.length === 0);
+    askOverlayActive ||
+    openRequestsUnverified ||
+    landingCampaignChatLocked ||
+    sendMut.isPending ||
+    uploading ||
+    (!draft.trim() && pendingAttachments.length === 0);
   const sendDimmed = sendDisabled || sendBlockedByMentionGate;
 
   const mention = useMentionAutocomplete({
@@ -3541,16 +3766,16 @@ export function ChatView({
           style={askOverlayActive ? { zIndex: 40 } : undefined}
         >
           {/* The ask pops up as a card INSIDE the workspace body — offset below
-              the (stable, single-row) topic header so the header and the
-              right rail stay visible. Owns answering: Reply resolves with the
-              composed answer; Skip ALSO resolves, sending a "skipped" answer so
-              the asking agent unblocks and the red dot clears (skip is an answer,
-              not a temporary dismiss). Keyed by request id so its answer state
-              resets when the blocking question changes. */}
+              the (stable, single-row) topic header so the header and the right
+              rail stay visible. Submit and Skip resolve; Ask agent keeps the
+              request open; closing enters the read-only inspect mode. Keyed by
+              request id so its answer state resets when the blocking question
+              changes. */}
           {askOverlayActive && dockRequest && dockPayload ? (
             <div style={{ position: "absolute", top: 52, left: 0, right: 0, bottom: 0, zIndex: 30 }}>
               <AskTakeover
                 key={dockRequest.id}
+                requestId={dockRequest.id}
                 body={typeof dockRequest.content === "string" ? dockRequest.content : ""}
                 images={imageAttachmentRefsFromMetadata(dockRequest.metadata).map((ref) => ({
                   imageId: ref.attachmentId,
@@ -3564,19 +3789,29 @@ export function ChatView({
                 markdownComponents={askMarkdownComponents}
                 isTrial={isTrial}
                 mobile={composerMobile}
+                askAgent={{
+                  exchanges: askAgent.exchanges,
+                  waiting: askAgent.waiting,
+                  sending: askAgent.sending,
+                  error: askAgent.error,
+                  onAsk: askAgent.ask,
+                }}
+                onDismiss={enterAskInspectMode}
                 onReply={(answer) => {
                   void submitAskAnswer(dockRequest, answer);
                 }}
                 onSkip={() => {
-                  // Skip is an answer, not a dismiss: send a resolving reply
-                  // (kind="answered") carrying a "skipped" body so the open
-                  // request resolves, the red dot clears, and the asking agent
-                  // unblocks and proceeds with its own judgment.
-                  void submitAskAnswer(dockRequest, {
-                    content: "(Skipped — no answer provided.)",
-                    mentions: [],
-                    images: [],
-                  });
+                  // Skip is an explicit lifecycle close, not a dismiss or an
+                  // answer inferred from display copy.
+                  void submitAskAnswer(
+                    dockRequest,
+                    {
+                      content: "(Skipped — no answer provided.)",
+                      mentions: [],
+                      images: [],
+                    },
+                    "closed",
+                  );
                 }}
               />
             </div>
@@ -4043,9 +4278,37 @@ export function ChatView({
                 <ComposeStatusBar
                   chatId={chatId}
                   agents={(chatDetail?.participants ?? []).filter((p) => p.type !== "human")}
-                  fallbackFocusRef={readOnly ? readOnlyComposerRef : textareaRef}
+                  fallbackFocusRef={
+                    askOverlayActive
+                      ? blockedComposerRef
+                      : readOnly
+                        ? readOnlyComposerRef
+                        : inspectAskMode || openRequestsUnverified
+                          ? inspectComposerRef
+                          : textareaRef
+                  }
                 />
-                {readOnly ? (
+                {askOverlayActive ? (
+                  <div
+                    ref={blockedComposerRef}
+                    tabIndex={-1}
+                    data-ask-blocked-composer
+                    className="composer-card flex items-center"
+                    style={{
+                      gap: "var(--sp-3)",
+                      minHeight: composerMobile ? 52 : 46,
+                      padding: "var(--sp-2_5) var(--sp-3)",
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      color: "var(--fg-3)",
+                    }}
+                  >
+                    <span aria-hidden className="mono">
+                      ?
+                    </span>
+                    <span className="text-body">Answer the question above to continue this chat.</span>
+                  </div>
+                ) : readOnly ? (
                   <div
                     ref={readOnlyComposerRef}
                     tabIndex={-1}
@@ -4085,11 +4348,99 @@ export function ChatView({
                       </Button>
                     )}
                   </div>
+                ) : inspectAskMode && openRequestCount > 0 ? (
+                  <button
+                    ref={(el) => {
+                      inspectComposerRef.current = el;
+                    }}
+                    type="button"
+                    data-inspect-ask-composer
+                    onClick={reopenAskTakeover}
+                    className="composer-card flex w-full items-center text-left transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{
+                      gap: "var(--sp-3)",
+                      minHeight: composerMobile ? 52 : 46,
+                      padding: "var(--sp-2_5) var(--sp-3)",
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      color: "var(--fg-2)",
+                    }}
+                  >
+                    <span
+                      aria-hidden
+                      className="mono inline-flex shrink-0 items-center justify-center"
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: "var(--radius-full)",
+                        background: "var(--state-needs-you)",
+                        color: "var(--primary-on)",
+                      }}
+                    >
+                      ?
+                    </span>
+                    <span className="text-body flex-1">
+                      {openRequestCount === 1 ? "有 1 条待处理的问题" : `有 ${openRequestCount} 条待处理的问题`}
+                    </span>
+                    <span className="text-label" style={{ color: "var(--fg-4)" }}>
+                      Open
+                    </span>
+                  </button>
+                ) : openRequestsUnverified ? (
+                  /* Fail-closed state, BOTH routes: the window-independent
+                     open-requests source has not confirmed this chat's state
+                     in this mount, so the ordinary composer must NOT render —
+                     a fast send would bypass a possibly still-open request.
+                     Shares the inspect composer's focus ref so
+                     ComposeStatusBar keeps a stable fallback target. */
+                  <div
+                    ref={(el) => {
+                      inspectComposerRef.current = el;
+                    }}
+                    tabIndex={-1}
+                    data-open-requests-unverified
+                    className="composer-card flex items-center"
+                    style={{
+                      gap: "var(--sp-3)",
+                      minHeight: composerMobile ? 52 : 46,
+                      padding: "var(--sp-2_5) var(--sp-3)",
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      color: "var(--fg-3)",
+                    }}
+                  >
+                    {openRequestsMountFailed ? (
+                      <>
+                        <span className="text-body flex-1" style={{ color: "var(--fg-2)" }}>
+                          Couldn’t check for open questions.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void openRequestsQuery.refetch()}
+                          className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-hover)]"
+                          style={{
+                            minHeight: 32,
+                            padding: "0 var(--sp-3)",
+                            border: "var(--hairline) solid var(--border)",
+                            borderRadius: "var(--radius-input)",
+                            background: "var(--bg-raised)",
+                            color: "var(--fg-2)",
+                          }}
+                        >
+                          Retry
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <LoaderCircle aria-hidden className="h-4 w-4 shrink-0 animate-spin" />
+                        <span className="text-body" role="status">
+                          Checking for open questions…
+                        </span>
+                      </>
+                    )}
+                  </div>
                 ) : (
                   <>
-                    {/* A blocking question is answered in the full-coverage
-                        AskTakeover overlay (rendered over the workspace), not in
-                        the composer. */}
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: drop target for image upload */}
                     <div
                       className="composer-card composer-input"

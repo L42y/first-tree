@@ -8,6 +8,15 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const cliRoot = join(repoRoot, "apps", "cli");
 const clientRoot = join(repoRoot, "packages", "client");
 const canonicalPolicyPath = join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md");
+const canonicalWriteRoutingPath = join(
+  repoRoot,
+  "packages",
+  "client",
+  "src",
+  "runtime",
+  "assets",
+  "context-tree-write-routing.md",
+);
 const smokeEntryName = "context-policy-runtime-smoke-entry.mjs";
 const roots: string[] = [];
 
@@ -25,10 +34,12 @@ type BuiltBriefingRuntime = {
     payload: null;
     workspacePath: string;
     sourceRepos: [];
-    contextTreePath: null;
+    contextTreePath: string | null;
   }) => string;
   readCanonicalContextTreePolicy: () => string;
+  readCanonicalContextTreeWriteRouting: () => string;
   resolveCanonicalContextTreePolicyPath: () => string;
+  resolveCanonicalContextTreeWriteRoutingPath: () => string;
   setCliBinding: (binding: { binName: string; packageName: string }) => void;
 };
 
@@ -88,8 +99,13 @@ afterAll(() => {
 function assertRuntimeEmbedsCanonicalPolicy(runtime: BuiltBriefingRuntime): void {
   runtime.setCliBinding({ binName: "first-tree", packageName: "first-tree" });
   const canonical = readFileSync(canonicalPolicyPath, "utf8");
+  const canonicalWriteRouting = readFileSync(canonicalWriteRoutingPath, "utf8").trim();
   expect(runtime.readCanonicalContextTreePolicy()).toBe(canonical);
+  expect(runtime.readCanonicalContextTreeWriteRouting()).toBe(canonicalWriteRouting);
   expect(runtime.resolveCanonicalContextTreePolicyPath()).toMatch(/runtime-assets[/\\]context-tree-policy\.md$/u);
+  expect(runtime.resolveCanonicalContextTreeWriteRoutingPath()).toMatch(
+    /runtime-assets[/\\]context-tree-write-routing\.md$/u,
+  );
   const briefing = runtime.buildAgentBriefing({
     identity: {
       agentId: "agent-runtime-smoke",
@@ -103,11 +119,25 @@ function assertRuntimeEmbedsCanonicalPolicy(runtime: BuiltBriefingRuntime): void
     payload: null,
     workspacePath: "/tmp/runtime-smoke-workspace",
     sourceRepos: [],
-    contextTreePath: null,
+    contextTreePath: "/tmp/runtime-smoke-context-tree",
   });
   expect(briefing).toContain(canonical);
   expect(briefing.split(canonical)).toHaveLength(2);
+  expect(briefing).toContain(canonicalWriteRouting);
+  expect(briefing.split(canonicalWriteRouting)).toHaveLength(2);
 }
+
+describe("built package CLI", () => {
+  it("starts the built package CLI with its external native lock addon", () => {
+    const packageJson = JSON.parse(readFileSync(join(cliRoot, "package.json"), "utf8")) as { version: string };
+    const output = execFileSync(process.execPath, [join(cliEntryDir, "index.mjs"), "--version"], {
+      cwd: cliRoot,
+      encoding: "utf8",
+    });
+
+    expect(output.trim()).toBe(packageJson.version);
+  });
+});
 
 describe("canonical Policy runtime layouts", () => {
   it("does not expose Managed briefing internals from public package entries", async () => {
@@ -121,6 +151,8 @@ describe("canonical Policy runtime layouts", () => {
       expect(entry).not.toHaveProperty("readCanonicalContextTreePolicy");
       expect(entry).not.toHaveProperty("resolveCanonicalContextTreePolicyPath");
     }
+    expect(clientEntry).toHaveProperty("readCanonicalContextTreeWriteRouting");
+    expect(cliEntry).not.toHaveProperty("readCanonicalContextTreeWriteRouting");
     expect(cliEntry).not.toHaveProperty("setCliBinding");
   });
 

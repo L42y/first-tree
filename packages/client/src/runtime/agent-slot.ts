@@ -1,5 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type {
   AgentRuntimeConfig,
   InboxDeliverFrame,
@@ -19,6 +18,7 @@ import type { SessionConfig } from "./config.js";
 import { clampRetryAttempt, classify, ERROR_KINDS, nextRetryDelayMs } from "./error-taxonomy.js";
 import type { HandlerFactory } from "./handler.js";
 import { PsSubprocessProbe } from "./process-tree-probe.js";
+import { RuntimeSessionTokenFile } from "./runtime-session-token-file.js";
 import { SessionManager, type SessionManagerShutdownOptions } from "./session-manager.js";
 
 /**
@@ -105,6 +105,12 @@ export class AgentSlot {
   private sessionManager: SessionManager | null = null;
   private readonly config: AgentSlotConfig;
   private readonly runtimeSessionTokenFile: string;
+  private readonly runtimeSessionTokenStore: RuntimeSessionTokenFile;
+  private runtimeSessionTokenDigest: string | null = null;
+  private runtimeSessionTokenMutationError: unknown = null;
+  /** ClientConnection emits and resolves the same BoundAgent object for the initial bind. */
+  private readonly persistedBoundAgents = new WeakSet<BoundAgent>();
+  private started = false;
   private logger: pino.Logger;
   private agentConfigCache: AgentConfigCache | null = null;
   private sdk: FirstTreeHubSDK | null = null;
@@ -118,7 +124,7 @@ export class AgentSlot {
   private stopping: Promise<void> | null = null;
   /** One agent-wide rebind serves every chat that observes the same stale proof. */
   private runtimeSessionProofRecoveryInFlight: Promise<void> | null = null;
-  private readonly runtimeSessionTokenProvider = (): string | undefined => this.readRuntimeSessionToken();
+  private readonly runtimeSessionTokenProvider = (): string | undefined => this.runtimeSessionTokenStore.read();
   /**
    * Aborts an in-flight bring-up config-fetch retry (see
    * {@link loadAgentConfigWithRetry}) so a stop()/unbind during the backoff
@@ -135,6 +141,7 @@ export class AgentSlot {
   constructor(config: AgentSlotConfig) {
     this.config = config;
     this.runtimeSessionTokenFile = join(defaultDataDir(), "runtime-session-tokens", `${config.agentId}.token`);
+    this.runtimeSessionTokenStore = new RuntimeSessionTokenFile(this.runtimeSessionTokenFile);
     this.logger = createLogger("slot").child({ agentName: config.name, agentId: config.agentId });
   }
 
@@ -160,6 +167,8 @@ export class AgentSlot {
   }
 
   async start(): Promise<RegisterResult> {
+    this.started = false;
+    this.runtimeSessionTokenMutationError = null;
     this.bringupAbort = new AbortController();
     this.clientConnection.setRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
     // Attach listeners BEFORE `bindAgent` so the server's bind-time
@@ -199,7 +208,14 @@ export class AgentSlot {
       if (boundAgent.agentId === this.config.agentId) {
         let runtimeSessionProofRefreshed = false;
         if (boundAgent.runtimeSessionToken) {
-          this.persistRuntimeSessionToken(boundAgent.runtimeSessionToken);
+          if (!this.persistBoundRuntimeSessionToken(boundAgent)) {
+            if (this.started) {
+              void this.stop("runtime session token persistence failed").catch((err) => {
+                this.logger.error({ err }, "failed to stop slot after runtime session token persistence failure");
+              });
+            }
+            return;
+          }
           if (boundAgent.sdk) this.adoptRuntimeTransport(boundAgent.sdk);
           runtimeSessionProofRefreshed = true;
         }
@@ -252,8 +268,12 @@ export class AgentSlot {
       const runtimeType = this.config.runtimeType ?? this.config.type;
       const bound = await this.clientConnection.bindAgent(this.config.agentId, runtimeType, this.config.runtimeVersion);
       bindSucceeded = true;
+      this.throwIfRuntimeSessionTokenMutationFailed();
       const sdk = bound.sdk;
-      if (bound.runtimeSessionToken) this.persistRuntimeSessionToken(bound.runtimeSessionToken);
+      if (bound.runtimeSessionToken && !this.persistedBoundAgents.has(bound)) {
+        this.persistBoundRuntimeSessionToken(bound);
+        this.throwIfRuntimeSessionTokenMutationFailed();
+      }
       this.adoptRuntimeTransport(sdk);
       const agent = await sdk.register();
 
@@ -261,6 +281,8 @@ export class AgentSlot {
 
       if (agent.type === "human") {
         this.logger.info("server reports type=human — message processing disabled");
+        this.throwIfRuntimeSessionTokenMutationFailed();
+        this.started = true;
         return agent;
       }
 
@@ -283,6 +305,7 @@ export class AgentSlot {
           "context tree not configured or binding unresolved — agent will start without organizational context",
         );
       }
+      this.throwIfRuntimeSessionTokenMutationFailed();
 
       const registryPath = join(defaultDataDir(), "sessions", `${this.config.name}.json`);
 
@@ -388,6 +411,8 @@ export class AgentSlot {
       this.scheduleActiveRuntimeChatIdsRefresh();
       this.startReconcileLoop();
 
+      this.throwIfRuntimeSessionTokenMutationFailed();
+      this.started = true;
       return agent;
     } catch (err) {
       await this.cleanupFailedStart({ unbind: bindSucceeded });
@@ -493,34 +518,35 @@ export class AgentSlot {
     return recovery;
   }
 
-  private persistRuntimeSessionToken(token: string | undefined): void {
-    let tmpFile: string | null = null;
+  private persistBoundRuntimeSessionToken(boundAgent: BoundAgent): boolean {
+    if (!boundAgent.runtimeSessionToken || this.persistedBoundAgents.has(boundAgent)) return true;
     try {
-      if (!token) {
-        rmSync(this.runtimeSessionTokenFile, { force: true });
-        return;
-      }
-      mkdirSync(dirname(this.runtimeSessionTokenFile), { recursive: true, mode: 0o700 });
-      tmpFile = `${this.runtimeSessionTokenFile}.tmp.${process.pid}.${Date.now()}.${Math.random()
-        .toString(36)
-        .slice(2)}`;
-      writeFileSync(tmpFile, `${token}\n`, { encoding: "utf8", mode: 0o600 });
-      chmodSync(tmpFile, 0o600);
-      renameSync(tmpFile, this.runtimeSessionTokenFile);
-      tmpFile = null;
-      chmodSync(this.runtimeSessionTokenFile, 0o600);
+      const digest = this.runtimeSessionTokenStore.persist(boundAgent.runtimeSessionToken);
+      this.runtimeSessionTokenDigest = digest;
+      this.persistedBoundAgents.add(boundAgent);
+      return true;
     } catch (err) {
-      if (tmpFile) rmSync(tmpFile, { force: true });
-      this.logger.warn({ err }, "failed to persist runtime session token");
+      this.runtimeSessionTokenMutationError = err;
+      this.logger.error({ err }, "failed to persist runtime session token — slot unavailable");
+      return false;
     }
   }
 
-  private readRuntimeSessionToken(): string | undefined {
+  private throwIfRuntimeSessionTokenMutationFailed(): void {
+    if (!this.runtimeSessionTokenMutationError) return;
+    throw new Error("Runtime session token persistence failed; the agent slot cannot become healthy.", {
+      cause: this.runtimeSessionTokenMutationError,
+    });
+  }
+
+  private cleanupOwnedRuntimeSessionToken(): void {
+    const digest = this.runtimeSessionTokenDigest;
+    this.runtimeSessionTokenDigest = null;
+    if (!digest) return;
     try {
-      const token = readFileSync(this.runtimeSessionTokenFile, "utf8").trim();
-      return token || undefined;
-    } catch {
-      return undefined;
+      this.runtimeSessionTokenStore.removeIfOwned(digest);
+    } catch (err) {
+      this.logger.warn({ err }, "runtime session token cleanup failed; leaving any remaining file untouched");
     }
   }
 
@@ -535,6 +561,7 @@ export class AgentSlot {
   }
 
   private async stopOnce(reason?: string, opts: AgentSlotStopOptions = {}): Promise<void> {
+    this.started = false;
     this.bringupAbort?.abort();
     this.activeRuntimeChatIdsRefreshGeneration++;
     if (this.reconcileTimer) {
@@ -567,7 +594,7 @@ export class AgentSlot {
       firstError ??= err;
       this.logger.warn({ err }, "failed to shut down sessions while stopping");
     }
-    this.persistRuntimeSessionToken(undefined);
+    this.cleanupOwnedRuntimeSessionToken();
     this.sessionManager = null;
     this.agentConfigCache = null;
     this.sdk = null;
@@ -579,6 +606,7 @@ export class AgentSlot {
   }
 
   private async cleanupFailedStart(opts: { unbind: boolean }): Promise<void> {
+    this.started = false;
     this.bringupAbort?.abort();
     this.activeRuntimeChatIdsRefreshGeneration++;
     if (this.reconcileTimer) {
@@ -605,14 +633,19 @@ export class AgentSlot {
         this.logger.warn({ err }, "failed to unbind after aborted agent start");
       }
     }
-    await this.sessionManager?.shutdown();
-    this.persistRuntimeSessionToken(undefined);
+    try {
+      await this.sessionManager?.shutdown();
+    } catch (err) {
+      this.logger.warn({ err }, "failed to shut down sessions after aborted agent start");
+    }
+    this.cleanupOwnedRuntimeSessionToken();
     this.sessionManager = null;
     this.agentConfigCache = null;
     this.sdk = null;
     this.activeRuntimeChatIds = null;
     this.activeRuntimeChatIdsRefreshInFlight = null;
     this.inboxId = null;
+    this.runtimeSessionTokenMutationError = null;
   }
 
   private reportSessionState(chatId: string, state: SessionState): void {

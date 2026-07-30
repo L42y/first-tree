@@ -40,7 +40,19 @@ export function registerChatSendCommand(chat: Command): void {
       "-F, --message-file <path>",
       "Read the message body from <path> (or `-` for stdin) instead of the [message] argument. Preferred for any " +
         "rich or multi-line body: the content never passes through the shell, so backticks, quotes, and newlines " +
-        "are sent verbatim.",
+        "are sent verbatim. This reads only the message body; it does not attach <path>.",
+    )
+    .addHelpText(
+      "after",
+      [
+        "",
+        "Attachment capture (agent sessions; best-effort and body-reference based):",
+        "  Images      Embed `![alt](path)` for PNG/JPEG/GIF/WebP files inside the sending agent's own workspace",
+        "              (10 MiB each, up to 20 images per message).",
+        "  Documents   Reference a workspace `.md` path (10 MiB each, up to 10 documents per message).",
+        "  Other       Other outbound file types are not captured by `chat send`.",
+        "",
+      ].join("\n"),
     )
     .action(async (name: string | undefined, message: string | undefined, options: SendOptions) => {
       try {

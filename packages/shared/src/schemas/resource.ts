@@ -5,6 +5,7 @@ import {
   mcpStdioServerSchema,
   normalizeRepoLocalPath,
   PROMPT_APPEND_MAX_LENGTH,
+  runtimeSkillBundleSchema,
 } from "./agent-runtime-config.js";
 import { repoUrlSchema } from "./org-settings.js";
 
@@ -83,7 +84,7 @@ export const skillResourcePayloadSchema = z.object({
   name: z.string().min(1).max(100),
   namespace: z.string().min(1).max(100).optional(),
   description: z.string().min(1).max(1000),
-  body: z.string().max(64 * 1024),
+  body: z.string().max(256 * 1024),
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
 export type SkillResourcePayload = z.infer<typeof skillResourcePayloadSchema>;
@@ -140,11 +141,13 @@ export const createTeamResourceSchema = z.discriminatedUnion("type", [
     ...namedResourceInputShape,
     payload: promptResourcePayloadSchema,
   }),
-  z.object({
-    type: z.literal("skill"),
-    ...namedResourceInputShape,
-    payload: skillResourcePayloadSchema,
-  }),
+  z
+    .object({
+      type: z.literal("skill"),
+      defaultEnabled: resourceDefaultEnabledSchema.default("available"),
+      bundleAttachmentId: z.string().uuid(),
+    })
+    .strict(),
   z.object({
     type: z.literal("mcp"),
     ...namedResourceInputShape,
@@ -212,6 +215,7 @@ export const updateTeamResourceSchema = z.object({
   defaultEnabled: resourceDefaultEnabledSchema.optional(),
   status: resourceStatusSchema.optional(),
   payload: z.unknown().optional(),
+  bundleAttachmentId: z.string().uuid().optional(),
 });
 export type UpdateTeamResource = z.infer<typeof updateTeamResourceSchema>;
 
@@ -349,6 +353,7 @@ export const resourceRowSchema = z.object({
   ownerAgentId: z.string().nullable(),
   name: z.string(),
   repoCanonicalKey: z.string().nullable(),
+  bundleAttachmentId: z.string().nullable(),
   defaultEnabled: resourceDefaultEnabledSchema.nullable(),
   status: resourceStatusSchema,
   payload: z.unknown(),
@@ -378,6 +383,7 @@ export const effectiveResourceRowSchema = z.object({
   mode: z.enum(["enabled", "disabled", "replaced", "unavailable"]),
   defaultEnabled: resourceDefaultEnabledSchema.nullable(),
   payload: z.unknown().nullable(),
+  skillBundle: runtimeSkillBundleSchema.optional(),
   repo: gitRepoSchema.nullable(),
   promptBody: z.string().nullable(),
   unavailableReason: z.string().nullable(),

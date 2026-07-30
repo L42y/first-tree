@@ -43,15 +43,12 @@ export function StepConnectComputer() {
           </FlowHint>
         ) : (
           <>
-            {/* Path 1 — run it yourself in a terminal (bare command). */}
             <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
               <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
                 {COPY.connectComputer.terminalBoxLabel}
               </p>
               <CommandBox command={cliCommand} />
             </div>
-            {/* Path 2 — paste a ready prompt to the coding agent you already
-                  have; the "please run this" wrapper makes the agent execute it. */}
             <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
               <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
                 {COPY.connectComputer.agentBoxLabel}

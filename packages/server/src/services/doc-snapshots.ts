@@ -5,7 +5,7 @@ import {
   MAX_MESSAGE_ATTACHMENT_REFS,
 } from "@first-tree/shared";
 import { BadRequestError } from "../errors.js";
-import { type AttachmentReader, loadAttachmentMeta } from "./attachment.js";
+import { type AttachmentReader, loadAttachmentMetaForReference } from "./attachment.js";
 
 /**
  * Server-side shape validation for `metadata.documentContext`.
@@ -76,7 +76,7 @@ export async function validateMessageAttachmentRefs(
   }
 
   // Look up every referenced row in parallel (metadata only — no bytea).
-  const rows = await Promise.all(refs.map((ref) => loadAttachmentMeta(db, ref.attachmentId)));
+  const rows = await Promise.all(refs.map((ref) => loadAttachmentMetaForReference(db, ref.attachmentId)));
 
   for (let i = 0; i < refs.length; i += 1) {
     const ref = refs[i];

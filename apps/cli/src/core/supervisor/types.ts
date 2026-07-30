@@ -6,6 +6,8 @@ export type ServiceInfo = {
   unitPath: string;
   logDir: string;
   state: ServiceState;
+  /** Home pinned into the installed supervisor definition, when readable. */
+  configuredHome?: string;
   /** PID of the active service process, if running. */
   pid?: number;
   /** systemd manager scope when platform === "systemd". */

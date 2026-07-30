@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
+import { useAskAgentNavLocked } from "../../components/chat/ask-agent-nav-lock.js";
 import { TeamSwitchOverlay } from "../../components/team-switch-overlay.js";
 import { useAdminWs } from "../../hooks/use-admin-ws.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
@@ -40,18 +41,18 @@ export function MobileShell() {
   });
 
   const selectedChatId = searchParams.get("c");
-  const workRoute =
-    location.pathname === "/m/work" || location.pathname === "/m/now" || location.pathname === "/m/chat";
+  const workRoute = location.pathname === "/m/chat";
   const immersiveChat = workRoute && selectedChatId !== null;
+  // While an Ask agent attempt is pending, the bottom tabs fail closed so
+  // the pending feedback's owning surface cannot unmount mid-attempt.
+  // Browser Back/Forward is owned by the bootstrap singleton popstate guard.
+  const askAgentNavLocked = useAskAgentNavLocked();
   const firstWorkPage = tabCountsQuery.data?.pages[0];
   const rows = mobileRowsFromList(firstWorkPage);
-  const attentionRows = firstWorkPage?.priorityRows.attention ?? [];
-  const attentionUnread = attentionRows.reduce((count, row) => count + (row.unreadMentionCount > 0 ? 1 : 0), 0);
   const totalUnread = Object.values(unreadCountsQuery.data?.counts ?? {}).reduce(
     (count, source) => count + source.unreadChatCount,
     0,
   );
-  const workCount = attentionRows.length + totalUnread - attentionUnread;
 
   // Kept above the onboarding early-return so hook order stays unconditional.
   const installGuide = useInstallGuideAuto({ hasContent: rows.length > 0, immersive: immersiveChat });
@@ -74,7 +75,7 @@ export function MobileShell() {
       <main className="flex-1 min-h-0 overflow-hidden">
         <Outlet />
       </main>
-      {immersiveChat ? null : <MobileBottomTabs workCount={workCount} />}
+      {immersiveChat ? null : <MobileBottomTabs chatCount={totalUnread} locked={askAgentNavLocked} />}
       {installGuide.open && installGuide.mode ? (
         <InstallGuideSheet mode={installGuide.mode} onInstall={installGuide.install} onClose={installGuide.dismiss} />
       ) : null}

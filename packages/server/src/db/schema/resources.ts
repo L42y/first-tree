@@ -22,6 +22,12 @@ export const resources = pgTable(
     ownerAgentId: text("owner_agent_id").references(() => agents.uuid, { onDelete: "cascade" }),
     name: text("name").notNull(),
     repoCanonicalKey: text("repo_canonical_key"),
+    /**
+     * Immutable ZIP attachment containing the complete Skill directory.
+     * Meaningful only when `type = 'skill'`. Deliberately no FK: attachment
+     * lifecycle and cross-consumer references are application-managed.
+     */
+    bundleAttachmentId: text("bundle_attachment_id"),
     defaultEnabled: text("default_enabled").$type<ResourceDefaultEnabled>(),
     status: text("status").$type<ResourceStatus>().notNull().default("active"),
     payload: jsonb("payload").$type<ResourcePayload>().notNull(),
@@ -34,6 +40,7 @@ export const resources = pgTable(
     index("idx_resources_org_type_scope").on(table.organizationId, table.type, table.scope),
     index("idx_resources_owner_agent").on(table.ownerAgentId),
     index("idx_resources_repo_key").on(table.organizationId, table.repoCanonicalKey),
+    index("idx_resources_bundle_attachment").on(table.bundleAttachmentId),
     uniqueIndex("uq_resources_team_repo_canonical_active")
       .on(table.organizationId, table.repoCanonicalKey)
       .where(

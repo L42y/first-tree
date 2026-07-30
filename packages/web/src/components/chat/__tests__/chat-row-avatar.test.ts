@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildAvatarAriaLabel, formatUnreadLabel, pickAvatarHue, pickCompositeShape } from "../chat-row-avatar.js";
+import {
+  buildAvatarAriaLabel,
+  formatUnreadLabel,
+  listCornerMarkKinds,
+  pickAvatarHue,
+  pickCompositeShape,
+} from "../chat-row-avatar.js";
 
 /**
  * Pin the pure decision helpers exported by `ChatRowAvatar`. The
@@ -115,5 +121,20 @@ describe("buildAvatarAriaLabel — state-only screen-reader text", () => {
 
   it("composes all present signals into one comma-joined label (failed first)", () => {
     expect(buildAvatarAriaLabel({ failed: true, unread: 5 })).toBe("failed, 5 unread");
+  });
+});
+
+describe("listCornerMarkKinds — independent conversation state icons", () => {
+  it("returns every active state instead of collapsing to a priority winner", () => {
+    expect(listCornerMarkKinds({ failed: true, needsYou: true, unread: true })).toEqual([
+      "unread",
+      "needs-you",
+      "failed",
+    ]);
+  });
+
+  it("returns only the states that apply", () => {
+    expect(listCornerMarkKinds({ failed: false, needsYou: true, unread: false })).toEqual(["needs-you"]);
+    expect(listCornerMarkKinds({ failed: false, needsYou: false, unread: false })).toEqual([]);
   });
 });

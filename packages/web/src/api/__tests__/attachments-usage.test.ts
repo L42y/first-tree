@@ -52,7 +52,7 @@ describe("attachments and usage API wrappers", () => {
       [ATTACHMENT_MIME_HEADER]: "image/png",
       [ATTACHMENT_FILENAME_HEADER]: "%E4%BD%A0%E5%A5%BD.png",
     });
-    expect(init?.body).toBeInstanceOf(ArrayBuffer);
+    expect(init?.body).toBe(file);
   });
 
   it("downloads attachment bytes as base64 and preserves served mime type", async () => {

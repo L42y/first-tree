@@ -105,7 +105,7 @@ export const githubAppInstallations = pgTable(
     hubOrganizationId: text("hub_organization_id").references(() => organizations.id, { onDelete: "set null" }),
     /**
      * Granted permissions snapshot, e.g.
-     *   {contents: "write", pull_requests: "write", issues: "read", ...}
+     *   {contents: "write", pull_requests: "write", issues: "write", ...}
      * Refreshed on `installation` / `installation_repositories` webhooks.
      * Keys are free-form because GitHub adds new permission names over
      * time; the type is enforced at the service layer via the shared

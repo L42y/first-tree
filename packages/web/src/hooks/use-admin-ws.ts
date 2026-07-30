@@ -94,6 +94,7 @@ function createThrottledInvalidator(queryKey: readonly unknown[], throttleMs: nu
 }
 
 const meChatsInvalidator = createThrottledInvalidator(["me", "chats"], INVALIDATE_THROTTLE_MS);
+const needYouInvalidator = createThrottledInvalidator(["need-you"], INVALIDATE_THROTTLE_MS);
 // `["activity"]` and `["sessions"]` are read by 5+ workspace components
 // each (chat-view, roster, agent-context, new-chat-draft, team, clients,
 // command-palette). A non-throttled invalidation on every `session:state`
@@ -258,6 +259,10 @@ function broadcast(msg: WsMessage) {
       // already wired into ChatView.
       const chatId = typeof msg.chatId === "string" ? msg.chatId : null;
       meChatsInvalidator.invalidate(latestQc);
+      // A request may have opened/resolved, or this may be a matching Ask agent
+      // `chat send --reply-to`. Refresh the global request queue and the durable
+      // request-thread projection without waiting for their polling floors.
+      needYouInvalidator.invalidate(latestQc);
       if (chatId) {
         latestQc.invalidateQueries({ queryKey: ["chat-messages", chatId] });
         latestQc.invalidateQueries({ queryKey: ["chat-detail", chatId] });
@@ -265,6 +270,7 @@ function broadcast(msg: WsMessage) {
         // refresh them on the same kick so a new (or just-resolved) ask flips
         // the takeover without waiting for its own 5s poll.
         latestQc.invalidateQueries({ queryKey: ["chat-open-requests", chatId] });
+        latestQc.invalidateQueries({ queryKey: ["request-thread", chatId] });
         // The new message may be an accepted cron trigger (or its result),
         // which flips the schedule's outstanding state. The WS frame carries
         // no metadata, so conservatively refresh the chat's schedule list.
@@ -287,11 +293,13 @@ function broadcast(msg: WsMessage) {
       }
     } else if (msg.type === "me-chats:changed") {
       // The viewer's OWN private me-chats projection changed on another device
-      // (a pin / unpin). The server sends this frame only to this user's own
-      // sockets (never broadcast — pin state is private), so a bare list
-      // invalidation regroups the rail across their devices in realtime. No
-      // chatId; nothing chat-specific to touch.
+      // (pin or engagement). The server sends this frame only to this user's own
+      // sockets, so refresh both private projections across their devices.
+      // Engagement controls whether a chat belongs to the Active-scoped Need
+      // you queue. Pin reuses the same bare event; its extra queue refetch is
+      // intentionally harmless.
       meChatsInvalidator.invalidate(latestQc);
+      needYouInvalidator.invalidate(latestQc);
     } else if (msg.type === "pulse:tick") {
       // Per-org runtime-state aggregate (pulse-aggregator broadcasts every 5s).
       // The composite `offline` (client_id → null) and runtime-`error` → failed
@@ -369,6 +377,11 @@ function connect() {
       // Same reasoning for the window-independent open-requests source that
       // backs the blocking takeover — catch it up after a WS gap too.
       latestQc.invalidateQueries({ queryKey: ["chat-open-requests"] });
+      // Need you and its clarification threads are also push-driven. Refresh
+      // both projections after a gap so counts and late agent replies cannot
+      // remain stale until another message happens to arrive.
+      latestQc.invalidateQueries({ queryKey: ["need-you"] });
+      latestQc.invalidateQueries({ queryKey: ["request-thread"] });
       // The chat-first workspace reads `viewerMembershipKind` (and other
       // viewer-scoped fields) off `["chat-detail", chatId]`. Without this,
       // a frame that fired while the WS was down (e.g. the caller was
@@ -438,6 +451,7 @@ function teardown() {
     reconnectTimer = null;
   }
   meChatsInvalidator.dispose();
+  needYouInvalidator.dispose();
   activityInvalidator.dispose();
   sessionsInvalidator.dispose();
   chatAgentStatusInvalidator.dispose();

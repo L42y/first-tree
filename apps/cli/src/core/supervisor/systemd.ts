@@ -7,6 +7,7 @@ import { channelConfig } from "../channel.js";
 import { print } from "../output.js";
 import {
   ensureLogDir,
+  extractFirstTreeHomeFromSystemd,
   extractProxyFromSystemd,
   logDir,
   migrateBakedProxyEnv,
@@ -378,12 +379,22 @@ function systemdInfo(
   detail?: string,
   migrationRequired?: ServiceInfo["migrationRequired"],
 ): ServiceInfo {
+  let configuredHome: string | undefined;
+  if (existsSync(unitPath)) {
+    try {
+      configuredHome = extractFirstTreeHomeFromSystemd(readFileSync(unitPath, "utf8")) ?? channelConfig.defaultHome;
+    } catch {
+      // An unreadable definition cannot prove which home the service owns.
+      configuredHome = undefined;
+    }
+  }
   return {
     platform: "systemd",
     label: SYSTEMD_UNIT,
     unitPath,
     logDir: logDir(),
     state,
+    configuredHome,
     managerScope,
     migrationRequired,
     pid,

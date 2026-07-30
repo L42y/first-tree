@@ -11,7 +11,6 @@ import { CommunityChannels } from "../../../components/community-channels.js";
 import { Button } from "../../../components/ui/button.js";
 import { readCampaignActionHandoffFlag, writeCampaignActionHandoffFlag } from "../../../utils/onboarding-flags.js";
 import { getCampaign } from "../../quickstart/campaigns.js";
-import { ContextEnablement } from "../../settings/context-enablement.js";
 import {
   buildCampaignActionBootstrap,
   buildInviteeReadyBootstrap,
@@ -293,11 +292,10 @@ function AdminStartChat() {
 // ── Invitee ─────────────────────────────────────────────────────────────
 
 function InviteeStartChat() {
-  const { organizationId, computer } = useOnboardingFlow();
-  // BYO Context readiness and managed first-chat readiness are deliberately
-  // separate. External Read needs only a bound Context Tree plus an active
-  // Team code-repository resource; the legacy managed first chat may still
-  // need its GitHub installation before its first git operation.
+  const { organizationId } = useOnboardingFlow();
+  // This is the member's already-selected managed-agent path. Readiness here
+  // controls only the first First Tree chat; optional external Context access
+  // is not part of this managed-agent path.
   //
   // We use the dedicated /github-app-installation/exists endpoint here (returns
   // `{ exists: boolean }`, member-readable) rather than the full installation
@@ -331,9 +329,7 @@ function InviteeStartChat() {
       };
     },
     enabled: !!organizationId,
-    // Poll while either surface is incomplete. A GitLab-backed Team can expose
-    // its provider-neutral BYO handoff while this legacy GitHub probe remains
-    // false; the probe only controls the managed first-chat branch below.
+    // Poll while the managed first-chat capability is incomplete.
     refetchInterval: (query) => {
       const d = query.state.data;
       if (!d) return 5000;
@@ -350,11 +346,10 @@ function InviteeStartChat() {
   // Read failure → not-ready; the query keeps polling so a transient blip
   // resolves on its own.
   if (teamQuery.isError || !teamQuery.data) {
-    return <InviteeNotReady contextReady={false} computerConnected={computer.connectedClient !== null} />;
+    return <InviteeNotReady />;
   }
 
   const { treeUrl, hasInstallation, installationKnown, hasCodeRepository } = teamQuery.data;
-  const contextReady = Boolean(treeUrl) && hasCodeRepository;
   // "ready" requires an AUTHORITATIVE install=true. `hasInstallation` is optimistic
   // on a failed probe (null → true) so the query keeps polling instead of flapping
   // — but we must NOT render the ready launch (which reads the tree and would 403
@@ -363,21 +358,20 @@ function InviteeStartChat() {
   // polling, so it advances to ready on its own once install is confirmed.
   const installed = installationKnown && hasInstallation;
   return resolveInviteeStartChatState({ treeUrl, hasInstallation: installed }) === "ready" && hasCodeRepository ? (
-    <InviteeReady computerConnected={computer.connectedClient !== null} />
+    <InviteeReady />
   ) : (
-    <InviteeNotReady contextReady={contextReady} computerConnected={computer.connectedClient !== null} />
+    <InviteeNotReady />
   );
 }
 
 /**
  * Invitee · ready to launch. The team has a Context Tree and the provider
- * capability needed by the managed first chat, so there's nothing left to
- * set up — and nothing to pick: the
- * agent already inherits the team's `recommended` repo resources automatically
- * (they're enabled for every org agent). This mirrors the admin finale as a
- * pure launch into a real chat. An invitee never mutates team config.
+ * capability needed by the managed first chat, so the agent already inherits
+ * the team's `recommended` repo resources automatically (they're enabled for
+ * every org agent). This is the member's selected First Tree path; optional
+ * external Context access is not replayed here.
  */
-function InviteeReady({ computerConnected }: { computerConnected: boolean }) {
+function InviteeReady() {
   const { organizationId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
   const [phase, setPhase] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -421,14 +415,6 @@ function InviteeReady({ computerConnected }: { computerConnected: boolean }) {
             {error}
           </FlowHint>
         )}
-        {organizationId && (
-          <ContextEnablement
-            organizationId={organizationId}
-            teamRole="member"
-            ready
-            computerConnected={computerConnected}
-          />
-        )}
         <div className="flex">
           <Button type="button" variant="cta" onClick={() => void handleStart()}>
             <span>{COPY.startChat.startWorking}</span>
@@ -443,15 +429,16 @@ function InviteeReady({ computerConnected }: { computerConnected: boolean }) {
 
 /**
  * Invitee · the managed first chat isn't ready yet. This can be an Admin-owned
- * Context/Team-repository gap or only the legacy GitHub capability gap. BYO
- * Context is rendered independently: a GitLab Team with a bound Tree and code
- * repository can enable its external provider even while this branch remains.
+ * Context/Team-repository gap or only the legacy GitHub capability gap.
+ * Missing Team setup stays out of the finale because a member cannot fix it
+ * here, and optional external Context access is not replayed after this First
+ * Tree path was selected.
  *
  * The primary action starts a real first chat with the agent. Routing it through
  * `completeAndEnterChat` — not `finishLater` — means the button lands the user
  * in a real chat WITH the agent, instead of dropping them into an empty workspace.
  */
-function InviteeNotReady({ contextReady, computerConnected }: { contextReady: boolean; computerConnected: boolean }) {
+function InviteeNotReady() {
   const { organizationId, completeAndEnterChat, reportStepFailure } = useOnboardingFlow();
   const [phase, setPhase] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -491,14 +478,6 @@ function InviteeNotReady({ contextReady, computerConnected }: { contextReady: bo
           <FlowHint tone="error" role="alert">
             {error}
           </FlowHint>
-        )}
-        {organizationId && (
-          <ContextEnablement
-            organizationId={organizationId}
-            teamRole="member"
-            ready={contextReady}
-            computerConnected={computerConnected}
-          />
         )}
         {/* The primary action is not an escape hatch: the common not-ready case
             (admin finished without a tree) never resolves, so the real path

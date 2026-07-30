@@ -121,4 +121,25 @@ describe("ChatRowAvatar — group composite uses identicons", () => {
     );
     expect(html.match(/loading="lazy"/g) ?? []).toHaveLength(2);
   });
+
+  it("keeps unread, open-request, and recovery markers independently visible", () => {
+    const html = renderToStaticMarkup(
+      <ChatRowAvatar
+        title="Team"
+        type="group"
+        participants={peers}
+        selfAgentId="self"
+        unreadCount={2}
+        failed
+        needsYou
+        badge={false}
+        statusDot
+      />,
+    );
+    expect(html.match(/data-chat-state-mark=/g) ?? []).toHaveLength(3);
+    expect(html).toContain('data-chat-state-mark="unread"');
+    expect(html).toContain('data-chat-state-mark="needs-you"');
+    expect(html).toContain('data-chat-state-mark="failed"');
+    expect(html).toContain('aria-label="failed, needs you, 2 unread"');
+  });
 });

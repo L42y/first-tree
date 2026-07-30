@@ -17,17 +17,20 @@ const clientMocks = vi.hoisted(() => ({
 }));
 
 const coreMocks = vi.hoisted(() => ({
+  acquireDaemonRuntimeOwnership: vi.fn(),
   CapabilityRefresher: vi.fn(),
   ClientRuntime: vi.fn(),
   createApiNameResolver: vi.fn(),
   createExecuteUpdate: vi.fn(),
   createLoggerRuntimeOutput: vi.fn(),
+  daemonRuntimeHomesEqual: vi.fn(),
   declineUpdate: vi.fn(),
   ensureActiveRootClientIdPersisted: vi.fn(),
   ensureFreshAccessToken: vi.fn(),
   getClientSwitchStartupBlock: vi.fn(),
   getClientServiceStatus: vi.fn(),
   handleClientOrgMismatch: vi.fn(),
+  isDaemonRuntimeOwnershipError: vi.fn(),
   isServiceSupported: vi.fn(),
   listPinnedAgents: vi.fn(),
   loadCredentials: vi.fn(),
@@ -90,6 +93,7 @@ const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: string | nu
 });
 
 let home: string;
+let runtimeOwnershipRelease: ReturnType<typeof vi.fn>;
 let runtimeInstance: {
   addAgent: ReturnType<typeof vi.fn>;
   start: ReturnType<typeof vi.fn>;
@@ -152,6 +156,16 @@ beforeEach(() => {
   coreMocks.loadCredentials.mockReturnValue({ refreshToken: "refresh" });
   coreMocks.loadDaemonEnv.mockReturnValue([]);
   coreMocks.getClientSwitchStartupBlock.mockReturnValue(null);
+  runtimeOwnershipRelease = vi.fn();
+  coreMocks.acquireDaemonRuntimeOwnership.mockReturnValue({
+    lockPath: join(home, "state", "daemon-runtime.lock"),
+    owner: { instanceId: "owner-test" },
+    release: runtimeOwnershipRelease,
+  });
+  coreMocks.isDaemonRuntimeOwnershipError.mockImplementation(
+    (error: unknown) => typeof error === "object" && error !== null && "daemonOwnership" in error,
+  );
+  coreMocks.daemonRuntimeHomesEqual.mockImplementation((left: string, right: string) => left === right);
   coreMocks.resolveClientRuntimeStopReason.mockReturnValue(undefined);
   coreMocks.isServiceSupported.mockReturnValue(false);
   coreMocks.getClientServiceStatus.mockReturnValue({
@@ -306,6 +320,8 @@ describe("daemon start command", () => {
 
     await expect(runStart()).resolves.toBeTruthy();
     expect(output()).toContain("Service is already running");
+    expect(output()).toContain("stop it before running `first-tree-dev daemon start --foreground`");
+    expect(coreMocks.acquireDaemonRuntimeOwnership).not.toHaveBeenCalled();
     expect(coreMocks.ClientRuntime).not.toHaveBeenCalled();
 
     stderrSpy.mockClear();
@@ -318,6 +334,50 @@ describe("daemon start command", () => {
 
     await expect(runStart()).resolves.toBeTruthy();
     expect(output()).toContain("Service is already running (systemd).");
+  });
+
+  it("preflights an active service before an explicit foreground start", async () => {
+    coreMocks.isServiceSupported.mockReturnValue(true);
+    coreMocks.getClientServiceStatus.mockReturnValue({
+      platform: "launchd",
+      state: "active",
+      label: "first-tree-dev",
+      detail: "pid 123",
+      logDir: "/logs",
+      configuredHome: home,
+    });
+
+    await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(output()).toContain("Cannot start a foreground daemon while the launchd service is active (pid 123)");
+    expect(output()).toContain("`first-tree-dev daemon stop`");
+    expect(coreMocks.acquireDaemonRuntimeOwnership).not.toHaveBeenCalled();
+    expect(coreMocks.promptMissingFields).not.toHaveBeenCalled();
+    expect(coreMocks.ClientRuntime).not.toHaveBeenCalled();
+  });
+
+  it("lets an explicit foreground home run beside an active service for a different home", async () => {
+    coreMocks.isServiceSupported.mockReturnValue(true);
+    coreMocks.getClientServiceStatus.mockReturnValue({
+      platform: "launchd",
+      state: "active",
+      label: "first-tree-dev",
+      detail: "pid 123",
+      logDir: "/logs",
+      configuredHome: join(home, "service-home"),
+    });
+
+    await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(output()).not.toContain("Cannot start a foreground daemon while the launchd service is active");
+    expect(coreMocks.acquireDaemonRuntimeOwnership).toHaveBeenCalledWith({
+      channel: "dev",
+      home,
+      mode: "foreground",
+      version: "0.0.0-test",
+    });
+    expect(coreMocks.promptMissingFields).toHaveBeenCalled();
+    expect(coreMocks.ClientRuntime).toHaveBeenCalled();
   });
 
   it("starts an inactive service and prints log hints", async () => {
@@ -491,6 +551,15 @@ describe("daemon start command", () => {
   it("runs inline, reconciles local state, uploads capabilities and skills", async () => {
     await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
 
+    expect(coreMocks.acquireDaemonRuntimeOwnership).toHaveBeenCalledWith({
+      channel: "dev",
+      home,
+      mode: "foreground",
+      version: "0.0.0-test",
+    });
+    expect(coreMocks.acquireDaemonRuntimeOwnership.mock.invocationCallOrder[0]).toBeLessThan(
+      coreMocks.promptMissingFields.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
     expect(coreMocks.promptMissingFields).toHaveBeenCalledWith(expect.objectContaining({ noInteractive: false }));
     expect(clientMocks.applyClientLoggerConfig).toHaveBeenCalledWith({ level: "info" });
     expect(coreMocks.migrateLocalAgentDirs).toHaveBeenCalled();
@@ -575,6 +644,7 @@ describe("daemon start command", () => {
       expect(runtimeInstance.unwatchAgentsDir).toHaveBeenCalled();
       expect(runtimeInstance.stop).toHaveBeenCalledWith(undefined);
       expect(coreMocks.registerClientRuntimeMarker.mock.results[0]?.value).toHaveBeenCalled();
+      expect(runtimeOwnershipRelease).toHaveBeenCalled();
       expect(clientMocks.flushClientSentry).toHaveBeenCalled();
       expect(exitSpy).toHaveBeenCalledWith(0);
     } finally {
@@ -729,6 +799,12 @@ describe("daemon start command", () => {
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
     expect(clientMocks.applyClientLoggerConfig).toHaveBeenCalledWith({ level: "info" });
     expect(coreMocks.createLoggerRuntimeOutput).toHaveBeenCalledWith(expect.any(Object));
+    expect(coreMocks.acquireDaemonRuntimeOwnership).toHaveBeenCalledWith({
+      channel: "dev",
+      home,
+      mode: "service",
+      version: "0.0.0-test",
+    });
     expect(coreMocks.ClientRuntime).toHaveBeenCalledWith(
       "https://first-tree.example",
       "client_1234abcd",
@@ -738,6 +814,44 @@ describe("daemon start command", () => {
       }),
     );
     expect(output()).toBe("");
+  });
+
+  it("settles a supervisor ownership collision without a restart-triggering failure", async () => {
+    const daemonLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    clientMocks.createLogger.mockReturnValue(daemonLogger);
+    process.env.FIRST_TREE_SERVICE_MODE = "1";
+    coreMocks.acquireDaemonRuntimeOwnership.mockImplementationOnce(() => {
+      throw Object.assign(new Error("home is already held by pid 321 (foreground)"), { daemonOwnership: true });
+    });
+
+    await expect(runStart(["--no-interactive"])).resolves.toBeTruthy();
+
+    expect(daemonLogger.error).toHaveBeenCalledWith(
+      "✗ home is already held by pid 321 (foreground); supervisor child is stopping without restart.",
+    );
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(coreMocks.promptMissingFields).not.toHaveBeenCalled();
+    expect(coreMocks.ClientRuntime).not.toHaveBeenCalled();
+  });
+
+  it("fails a manual inline start with the live owner details", async () => {
+    coreMocks.acquireDaemonRuntimeOwnership.mockImplementationOnce(() => {
+      throw Object.assign(new Error("home is already held by pid 654 (service)"), {
+        code: "DAEMON_RUNTIME_ALREADY_RUNNING",
+        daemonOwnership: true,
+      });
+    });
+
+    await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(failMock).toHaveBeenCalledWith(
+      "DAEMON_RUNTIME_ALREADY_RUNNING",
+      "home is already held by pid 654 (service)",
+      1,
+    );
+    expect(clientMocks.captureClientException).not.toHaveBeenCalled();
+    expect(coreMocks.promptMissingFields).not.toHaveBeenCalled();
+    expect(coreMocks.ClientRuntime).not.toHaveBeenCalled();
   });
 
   it("treats explicit foreground as foreground even when service-mode env is inherited", async () => {

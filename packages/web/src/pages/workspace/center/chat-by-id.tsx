@@ -47,7 +47,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isListResponse(value: unknown): value is ListMeChatsResponse {
   if (!isRecord(value) || !Array.isArray(value.rows) || !isRecord(value.priorityRows)) return false;
-  return Array.isArray(value.priorityRows.attention) && Array.isArray(value.priorityRows.pinned);
+  return Array.isArray(value.priorityRows.pinned);
 }
 
 function isMeChatsCache(value: unknown): value is MeChatsCache {
@@ -81,19 +81,12 @@ function patchReadChatInCachedLists(queryClient: QueryClient, chatId: string, un
     };
     const patchResponse = (response: ListMeChatsResponse): ListMeChatsResponse => {
       const rows = patchRows(response.rows);
-      const attention = patchRows(response.priorityRows.attention);
       const pinned = patchRows(response.priorityRows.pinned);
-      if (!rows.changed && !attention.changed && !pinned.changed) return response;
+      if (!rows.changed && !pinned.changed) return response;
       return {
         ...response,
         rows: rows.changed ? rows.rows : response.rows,
-        priorityRows:
-          attention.changed || pinned.changed
-            ? {
-                attention: attention.changed ? attention.rows : response.priorityRows.attention,
-                pinned: pinned.changed ? pinned.rows : response.priorityRows.pinned,
-              }
-            : response.priorityRows,
+        priorityRows: pinned.changed ? { pinned: pinned.rows } : response.priorityRows,
       };
     };
 

@@ -13,6 +13,7 @@ import {
   type TokenUsage,
 } from "@botiverse/kimi-code-sdk";
 import {
+  type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
   classifyShellCommandIo,
   DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD,
@@ -44,10 +45,11 @@ import type {
   SessionMessage,
 } from "../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../runtime/handler.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../runtime/provider-retry-policy.js";
-import { materializeResourceSkills } from "../runtime/resource-skills.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../runtime/workspace.js";
 import { chunkAssistantText } from "./assistant-text.js";
 import { formatAuthHint, isKimiCodeAuthError } from "./auth-error-hint.js";
@@ -205,6 +207,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
   let session: Session | null = null;
   let sessionId: string | null = null;
   let activePayload: AgentRuntimeConfigPayload | null = null;
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   let sourceReposForPrompt: PredeclaredSourceRepo[] = [];
   let sessionActive = false;
   let initialTurnPreparing = false;
@@ -250,6 +253,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -654,8 +658,12 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     const workspaceCwd = acquireAgentHome(workspaceRoot);
     cwd = workspaceCwd;
 
+    let runtimeConfig: AgentRuntimeConfig | null = null;
     let payload: AgentRuntimeConfigPayload | null = null;
-    if (agentConfigCache) payload = (await agentConfigCache.refresh(sessionCtx.agent.agentId)).payload;
+    if (agentConfigCache) {
+      runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+      payload = runtimeConfig.payload;
+    }
     const payloadResolved = payload !== null;
     payload ??= { ...DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD };
     if (payload.kind !== "kimi-code") {
@@ -663,7 +671,15 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     }
 
     sourceReposForPrompt = declaredSourceRepos(workspaceCwd, payload);
-    await materializeResourceSkills(workspaceCwd, payload, sessionCtx);
+    reconciledTeamSkills = (
+      await reconcileManagedSkillsForConfig(
+        workspaceCwd,
+        runtimeProvider,
+        runtimeConfig,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+      )
+    ).teamSkills;
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);
     ensureAgentBootstrap({
       workspace: workspaceCwd,

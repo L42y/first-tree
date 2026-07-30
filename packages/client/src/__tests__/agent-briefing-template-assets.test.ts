@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 describe("agent briefing template assets", () => {
-  it("copy script materializes the briefing template and canonical Policy as non-Skill runtime assets", () => {
+  it("copy script materializes the briefing template and canonical Context assets", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "first-tree-template-assets-"));
     try {
       const relativePackageDir = relative(repoRoot, tempRoot);
@@ -20,8 +20,10 @@ describe("agent briefing template assets", () => {
 
       const copiedTemplate = join(tempRoot, "dist", "templates", "agent-briefing.ejs");
       const copiedPolicy = join(tempRoot, "dist", "runtime-assets", "context-tree-policy.md");
+      const copiedWriteRouting = join(tempRoot, "dist", "runtime-assets", "context-tree-write-routing.md");
       expect(existsSync(copiedTemplate)).toBe(true);
       expect(existsSync(copiedPolicy)).toBe(true);
+      expect(existsSync(copiedWriteRouting)).toBe(true);
 
       const copiedSource = readFileSync(copiedTemplate, "utf8");
       const sourceTemplate = readFileSync(
@@ -32,9 +34,14 @@ describe("agent briefing template assets", () => {
         join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md"),
         "utf8",
       );
+      const sourceWriteRouting = readFileSync(
+        join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-write-routing.md"),
+        "utf8",
+      );
 
       expect(copiedSource).toBe(sourceTemplate);
       expect(readFileSync(copiedPolicy, "utf8")).toBe(sourcePolicy);
+      expect(readFileSync(copiedWriteRouting, "utf8")).toBe(sourceWriteRouting);
       expect(copiedSource).toContain("# Working in First Tree (First Tree Managed)");
       expect(copiedSource).toContain("## GitLab Working Posture");
       expect(copiedSource).toContain("## GitLab Entity Attention");

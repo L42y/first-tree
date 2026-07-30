@@ -7,15 +7,13 @@ import {
 import { apiFetchRaw, withOrg } from "./client.js";
 
 /**
- * Upload a file's bytes to the org-scoped object store and return its
- * metadata — the `id` is what an image message references. Targets the
- * currently-viewed org via `withOrg`; the chat lives in that org, so its
- * members can fetch the bytes back through the capability-model download.
+ * Upload a file's bytes to the org-scoped attachment store and return its
+ * metadata — consumers persist the returned `id`. Targets the currently
+ * viewed org via `withOrg`.
  *
  * The filename is `encodeURIComponent`-escaped because HTTP header values are
  * limited to ISO-8859-1 and a raw unicode name would make `fetch` throw. The
- * user-visible filename shown in chat comes from the message ref (JSON body),
- * not this header — the header only feeds the download `Content-Disposition`.
+ * The header feeds attachment metadata and download `Content-Disposition`.
  */
 /**
  * Best-effort MIME for an upload: browsers leave `File.type` empty for several
@@ -26,19 +24,22 @@ import { apiFetchRaw, withOrg } from "./client.js";
  * driven by the filename extension, not this MIME, so the octet-stream fallback
  * is harmless.
  */
-export function uploadMimeFor(file: File): string {
+export function uploadMimeFor(file: Blob): string {
   return file.type || "application/octet-stream";
 }
 
-export async function uploadAttachment(file: File): Promise<UploadAttachmentResponse> {
-  const bytes = await file.arrayBuffer();
+export async function uploadAttachment(file: Blob, filename?: string): Promise<UploadAttachmentResponse> {
+  const inferredName =
+    filename ?? ("name" in file && typeof file.name === "string" && file.name.trim().length > 0 ? file.name : "blob");
   const res = await apiFetchRaw(withOrg("/attachments"), {
     method: "POST",
-    body: bytes,
+    // Passing the Blob directly lets fetch stream it; do not materialize a
+    // second full ArrayBuffer in browser memory.
+    body: file,
     headers: {
       "Content-Type": "application/octet-stream",
       [ATTACHMENT_MIME_HEADER]: uploadMimeFor(file),
-      [ATTACHMENT_FILENAME_HEADER]: encodeURIComponent(file.name),
+      [ATTACHMENT_FILENAME_HEADER]: encodeURIComponent(inferredName),
     },
   });
   return uploadAttachmentResponseSchema.parse(await res.json());

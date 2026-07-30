@@ -51,8 +51,8 @@ vi.mock("../steps/step-start-chat.js", () => ({
 vi.mock("../steps/step-team.js", () => ({
   StepTeam: () => <div>Create Team Step</div>,
 }));
-vi.mock("../steps/step-join-team.js", () => ({
-  StepJoinTeam: () => <div>Join Team Step</div>,
+vi.mock("../steps/step-get-started.js", () => ({
+  StepGetStarted: () => <div>Get Started Step</div>,
 }));
 
 let root: Root | null = null;
@@ -204,7 +204,7 @@ describe("OnboardingPage", () => {
       ["connect-computer", "Connect Computer Step", "admin", "admin"],
       ["create-agent", "Create Agent Step", "admin", "admin"],
       ["start-chat", "Start Chat Step", "admin", "admin"],
-      ["join-team", "Join Team Step", "member", "invitee"],
+      ["get-started", "Get Started Step", "member", "invitee"],
     ];
 
     for (const [step, label, role, path] of cases) {

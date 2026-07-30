@@ -5,19 +5,25 @@ export const CONTEXT_INTEGRATION_PROVIDERS = ["claude-code", "codex"] as const;
 export const contextIntegrationProviderSchema = z.enum(CONTEXT_INTEGRATION_PROVIDERS);
 export type ContextIntegrationProvider = z.infer<typeof contextIntegrationProviderSchema>;
 
+export const contextEnablementIntentSchema = z.enum(["settings", "onboarding"]);
+export type ContextEnablementIntent = z.infer<typeof contextEnablementIntentSchema>;
+
 export const contextEnablementHandoffQuerySchema = z
   .object({
     provider: contextIntegrationProviderSchema,
+    intent: contextEnablementIntentSchema.default("settings"),
   })
   .strict();
 export type ContextEnablementHandoffQuery = z.infer<typeof contextEnablementHandoffQuerySchema>;
 
 export const contextEnablementHandoffSchema = z
   .object({
+    protocolVersion: z.literal(1),
     organizationId: z.string().min(1),
     teamDisplayName: z.string().min(1),
     role: z.enum(["admin", "member"]),
     provider: contextIntegrationProviderSchema,
+    intent: contextEnablementIntentSchema,
     command: z.string().min(1),
     workingDirectoryInstruction: z.string().min(1),
   })

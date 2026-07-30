@@ -12,7 +12,8 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 });
 
 /**
- * Server-side blob storage primitive. The first-tree object-storage layer.
+ * Server-side object storage. Immutable binary bytes and metadata live
+ * together in PostgreSQL.
  *
  * Independent blob — intentionally NO `chat_id` / `message_id` columns.
  * Upstream consumers (the `imageId` field inside `messages.content` jsonb,
@@ -26,21 +27,34 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
  * (`POST /api/v1/orgs/:orgId/attachments`) so `uploaded_by` resolves to a
  * stable member identity.
  *
- * Lifecycle: write-once. v1 keeps every row forever. A refcount /
- * orphan-sweep job is a follow-up only if storage growth demands it; it
- * would have to scan every known upstream reference site.
+ * Lifecycle: write-once. Uploads reserve quota as `uploading` and become
+ * `ready` only after their `bytea` payload is published. `deleting` remains a
+ * compatibility state for rows created by the short-lived external-store
+ * implementation.
  */
+export type AttachmentLifecycleState = "uploading" | "ready" | "deleting";
+
 export const attachments = pgTable(
   "attachments",
   {
     /** UUIDv4. Same value upstream references store. */
     id: text("id").primaryKey(),
+    /** Owning team. No FK so attachment cleanup is application-controlled. */
+    organizationId: text("organization_id"),
+    /**
+     * Transitional pointer for payloads written by #2062. New writes leave it
+     * null; reverse-backfilled rows retain it until pre-transition replicas
+     * have drained.
+     */
+    objectKey: text("object_key"),
+    lifecycleState: text("lifecycle_state").$type<AttachmentLifecycleState>().notNull().default("ready"),
     /** MIME as declared by the uploader. v1 does not restrict. */
     mimeType: text("mime_type").notNull(),
     filename: text("filename").notNull(),
     /** Server-measured byte length; clients do not get to lie about this. */
     sizeBytes: integer("size_bytes").notNull(),
-    data: bytea("data").notNull(),
+    /** Immutable PostgreSQL payload; null only while uploading or before the reverse backfill. */
+    data: bytea("data"),
     /**
      * `agents.uuid` of the team member who uploaded these bytes. Humans
      * store their `humanAgentId`; AI agents store their own uuid. No FK —
@@ -49,8 +63,11 @@ export const attachments = pgTable(
      */
     uploadedBy: text("uploaded_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    index("attachments_org_state_idx").on(table.organizationId, table.lifecycleState),
+    index("attachments_state_updated_idx").on(table.lifecycleState, table.updatedAt),
     index("attachments_uploaded_by_idx").on(table.uploadedBy),
     index("attachments_created_at_idx").on(table.createdAt),
   ],

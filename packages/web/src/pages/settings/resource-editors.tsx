@@ -3,6 +3,7 @@ import { deriveRepoShortLabel } from "@first-tree/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { uploadAttachment } from "../../api/attachments.js";
 import {
   createTeamResource,
   previewOrgResourceImpact,
@@ -16,6 +17,12 @@ import { Label } from "../../components/ui/label.js";
 import { Select, type SelectOption } from "../../components/ui/select.js";
 import { Textarea } from "../../components/ui/textarea.js";
 import { normalizeRepoUrl } from "../../lib/normalize-repo-url.js";
+import {
+  type PreparedSkillBundle,
+  preparePastedSkill,
+  prepareSkillFile,
+  prepareSkillFolder,
+} from "../../lib/skill-bundle.js";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Shared types + constants
@@ -24,13 +31,16 @@ import { normalizeRepoUrl } from "../../lib/normalize-repo-url.js";
 export const RESOURCE_TYPES: ResourceType[] = ["repo", "prompt", "skill", "mcp"];
 const DEFAULT_MODES = ["available", "recommended"] as const;
 const TRANSPORTS = ["stdio", "http", "sse"] as const;
+const SKILL_INPUT_MODES = ["paste", "file", "folder"] as const;
 type DefaultMode = (typeof DEFAULT_MODES)[number];
 type Transport = (typeof TRANSPORTS)[number];
+type SkillInputMode = (typeof SKILL_INPUT_MODES)[number];
 
 // Narrow a raw Select value back to its union without an `as` assertion — the
 // control only emits provided option values, so the fallback never runs.
 const asDefaultMode = (v: string): DefaultMode => DEFAULT_MODES.find((d) => d === v) ?? "available";
 const asTransport = (v: string): Transport => TRANSPORTS.find((t) => t === v) ?? "stdio";
+const asSkillInputMode = (v: string): SkillInputMode => SKILL_INPUT_MODES.find((mode) => mode === v) ?? "paste";
 
 const DEFAULT_OPTIONS: SelectOption[] = [
   { value: "recommended", label: "On by default" },
@@ -48,6 +58,11 @@ export function defaultEnabledLabel(value: DefaultMode | null): string {
   return value === "recommended" ? "On by default" : "Opt-in";
 }
 const TRANSPORT_OPTIONS: SelectOption[] = TRANSPORTS.map((t) => ({ value: t, label: t }));
+const SKILL_INPUT_OPTIONS: SelectOption[] = [
+  { value: "paste", label: "Paste SKILL.md" },
+  { value: "file", label: "Upload ZIP or SKILL.md" },
+  { value: "folder", label: "Choose Skill folder" },
+];
 // Mirrors MCP_NAME_PATTERN (agent-runtime-config.ts). Validated explicitly in
 // JS rather than via the HTML `pattern` attr — `pattern` is compiled with the
 // regex `v` flag by browsers and doesn't reliably block this character class.
@@ -82,29 +97,6 @@ function strList(payload: unknown, key: string): string[] {
   }
   return [];
 }
-function record(payload: unknown, key: string): [string, string][] {
-  if (payload && typeof payload === "object" && key in payload) {
-    const v = (payload as Record<string, unknown>)[key];
-    if (v && typeof v === "object") {
-      return Object.entries(v).filter((e): e is [string, string] => typeof e[1] === "string");
-    }
-  }
-  return [];
-}
-// Non-string entries of a record payload. Skill `metadata` is
-// z.record(string, unknown) and is no longer user-editable; this preserves any
-// non-string values an imported skill carried so an edit doesn't drop them.
-function nonStringRecord(payload: unknown, key: string): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  if (payload && typeof payload === "object" && key in payload) {
-    const v = (payload as Record<string, unknown>)[key];
-    if (v && typeof v === "object") {
-      for (const [k, val] of Object.entries(v)) if (typeof val !== "string") out[k] = val;
-    }
-  }
-  return out;
-}
-
 // ─────────────────────────────────────────────────────────────────────────
 // Editor open-state (owned by the page)
 // ─────────────────────────────────────────────────────────────────────────
@@ -189,11 +181,19 @@ function useResourceSave(state: EditorState, onDone: () => void): SaveApi {
   });
   const updateMut = useMutation({
     mutationFn: (payload: CreateTeamResource) =>
-      updateResource(state.mode === "edit" ? state.resource.id : "", {
-        name: payload.name,
-        defaultEnabled: payload.defaultEnabled,
-        payload: payload.payload,
-      }),
+      updateResource(
+        state.mode === "edit" ? state.resource.id : "",
+        payload.type === "skill"
+          ? {
+              defaultEnabled: payload.defaultEnabled,
+              bundleAttachmentId: payload.bundleAttachmentId,
+            }
+          : {
+              name: payload.name,
+              defaultEnabled: payload.defaultEnabled,
+              payload: payload.payload,
+            },
+      ),
     onSuccess: onDone,
     onError: (e) => setError(e instanceof Error ? e.message : String(e)),
   });
@@ -209,7 +209,10 @@ function useResourceSave(state: EditorState, onDone: () => void): SaveApi {
     // simulates a brand-new recommended resource and under-reports changes to
     // an existing (e.g. available, already-bound) one.
     mutationFn: (payload: CreateTeamResource) => {
-      const body = { type: payload.type, defaultEnabled: payload.defaultEnabled, payload: payload.payload };
+      const body =
+        payload.type === "skill"
+          ? { type: payload.type, defaultEnabled: payload.defaultEnabled }
+          : { type: payload.type, defaultEnabled: payload.defaultEnabled, payload: payload.payload };
       return state.mode === "edit" ? previewResourceImpact(state.resource.id, body) : previewOrgResourceImpact(body);
     },
     onSuccess: (r, payload) => {
@@ -230,8 +233,8 @@ function useResourceSave(state: EditorState, onDone: () => void): SaveApi {
   return {
     requestSave: (payload) => {
       setError(null);
-      // Only prompt/skill bodies can overflow an agent's prompt budget.
-      const gated = payload.type === "prompt" || payload.type === "skill";
+      // Only instructions enter the prompt append budget.
+      const gated = payload.type === "prompt";
       if (!gated || acknowledged.current) {
         doSubmit(payload);
         return;
@@ -348,24 +351,20 @@ function StringListField({
   );
 }
 
-function pairsToRecord(pairs: [string, string][]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of pairs) if (k.trim()) out[k.trim()] = v;
-  return out;
-}
-
 // Shared footer (Cancel · Save) — reused by every editor.
 function EditorFooter({
   save,
   saveLabel,
   onCancel,
   localError,
+  busy = false,
 }: {
   save: SaveApi;
   saveLabel: string;
   onCancel: () => void;
   /** Client-side validation message (blocks submit before the API call). */
   localError?: string | null;
+  busy?: boolean;
 }) {
   return (
     <>
@@ -382,7 +381,7 @@ function EditorFooter({
       <Button type="button" variant="ghost" onClick={onCancel}>
         Cancel
       </Button>
-      <Button type="submit" disabled={save.saving || save.checking}>
+      <Button type="submit" disabled={busy || save.saving || save.checking}>
         {save.overflowWarning ? "Save anyway" : saveLabel}
       </Button>
     </>
@@ -639,54 +638,216 @@ function PromptEditor({ state, save, onClose }: EditorProps) {
 
 function SkillEditor({ state, save, onClose }: EditorProps) {
   const init = state.mode === "edit" ? state.resource : null;
-  // Editable field is the skill id (`payload.name`); prefill from it so an edit
-  // round-trips the real skill name, not a divergent display name.
-  const [name, setName] = useState(str(init?.payload, "name") || init?.name || "");
-  const [description, setDescription] = useState(str(init?.payload, "description"));
-  const [body, setBody] = useState(str(init?.payload, "body"));
   const [mode, setMode] = useState<DefaultMode>(asDefaultMode(init?.defaultEnabled ?? "available"));
-  // Namespace and metadata are no longer editable here: they leaked the storage
-  // schema into a form a human authoring a team skill has no use for (namespace
-  // is a plugin-origin concept; metadata is a free-form bag with zero guidance).
-  // Still round-trip whatever an imported SKILL.md carried so editing a skill
-  // never silently drops those values.
-  const preservedNamespace = str(init?.payload, "namespace");
-  const preservedMeta = {
-    ...nonStringRecord(init?.payload, "metadata"),
-    ...pairsToRecord(record(init?.payload, "metadata")),
+  const [replaceBundle, setReplaceBundle] = useState(state.mode === "create");
+  const [inputMode, setInputMode] = useState<SkillInputMode>("paste");
+  const [markdown, setMarkdown] = useState(() => initialSkillMarkdown(init));
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [folderFiles, setFolderFiles] = useState<File[]>([]);
+  const [preparing, setPreparing] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  // The native file inputs stay mounted (they own accept/multiple/webkitdirectory
+  // and the change events) but are hidden: browsers render their button and
+  // empty-state label ("选择文件 / 未选择任何文件") in the OS locale, which leaks
+  // non-English copy into the English product. App-owned Button + status text
+  // trigger and describe them instead, so the copy is always English.
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const prepareBundle = async (): Promise<PreparedSkillBundle> => {
+    if (inputMode === "paste") {
+      if (!markdown.trim()) throw new Error("Paste a SKILL.md first");
+      return preparePastedSkill(markdown);
+    }
+    if (inputMode === "file") {
+      if (!selectedFile) throw new Error("Choose a ZIP or SKILL.md file first");
+      return prepareSkillFile(selectedFile);
+    }
+    if (folderFiles.length === 0) throw new Error("Choose a Skill folder first");
+    return prepareSkillFolder(folderFiles);
   };
 
-  const payload = (): CreateTeamResource => {
-    const skillName = name.trim() || "skill";
-    const outerName = init ? init.name : skillName; // preserve display name on edit
-    return {
-      type: "skill",
-      name: outerName,
-      defaultEnabled: mode,
-      payload: {
-        name: skillName,
-        ...(preservedNamespace.trim() ? { namespace: preservedNamespace.trim() } : {}),
-        description: description.trim() || skillName,
-        body,
-        metadata: preservedMeta,
-      },
-    };
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setLocalError(null);
+    setPreparing(true);
+    try {
+      let bundleAttachmentId = init?.bundleAttachmentId ?? null;
+      if (replaceBundle) {
+        const prepared = await prepareBundle();
+        const uploaded = await uploadAttachment(prepared.blob, prepared.filename);
+        bundleAttachmentId = uploaded.id;
+      }
+      if (!bundleAttachmentId) {
+        throw new Error("This legacy Skill needs a replacement bundle before it can be saved");
+      }
+      save.requestSave({
+        type: "skill",
+        bundleAttachmentId,
+        defaultEnabled: mode,
+      });
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPreparing(false);
+    }
   };
 
   return (
-    <ModalEditor state={state} save={save} onClose={onClose} payload={payload}>
-      <Field id="skill-name" label="Name" value={name} onChange={setName} placeholder="release-notes" mono />
-      <Field
-        id="skill-desc"
-        label="Description"
-        value={description}
-        onChange={setDescription}
-        placeholder="What this skill does"
-      />
-      <BodyField id="skill-body" value={body} onChange={setBody} />
-      <DefaultModeField value={mode} onChange={setMode} />
-    </ModalEditor>
+    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <DialogContent aria-describedby={undefined} className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{titleFor(state)}</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          <div className="space-y-4" style={{ maxHeight: "70vh", overflowY: "auto" }}>
+            {init ? (
+              <div className="space-y-1">
+                <p className="text-body font-medium" style={{ margin: 0 }}>
+                  {init.name}
+                </p>
+                <p className="text-label" style={{ color: "var(--fg-3)", margin: 0 }}>
+                  {str(init.payload, "description") || "No description"}
+                </p>
+                <Button type="button" variant="outline" size="sm" onClick={() => setReplaceBundle((value) => !value)}>
+                  {replaceBundle ? "Keep current bundle" : "Replace bundle"}
+                </Button>
+              </div>
+            ) : null}
+
+            {replaceBundle ? (
+              <>
+                <FieldShell id="skill-input-mode" label={init ? "Replacement source" : "Skill source"}>
+                  <Select
+                    id="skill-input-mode"
+                    aria-label="Skill source"
+                    value={inputMode}
+                    onChange={(value) => setInputMode(asSkillInputMode(value))}
+                    options={SKILL_INPUT_OPTIONS}
+                  />
+                </FieldShell>
+                {inputMode === "paste" ? (
+                  <FieldShell id="skill-markdown" label="SKILL.md">
+                    <Textarea
+                      id="skill-markdown"
+                      value={markdown}
+                      onChange={(event) => setMarkdown(event.target.value)}
+                      className="min-h-64 resize-y mono"
+                      placeholder={"---\nname: release-notes\ndescription: Draft release notes\n---\n\nInstructions…"}
+                    />
+                  </FieldShell>
+                ) : inputMode === "file" ? (
+                  <FieldShell id="skill-file" label="ZIP or SKILL.md">
+                    <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-describedby="skill-file-status"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        Choose file
+                      </Button>
+                      {/* role="status" (polite live region, atomic) announces the
+                          selection change that the hidden input can no longer
+                          convey; aria-describedby ties it to the trigger. */}
+                      <p
+                        id="skill-file-status"
+                        role="status"
+                        className="text-label"
+                        style={{ color: "var(--fg-3)", margin: 0 }}
+                      >
+                        {selectedFile ? selectedFile.name : "No file selected"}
+                      </p>
+                    </div>
+                    <Input
+                      id="skill-file"
+                      type="file"
+                      accept=".zip,.md,application/zip,text/markdown,text/plain"
+                      className="hidden"
+                      ref={fileInputRef}
+                      onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+                    />
+                  </FieldShell>
+                ) : (
+                  <FieldShell id="skill-folder" label="Skill folder">
+                    <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-describedby="skill-folder-status"
+                        onClick={() => folderInputRef.current?.click()}
+                      >
+                        Choose folder
+                      </Button>
+                      <p
+                        id="skill-folder-status"
+                        role="status"
+                        className="text-label"
+                        style={{ color: "var(--fg-3)", margin: 0 }}
+                      >
+                        {folderFiles.length > 0 ? `${folderFiles.length} files selected` : "No folder selected"}
+                      </p>
+                    </div>
+                    <Input
+                      id="skill-folder"
+                      type="file"
+                      multiple
+                      className="hidden"
+                      ref={(node) => {
+                        folderInputRef.current = node;
+                        node?.setAttribute("webkitdirectory", "");
+                      }}
+                      onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
+                    />
+                  </FieldShell>
+                )}
+              </>
+            ) : null}
+            <DefaultModeField value={mode} onChange={setMode} />
+          </div>
+          <DialogFooter>
+            <EditorFooter
+              save={save}
+              saveLabel={state.mode === "edit" ? "Save" : "Create"}
+              onCancel={onClose}
+              localError={localError}
+              busy={preparing}
+            />
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
+}
+
+function initialSkillMarkdown(resource: ResourceRow | null): string {
+  if (!resource) return "---\nname: \ndescription: \n---\n\n";
+  const name = str(resource.payload, "name") || resource.name;
+  const namespace = str(resource.payload, "namespace");
+  const description = str(resource.payload, "description");
+  const body = str(resource.payload, "body");
+  const metadata =
+    resource.payload &&
+    typeof resource.payload === "object" &&
+    "metadata" in resource.payload &&
+    resource.payload.metadata &&
+    typeof resource.payload.metadata === "object" &&
+    !Array.isArray(resource.payload.metadata)
+      ? resource.payload.metadata
+      : {};
+  return [
+    "---",
+    `name: ${JSON.stringify(name)}`,
+    ...(namespace ? [`namespace: ${JSON.stringify(namespace)}`] : []),
+    `description: ${JSON.stringify(description)}`,
+    `metadata: ${JSON.stringify(metadata)}`,
+    "---",
+    "",
+    body,
+    "",
+  ].join("\n");
 }
 
 function BodyField({

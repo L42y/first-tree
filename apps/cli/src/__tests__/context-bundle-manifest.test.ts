@@ -64,11 +64,35 @@ describe("context integration bundle", () => {
     const projectedSkills = new Map<string, { read: string; write: string }>();
     for (const provider of ["claude-code", "codex"]) {
       const pluginRoot = join(root, provider, "plugins", "first-tree-context");
+      const hook = readFileSync(join(pluginRoot, "hooks", "hooks.json"), "utf8");
       const readSkill = readFileSync(join(pluginRoot, "skills", "first-tree-read", "SKILL.md"), "utf8");
       const writeSkill = readFileSync(join(pluginRoot, "skills", "first-tree-write", "SKILL.md"), "utf8");
       projectedSkills.set(provider, { read: readSkill, write: writeSkill });
+      expect(hook).toContain('"timeout": 5');
+      expect(hook).not.toContain('"timeout": 3');
+      expect(hook).toContain('"matcher": "startup|resume|clear|compact"');
       expect(readSkill).toContain(`context read --provider ${provider}`);
       expect(writeSkill).toContain(`context write --provider ${provider}`);
+      const writeDescription = /^description: (.+)$/mu.exec(writeSkill)?.[1];
+      expect(writeDescription).toContain("connected SessionStart standing route classifies a concrete source artifact");
+      expect(writeDescription).toContain("for example, a PR/MR, forge Issue");
+      expect(writeDescription).toContain("meeting or decision note");
+      expect(writeDescription).toContain("commit discussion or review thread");
+      expect(writeDescription).not.toContain("source repo change you just completed");
+      expect(writeDescription).not.toContain("Audit finding");
+      expect(writeDescription).not.toContain("context-tree-audit");
+      expect(writeSkill).toContain("a source repo change you just completed");
+      expect(writeSkill).toContain("an evidence-backed `context-tree-audit` finding");
+      expect(writeSkill).toContain("This Source Gate\nremains intentionally broader than the generic automatic route.");
+      expect(writeSkill).toContain(
+        "Write intent comes only from an\n  explicit Tree-write request or the connected SessionStart standing route",
+      );
+      expect(writeSkill).toContain(
+        "Authorization to\n  publish the source PR/MR alone is not a separate or transitive intent rule.",
+      );
+      expect(writeSkill).toContain(
+        "standing classification selects this workflow but never\nbypasses its live write preflight",
+      );
       expect(readSkill).toContain("read\n`references/context-tree-policy.md` completely");
       expect(writeSkill).toContain("read\n`references/context-tree-policy.md` completely");
       expect(readSkill).toContain('first_tree_source_checkout="$(git rev-parse --show-toplevel)"');
@@ -166,7 +190,6 @@ describe("context integration bundle", () => {
       installed: true,
       enabled: true,
       installedPath,
-      hookTrust: "provider_managed",
       issues: [],
     };
     const installedMarketplaces: string[] = [];
@@ -175,6 +198,7 @@ describe("context integration bundle", () => {
       executable: "codex",
       minimumVersion: "0.144.1",
       probe: () => probe,
+      inspectHook: async () => ({ trust: "trusted", enabled: true, source: "provider_api", issues: [] }),
       validateMarketplace: () => undefined,
       install: ({ marketplaceRoot }) => {
         installedMarketplaces.push(marketplaceRoot);
@@ -213,9 +237,9 @@ describe("context integration bundle", () => {
         installed: true,
         enabled: true,
         installedPath: "/provider/cache/first-tree-context",
-        hookTrust: "review_required",
         issues: [],
       }),
+      inspectHook: async () => ({ trust: "trusted", enabled: true, source: "provider_api", issues: [] }),
       validateMarketplace: () => undefined,
       install: () => {
         throw new Error("not used");
@@ -260,7 +284,6 @@ describe("context integration bundle", () => {
       installed: false,
       enabled: false,
       installedPath: null,
-      hookTrust: "provider_managed",
       issues: [],
     };
     const driver: ContextIntegrationProviderDriver = {
@@ -268,6 +291,7 @@ describe("context integration bundle", () => {
       executable: "codex",
       minimumVersion: "0.144.0",
       probe: () => probe,
+      inspectHook: async () => ({ trust: "unknown", enabled: null, source: "unavailable", issues: [] }),
       validateMarketplace: () => undefined,
       install: ({ marketplaceRoot }) => {
         expect(marketplaceRoot).toBe(contextIntegrationMarketplaceSourcePath("codex"));
@@ -316,7 +340,6 @@ describe("context integration bundle", () => {
       installed: false,
       enabled: false,
       installedPath: null,
-      hookTrust: "provider_managed",
       issues: [],
     };
     const driver: ContextIntegrationProviderDriver = {
@@ -324,6 +347,7 @@ describe("context integration bundle", () => {
       executable: "codex",
       minimumVersion: "0.144.0",
       probe: () => initialProbe,
+      inspectHook: async () => ({ trust: "unknown", enabled: null, source: "unavailable", issues: [] }),
       validateMarketplace: () => undefined,
       install: ({ marketplaceRoot }) => {
         cpSync(join(marketplaceRoot, "plugins", "first-tree-context"), installedPath, { recursive: true });
@@ -373,9 +397,9 @@ describe("context integration bundle", () => {
         installed: probeCount++ > 0,
         enabled: true,
         installedPath: null,
-        hookTrust: "review_required",
         issues: [],
       }),
+      inspectHook: async () => ({ trust: "trusted", enabled: true, source: "provider_api", issues: [] }),
       validateMarketplace: () => undefined,
       install,
       uninstall: () => undefined,
@@ -421,9 +445,9 @@ describe("context integration bundle", () => {
         installed: false,
         enabled: false,
         installedPath: null,
-        hookTrust: "unknown",
         issues: ["Codex 0.100.0 is older than the required 0.144.0."],
       }),
+      inspectHook: async () => ({ trust: "unknown", enabled: null, source: "unavailable", issues: [] }),
       validateMarketplace: () => undefined,
       install,
       uninstall: () => undefined,
@@ -465,9 +489,9 @@ describe("context integration bundle", () => {
         installed: true,
         enabled: false,
         installedPath: "/provider/cache/first-tree-context",
-        hookTrust: "review_required",
         issues: [],
       }),
+      inspectHook: async () => ({ trust: "trusted", enabled: false, source: "provider_api", issues: [] }),
       validateMarketplace: () => undefined,
       install,
       uninstall: () => undefined,
@@ -501,6 +525,9 @@ describe("context integration bundle", () => {
       minimumVersion: "0.144.0",
       probe: () => {
         throw new Error("must not probe");
+      },
+      inspectHook: async () => {
+        throw new Error("must not inspect");
       },
       validateMarketplace: () => undefined,
       install: () => {

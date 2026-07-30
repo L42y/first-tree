@@ -17,8 +17,9 @@ import {
   type SessionContext,
   type SessionMessage,
 } from "../../runtime/handler.js";
-import { materializeResourceSkills } from "../../runtime/resource-skills.js";
+import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { createToolCallProcessor, mapMcpServers } from "../claude-code.js";
 import { resolveClaudeCodeExecutable } from "../claude-executable.js";
@@ -132,6 +133,7 @@ async function orphanSweep(clientId: string): Promise<void> {
  */
 export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
+  const runtimeProvider = "claude-code-tui" as const;
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
@@ -165,6 +167,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   // process), so we snapshot once per startClaude().
   let chatContextForPrompt: ChatContext | undefined;
   let sourceReposForPrompt: PredeclaredSourceRepo[] = [];
+  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
 
   function buildEnv(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload): Record<string, string> {
     const env: Record<string, string> = {};
@@ -196,6 +199,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
+      teamSkills: reconciledTeamSkills,
     });
   }
 
@@ -671,7 +675,15 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
           // Pure declaration — the agent itself clones/refreshes the repos per
           // its briefing protocol; the listed paths may not exist yet.
           sourceReposForPrompt = declaredSourceRepos(cwd, payload);
-          await materializeResourceSkills(cwd, payload, sessionCtx);
+          reconciledTeamSkills = (
+            await reconcileManagedSkillsForConfig(
+              cwd,
+              runtimeProvider,
+              agentConfigCache?.get(sessionCtx.agent.agentId),
+              sessionCtx.log,
+              teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+            )
+          ).teamSkills;
           const providerEnv = buildEnv(sessionCtx, payload);
           ensureAgentBootstrap({
             workspace: cwd,
@@ -730,10 +742,18 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
           chatContextForPrompt = await fetchChatContextOrLog(sessionCtx);
           // Pure declaration — same as the start() path.
           sourceReposForPrompt = declaredSourceRepos(cwd, payload);
-          await materializeResourceSkills(cwd, payload, sessionCtx);
+          reconciledTeamSkills = (
+            await reconcileManagedSkillsForConfig(
+              cwd,
+              runtimeProvider,
+              agentConfigCache?.get(sessionCtx.agent.agentId),
+              sessionCtx.log,
+              teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+            )
+          ).teamSkills;
           const providerEnv = buildEnv(sessionCtx, payload);
           // Same shared bootstrap as start(): ensureAgentBootstrap handles the
-          // sentinel + CLI-version drift internally, so a stale or failed
+          // stable workspace sentinel internally, so a stale or failed
           // integration is re-run on resume instead of being skipped.
           ensureAgentBootstrap({
             workspace: cwd,

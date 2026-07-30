@@ -24,20 +24,27 @@ export function MobileChatActionsSheet({ row, onClose }: { row: MeChatRow; onClo
     return () => previousFocus?.focus();
   }, []);
 
-  const invalidate = async (): Promise<void> => {
-    await Promise.all([
+  const invalidate = async (includeNeedYou = false): Promise<void> => {
+    const invalidations = [
       queryClient.invalidateQueries({ queryKey: ["me", "chats"] }),
       queryClient.invalidateQueries({ queryKey: ["chat-detail", row.chatId] }),
-    ]);
+    ];
+    if (includeNeedYou) invalidations.push(queryClient.invalidateQueries({ queryKey: ["need-you"] }));
+    await Promise.all(invalidations);
   };
 
-  const run = async (key: string, operation: () => Promise<unknown>, successTitle: string | null): Promise<boolean> => {
+  const run = async (
+    key: string,
+    operation: () => Promise<unknown>,
+    successTitle: string | null,
+    invalidateNeedYou = false,
+  ): Promise<boolean> => {
     if (pending) return false;
     setPending(key);
     setError(null);
     try {
       await operation();
-      void invalidate();
+      void invalidate(invalidateNeedYou);
       if (successTitle) addToast({ title: successTitle });
       onClose();
       return true;
@@ -50,7 +57,7 @@ export function MobileChatActionsSheet({ row, onClose }: { row: MeChatRow; onClo
 
   const archive = async (): Promise<void> => {
     if (archiveBlocker) return;
-    const succeeded = await run("archive", () => patchChatEngagement(row.chatId, "archived"), null);
+    const succeeded = await run("archive", () => patchChatEngagement(row.chatId, "archived"), null, true);
     if (!succeeded) return;
     addToast({
       title: "Chat moved to Archived",
@@ -58,7 +65,7 @@ export function MobileChatActionsSheet({ row, onClose }: { row: MeChatRow; onClo
         label: "Undo",
         onClick: () => {
           void patchChatEngagement(row.chatId, "active")
-            .then(invalidate)
+            .then(() => invalidate(true))
             .then(() => addToast({ title: "Archive undone" }))
             .catch(() =>
               addToast({ title: "Couldn't undo archive", description: "Open Archived to restore the chat." }),
@@ -158,7 +165,7 @@ export function MobileChatActionsSheet({ row, onClose }: { row: MeChatRow; onClo
               pending={pending === "unarchive"}
               disabled={pending !== null}
               onClick={() =>
-                void run("unarchive", () => patchChatEngagement(row.chatId, "active"), "Moved back to Chats")
+                void run("unarchive", () => patchChatEngagement(row.chatId, "active"), "Moved back to Chats", true)
               }
             />
           ) : (

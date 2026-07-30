@@ -140,6 +140,7 @@ const authMock = vi.hoisted(() => {
       dismissOnboarding: vi.fn(async () => undefined),
       restoreOnboarding: vi.fn(async () => undefined),
       markOnboardingCompleted: vi.fn(async () => undefined),
+      applyOnboardingKickoffStamp: vi.fn(),
       login: vi.fn(async () => undefined),
       adoptTokens: vi.fn(async () => undefined),
       selectOrganization: vi.fn(async () => undefined),
@@ -464,7 +465,7 @@ type FlowOverrides = Partial<Omit<OnboardingFlowValue, "activeStep">> & {
 function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
   const path: OnboardingPath = overrides.path ?? "admin";
   const sequence: readonly StepId[] = path === "admin" ? ADMIN_STEPS : INVITEE_STEPS;
-  const fallbackStep: StepId = path === "admin" ? "create-team" : "join-team";
+  const fallbackStep: StepId = path === "admin" ? "create-team" : "get-started";
   const requestedActiveStep = overrides.activeStep;
   const activeStep: StepId =
     requestedActiveStep && (sequence as readonly string[]).includes(requestedActiveStep)
@@ -495,6 +496,7 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
       tokenError: null,
       retry: vi.fn(),
     },
+    prepareByoBootstrap: vi.fn(),
     agentDisplayName: "Gandy's assistant",
     setAgentDisplayName: vi.fn(),
     visibility: "organization",
@@ -516,7 +518,6 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
     markTreeAutoDetectDone: vi.fn(),
     offerTeamAgentStart: false,
     completeAndEnterChat: vi.fn(async () => undefined),
-    skipAndEnterChat: vi.fn(async () => undefined),
     finishLater: vi.fn(async () => undefined),
   };
   return {
@@ -761,10 +762,12 @@ beforeEach(() => {
     defaultBranch: "main",
   });
   contextEnablementMocks.getContextEnablementHandoff.mockResolvedValue({
+    protocolVersion: 1,
     organizationId: "org-1",
     teamDisplayName: "Acme",
     role: "member",
     provider: "claude-code",
+    intent: "settings",
     command: "first-tree-dev context enable --provider 'claude-code' --team 'org-1'",
     workingDirectoryInstruction: "Run this from the target code repository.",
   });
@@ -1354,7 +1357,7 @@ describe("web DOM interaction coverage", () => {
         <LoginPage />,
         {
           pathname: "/login",
-          state: { from: { pathname: "/m/work", search: "", hash: "" } },
+          state: { from: { pathname: "/m/chat", search: "", hash: "" } },
         },
         undefined,
       );
@@ -1367,7 +1370,7 @@ describe("web DOM interaction coverage", () => {
       expect(mobileRoot?.className).toContain("pt-safe-top");
       expect(mobileRoot?.className).toContain("pb-safe-bottom");
       expect(
-        mobile.container.querySelector<HTMLAnchorElement>('a[href="/api/v1/auth/github/start?next=%2Fm%2Fwork"]'),
+        mobile.container.querySelector<HTMLAnchorElement>('a[href="/api/v1/auth/github/start?next=%2Fm%2Fchat"]'),
       ).toBeTruthy();
       await unmountRoot(mobile.root);
 
@@ -1380,7 +1383,7 @@ describe("web DOM interaction coverage", () => {
         <LoginPage />,
         {
           pathname: "/login",
-          state: { from: { pathname: "/m/work", search: "", hash: "" } },
+          state: { from: { pathname: "/m/chat", search: "", hash: "" } },
         },
         undefined,
       );
@@ -2048,7 +2051,7 @@ describe("web DOM interaction coverage", () => {
         retry: vi.fn(),
       },
     });
-    await waitForText("Choose your local coding agent", container);
+    await waitForText("Choose which local coding agent it uses", container);
 
     const nameInput = container.querySelector<HTMLInputElement>("#onboarding-agent-name");
     expect(nameInput).not.toBeNull();
@@ -2168,7 +2171,7 @@ describe("web DOM interaction coverage", () => {
       setTreeUrl,
       markTreeAutoDetectDone,
     });
-    await waitForText("Start working with your agent", adminAutoDetect.container);
+    await waitForText("Start your first Agent Chat", adminAutoDetect.container);
     expect(markTreeAutoDetectDone).toHaveBeenCalled();
     expect(setTreeBindingPlan).toHaveBeenCalledWith("useBoundTree");
     expect(setTreeUrl).toHaveBeenCalledWith("https://github.com/acme/context-tree");
@@ -2183,7 +2186,7 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Start working with your agent", adminExisting.container);
+    await waitForText("Start your first Agent Chat", adminExisting.container);
     await click(findButton(adminExisting.container, "Start chat"));
     await waitForText("Starting your agent", adminExisting.container);
     expect(agentApiMocks.listManagedAgents).toHaveBeenCalled();
@@ -2211,7 +2214,7 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "createBinding",
       treeUrl: "",
     });
-    await waitForText("Start working with your agent", adminNoProject.container);
+    await waitForText("Start your first Agent Chat", adminNoProject.container);
     expect(adminNoProject.container.textContent).toContain("Stay connected");
     expect(adminNoProject.container.textContent).toContain("Mobile app");
     expect(adminNoProject.container.textContent).toContain("Scan to install");
@@ -2236,11 +2239,9 @@ describe("web DOM interaction coverage", () => {
     contextEnablementMocks.getContextEnablementHandoff.mockClear();
     orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({ repo: "", branch: null });
     const inviteeNoTree = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
-    await waitForText("Start working with your agent", inviteeNoTree.container);
-    await waitForText(
-      "Needs Admin: ask a Team Admin to finish repository and Context Tree setup.",
-      inviteeNoTree.container,
-    );
+    await waitForText("Start your first Agent Chat", inviteeNoTree.container);
+    expect(inviteeNoTree.container.textContent).not.toContain("Use with Claude Code or Codex");
+    expect(inviteeNoTree.container.textContent).not.toContain("Needs Admin");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     await click(findButton(inviteeNoTree.container, "Start chat"));
     await waitForText("Starting your agent", inviteeNoTree.container);
@@ -2261,16 +2262,15 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText(
-      "Needs Admin: ask a Team Admin to finish repository and Context Tree setup.",
-      inviteeNoRepo.container,
-    );
+    await waitForText("Start your first Agent Chat", inviteeNoRepo.container);
+    expect(inviteeNoRepo.container.textContent).not.toContain("Use with Claude Code or Codex");
+    expect(inviteeNoRepo.container.textContent).not.toContain("Needs Admin");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     await unmountRoot(inviteeNoRepo.root);
 
-    // Invitee · GitLab-bound Tree + active repo + no GitHub App → the legacy
-    // managed first chat stays not-ready, but provider-neutral BYO Context
-    // still receives the exact invite Team handoff.
+    // Invitee · GitLab-bound Tree + active repo + no GitHub App → the selected
+    // First Tree path stays focused on chat. BYO was offered earlier as a peer
+    // onboarding choice and is not pitched again here.
     contextEnablementMocks.getContextEnablementHandoff.mockClear();
     orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({
       repo: "https://gitlab.example.com/acme/context-tree.git",
@@ -2282,11 +2282,10 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Start working with your agent", inviteeNoInstall.container);
-    await waitForText("Use Team Context in your coding agent", inviteeNoInstall.container);
-    await waitForText("--team 'org-1'", inviteeNoInstall.container);
-    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
-    expect(findButton(inviteeNoInstall.container, "Start working with your agent")).toBeNull();
+    await waitForText("Start your first Agent Chat", inviteeNoInstall.container);
+    expect(inviteeNoInstall.container.textContent).not.toContain("Use with Claude Code or Codex");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
+    expect(findButton(inviteeNoInstall.container, "Start your first Agent Chat")).toBeNull();
     await click(findButton(inviteeNoInstall.container, "Start chat"));
     expect(inviteeNoInstall.flow.completeAndEnterChat).toHaveBeenCalled();
     await unmountRoot(inviteeNoInstall.root);
@@ -2295,22 +2294,25 @@ describe("web DOM interaction coverage", () => {
     // not-ready, never render the ready action state. An optimistic hasInstallation
     // (null → true) must not launch tree-reading without an authoritative
     // install=true, or the agent would 403 on its first git op.
+    contextEnablementMocks.getContextEnablementHandoff.mockClear();
     githubAppMocks.getGithubAppInstallationExists.mockRejectedValueOnce(new Error("probe failed"));
     const inviteeProbeFail = await renderOnboardingDom(<StepStartChat />, {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Start working with your agent", inviteeProbeFail.container);
-    expect(findButton(inviteeProbeFail.container, "Start working with your agent")).toBeNull();
+    await waitForText("Start your first Agent Chat", inviteeProbeFail.container);
+    expect(inviteeProbeFail.container.textContent).not.toContain("Use with Claude Code or Codex");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
+    expect(findButton(inviteeProbeFail.container, "Start your first Agent Chat")).toBeNull();
     await unmountRoot(inviteeProbeFail.root);
 
     // Invitee · ready (tree + install) → a single launch, no repo selection. The
     // agent already inherits the team's recommended repos.
+    contextEnablementMocks.getContextEnablementHandoff.mockClear();
     const inviteeReady = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
-    await waitForText("Start working with your agent", inviteeReady.container);
-    await waitForText("Use Team Context in your coding agent", inviteeReady.container);
-    expect(contextEnablementMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
-    await waitForText("--team 'org-1'", inviteeReady.container);
+    await waitForText("Start your first Agent Chat", inviteeReady.container);
+    expect(inviteeReady.container.textContent).not.toContain("Use with Claude Code or Codex");
+    expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     await click(findButton(inviteeReady.container, "Start chat"));
     // Ready invitee also lands in a value-first work chat, not the tree setup
     // chat. The inherited team tree is context for orientation.
@@ -2339,7 +2341,7 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "createBinding",
       treeUrl: "",
     });
-    await waitForText("Start working with your agent", view.container);
+    await waitForText("Start your first Agent Chat", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,
@@ -2405,7 +2407,7 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Start working with your agent", view.container);
+    await waitForText("Start your first Agent Chat", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,
@@ -2434,7 +2436,7 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Start working with your agent", view.container);
+    await waitForText("Start your first Agent Chat", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,
@@ -2490,7 +2492,7 @@ describe("web DOM interaction coverage", () => {
         );
       },
     );
-    await waitForText("Start working with your agent", view.container);
+    await waitForText("Start your first Agent Chat", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,

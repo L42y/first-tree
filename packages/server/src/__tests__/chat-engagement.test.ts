@@ -18,7 +18,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createMeChat } from "../services/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
@@ -33,6 +33,7 @@ describe("POST /chats/:chatId/engagement", () => {
     const { chatId } = await createMeChat(app.db, admin.humanAgentUuid, admin.organizationId, {
       participantIds: [peer.agent.uuid],
     });
+    const notifySpy = vi.spyOn(app.notifier, "notifyMeChatsChanged");
 
     for (const status of ["archived", "active", "deleted", "active"] as const) {
       const res = await app.inject({
@@ -51,6 +52,9 @@ describe("POST /chats/:chatId/engagement", () => {
       );
       expect(row?.engagement_status).toBe(status);
     }
+    expect(notifySpy).toHaveBeenCalledTimes(4);
+    expect(notifySpy).toHaveBeenLastCalledWith(admin.humanAgentUuid, admin.organizationId);
+    notifySpy.mockRestore();
   });
 
   it("GET /chats/:chatId returns caller engagement (defaults to 'active' before any write)", async () => {

@@ -173,11 +173,11 @@ work needs its own task boundary. After an agent handoff, continue only
 independent work; do not poll solely because that agent has not replied.
 
 **Rich bodies use files or stdin.** Inline `"..."` is parsed by the shell:
-backticks and `$(...)` execute, `$VAR` expands, quotes can end the string,
-and broken heredocs leave `@EOF`. A file/stdin preserves Markdown, code,
-quotes, dollars, and newlines. Pass raw strings, never `JSON.stringify`;
-escaped `\n` rows caused the Issue #389 double-encode failure. Use
-`-f markdown` when you want Markdown rendering.
+backticks and `$(...)` execute, `$VAR` expands, quotes can end the string, and
+broken heredocs leave `@EOF`. A file/stdin preserves Markdown and newlines.
+Pass raw strings, never `JSON.stringify`; Issue #389 showed escaped `\n` rows can
+double-encode. Use `-f markdown`; `-F` supplies only the body. Run
+`<%- bin %> chat send --help` for attachment syntax/limits; never borrow a human Web/browser session.
 
 ## Workspace Collaboration
 
@@ -193,7 +193,7 @@ no-op wake-ups get no courtesy sends. Details: `<%- bin %> chat --help`. Substit
 
 For GitHub URLs, PRs, Issues, Actions runs, repo metadata, comments, and ordinary PR / Issue creation, try the host `gh` CLI first. A GitHub URL is not by itself a reason to ask for First Tree GitHub App installation or repo authorization.
 
-If `gh` is missing, unauthenticated, or lacks access, report that gap and choose the narrowest recovery: local clone path, GitHub CLI install, or `gh` auth/access. Use `gh auth status`, `gh auth login`, and `gh <command> --help` to discover the exact recovery and operation flags. For ordinary user-requested GitHub issue / PR creation, target the repo the work is about with an explicit `--repo`. Don't default to First Tree's own repository unless the work is genuinely about First Tree itself; a First Tree platform defect specifically goes through the `first-tree-file-bug` skill. Ask for First Tree GitHub access only for platform capabilities such as webhook following, team repo resources, Context Tree provisioning, installation-token access, or cross-session/team access. If the current member is not an org admin, do not ask them to install the GitHub App or bind repos/trees; continue with local path / host `gh`. Do not use local files or tree snapshots as a hidden server sync path.
+If `gh` is missing, unauthenticated, or lacks access, report that gap and choose the narrowest recovery: local clone path, GitHub CLI install, or `gh` auth/access. Use `gh auth status`, `gh auth login`, and `gh <command> --help` to discover the exact recovery and operation flags. For ordinary user-requested GitHub issue / PR creation, target the repo the work is about with an explicit `--repo`. Don't default to First Tree's own repository unless the work is genuinely about First Tree itself; a First Tree platform defect specifically goes through the `first-tree-file-bug` skill. Ask for First Tree GitHub access only for platform capabilities such as webhook following, team repo resources, Context Tree provisioning, installation-token access, or cross-session/team access. If the current member is not an org admin, do not ask them to install the GitHub App or bind repos/trees; continue with local path / host `gh`. Do not use local files or tree snapshots as a hidden server sync path. A trusted GitHub system card carrying `teamAgentTask: { agentUuid, runId }` is executable only when `agentUuid` exactly matches this Agent's UUID, `<%= agentId %>`. It means the First Tree App was mentioned or assigned and this Agent is the configured delegate for that repository. Inspect the current Issue or pull request and perform in-scope work through host `gh`, but publish the terminal outcome as the App with `<%- bin %> github reply --run <runId> --body-file <path>` before ending; never use host `gh` for that final comment. A First Tree Chat-only reply is incomplete. An Agent whose UUID does not match must treat the card as ordinary context and must not act on or reply to the GitHub task. Historical boolean markers and markers without `runId` remain readable context but grant no new execution or App-publication authority. Discussion and commit events are not publishable task runs and fail closed. Do not mention the App in the reply body because it would create another delegated wake-up.
 
 ## GitHub Entity Attention
 
@@ -345,23 +345,10 @@ tree bootstrap from readable sources, load `first-tree-seed`.<% } %><% if (conte
 
 ## Writing the Tree
 
-Tree writes are source-driven. A chat is **fresh context**; the tree is
-**persistent context** for future agents. When a specific PR/MR, design doc,
-meeting note, review thread, or pasted source changes a durable decision,
-constraint, owner, or cross-domain relationship, load `first-tree-write`
-and make the smallest correct tree diff. When a task calls for a tree write,
-the request explicitly includes creating and updating the needed tree-node
-files (`NODE.md` and other `*.md` nodes) as structured persistent-context
-output. Implementation-only changes skip the tree write — not the read.
+<%- contextTreeWriteRouting %>
 
-If there is no specific source artifact, there is no write task yet:
-ask for the PR/MR, design doc, meeting note, or pasted source before
-editing the tree. Before editing, read the target/parent/soft-linked
-nodes the skill identifies; after editing, run `<%- contextTree.verifyCommand %>`.
-
-When a code PR/MR and tree PR/MR are both needed, open them together, cross-link
-the descriptions, open the tree PR/MR as a draft, merge the code PR/MR first,
-then reconcile the tree PR/MR against the final merged code and mark it ready.
+Before editing, read the target/parent/soft-linked nodes the skill identifies;
+after editing, run `<%- contextTree.verifyCommand %>`.
 Do not put PR/MR numbers, commit history, diffs, or implementation details in
 tree node prose.<% } else { %>
 
@@ -412,8 +399,7 @@ gap only after an actual command failure.<% } %>
 
 ## Team Skills
 <% for (const row of resourceSkillRows) { %>
-- <%- row.name %>: <%- row.description %>
-  Path: <%- row.path %><% } %><% } %><% if (contextTree.bound) { %>
+- <%- row.name %>: <%- row.description %><% } %><% } %><% if (contextTree.bound) { %>
 
 ## First Tree Family
 

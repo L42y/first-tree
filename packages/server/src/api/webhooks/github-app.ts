@@ -1,5 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { githubAppInstallationPermissionsSchema, type ScmIngressContext } from "@first-tree/shared";
+import {
+  type GithubTaskReplyErrorCode,
+  githubAppInstallationPermissionsSchema,
+  type ScmIngressContext,
+} from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, UnauthorizedError } from "../../errors.js";
 import { createLogger } from "../../observability/index.js";
@@ -253,6 +257,7 @@ export async function githubAppWebhookRoutes(app: FastifyInstance): Promise<void
       return reply.status(200).send({ ok: true, event: eventType, handled: false });
     }
 
+    let appTaskBlocker: GithubTaskReplyErrorCode | null = null;
     const result = await processScmWebhookDelivery({
       db: app.db,
       ingress,
@@ -285,7 +290,14 @@ export async function githubAppWebhookRoutes(app: FastifyInstance): Promise<void
               installationId,
             })
           : Promise.resolve({ handled: false, reason: "unsupported_event" } as const),
-      resolveAudience: (normalizedEvent) => resolveGithubAudience(app.db, normalizedEvent),
+      resolveAudience: async (normalizedEvent) => {
+        const resolution = await resolveGithubAudience(app.db, normalizedEvent, {
+          appSlug: appConfig.slug,
+          appPermissions: installation.permissions,
+        });
+        appTaskBlocker = resolution.appTaskBlocker;
+        return resolution;
+      },
       deliver: (normalizedEvent, audience) =>
         deliverGithubEvent(app, normalizedEvent, audience.targets, {
           entityStateSeed: normalized.entityStateSeed,
@@ -311,6 +323,7 @@ export async function githubAppWebhookRoutes(app: FastifyInstance): Promise<void
           event: eventType,
           audience: 0,
           reason,
+          ...(appTaskBlocker ? { appTaskBlocker } : {}),
           contextReviewer: result.providerResult,
         });
       }
@@ -319,6 +332,7 @@ export async function githubAppWebhookRoutes(app: FastifyInstance): Promise<void
           ok: true,
           event: eventType,
           ...result.deliveryStats,
+          ...(appTaskBlocker ? { appTaskBlocker } : {}),
           contextReviewer: result.providerResult,
         });
     }

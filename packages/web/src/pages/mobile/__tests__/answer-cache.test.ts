@@ -42,11 +42,11 @@ const request = {
 } satisfies Message;
 
 describe("mobile answer cache", () => {
-  it("tombstones the request and synchronously demotes its mobile list projection", async () => {
+  it("tombstones the request and synchronously clears its row status without changing pin order", async () => {
     const queryClient = new QueryClient();
     const listKey = ["me", "chats", "mobile", "now"];
     const list: ListMeChatsResponse = {
-      priorityRows: { attention: [row], pinned: [] },
+      priorityRows: { pinned: [row] },
       rows: [row],
       nextCursor: null,
     };
@@ -59,7 +59,6 @@ describe("mobile answer cache", () => {
     expect(locallyResolvedRequestIds(queryClient, row.chatId).has(request.id)).toBe(true);
     expect(queryClient.getQueryData<{ items: Message[] }>(["chat-open-requests", row.chatId])?.items).toEqual([]);
     const patched = queryClient.getQueryData<ListMeChatsResponse>(listKey);
-    expect(patched?.priorityRows.attention).toEqual([]);
     expect(patched?.priorityRows.pinned).toEqual([{ ...row, openRequestCount: 0 }]);
     expect(patched?.rows[0]?.openRequestCount).toBe(0);
   });

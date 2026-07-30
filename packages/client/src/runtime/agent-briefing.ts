@@ -10,7 +10,6 @@ import type * as ejs from "ejs";
 import type { PredeclaredSourceRepo } from "./bootstrap.js";
 import { getCliBinding } from "./cli-binding.js";
 import type { AgentIdentity } from "./handler.js";
-import { buildResourceSkillBriefingRows, type ResourceSkillBriefingRow } from "./resource-skills.js";
 
 const require = createRequire(import.meta.url);
 // EJS is published as CommonJS at runtime even though its types expose named
@@ -34,6 +33,15 @@ const CONTEXT_TREE_POLICY_CANDIDATE_URLS = [
   // Shipped CLI and portable entries are nested one level below the copied
   // runtime asset directories.
   new URL("../runtime-assets/context-tree-policy.md", import.meta.url),
+] as const;
+const CONTEXT_TREE_WRITE_ROUTING_CANDIDATE_URLS = [
+  // Source execution: packages/client/src/runtime/agent-briefing.ts
+  new URL("./assets/context-tree-write-routing.md", import.meta.url),
+  // Root-level client/CLI chunks.
+  new URL("./runtime-assets/context-tree-write-routing.md", import.meta.url),
+  // Shipped CLI and portable entries are nested one level below the copied
+  // runtime asset directories.
+  new URL("../runtime-assets/context-tree-write-routing.md", import.meta.url),
 ] as const;
 
 type CachedTemplate = {
@@ -70,6 +78,11 @@ type ContextTreeRenderModel = Readonly<{
   addWorktreeCommand: string | null;
 }>;
 
+export type TeamSkillBriefingRow = Readonly<{
+  name: string;
+  description: string;
+}>;
+
 type AgentBriefingRenderModel = Readonly<{
   bin: string;
   generatedMarker: string;
@@ -87,11 +100,13 @@ type AgentBriefingRenderModel = Readonly<{
   taskWorktreePath: string;
   contextTree: ContextTreeRenderModel;
   contextTreePolicy: string;
-  resourceSkillRows: ReadonlyArray<ResourceSkillBriefingRow>;
+  contextTreeWriteRouting: string;
+  resourceSkillRows: ReadonlyArray<TeamSkillBriefingRow>;
 }>;
 
 let templateCache: CachedTemplate | null = null;
 let contextTreePolicyCache: string | null = null;
+let contextTreeWriteRoutingCache: string | null = null;
 
 /** Wrap a runtime value in canonical POSIX-safe single quotes. */
 function shellQuote(value: string): string {
@@ -103,6 +118,8 @@ export type BuildAgentBriefingOptions = {
   payload: AgentRuntimeConfigPayload | null;
   workspacePath: string;
   sourceRepos: ReadonlyArray<PredeclaredSourceRepo>;
+  /** Successful current-provider rows from the same reconcile result. */
+  teamSkills?: ReadonlyArray<TeamSkillBriefingRow>;
   contextTreePath: string | null;
   /** Upstream coordinates used by the agent-managed Context Tree clone. */
   contextTreeRepoUrl?: string | null;
@@ -165,7 +182,11 @@ function buildAgentBriefingRenderModel(opts: BuildAgentBriefingOptions): AgentBr
       opts.contextTreeBranch ?? null,
     ),
     contextTreePolicy: readCanonicalContextTreePolicy(),
-    resourceSkillRows: buildResourceSkillBriefingRows(opts.workspacePath, opts.payload),
+    contextTreeWriteRouting: readCanonicalContextTreeWriteRouting(),
+    resourceSkillRows: (opts.teamSkills ?? []).map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+    })),
   };
 }
 
@@ -254,6 +275,21 @@ export function readCanonicalContextTreePolicy(): string {
   if (contextTreePolicyCache !== null) return contextTreePolicyCache;
   contextTreePolicyCache = readFileSync(resolveCanonicalContextTreePolicyPath(), "utf8");
   return contextTreePolicyCache;
+}
+
+export function resolveCanonicalContextTreeWriteRoutingPath(): string {
+  for (const url of CONTEXT_TREE_WRITE_ROUTING_CANDIDATE_URLS) {
+    const filename = fileURLToPath(url);
+    if (existsSync(filename)) return filename;
+  }
+  throw new Error("Canonical Context Tree write routing contract is missing from the client runtime assets.");
+}
+
+/** Read the provider-neutral source-artifact to Tree-write routing contract. */
+export function readCanonicalContextTreeWriteRouting(): string {
+  if (contextTreeWriteRoutingCache !== null) return contextTreeWriteRoutingCache;
+  contextTreeWriteRoutingCache = readFileSync(resolveCanonicalContextTreeWriteRoutingPath(), "utf8").trim();
+  return contextTreeWriteRoutingCache;
 }
 
 /** Names of the First Tree skills listed by both routing tables. */

@@ -1,17 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig, AgentRuntimeConfigPayload, RuntimeResourceSkill } from "@first-tree/shared";
+import { strToU8, zipSync } from "fflate";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatContext } from "../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../runtime/handler.js";
 import { mockCtxPlumbing } from "./test-helpers.js";
 
-// A resource skill bound to an agent that already has a live session only lands
-// on disk if the handler re-materializes it when the config version bumps —
-// see maybeSwitchConfig's restart path in claude-code.ts. This exercises that
-// path end-to-end against a real temp workspace (materializeResourceSkills is
-// NOT mocked): the SKILL.md must appear before the injected turn runs.
+// Use the real managed reconciler instead of the default handler-test double
+// installed by vitest.setup.ts.
+vi.unmock("../runtime/managed-skills.js");
+
+// A Team Skill bound to an agent that already has a live session only lands on
+// disk if the handler reconciles it before restarting on a config bump. This
+// exercises that path end-to-end against a real temp workspace.
 const state = vi.hoisted(() => ({
   chatContextPromise: null as Promise<ChatContext> | null,
   resolveChatContext: null as ((value: ChatContext) => void) | null,
@@ -138,7 +141,7 @@ function makeMessage(id: string, content: string): SessionMessage {
   return { id, chatId: "chat-materialize", senderId: "sender-1", format: "text", content, metadata: {} };
 }
 
-function makeContext(): SessionContext {
+function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void = () => {}): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   return {
     agent: {
@@ -150,9 +153,9 @@ function makeContext(): SessionContext {
       delegateMention: null,
       metadata: {},
     },
-    sdk: { serverUrl: "http://test", sendMessage } as unknown as SessionContext["sdk"],
+    sdk: { serverUrl: "http://test", sendMessage, fetchAttachment } as unknown as SessionContext["sdk"],
     chatId: "chat-materialize",
-    log: () => {},
+    log,
     recordProviderActivity: () => {},
     emitEvent: () => {},
     ...mockCtxPlumbing({ sendMessage }, "chat-materialize"),
@@ -171,15 +174,15 @@ function resolveChatContext(): void {
 }
 
 async function waitFor(assertion: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1500;
+  const deadline = Date.now() + 5000;
   while (!assertion()) {
     if (Date.now() > deadline) throw new Error("timed out waiting for assertion");
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
 
-function skillPath(resourceId: string): string {
-  return join(workspaceRoot, ".first-tree", "resources", "skills", resourceId, "SKILL.md");
+function skillPath(): string {
+  return join(workspaceRoot, ".claude", "skills", "production-scan", "SKILL.md");
 }
 
 beforeEach(() => {
@@ -200,7 +203,7 @@ afterEach(() => {
   wakeQuery();
 });
 
-describe("claude-code inject-time resource-skill materialization", () => {
+describe("claude-code inject-time managed Skill reconciliation", () => {
   it("materializes a skill bound mid-session so the injected turn finds it on disk", async () => {
     cachedConfig = makeConfig(1, []);
     const config = { workspaceRoot, agentConfigCache };
@@ -213,7 +216,7 @@ describe("claude-code inject-time resource-skill materialization", () => {
     await waitFor(() => state.observedInputs.length === 1);
 
     // Start ran with no skills, so nothing is on disk yet.
-    expect(existsSync(skillPath(SCAN_SKILL.resourceId))).toBe(false);
+    expect(existsSync(skillPath())).toBe(false);
 
     // Server binds the scan skill + bumps the config version; the cache now
     // reflects the newer version. An injected message drives the drain →
@@ -223,7 +226,7 @@ describe("claude-code inject-time resource-skill materialization", () => {
 
     // Wait for the body to actually land — existsSync alone can race the
     // create-then-write window and observe a still-empty file.
-    const target = skillPath(SCAN_SKILL.resourceId);
+    const target = skillPath();
     await waitFor(() => existsSync(target) && readFileSync(target, "utf-8").includes("SCAN RUBRIC BODY"));
     expect(readFileSync(target, "utf-8")).toContain("SCAN RUBRIC BODY");
 
@@ -241,7 +244,7 @@ describe("claude-code inject-time resource-skill materialization", () => {
     await startPromise;
     await waitFor(() => state.observedInputs.length === 1);
     // Start materialized the skill at version 2.
-    expect(existsSync(skillPath(SCAN_SKILL.resourceId))).toBe(true);
+    expect(existsSync(skillPath())).toBe(true);
 
     // A swallowed refresh failure leaves a version-0 empty fallback config.
     // maybeSwitchConfig still runs its restart path (writeAgentBriefing fires),
@@ -252,8 +255,114 @@ describe("claude-code inject-time resource-skill materialization", () => {
     handler.inject(makeMessage("m2", "another message"));
 
     await waitFor(() => vi.mocked(writeAgentBriefing).mock.calls.length >= 1);
-    expect(existsSync(skillPath(SCAN_SKILL.resourceId))).toBe(true);
+    expect(existsSync(skillPath())).toBe(true);
 
     await handler.shutdown();
+  });
+
+  it("downloads and settles a newly attached complete bundle before the injected provider turn", async () => {
+    const bundle = Buffer.from(
+      zipSync({
+        "SKILL.md": strToU8(
+          [
+            "---",
+            "name: production-scan",
+            "description: Scan this repo from a complete bundle.",
+            "---",
+            "",
+            "# Scan",
+            "",
+            "BUNDLED RUBRIC BODY",
+            "",
+          ].join("\n"),
+        ),
+        "scripts/scan.sh": strToU8("#!/bin/sh\necho bundle-ready\n"),
+        "assets/proof.bin": Uint8Array.from([0, 255, 7]),
+      }),
+    );
+    const fetchAttachment = vi.fn().mockResolvedValue({
+      bytes: bundle,
+      mimeType: "application/zip",
+      filename: "production-scan.zip",
+      size: bundle.byteLength,
+    });
+    const bundledSkill: RuntimeResourceSkill = {
+      ...SCAN_SKILL,
+      body: "INLINE FALLBACK MUST NOT LAND",
+      bundle: {
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "zip",
+        sizeBytes: bundle.byteLength,
+      },
+    };
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({ workspaceRoot, agentConfigCache });
+    const ctx = makeContext(fetchAttachment);
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    cachedConfig = makeConfig(2, [bundledSkill]);
+    handler.inject(makeMessage("m2", "run the newly attached scan"));
+
+    await waitFor(() => state.observedInputs.length === 2);
+    expect(fetchAttachment).toHaveBeenCalledTimes(1);
+    expect(fetchAttachment).toHaveBeenCalledWith({ id: bundledSkill.bundle?.attachmentId });
+    expect(readFileSync(skillPath(), "utf-8")).toContain("BUNDLED RUBRIC BODY");
+    expect(readFileSync(skillPath(), "utf-8")).not.toContain("INLINE FALLBACK");
+    expect(
+      readFileSync(join(workspaceRoot, ".claude", "skills", "production-scan", "scripts", "scan.sh"), "utf-8"),
+    ).toContain("bundle-ready");
+
+    await handler.shutdown();
+  });
+
+  it("blocks an injected provider turn when drift cannot leave the discovery root", async () => {
+    const bundle = Buffer.from(
+      zipSync({
+        "SKILL.md": strToU8("---\nname: production-scan\ndescription: Scan safely.\n---\n\n# Scan\n"),
+        "scripts/scan.sh": strToU8("#!/bin/sh\necho safe\n"),
+      }),
+    );
+    const bundledSkill: RuntimeResourceSkill = {
+      ...SCAN_SKILL,
+      bundle: {
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "zip",
+        sizeBytes: bundle.byteLength,
+      },
+    };
+    const fetchAttachment = vi.fn().mockResolvedValue({
+      bytes: bundle,
+      mimeType: "application/zip",
+      filename: "production-scan.zip",
+      size: bundle.byteLength,
+    });
+    const logs: string[] = [];
+    cachedConfig = makeConfig(1, [bundledSkill]);
+    const handler = createClaudeCodeHandler({ workspaceRoot, agentConfigCache });
+    const ctx = makeContext(fetchAttachment, (message) => logs.push(message));
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx);
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    const scriptsRoot = join(workspaceRoot, ".claude", "skills", "production-scan", "scripts");
+    writeFileSync(join(scriptsRoot, "scan.sh"), "#!/bin/sh\necho tampered\n");
+    const discoveryRoot = join(workspaceRoot, ".claude", "skills");
+    chmodSync(discoveryRoot, 0o500);
+    try {
+      cachedConfig = makeConfig(2, [bundledSkill]);
+      handler.inject(makeMessage("m2", "must not reach provider"));
+      await waitFor(() => logs.some((message) => message.includes("cannot be verified or quarantined")));
+      expect(state.observedInputs).toHaveLength(1);
+      expect(readFileSync(join(scriptsRoot, "scan.sh"), "utf-8")).toContain("tampered");
+    } finally {
+      chmodSync(discoveryRoot, 0o700);
+      await handler.shutdown();
+    }
   });
 });

@@ -46,6 +46,36 @@ export const CLI_BODY_ORIGINS = {
 } as const;
 export type CliBodyOrigin = (typeof CLI_BODY_ORIGINS)[keyof typeof CLI_BODY_ORIGINS];
 
+/**
+ * Server-owned marker on a human's "Ask agent" clarification message.
+ *
+ * The browser never writes this metadata directly. It posts the visible
+ * clarification text to the request-scoped endpoint; the server validates the
+ * still-open request + its original asker, then stamps this marker and routes
+ * the message to that agent. Ordinary message sends strip the key, so the
+ * runtime may safely use it to attach a fixed steering envelope without
+ * persisting hidden prompt text in chat history.
+ */
+export const ASK_AGENT_METADATA_KEY = "askAgent";
+export const askAgentMessageMetadataSchema = z.object({
+  requestId: z.string().min(1),
+  agentId: z.string().min(1),
+});
+export type AskAgentMessageMetadata = z.infer<typeof askAgentMessageMetadataSchema>;
+
+export function readAskAgentMessageMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): AskAgentMessageMetadata | null {
+  const parsed = askAgentMessageMetadataSchema.safeParse(metadata?.[ASK_AGENT_METADATA_KEY]);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Human-authored visible body accepted by the request-scoped Ask agent route. */
+export const askAgentQuestionSchema = z.object({
+  content: z.string().trim().min(1).max(4_000),
+});
+export type AskAgentQuestion = z.infer<typeof askAgentQuestionSchema>;
+
 export const MESSAGE_FORMATS = {
   TEXT: "text",
   MARKDOWN: "markdown",
@@ -67,9 +97,9 @@ export const MESSAGE_FORMATS = {
    * Lifecycle is driven by an EXPLICIT resolution signal: a question is
    * answered/closed only by a later message carrying `metadata.resolves` (see
    * `requestResolutionSchema`), which drives `chat_user_state.open_request_count`
-   * down. The target's answer ALWAYS resolves it — picking an option OR typing
-   * free text both write `resolves` (kind="answered"). NEW resolutions are
-   * human-only — the server accepts a `resolves` write only from the target. An
+   * down. The target's Submit resolves it with `kind="answered"`; Skip resolves
+   * it with `kind="closed"`. NEW resolutions are human-only — the server accepts
+   * a `resolves` write only from the target. An
    * agent CAN post a plain `chat send <human>` follow-up (an informational free
    * reply; it carries no `resolves`, raises no red dot, and never resolves the
    * question), but it cannot answer/close the question itself. Lifecycle readers
@@ -134,9 +164,10 @@ export type AskRequest = z.infer<typeof askRequestSchema>;
  * `format="request"` message. This is the ONLY thing that answers or closes
  * an open question — `inReplyTo` no longer does (it is pure threading now).
  *
- * Written ONLY by the target human's web answer — picking an option OR typing
- * free text both attach `resolves` (kind="answered"); the blocking answer
- * surface has no "reply without resolving" path, so every human answer resolves.
+ * Written ONLY by the target human's web answer surface — picking an option OR
+ * typing free text attaches `resolves` (kind="answered"), while Skip attaches
+ * `resolves` (kind="closed"). The surface has no "reply without resolving"
+ * path, so every action completes the request lifecycle.
  * An agent (including the asker) **cannot** write a resolution: the server
  * authorizes a NEW resolution only from the question's target, so an agent
  * answers nothing and closes nothing. (Pre-refinement history may still hold
@@ -147,10 +178,9 @@ export type AskRequest = z.infer<typeof askRequestSchema>;
  *
  *   - kind="answered" — the question is answered. The readable answer stays in
  *     the message `content`.
- *   - kind="closed"   — the question is withdrawn. Retained as a server-honored
- *     resolution kind for compatibility; no current surface produces it (the
- *     human web answer only ever writes "answered"). `reason` optionally explains
- *     why.
+ *   - kind="closed"   — the target human skipped the question without providing
+ *     an answer. The readable Skip note stays in `content`; `reason` optionally
+ *     explains why.
  *
  * Server-opaque except for the `open_request_count` counter, whose −1 keys
  * off `resolves.request`. The web parses it with `safeParse`.

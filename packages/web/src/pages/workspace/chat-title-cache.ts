@@ -15,15 +15,13 @@ function patchRows(rows: MeChatRow[], chatId: string, title: string): { rows: Me
 
 function patchResponse(data: ListMeChatsResponse, chatId: string, title: string): ListMeChatsResponse {
   const ordinary = patchRows(data.rows, chatId, title);
-  const attention = patchRows(data.priorityRows.attention, chatId, title);
   const pinned = patchRows(data.priorityRows.pinned, chatId, title);
-  if (!ordinary.changed && !attention.changed && !pinned.changed) return data;
+  if (!ordinary.changed && !pinned.changed) return data;
 
   return {
     ...data,
     rows: ordinary.rows,
     priorityRows: {
-      attention: attention.rows,
       pinned: pinned.rows,
     },
   };
@@ -35,7 +33,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isListResponse(value: unknown): value is ListMeChatsResponse {
   if (!isRecord(value) || !Array.isArray(value.rows) || !isRecord(value.priorityRows)) return false;
-  return Array.isArray(value.priorityRows.attention) && Array.isArray(value.priorityRows.pinned);
+  return Array.isArray(value.priorityRows.pinned);
 }
 
 function isMeChatsCache(value: unknown): value is MeChatsCache {

@@ -50,9 +50,11 @@ const chatMocks = vi.hoisted(() => ({
   getChat: vi.fn(),
   listChatMessages: vi.fn(),
   listChatOpenRequests: vi.fn(),
+  listRequestThread: vi.fn(),
   patchChatEngagement: vi.fn(),
   readFileAsBase64: vi.fn(),
   renameChat: vi.fn(),
+  sendAskAgentQuestion: vi.fn(),
   sendChatMessage: vi.fn(),
   sendFileMessageBatch: vi.fn(),
 }));
@@ -741,9 +743,23 @@ beforeEach(() => {
   chatMocks.getChat.mockResolvedValue(chatDetail());
   chatMocks.listChatMessages.mockResolvedValue(BASE_MESSAGES);
   chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+  chatMocks.listRequestThread.mockResolvedValue({ items: [] });
   chatMocks.patchChatEngagement.mockResolvedValue({ chatId: "chat-1", engagementStatus: "active" });
   chatMocks.readFileAsBase64.mockResolvedValue("image-base64");
   chatMocks.renameChat.mockResolvedValue({ id: "chat-1", topic: "Renamed launch" });
+  chatMocks.sendAskAgentQuestion.mockImplementation((chatId: string, requestId: string, content: string) =>
+    Promise.resolve(
+      message({
+        id: "clarification-1",
+        chatId,
+        senderId: "human-agent-self",
+        content,
+        inReplyTo: requestId,
+        metadata: { askAgent: { requestId, agentId: "agent-1" } },
+        createdAt: "2026-05-28T12:00:30.000Z",
+      }),
+    ),
+  );
   chatMocks.sendChatMessage.mockImplementation((chatId: string, content: string) =>
     Promise.resolve(
       message({
@@ -1114,13 +1130,18 @@ describe("ChatView", () => {
     const { ChatView } = await import("../chat-view.js");
     const deleted = chatDetail({ engagementStatus: "deleted", title: "Deleted launch" });
     chatMocks.getChat.mockResolvedValue(deleted);
+    let deletedQueryClient: QueryClient | null = null;
     const deletedView = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (queryClient) => {
+      deletedQueryClient = queryClient;
       seedChat(queryClient, deleted);
     });
+    if (!deletedQueryClient) throw new Error("Missing deleted chat query client");
+    const invalidateSpy = vi.spyOn(deletedQueryClient, "invalidateQueries");
     await waitForText(deletedView.container, "Restore");
     await click(buttonByText(deletedView.container, "Restore"));
     await waitForCondition(() => chatMocks.patchChatEngagement.mock.calls.length > 0, "Expected restore");
     expect(chatMocks.patchChatEngagement).toHaveBeenCalledWith("chat-1", "active");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["need-you"] });
     await act(async () => deletedView.root.unmount());
 
     const onJoin = vi.fn();
@@ -2151,6 +2172,83 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows agent mention capsules for Ask agent, its response, and the resolving answer", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const request = message({
+      id: "req-tagged-history",
+      senderId: "agent-1",
+      format: "request",
+      content: "Which rollout should we choose?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      source: "cli",
+      createdAt: "2026-05-28T12:00:00.000Z",
+    });
+    const clarification = message({
+      id: "clarification-tagged-history",
+      senderId: "human-agent-self",
+      content: "What is the migration risk?",
+      metadata: {
+        mentions: ["agent-1"],
+        askAgent: { requestId: request.id, agentId: "agent-1" },
+      },
+      inReplyTo: request.id,
+      source: "web",
+      createdAt: "2026-05-28T12:01:00.000Z",
+    });
+    const clarificationReply = message({
+      id: "clarification-reply-tagged-history",
+      senderId: "agent-1",
+      content: "@gandy Option B reduces the migration risk.",
+      metadata: { mentions: ["human-agent-self"] },
+      inReplyTo: clarification.id,
+      source: "cli",
+      createdAt: "2026-05-28T12:02:00.000Z",
+    });
+    const answer = message({
+      id: "answer-tagged-history",
+      senderId: "human-agent-self",
+      content: "Proceed with option B.",
+      metadata: {
+        mentions: ["agent-1"],
+        resolves: { request: request.id, kind: "answered" },
+      },
+      inReplyTo: request.id,
+      source: "web",
+      createdAt: "2026-05-28T12:03:00.000Z",
+    });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([request, clarification, clarificationReply, answer])),
+      "/",
+    );
+
+    await waitForText(container, "Proceed with option B.");
+    const requestRow = container.querySelector('[data-message-id="req-tagged-history"]');
+    const clarificationRow = container.querySelector('[data-message-id="clarification-tagged-history"]');
+    const replyRow = container.querySelector('[data-message-id="clarification-reply-tagged-history"]');
+    const answerRow = container.querySelector('[data-message-id="answer-tagged-history"]');
+
+    // A plain request is not relabelled. The two human request actions expose
+    // their metadata-only route with a synthetic tag.
+    expect(requestRow?.querySelector("[data-request-agent-tag]")).toBeNull();
+    expect(
+      clarificationRow?.querySelector('[data-request-agent-tag] .mention-chip[data-mention-agent-id="agent-1"]')
+        ?.textContent,
+    ).toBe("@Nova");
+    expect(
+      answerRow?.querySelector('[data-request-agent-tag] .mention-chip[data-mention-agent-id="agent-1"]')?.textContent,
+    ).toBe("@Nova");
+
+    // `chat send` already normalized the agent reply to a leading persisted
+    // mention. It remains a single inline chip instead of gaining a duplicate
+    // synthetic one.
+    expect(replyRow?.querySelector("[data-request-agent-tag]")).toBeNull();
+    expect(replyRow?.querySelectorAll('.mention-chip[data-mention-agent-id="human-agent-self"]')).toHaveLength(1);
+    expect(replyRow?.querySelector(".mention-chip")?.textContent).toBe("@Gandy");
+
+    await act(async () => root.unmount());
+  });
+
   // R3: opening an attachment preview (new `docChat` + `docAttachment` params)
   // collapses the right sidebar so the preview rail gets the slot, then restores
   // it when the preview params clear. Keys on the new params — before the fix
@@ -2280,7 +2378,7 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("clears a stale auto-primed @ when a request dock arrives late and clean-resolves option answers", async () => {
+  it("removes a focused composer when a request arrives and clean-resolves through takeover", async () => {
     const { ChatView } = await import("../chat-view.js");
     const dockMessages = messages([
       message({
@@ -2318,15 +2416,21 @@ describe("ChatView", () => {
       queryClient.setQueryData(["chat-messages", "chat-1"], dockMessages);
     });
     await flush();
-    await waitForText(container, "Reply");
-    await waitForCondition(() => textarea.value === "", "Expected late request dock to clear auto-primed @");
+    await waitForText(container, "Submit");
+    expect(textarea.isConnected).toBe(false);
+    expect(container.querySelector("[data-ask-blocked-composer]")).not.toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('[role="dialog"]'));
 
-    // Decoupled: clicking an option highlights the pill but does NOT fill the
-    // composer — the draft stays empty (the auto-primed @ has been cleared).
-    // Answering happens in the overlay: the composer stays empty.
+    // A queued background-composer Enter cannot send an ordinary message after
+    // takeover: that composer is gone and focus belongs to the request dialog.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Answering happens only in the overlay.
     await click(askOption(container, "Blue-green"));
-    expect(textarea.value).toBe("");
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected option answer send");
     // The answer is the selected option label, resolving the question.
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "Blue-green", ["agent-1"], {
@@ -2367,13 +2471,13 @@ describe("ChatView", () => {
       queryClient.setQueryData(["chat-messages", "chat-1"], dockMessages);
     });
     await flush();
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
 
     // Reply is disabled until an option is picked, then resolves with the label.
-    expect(buttonByText(container, "Reply")?.disabled).toBe(true);
+    expect(buttonByText(container, "Submit")?.disabled).toBe(true);
     await click(askOption(container, "Blue-green"));
-    expect(buttonByText(container, "Reply")?.disabled).toBe(false);
-    await click(buttonByText(container, "Reply"));
+    expect(buttonByText(container, "Submit")?.disabled).toBe(false);
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(
       () => chatMocks.sendChatMessage.mock.calls.length > 0,
       "Expected the options answer to resolve",
@@ -2422,8 +2526,433 @@ describe("ChatView", () => {
 
     // The blocking takeover still appears, driven by the open-requests source.
     await waitForText(container, "Approve the migration?");
-    expect(buttonByText(container, "Reply")).toBeTruthy();
+    expect(buttonByText(container, "Submit")).toBeTruthy();
     expect(buttonByText(container, "Skip")).toBeTruthy();
+
+    await act(async () => root.unmount());
+  });
+
+  it("supports request inspection without enabling ordinary chat sends", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const firstAsk = message({
+      id: "req-inspect-1",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    const secondAsk = message({
+      id: "req-inspect-2",
+      senderId: "agent-1",
+      format: "request",
+      content: "Choose the rollout window.",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:30:00.000Z",
+    });
+    const laterMessage = message({
+      id: "msg-after-asks",
+      senderId: "agent-1",
+      content: "Extra evidence after both questions.",
+      createdAt: "2026-05-28T11:45:00.000Z",
+    });
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [firstAsk, secondAsk] });
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([firstAsk, secondAsk, laterMessage]));
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [firstAsk, secondAsk] });
+      },
+      "/?showAsk=false",
+    );
+
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).toBeNull();
+    expect(container.textContent).toContain("Approve the migration?");
+    expect(container.textContent).toContain("Choose the rollout window.");
+    expect(container.textContent).toContain("Extra evidence after both questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+
+    const blockedComposer = container.querySelector<HTMLButtonElement>("[data-inspect-ask-composer]");
+    expect(blockedComposer).not.toBeNull();
+    expect(blockedComposer?.textContent).toContain("有 2 条待处理的问题");
+    await click(blockedComposer);
+    await waitForText(container, "Submit");
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).not.toBeNull();
+    expect(container.textContent).toContain("Approve the migration?");
+
+    await click(container.querySelector('button[aria-label="Close question"]'));
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).toBeNull();
+    expect(container.querySelector("[data-inspect-ask-composer]")?.textContent).toContain("有 2 条待处理的问题");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the composer fail-closed while the open-requests source is pending in inspect mode", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // The request is past the loaded 50-message window, so ONLY the pending
+    // open-requests query can know about it. Until that query confirms the
+    // chat's state, an empty derivation is unknown — not "no requests".
+    const buriedAsk = message({
+      id: "req-inspect-pending",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/?showAsk=false",
+    );
+
+    // Pending: no ordinary composer, no reopen affordance — fail closed.
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("[data-inspect-ask-composer]")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // The query confirms the still-open request: the reopen affordance
+    // replaces the pending panel; the ordinary composer stays hidden.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "有 1 条待处理的问题");
+    expect(container.querySelector("[data-inspect-ask-composer]")).not.toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows a retryable error instead of the ordinary composer when the open-requests source fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("open requests unavailable"));
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/?showAsk=false",
+    );
+
+    // Failed: no ordinary composer either — an understandable recovery path.
+    await waitForText(container, "Couldn’t check for open questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Retry succeeds with a CONFIRMED zero: only now may the ordinary
+    // composer return.
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+    await click(buttonByText(container, "Retry"));
+    await waitForCondition(
+      () => container.querySelector("textarea") !== null,
+      "ordinary composer after confirmed zero",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("treats a cached empty open-requests result as unconfirmed until this mount's fetch succeeds", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const buriedAsk = message({
+      id: "req-inspect-stale-cache",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([]));
+        // A previous visit's successful EMPTY result, now stale: a new open
+        // request has since arrived outside the timeline window. TanStack
+        // Query keeps status "success" for this row through the mount
+        // refetch — the exact fail-open window this test pins shut.
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [] });
+        // The harness client uses staleTime: Infinity; production (staleTime 0)
+        // refetches on mount, so mark the row stale to match.
+        void client.invalidateQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+      },
+      "/?showAsk=false",
+    );
+
+    // Stale cached zero must NOT restore the ordinary composer.
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("[data-inspect-ask-composer]")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.listChatOpenRequests).toHaveBeenCalled();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // This mount's fetch lands with the still-open request: only the reopen
+    // affordance appears, never the ordinary composer.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "有 1 条待处理的问题");
+    expect(container.querySelector("[data-inspect-ask-composer]")).not.toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps fail-closed with a retryable error when the mount refetch of a cached zero fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("open requests unavailable"));
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([]));
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [] });
+        void client.invalidateQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+      },
+      "/?showAsk=false",
+    );
+
+    // The mount refetch fails while the stale cached zero keeps status
+    // "success": still no ordinary composer — a retryable error instead.
+    await waitForText(container, "Couldn’t check for open questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Retry confirms a fresh zero in this mount: the composer may return.
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+    await click(buttonByText(container, "Retry"));
+    await waitForCondition(
+      () => container.querySelector("textarea") !== null,
+      "ordinary composer after mount-confirmed zero",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the ordinary composer fail-closed on the normal route while the open-requests source is pending", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // NO `showAsk` param: the normal chat route must fail closed too — a
+    // buried request (outside the latest-50 window) is invisible to
+    // `blockingMessages` until the open-requests query lands.
+    const buriedAsk = message({
+      id: "req-normal-pending",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/",
+    );
+
+    expect(container.querySelector("textarea")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // The query lands with the still-open request: the blocking takeover
+    // appears; the ordinary composer is replaced by the blocked bar.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "Approve the migration?");
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).not.toBeNull();
+    expect(buttonByText(container, "Submit")).toBeTruthy();
+    expect(container.querySelector("[data-ask-blocked-composer]")).not.toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the ordinary composer fail-closed on the normal route when the open-requests source fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("open requests unavailable"));
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/",
+    );
+
+    await waitForText(container, "Couldn’t check for open questions.");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Retry confirms a fresh zero in this mount: the composer may return.
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
+    await click(buttonByText(container, "Retry"));
+    await waitForCondition(
+      () => container.querySelector("textarea") !== null,
+      "ordinary composer after mount-confirmed zero on the normal route",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("treats a cached empty success as unconfirmed on the normal route until this mount's fetch settles", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const buriedAsk = message({
+      id: "req-normal-stale-cache",
+      senderId: "agent-1",
+      format: "request",
+      content: "Approve the migration?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:00:00.000Z",
+    });
+    let resolveOpenRequests!: (value: { items: MessageWithDelivery[] }) => void;
+    chatMocks.listChatOpenRequests.mockImplementation(
+      () =>
+        new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+          resolveOpenRequests = resolve;
+        }),
+    );
+
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([]));
+        // A previous visit's successful EMPTY result rides the mount as
+        // status "success" through the background refetch — the fail-open
+        // window this test pins shut on the normal route.
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [] });
+        // The harness client uses staleTime: Infinity; production (staleTime 0)
+        // refetches on mount, so mark the row stale to match.
+        void client.invalidateQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+      },
+      "/",
+    );
+
+    expect(container.querySelector("textarea")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.listChatOpenRequests).toHaveBeenCalled();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Settling with the still-open request enters the takeover directly.
+    await act(async () => {
+      resolveOpenRequests({ items: [buriedAsk] });
+    });
+    await waitForText(container, "Approve the migration?");
+    expect(container.querySelector('[role="dialog"][aria-label^="Question"]')).not.toBeNull();
+    expect(container.querySelector("[data-ask-blocked-composer]")).not.toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("latches the confirmation per chat viewing: transient poll errors do not re-block, chat switches re-verify", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // Per-chat deferred control over the open-requests source.
+    const pendingResolvers = new Map<string, (value: { items: MessageWithDelivery[] }) => void>();
+    const deferAll = () => {
+      chatMocks.listChatOpenRequests.mockImplementation(
+        (chatId: string) =>
+          new Promise<{ items: MessageWithDelivery[] }>((resolve) => {
+            pendingResolvers.set(chatId, resolve);
+          }),
+      );
+    };
+    deferAll();
+
+    const { container, queryClient, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), messages([])),
+      "/",
+    );
+
+    // chat-1 confirms a zero: the composer appears.
+    await act(async () => {
+      pendingResolvers.get("chat-1")?.({ items: [] });
+    });
+    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-1 confirmed");
+
+    // A transient poll failure AFTER the latch must not re-block the composer
+    // or surface the retry panel — this viewing is already confirmed.
+    chatMocks.listChatOpenRequests.mockRejectedValue(new Error("poll blip"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["chat-open-requests", "chat-1"] });
+    });
+    await flush();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.textContent).not.toContain("Couldn’t check for open questions.");
+
+    // Switch to chat-2 WITHOUT remounting ChatView: the latch must reset, so
+    // the pending source is unverified again — no composer.
+    deferAll();
+    seedChat(queryClient, chatDetail({ id: "chat-2" }), messages([]));
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <ChatView agentId="agent-1" chatId="chat-2" />
+            </ToastProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flush();
+    expect(container.querySelector("textarea")).toBeNull();
+    await waitForText(container, "Checking for open questions…");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // chat-2 confirms: composer returns.
+    await act(async () => {
+      pendingResolvers.get("chat-2")?.({ items: [] });
+    });
+    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-2 confirmed");
+
+    // Back to chat-1 (still without remount): the earlier chat-1 latch was
+    // cleared on switch, so this viewing re-verifies too.
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <ChatView agentId="agent-1" chatId="chat-1" />
+            </ToastProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flush();
+    expect(container.querySelector("textarea")).toBeNull();
+    // chat-1's query still carries the blip's error status, so this viewing
+    // shows the retryable fail-closed error (not the neutral checking state);
+    // the in-flight mount refetch settles it.
+    await waitForText(container, "Couldn’t check for open questions.");
+
+    await act(async () => {
+      pendingResolvers.get("chat-1")?.({ items: [] });
+    });
+    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-1 re-confirmed");
 
     await act(async () => root.unmount());
   });
@@ -2470,7 +2999,7 @@ describe("ChatView", () => {
     );
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "(Skipped — no answer provided.)", ["agent-1"], {
       inReplyTo: "req-skip",
-      resolves: { request: "req-skip", kind: "answered" },
+      resolves: { request: "req-skip", kind: "closed" },
     });
 
     await act(async () => root.unmount());
@@ -2502,19 +3031,19 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const other = askTextarea(container);
     if (!other) throw new Error("Overlay free-text input missing");
 
     // No option picked + empty Other → Reply disabled.
-    expect(buttonByText(container, "Reply")?.disabled).toBe(true);
+    expect(buttonByText(container, "Submit")?.disabled).toBe(true);
 
     // Typing a free-text answer (without picking an option) enables Reply.
     await setValue(other, "Neither — let's hold the deploy");
-    expect(buttonByText(container, "Reply")?.disabled).toBe(false);
+    expect(buttonByText(container, "Submit")?.disabled).toBe(false);
 
     // ...and Reply resolves with the free text as the answer.
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected free-text answer send");
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "Neither — let's hold the deploy", ["agent-1"], {
       inReplyTo: "req-opt",
@@ -2561,7 +3090,7 @@ describe("ChatView", () => {
       queryClient.setQueryData(["chat-messages", "chat-1"], dockMessages);
     });
     await flush();
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     expect(textarea.value).toBe("");
 
     await setValue(textarea, "@");
@@ -2599,11 +3128,11 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const answerBox = askTextarea(container);
     if (!answerBox) throw new Error("Overlay free-text input missing");
     await setValue(answerBox, "Screenshot evidence attached");
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected text resolve send");
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "Screenshot evidence attached", ["agent-1"], {
       inReplyTo: "req-file",
@@ -2622,7 +3151,7 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const answerBox = askTextarea(container);
     if (!answerBox) throw new Error("Overlay free-text input missing");
     await setValue(answerBox, "Screenshot evidence attached");
@@ -2634,7 +3163,7 @@ describe("ChatView", () => {
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!fileInput) throw new Error("File input missing");
     await changeFiles(fileInput, [file]);
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(
       () => chatMocks.sendFileMessageBatch.mock.calls.length > 0,
       "Expected image file-batch resolve",
@@ -2667,13 +3196,13 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Reply");
+    await waitForText(container, "Submit");
     const file = new File(["pdf"], "evidence.pdf", { type: "application/pdf" });
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!fileInput) throw new Error("File input missing");
     await changeFiles(fileInput, [file]);
     await waitForText(container, "evidence.pdf");
-    await click(buttonByText(container, "Reply"));
+    await click(buttonByText(container, "Submit"));
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected document resolve send");
     expect(attachmentMocks.uploadAttachment).toHaveBeenCalledWith(file);
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "", ["agent-1"], {

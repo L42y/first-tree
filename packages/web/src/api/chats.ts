@@ -8,6 +8,7 @@ import type {
   ChatTokenUsage,
   Message,
   RequestResolution,
+  RequestThreadResponse,
 } from "@first-tree/shared";
 import { api, withOrg } from "./client.js";
 
@@ -276,4 +277,18 @@ export function listChatMessages(
  */
 export function listChatOpenRequests(chatId: string): Promise<{ items: Message[] }> {
   return api.get<{ items: Message[] }>(`/chats/${encodeURIComponent(chatId)}/open-requests`);
+}
+
+/** Durable request + Ask agent clarification/reply thread. */
+export function listRequestThread(chatId: string, requestId: string): Promise<RequestThreadResponse> {
+  return api.get<RequestThreadResponse>(
+    `/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/thread`,
+  );
+}
+
+/** Ask the original requester for clarification while leaving the request open. */
+export function sendAskAgentQuestion(chatId: string, requestId: string, content: string): Promise<Message> {
+  return api.post<Message>(`/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/ask-agent`, {
+    content,
+  });
 }

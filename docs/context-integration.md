@@ -36,15 +36,70 @@ manifest also records both adapter digests and the canonical Policy digest.
 - SessionStart handles startup, resume, clear, and compact, but only activates
   an exact local binding that still passes live membership, Team repository,
   and Tree binding checks.
+- A connected SessionStart always carries the same source-artifact routing
+  contract as the Managed briefing. Its non-exhaustive automatic examples are
+  PR/MR, forge Issue, design document, meeting or decision note, commit
+  discussion or review thread, and pasted source. When one changes a durable
+  decision, constraint, owner, or cross-domain relationship, the provider
+  loads `first-tree-write`. Implementation-only artifacts do not produce a
+  Tree write, and no Tree write task exists before a concrete source artifact
+  does. A just-completed local source change is not promoted to this generic
+  route, and Audit findings continue through their dedicated Maintenance
+  handoff; the Skill's accepted-source gate remains broader.
+- External write intent comes only from an explicit Tree-write request or that
+  connected SessionStart standing route classifying a concrete artifact as
+  durable Tree work. Permission to publish a source PR/MR is not a separate
+  transitive Tree-write intent rule.
 - External Read and Write never accept a Team argument. Their provider-specific
   hidden routes derive Team from the current provider + checkout binding and
   repeat the same live activation before every Read, initial Write authoring,
   push, and PR/MR creation.
 - Activation failure never blocks ordinary provider work and never falls back
   to another Team or cached authority.
+- SessionStart uses one non-retrying two-second live-authority attempt covering
+  access-token refresh and the validator request inside a five-second provider
+  hook budget, so timeout or network failure can return a controlled
+  unavailable envelope instead of being killed by the provider. Explicit
+  status, Read, and Write activation use a five-second attempt covering the
+  same two stages and retry the same exact Team + repository once only for
+  timeout, network, or HTTP 5xx failures. Authentication, authorization,
+  binding, scope, and typed disabled results never retry. Failures expose
+  stable timeout, network, server, or rejection reason codes without returning
+  cached authority.
 - Read does not depend on Reviewer readiness. A new official Write fails before
   remote mutation when Automatic Review is absent, disabled, structurally
   incomplete, or offline.
+- When source and Tree PRs/MRs are both required, create and cross-link both,
+  keep the Tree change draft, merge source first, reconcile the Tree change
+  against merged source truth, and only then mark it ready. SessionStart
+  classification never replaces the existing live preflight, Reviewer, forge
+  identity, or exact-binding authority gates.
+
+## Codex Hook consent and verification
+
+Codex owns Hook consent. First Tree installs the Plugin but never bypasses,
+pre-approves, or silently enables the SessionStart Hook. After the first
+`context enable --provider codex`:
+
+1. open Codex in the enabled checkout;
+2. run `/hooks`;
+3. find **First Tree Context → SessionStart**, enable its checkbox, and choose
+   **Trust**;
+4. exit and start a new Codex session in that checkout;
+5. run `first-tree context status --provider codex` and confirm **Hook trusted**
+   and **Hook enabled** are `Yes`, and **Live activation** is `Connected`.
+
+Both `context enable` and `context status` query Codex's provider-owned
+`hooks/list` API after installation. They report trust and enablement
+separately, including a Hook that changed after approval. A previously trusted
+and enabled Hook therefore does not receive another review prompt.
+
+Status output also keeps machine/user/provider and repository authority
+separate: provider compatibility, Plugin installation, Plugin enablement,
+Hook trust, Hook enablement, current checkout, exact binding, and live Team
+activation each have their own row. Checkout failures preserve their actual
+cause and repair action: signed out, outside a Git checkout, or missing/invalid
+`origin`.
 
 ## Upgrade, rollback, and disable
 
@@ -102,15 +157,16 @@ enforces the provider minimum version. Any manifest, source, or provider-cache
 drift reports `repair` and prevents Context activation without blocking ordinary
 provider work.
 
-The canonical Context Tree Policy has one source file. Managed workspaces
-receive its bytes in the generated briefing; External Claude and Codex bundles
-receive the same Policy bytes under each projected Read/Write Skill. The
-generated External Skills also share one canonical source template; their
-reproducible provider projections may differ only in the fixed adapter routing
-needed to resolve the exact `provider + checkout` binding. The External
-projection adds the mandatory lazy-load reference, while Managed Skills
-continue to rely on the always-present briefing and never depend on a
-Plugin-only relative file.
+The canonical Context Tree Policy and source-artifact Write routing contract
+each have one source file. Managed workspaces receive both in the generated
+briefing; connected External sessions receive the routing contract at
+SessionStart, while External Claude and Codex bundles receive the same Policy
+bytes under each projected Read/Write Skill. The generated External Skills also
+share one canonical source template; their reproducible provider projections
+may differ only in the fixed adapter routing needed to resolve the exact
+`provider + checkout` binding. The External projection adds the mandatory
+lazy-load reference, while Managed Skills continue to rely on the
+always-present briefing and never depend on a Plugin-only relative file.
 
 ## Release qualification
 

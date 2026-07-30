@@ -23,7 +23,7 @@ describe("mobile projections share the realtime invalidation prefix", () => {
     meChatMocks.listMeChats.mockReset();
     meChatMocks.listMeChats.mockResolvedValue({
       rows: [],
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       nextCursor: null,
     });
     meChatMocks.listMeChatSourceCounts.mockResolvedValue({ counts: {} });
@@ -32,10 +32,10 @@ describe("mobile projections share the realtime invalidation prefix", () => {
   it("refetches Work when ['me','chats'] is invalidated (answer / new message / failure)", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     harness.render(
-      <MemoryRouter initialEntries={["/m/work"]}>
+      <MemoryRouter initialEntries={["/m/chat"]}>
         <QueryClientProvider client={queryClient}>
           <Routes>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -44,7 +44,7 @@ describe("mobile projections share the realtime invalidation prefix", () => {
     // Let the first fetch settle (empty state renders) before invalidating,
     // so the invalidation queues a real refetch rather than coalescing with an
     // in-flight fetch.
-    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active work"));
+    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active chats"));
     expect(meChatMocks.listMeChats).toHaveBeenCalledTimes(1);
     expect(meChatMocks.listMeChatSourceCounts).toHaveBeenCalledTimes(1);
 

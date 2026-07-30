@@ -110,6 +110,7 @@ export function RowEngagementMenu({
     onSuccess: (_data, next) => {
       setScheduleWarning(null);
       setLookupError(null);
+      queryClient.invalidateQueries({ queryKey: ["need-you"] });
       // The Server's owner-scoped pause on chat delete does NOT emit
       // `chat:updated`, and the action guard just populated fresh Active
       // rows — without this nudge the sidebar would show the pre-delete

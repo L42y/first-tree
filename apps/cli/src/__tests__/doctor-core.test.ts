@@ -47,6 +47,40 @@ afterEach(() => {
 });
 
 describe("doctor core checks", () => {
+  it("diagnoses absent, live, and untrusted daemon ownership", async () => {
+    const { checkDaemonRuntimeOwnership } = await import("../core/doctor.js");
+    const { acquireDaemonRuntimeOwnership, daemonRuntimeOwnershipPath } = await import(
+      "../core/daemon-runtime-ownership.js"
+    );
+
+    expect(checkDaemonRuntimeOwnership()).toEqual({
+      label: "Daemon owner",
+      ok: true,
+      detail: "lock not held",
+    });
+
+    const lease = acquireDaemonRuntimeOwnership({
+      channel: "dev",
+      home,
+      mode: "service",
+      version: "0.0.0-test",
+    });
+    expect(checkDaemonRuntimeOwnership()).toMatchObject({
+      label: "Daemon owner",
+      ok: true,
+      detail: expect.stringContaining(`pid ${process.pid}, dev/service`),
+    });
+    lease.release();
+
+    mkdirSync(join(home, "state"), { recursive: true });
+    writeFileSync(daemonRuntimeOwnershipPath(home), "{broken", "utf8");
+    expect(checkDaemonRuntimeOwnership()).toMatchObject({
+      label: "Daemon owner",
+      ok: false,
+      detail: expect.stringContaining("untrusted lock"),
+    });
+  });
+
   it("checks config, server reachability, websocket reachability, and local agents", async () => {
     const {
       checkAgentConfigs,
