@@ -30,7 +30,6 @@ import {
   Download,
   ExternalLink,
   Eye,
-  LoaderCircle,
   Menu,
   MessageSquare,
   PanelRight,
@@ -4283,7 +4282,7 @@ export function ChatView({
                       ? blockedComposerRef
                       : readOnly
                         ? readOnlyComposerRef
-                        : inspectAskMode || openRequestsUnverified
+                        : inspectAskMode && openRequestCount > 0
                           ? inspectComposerRef
                           : textareaRef
                   }
@@ -4386,59 +4385,6 @@ export function ChatView({
                       Open
                     </span>
                   </button>
-                ) : openRequestsUnverified ? (
-                  /* Fail-closed state, BOTH routes: the window-independent
-                     open-requests source has not confirmed this chat's state
-                     in this mount, so the ordinary composer must NOT render —
-                     a fast send would bypass a possibly still-open request.
-                     Shares the inspect composer's focus ref so
-                     ComposeStatusBar keeps a stable fallback target. */
-                  <div
-                    ref={(el) => {
-                      inspectComposerRef.current = el;
-                    }}
-                    tabIndex={-1}
-                    data-open-requests-unverified
-                    className="composer-card flex items-center"
-                    style={{
-                      gap: "var(--sp-3)",
-                      minHeight: composerMobile ? 52 : 46,
-                      padding: "var(--sp-2_5) var(--sp-3)",
-                      border: "var(--hairline) solid var(--border)",
-                      background: "var(--bg-raised)",
-                      color: "var(--fg-3)",
-                    }}
-                  >
-                    {openRequestsMountFailed ? (
-                      <>
-                        <span className="text-body flex-1" style={{ color: "var(--fg-2)" }}>
-                          Couldn’t check for open questions.
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void openRequestsQuery.refetch()}
-                          className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-hover)]"
-                          style={{
-                            minHeight: 32,
-                            padding: "0 var(--sp-3)",
-                            border: "var(--hairline) solid var(--border)",
-                            borderRadius: "var(--radius-input)",
-                            background: "var(--bg-raised)",
-                            color: "var(--fg-2)",
-                          }}
-                        >
-                          Retry
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <LoaderCircle aria-hidden className="h-4 w-4 shrink-0 animate-spin" />
-                        <span className="text-body" role="status">
-                          Checking for open questions…
-                        </span>
-                      </>
-                    )}
-                  </div>
                 ) : (
                   <>
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: drop target for image upload */}
@@ -4958,15 +4904,25 @@ export function ChatView({
                             disabled={sendDisabled}
                             aria-disabled={sendBlockedByMentionGate || undefined}
                             title={
-                              sendBlockedByMentionGate
-                                ? "@mention someone to send — a group message must address someone"
-                                : // On mobile Enter inserts a newline, so the button is
-                                  // the only way to send — don't advertise the Enter shortcut.
-                                  composerMobile
-                                  ? "Send"
-                                  : "Send (Enter)"
+                              openRequestsMountFailed
+                                ? "Couldn’t check for open questions"
+                                : openRequestsUnverified
+                                  ? "Checking for open questions"
+                                  : sendBlockedByMentionGate
+                                    ? "@mention someone to send — a group message must address someone"
+                                    : // On mobile Enter inserts a newline, so the button is
+                                      // the only way to send — don't advertise the Enter shortcut.
+                                      composerMobile
+                                      ? "Send"
+                                      : "Send (Enter)"
                             }
-                            aria-label="Send"
+                            aria-label={
+                              openRequestsMountFailed
+                                ? "Send unavailable — couldn’t check for open questions"
+                                : openRequestsUnverified
+                                  ? "Checking for open questions"
+                                  : "Send"
+                            }
                             className={cn(
                               "inline-flex items-center justify-center transition-opacity",
                               sendDimmed && "opacity-40",
@@ -4990,6 +4946,25 @@ export function ChatView({
                         </span>
                       </div>
                     </div>
+                    {openRequestsMountFailed && (
+                      <div
+                        data-open-requests-error
+                        className="flex items-center justify-between"
+                        style={{ padding: "var(--sp-1_5) var(--sp-0_5) 0" }}
+                      >
+                        <span className="mono text-label" role="status" style={{ color: "var(--fg-3)" }}>
+                          Couldn’t check for open questions.
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => void openRequestsQuery.refetch()}
+                        >
+                          Retry
+                        </Button>
+                      </div>
+                    )}
                     {(sendMut.isError || uploadError) && (
                       <p
                         className="mono text-label"
