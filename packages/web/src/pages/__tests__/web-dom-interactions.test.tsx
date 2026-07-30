@@ -1574,7 +1574,7 @@ describe("web DOM interaction coverage", () => {
     await click(switcher.container.querySelector('button[aria-haspopup="menu"]'));
     await click(
       [...switcher.container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Create new team"),
+        button.textContent?.includes("Create team"),
       ) ?? null,
     );
     await waitForText("Create", document.body);

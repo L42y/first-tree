@@ -360,10 +360,10 @@ describe("Layout Ask agent navigation lock", () => {
     // the other-team switch row, Leave, Create, Join, Invite.
     const teamTwoRow = menuItemByText(container, "Team Two");
     expect(teamTwoRow?.disabled).toBe(true);
-    const createRow = menuItemByText(container, "Create new team");
+    const createRow = menuItemByText(container, "Create team");
     expect(createRow?.disabled).toBe(true);
     expect(menuItemByText(container, "Join with invite link")?.disabled).toBe(true);
-    expect(menuItemByText(container, "Leave this team")?.disabled).toBe(true);
+    expect(menuItemByText(container, "Leave team")?.disabled).toBe(true);
     expect(menuItemByText(container, "Invite teammates")?.disabled).toBe(true);
 
     // The switch action boundary re-checks the lock: no cache-clearing
@@ -391,9 +391,34 @@ describe("Layout Ask agent navigation lock", () => {
 
     // …and Create reaches the setup modal.
     await click(trigger());
-    await waitForText("Create new team");
-    await click(menuItemByText(container, "Create new team"));
+    await waitForText("Create team");
+    await click(menuItemByText(container, "Create team"));
     await waitForText("Create a new team");
+
+    await act(async () => root.unmount());
+  });
+
+  it("dismisses TeamSwitcher navigation dialogs that were already open when the lock engages", async () => {
+    const { container, root } = await renderLayout("/?review=need-you");
+    const trigger = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Switch team"]');
+
+    await click(trigger());
+    await click(menuItemByText(container, "Leave team"));
+    await waitForText("Leave Team One?");
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+
+    await engageLock();
+    expect(document.body.textContent).not.toContain("Leave Team One?");
+
+    await releaseLock();
+    await click(trigger());
+    await click(menuItemByText(container, "Create team"));
+    await waitForText("Create a new team");
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+
+    await engageLock();
+    expect(document.body.textContent).not.toContain("Create a new team");
+    expect(locationText(container)).toBe("/?review=need-you");
 
     await act(async () => root.unmount());
   });

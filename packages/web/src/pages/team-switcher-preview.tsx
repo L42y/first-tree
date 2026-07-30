@@ -192,10 +192,10 @@ export function TeamSwitcherPreviewPage() {
             <PreviewToggle on={false} label="Theme" onClick={() => document.documentElement.classList.toggle("dark")} />
           </div>
           <p className="text-caption" style={{ color: "var(--fg-3)", marginTop: "var(--sp-3)" }}>
-            Open the anchor to switch teams or use the pencil in the current-team header to rename it inline. Picking a
-            team shows the row spinner, disabled list, optimistic anchor, and the "Switching to…" veil (~0.7s here).
-            "Force switch failure" rolls back with an inline retry hint; "Single team" drops the switch list but keeps
-            the anchor.
+            Open the anchor to switch teams or use the pencil in the current-team header to open the rename dialog.
+            Picking a team shows the row spinner, disabled list, optimistic anchor, and the "Switching to…" veil (~0.7s
+            here). "Force switch failure" rolls back with an inline retry hint; "Single team" drops the switch list but
+            keeps the anchor.
           </p>
         </div>
       </div>

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../api/client.js";
 import { useAuth } from "../auth/auth-context.js";
+import { isAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog.js";
 import { Input } from "./ui/input.js";
@@ -78,6 +79,10 @@ function CreateForm({ onDone }: { onDone: () => void }) {
       const res = await api.post<{
         organization: { id: string; name: string; displayName: string; role: string };
       }>("/me/organizations", { name: slugify(trimmed), displayName: trimmed });
+      // The request may outlive this dialog. If an Ask attempt claimed the
+      // current surface while the server was responding, keep its owner
+      // mounted instead of switching teams and navigating away underneath it.
+      if (isAskAgentNavLocked()) return;
       // The caller is already authenticated and the user JWT is org-agnostic,
       // so no token adoption is needed (the endpoint returns none). Select the
       // freshly created org so the user lands in it.
@@ -142,6 +147,7 @@ function JoinForm({ onDone }: { onDone: () => void }) {
         memberId: string;
         role: string;
       }>("/me/organizations/join", { token: justToken });
+      if (isAskAgentNavLocked()) return;
       // No token adoption: the endpoint returns none and the user JWT is
       // org-agnostic. Select the joined org so the user lands in it instead of
       // a stale one (and so we never write `undefined` into the token store).

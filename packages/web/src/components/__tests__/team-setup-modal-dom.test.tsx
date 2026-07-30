@@ -4,6 +4,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { addAskAgentNavLock, clearAskAgentNavLocks, removeAskAgentNavLock } from "../chat/ask-agent-nav-lock.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -78,11 +79,13 @@ function buttonByText(container: ParentNode, text: string): HTMLButtonElement | 
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  clearAskAgentNavLocks();
   vi.clearAllMocks();
   authMock.value.selectOrganization.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
+  clearAskAgentNavLocks();
   document.body.innerHTML = "";
   vi.restoreAllMocks();
 });
@@ -129,6 +132,55 @@ describe("TeamSetupModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(routerMocks.navigate).toHaveBeenCalledWith("/onboarding", { replace: true });
 
+    await act(async () => root.unmount());
+  });
+
+  it.each([
+    {
+      action: "create" as const,
+      inputLabel: "Team name",
+      inputValue: "Deferred team",
+      response: {
+        organization: { id: "org-new", name: "deferred-team", displayName: "Deferred team", role: "admin" },
+      },
+    },
+    {
+      action: "join" as const,
+      inputLabel: "Invite token or full URL",
+      inputValue: "token-deferred",
+      response: { organizationId: "org-joined", memberId: "member-new", role: "member" },
+    },
+  ])("does not switch or navigate when the Ask lock engages during a pending $action request", async (testCase) => {
+    let resolveRequest: ((value: typeof testCase.response) => void) | undefined;
+    clientMocks.post.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    const onClose = vi.fn();
+    const { TeamSetupModal } = await import("../team-setup-modal.js");
+    const { root } = await renderDom(<TeamSetupModal action={testCase.action} onClose={onClose} />);
+
+    const input = document.body.querySelector<HTMLInputElement>(`input[aria-label="${testCase.inputLabel}"]`);
+    if (!input) throw new Error(`${testCase.inputLabel} input missing`);
+    await setInputValue(input, testCase.inputValue);
+    await submit(document.body.querySelector("form"));
+    expect(clientMocks.post).toHaveBeenCalledTimes(1);
+
+    const lock = { chatId: "chat-1", requestId: `request-${testCase.action}` };
+    addAskAgentNavLock(lock);
+    await act(async () => {
+      resolveRequest?.(testCase.response);
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
+    expect(routerMocks.navigate).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    removeAskAgentNavLock(lock);
     await act(async () => root.unmount());
   });
 
