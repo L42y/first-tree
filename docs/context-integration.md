@@ -27,11 +27,14 @@ manifest also records both adapter digests and the canonical Policy digest.
 
 - Web Setup and onboarding provide one provider-neutral prompt. The current
   coding agent selects `codex` or `claude-code` from its own host identity,
-  never from installed binaries.
-- `context enable` installs the user-scope Plugin and binds either an explicit
+  never from installed binaries. It runs the selected handoff unchanged; only
+  the CLI's provider-specific resolver classifies the project.
+- `context enable` installs the user-scope Plugin and binds the resolved
   canonical project path or the provider's single pathless project to the
   handoff-selected Team. A path project may be an ordinary directory containing
-  zero, one, or many source repositories.
+  zero, one, or many source repositories. Explicit selector flags remain
+  available for deterministic internal/recovery calls, not model-side
+  classification.
 - `config/context.yaml` schema v2 stores only
   `provider + project(path|pathless) → organizationId`. It never stores source
   repository identity or a Context Tree remote/local snapshot path.
@@ -212,7 +215,8 @@ can roll forward safely. Its `repositoryKey` is syntax-checked for wire
 compatibility but is not queried or used for authorization, and the response
 retains schema version 1. New Clients send only v2.
 
-Remove v1 only after telemetry shows no supported released Client using it for
-one complete support window and the minimum supported First Tree release has
-moved past the last v1 sender. The local `context.yaml` v1 migration remains a
-one-way, backup-preserving file migration; it is not a second runtime model.
+Track removal in an explicit follow-up and remove v1 only after both conditions
+hold: two consecutive public releases have shipped with v2 callers, and
+telemetry shows v1 compatibility traffic has reached zero. The local
+`context.yaml` v1 migration remains a one-way, backup-preserving file
+migration; it is not a second runtime model.

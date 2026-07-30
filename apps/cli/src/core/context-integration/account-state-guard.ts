@@ -1,7 +1,8 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { contextIntegrationProviderSchema } from "@first-tree/shared";
 import { defaultHome, readConfigFile } from "@first-tree/shared/config";
-import { channelConfig } from "../channel.js";
+import { contextRepairCommand } from "./repair-guidance.js";
 
 const heldAccountLocks = new Set<string>();
 
@@ -35,14 +36,18 @@ export function assertContextMutationCanStart(home = defaultHome()): void {
 }
 
 export function assertClientSwitchCanStart(home = defaultHome()): void {
-  const blockers = [
-    join(home, "state", "context", "install.lock"),
-    join(home, "state", "context", "install-journal.json"),
-    join(home, "state", "context", "operation-journal.json"),
-  ];
-  if (blockers.some((path) => existsSync(path))) {
+  const installJournal = join(home, "state", "context", "install-journal.json");
+  const operationJournal = join(home, "state", "context", "operation-journal.json");
+  for (const journal of [operationJournal, installJournal]) {
+    if (!existsSync(journal)) continue;
+    const provider = readBlockingJournalProvider(journal);
     throw new Error(
-      `A First Tree Context Plugin/binding operation is active or incomplete. Run \`${channelConfig.binName} context repair --provider <claude-code|codex>\` for the affected provider before switching accounts.`,
+      `A First Tree Context Plugin/binding operation is incomplete. Run \`${contextRepairCommand(provider)}\` before switching accounts.`,
+    );
+  }
+  if (existsSync(join(home, "state", "context", "install.lock"))) {
+    throw new Error(
+      "A First Tree Context Plugin/binding operation is still active. Wait for it to finish before switching accounts.",
     );
   }
 }
@@ -95,4 +100,17 @@ function removeStalePidLock(path: string): void {
 
 function isMissing(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT";
+}
+
+function readBlockingJournalProvider(path: string) {
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof value !== "object" || value === null || !("provider" in value)) throw new Error("missing provider");
+    return contextIntegrationProviderSchema.parse(Reflect.get(value, "provider"));
+  } catch (error) {
+    throw new Error(
+      `The incomplete Context operation journal at ${path} is unreadable or invalid. Preserve the file and repair the journal before switching accounts.`,
+      { cause: error },
+    );
+  }
 }

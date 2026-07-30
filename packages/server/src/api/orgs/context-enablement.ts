@@ -30,7 +30,7 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
         "--yes",
       ].join(" "),
       workingDirectoryInstruction:
-        "Run this once with either an explicit attached project root or explicit pathless project selector.",
+        "Run this once unchanged. The First Tree CLI resolves the current provider project as a canonical path, pathless session, or unknown state.",
     });
   });
 }

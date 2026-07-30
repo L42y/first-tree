@@ -15,3 +15,10 @@ export function contextRepairAdditionalContext(provider: ContextIntegrationProvi
     `After repair, run \`${channelConfig.binName} context status --provider ${provider}\`; manually activate First Tree Context if the current session still needs it.`,
   ].join("\n");
 }
+
+export function contextRepairUnavailableMessage(
+  provider: ContextIntegrationProvider,
+  issues: readonly string[],
+): string {
+  return [issues.join(" "), contextRepairAdditionalContext(provider)].filter(Boolean).join("\n");
+}

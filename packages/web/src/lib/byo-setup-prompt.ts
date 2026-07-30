@@ -65,7 +65,7 @@ export function buildByoSetupPrompt({
       ...(index === handoffs.length - 1 ? [] : [""]),
     ]),
     "",
-    "Determine whether this session has an attached local project. For an attached project, append `--project-root '<canonical-project-root>'`; the project may be an ordinary directory containing zero, one, or many Git repositories. For a session without an attached project, append `--pathless`. Never infer pathless merely because the current directory is not a Git repository.",
+    "Run the selected handoff command exactly as written. Do not append a project selector: the First Tree CLI resolves this provider's attached or pathless project through its provider-specific resolver.",
   ];
   const completion =
     intent === "onboarding"

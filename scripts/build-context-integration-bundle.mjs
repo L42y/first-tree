@@ -105,9 +105,9 @@ function projectExternalSkill(name, sourceContent, provider) {
     "  Context Tree readiness validation, then delegates to the generic Tree",
     "  operation. Missing binding, Server failure, or denied activation",
     "  stops before Tree content or mutation authority is returned.",
-    "- Capture whether the current provider project is attached or pathless before entering",
-    "  a Tree snapshot/worktree. Pass that same project selector to every hidden route.",
-    "  A Tree snapshot or authoring worktree is never the activation project.",
+    "- Let the first hidden `context read` call resolve the provider project. Preserve its",
+    "  returned `activationProject` receipt and pass that exact path/pathless identity to",
+    "  every later hidden route. Never reclassify from a Tree snapshot or authoring worktree.",
     "- Re-run `context write` immediately before every push and PR/MR creation; a",
     "  SessionStart Connected envelope is not mutation authority.",
     "",
@@ -166,11 +166,9 @@ explicit Team in the BYO path.
       `first-tree tree read --help
 byo_read_root="$(mktemp -d)"
 first-tree --json tree read --team "<team-id>" --snapshot "$byo_read_root/context-tree"`,
-      `first_tree_project_root="<attached-project-root>"
-first-tree context read ${providerOption} --help
+      `__FIRST_TREE_SKILL_INVOCATION__ context read ${providerOption} --help
 byo_read_root="$(mktemp -d)"
-# For a pathless session replace --project-root with --pathless and omit its value.
-first-tree --json context read ${providerOption} --project-root "$first_tree_project_root" \\
+__FIRST_TREE_SKILL_INVOCATION__ --json context read ${providerOption} \\
   --snapshot "$byo_read_root/context-tree"`,
       `${name} command`,
     );
@@ -274,7 +272,7 @@ source-backed write.`,
       content,
       `first-tree --json tree write --team "<team-id>" \\
   --snapshot "<exact-snapshot>" --github-login "<gh-login>"`,
-      `first-tree --json context write ${providerOption} <project-selector> \\
+      `__FIRST_TREE_SKILL_INVOCATION__ --json context write ${providerOption} <activation-project-selector-from-read> \\
   --snapshot "<exact-snapshot>" --github-login "<gh-login>"`,
       `${name} GitHub command`,
     );
@@ -282,7 +280,7 @@ source-backed write.`,
       content,
       `first-tree --json tree write --team "<team-id>" \\
   --snapshot "<exact-snapshot>"`,
-      `first-tree --json context write ${providerOption} <project-selector> \\
+      `__FIRST_TREE_SKILL_INVOCATION__ --json context write ${providerOption} <activation-project-selector-from-read> \\
   --snapshot "<exact-snapshot>"`,
       `${name} GitLab command`,
     );
@@ -320,7 +318,10 @@ source-backed write.`,
       throw new Error(`External ${provider} ${name} still exposes a forbidden generic activation path: ${pattern}`);
     }
   }
-  return content;
+  return content.replace(
+    /\bfirst-tree(?=\s+(?:chat|context|github|gitlab|tree)\b)/gu,
+    "__FIRST_TREE_SKILL_INVOCATION__",
+  );
 }
 
 function copyExternalSkills(pluginRoot, provider) {
@@ -355,19 +356,20 @@ description: Manually activate First Tree Team Context for the current ${provide
 
 # Activate First Tree Context
 
-1. Determine whether this provider session has an attached local project. Never infer or accept a Team id.
-2. For an attached project, use \`--project-root "<provider-project-root>"\`. For a pathless session, use \`--pathless\`. Never use pathless as fallback for an attached project.
-3. Create a task-owned temporary directory and run:
+1. Never infer or accept a Team id, and do not classify the project yourself. The CLI owns provider-specific attached/pathless resolution.
+2. Create a task-owned temporary directory and run the read command without \`--project-root\` or \`--pathless\`:
 
 \`\`\`sh
 first_tree_read_root="$(mktemp -d)"
-first-tree --json context read --provider ${provider} <project-selector> \\
+__FIRST_TREE_SKILL_INVOCATION__ --json context read --provider ${provider} \\
   --snapshot "$first_tree_read_root/context-tree"
 \`\`\`
 
-4. Treat a failed binding or live-authority check as unavailable; ordinary coding may continue. Do not ask for a Team id and do not search another binding.
-5. Before interpreting Tree content, read \`../first-tree-read/references/context-tree-policy.md\` completely and apply it to file selection and authority. Fail closed if that canonical Policy is unavailable.
-6. Read the relevant files only from the returned exact detached \`snapshotPath\`. Keep that snapshot for any write preflight in this task, and use the sibling \`first-tree-read\` / \`first-tree-write\` workflows for subsequent Context operations.
+3. Adopt the returned \`activationContext\` block verbatim as standing instructions for this session. It is produced by the same connected-context builder as SessionStart and \`context enable\`; do not summarize or reconstruct it.
+4. Preserve the returned \`activationProject\` receipt. For every later \`context write\` in this task, pass exactly \`--project-root "<root>"\` when its project kind is \`path\`, or \`--pathless\` when its kind is \`pathless\`. Never derive a replacement selector from a changed cwd, the Context Tree snapshot, or an authoring worktree.
+5. Treat a failed binding or live-authority check as unavailable; ordinary coding may continue. Do not ask for a Team id and do not search another binding.
+6. Before interpreting Tree content, read \`../first-tree-read/references/context-tree-policy.md\` completely and apply it to file selection and authority. Fail closed if that canonical Policy is unavailable.
+7. Read the relevant files only from the returned exact detached \`snapshotPath\`. Keep that snapshot and its \`activationProject\` receipt for any write preflight in this task, and use the sibling \`first-tree-read\` / \`first-tree-write\` workflows for subsequent Context operations.
 `,
   );
 }

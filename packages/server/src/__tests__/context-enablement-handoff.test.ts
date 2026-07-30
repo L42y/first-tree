@@ -23,6 +23,8 @@ describe("Context enablement handoff", () => {
     expect(response.json().command).toBe(
       `'first-tree-staging' context enable --provider 'codex' --team '${admin.organizationId}' --yes`,
     );
+    expect(response.json().workingDirectoryInstruction).toContain("CLI resolves the current provider project");
+    expect(response.json().workingDirectoryInstruction).not.toContain("explicit attached project root");
     expect(response.body).not.toContain("--no-start");
   });
 

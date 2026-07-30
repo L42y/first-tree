@@ -4,7 +4,7 @@ import {
   requireConnectedExternalContext,
 } from "../../core/context-integration/activation.js";
 import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
-import { contextRepairCommand } from "../../core/context-integration/repair-guidance.js";
+import { contextRepairUnavailableMessage } from "../../core/context-integration/repair-guidance.js";
 import { inspectContextIntegrationRuntime } from "../../core/context-integration/runtime-health.js";
 import { ContextTreeWritePreflightCliError, preflightContextTreeWrite } from "../../core/context-tree-write.js";
 import { isJsonMode, print } from "../../core/output.js";
@@ -34,11 +34,7 @@ export async function runContextWrite(context: CommandContext): Promise<void> {
   const provider = parseContextProvider(options.provider ?? "");
   const health = inspectContextIntegrationRuntime(createContextIntegrationDriver(provider));
   if (!health.healthy) {
-    print.fail(
-      "context_plugin_repair_required",
-      `${health.issues.join(" ")} Run \`${contextRepairCommand(provider)}\`.`,
-      1,
-    );
+    print.fail("context_plugin_repair_required", contextRepairUnavailableMessage(provider, health.issues), 1);
   }
   const sdk = createMemberSdk();
   try {

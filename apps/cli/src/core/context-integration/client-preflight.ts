@@ -98,6 +98,7 @@ export function resolveProviderProject(
   provider: ContextIntegrationProvider,
   input: Pick<ContextSessionHookInput, "cwd">,
   env: NodeJS.ProcessEnv = process.env,
+  classifierOptions: { platform?: NodeJS.Platform; home?: string } = {},
 ): ContextProjectResolution {
   if (provider === "claude-code") {
     const projectRoot = env.CLAUDE_PROJECT_DIR;
@@ -117,9 +118,11 @@ export function resolveProviderProject(
       message: "Codex did not provide a working directory for project classification.",
     };
   }
-  const pathless = classifyCodexProjectlessPath(input.cwd, env);
+  const canonical = resolvePathProject(input.cwd, "codex_cwd_best_effort");
+  if (canonical.kind !== "path") return canonical;
+  const pathless = classifyCodexProjectlessPath(canonical.project.root, env, classifierOptions);
   if (pathless) return { kind: "pathless", project: { kind: "pathless" }, source: "codex_documents_v1" };
-  return resolvePathProject(input.cwd, "codex_cwd_best_effort");
+  return canonical;
 }
 
 export function classifyCodexProjectlessPath(

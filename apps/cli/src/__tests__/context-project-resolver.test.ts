@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,11 @@ import {
   resolveProviderProject,
   resolveSessionContextProject,
 } from "../core/context-integration/client-preflight.js";
+import {
+  type ContextBindingStorePaths,
+  readContextIntegrationConfig,
+  writeContextBinding,
+} from "../core/context-integration/context-binding-store.js";
 
 describe("Context project resolver", () => {
   it.each([
@@ -61,6 +66,67 @@ describe("Context project resolver", () => {
         platform: "win32",
       }),
     ).toBe(false);
+  });
+
+  it("persists a Codex scratch setup as pathless through the shared resolver result", () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-scratch-binding-"));
+    const scratch = join(root, "home", "Documents", "Codex", "2026-07-30", "d");
+    mkdirSync(scratch, { recursive: true });
+    const paths: ContextBindingStorePaths = {
+      configPath: join(root, "config", "context.yaml"),
+      lockPath: join(root, "state", "context", "install.lock"),
+    };
+    const resolution = resolveProviderProject(
+      "codex",
+      { cwd: scratch },
+      {},
+      { platform: process.platform, home: join(root, "home") },
+    );
+    expect(resolution).toMatchObject({
+      kind: "pathless",
+      project: { kind: "pathless" },
+      source: "codex_documents_v1",
+    });
+    if (resolution.kind !== "pathless") throw new Error("expected pathless project");
+
+    writeContextBinding(
+      {
+        provider: "codex",
+        project: resolution.project,
+        organizationId: "org_acme",
+      },
+      { paths },
+    );
+    expect(readContextIntegrationConfig(paths).bindings).toEqual([
+      {
+        provider: "codex",
+        project: { kind: "pathless" },
+        organizationId: "org_acme",
+      },
+    ]);
+  });
+
+  it("canonicalizes Codex cwd before scratch classification", () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-project-symlink-"));
+    const home = join(root, "home");
+    const scratch = join(home, "Documents", "Codex", "2026-07-30", "scratch");
+    const ordinary = join(root, "ordinary");
+    const externalLink = join(root, "scratch-link");
+    const scratchLink = join(scratch, "ordinary-link");
+    mkdirSync(scratch, { recursive: true });
+    mkdirSync(ordinary);
+    symlinkSync(scratch, externalLink);
+    symlinkSync(ordinary, scratchLink);
+
+    expect(
+      resolveProviderProject("codex", { cwd: externalLink }, {}, { platform: process.platform, home }),
+    ).toMatchObject({ kind: "pathless", source: "codex_documents_v1" });
+    expect(
+      resolveProviderProject("codex", { cwd: scratchLink }, {}, { platform: process.platform, home }),
+    ).toMatchObject({ kind: "path", project: { root: ordinary } });
+    expect(
+      resolveProviderProject("codex", { cwd: join(root, "missing") }, {}, { platform: process.platform, home }),
+    ).toMatchObject({ kind: "unknown", source: "path_unreadable" });
   });
 
   it("uses CLAUDE_PROJECT_DIR instead of mutable hook cwd", () => {

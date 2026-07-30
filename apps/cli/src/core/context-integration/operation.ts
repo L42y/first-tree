@@ -6,7 +6,11 @@ import type {
   ContextIntegrationConfig,
   ContextIntegrationInstallManifest,
 } from "@first-tree/shared";
-import { contextIntegrationConfigSchema, contextIntegrationInstallManifestSchema } from "@first-tree/shared";
+import {
+  contextIntegrationConfigSchema,
+  contextIntegrationInstallManifestSchema,
+  legacyContextIntegrationConfigSchema,
+} from "@first-tree/shared";
 import { defaultHome } from "@first-tree/shared/config";
 import { channelConfig } from "../channel.js";
 import { readActiveContextAccountClientId } from "./account-state-guard.js";
@@ -384,10 +388,7 @@ function readOperationJournal(): OperationJournal | null {
     ) {
       throw new Error("invalid operation journal");
     }
-    const previousBindings = contextIntegrationConfigSchema.parse({
-      schemaVersion: 2,
-      bindings: parsed.previousBindings,
-    }).bindings;
+    const previousBindings = parseOperationJournalBindings(parsed.previousBindings);
     const previousInstallManifest =
       parsed.previousInstallManifest === null
         ? null
@@ -407,6 +408,23 @@ function readOperationJournal(): OperationJournal | null {
     if (isMissing(error)) return null;
     throw new Error(`Invalid First Tree Context operation journal at ${operationJournalPath()}.`, { cause: error });
   }
+}
+
+function parseOperationJournalBindings(value: unknown): ContextIntegrationBinding[] {
+  const current = contextIntegrationConfigSchema.safeParse({
+    schemaVersion: 2,
+    bindings: value,
+  });
+  if (current.success) return current.data.bindings;
+  const legacy = legacyContextIntegrationConfigSchema.parse({ schemaVersion: 1, bindings: value });
+  return contextIntegrationConfigSchema.parse({
+    schemaVersion: 2,
+    bindings: legacy.bindings.map((binding) => ({
+      provider: binding.provider,
+      project: { kind: "path", root: binding.checkoutRoot },
+      organizationId: binding.organizationId,
+    })),
+  }).bindings;
 }
 
 function assertNoIncompleteOperation(): void {

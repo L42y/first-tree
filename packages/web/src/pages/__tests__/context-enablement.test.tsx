@@ -265,8 +265,9 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("If you are Codex:");
     expect(copiedPrompt).toContain("--provider 'codex' --team 'org-1'");
     expect(copiedPrompt).toContain("do not run both commands");
-    expect(copiedPrompt).toContain("--project-root '<canonical-project-root>'");
-    expect(copiedPrompt).toContain("--pathless");
+    expect(copiedPrompt).toContain("Do not append a project selector");
+    expect(copiedPrompt).not.toContain("--project-root '<canonical-project-root>'");
+    expect(copiedPrompt).not.toContain("Determine whether this session has an attached local project");
     expect(copiedPrompt).toContain("Do not mark onboarding complete.");
     expect(host.textContent).toContain("Setup prompt copied.");
     expect(host.textContent).not.toContain("Copied — paste it into");
@@ -328,6 +329,8 @@ describe("personal Context access", () => {
     expect(prompt).toContain("bootstrap-command");
     expect(prompt).toContain("claude-command");
     expect(prompt).toContain("claude-command");
+    expect(prompt).toContain("Do not append a project selector");
+    expect(prompt).not.toContain("Determine whether this session has an attached local project");
     expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
     expect(prompt).not.toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");

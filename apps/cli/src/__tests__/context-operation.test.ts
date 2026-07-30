@@ -389,6 +389,54 @@ describe("Context integration cross-resource operation", () => {
     expect(existsSync(recoveryRoot)).toBe(false);
   });
 
+  it("migrates legacy v1 bindings while recovering an old release journal", () => {
+    const home = setupHome("first-tree-context-operation-v1-recovery-");
+    const provider = driver(false);
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
+    mkdirSync(recoveryRoot, { recursive: true });
+    mkdirSync(join(home, "state", "context"), { recursive: true });
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "binding_changed",
+        previousBindings: [
+          {
+            provider: "codex",
+            checkoutRoot: "/work/legacy-project",
+            repositoryKey: "github.com/acme/legacy",
+            organizationId: "org_acme",
+          },
+        ],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-28T00:00:00.000Z",
+      })}\n`,
+    );
+
+    expect(recoverContextIntegrationOperation(provider.value)).toBe(true);
+    expect(readContextIntegrationConfig()).toEqual({
+      schemaVersion: 2,
+      bindings: [
+        {
+          provider: "codex",
+          project: { kind: "path", root: "/work/legacy-project" },
+          organizationId: "org_acme",
+        },
+      ],
+    });
+    expect(provider.uninstall).toHaveBeenCalled();
+    expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
+  });
+
   it("keeps a durable recovery snapshot when retrying the old provider install fails", () => {
     const home = setupHome("first-tree-context-operation-retry-");
     const provider = driver(false);

@@ -69,11 +69,13 @@ type SwitchMoveGroup = "park" | "restore";
 type SwitchMoveKind =
   | "park-client-yaml"
   | "park-context-yaml"
+  | "park-context-v1-backup"
   | "park-agents"
   | "park-sessions"
   | "park-workspaces"
   | "restore-client-yaml"
   | "restore-context-yaml"
+  | "restore-context-v1-backup"
   | "restore-agents"
   | "restore-sessions"
   | "restore-workspaces";
@@ -997,6 +999,13 @@ function buildSwitchMoves(opts: {
       join(fromParkedRoot, "config", "context.yaml"),
       false,
     ),
+    move(
+      "park-context-v1-backup",
+      "park",
+      join(opts.configDir, "context.yaml.v1.bak"),
+      join(fromParkedRoot, "config", "context.yaml.v1.bak"),
+      false,
+    ),
     move("park-sessions", "park", join(opts.dataDir, "sessions"), join(fromParkedRoot, "data", "sessions"), false),
     move(
       "park-workspaces",
@@ -1035,6 +1044,13 @@ function buildSwitchMoves(opts: {
       "restore",
       join(toParkedRoot, "config", "context.yaml"),
       join(opts.configDir, "context.yaml"),
+      false,
+    ),
+    move(
+      "restore-context-v1-backup",
+      "restore",
+      join(toParkedRoot, "config", "context.yaml.v1.bak"),
+      join(opts.configDir, "context.yaml.v1.bak"),
       false,
     ),
     move("restore-sessions", "restore", join(toParkedRoot, "data", "sessions"), join(opts.dataDir, "sessions"), false),

@@ -132,6 +132,7 @@ describe("client switch transaction recovery", () => {
     writeClientYaml("client_aabbccdd", "https://old.example");
     mkdirSync(join(home, "config", "agents", "old-agent"), { recursive: true });
     writeFileSync(join(home, "config", "context.yaml"), "schemaVersion: 1\nbindings: []\n");
+    writeFileSync(join(home, "config", "context.yaml.v1.bak"), "old-account-backup\n");
     mkdirSync(join(home, "data", "sessions", "old-session"), { recursive: true });
 
     const config = await switchLocalClientForLogin({
@@ -154,6 +155,10 @@ describe("client switch transaction recovery", () => {
     expect(existsSync(join(home, "parked-clients", "client_aabbccdd", "config", "client.yaml"))).toBe(true);
     expect(existsSync(join(home, "parked-clients", "client_aabbccdd", "config", "agents", "old-agent"))).toBe(true);
     expect(existsSync(join(home, "parked-clients", "client_aabbccdd", "config", "context.yaml"))).toBe(true);
+    expect(readFileSync(join(home, "parked-clients", "client_aabbccdd", "config", "context.yaml.v1.bak"), "utf8")).toBe(
+      "old-account-backup\n",
+    );
+    expect(existsSync(join(home, "config", "context.yaml.v1.bak"))).toBe(false);
     expect(readFileSync(join(home, "config", "credentials.json"), "utf8")).toContain("new-refresh");
     expect(existsSync(clientSwitchJournalPath(home))).toBe(false);
     expect(existsSync(clientSwitchLockPath(home))).toBe(false);
@@ -170,10 +175,12 @@ describe("client switch transaction recovery", () => {
   it("restores a remembered parked client during login switching", async () => {
     const { switchLocalClientForLogin } = await import("../core/client-switch.js");
     writeClientYaml("client_aabbccdd", "https://old.example");
+    writeFileSync(join(home, "config", "context.yaml.v1.bak"), "old-account-backup\n");
     const parkedTarget = join(home, "parked-clients", "client_11223344");
     writeClientYaml("client_11223344", "https://new.example", join(parkedTarget, "config"));
     mkdirSync(join(parkedTarget, "config", "agents", "target-agent"), { recursive: true });
     writeFileSync(join(parkedTarget, "config", "context.yaml"), "schemaVersion: 1\nbindings: []\n");
+    writeFileSync(join(parkedTarget, "config", "context.yaml.v1.bak"), "target-account-backup\n");
     mkdirSync(join(parkedTarget, "data", "sessions", "target-session"), { recursive: true });
     writeJson(join(home, "parked-clients", "index.json"), {
       version: 1,
@@ -211,6 +218,10 @@ describe("client switch transaction recovery", () => {
     expect(config.client.id).toBe("client_11223344");
     expect(existsSync(join(home, "config", "agents", "target-agent"))).toBe(true);
     expect(readFileSync(join(home, "config", "context.yaml"), "utf8")).toContain("schemaVersion: 1");
+    expect(readFileSync(join(home, "config", "context.yaml.v1.bak"), "utf8")).toBe("target-account-backup\n");
+    expect(readFileSync(join(home, "parked-clients", "client_aabbccdd", "config", "context.yaml.v1.bak"), "utf8")).toBe(
+      "old-account-backup\n",
+    );
     expect(existsSync(join(home, "data", "sessions", "target-session"))).toBe(true);
     const index = readJson(join(home, "parked-clients", "index.json")) as {
       activeClientId: string;
@@ -226,6 +237,7 @@ describe("client switch transaction recovery", () => {
     );
     const parkedTarget = join(home, "parked-clients", "client_11223344");
     writeClientYaml("client_11223344", "https://new.example", join(parkedTarget, "config"));
+    writeFileSync(join(parkedTarget, "config", "context.yaml.v1.bak"), "pending-target-backup\n");
     mkdirSync(join(home, "state"), { recursive: true });
     writeJson(clientSwitchLockPath(home), { pid: process.pid });
     writeJson(clientSwitchJournalPath(home), {
@@ -259,6 +271,14 @@ describe("client switch transaction recovery", () => {
           required: false,
           state: "pending",
         },
+        {
+          kind: "restore-context-v1-backup",
+          group: "restore",
+          source: join(parkedTarget, "config", "context.yaml.v1.bak"),
+          target: join(home, "config", "context.yaml.v1.bak"),
+          required: false,
+          state: "pending",
+        },
       ],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -278,6 +298,7 @@ describe("client switch transaction recovery", () => {
     };
     expect(index.activeClientId).toBe("client_11223344");
     expect(index.clients.client_aabbccdd?.storage).toBe("parked");
+    expect(readFileSync(join(home, "config", "context.yaml.v1.bak"), "utf8")).toBe("pending-target-backup\n");
   });
 
   it("fails before switching when the existing owner or active client id is unknown", async () => {

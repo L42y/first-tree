@@ -16,7 +16,10 @@ import type {
   ContextIntegrationProviderDriver,
   ProviderPluginProbe,
 } from "../core/context-integration/provider-driver.js";
-import { contextRepairAdditionalContext } from "../core/context-integration/repair-guidance.js";
+import {
+  contextRepairAdditionalContext,
+  contextRepairUnavailableMessage,
+} from "../core/context-integration/repair-guidance.js";
 import { inspectContextIntegrationStatus } from "../core/context-integration/status.js";
 
 function pluginProbe(overrides: Partial<ProviderPluginProbe> = {}): ProviderPluginProbe {
@@ -217,5 +220,9 @@ describe("Context enable setup verdict", () => {
     expect(guidance).toContain("Only if the user explicitly asks");
     expect(guidance).toContain("first-tree-dev context repair --provider codex");
     expect(guidance).toContain("first-tree-dev context status --provider codex");
+    const manualRouteFailure = contextRepairUnavailableMessage("codex", ["Plugin payload is stale."]);
+    expect(manualRouteFailure).toContain("Ordinary provider work can continue");
+    expect(manualRouteFailure).toContain("Do not repair, upgrade, or synchronize the Plugin automatically.");
+    expect(manualRouteFailure).toContain("Only if the user explicitly asks");
   });
 });

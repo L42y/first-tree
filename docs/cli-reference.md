@@ -1153,15 +1153,17 @@ memberships.
 
 ```text
 first-tree context
-├── enable --provider claude-code|codex --team ID (--project-root DIR|--pathless) [--yes]
+├── enable --provider claude-code|codex --team ID [--project-root DIR|--pathless] [--yes]
 ├── status --provider claude-code|codex [--project-root DIR|--pathless]
 ├── repair --provider claude-code|codex
 └── disable --provider claude-code|codex [--project-root DIR|--pathless] [--yes]
 ```
 
 Give the provider-neutral Web Setup prompt to the current coding agent. The
-agent selects its own provider and an attached `--project-root` or explicit
-`--pathless` project, then runs the exact Team-authored command. Enable installs the provider Plugin
+agent selects only its own provider and runs the exact Team-authored command
+unchanged. The CLI's centralized provider resolver classifies the attached or
+pathless project; the prompt does not ask the model to append selector flags.
+Enable installs the provider Plugin
 through the provider's official user-scope lifecycle, and records only the
 provider + project → Team binding in
 `$FIRST_TREE_HOME/config/context.yaml`. It does not create a First Tree Agent,
@@ -1221,7 +1223,10 @@ The external Plugin also uses hidden `context read` and `context write`
 bridges. They do not accept `--team`: each derives Team from the exact current
 provider + project binding, repeats live membership and Context Tree readiness
 validation, and only then delegates to the ordinary `tree read` or
-`tree write` implementation. Status and these explicit routes use five-second
+`tree write` implementation. The first hidden Read resolves the provider
+project and returns an additive `activationProject` receipt; later Write calls
+reuse that exact path/pathless identity instead of reclassifying a changed
+working directory. Status and these explicit routes use five-second
 authority attempts covering token refresh plus validation, and retry the same
 exact Team once only after a timeout, network failure, or HTTP 5xx
 response. Authentication, authorization, binding, scope, and typed disabled
