@@ -1,4 +1,4 @@
-import { imageAttachmentRefsFromMetadata } from "@first-tree/shared";
+import { imageAttachmentRefsFromMetadata, type RequestResolution } from "@first-tree/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -59,12 +59,12 @@ export function MobileAskSheet({ chatId, onClose }: { chatId: string; onClose: (
     [agentId, detailQuery.data?.participants],
   );
 
-  const submit = async (answer: AskAnswer): Promise<void> => {
+  const submit = async (answer: AskAnswer, resolutionKind: RequestResolution["kind"] = "answered"): Promise<void> => {
     if (!request || sending) return;
     setError(null);
     setSending(true);
     try {
-      await sendAskAnswer({ chatId, request, answer });
+      await sendAskAnswer({ chatId, request, answer, resolutionKind });
       await commitMobileAskResolution(queryClient, chatId, request.id);
       addToast({ title: "Answer sent" });
       onClose();
@@ -96,7 +96,7 @@ export function MobileAskSheet({ chatId, onClose }: { chatId: string; onClose: (
             void submit(answer);
           }}
           onSkip={() => {
-            void submit({ content: "(Skipped — no answer provided.)", mentions: [], images: [] });
+            void submit({ content: "(Skipped — no answer provided.)", mentions: [], images: [] }, "closed");
           }}
         />
       </div>

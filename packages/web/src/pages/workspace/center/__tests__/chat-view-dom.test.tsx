@@ -2955,7 +2955,7 @@ describe("ChatView", () => {
     );
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "(Skipped — no answer provided.)", ["agent-1"], {
       inReplyTo: "req-skip",
-      resolves: { request: "req-skip", kind: "answered" },
+      resolves: { request: "req-skip", kind: "closed" },
     });
 
     await act(async () => root.unmount());

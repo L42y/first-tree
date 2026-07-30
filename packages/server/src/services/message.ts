@@ -492,22 +492,40 @@ export function preflightMessageSendIntent(input: {
 
   const incomingMeta = stripUntrustedMetadataKeys(rawIncomingMeta, options);
   validateDocumentContext(incomingMeta);
-  if (incomingMeta.resolves !== undefined && !requestResolutionSchema.safeParse(incomingMeta.resolves).success) {
+  const parsedResolution = requestResolutionSchema.safeParse(incomingMeta.resolves);
+  if (incomingMeta.resolves !== undefined && !parsedResolution.success) {
     throw new BadRequestError(
       'Malformed "metadata.resolves": expected {request: <messageId>, kind: "answered"|"closed", reason?}.',
     );
   }
+  // Skip is a lifecycle close, not an ordinary message. The web still declares
+  // the original asker so an active agent is notified and can continue. If that
+  // asker is no longer a live participant, preflight may drop only that stale
+  // route and let the durable close reach the transaction-level request/chat/
+  // target-human authorization below. Answers and every other send keep the
+  // normal fail-closed recipient contract.
+  const isHumanClosedResolution =
+    senderType === "human" && parsedResolution.success && parsedResolution.data.kind === "closed";
 
   const explicitMentionsRaw = incomingMeta.mentions;
   const explicitMentionsRawList = Array.isArray(explicitMentionsRaw)
     ? explicitMentionsRaw.filter((m): m is string => typeof m === "string")
     : [];
   const participantsById = new Map(participants.map((p) => [p.agentId, p]));
+  let droppedClosedResolutionMention = false;
+  const dropInactiveMentionTargets = options.dropInactiveMentionTargets || isHumanClosedResolution;
   const explicitMentions = explicitMentionsRawList.filter((id) => {
     if (id === senderId) return true;
     const participant = participantsById.get(id);
-    if (!participant) return false;
-    return !options.dropInactiveMentionTargets || participant.status === "active";
+    if (!participant) {
+      if (isHumanClosedResolution) droppedClosedResolutionMention = true;
+      return false;
+    }
+    if (dropInactiveMentionTargets && participant.status !== "active") {
+      if (isHumanClosedResolution) droppedClosedResolutionMention = true;
+      return false;
+    }
+    return true;
   });
 
   const receiverNames = data.receiverNames ?? [];
@@ -588,7 +606,7 @@ export function preflightMessageSendIntent(input: {
     : [];
   const metadataToStore: Record<string, unknown> = {
     ...incomingMeta,
-    ...(options.dropInactiveMentionTargets
+    ...(dropInactiveMentionTargets
       ? { mentions: mergedMentions }
       : mergedMentions.length > 0
         ? { mentions: mergedMentions }
@@ -617,7 +635,10 @@ export function preflightMessageSendIntent(input: {
   // (Resolution stays human-only — enforced by the resolution authorization
   // below, independent of who may send.)
 
-  const skipRecipientEnforcement = purposeProfile.skipMentionEnforcement || options.allowRecipientlessSend === true;
+  const skipRecipientEnforcement =
+    purposeProfile.skipMentionEnforcement ||
+    options.allowRecipientlessSend === true ||
+    (isHumanClosedResolution && droppedClosedResolutionMention);
   if (!skipRecipientEnforcement) {
     const hasActiveAddressed = (options.addressedToAgentIds ?? []).some(
       (id) => id !== senderId && participantsById.get(id)?.status === "active",
@@ -715,6 +736,9 @@ export async function sendMessage(
  * shapes:
  *   - `data.purpose === "agent-final-text"` — silent history-only write
  *   - `options.allowRecipientlessSend === true` — trusted system opt-out
+ *   - a target human's `kind="closed"` request resolution after preflight
+ *     drops its declared asker because that agent is inactive or missing;
+ *     transaction-level request/chat/target authorization still applies
  *
  * The server never parses `@<name>` tokens out of content. Clients that
  * surface IM-style `@-mention` UX (web composer, future mobile) must
@@ -1030,6 +1054,25 @@ async function sendMessageInner(
       // authoritative gate for the resolution itself.
       if (senderId !== target) {
         throw new ForbiddenError("Only the question's target may resolve it — the human answers in the web UI.");
+      }
+      // A Skip still routes to and wakes a live asker. Recipientless close is
+      // only the degraded lifecycle path for an asker that preflight found
+      // suspended, deleted, or missing. This check prevents a caller from
+      // smuggling an unrelated stale mention through preflight to suppress
+      // routing to an otherwise-active asker.
+      const activeAsker = participants.find(
+        (participant) => participant.agentId === parent.senderId && participant.status === "active",
+      );
+      if (resolution.data.kind === "closed") {
+        const declaredMentions = Array.isArray(data.metadata?.mentions)
+          ? data.metadata.mentions.filter((mention): mention is string => typeof mention === "string")
+          : [];
+        if (activeAsker && !mergedMentions.includes(activeAsker.agentId)) {
+          throw new BadRequestError("Closing a request from an active asker must route the resolution to that asker.");
+        }
+        if (!activeAsker && !declaredMentions.includes(parent.senderId)) {
+          throw new BadRequestError("Closing a request must declare the original asker before routing can degrade.");
+        }
       }
       // Idempotency: only the FIRST resolution decrements (exclude the row we
       // just inserted). A prior resolution is any other message in this chat

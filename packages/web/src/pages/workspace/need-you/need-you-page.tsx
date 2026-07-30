@@ -1,4 +1,9 @@
-import { imageAttachmentRefsFromMetadata, type Message, type NeedYouRequestItem } from "@first-tree/shared";
+import {
+  imageAttachmentRefsFromMetadata,
+  type Message,
+  type NeedYouRequestItem,
+  type RequestResolution,
+} from "@first-tree/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ExternalLink, History, LoaderCircle } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
@@ -105,7 +110,10 @@ export function NeedYouPage({
   }, [onClose, reviewLocked]);
   const { markdownComponents } = useGitlabEntityPresentation(organizationId);
 
-  const resolveRequest = async (answer: AskAnswer): Promise<void> => {
+  const resolveRequest = async (
+    answer: AskAnswer,
+    resolutionKind: RequestResolution["kind"] = "answered",
+  ): Promise<void> => {
     if (!item || sendingRequestId === item.request.id) return;
     const resolvingId = item.request.id;
     setSendError(null);
@@ -115,6 +123,7 @@ export function NeedYouPage({
         chatId: item.chat.id,
         request: item.request,
         answer,
+        resolutionKind,
       });
       clearAskTakeoverDraft(resolvingId);
       removeResolvedNeedYouRequest(queryClient, organizationId, resolvingId);
@@ -262,11 +271,14 @@ export function NeedYouPage({
               void resolveRequest(answer);
             }}
             onSkip={() => {
-              void resolveRequest({
-                content: "(Skipped — no answer provided.)",
-                mentions: [],
-                images: [],
-              });
+              void resolveRequest(
+                {
+                  content: "(Skipped — no answer provided.)",
+                  mentions: [],
+                  images: [],
+                },
+                "closed",
+              );
             }}
           />
         )}

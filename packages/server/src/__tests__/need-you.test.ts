@@ -1,5 +1,7 @@
 import { ASK_AGENT_METADATA_KEY, readAskAgentMessageMetadata } from "@first-tree/shared";
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { agents } from "../db/schema/agents.js";
 import { chats } from "../db/schema/chats.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
@@ -107,6 +109,107 @@ describe("Need you request queue and Ask agent protocol", () => {
       total: 1,
       items: [{ request: { id: request.id } }],
     });
+  });
+
+  it("closes a skipped request and notifies an active asker", async () => {
+    const input = await setup("skip-active");
+    const request = await ask(input, "Which rollout?");
+
+    const result = await sendMessage(input.app.db, input.chatId, input.owner.humanAgentUuid, {
+      source: "web",
+      format: "text",
+      content: "(Skipped — no answer provided.)",
+      metadata: {
+        mentions: [input.asker.uuid],
+        resolves: { request: request.id, kind: "closed" },
+      },
+      inReplyTo: request.id,
+    });
+
+    expect(result.message.metadata).toMatchObject({
+      mentions: [input.asker.uuid],
+      resolves: { request: request.id, kind: "closed" },
+    });
+    expect(result.recipients).toContain(input.asker.inboxId);
+    await expect(
+      listNeedYouRequests(input.app.db, input.owner.humanAgentUuid, input.owner.organizationId, { limit: 50 }),
+    ).resolves.toMatchObject({ total: 0, items: [] });
+  });
+
+  it.each([
+    "suspended",
+    "deleted",
+  ] as const)("lets the target human close a request after the asker becomes %s without weakening other sends", async (status) => {
+    const input = await setup(`skip-${status}`);
+    const request = await ask(input, "Which rollout?");
+    await input.app.db
+      .update(agents)
+      .set({ status, ...(status === "deleted" ? { name: null } : {}) })
+      .where(eq(agents.uuid, input.asker.uuid));
+
+    const expectInactiveRouteFailure = async (send: () => ReturnType<typeof sendMessage>): Promise<void> => {
+      await expect(send()).rejects.toThrow(/Cannot route .* because the agent is (suspended|deleted)/);
+    };
+
+    await expectInactiveRouteFailure(() =>
+      sendMessage(input.app.db, input.chatId, input.owner.humanAgentUuid, {
+        source: "web",
+        format: "text",
+        content: "Ordinary message",
+        metadata: { mentions: [input.asker.uuid] },
+      }),
+    );
+    await expectInactiveRouteFailure(() =>
+      sendMessage(input.app.db, input.chatId, input.owner.humanAgentUuid, {
+        source: "web",
+        format: "text",
+        content: "Ordinary answer",
+        metadata: {
+          mentions: [input.asker.uuid],
+          resolves: { request: request.id, kind: "answered" },
+        },
+        inReplyTo: request.id,
+      }),
+    );
+    await expectInactiveRouteFailure(() =>
+      sendMessage(
+        input.app.db,
+        input.chatId,
+        input.owner.humanAgentUuid,
+        {
+          source: "web",
+          format: "text",
+          content: "Can you clarify?",
+          metadata: { mentions: [input.asker.uuid] },
+          inReplyTo: request.id,
+        },
+        { askAgentRequestId: request.id },
+      ),
+    );
+
+    await expect(
+      listNeedYouRequests(input.app.db, input.owner.humanAgentUuid, input.owner.organizationId, { limit: 50 }),
+    ).resolves.toMatchObject({ total: 1, items: [{ request: { id: request.id } }] });
+
+    const result = await sendMessage(input.app.db, input.chatId, input.owner.humanAgentUuid, {
+      source: "web",
+      format: "text",
+      content: "(Skipped — no answer provided.)",
+      metadata: {
+        mentions: [input.asker.uuid],
+        resolves: { request: request.id, kind: "closed" },
+      },
+      inReplyTo: request.id,
+    });
+
+    expect(result.message.metadata).toMatchObject({
+      mentions: [],
+      resolves: { request: request.id, kind: "closed" },
+    });
+    expect(result.recipients).toEqual([]);
+    await expect(
+      listNeedYouRequests(input.app.db, input.owner.humanAgentUuid, input.owner.organizationId, { limit: 50 }),
+    ).resolves.toMatchObject({ total: 0, items: [] });
   });
 
   it("keeps Ask agent clarification and reply in a durable thread without resolving the request", async () => {

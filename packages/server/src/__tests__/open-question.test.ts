@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { agents } from "../db/schema/agents.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { messages } from "../db/schema/messages.js";
 import { BadRequestError } from "../errors.js";
@@ -432,6 +433,42 @@ describe("open-question (format=request) + open_request_count", () => {
       .from(messages)
       .where(and(eq(messages.chatId, chat.id), eq(messages.senderId, other.uuid)));
     expect(stray).toHaveLength(0);
+  });
+
+  it("still enforces target-human authorization after a stale asker route is dropped", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const asker = await createTestAgent(app, { name: `oq-stale-asker-${uid}` });
+    const { agent: target } = await createTestAgent(app, { name: `oq-stale-target-${uid}`, type: "human" });
+    const { agent: otherHuman } = await createTestAgent(app, {
+      name: `oq-stale-other-${uid}`,
+      type: "human",
+    });
+    const chat = await createChat(app.db, asker.agent.uuid, {
+      type: "group",
+      participantIds: [target.uuid, otherHuman.uuid],
+    });
+    const { message: question } = await sendMessage(app.db, chat.id, asker.agent.uuid, {
+      source: "api",
+      format: "request",
+      content: "Ship now?",
+      metadata: { mentions: [target.uuid] },
+    });
+    await app.db.update(agents).set({ status: "suspended" }).where(eq(agents.uuid, asker.agent.uuid));
+
+    await expect(
+      sendMessage(app.db, chat.id, otherHuman.uuid, {
+        source: "web",
+        format: "text",
+        content: "(Skipped — no answer provided.)",
+        metadata: {
+          mentions: [asker.agent.uuid],
+          resolves: { request: question.id, kind: "closed" },
+        },
+        inReplyTo: question.id,
+      }),
+    ).rejects.toThrow(/Only the question's target may resolve/i);
+    expect(await openReqCount(app, chat.id, target.uuid)).toBe(1);
   });
 
   it("a resolves pointed at a nonexistent message id is REJECTED and writes nothing", async () => {

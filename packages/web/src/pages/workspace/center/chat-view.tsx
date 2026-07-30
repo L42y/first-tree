@@ -2482,12 +2482,16 @@ export function ChatView({
   // the card nor drops the typed answer / staged images — the user just sees
   // the error and retries. On success `askBusy` stays true so the card is inert
   // during the refetch window (no double-submit) and clears when it unmounts.
-  const submitAskAnswer = async (request: { id: string; senderId: string }, answer: AskAnswer) => {
+  const submitAskAnswer = async (
+    request: { id: string; senderId: string },
+    answer: AskAnswer,
+    resolutionKind: RequestResolution["kind"] = "answered",
+  ) => {
     if (askBusy) return;
     setAskError(null);
     setAskBusy(true);
     try {
-      await sendAskAnswer({ chatId, request, answer });
+      await sendAskAnswer({ chatId, request, answer, resolutionKind });
       clearAskTakeoverDraft(request.id);
       queryClient.invalidateQueries({ queryKey: messagesQueryKey });
       queryClient.invalidateQueries({ queryKey: ["chat-open-requests", chatId] });
@@ -2588,9 +2592,9 @@ export function ChatView({
   // `answerSelections` (kept here as state, NEVER written into the composer, so
   // a click only highlights the option and leaves typed text untouched), and
   // the composer holds free text only. Sending merges both into one canonical
-  // reply that ALWAYS carries `metadata.resolves` (kind="answered") — clicking
-  // an option or typing free text both resolve the question; there is no
-  // separate "leave it open for the asker to judge" path on this surface.
+  // reply that ALWAYS carries `metadata.resolves`: Submit uses `kind="answered"`
+  // and Skip uses `kind="closed"`. There is no separate "leave it open for the
+  // asker to judge" path on this surface.
   // Watchers never block — the read-only branch renders no composer.
   // `readRequestPayload` always yields an answer affordance (a well-formed
   // payload, or a free-text fallback for an absent / legacy / malformed one), so
@@ -3797,15 +3801,17 @@ export function ChatView({
                   void submitAskAnswer(dockRequest, answer);
                 }}
                 onSkip={() => {
-                  // Skip is an answer, not a dismiss: send a resolving reply
-                  // (kind="answered") carrying a "skipped" body so the open
-                  // request resolves, the red dot clears, and the asking agent
-                  // unblocks and proceeds with its own judgment.
-                  void submitAskAnswer(dockRequest, {
-                    content: "(Skipped — no answer provided.)",
-                    mentions: [],
-                    images: [],
-                  });
+                  // Skip is an explicit lifecycle close, not a dismiss or an
+                  // answer inferred from display copy.
+                  void submitAskAnswer(
+                    dockRequest,
+                    {
+                      content: "(Skipped — no answer provided.)",
+                      mentions: [],
+                      images: [],
+                    },
+                    "closed",
+                  );
                 }}
               />
             </div>
