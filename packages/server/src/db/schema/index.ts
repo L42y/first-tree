@@ -2,6 +2,7 @@ export { agentChatSessions } from "./agent-chat-sessions.js";
 export { agentConfigs } from "./agent-configs.js";
 export { agentPresence } from "./agent-presence.js";
 export { agentResourceBindings } from "./agent-resource-bindings.js";
+export { agentTemplates } from "./agent-templates.js";
 export { agents } from "./agents.js";
 export { attachments } from "./attachments.js";
 // Legacy audit table — kept for drizzle-kit parity only (see file header); not used at runtime.

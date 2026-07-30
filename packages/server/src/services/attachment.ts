@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { MAX_ATTACHMENT_BYTES } from "@first-tree/shared";
 import { and, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
+import { agentTemplates } from "../db/schema/agent-templates.js";
 import { attachments } from "../db/schema/attachments.js";
 import { messages } from "../db/schema/messages.js";
 import { resources } from "../db/schema/resources.js";
@@ -298,6 +299,32 @@ export async function isAttachmentReferenced(db: Database, id: string): Promise<
     .where(eq(resources.bundleAttachmentId, id))
     .limit(1);
   if (resourceRef) return true;
+
+  // Official Agent Template Skill components hold immutable complete-directory
+  // ZIP bundles at `payload.components[].bundle.attachmentId`. A bundle
+  // referenced only by a Template must survive the orphan sweep until every
+  // Template releases it. The CASE keeps malformed payload rows (non-array
+  // `components`) out of jsonb_array_elements deterministically — boolean
+  // reordering means an outer AND guard is not a reliable barrier, and one
+  // raising row would break the whole sweep. Valid schemaVersion=1 payloads
+  // always carry an array here.
+  const [templateRef] = await db
+    .select({ id: agentTemplates.id })
+    .from(agentTemplates)
+    .where(
+      sql`EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(${agentTemplates.payload} -> 'components') = 'array'
+            THEN ${agentTemplates.payload} -> 'components'
+            ELSE '[]'::jsonb
+          END
+        ) AS component
+        WHERE component -> 'bundle' ->> 'attachmentId' = ${id}
+      )`,
+    )
+    .limit(1);
+  if (templateRef) return true;
 
   const imageArray = JSON.stringify([{ imageId: id }]);
   const attachmentArray = JSON.stringify([{ attachmentId: id }]);

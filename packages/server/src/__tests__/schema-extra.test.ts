@@ -60,7 +60,7 @@ describe("database schema exports", () => {
 
   it("builds deferred Drizzle extra configs for indexed tables", () => {
     expect(buildExtraConfig(agentChatSessions)).toHaveLength(2);
-    expect(buildExtraConfig(agentResourceBindings)).toHaveLength(3);
+    expect(buildExtraConfig(agentResourceBindings)).toHaveLength(5);
     expect(buildExtraConfig(agents)).toHaveLength(5);
     expect(buildExtraConfig(authIdentities)).toHaveLength(4);
     expect(buildExtraConfig(clients)).toHaveLength(3);
@@ -70,7 +70,7 @@ describe("database schema exports", () => {
     expect(buildExtraConfig(invitations)).toHaveLength(2);
     expect(buildExtraConfig(invitationRedemptions)).toHaveLength(2);
     expect(buildExtraConfig(organizationSettings)).toHaveLength(2);
-    expect(buildExtraConfig(resources)).toHaveLength(6);
+    expect(buildExtraConfig(resources)).toHaveLength(8);
   });
 
   it("resolves inline foreign key references for schema tables", () => {
