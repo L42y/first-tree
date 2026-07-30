@@ -1084,8 +1084,7 @@ describe("Settings Setup overview", () => {
 
     expect(rowFor("context-tree", input).action).toEqual({
       label: "Set up",
-      to: "/settings/setup#context-tree",
-      intent: "open-context-tree-controls",
+      to: "/settings/context#binding",
     });
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
   });
