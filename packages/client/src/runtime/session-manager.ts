@@ -59,6 +59,7 @@ import {
   buildProviderRetryEvent,
   classifyProviderFailure,
   decideProviderRetry,
+  MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
@@ -2206,6 +2207,11 @@ export class SessionManager {
   private triggerImmediateRetry(chatId: string): void {
     const entry = this.sessions.get(chatId);
     if (!entry || entry.retryAttempt === 0) return;
+    // Managed-Skill discovery safety is a local provider-preflight gate, not
+    // an availability hint that newer input can bypass. Keep the original
+    // head and FIFO tail behind the bounded timer so repeated deliveries or
+    // resume commands cannot turn the safety wait into a hot retry loop.
+    if (entry.lastRetryReason === MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE) return;
     if (entry.retryTimer) {
       clearTimeout(entry.retryTimer);
       entry.retryTimer = null;

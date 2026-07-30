@@ -1,6 +1,7 @@
 import { parseProviderRetryEventMessage, type SessionEvent, type SessionState } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } from "../runtime/handler.js";
+import { ManagedSkillsUnsafeDiscoveryError } from "../runtime/managed-skills.js";
 import { SessionManager } from "../runtime/session-manager.js";
 import type { FirstTreeHubSDK } from "../sdk.js";
 import { silentLogger } from "./_logger-helpers.js";
@@ -246,6 +247,193 @@ describe("SessionManager: transient session retry", () => {
     expect(recovered.start).toHaveBeenCalled();
 
     await sm.shutdown();
+  });
+
+  it("parks managed-Skill unsafe resume retries past the old exhaustion boundary and drains head then tail once", async () => {
+    vi.useFakeTimers();
+    try {
+      const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+      const events: SessionEvent[] = [];
+      let initialCtx: SessionContext | undefined;
+      let initialMessage: SessionMessage | undefined;
+      let recoveredCtx: SessionContext | undefined;
+      let recoveredHead: SessionMessage | undefined;
+      const recoveredTail: SessionMessage[] = [];
+      const established: AgentHandler = {
+        start: vi.fn(async (message, ctx) => {
+          initialMessage = message;
+          initialCtx = ctx;
+          return "existing-opencode-session";
+        }),
+        resume: vi.fn().mockRejectedValue(new ManagedSkillsUnsafeDiscoveryError("unsafe discovery on resume")),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const unsafeRetries = Array.from(
+        { length: 5 },
+        (_, index): AgentHandler => ({
+          start: vi.fn(),
+          resume: vi.fn().mockRejectedValue(new ManagedSkillsUnsafeDiscoveryError(`opaque unsafe retry ${index + 1}`)),
+          inject: vi.fn(),
+          suspend: vi.fn().mockResolvedValue(undefined),
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        }),
+      );
+      const recovered: AgentHandler = {
+        start: vi.fn(),
+        resume: vi.fn(async (message, sessionId, ctx) => {
+          recoveredHead = message;
+          recoveredCtx = ctx;
+          return sessionId;
+        }),
+        inject: vi.fn((message) => {
+          recoveredTail.push(message);
+          return { kind: "owned", mode: "queued" } as const;
+        }),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const sm = makeManager({
+        handlers: [established, ...unsafeRetries, recovered],
+        ackEntry,
+        recoverChat,
+        onSessionEvent: (_chatId, event) => events.push(event),
+      });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-unsafe-resume", messageId: "msg-seed" }));
+      if (!initialCtx || !initialMessage) throw new Error("initial OpenCode session was not captured");
+      await initialCtx.finishTurn(initialMessage, { status: "success", terminal: true });
+      ackEntry.mockClear();
+      await sm.handleCommand("chat-unsafe-resume", "session:suspend");
+
+      await sm.dispatch(mockEntry({ id: 2, chatId: "chat-unsafe-resume", messageId: "msg-head" }));
+      await sm.dispatch(mockEntry({ id: 3, chatId: "chat-unsafe-resume", messageId: "msg-tail" }));
+
+      // New input must remain behind the retry head instead of forcing an
+      // immediate safety retry.
+      expect(unsafeRetries[0]?.resume).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+
+      for (const delayMs of [1_000, 2_000, 4_000, 8_000, 16_000]) {
+        await vi.advanceTimersByTimeAsync(delayMs);
+      }
+
+      // 31 virtual seconds crosses the former 5s + 15s unknown-exhaustion
+      // boundary. The same head and tail remain locally owned and unacked.
+      expect(unsafeRetries.every((handler) => vi.mocked(handler.resume).mock.calls.length === 1)).toBe(true);
+      expect(recovered.resume).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+      expect(recoverChat).not.toHaveBeenCalled();
+      const resilienceEvents = events
+        .filter((event): event is Extract<SessionEvent, { kind: "error" }> => event.kind === "error")
+        .map((event) => parseProviderRetryEventMessage(event.payload.message))
+        .filter((event) => event !== null);
+      expect(resilienceEvents.some((event) => event.event === "provider_retry_exhausted")).toBe(false);
+      expect(resilienceEvents.some((event) => event.event === "provider_failure_terminal")).toBe(false);
+      expect(
+        resilienceEvents.filter((event) => event.event === "provider_retry_scheduled").map((event) => event.delayMs),
+      ).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 32_000]);
+
+      await vi.advanceTimersByTimeAsync(32_000);
+      expect(recovered.resume).toHaveBeenCalledTimes(1);
+      expect(recovered.resume).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "msg-head" }),
+        "existing-opencode-session",
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(recovered.inject).toHaveBeenCalledTimes(1);
+      expect(recoveredTail.map((message) => message.id)).toEqual(["msg-tail"]);
+      expect(ackEntry).not.toHaveBeenCalled();
+      if (!recoveredCtx || !recoveredHead || !recoveredTail[0]) {
+        throw new Error("recovered FIFO delivery was not captured");
+      }
+
+      await recoveredCtx.finishTurn(recoveredHead, { status: "success", terminal: true });
+      await recoveredCtx.finishTurn(recoveredTail[0], { status: "success", terminal: true });
+
+      expect(ackEntry).toHaveBeenNthCalledWith(1, 2);
+      expect(ackEntry).toHaveBeenNthCalledWith(2, 3);
+      expect(recoverChat).not.toHaveBeenCalled();
+      await sm.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps fresh-start unsafe discovery unacked and cancels its bounded retry on suspend", async () => {
+    vi.useFakeTimers();
+    try {
+      const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+      const retryStart = vi.fn().mockRejectedValue(new ManagedSkillsUnsafeDiscoveryError("unsafe fresh start"));
+      const first: AgentHandler = {
+        start: retryStart,
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const shouldStayUnused: AgentHandler = {
+        start: vi.fn().mockRejectedValue(new ManagedSkillsUnsafeDiscoveryError("late unsafe retry")),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const sm = makeManager({ handlers: [first, shouldStayUnused], ackEntry, recoverChat });
+
+      await sm.dispatch(mockEntry({ id: 10, chatId: "chat-unsafe-start-suspend", messageId: "msg-head" }));
+      await sm.dispatch(mockEntry({ id: 11, chatId: "chat-unsafe-start-suspend", messageId: "msg-tail" }));
+      expect(retryStart).toHaveBeenCalledTimes(1);
+      expect(shouldStayUnused.start).not.toHaveBeenCalled();
+
+      await sm.handleCommand("chat-unsafe-start-suspend", "session:suspend");
+      await sm.handleCommand("chat-unsafe-start-suspend", "session:resume");
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(shouldStayUnused.start).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+      expect(recoverChat).toHaveBeenCalledTimes(1);
+      expect(recoverChat).toHaveBeenCalledWith("chat-unsafe-start-suspend");
+      await sm.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a fresh-start unsafe retry on shutdown without terminally settling its FIFO work", async () => {
+    vi.useFakeTimers();
+    try {
+      const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+      const first: AgentHandler = {
+        start: vi.fn().mockRejectedValue(new ManagedSkillsUnsafeDiscoveryError("unsafe fresh start")),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const shouldStayUnused: AgentHandler = {
+        start: vi.fn().mockRejectedValue(new ManagedSkillsUnsafeDiscoveryError("late unsafe retry")),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const sm = makeManager({ handlers: [first, shouldStayUnused], ackEntry });
+
+      await sm.dispatch(mockEntry({ id: 20, chatId: "chat-unsafe-start-shutdown", messageId: "msg-head" }));
+      await sm.dispatch(mockEntry({ id: 21, chatId: "chat-unsafe-start-shutdown", messageId: "msg-tail" }));
+      await sm.shutdown();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(shouldStayUnused.start).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("manual suspend during retry backoff cancels the retry and leaves work for recovery", async () => {
