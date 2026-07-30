@@ -17,6 +17,7 @@ import { MobilePreviewPage } from "../mobile-preview.js";
 import { MockTeamStepsA, MockTeamStepsB, MockWelcomeCeremonial } from "../onboarding-team-steps-mocks.js";
 import { RequestDockPreviewPage } from "../request-dock-preview.js";
 import { ResourcesPreviewPage } from "../resources-preview.js";
+import { SettingsContextTreePreviewPage } from "../settings-context-tree-preview.js";
 import { SettingsGithubPreviewPage } from "../settings-github-preview.js";
 import { SetupPreviewPage } from "../setup-preview.js";
 import { SupportMenuPreviewPage } from "../support-menu-preview.js";
@@ -238,45 +239,50 @@ describe("extra preview pages", () => {
     expect(text(rendered.container)).toContain("Context Tree");
     const treeRow = rendered.container.querySelector<HTMLElement>('[data-setup-row="context-tree"]');
     if (!treeRow) throw new Error("Missing Context Tree row");
-    await click(buttonByText(treeRow, "Manage"));
-    const treeControls = treeRow.querySelector<HTMLElement>('[data-setup-owner-controls="context-tree"]');
-    expect(treeControls).not.toBeNull();
-    const reviewerControls = treeControls?.querySelector<HTMLElement>('[data-setup-owner-controls="automatic-review"]');
-    expect(reviewerControls).not.toBeNull();
-    expect(rendered.container.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
-    expect(text(reviewerControls ?? treeRow)).toContain("Context Reviewer");
-    expect(text(treeControls ?? treeRow)).toContain("Use with Claude Code or Codex");
-    expect(text(treeControls ?? treeRow)).toContain("Copy setup prompt");
-    expect(text(treeControls ?? treeRow)).toContain("Preview prompt");
-    expect(text(treeControls ?? treeRow)).not.toContain("context enable --provider");
-    const enablement = reviewerControls?.querySelector<HTMLButtonElement>('[role="switch"]');
-    expect(enablement?.getAttribute("aria-checked")).toBe("true");
-    if (!enablement) throw new Error("Missing preview Reviewer enablement switch");
-    await click(enablement);
-    expect(enablement.getAttribute("aria-checked")).toBe("false");
-    await click(buttonByText(treeRow, "Manage"));
+    const manage = treeRow.querySelector<HTMLAnchorElement>('a[href="/settings/context"]');
+    expect(manage?.textContent).toBe("Manage");
     expect(treeRow.querySelector('[data-setup-owner-controls="context-tree"]')).toBeNull();
+    expect(rendered.container.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
     expect(globalThis.fetch).not.toHaveBeenCalled();
 
     await cleanupRendered(rendered);
   });
 
-  it("renders Member personal Context access without Admin controls", async () => {
+  it("keeps Member Setup as a read-only Context summary", async () => {
     const rendered = await renderPreview(<SetupPreviewPage />, "/preview/setup?role=member&state=ready");
     const treeRow = rendered.container.querySelector<HTMLElement>('[data-setup-row="context-tree"]');
     if (!treeRow) throw new Error("Missing Context Tree row");
 
-    await click(buttonByText(treeRow, "Access"));
-    const controls = treeRow.querySelector<HTMLElement>('[data-setup-owner-controls="context-tree"]');
-    expect(controls).not.toBeNull();
-    expect(controls?.querySelector<HTMLAnchorElement>('a[href="/context"]')?.textContent).toBe("Open Context →");
-    expect(text(controls ?? treeRow)).toContain("Use with Claude Code or Codex");
-    expect(text(controls ?? treeRow)).toContain("Copy setup prompt");
-    expect(text(controls ?? treeRow)).toContain("Preview prompt");
-    expect(controls?.querySelector('[data-setup-owner-controls="automatic-review"]')).toBeNull();
-    expect(controls?.querySelector('[role="switch"]')).toBeNull();
+    expect(treeRow.querySelector<HTMLAnchorElement>('a[href="/context"]')?.textContent).toBe("View");
+    expect(treeRow.querySelector('[data-setup-owner-controls="context-tree"]')).toBeNull();
+    expect(treeRow.querySelector('[role="switch"]')).toBeNull();
 
     await cleanupRendered(rendered);
+  });
+
+  it("renders the seeded Context Tree settings preview for Admins and Members without real APIs", async () => {
+    const admin = await renderPreview(<SettingsContextTreePreviewPage />, "/preview/settings-context-tree?role=admin");
+
+    expect(admin.container.querySelector('[data-settings-context-tree-preview="admin"]')).not.toBeNull();
+    expect(text(admin.container)).toContain("Binding");
+    expect(text(admin.container)).toContain("Automatic review");
+    expect(text(admin.container)).toContain("Coding-agent access");
+    expect(admin.container.querySelector('[data-setup-owner-controls="context-tree"]')).not.toBeNull();
+    expect(admin.container.querySelector('[role="switch"]')).not.toBeNull();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    await cleanupRendered(admin);
+
+    const member = await renderPreview(
+      <SettingsContextTreePreviewPage />,
+      "/preview/settings-context-tree?role=member",
+    );
+    expect(member.container.querySelector('[data-settings-context-tree-preview="member"]')).not.toBeNull();
+    expect(text(member.container)).toContain("Connected");
+    expect(text(member.container)).toContain("Reviewer · Context Reviewer");
+    expect(member.container.querySelector("[data-setup-owner-controls]")).toBeNull();
+    expect(member.container.querySelector('[role="switch"]')).toBeNull();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    await cleanupRendered(member);
   });
 
   it("renders the seeded agent-detail preview sections", async () => {

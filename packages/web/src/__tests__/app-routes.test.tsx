@@ -130,10 +130,9 @@ vi.mock("../pages/settings.js", async () => {
 });
 vi.mock("../pages/settings/computers.js", () => ({ SettingsComputersPage: () => <div>settings computers</div> }));
 vi.mock("../pages/settings/account.js", () => ({ SettingsAccountPage: () => <div>settings account</div> }));
-vi.mock("../pages/settings/context-tree.js", async () => {
-  const { Navigate } = await import("react-router");
-  return { SettingsContextTreePage: () => <Navigate to="/settings/setup" replace /> };
-});
+vi.mock("../pages/settings/context-tree.js", () => ({
+  SettingsContextTreePage: () => <div>settings context tree</div>,
+}));
 vi.mock("../pages/settings/github.js", () => ({ SettingsGithubPage: () => <div>settings github</div> }));
 vi.mock("../pages/settings/gitlab.js", () => ({ SettingsGitlabPage: () => <div>settings gitlab</div> }));
 vi.mock("../pages/settings/integrations.js", async () => {
@@ -334,8 +333,8 @@ describe("App routes", () => {
     expect(await renderAppAt("/settings/repositories")).toContain("settings repositories");
     await resetRenderedApp();
 
-    expect(await renderAppAt("/settings/context")).toContain("settings setup");
-    expect(window.location.pathname).toBe("/settings/setup");
+    expect(await renderAppAt("/settings/context")).toContain("settings context tree");
+    expect(window.location.pathname).toBe("/settings/context");
     await resetRenderedApp();
 
     expect(await renderAppAt("/settings/resources")).toContain("settings resources");

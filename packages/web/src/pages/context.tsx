@@ -9,11 +9,12 @@ import { useQuery } from "@tanstack/react-query";
 import { stratify, tree } from "d3-hierarchy";
 import { AlertTriangle, Info, Network, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { getContextTreeSnapshot } from "../api/context-tree.js";
 import { useAuth } from "../auth/auth-context.js";
 import { resolveAvatarHue } from "../components/chat/chat-row-avatar.js";
 import { Identicon } from "../components/identicon.js";
+import { Button } from "../components/ui/button.js";
 import { PageHeader } from "../components/ui/page-header.js";
 import { Panel, PanelBody } from "../components/ui/panel.js";
 import {
@@ -21,7 +22,6 @@ import {
   GITLAB_WEB_CONTEXT_UNAVAILABLE_TITLE,
   isTeamNonActionableGitlabWebContext,
 } from "./context-tree-availability.js";
-import { ContextTreeBuildEntry } from "./context-tree-build-entry.js";
 import { ContextSectionTabs } from "./docs/context-section-tabs.js";
 
 const CONTEXT_WINDOW = "7d";
@@ -78,7 +78,7 @@ export function ContextPage({ previewSnapshot }: { previewSnapshot?: ContextTree
         ) : null}
         {snapshot && (preview || !query.isLoading) ? (
           snapshot.snapshotStatus === "unavailable" ? (
-            <UnavailableState snapshot={snapshot} isAdmin={isAdmin} canOpenChat={!preview && isAdmin} />
+            <UnavailableState snapshot={snapshot} isAdmin={isAdmin} canManageSettings={!preview && isAdmin} />
           ) : (
             <>
               <ContextStatusNote snapshot={snapshot} />
@@ -639,11 +639,11 @@ function ErrorState({ message }: { message: string }) {
 function UnavailableState({
   snapshot,
   isAdmin,
-  canOpenChat,
+  canManageSettings,
 }: {
   snapshot: ContextTreeSnapshot;
   isAdmin: boolean;
-  canOpenChat: boolean;
+  canManageSettings: boolean;
 }) {
   const gitlabContentAvailability =
     snapshot.provider === "gitlab" && snapshot.contentAvailability?.status === "unavailable"
@@ -672,10 +672,10 @@ function UnavailableState({
       ? (gitlabCopy?.detail ??
         "The anonymous GitLab repository refresh failed. Use an Agent with local git/glab access to inspect it; inbound Webhook automation is independent.")
       : isAdmin
-        ? "Open a chat with your agent to inspect the tree and this sync issue."
+        ? "Review the binding and recovery options in Settings."
         : "Ask an admin to inspect this Context Tree sync issue."
     : isAdmin
-      ? "Your agent can build it with you in a chat. Share a local project folder or GitHub repository URL there."
+      ? "Set it up in Settings when your team is ready."
       : "Ask an admin to set up your team's Context Tree.";
   const syncDetail = teamNonActionableGitlabWebContext ? null : snapshot.contextStatus.detail;
   const repoLabel = snapshot.repo ? redactRepoForDisplay(snapshot.repo) : null;
@@ -703,12 +703,16 @@ function UnavailableState({
                 {syncDetail}
               </div>
             ) : null}
-            {/* Recoverable admin-facing unavailable states continue in the
-                chat-first setup flow. GitLab auth and operator-owned egress
-                failures are not Team setup debt. */}
-            {canOpenChat && !teamNonActionableGitlabWebContext ? (
+            {/* Context is permanently read-only. Team-actionable binding and
+                recovery work belongs to Settings; GitLab auth and
+                operator-owned egress failures are not Team setup debt. */}
+            {canManageSettings && !teamNonActionableGitlabWebContext ? (
               <div style={{ marginTop: "var(--sp-3)" }}>
-                <ContextTreeBuildEntry intent={snapshot.repo ? "recover" : "build"} />
+                <Button asChild type="button" variant="outline" size="sm">
+                  <Link to="/settings/context#binding">
+                    {snapshot.repo ? "Manage Context Tree" : "Set up Context Tree"}
+                  </Link>
+                </Button>
               </div>
             ) : null}
             {snapshot.repo || snapshot.branch ? (

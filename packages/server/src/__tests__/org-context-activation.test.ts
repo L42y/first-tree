@@ -48,6 +48,7 @@ describe("org-scoped member Context activation", () => {
       outcome: "needs_admin",
       reasonCode: "context_tree_unbound",
       team: { organizationId: admin.organizationId, role: "admin" },
+      nextAction: { settingsUrl: "/settings/context#binding" },
     });
 
     await putOrgSetting(

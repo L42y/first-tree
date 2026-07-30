@@ -1,27 +1,17 @@
-import type {
-  ContextReviewerCandidatesOutput,
-  OrgContextTreeFeaturesOutput,
-  OrgContextTreeInput,
-  OrgContextTreeOutput,
-  TeamSetupCapabilities,
-} from "@first-tree/shared";
+import type { TeamSetupCapabilities } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link, useSearchParams } from "react-router";
 import { setupCapabilitiesQueryKey } from "../api/setup-capabilities.js";
 import { AuthContext } from "../auth/auth-context.js";
-import { buildByoSetupPrompt } from "../lib/byo-setup-prompt.js";
 import { cn } from "../lib/utils.js";
-import { ContextPersonalAccess } from "./settings/context-enablement.js";
 import { buildSetupRows, type SetupFacts, SetupOverview } from "./settings/setup.js";
-import { SetupContextTreeControls } from "./settings/setup-context-tree-controls.js";
-import { SetupReviewerControls } from "./settings/setup-reviewer-controls.js";
 import { SettingsLayout } from "./settings.js";
 
 type PreviewRole = "admin" | "member";
 type PreviewState = "ready" | "mixed";
 
-const PREVIEW_CAPABILITIES: TeamSetupCapabilities = {
+export const PREVIEW_CAPABILITIES: TeamSetupCapabilities = {
   organizationId: "org-preview",
   repositoryAutomation: {
     providers: [
@@ -98,115 +88,6 @@ const MIXED_CAPABILITIES: TeamSetupCapabilities = {
   },
 };
 
-const PREVIEW_REVIEWER_CANDIDATES: ContextReviewerCandidatesOutput = {
-  items: [
-    {
-      uuid: "agent-reviewer",
-      name: "context-reviewer",
-      displayName: "Context Reviewer",
-      visibility: "organization",
-      runtime: { health: "ready", blockers: [] },
-    },
-    {
-      uuid: "agent-offline-reviewer",
-      name: "offline-reviewer",
-      displayName: "Offline Reviewer",
-      visibility: "organization",
-      runtime: {
-        health: "degraded",
-        blockers: [
-          {
-            code: "context_review_agent_inactive",
-            resolutionOwner: "operator",
-            actionKind: null,
-          },
-        ],
-      },
-    },
-  ],
-  blockers: [],
-};
-
-async function previewLoadTreeSetting(): Promise<OrgContextTreeOutput> {
-  return {
-    provider: "github",
-    repo: "https://github.com/agent-team-foundation/first-tree-context",
-    branch: "main",
-  };
-}
-
-async function previewSaveTreeSetting(
-  _organizationId: string,
-  input: OrgContextTreeInput,
-): Promise<OrgContextTreeOutput> {
-  return {
-    provider: "github",
-    repo: input.repo ?? undefined,
-    branch: input.branch ?? undefined,
-  };
-}
-
-async function previewAssignReviewer(
-  _organizationId: string,
-  agentUuid: string | null,
-): Promise<OrgContextTreeFeaturesOutput> {
-  const candidate = PREVIEW_REVIEWER_CANDIDATES.items.find((item) => item.uuid === agentUuid);
-  return {
-    contextReviewer: {
-      enabled: false,
-      agentUuid,
-      reviewerAgent: candidate
-        ? { uuid: candidate.uuid, name: candidate.name, displayName: candidate.displayName }
-        : null,
-    },
-  };
-}
-
-async function previewSetReviewerEnabled(
-  _organizationId: string,
-  enabled: boolean,
-): Promise<OrgContextTreeFeaturesOutput> {
-  return {
-    contextReviewer: {
-      enabled,
-      agentUuid: "agent-reviewer",
-      reviewerAgent: { uuid: "agent-reviewer", name: "context-reviewer", displayName: "Context Reviewer" },
-    },
-  };
-}
-
-async function previewRefresh(): Promise<void> {}
-
-async function previewPersonalAccessPrompt(): Promise<string> {
-  return buildByoSetupPrompt({
-    organizationId: "org-preview",
-    bootstrapCommand: "'first-tree-staging' login 'preview-code'",
-    handoffs: [
-      {
-        protocolVersion: 1,
-        organizationId: "org-preview",
-        teamDisplayName: "Gandy's team",
-        role: "admin",
-        provider: "claude-code",
-        intent: "settings",
-        command: "'first-tree-staging' context enable --provider 'claude-code' --team 'org-preview'",
-        workingDirectoryInstruction: "Run this once from the repository root.",
-      },
-      {
-        protocolVersion: 1,
-        organizationId: "org-preview",
-        teamDisplayName: "Gandy's team",
-        role: "admin",
-        provider: "codex",
-        intent: "settings",
-        command: "'first-tree-staging' context enable --provider 'codex' --team 'org-preview'",
-        workingDirectoryInstruction: "Run this once from the repository root.",
-      },
-    ],
-    intent: "settings",
-  });
-}
-
 function previewFacts(role: PreviewRole, state: PreviewState): SetupFacts {
   if (state === "mixed") {
     return {
@@ -247,9 +128,6 @@ function previewFacts(role: PreviewRole, state: PreviewState): SetupFacts {
 
 export function SetupPreviewPage() {
   const [searchParams] = useSearchParams();
-  const [expandedOwnerControl, setExpandedOwnerControl] = useState<
-    ReturnType<typeof buildSetupRows>[number]["key"] | null
-  >(null);
   const role: PreviewRole = searchParams.get("role") === "member" ? "member" : "admin";
   const state: PreviewState = searchParams.get("state") === "mixed" ? "mixed" : "ready";
   const facts = previewFacts(role, state);
@@ -263,12 +141,6 @@ export function SetupPreviewPage() {
     client.setQueryData(["context-tree-snapshot", "org-preview", "7d", false], {
       snapshotStatus,
     });
-    client.setQueryData(["org-setting", "org-preview", "context_tree", "raw"], {
-      provider: "github",
-      repo: "https://github.com/agent-team-foundation/first-tree-context",
-      branch: "main",
-    });
-    client.setQueryData(["context-reviewer", "candidates", "org-preview"], PREVIEW_REVIEWER_CANDIDATES);
     return client;
   }, [capabilities, snapshotStatus]);
   const auth = {
@@ -283,74 +155,12 @@ export function SetupPreviewPage() {
     onboardingCompletedAt: facts.onboardingCompletedAt,
   } as unknown as Parameters<typeof AuthContext.Provider>[0]["value"];
 
-  const ownerControls =
-    expandedOwnerControl !== "context-tree"
-      ? {}
-      : {
-          "context-tree":
-            role === "admin" ? (
-              <SetupContextTreeControls
-                binding={capabilities.contextTree.binding}
-                availability={snapshotStatus}
-                loadSetting={previewLoadTreeSetting}
-                saveSetting={previewSaveTreeSetting}
-                refreshFacts={previewRefresh}
-              >
-                <div className="flex flex-col">
-                  {capabilities.contextTree.automaticReview.adoption !== "unavailable" ? (
-                    <SetupReviewerControls
-                      review={capabilities.contextTree.automaticReview}
-                      embedded
-                      loadCandidates={async () => PREVIEW_REVIEWER_CANDIDATES}
-                      assignReviewer={previewAssignReviewer}
-                      setReviewerEnabled={previewSetReviewerEnabled}
-                      refreshFacts={previewRefresh}
-                    />
-                  ) : null}
-                  {state === "ready" ? (
-                    <div
-                      style={{
-                        marginTop: "var(--sp-4)",
-                        paddingTop: "var(--sp-4)",
-                        borderTop: "var(--hairline) solid var(--border-faint)",
-                      }}
-                    >
-                      <ContextPersonalAccess organizationId="org-preview" preparePrompt={previewPersonalAccessPrompt} />
-                    </div>
-                  ) : null}
-                </div>
-              </SetupContextTreeControls>
-            ) : state === "ready" ? (
-              <div
-                data-setup-owner-controls="context-tree"
-                style={{
-                  padding: "var(--sp-4)",
-                  border: "var(--hairline) solid var(--border)",
-                  borderRadius: "var(--radius-panel)",
-                  background: "var(--bg-sunken)",
-                }}
-              >
-                <div className="flex justify-end" style={{ marginBottom: "var(--sp-3)" }}>
-                  <Link className="text-label font-medium text-primary hover:underline" to="/context">
-                    Open Context →
-                  </Link>
-                </div>
-                <ContextPersonalAccess organizationId="org-preview" preparePrompt={previewPersonalAccessPrompt} />
-              </div>
-            ) : null,
-        };
-
   return (
     <QueryClientProvider client={queryClient}>
       <AuthContext.Provider value={auth}>
         <div style={{ minHeight: "100vh", background: "var(--bg)" }} data-setup-preview={`${role}-${state}`}>
           <SettingsLayout activePathname="/settings/setup">
-            <SetupOverview
-              facts={facts}
-              rows={buildSetupRows(facts)}
-              ownerControls={ownerControls}
-              onToggleOwnerControl={(key) => setExpandedOwnerControl((current) => (current === key ? null : key))}
-            />
+            <SetupOverview facts={facts} rows={buildSetupRows(facts)} />
           </SettingsLayout>
           <nav
             aria-label="Setup preview controls"

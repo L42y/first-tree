@@ -48,7 +48,7 @@ async function renderPage(path = "/settings/repositories"): Promise<{ container:
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/settings/repositories" element={<SettingsRepositoriesPage />} />
-          <Route path="/settings/setup" element={<LocationProbe />} />
+          <Route path="/settings/context" element={<LocationProbe />} />
         </Routes>
       </MemoryRouter>,
     );
@@ -109,12 +109,10 @@ describe("SettingsRepositoriesPage", () => {
     await act(async () => root.unmount());
   });
 
-  it("redirects the retired Context Tree anchor to canonical Setup controls", async () => {
+  it("redirects the retired Context Tree anchor to the dedicated settings page", async () => {
     const { container, root } = await renderPage("/settings/repositories#context-tree");
 
-    expect(container.querySelector("[data-location]")?.getAttribute("data-location")).toBe(
-      "/settings/setup#context-tree",
-    );
+    expect(container.querySelector("[data-location]")?.getAttribute("data-location")).toBe("/settings/context#binding");
     expect(container.querySelector('[data-testid="resource-sections"]')).toBeNull();
     await act(async () => root.unmount());
   });
