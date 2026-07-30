@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../api/client.js";
 import { useAuth } from "../auth/auth-context.js";
-import { isAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
+import { runAfterAskAgentNavUnlock } from "./chat/ask-agent-nav-lock.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog.js";
 import { Input } from "./ui/input.js";
@@ -80,18 +80,20 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         organization: { id: string; name: string; displayName: string; role: string };
       }>("/me/organizations", { name: slugify(trimmed), displayName: trimmed });
       // The request may outlive this dialog. If an Ask attempt claimed the
-      // current surface while the server was responding, keep its owner
-      // mounted instead of switching teams and navigating away underneath it.
-      if (isAskAgentNavLocked()) return;
-      // The caller is already authenticated and the user JWT is org-agnostic,
-      // so no token adoption is needed (the endpoint returns none). Select the
-      // freshly created org so the user lands in it.
-      await selectOrganization(res.organization.id);
-      onDone();
-      // A newly created team starts a fresh setup lifecycle. Enter the
-      // onboarding route directly so account-level dismissals from another
-      // team cannot strand the user on an empty workspace.
-      navigate("/onboarding", { replace: true });
+      // current surface while the server was responding, preserve the
+      // successful result and finish its client handoff after the owner
+      // releases the navigation lock.
+      await runAfterAskAgentNavUnlock(async () => {
+        // The caller is already authenticated and the user JWT is org-agnostic,
+        // so no token adoption is needed (the endpoint returns none). Select the
+        // freshly created org so the user lands in it.
+        await selectOrganization(res.organization.id);
+        onDone();
+        // A newly created team starts a fresh setup lifecycle. Enter the
+        // onboarding route directly so account-level dismissals from another
+        // team cannot strand the user on an empty workspace.
+        navigate("/onboarding", { replace: true });
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create team");
     } finally {
@@ -147,16 +149,17 @@ function JoinForm({ onDone }: { onDone: () => void }) {
         memberId: string;
         role: string;
       }>("/me/organizations/join", { token: justToken });
-      if (isAskAgentNavLocked()) return;
-      // No token adoption: the endpoint returns none and the user JWT is
-      // org-agnostic. Select the joined org so the user lands in it instead of
-      // a stale one (and so we never write `undefined` into the token store).
-      await selectOrganization(res.organizationId);
-      onDone();
-      // A joined team may still need this member's computer/agent setup.
-      // `/onboarding` bounces back to the workspace when the selected org is
-      // already ready, so mature teams are not held in the flow.
-      navigate("/onboarding", { replace: true });
+      await runAfterAskAgentNavUnlock(async () => {
+        // No token adoption: the endpoint returns none and the user JWT is
+        // org-agnostic. Select the joined org so the user lands in it instead of
+        // a stale one (and so we never write `undefined` into the token store).
+        await selectOrganization(res.organizationId);
+        onDone();
+        // A joined team may still need this member's computer/agent setup.
+        // `/onboarding` bounces back to the workspace when the selected org is
+        // already ready, so mature teams are not held in the flow.
+        navigate("/onboarding", { replace: true });
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to join team");
     } finally {

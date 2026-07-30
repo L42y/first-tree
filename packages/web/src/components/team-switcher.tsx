@@ -9,7 +9,7 @@ import { updateOrganization } from "../api/organizations.js";
 import { useAuth } from "../auth/auth-context.js";
 import { cn } from "../lib/utils.js";
 import { Avatar } from "./avatar.js";
-import { isAskAgentNavLocked, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
+import { isAskAgentNavLocked, runAfterAskAgentNavUnlock, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 import { InviteDialog } from "./invite-dialog.js";
 import { TeamSetupModal } from "./team-setup-modal.js";
 import { Button } from "./ui/button.js";
@@ -161,7 +161,6 @@ export function TeamSwitcher({
   });
 
   const switchAfterLeave = async (org: OrgBrief) => {
-    if (isAskAgentNavLocked()) return;
     setSwitchError(null);
     setSwitchingOrg(org);
     const startedAt = Date.now();
@@ -190,13 +189,20 @@ export function TeamSwitcher({
       const nextOrg = others[0] ?? null;
       setLeaveConfirmOpen(false);
       setOpen(false);
-      await refreshMe();
-      if (nextOrg) {
-        await switchAfterLeave(nextOrg);
-      } else {
-        queryClient.clear();
-        if (redirectHomeOnSwitch) navigate("/onboarding", { replace: true });
-      }
+      // Membership deletion is already durable. Preserve the Ask surface, then
+      // complete exactly one client transition after unlock instead of
+      // dropping the success or navigating through the lock.
+      await runAfterAskAgentNavUnlock(async () => {
+        if (nextOrg) {
+          await switchAfterLeave(nextOrg);
+          return;
+        }
+        await refreshMe();
+        await runAfterAskAgentNavUnlock(() => {
+          queryClient.clear();
+          if (redirectHomeOnSwitch) navigate("/onboarding", { replace: true });
+        });
+      });
     },
   });
 

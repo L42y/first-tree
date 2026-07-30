@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthContext } from "../../auth/auth-context.js";
+import { addAskAgentNavLock, clearAskAgentNavLocks, removeAskAgentNavLock } from "../chat/ask-agent-nav-lock.js";
 import { TeamSwitcher } from "../team-switcher.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -224,6 +225,7 @@ async function renderHarness(
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  clearAskAgentNavLocks();
   clientMocks.get.mockResolvedValue(ORGS);
   memberMocks.leaveMembership.mockResolvedValue(undefined);
   orgMocks.updateOrganization.mockImplementation(async (_id: string, patch: Partial<Organization>) =>
@@ -232,6 +234,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearAskAgentNavLocks();
   document.body.innerHTML = "";
   vi.clearAllMocks();
 });
@@ -550,8 +553,39 @@ describe("TeamSwitcher", () => {
     await click(buttonByText(document.body, "Leave team"));
 
     expect(memberMocks.leaveMembership).toHaveBeenCalledWith("member-1");
-    expect(refreshMe).toHaveBeenCalledTimes(1);
+    // The real selectOrganization path refreshes /me after atomically clearing
+    // org-scoped caches and reconnecting the admin WebSocket.
+    expect(refreshMe).not.toHaveBeenCalled();
     expect(select).toHaveBeenCalledWith("org-2");
+
+    await act(async () => root.unmount());
+  });
+
+  it("defers a completed leave and its next-team transition until a late Ask lock releases", async () => {
+    const leaveGate = deferred();
+    memberMocks.leaveMembership.mockReturnValueOnce(leaveGate.promise);
+    const refreshMe = vi.fn(async () => {});
+    const select = vi.fn(async () => {});
+    const { container, root } = await renderHarness(select, { refreshMe });
+
+    await click(anchorOf(container));
+    await click(buttonByText(container, "Leave team"));
+    await click(buttonByText(document.body, "Leave team"));
+
+    const lock = { chatId: "chat-1", requestId: "request-leave-next" };
+    await act(async () => addAskAgentNavLock(lock));
+    leaveGate.resolve();
+    await flush();
+
+    expect(memberMocks.leaveMembership).toHaveBeenCalledWith("member-1");
+    expect(select).not.toHaveBeenCalled();
+    expect(refreshMe).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/team");
+
+    await act(async () => removeAskAgentNavLock(lock));
+    await flush();
+    expect(select).toHaveBeenCalledWith("org-2");
+    expect(refreshMe).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
@@ -567,6 +601,35 @@ describe("TeamSwitcher", () => {
     await click(buttonByText(document.body, "Leave team"));
 
     expect(memberMocks.leaveMembership).toHaveBeenCalledWith("member-1");
+    expect(refreshMe).toHaveBeenCalledTimes(1);
+    expect(select).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/onboarding");
+
+    await act(async () => root.unmount());
+  });
+
+  it("defers last-team recovery until a completed leave's late Ask lock releases", async () => {
+    clientMocks.get.mockResolvedValue([ORGS[0]]);
+    const leaveGate = deferred();
+    memberMocks.leaveMembership.mockReturnValueOnce(leaveGate.promise);
+    const refreshMe = vi.fn(async () => {});
+    const select = vi.fn(async () => {});
+    const { container, root } = await renderHarness(select, { refreshMe, redirectHomeOnSwitch: true });
+
+    await click(anchorOf(container));
+    await click(buttonByText(container, "Leave team"));
+    await click(buttonByText(document.body, "Leave team"));
+
+    const lock = { chatId: "chat-1", requestId: "request-leave-last" };
+    await act(async () => addAskAgentNavLock(lock));
+    leaveGate.resolve();
+    await flush();
+
+    expect(refreshMe).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/team");
+
+    await act(async () => removeAskAgentNavLock(lock));
+    await flush();
     expect(refreshMe).toHaveBeenCalledTimes(1);
     expect(select).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/onboarding");

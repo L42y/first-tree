@@ -150,7 +150,7 @@ describe("TeamSetupModal", () => {
       inputValue: "token-deferred",
       response: { organizationId: "org-joined", memberId: "member-new", role: "member" },
     },
-  ])("does not switch or navigate when the Ask lock engages during a pending $action request", async (testCase) => {
+  ])("defers a successful $action handoff until a late Ask lock releases", async (testCase) => {
     let resolveRequest: ((value: typeof testCase.response) => void) | undefined;
     clientMocks.post.mockImplementation(
       () =>
@@ -170,6 +170,9 @@ describe("TeamSetupModal", () => {
 
     const lock = { chatId: "chat-1", requestId: `request-${testCase.action}` };
     addAskAgentNavLock(lock);
+    // TeamSwitcher dismisses the setup dialog when the lock engages. The
+    // already-submitted request still owns a durable successful continuation.
+    await act(async () => root.unmount());
     await act(async () => {
       resolveRequest?.(testCase.response);
       await Promise.resolve();
@@ -181,7 +184,12 @@ describe("TeamSetupModal", () => {
     expect(onClose).not.toHaveBeenCalled();
 
     removeAskAgentNavLock(lock);
-    await act(async () => root.unmount());
+    await flush();
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith(
+      testCase.action === "create" ? "org-new" : "org-joined",
+    );
+    expect(routerMocks.navigate).toHaveBeenCalledWith("/onboarding", { replace: true });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces create and join errors without closing", async () => {
