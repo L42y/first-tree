@@ -1196,12 +1196,13 @@ describe("page SSR smoke coverage", () => {
   it("renders ChatView alternate chrome, composer, and recovery states", async () => {
     const { ChatView } = await import("../workspace/center/chat-view.js");
 
-    // SSR/initial paint: no mount-scope open-request fetch has completed, so
-    // the composer fail-closes into the checking state until the client
-    // confirms the chat's open-request snapshot.
-    expect(renderWithClient(<ChatView agentId="agent-1" chatId="chat-1" />, createClient())).toContain(
-      "Checking for open questions…",
-    );
+    // SSR/initial paint: no mount-scope open-request fetch has completed.
+    // Keep the stable draft surface visible, while the send control remains
+    // fail-closed until the client confirms the chat's snapshot.
+    const pendingHtml = renderWithClient(<ChatView agentId="agent-1" chatId="chat-1" />, createClient());
+    expect(pendingHtml).toContain("<textarea");
+    expect(pendingHtml).toContain('aria-label="Checking for open questions"');
+    expect(pendingHtml).not.toContain("Checking for open questions…");
 
     const readOnlyClient = createClient();
     expect(

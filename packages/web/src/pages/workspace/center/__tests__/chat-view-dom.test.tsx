@@ -2572,14 +2572,21 @@ describe("ChatView", () => {
       "/?showAsk=false",
     );
 
-    // Pending: no ordinary composer, no reopen affordance — fail closed.
-    expect(container.querySelector("textarea")).toBeNull();
+    // Pending: the stable composer remains editable, but sending stays
+    // fail-closed until this viewing has a fresh open-request snapshot.
+    const pendingTextarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!pendingTextarea) throw new Error("Composer textarea missing");
     expect(container.querySelector("[data-inspect-ask-composer]")).toBeNull();
-    await waitForText(container, "Checking for open questions…");
+    await setValue(pendingTextarea, "Draft while questions load");
+    expect(pendingTextarea.value).toBe("Draft while questions load");
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Checking for open questions"]')?.disabled,
+    ).toBe(true);
+    expect(container.textContent).not.toContain("Checking for open questions");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     // The query confirms the still-open request: the reopen affordance
-    // replaces the pending panel; the ordinary composer stays hidden.
+    // takes over the stable composer.
     await act(async () => {
       resolveOpenRequests({ items: [buriedAsk] });
     });
@@ -2591,7 +2598,7 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("shows a retryable error instead of the ordinary composer when the open-requests source fails", async () => {
+  it("keeps the ordinary composer and shows a compact retry when the open-requests source fails", async () => {
     const { ChatView } = await import("../chat-view.js");
     chatMocks.listChatOpenRequests.mockRejectedValue(new Error("open requests unavailable"));
 
@@ -2601,19 +2608,27 @@ describe("ChatView", () => {
       "/?showAsk=false",
     );
 
-    // Failed: no ordinary composer either — an understandable recovery path.
+    // Failed: the draft surface stays stable, while the send gate and compact
+    // recovery row explain why this chat cannot send yet.
     await waitForText(container, "Couldn’t check for open questions.");
-    expect(container.querySelector("textarea")).toBeNull();
+    const failedTextarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!failedTextarea) throw new Error("Composer textarea missing");
+    await setValue(failedTextarea, "Keep this draft while retrying");
+    expect(container.querySelector("[data-open-requests-error]")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Send unavailable — couldn’t check for open questions"]',
+      )?.disabled,
+    ).toBe(true);
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
-    // Retry succeeds with a CONFIRMED zero: only now may the ordinary
-    // composer return.
+    // Retry succeeds with a CONFIRMED zero: the recovery row clears and the
+    // stable composer remains in place.
     chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
     await click(buttonByText(container, "Retry"));
-    await waitForCondition(
-      () => container.querySelector("textarea") !== null,
-      "ordinary composer after confirmed zero",
-    );
+    await waitForCondition(() => container.querySelector("[data-open-requests-error]") === null, "retry row to clear");
+    expect(container.querySelector("textarea")).toBe(failedTextarea);
+    expect(failedTextarea.value).toBe("Keep this draft while retrying");
 
     await act(async () => root.unmount());
   });
@@ -2652,10 +2667,14 @@ describe("ChatView", () => {
       "/?showAsk=false",
     );
 
-    // Stale cached zero must NOT restore the ordinary composer.
-    expect(container.querySelector("textarea")).toBeNull();
+    // Stale cached zero may render the stable draft surface, but must NOT
+    // enable ordinary sending before this viewing confirms the snapshot.
+    expect(container.querySelector("textarea")).not.toBeNull();
     expect(container.querySelector("[data-inspect-ask-composer]")).toBeNull();
-    await waitForText(container, "Checking for open questions…");
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Checking for open questions"]')?.disabled,
+    ).toBe(true);
+    expect(container.textContent).not.toContain("Checking for open questions");
     expect(chatMocks.listChatOpenRequests).toHaveBeenCalled();
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
@@ -2687,18 +2706,17 @@ describe("ChatView", () => {
     );
 
     // The mount refetch fails while the stale cached zero keeps status
-    // "success": still no ordinary composer — a retryable error instead.
+    // "success": the draft surface stays mounted, with a retryable error.
     await waitForText(container, "Couldn’t check for open questions.");
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.querySelector("[data-open-requests-error]")).not.toBeNull();
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
-    // Retry confirms a fresh zero in this mount: the composer may return.
+    // Retry confirms a fresh zero in this mount: the recovery row clears.
     chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
     await click(buttonByText(container, "Retry"));
-    await waitForCondition(
-      () => container.querySelector("textarea") !== null,
-      "ordinary composer after mount-confirmed zero",
-    );
+    await waitForCondition(() => container.querySelector("[data-open-requests-error]") === null, "retry row to clear");
+    expect(container.querySelector("textarea")).not.toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -2730,8 +2748,17 @@ describe("ChatView", () => {
       "/",
     );
 
-    expect(container.querySelector("textarea")).toBeNull();
-    await waitForText(container, "Checking for open questions…");
+    const pendingTextarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!pendingTextarea) throw new Error("Composer textarea missing");
+    await setValue(pendingTextarea, "Draft before the request arrives @nova");
+    expect(pendingTextarea.value).toBe("Draft before the request arrives @nova");
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Checking for open questions"]')?.disabled,
+    ).toBe(true);
+    expect(container.textContent).not.toContain("Checking for open questions");
+    await act(async () => {
+      pendingTextarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     // The query lands with the still-open request: the blocking takeover
@@ -2759,16 +2786,16 @@ describe("ChatView", () => {
     );
 
     await waitForText(container, "Couldn’t check for open questions.");
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.querySelector("[data-open-requests-error]")).not.toBeNull();
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
-    // Retry confirms a fresh zero in this mount: the composer may return.
+    // Retry confirms a fresh zero in this mount: the recovery row clears
+    // without swapping the composer.
     chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
     await click(buttonByText(container, "Retry"));
-    await waitForCondition(
-      () => container.querySelector("textarea") !== null,
-      "ordinary composer after mount-confirmed zero on the normal route",
-    );
+    await waitForCondition(() => container.querySelector("[data-open-requests-error]") === null, "retry row to clear");
+    expect(container.querySelector("textarea")).not.toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -2806,8 +2833,11 @@ describe("ChatView", () => {
       "/",
     );
 
-    expect(container.querySelector("textarea")).toBeNull();
-    await waitForText(container, "Checking for open questions…");
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Checking for open questions"]')?.disabled,
+    ).toBe(true);
+    expect(container.textContent).not.toContain("Checking for open questions");
     expect(chatMocks.listChatOpenRequests).toHaveBeenCalled();
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
@@ -2843,11 +2873,15 @@ describe("ChatView", () => {
       "/",
     );
 
-    // chat-1 confirms a zero: the composer appears.
+    // chat-1 confirms a zero: the stable composer stays in place and its send
+    // control leaves the verification state.
     await act(async () => {
       pendingResolvers.get("chat-1")?.({ items: [] });
     });
-    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-1 confirmed");
+    await waitForCondition(
+      () => container.querySelector('button[aria-label="Send"]') !== null,
+      "send control after chat-1 confirmed",
+    );
 
     // A transient poll failure AFTER the latch must not re-block the composer
     // or surface the retry panel — this viewing is already confirmed.
@@ -2860,7 +2894,7 @@ describe("ChatView", () => {
     expect(container.textContent).not.toContain("Couldn’t check for open questions.");
 
     // Switch to chat-2 WITHOUT remounting ChatView: the latch must reset, so
-    // the pending source is unverified again — no composer.
+    // the stable composer remains visible but sending is unverified again.
     deferAll();
     seedChat(queryClient, chatDetail({ id: "chat-2" }), messages([]));
     await act(async () => {
@@ -2875,15 +2909,22 @@ describe("ChatView", () => {
       );
     });
     await flush();
-    expect(container.querySelector("textarea")).toBeNull();
-    await waitForText(container, "Checking for open questions…");
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Checking for open questions"]')?.disabled,
+    ).toBe(true);
+    expect(container.textContent).not.toContain("Checking for open questions");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
-    // chat-2 confirms: composer returns.
+    // chat-2 confirms: the stable composer stays put and the verification
+    // label lifts from the send control.
     await act(async () => {
       pendingResolvers.get("chat-2")?.({ items: [] });
     });
-    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-2 confirmed");
+    await waitForCondition(
+      () => container.querySelector('button[aria-label="Send"]') !== null,
+      "send control after chat-2 confirmed",
+    );
 
     // Back to chat-1 (still without remount): the earlier chat-1 latch was
     // cleared on switch, so this viewing re-verifies too.
@@ -2899,16 +2940,19 @@ describe("ChatView", () => {
       );
     });
     await flush();
-    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
     // chat-1's query still carries the blip's error status, so this viewing
-    // shows the retryable fail-closed error (not the neutral checking state);
+    // shows the compact retryable error while preserving the draft surface;
     // the in-flight mount refetch settles it.
     await waitForText(container, "Couldn’t check for open questions.");
 
     await act(async () => {
       pendingResolvers.get("chat-1")?.({ items: [] });
     });
-    await waitForCondition(() => container.querySelector("textarea") !== null, "composer after chat-1 re-confirmed");
+    await waitForCondition(
+      () => container.querySelector('button[aria-label="Send"]') !== null,
+      "send control after chat-1 re-confirmed",
+    );
 
     await act(async () => root.unmount());
   });
