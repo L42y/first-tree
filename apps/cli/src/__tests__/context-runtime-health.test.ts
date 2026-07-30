@@ -18,6 +18,7 @@ import type {
 } from "../core/context-integration/provider-driver.js";
 import { providerPluginRoot, resolveContextIntegrationRelease } from "../core/context-integration/release.js";
 import { inspectContextIntegrationRuntime } from "../core/context-integration/runtime-health.js";
+import { COMMAND_VERSION } from "../core/version.js";
 
 const originalFirstTreeHome = process.env.FIRST_TREE_HOME;
 const originalPath = process.env.PATH;
@@ -41,7 +42,7 @@ function buildRelease(): string {
       "--out-dir",
       root,
       "--version",
-      "0.5.17",
+      COMMAND_VERSION,
       "--channel",
       "dev",
     ],
@@ -83,7 +84,7 @@ function writeMatchingInstall(releaseRoot: string): void {
     schemaVersion: 1,
     channel: "dev",
     provider: "codex",
-    firstTreeVersion: "0.5.17",
+    firstTreeVersion: COMMAND_VERSION,
     bundleVersion: release.manifest.version,
     bundleDigest: release.manifest.bundleDigest,
     policyDigest: release.manifest.policyDigest,
