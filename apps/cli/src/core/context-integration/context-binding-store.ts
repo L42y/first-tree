@@ -16,6 +16,7 @@ import {
   type ContextIntegrationProject,
   type ContextIntegrationProvider,
   contextIntegrationConfigSchema,
+  type LegacyContextIntegrationConfig,
   legacyContextIntegrationConfigSchema,
 } from "@first-tree/shared";
 import { defaultConfigDir, defaultHome } from "@first-tree/shared/config";
@@ -151,6 +152,26 @@ export function replaceContextIntegrationConfig(
   paths: ContextBindingStorePaths = defaultContextBindingStorePaths(),
 ): void {
   withContextIntegrationLock(() => writeContextIntegrationConfig(config, paths), paths);
+}
+
+export function preserveLegacyContextIntegrationBackup(
+  config: LegacyContextIntegrationConfig,
+  paths: ContextBindingStorePaths = defaultContextBindingStorePaths(),
+): void {
+  withContextIntegrationLock(() => {
+    const backupPath = paths.legacyBackupPath ?? `${paths.configPath}.v1.bak`;
+    if (existsSync(backupPath)) {
+      const existing = statSync(backupPath);
+      if (!existing.isFile() || (existing.mode & 0o777) !== 0o600) {
+        throw new Error(`Invalid First Tree Context v1 backup at ${backupPath}.`);
+      }
+      legacyContextIntegrationConfigSchema.parse(parse(readFileSync(backupPath, "utf8")));
+      return;
+    }
+    const validated = legacyContextIntegrationConfigSchema.parse(config);
+    mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
+    writeFileSync(backupPath, stringify(validated), { mode: 0o600, flag: "wx" });
+  }, paths);
 }
 
 export function assertContextIntegrationConfig(

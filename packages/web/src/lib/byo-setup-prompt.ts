@@ -62,10 +62,15 @@ export function buildByoSetupPrompt({
     ...handoffs.flatMap((handoff, index) => [
       `If you are ${PROVIDER_LABELS[handoff.provider]}:`,
       handoff.command,
+      ...(handoff.provider === "claude-code"
+        ? [
+            "Append exactly one selector from the current Claude Code host identity: `--project-root '<host-confirmed-project-root>'` for an attached project, or `--pathless` for a truly pathless session. Do not derive the root from shell `pwd`/cwd; if the host project identity is unavailable, stop and report that gap.",
+          ]
+        : [
+            "Run this Codex handoff unchanged. Do not append a selector: the CLI owns the centralized canonical-path and scratch-path classifier.",
+          ]),
       ...(index === handoffs.length - 1 ? [] : [""]),
     ]),
-    "",
-    "Run the selected handoff command exactly as written. Do not append a project selector: the First Tree CLI resolves this provider's attached or pathless project through its provider-specific resolver.",
   ];
   const completion =
     intent === "onboarding"

@@ -4,6 +4,7 @@ import {
   contextIntegrationInstallJournalSchema,
   contextIntegrationInstallManifestSchema,
   contextIntegrationReleaseManifestSchema,
+  legacyContextIntegrationConfigSchema,
 } from "../index.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -37,6 +38,59 @@ describe("context integration contracts", () => {
             provider: "remote",
             project: { kind: "path", root: "/work/payments" },
             organizationId: "org_acme",
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    [
+      "pathless",
+      [
+        { provider: "codex", project: { kind: "pathless" }, organizationId: "org_a" },
+        { provider: "codex", project: { kind: "pathless" }, organizationId: "org_b" },
+      ],
+    ],
+    [
+      "path",
+      [
+        { provider: "codex", project: { kind: "path", root: "/work/project" }, organizationId: "org_a" },
+        { provider: "codex", project: { kind: "path", root: "/work/project" }, organizationId: "org_b" },
+      ],
+    ],
+  ])("rejects duplicate provider + %s project identities", (_kind, bindings) => {
+    expect(contextIntegrationConfigSchema.safeParse({ schemaVersion: 2, bindings }).success).toBe(false);
+  });
+
+  it("allows overlapping ancestor projects because their identities are distinct", () => {
+    expect(
+      contextIntegrationConfigSchema.safeParse({
+        schemaVersion: 2,
+        bindings: [
+          { provider: "codex", project: { kind: "path", root: "/work" }, organizationId: "org_a" },
+          { provider: "codex", project: { kind: "path", root: "/work/project" }, organizationId: "org_b" },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a legacy migration with duplicate provider + checkout identities", () => {
+    expect(
+      legacyContextIntegrationConfigSchema.safeParse({
+        schemaVersion: 1,
+        bindings: [
+          {
+            provider: "codex",
+            checkoutRoot: "/work/project",
+            repositoryKey: "github.com/acme/one",
+            organizationId: "org_a",
+          },
+          {
+            provider: "codex",
+            checkoutRoot: "/work/project",
+            repositoryKey: "github.com/acme/two",
+            organizationId: "org_b",
           },
         ],
       }).success,

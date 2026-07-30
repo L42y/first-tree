@@ -265,8 +265,9 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("If you are Codex:");
     expect(copiedPrompt).toContain("--provider 'codex' --team 'org-1'");
     expect(copiedPrompt).toContain("do not run both commands");
-    expect(copiedPrompt).toContain("Do not append a project selector");
-    expect(copiedPrompt).not.toContain("--project-root '<canonical-project-root>'");
+    expect(copiedPrompt).toContain("Run this Codex handoff unchanged");
+    expect(copiedPrompt).toContain("--project-root '<host-confirmed-project-root>'");
+    expect(copiedPrompt).toContain("Do not derive the root from shell `pwd`/cwd");
     expect(copiedPrompt).not.toContain("Determine whether this session has an attached local project");
     expect(copiedPrompt).toContain("Do not mark onboarding complete.");
     expect(host.textContent).toContain("Setup prompt copied.");
@@ -329,7 +330,8 @@ describe("personal Context access", () => {
     expect(prompt).toContain("bootstrap-command");
     expect(prompt).toContain("claude-command");
     expect(prompt).toContain("claude-command");
-    expect(prompt).toContain("Do not append a project selector");
+    expect(prompt).toContain("--project-root '<host-confirmed-project-root>'");
+    expect(prompt).toContain("if the host project identity is unavailable, stop");
     expect(prompt).not.toContain("Determine whether this session has an attached local project");
     expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
     expect(prompt).not.toContain("confirms that onboarding is complete");

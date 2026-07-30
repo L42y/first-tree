@@ -36,8 +36,11 @@ together.
 
 - Start, resume, clear, and compact a provider session in the bound project.
   Observe the real SessionStart hook transcript and measure end-to-end hook time.
-- Repeat in the unbound and pathless sessions and confirm no Team Context is
-  auto-injected; then manually activate the bound pathless project.
+- Repeat in the unbound path and pathless sessions and confirm no Team Context
+  is auto-injected and manual activation fails without a binding. Run
+  `context enable` with the pathless selector, start a fresh pathless session,
+  confirm SessionStart still does not auto-inject, then use the manual
+  `first-tree` Skill and confirm it activates the newly bound pathless project.
 - Exercise `context status`, guarded Read, and guarded Write preflight through the
   shipped CLI artifact while the activation endpoint is healthy.
 - Repeat with an access token that requires refresh. Introduce slow refresh,

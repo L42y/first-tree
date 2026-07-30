@@ -12,7 +12,7 @@ surfaces: [cli, codex, server]
 Confirm that the shipped CLI never bypasses Codex Hook consent, guides a person
 through the first enable flow, then reads the provider's real SessionStart
 trust and enabled state without conflating machine Plugin state with
-repository/Team activation.
+project/Team activation.
 
 ## Preconditions
 

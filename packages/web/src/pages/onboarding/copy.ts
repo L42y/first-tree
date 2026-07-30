@@ -353,7 +353,6 @@ export const COPY = {
       "Open Claude Code or Codex in the local project you want to work on, then paste one prompt. The project may be an ordinary folder with zero, one, or many source repositories.",
     byoBoundary:
       "This does not create a First Tree agent. Your coding-agent conversation stays outside First Tree Chat.",
-    byoProviderLabel: "Which coding agent are you using?",
     byoPreparingPrompt: "Preparing your setup prompt…",
     byoPromptTitle: "Setup prompt",
     byoPromptMeta: (provider: string, team: string) => `${provider} for ${team}`,
@@ -364,8 +363,7 @@ export const COPY = {
     byoPasteToContinue: (provider: string) =>
       `Paste into ${provider} opened at the project you want to use. Setup and verification happen there.`,
     byoCopyFailed: "Couldn't copy automatically. Open the full prompt and copy it manually.",
-    byoCodexTrust: "Codex may ask you to approve the First Tree hook in /hooks. Continue in Codex after approval.",
-    byoUnavailable: "Needs Admin: your Team's repository or Context Tree setup is not ready yet.",
+    byoUnavailable: "Needs Admin: your Team's Context Tree setup is not ready yet.",
     byoHandoffError: "Couldn't prepare the setup prompt just now. Try again.",
     byoRetryPrompt: "Try again",
     byoReturnToFirstTree: "Return to First Tree",

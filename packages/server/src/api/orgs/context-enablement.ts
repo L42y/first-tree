@@ -30,7 +30,9 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
         "--yes",
       ].join(" "),
       workingDirectoryInstruction:
-        "Run this once unchanged. The First Tree CLI resolves the current provider project as a canonical path, pathless session, or unknown state.",
+        query.provider === "claude-code"
+          ? "Append one host-confirmed Claude Code selector: --project-root <root> for an attached project or --pathless for a truly pathless session. Never derive the project root from shell cwd."
+          : "Run this once unchanged. The First Tree CLI centrally classifies the canonical Codex cwd as an attached or known scratch pathless project.",
     });
   });
 }

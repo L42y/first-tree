@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { ContextIntegrationProvider } from "@first-tree/shared";
-import { resolveCliInvocation, shellQuote } from "../supervisor/shared.js";
+import { resolveCliInvocation } from "../supervisor/shared.js";
 import type { ResolvedBinary } from "../supervisor/types.js";
 import type { ProviderPluginProbe } from "./provider-driver.js";
 import { type ContextIntegrationRelease, providerPluginRoot } from "./release.js";
@@ -158,8 +158,12 @@ function materializedFile(name: string, content: Buffer, adapterDigest: string, 
 
 function renderCliInvocation(invocation: ResolvedBinary): string {
   return invocation.kind === "bin"
-    ? shellQuote(invocation.program)
-    : [invocation.program, ...(invocation.args ?? [])].map(shellQuote).join(" ");
+    ? quotePluginShellArg(invocation.program)
+    : [invocation.program, ...(invocation.args ?? [])].map(quotePluginShellArg).join(" ");
+}
+
+function quotePluginShellArg(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function normalizedFiles(root: string): string[] {

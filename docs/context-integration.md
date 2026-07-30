@@ -17,7 +17,7 @@ its conversation to First Tree Chat.
 Windows is not excluded because of Claude or Codex. First Tree does not yet
 ship the required Windows portable binary, installer, path handling, and
 native/WSL qualification. Remote provider environments also need a separate
-credential and repository-authority design.
+credential, local-project identity, and provider host-signal design.
 
 Minimum provider versions are recorded in the Context integration release
 manifest embedded in every npm and portable distribution. The portable
@@ -27,14 +27,18 @@ manifest also records both adapter digests and the canonical Policy digest.
 
 - Web Setup and onboarding provide one provider-neutral prompt. The current
   coding agent selects `codex` or `claude-code` from its own host identity,
-  never from installed binaries. It runs the selected handoff unchanged; only
-  the CLI's provider-specific resolver classifies the project.
+  never from installed binaries. Codex runs the handoff unchanged so the CLI
+  applies its centralized classifier. Claude Code appends one host-confirmed
+  path/pathless selector because ordinary shell commands are not guaranteed to
+  receive the hook-only `CLAUDE_PROJECT_DIR` signal. Neither flow derives a
+  project root from Git or mutable shell cwd.
 - `context enable` installs the user-scope Plugin and binds the resolved
   canonical project path or the provider's single pathless project to the
   handoff-selected Team. A path project may be an ordinary directory containing
   zero, one, or many source repositories. Explicit selector flags remain
-  available for deterministic internal/recovery calls, not model-side
-  classification.
+  required when a provider's ordinary shell does not expose stable project
+  identity, and are reused from the first activation receipt after shell cwd
+  changes.
 - `config/context.yaml` schema v2 stores only
   `provider + project(path|pathless) → organizationId`. It never stores source
   repository identity or a Context Tree remote/local snapshot path.
@@ -155,6 +159,10 @@ the supported provider CLI.
 path/pathless project and removes only its effective binding. A path project
 uses the deepest matching ancestor binding; pathless removes only the
 provider's pathless binding. No match returns idempotent `Already disabled`.
+After removing a nested binding, the same queried path is resolved again. If a
+parent binding becomes effective, the result is `fallback_active`, names that
+Team/root, and gives the same command as the next one-binding removal action;
+it never claims the project is disabled while a fallback remains.
 The provider Plugin, marketplace, login credentials, other project bindings,
 and First Tree Client daemon are preserved. Context already injected into the
 current session cannot be revoked; the change applies to future sessions and
@@ -168,7 +176,7 @@ normal recovery.
 `context status`, SessionStart, and the hidden Read/Write routes compare the
 installed bundle, Policy, and adapter digests with the current CLI's embedded
 release. They also verify the complete materialized Plugin source and the
-provider-owned installed cache, including both Skills, both Policy projections,
+provider-owned installed cache, including all three Skills, both Policy projections,
 the launcher, and the hook definition. Install commits its ready manifest only
 after the provider's actual installed path matches that payload. The same gate
 enforces the provider minimum version. Any manifest, source, or provider-cache

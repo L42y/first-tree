@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -434,7 +434,81 @@ describe("Context integration cross-resource operation", () => {
       ],
     });
     expect(provider.uninstall).toHaveBeenCalled();
+    const backupPath = join(home, "config", "context.yaml.v1.bak");
+    expect(readFileSync(backupPath, "utf8")).toContain("repositoryKey: github.com/acme/legacy");
+    expect(readFileSync(backupPath, "utf8")).toContain("checkoutRoot: /work/legacy-project");
+    expect(statSync(backupPath).mode & 0o777).toBe(0o600);
     expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
+
+    const secondOperationId = "22345678-1234-4123-8123-123456789abc";
+    mkdirSync(join(home, "state", "context", "operation-recovery", secondOperationId), { recursive: true });
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        operationId: secondOperationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "binding_changed",
+        previousBindings: [
+          {
+            provider: "codex",
+            checkoutRoot: "/work/later-project",
+            repositoryKey: "github.com/acme/later",
+            organizationId: "org_later",
+          },
+        ],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-28T00:00:00.000Z",
+      })}\n`,
+    );
+    expect(recoverContextIntegrationOperation(provider.value)).toBe(true);
+    expect(readFileSync(backupPath, "utf8")).toContain("repositoryKey: github.com/acme/legacy");
+    expect(readFileSync(backupPath, "utf8")).not.toContain("github.com/acme/later");
+  });
+
+  it("keeps the legacy recovery journal when its fixed backup cannot be preserved", () => {
+    const home = setupHome("first-tree-context-operation-v1-backup-failure-");
+    const provider = driver(false);
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    mkdirSync(join(home, "state", "context", "operation-recovery", operationId), { recursive: true });
+    mkdirSync(join(home, "config", "context.yaml.v1.bak"), { recursive: true });
+    const journalPath = join(home, "state", "context", "operation-journal.json");
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "binding_changed",
+        previousBindings: [
+          {
+            provider: "codex",
+            checkoutRoot: "/work/legacy-project",
+            repositoryKey: "github.com/acme/legacy",
+            organizationId: "org_acme",
+          },
+        ],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-28T00:00:00.000Z",
+      })}\n`,
+    );
+
+    expect(() => recoverContextIntegrationOperation(provider.value)).toThrow(
+      "Could not recover the incomplete First Tree Context operation",
+    );
+    expect(existsSync(journalPath)).toBe(true);
   });
 
   it("keeps a durable recovery snapshot when retrying the old provider install fails", () => {

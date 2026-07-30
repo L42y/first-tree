@@ -81,8 +81,61 @@ describe("context disable command", () => {
     expect(output.status).toHaveBeenCalledWith("Project", deepest.project.root);
     expect(output.status).toHaveBeenCalledWith("Team", deepest.organizationId);
     expect(output.status).toHaveBeenCalledWith("Plugin", "keep user-scope Plugin");
-    expect(output.status).toHaveBeenCalledWith("Context", "Disabled for future sessions and activations");
+    expect(output.status).toHaveBeenCalledWith(
+      "Context",
+      expect.stringContaining(`parent Project ${parent.project.root} remains active for Team ${parent.organizationId}`),
+    );
+    expect(output.status).toHaveBeenCalledWith(
+      "Next action",
+      expect.stringContaining("context disable --provider codex --project-root"),
+    );
     expect(output.status).toHaveBeenCalledWith("Current session", "already injected Context cannot be removed");
+  });
+
+  it("reports a same-Team parent fallback in JSON instead of claiming disabled", async () => {
+    const { project, nested } = setup();
+    const parent = {
+      provider: "codex" as const,
+      project: { kind: "path" as const, root: project },
+      organizationId: "org_same",
+    };
+    const deepest = {
+      provider: "codex" as const,
+      project: { kind: "path" as const, root: join(project, "packages") },
+      organizationId: "org_same",
+    };
+    writeContextBinding(parent);
+    writeContextBinding(deepest);
+
+    await runContextDisable(context({ provider: "codex", projectRoot: nested, yes: true }, true));
+
+    expect(output.result).toHaveBeenCalledWith({
+      provider: "codex",
+      project: { kind: "path", root: nested },
+      status: "fallback_active",
+      removed: deepest,
+      fallback: parent,
+    });
+  });
+
+  it("reports disabled when removing a path binding leaves no fallback", async () => {
+    const { project, nested } = setup();
+    const binding = {
+      provider: "codex" as const,
+      project: { kind: "path" as const, root: project },
+      organizationId: "org_only",
+    };
+    writeContextBinding(binding);
+
+    await runContextDisable(context({ provider: "codex", projectRoot: nested, yes: true }, true));
+
+    expect(output.result).toHaveBeenCalledWith({
+      provider: "codex",
+      project: { kind: "path", root: nested },
+      status: "disabled",
+      removed: binding,
+      fallback: null,
+    });
   });
 
   it("removes only the pathless binding", async () => {

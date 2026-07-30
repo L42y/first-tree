@@ -105,8 +105,9 @@ function projectExternalSkill(name, sourceContent, provider) {
     "  Context Tree readiness validation, then delegates to the generic Tree",
     "  operation. Missing binding, Server failure, or denied activation",
     "  stops before Tree content or mutation authority is returned.",
-    "- Let the first hidden `context read` call resolve the provider project. Preserve its",
-    "  returned `activationProject` receipt and pass that exact path/pathless identity to",
+    "- Give the first hidden `context read` call the current session's host-confirmed project selector.",
+    "  Let the CLI resolver canonicalize that identity, then preserve its returned",
+    "  `activationProject` receipt and pass that exact path/pathless identity to",
     "  every later hidden route. Never reclassify from a Tree snapshot or authoring worktree.",
     "- Re-run `context write` immediately before every push and PR/MR creation; a",
     "  SessionStart Connected envelope is not mutation authority.",
@@ -168,7 +169,7 @@ byo_read_root="$(mktemp -d)"
 first-tree --json tree read --team "<team-id>" --snapshot "$byo_read_root/context-tree"`,
       `__FIRST_TREE_SKILL_INVOCATION__ context read ${providerOption} --help
 byo_read_root="$(mktemp -d)"
-__FIRST_TREE_SKILL_INVOCATION__ --json context read ${providerOption} \\
+__FIRST_TREE_SKILL_INVOCATION__ --json context read ${providerOption} <host-confirmed-project-selector> \\
   --snapshot "$byo_read_root/context-tree"`,
       `${name} command`,
     );
@@ -356,12 +357,17 @@ description: Manually activate First Tree Team Context for the current ${provide
 
 # Activate First Tree Context
 
-1. Never infer or accept a Team id, and do not classify the project yourself. The CLI owns provider-specific attached/pathless resolution.
-2. Create a task-owned temporary directory and run the read command without \`--project-root\` or \`--pathless\`:
+1. Never infer or accept a Team id. Preserve the current session's original project identity even if shell cwd has changed:
+${
+  provider === "claude-code"
+    ? '   - Use `--project-root "<host-confirmed-Claude-project-root>"` for an attached Claude Code project, or `--pathless` only when the Claude host confirms the session is pathless. Never derive the root from shell `pwd`/cwd or assume `CLAUDE_PROJECT_DIR` exists in an ordinary shell command.'
+    : '   - Use `--pathless` when the current Codex App session is projectless; otherwise use `--project-root "<original-attached-project-root>"`. Do not reclassify from the current shell cwd and do not copy or reproduce the Codex scratch-path heuristic; the CLI remains the only classifier used by setup and Hook activation.'
+}
+2. Create a task-owned temporary directory and run the read command with that one host-confirmed selector:
 
 \`\`\`sh
 first_tree_read_root="$(mktemp -d)"
-__FIRST_TREE_SKILL_INVOCATION__ --json context read --provider ${provider} \\
+__FIRST_TREE_SKILL_INVOCATION__ --json context read --provider ${provider} <host-confirmed-project-selector> \\
   --snapshot "$first_tree_read_root/context-tree"
 \`\`\`
 

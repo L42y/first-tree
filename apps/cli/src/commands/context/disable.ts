@@ -1,5 +1,6 @@
 import { confirm } from "@inquirer/prompts";
 import type { Command } from "commander";
+import { channelConfig } from "../../core/channel.js";
 import { readActiveContextAccountClientId } from "../../core/context-integration/account-state-guard.js";
 import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
 import {
@@ -8,6 +9,7 @@ import {
 } from "../../core/context-integration/context-binding-store.js";
 import { disableContextIntegrationOperation } from "../../core/context-integration/operation.js";
 import { print } from "../../core/output.js";
+import { shellQuote } from "../../core/supervisor/shared.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
 import { parseContextProvider } from "./shared.js";
 
@@ -54,9 +56,28 @@ export async function runContextDisable(context: CommandContext): Promise<void> 
     expectedConfig: config,
     expectedAccountClientId,
   });
-  const output = { provider, project, status: "disabled", removed: result.removed[0] ?? null };
+  const fallback = findContextBinding(provider, project);
+  const output = {
+    provider,
+    project,
+    status: fallback ? "fallback_active" : "disabled",
+    removed: result.removed[0] ?? null,
+    fallback,
+  };
   if (context.options.json) print.result(output);
-  else {
+  else if (fallback) {
+    print.status(
+      "Context",
+      `Removed the deepest binding, but parent Project ${fallback.project.kind === "path" ? fallback.project.root : "pathless"} remains active for Team ${fallback.organizationId}`,
+    );
+    print.status(
+      "Next action",
+      `${channelConfig.binName} context disable --provider ${provider} ${
+        project.kind === "path" ? `--project-root ${shellQuote(project.root)}` : "--pathless"
+      }`,
+    );
+    print.status("Current session", "already injected Context cannot be removed");
+  } else {
     print.status("Context", "Disabled for future sessions and activations");
     print.status("Current session", "already injected Context cannot be removed");
   }

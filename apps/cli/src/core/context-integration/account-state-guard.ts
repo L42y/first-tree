@@ -1,6 +1,12 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { contextIntegrationProviderSchema } from "@first-tree/shared";
+import {
+  contextIntegrationConfigSchema,
+  contextIntegrationInstallJournalSchema,
+  contextIntegrationInstallManifestSchema,
+  contextIntegrationProviderSchema,
+  legacyContextIntegrationConfigSchema,
+} from "@first-tree/shared";
 import { defaultHome, readConfigFile } from "@first-tree/shared/config";
 import { contextRepairCommand } from "./repair-guidance.js";
 
@@ -105,8 +111,44 @@ function isMissing(error: unknown): boolean {
 function readBlockingJournalProvider(path: string) {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof value !== "object" || value === null || !("provider" in value)) throw new Error("missing provider");
-    return contextIntegrationProviderSchema.parse(Reflect.get(value, "provider"));
+    if (path.endsWith("install-journal.json")) {
+      return contextIntegrationInstallJournalSchema.parse(value).provider;
+    }
+    if (typeof value !== "object" || value === null) throw new Error("invalid operation journal");
+    const journal = value as Record<string, unknown>;
+    const provider = contextIntegrationProviderSchema.parse(journal.provider);
+    const operationIdValid =
+      typeof journal.operationId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(journal.operationId);
+    const bindingsValid =
+      contextIntegrationConfigSchema.safeParse({ schemaVersion: 2, bindings: journal.previousBindings }).success ||
+      legacyContextIntegrationConfigSchema.safeParse({ schemaVersion: 1, bindings: journal.previousBindings }).success;
+    const manifestValid =
+      journal.previousInstallManifest === null ||
+      contextIntegrationInstallManifestSchema.safeParse(journal.previousInstallManifest).success;
+    if (
+      journal.schemaVersion !== 1 ||
+      !operationIdValid ||
+      typeof journal.accountClientId !== "string" ||
+      !/^client_[a-f0-9]{8}$/u.test(journal.accountClientId) ||
+      !["enable", "disable", "repair"].includes(String(journal.operation)) ||
+      !["prepared", "provider_changed", "binding_changed", "rollback_failed"].includes(String(journal.phase)) ||
+      !bindingsValid ||
+      !manifestValid ||
+      typeof journal.providerInstalled !== "boolean" ||
+      typeof journal.providerEnabled !== "boolean" ||
+      typeof journal.marketplaceSourceExisted !== "boolean" ||
+      (journal.recoveryMarketplaceRoot !== null && typeof journal.recoveryMarketplaceRoot !== "string") ||
+      typeof journal.startedAt !== "string" ||
+      !Number.isFinite(Date.parse(journal.startedAt)) ||
+      (journal.providerInstalled === true &&
+        (journal.previousInstallManifest === null ||
+          typeof journal.recoveryMarketplaceRoot !== "string" ||
+          journal.providerEnabled !== true))
+    ) {
+      throw new Error("invalid operation journal");
+    }
+    return provider;
   } catch (error) {
     throw new Error(
       `The incomplete Context operation journal at ${path} is unreadable or invalid. Preserve the file and repair the journal before switching accounts.`,

@@ -5,6 +5,7 @@ import type {
   ContextIntegrationBinding,
   ContextIntegrationConfig,
   ContextIntegrationInstallManifest,
+  LegacyContextIntegrationConfig,
 } from "@first-tree/shared";
 import {
   contextIntegrationConfigSchema,
@@ -16,6 +17,7 @@ import { channelConfig } from "../channel.js";
 import { readActiveContextAccountClientId } from "./account-state-guard.js";
 import {
   assertContextIntegrationConfig,
+  preserveLegacyContextIntegrationBackup,
   readContextIntegrationConfig,
   removeContextBindings,
   replaceContextIntegrationConfig,
@@ -62,6 +64,10 @@ type OperationJournal = {
   marketplaceSourceExisted: boolean;
   recoveryMarketplaceRoot: string | null;
   startedAt: string;
+};
+
+type ParsedOperationJournal = OperationJournal & {
+  legacyPreviousConfig: LegacyContextIntegrationConfig | null;
 };
 
 export function enableContextIntegrationOperation(
@@ -328,6 +334,7 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
     }
     const errors: unknown[] = [];
     try {
+      if (journal.legacyPreviousConfig) preserveLegacyContextIntegrationBackup(journal.legacyPreviousConfig);
       replaceContextIntegrationConfig(snapshot.config);
     } catch (error) {
       errors.push(error);
@@ -364,7 +371,7 @@ export function inspectContextIntegrationOperation(): {
     : null;
 }
 
-function readOperationJournal(): OperationJournal | null {
+function readOperationJournal(): ParsedOperationJournal | null {
   try {
     const parsed = JSON.parse(readFileSync(operationJournalPath(), "utf8")) as Partial<OperationJournal>;
     const operationIdValid =
@@ -388,7 +395,7 @@ function readOperationJournal(): OperationJournal | null {
     ) {
       throw new Error("invalid operation journal");
     }
-    const previousBindings = parseOperationJournalBindings(parsed.previousBindings);
+    const previous = parseOperationJournalBindings(parsed.previousBindings);
     const previousInstallManifest =
       parsed.previousInstallManifest === null
         ? null
@@ -401,8 +408,9 @@ function readOperationJournal(): OperationJournal | null {
     }
     return {
       ...(parsed as OperationJournal),
-      previousBindings,
+      previousBindings: previous.bindings,
       previousInstallManifest,
+      legacyPreviousConfig: previous.legacyConfig,
     };
   } catch (error) {
     if (isMissing(error)) return null;
@@ -410,21 +418,27 @@ function readOperationJournal(): OperationJournal | null {
   }
 }
 
-function parseOperationJournalBindings(value: unknown): ContextIntegrationBinding[] {
+function parseOperationJournalBindings(value: unknown): {
+  bindings: ContextIntegrationBinding[];
+  legacyConfig: LegacyContextIntegrationConfig | null;
+} {
   const current = contextIntegrationConfigSchema.safeParse({
     schemaVersion: 2,
     bindings: value,
   });
-  if (current.success) return current.data.bindings;
+  if (current.success) return { bindings: current.data.bindings, legacyConfig: null };
   const legacy = legacyContextIntegrationConfigSchema.parse({ schemaVersion: 1, bindings: value });
-  return contextIntegrationConfigSchema.parse({
-    schemaVersion: 2,
-    bindings: legacy.bindings.map((binding) => ({
-      provider: binding.provider,
-      project: { kind: "path", root: binding.checkoutRoot },
-      organizationId: binding.organizationId,
-    })),
-  }).bindings;
+  return {
+    bindings: contextIntegrationConfigSchema.parse({
+      schemaVersion: 2,
+      bindings: legacy.bindings.map((binding) => ({
+        provider: binding.provider,
+        project: { kind: "path", root: binding.checkoutRoot },
+        organizationId: binding.organizationId,
+      })),
+    }).bindings,
+    legacyConfig: legacy,
+  };
 }
 
 function assertNoIncompleteOperation(): void {

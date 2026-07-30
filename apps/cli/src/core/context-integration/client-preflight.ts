@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, posix, resolve, win32 } from "node:path";
 import type { ContextIntegrationProject, ContextIntegrationProvider } from "@first-tree/shared";
@@ -83,13 +83,14 @@ export function resolveSessionContextProject(
   provider: ContextIntegrationProvider,
   input: ContextSessionHookInput,
   env: NodeJS.ProcessEnv = process.env,
+  classifierOptions: Parameters<typeof resolveProviderProject>[3] = {},
 ): ContextProjectResolution {
   const sessionId = validSessionId(input.sessionId) ? input.sessionId : undefined;
   if (sessionId) {
     const cached = readCachedSessionProject(sessionId, env);
     if (cached) return cached;
   }
-  const resolution = resolveProviderProject(provider, input, env);
+  const resolution = resolveProviderProject(provider, input, env, classifierOptions);
   if (sessionId && resolution.kind !== "unknown") writeCachedSessionProject(sessionId, resolution, env);
   return resolution;
 }
@@ -98,7 +99,12 @@ export function resolveProviderProject(
   provider: ContextIntegrationProvider,
   input: Pick<ContextSessionHookInput, "cwd">,
   env: NodeJS.ProcessEnv = process.env,
-  classifierOptions: { platform?: NodeJS.Platform; home?: string } = {},
+  classifierOptions: {
+    platform?: NodeJS.Platform;
+    home?: string;
+    realpath?: typeof realpathSync;
+    stat?: typeof statSync;
+  } = {},
 ): ContextProjectResolution {
   if (provider === "claude-code") {
     const projectRoot = env.CLAUDE_PROJECT_DIR;
@@ -109,7 +115,7 @@ export function resolveProviderProject(
         message: "Claude Code did not provide CLAUDE_PROJECT_DIR for this session.",
       };
     }
-    return resolvePathProject(projectRoot, "claude_project_dir");
+    return resolvePathProject(projectRoot, "claude_project_dir", classifierOptions);
   }
   if (!input.cwd) {
     return {
@@ -118,7 +124,7 @@ export function resolveProviderProject(
       message: "Codex did not provide a working directory for project classification.",
     };
   }
-  const canonical = resolvePathProject(input.cwd, "codex_cwd_best_effort");
+  const canonical = resolvePathProject(input.cwd, "codex_cwd_best_effort", classifierOptions);
   if (canonical.kind !== "path") return canonical;
   const pathless = classifyCodexProjectlessPath(canonical.project.root, env, classifierOptions);
   if (pathless) return { kind: "pathless", project: { kind: "pathless" }, source: "codex_documents_v1" };
@@ -128,7 +134,7 @@ export function resolveProviderProject(
 export function classifyCodexProjectlessPath(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
-  options: { platform?: NodeJS.Platform; home?: string } = {},
+  options: { platform?: NodeJS.Platform; home?: string; realpath?: typeof realpathSync } = {},
 ): boolean {
   const platform = options.platform ?? process.platform;
   const pathApi = platform === "win32" ? win32 : posix;
@@ -141,7 +147,17 @@ export function classifyCodexProjectlessPath(
     }
   }
   const normalizedCwd = normalizeForComparison(cwd, platform);
+  const comparableBases = new Set(bases);
   for (const base of bases) {
+    try {
+      comparableBases.add((options.realpath ?? realpathSync)(base));
+    } catch {
+      // Synthetic platform tests and not-yet-created scratch roots still use
+      // the logical candidate. Existing redirected roots add their canonical
+      // target so cwd and base are compared in the same namespace.
+    }
+  }
+  for (const base of comparableBases) {
     const relativePath = pathApi.relative(normalizeForComparison(base, platform), normalizedCwd);
     if (
       !relativePath ||
@@ -171,19 +187,28 @@ function requireKnownProject(
   resolution: ContextProjectResolution,
 ): ContextProjectResolution & { kind: "path" | "pathless" } {
   if (resolution.kind !== "unknown") return resolution;
+  const unreadable = resolution.source === "path_unreadable";
   throw new ContextClientPreflightError(
-    contextClientPreflightErrorCode.projectUnknown,
+    unreadable ? contextClientPreflightErrorCode.projectUnreadable : contextClientPreflightErrorCode.projectUnknown,
     resolution.message,
-    "Pass `--pathless` for a pathless session or `--project-root <path>` for an attached project.",
+    unreadable
+      ? "Choose an existing readable project directory and rerun the command."
+      : "Pass `--pathless` for a pathless session or `--project-root <path>` for an attached project.",
   );
 }
 
 function resolvePathProject(
   path: string,
   source: Extract<ContextProjectResolution, { kind: "path" }>["source"],
+  dependencies: {
+    realpath?: typeof realpathSync;
+    stat?: typeof statSync;
+  } = {},
 ): ContextProjectResolution {
   try {
-    const root = realpathSync(resolve(path));
+    const root = (dependencies.realpath ?? realpathSync)(resolve(path));
+    const stat = (dependencies.stat ?? statSync)(root);
+    if (!stat.isDirectory()) throw new Error("project root is not a directory");
     return { kind: "path", project: { kind: "path", root }, source };
   } catch {
     return {

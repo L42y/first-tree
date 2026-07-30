@@ -28,7 +28,24 @@ function setupHome(): string {
 describe("Context/client-switch account-state interlock", () => {
   it("blocks a client switch while a durable Context operation exists", async () => {
     const home = setupHome();
-    writeFileSync(join(home, "state", "context", "operation-journal.json"), '{"provider":"codex"}');
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        operationId: "12345678-1234-4123-8123-123456789abc",
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "disable",
+        phase: "binding_changed",
+        previousBindings: [],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-30T00:00:00.000Z",
+      }),
+    );
 
     await expect(
       switchLocalClientForLogin({
@@ -52,7 +69,7 @@ describe("Context/client-switch account-state interlock", () => {
   it("preserves and reports a corrupt Context journal instead of suggesting a provider placeholder", async () => {
     const home = setupHome();
     const journal = join(home, "state", "context", "operation-journal.json");
-    writeFileSync(journal, "{}");
+    writeFileSync(journal, '{"provider":"codex"}');
 
     await expect(
       switchLocalClientForLogin({

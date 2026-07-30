@@ -66,7 +66,22 @@ export const contextIntegrationConfigSchema = z
     schemaVersion: z.literal(2),
     bindings: z.array(contextIntegrationBindingSchema).default([]),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    const seen = new Set<string>();
+    config.bindings.forEach((binding, index) => {
+      const projectIdentity = binding.project.kind === "path" ? `path:${binding.project.root}` : "pathless";
+      const identity = `${binding.provider}\0${projectIdentity}`;
+      if (seen.has(identity)) {
+        context.addIssue({
+          code: "custom",
+          path: ["bindings", index],
+          message: "Each provider + project identity may have only one Team binding.",
+        });
+      }
+      seen.add(identity);
+    });
+  });
 export type ContextIntegrationConfig = z.infer<typeof contextIntegrationConfigSchema>;
 
 /** Read only at the atomic local migration boundary. */
@@ -86,7 +101,21 @@ export const legacyContextIntegrationConfigSchema = z
     schemaVersion: z.literal(1),
     bindings: z.array(legacyContextIntegrationBindingSchema).default([]),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    const seen = new Set<string>();
+    config.bindings.forEach((binding, index) => {
+      const identity = `${binding.provider}\0${binding.checkoutRoot}`;
+      if (seen.has(identity)) {
+        context.addIssue({
+          code: "custom",
+          path: ["bindings", index],
+          message: "Each provider + checkout identity may migrate to only one Team binding.",
+        });
+      }
+      seen.add(identity);
+    });
+  });
 export type LegacyContextIntegrationConfig = z.infer<typeof legacyContextIntegrationConfigSchema>;
 
 export const contextIntegrationInstallManifestSchema = z

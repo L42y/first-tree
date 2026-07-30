@@ -169,6 +169,29 @@ describe("context binding store v2", () => {
     expect(readFileSync(storePaths.configPath, "utf8")).toBe("bindings: nope\n");
   });
 
+  it("fails closed on conflicting legacy bindings without creating a backup or overwriting config", () => {
+    const storePaths = temporaryPaths("context-binding-conflicting-legacy-");
+    mkdirSync(dirname(storePaths.configPath), { recursive: true });
+    const legacy = [
+      "schemaVersion: 1",
+      "bindings:",
+      "  - provider: codex",
+      "    checkoutRoot: /work/project",
+      "    repositoryKey: github.com/acme/one",
+      "    organizationId: org_one",
+      "  - provider: codex",
+      "    checkoutRoot: /work/project",
+      "    repositoryKey: github.com/acme/two",
+      "    organizationId: org_two",
+      "",
+    ].join("\n");
+    writeFileSync(storePaths.configPath, legacy);
+
+    expect(() => readContextIntegrationConfig(storePaths)).toThrow(/Invalid First Tree Context binding config/);
+    expect(readFileSync(storePaths.configPath, "utf8")).toBe(legacy);
+    expect(() => statSync(storePaths.legacyBackupPath ?? "")).toThrow();
+  });
+
   it("does not steal a live integration operation lock", () => {
     const storePaths = temporaryPaths("context-binding-lock-");
     mkdirSync(dirname(storePaths.lockPath), { recursive: true });

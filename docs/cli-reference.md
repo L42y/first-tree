@@ -1160,9 +1160,11 @@ first-tree context
 ```
 
 Give the provider-neutral Web Setup prompt to the current coding agent. The
-agent selects only its own provider and runs the exact Team-authored command
-unchanged. The CLI's centralized provider resolver classifies the attached or
-pathless project; the prompt does not ask the model to append selector flags.
+agent selects only its own provider. Codex runs the exact Team-authored command
+unchanged so the CLI applies its centralized classifier. Claude Code appends
+one path/pathless selector from the host-confirmed project identity because
+ordinary shell commands are not guaranteed to receive the Hook-only
+`CLAUDE_PROJECT_DIR`; it must not derive that root from mutable shell cwd.
 Enable installs the provider Plugin
 through the provider's official user-scope lifecycle, and records only the
 provider + project → Team binding in
@@ -1193,8 +1195,10 @@ as separate layers. It reads Codex Hook state from the provider-owned
 `hooks/list` API and distinguishes trusted, changed, review-required, and
 disabled states. It also checks the Plugin manifest and the actual
 provider-installed Skill/Policy/hook bytes. `context repair` revalidates and reinstalls only First Tree's
-Plugin through the same durable operation journal used by enable/disable, with
-rollback to the prior provider cache on failure. Context mutations and local
+Plugin through the durable outer operation journal used by enable and repair,
+with rollback to the prior provider cache on failure. Binding-only disable uses
+that journal only to preserve and atomically update binding state; it never
+captures, removes, or restores provider Plugin state. Context mutations and local
 Client account switching are mutually exclusive; incomplete operations retain
 the exact Computer identity and must be recovered under that same account.
 An installed-but-disabled Plugin fails before mutation because its prior
@@ -1205,6 +1209,9 @@ First Tree keeps that source under
 installed Plugin cache remains provider-owned. `context disable` removes only
 the current effective project binding. It preserves the user-scope Plugin,
 retained marketplace source, local account, and every other project binding.
+If removal exposes a parent path binding, the result is `fallback_active` and
+reports that still-effective Team/root plus the next one-binding disable
+command instead of claiming the queried project is disabled.
 Context already injected into the current session cannot be revoked; the
 change applies to future sessions and explicit activations. Provider-native
 hook trust remains provider-owned.
