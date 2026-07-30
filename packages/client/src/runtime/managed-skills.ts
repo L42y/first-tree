@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { createWriteStream, lstatSync, realpathSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -14,8 +14,24 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import type { AgentRuntimeConfig, RuntimeProvider, RuntimeResourceSkill } from "@first-tree/shared";
-import { parse as parseYaml } from "yaml";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import {
+  type AgentRuntimeConfig,
+  foldPortableTeamSkillPath,
+  getPortableTeamSkillRelativePathError,
+  getPortableTeamSkillSegmentError,
+  normalizeTeamSkillTargetSlug,
+  parseStrictTeamSkillMarkdown,
+  type RuntimeProvider,
+  type RuntimeResourceSkill,
+  type RuntimeSkillBundle,
+  recordPortableTeamSkillPath,
+  TEAM_SKILL_BUNDLE_LIMITS,
+  TEAM_SKILL_OWNERSHIP_MARKER,
+} from "@first-tree/shared";
+import { parseDocument } from "yaml";
+import yauzl, { type Entry, type ZipFile } from "yauzl";
 import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
 import {
   clearManagedSkillsJournal,
@@ -33,14 +49,14 @@ import {
 } from "./managed-state.js";
 import { acquireWorkspaceFileLock, type WorkspaceFileLock } from "./workspace-file-lock.js";
 
-const OWNERSHIP_MARKER = ".first-tree-managed.json";
+const OWNERSHIP_MARKER = TEAM_SKILL_OWNERSHIP_MARKER;
 const LEGACY_RESOURCE_SKILLS_ROOT = ".first-tree/resources/skills";
-const MAX_SKILL_FILES = 512;
-const MAX_SKILL_TOTAL_BYTES = 16 * 1024 * 1024;
-const MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_SKILL_DEPTH = 16;
-const MAX_SKILL_NAME_LENGTH = 63;
+const MAX_SKILL_FILES = TEAM_SKILL_BUNDLE_LIMITS.maxMaterializedFiles;
+const MAX_SKILL_TOTAL_BYTES = TEAM_SKILL_BUNDLE_LIMITS.maxMaterializedBytes;
+const MAX_SKILL_FILE_BYTES = TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes;
+const MAX_SKILL_DEPTH = TEAM_SKILL_BUNDLE_LIMITS.maxDepth;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
+const MANAGED_SKILLS_QUARANTINE_PREFIX = ".managed-skill-quarantine-";
 
 const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = {
   "claude-code": ".claude/skills",
@@ -55,7 +71,6 @@ const ALLOWED_TARGET_ROOTS = new Set<string>([...Object.values(PROVIDER_SKILL_RO
 
 const RETIRED_CORE_SKILL_NAMES = ["first-tree-guide", "first-tree-kickoff", "first-tree-gitlab"] as const;
 const ALL_KNOWN_CORE_SKILL_NAMES = [...CORE_SKILL_NAMES, ...RETIRED_CORE_SKILL_NAMES] as const;
-const RESERVED_CORE_SLUGS = new Set<string>(CORE_SKILL_NAMES);
 const WINDOWS_RESERVED_NAMES = new Set<string>([
   "con",
   "prn",
@@ -119,7 +134,14 @@ export type ManagedSkillsCheckpoint =
   | "target_backed_up"
   | "target_installed"
   | "state_committed"
-  | "backup_cleaned";
+  | "backup_cleaned"
+  | "quarantine_rename"
+  | "quarantine_moved"
+  | "remove_target"
+  | "journal_recovery"
+  | "provider_root_read";
+
+export type TeamSkillBundleResolver = (bundle: RuntimeSkillBundle) => Promise<Buffer>;
 
 export type ReconcileManagedSkillsOptions = Readonly<{
   workspace: string;
@@ -128,6 +150,8 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   log?: (message: string) => void;
   /** Test/build override. Production resolves the bundled client skills directory. */
   bundledSkillsRoot?: string;
+  /** Resolves immutable Team Skill ZIP bytes through the authenticated SDK. */
+  bundleResolver?: TeamSkillBundleResolver;
   lockTimeoutMs?: number;
   /** Fault-injection seam used by deterministic crash-recovery tests. */
   testCrashAt?: ManagedSkillsCheckpoint;
@@ -135,6 +159,12 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   testFailureAt?: ManagedSkillsCheckpoint;
   /** Forces the rollback path to preserve its journal and abort reconciliation. */
   testRecoveryFailure?: boolean;
+  /** Test-only platform override for the POSIX mode-safety gate. */
+  testModePlatform?: NodeJS.Platform;
+  /** Mutates test state immediately before the universal provider-publication digest gate. */
+  testBeforePublication?: () => void | Promise<void>;
+  /** @deprecated Use testBeforePublication. */
+  testBeforeTeamRows?: () => void | Promise<void>;
 }>;
 
 type DesiredManagedSkill = Readonly<{
@@ -146,7 +176,13 @@ type DesiredManagedSkill = Readonly<{
   validationError: string | null;
   source:
     | Readonly<{ kind: "bundled-directory"; path: string }>
-    | Readonly<{ kind: "inline-skill"; skill: RuntimeResourceSkill }>;
+    | Readonly<{ kind: "inline-skill"; skill: RuntimeResourceSkill }>
+    | Readonly<{ kind: "preserved-attachment"; entry: ManagedSkillEntry }>
+    | Readonly<{
+        kind: "attachment-zip";
+        bundle: RuntimeSkillBundle;
+        manifestName: string;
+      }>;
 }>;
 
 type AllocatedManagedSkill = Readonly<{
@@ -176,7 +212,14 @@ type SkillTreeStats = {
 };
 
 class ManagedSkillsFatalError extends Error {}
+export class ManagedSkillsUnsafeDiscoveryError extends Error {
+  override readonly name = "ManagedSkillsUnsafeDiscoveryError";
+}
 class ManagedSkillsSimulatedCrash extends Error {}
+
+export function isManagedSkillsUnsafeDiscoveryError(error: unknown): error is ManagedSkillsUnsafeDiscoveryError {
+  return error instanceof ManagedSkillsUnsafeDiscoveryError;
+}
 
 const processMutexTails = new Map<string, Promise<void>>();
 
@@ -202,12 +245,14 @@ export async function reconcileManagedSkillsForConfig(
   provider: RuntimeProvider,
   config: AgentRuntimeConfig | null | undefined,
   log?: (message: string) => void,
+  bundleResolver?: TeamSkillBundleResolver,
 ): Promise<ReconcileManagedSkillsResult> {
   return reconcileManagedSkills({
     workspace,
     provider,
     teamSnapshot: teamSkillSnapshotFromConfig(config),
     log,
+    bundleResolver,
   });
 }
 
@@ -227,7 +272,7 @@ export async function reconcileManagedSkills(
     try {
       assertManagedWorkspaceRootsSafe(options.workspace);
       lock = await acquireWorkspaceLock(options);
-      await recoverPendingJournal(options.workspace, options.log);
+      await recoverPendingJournal(options);
       let state = await loadOrMigrateManagedState(options);
 
       const authoritative =
@@ -259,9 +304,12 @@ export async function reconcileManagedSkills(
           "Managed skills Team Resource snapshot unavailable; preserving last-known-good Team Skills until control-plane recovery",
         );
       }
+      if (!authoritative) {
+        await verifyPreservedTeamTargets(options, state);
+      }
 
-      const desiredSkills = await buildDesiredSkills(options, authoritative);
-      const allocations = await allocateTargets(options.workspace, options.provider, state, desiredSkills);
+      const desiredSkills = await buildDesiredSkills(options, state, authoritative);
+      const allocations = await allocateTargets(options, state, desiredSkills);
       const successfulTargets = new Map<ManagedSkillEntry["key"], string>();
       const desiredKeys = new Set<ManagedSkillEntry["key"]>(desiredSkills.map((skill) => skill.key));
 
@@ -276,34 +324,57 @@ export async function reconcileManagedSkills(
         }
         try {
           state = await ensureTargetOwnership(options.workspace, state, allocated);
-          const existing = state.skills.find(
-            (entry) =>
-              entry.key === allocated.desired.key &&
-              entry.target === allocated.target &&
-              entry.revision === allocated.desired.revision,
+          const current = state.skills.find(
+            (entry) => entry.key === allocated.desired.key && entry.target === allocated.target,
           );
-          if (existing) {
-            const actualDigest = await digestManagedTarget(options.workspace, existing.target);
-            const expectedDigest =
-              allocated.desired.source.kind === "bundled-directory"
-                ? await digestBundledFinalTree(
-                    allocated.desired.source.path,
-                    allocated.desired.key,
-                    allocated.desired.revision,
-                  )
-                : existing.installedDigest;
-            if (actualDigest === existing.installedDigest && expectedDigest === existing.installedDigest) {
-              mutable.skipped.push(existing.key);
-              successfulTargets.set(existing.key, existing.target);
-              continue;
+          const existing = current?.revision === allocated.desired.revision ? current : undefined;
+          if (current) {
+            let actualDigest: `sha256:${string}` | null = null;
+            try {
+              actualDigest = await digestManagedTarget(options.workspace, current.target, {
+                modePlatform: options.testModePlatform,
+              });
+            } catch (error) {
+              options.log?.(
+                `Managed skill target cannot be verified (${current.key}): ${
+                  error instanceof Error ? error.message.slice(0, 300) : String(error)
+                }`,
+              );
+            }
+            if (actualDigest !== current.installedDigest) {
+              await quarantineDriftedManagedTarget(options, current);
+            } else if (existing) {
+              const expectedDigest =
+                allocated.desired.source.kind === "bundled-directory"
+                  ? await digestBundledFinalTree(
+                      allocated.desired.source.path,
+                      allocated.desired.key,
+                      allocated.desired.revision,
+                      options.testModePlatform,
+                    )
+                  : allocated.desired.source.kind === "inline-skill" ||
+                      allocated.desired.source.kind === "preserved-attachment"
+                    ? existing.installedDigest
+                    : actualDigest;
+              if (expectedDigest === existing.installedDigest) {
+                mutable.skipped.push(existing.key);
+                successfulTargets.set(existing.key, existing.target);
+                continue;
+              }
             }
           }
-          const staged = await stageManagedSkill(options.workspace, allocated);
+          const staged = await stageManagedSkill(options, allocated);
           state = await installStagedSkill(options, state, staged);
           mutable.installed.push(staged.entry.key);
           successfulTargets.set(staged.entry.key, staged.entry.target);
         } catch (error) {
-          if (error instanceof ManagedSkillsSimulatedCrash || error instanceof ManagedSkillsFatalError) throw error;
+          if (
+            error instanceof ManagedSkillsSimulatedCrash ||
+            error instanceof ManagedSkillsFatalError ||
+            error instanceof ManagedSkillsUnsafeDiscoveryError
+          ) {
+            throw error;
+          }
           const reason = error instanceof Error ? error.message : String(error);
           mutable.failures.push({ key: desired.key, reason });
           options.log?.(`Managed skill reconcile failed (${desired.key}): ${reason.slice(0, 300)}`);
@@ -327,18 +398,50 @@ export async function reconcileManagedSkills(
           state = await removeManagedEntry(options, state, entry);
           mutable.removed.push(`${entry.key}@${entry.target}`);
         } catch (error) {
-          if (error instanceof ManagedSkillsSimulatedCrash || error instanceof ManagedSkillsFatalError) throw error;
+          if (error instanceof ManagedSkillsSimulatedCrash) throw error;
+          if (await managedTargetExistsAfterFailedRemoval(options.workspace, entry.target)) {
+            throw new ManagedSkillsUnsafeDiscoveryError(
+              `Managed Skill target ${entry.target} could not be removed from provider discovery`,
+              { cause: error },
+            );
+          }
+          if (error instanceof ManagedSkillsFatalError) throw error;
           const reason = error instanceof Error ? error.message : String(error);
           mutable.failures.push({ key: entry.key, reason: `cleanup ${entry.target}: ${reason}` });
           options.log?.(`Managed skill cleanup failed (${entry.key} at ${entry.target}): ${reason.slice(0, 300)}`);
         }
       }
 
+      await (options.testBeforePublication ?? options.testBeforeTeamRows)?.();
+      const publication = await verifyLedgerTargetsForPublication(options, state);
+      for (const invalidated of publication.invalidated) {
+        mutable.installed = mutable.installed.filter((key) => key !== invalidated.key);
+        mutable.skipped = mutable.skipped.filter((key) => key !== invalidated.key);
+        mutable.failures.push({
+          key: invalidated.key,
+          reason: "managed Skill changed during final provider publication verification and was quarantined",
+        });
+      }
       if (authoritative && options.teamSnapshot.kind === "authoritative") {
-        mutable.teamSkills = await buildReconciledTeamRows(options.workspace, state, desiredSkills, successfulTargets);
+        mutable.teamSkills = buildReconciledTeamRows(
+          state,
+          desiredSkills,
+          successfulTargets,
+          publication.verifiedTargets,
+        );
       }
       return freezeResult(state.resourceConfigVersion, mutable);
     } catch (error) {
+      if (error instanceof ManagedSkillsUnsafeDiscoveryError) throw error;
+      if (
+        !(error instanceof ManagedSkillsSimulatedCrash) &&
+        (await providerDiscoveryMayContainManagedContent(options))
+      ) {
+        throw new ManagedSkillsUnsafeDiscoveryError(
+          "Managed Skill reconciliation did not reach verified publication while provider discovery may contain managed content",
+          { cause: error },
+        );
+      }
       const reason = error instanceof Error ? error.message : String(error);
       mutable.failures.push({ key: "workspace", reason });
       options.log?.(`Managed skills reconcile skipped: ${reason.slice(0, 300)}`);
@@ -527,6 +630,7 @@ async function adoptLegacyResourceSkills(
 ): Promise<ManagedState> {
   const additions: ManagedSkillEntry[] = [];
   for (const skill of skills) {
+    if (skill.bundle) continue;
     if (!isSafeLegacyResourceId(skill.resourceId)) continue;
     const target = `${LEGACY_RESOURCE_SKILLS_ROOT}/${skill.resourceId}`;
     if (state.skills.some((entry) => entry.target === target)) continue;
@@ -541,7 +645,7 @@ async function adoptLegacyResourceSkills(
     if (!digest) continue;
     let requestedSlug: string;
     try {
-      requestedSlug = normalizeRequestedSlug(skill.name);
+      requestedSlug = normalizeTeamSkillTargetSlug(skill.name);
     } catch {
       continue;
     }
@@ -567,6 +671,7 @@ function isSafeLegacyResourceId(resourceId: string): boolean {
 
 async function buildDesiredSkills(
   options: ReconcileManagedSkillsOptions,
+  state: ManagedState,
   authoritativeTeamSnapshot: boolean,
 ): Promise<DesiredManagedSkill[]> {
   let bundledRoot: string;
@@ -609,6 +714,13 @@ async function buildDesiredSkills(
   const emittedDuplicateIds = new Set<string>();
   for (const skill of sorted) {
     const key = `resource:${skill.resourceId}` as const;
+    const priorAttachment = !skill.bundle
+      ? state.skills.find((entry) => entry.key === key && entry.revision.startsWith("attachment:"))
+      : undefined;
+    const source: DesiredManagedSkill["source"] = priorAttachment
+      ? { kind: "preserved-attachment", entry: priorAttachment }
+      : teamSkillSource(skill);
+    const revision = priorAttachment?.revision ?? teamSkillRevision(skill);
     if ((resourceIdCounts.get(skill.resourceId) ?? 0) > 1) {
       if (!emittedDuplicateIds.has(skill.resourceId)) {
         emittedDuplicateIds.add(skill.resourceId);
@@ -618,26 +730,28 @@ async function buildDesiredSkills(
           kind: "team",
           requestedSlug: "",
           description: skill.description || "No description",
-          revision: inlineSkillRevision(skill),
+          revision,
           validationError: "duplicate resourceId in authoritative snapshot",
-          source: { kind: "inline-skill", skill },
+          source,
         });
       }
       continue;
     }
     try {
-      const requestedSlug = normalizeRequestedSlug(skill.name);
-      if (RESERVED_CORE_SLUGS.has(requestedSlug)) {
-        throw new Error(`Team Skill name "${skill.name}" is reserved by First Tree`);
+      const requestedSlug = priorAttachment?.requestedSlug ?? normalizeTeamSkillTargetSlug(skill.name);
+      if (priorAttachment) {
+        options.log?.(
+          `Managed Team Skill preserved attachment authority (${key}); current snapshot omitted its bundle descriptor`,
+        );
       }
       desired.push({
         key,
         kind: "team",
         requestedSlug,
         description: skill.description || "No description",
-        revision: inlineSkillRevision(skill),
+        revision,
         validationError: null,
-        source: { kind: "inline-skill", skill },
+        source,
       });
     } catch (error) {
       options.log?.(`Managed Team Skill rejected (${key}): ${error instanceof Error ? error.message : String(error)}`);
@@ -648,9 +762,9 @@ async function buildDesiredSkills(
         kind: "team",
         requestedSlug: "",
         description: skill.description || "No description",
-        revision: inlineSkillRevision(skill),
+        revision,
         validationError: error instanceof Error ? error.message : String(error),
-        source: { kind: "inline-skill", skill },
+        source,
       });
     }
   }
@@ -658,17 +772,18 @@ async function buildDesiredSkills(
 }
 
 async function allocateTargets(
-  workspace: string,
-  provider: RuntimeProvider,
+  options: ReconcileManagedSkillsOptions,
   state: ManagedState,
   desired: readonly DesiredManagedSkill[],
 ): Promise<Map<ManagedSkillEntry["key"], AllocatedManagedSkill>> {
+  const { workspace, provider } = options;
   const root = providerSkillRoot(provider);
   const occupied = new Map<string, ManagedSkillEntry["key"] | "unmanaged">();
   const onDiskSpellings = new Map<string, string>();
   try {
+    maybeFault(options, "provider_root_read");
     for (const entry of await readdir(resolveWorkspacePath(workspace, root, "root"), { withFileTypes: true })) {
-      const folded = entry.name.toLocaleLowerCase("en-US");
+      const folded = foldPortableTeamSkillPath(entry.name);
       occupied.set(folded, "unmanaged");
       onDiskSpellings.set(folded, entry.name);
     }
@@ -677,7 +792,7 @@ async function allocateTargets(
   }
   for (const entry of state.skills) {
     if (!entry.target.startsWith(`${root}/`)) continue;
-    occupied.set(entry.effectiveName.toLocaleLowerCase("en-US"), entry.key);
+    occupied.set(foldPortableTeamSkillPath(entry.effectiveName), entry.key);
   }
 
   const allocations = new Map<ManagedSkillEntry["key"], AllocatedManagedSkill>();
@@ -685,7 +800,7 @@ async function allocateTargets(
     if (!skill.requestedSlug || skill.validationError) continue;
     if (skill.kind === "core") {
       const target = `${root}/${skill.requestedSlug}`;
-      const folded = skill.requestedSlug.toLocaleLowerCase("en-US");
+      const folded = foldPortableTeamSkillPath(skill.requestedSlug);
       const owner = occupied.get(folded);
       if (owner === "unmanaged" && onDiskSpellings.get(folded) !== skill.requestedSlug) {
         // Do not create a second spelling that collides on case-insensitive
@@ -701,7 +816,7 @@ async function allocateTargets(
         continue;
       }
       allocations.set(skill.key, { desired: skill, effectiveName: skill.requestedSlug, target });
-      occupied.set(skill.requestedSlug.toLocaleLowerCase("en-US"), skill.key);
+      occupied.set(foldPortableTeamSkillPath(skill.requestedSlug), skill.key);
       continue;
     }
 
@@ -718,7 +833,7 @@ async function allocateTargets(
         effectiveName: reusable.effectiveName,
         target: reusable.target,
       });
-      occupied.set(reusable.effectiveName.toLocaleLowerCase("en-US"), skill.key);
+      occupied.set(foldPortableTeamSkillPath(reusable.effectiveName), skill.key);
       continue;
     }
 
@@ -730,7 +845,7 @@ async function allocateTargets(
             ? suffixSkillName(skill.requestedSlug, "-first-tree")
             : suffixSkillName(skill.requestedSlug, `-first-tree-${suffix}`);
       const target = `${root}/${effectiveName}`;
-      const key = effectiveName.toLocaleLowerCase("en-US");
+      const key = foldPortableTeamSkillPath(effectiveName);
       const owner = occupied.get(key);
       if (owner === undefined || owner === skill.key || (await targetMarkerMatches(workspace, target, skill.key))) {
         allocations.set(skill.key, { desired: skill, effectiveName, target });
@@ -795,19 +910,42 @@ async function ensureTargetOwnership(
   });
 }
 
-async function stageManagedSkill(workspace: string, allocated: AllocatedManagedSkill): Promise<StagedManagedSkill> {
+async function stageManagedSkill(
+  options: ReconcileManagedSkillsOptions,
+  allocated: AllocatedManagedSkill,
+): Promise<StagedManagedSkill> {
+  const workspace = options.workspace;
   const targetPath = resolveWorkspacePath(workspace, allocated.target, "target");
   await mkdir(dirname(targetPath), { recursive: true });
   const stagingName = `.${basename(targetPath)}.ft-${randomBytes(8).toString("hex")}.staging`;
   const stagingPath = join(dirname(targetPath), stagingName);
   const staging = portableRelative(workspace, stagingPath);
   await rm(stagingPath, { recursive: true, force: true });
-  await mkdir(stagingPath, { recursive: false });
+  await mkdir(stagingPath, { recursive: false, mode: 0o700 });
+  await chmod(stagingPath, 0o700);
   try {
     if (allocated.desired.source.kind === "bundled-directory") {
       await copySanitizedSkillTree(allocated.desired.source.path, stagingPath);
-    } else {
+    } else if (allocated.desired.source.kind === "inline-skill") {
       await writeInlineSkillTree(stagingPath, allocated);
+    } else if (allocated.desired.source.kind === "preserved-attachment") {
+      throw new Error(
+        `Team Skill bundle descriptor is unavailable for previously bundle-backed ${allocated.desired.key}`,
+      );
+    } else {
+      if (!options.bundleResolver) {
+        throw new Error(`Team Skill bundle resolver is unavailable for ${allocated.desired.key}`);
+      }
+      const bytes = await options.bundleResolver(allocated.desired.source.bundle);
+      if (bytes.byteLength !== allocated.desired.source.bundle.sizeBytes) {
+        throw new Error(
+          `Team Skill bundle ${allocated.desired.source.bundle.attachmentId} size mismatch: ` +
+            `expected ${allocated.desired.source.bundle.sizeBytes}, received ${bytes.byteLength}`,
+        );
+      }
+      await extractSkillZip(bytes, stagingPath);
+      await validateSkillManifest(stagingPath, allocated.desired.source.manifestName);
+      await rewriteSkillManifestName(stagingPath, allocated.effectiveName);
     }
     await writeOwnershipMarker(stagingPath, allocated.desired.key, allocated.desired.revision);
     const metadata = await validateSkillManifest(stagingPath, allocated.effectiveName);
@@ -816,7 +954,7 @@ async function stageManagedSkill(workspace: string, allocated: AllocatedManagedS
         `bundled Core Skill manifest name "${metadata.name}" does not match "${allocated.desired.requestedSlug}"`,
       );
     }
-    const installedDigest = await digestDirectory(stagingPath);
+    const installedDigest = await digestDirectory(stagingPath, options.testModePlatform);
     return {
       allocated,
       staging,
@@ -832,6 +970,106 @@ async function stageManagedSkill(workspace: string, allocated: AllocatedManagedS
   } catch (error) {
     await rm(stagingPath, { recursive: true, force: true });
     throw error;
+  }
+}
+
+async function quarantineDriftedManagedTarget(
+  options: ReconcileManagedSkillsOptions,
+  entry: ManagedSkillEntry,
+): Promise<void> {
+  try {
+    const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
+    const quarantinePath = managedTargetQuarantinePath(options.workspace, entry.target);
+    if (!(await pathExists(targetPath))) {
+      try {
+        await rm(quarantinePath, { recursive: true, force: true });
+      } catch (error) {
+        options.log?.(
+          `Managed skill stale quarantine cleanup deferred (${entry.target}): ${
+            error instanceof Error ? error.message.slice(0, 300) : String(error)
+          }`,
+        );
+      }
+      return;
+    }
+    // One stable slot per ledger target prevents repeated drift from growing
+    // an unbounded quarantine set. A stale slot must be removed before reuse.
+    await rm(quarantinePath, { recursive: true, force: true });
+    maybeFault(options, "quarantine_rename");
+    await rename(targetPath, quarantinePath);
+    options.log?.(`Managed skill quarantined unverified target ${entry.target}`);
+    maybeFault(options, "quarantine_moved");
+    try {
+      await rm(quarantinePath, { recursive: true, force: true });
+    } catch (error) {
+      options.log?.(
+        `Managed skill quarantine cleanup deferred (${entry.target}): ${
+          error instanceof Error ? error.message.slice(0, 300) : String(error)
+        }`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof ManagedSkillsSimulatedCrash) throw error;
+    throw new ManagedSkillsUnsafeDiscoveryError(
+      `Managed Skill target ${entry.target} cannot be verified or quarantined outside provider discovery`,
+      { cause: error },
+    );
+  }
+}
+
+function managedTargetQuarantinePath(workspace: string, target: string): string {
+  const quarantineKey = createHash("sha256").update(target).digest("hex").slice(0, 24);
+  const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${quarantineKey}`;
+  return resolveWorkspacePath(workspace, quarantine, "quarantine");
+}
+
+async function removeManagedTargetQuarantine(workspace: string, target: string): Promise<void> {
+  await rm(managedTargetQuarantinePath(workspace, target), { recursive: true, force: true });
+}
+
+async function verifyPreservedTeamTargets(options: ReconcileManagedSkillsOptions, state: ManagedState): Promise<void> {
+  const providerRoot = `${providerSkillRoot(options.provider)}/`;
+  for (const entry of state.skills) {
+    if (!entry.key.startsWith("resource:") || !entry.target.startsWith(providerRoot)) continue;
+    let actualDigest: `sha256:${string}` | null = null;
+    try {
+      actualDigest = await digestManagedTarget(options.workspace, entry.target, {
+        modePlatform: options.testModePlatform,
+      });
+    } catch (error) {
+      options.log?.(
+        `Preserved Team Skill target cannot be verified (${entry.key}): ${
+          error instanceof Error ? error.message.slice(0, 300) : String(error)
+        }`,
+      );
+    }
+    if (actualDigest !== entry.installedDigest) {
+      await quarantineDriftedManagedTarget(options, entry);
+    }
+  }
+}
+
+async function providerDiscoveryMayContainManagedContent(options: ReconcileManagedSkillsOptions): Promise<boolean> {
+  try {
+    const providerRoot = resolveWorkspacePath(options.workspace, providerSkillRoot(options.provider), "root");
+    const rootStat = await lstat(providerRoot);
+    if (!rootStat.isDirectory()) return true;
+    return (await readdir(providerRoot)).length > 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // If the discovery root itself cannot be inspected safely, absence of
+    // managed content cannot be proven.
+    return true;
+  }
+}
+
+async function managedTargetExistsAfterFailedRemoval(workspace: string, target: string): Promise<boolean> {
+  try {
+    return await pathExists(resolveWorkspacePath(workspace, target, "target"));
+  } catch {
+    // An unsafe/unresolvable discovery path is not proof that the provider
+    // cannot see it, so provider preflight must fail closed.
+    return true;
   }
 }
 
@@ -896,6 +1134,11 @@ async function removeManagedEntry(
   assertManagedTarget(entry.target);
   const afterState = removeEntry(beforeState, entry);
   const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
+  // A previous drift quarantine may have moved the target out of discovery
+  // before the process stopped. Clear that one stable, target-derived slot
+  // while the ledger entry still exists so a failed cleanup is retried rather
+  // than orphaned by authoritative removal.
+  await removeManagedTargetQuarantine(options.workspace, entry.target);
   if (!(await pathExists(targetPath))) {
     return persistStateMonotonic(options.workspace, afterState);
   }
@@ -916,6 +1159,7 @@ async function removeManagedEntry(
   writeManagedSkillsJournal(options.workspace, journal);
   maybeFault(options, "prepared");
   try {
+    maybeFault(options, "remove_target");
     await rename(targetPath, backupPath);
     journal = writeJournalPhase(options.workspace, journal, "target_backed_up");
     maybeFault(options, "target_backed_up");
@@ -946,7 +1190,7 @@ async function recoverFailedTransaction(
     if (options.testRecoveryFailure) {
       throw new Error("simulated managed skills recovery failure");
     }
-    await recoverPendingJournal(options.workspace, options.log);
+    await recoverPendingJournal(options);
     const recovered = readManagedStateResult(options.workspace);
     if (recovered.kind !== "current") {
       throw new Error("managed state unavailable after transaction recovery");
@@ -960,7 +1204,8 @@ async function recoverFailedTransaction(
   }
 }
 
-async function recoverPendingJournal(workspace: string, log?: (message: string) => void): Promise<void> {
+async function recoverPendingJournal(options: ReconcileManagedSkillsOptions): Promise<void> {
+  const { workspace, log } = options;
   const result = readManagedSkillsJournal(workspace);
   if (result.kind === "missing") return;
   if (result.kind === "future") {
@@ -971,6 +1216,7 @@ async function recoverPendingJournal(workspace: string, log?: (message: string) 
   if (result.kind === "invalid") {
     throw new ManagedSkillsFatalError(`managed skills journal is invalid: ${result.reason}`);
   }
+  maybeFault(options, "journal_recovery");
   const journal = result.journal;
   assertManagedTarget(journal.target);
   if (journal.staging) assertTemporaryTarget(journal.staging, ".staging");
@@ -992,7 +1238,9 @@ async function recoverPendingJournal(workspace: string, log?: (message: string) 
   const backupExists = backupPath ? await pathExists(backupPath) : false;
 
   if (journal.operation === "install") {
-    const actualDigest = targetExists ? await digestManagedTarget(workspace, journal.target) : null;
+    const actualDigest = targetExists
+      ? await digestManagedTarget(workspace, journal.target, { modePlatform: options.testModePlatform })
+      : null;
     if (actualDigest === journal.expectedInstalledDigest) {
       persistStateMonotonic(workspace, journal.afterState);
       if (stagingPath) await rm(stagingPath, { recursive: true, force: true });
@@ -1086,24 +1334,58 @@ function maybeFault(options: ReconcileManagedSkillsOptions, checkpoint: ManagedS
   }
 }
 
-async function buildReconciledTeamRows(
-  workspace: string,
+async function verifyLedgerTargetsForPublication(
+  options: ReconcileManagedSkillsOptions,
+  state: ManagedState,
+): Promise<
+  Readonly<{
+    verifiedTargets: ReadonlySet<string>;
+    invalidated: readonly ManagedSkillEntry[];
+  }>
+> {
+  const providerRoot = `${providerSkillRoot(options.provider)}/`;
+  const verifiedTargets = new Set<string>();
+  const invalidated: ManagedSkillEntry[] = [];
+  for (const entry of state.skills) {
+    if (!entry.target.startsWith(providerRoot)) continue;
+    let actualDigest: `sha256:${string}` | null = null;
+    try {
+      actualDigest = await digestManagedTarget(options.workspace, entry.target, {
+        modePlatform: options.testModePlatform,
+      });
+    } catch (error) {
+      options.log?.(
+        `Managed skill final publication target cannot be verified (${entry.key}): ${
+          error instanceof Error ? error.message.slice(0, 300) : String(error)
+        }`,
+      );
+    }
+    if (actualDigest !== entry.installedDigest) {
+      await quarantineDriftedManagedTarget(options, entry);
+      invalidated.push(entry);
+      continue;
+    }
+    verifiedTargets.add(entry.target);
+  }
+  return { verifiedTargets, invalidated };
+}
+
+function buildReconciledTeamRows(
   state: ManagedState,
   desired: readonly DesiredManagedSkill[],
   successfulTargets: ReadonlyMap<ManagedSkillEntry["key"], string>,
-): Promise<ReconciledTeamSkill[]> {
+  verifiedTargets: ReadonlySet<string>,
+): ReconciledTeamSkill[] {
   const rows: ReconciledTeamSkill[] = [];
   for (const skill of desired) {
     if (skill.kind !== "team") continue;
     const target = successfulTargets.get(skill.key);
-    if (!target) continue;
+    if (!target || !verifiedTargets.has(target)) continue;
     const entry = state.skills.find(
       (candidate) =>
         candidate.key === skill.key && candidate.target === target && candidate.revision === skill.revision,
     );
     if (!entry) continue;
-    const actualDigest = await digestManagedTarget(workspace, target);
-    if (actualDigest !== entry.installedDigest) continue;
     rows.push({
       key: skill.key as `resource:${string}`,
       name: entry.effectiveName,
@@ -1184,15 +1466,14 @@ async function validateSkillManifest(
   stagingPath: string,
   expectedName: string,
 ): Promise<Readonly<{ name: string; description: string }>> {
-  const markdown = await readFile(join(stagingPath, "SKILL.md"), "utf-8");
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
-  if (!match?.[1]) throw new Error("SKILL.md must contain YAML frontmatter");
-  let parsed: unknown;
+  const raw = await readFile(join(stagingPath, "SKILL.md"));
+  let markdown: string;
   try {
-    parsed = parseYaml(match[1]);
-  } catch (error) {
-    throw new Error(`SKILL.md frontmatter is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    markdown = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    throw new Error("SKILL.md must be valid UTF-8");
   }
+  const parsed = parseStrictTeamSkillMarkdown(markdown).frontmatter;
   if (!isRecord(parsed) || typeof parsed.name !== "string" || typeof parsed.description !== "string") {
     throw new Error("SKILL.md frontmatter requires string name and description");
   }
@@ -1201,6 +1482,316 @@ async function validateSkillManifest(
   }
   if (parsed.description.trim().length === 0) throw new Error("SKILL.md description must not be empty");
   return { name: parsed.name, description: parsed.description };
+}
+
+type ZipSkillEntry = Readonly<{
+  sourcePath: string;
+  targetPath: string;
+  kind: "directory" | "file";
+  mode: number;
+  size: number;
+}>;
+
+async function extractSkillZip(bytes: Buffer, destinationRoot: string): Promise<void> {
+  const entries = await inspectSkillZip(bytes);
+  const bySourcePath = new Map(entries.map((entry) => [entry.sourcePath, entry]));
+  const zipFile = await openZipBuffer(bytes);
+  try {
+    await forEachZipEntry(zipFile, async (zipEntry) => {
+      const planned = bySourcePath.get(zipEntry.fileName);
+      if (!planned) throw new Error(`Skill ZIP changed while extracting: ${zipEntry.fileName}`);
+      if (!planned.targetPath) return;
+      const targetPath = join(destinationRoot, ...planned.targetPath.split("/"));
+      if (planned.kind === "directory") {
+        await mkdir(targetPath, { recursive: true, mode: planned.mode });
+        await chmod(targetPath, planned.mode);
+        return;
+      }
+      await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+      await writeZipEntry(zipFile, zipEntry, targetPath, planned.mode, planned.size);
+    });
+  } finally {
+    zipFile.close();
+  }
+}
+
+async function inspectSkillZip(bytes: Buffer): Promise<ZipSkillEntry[]> {
+  const zipFile = await openZipBuffer(bytes);
+  const rawEntries: Array<
+    Readonly<{
+      sourcePath: string;
+      normalizedPath: string;
+      kind: "directory" | "file";
+      mode: number;
+      size: number;
+    }>
+  > = [];
+  const seenRawPaths = new Set<string>();
+  let entryCount = 0;
+  let fileCount = 0;
+  let totalBytes = 0;
+  try {
+    await forEachZipEntry(zipFile, async (entry) => {
+      const normalizedPath = validateZipEntryPath(entry.fileName);
+      entryCount++;
+      if (entryCount > TEAM_SKILL_BUNDLE_LIMITS.maxEntries) {
+        throw new Error(`Skill ZIP exceeds max entry count ${TEAM_SKILL_BUNDLE_LIMITS.maxEntries}`);
+      }
+      const folded = foldPortableTeamSkillPath(normalizedPath);
+      if (seenRawPaths.has(folded)) {
+        throw new Error(`Skill ZIP contains a duplicate case-folded path: ${normalizedPath}`);
+      }
+      seenRawPaths.add(folded);
+      if ((entry.generalPurposeBitFlag & 0x1) !== 0) {
+        throw new Error(`Skill ZIP contains an encrypted entry: ${normalizedPath}`);
+      }
+      const kind = zipEntryKind(entry, normalizedPath);
+      const size = entry.uncompressedSize;
+      if (!Number.isSafeInteger(size) || size < 0) {
+        throw new Error(`Skill ZIP entry has an invalid size: ${normalizedPath}`);
+      }
+      if (kind === "directory" && size !== 0) {
+        throw new Error(`Skill ZIP directory entry contains data: ${normalizedPath}`);
+      }
+      if (kind === "file") {
+        fileCount++;
+        totalBytes += size;
+        if (fileCount > TEAM_SKILL_BUNDLE_LIMITS.maxFiles) {
+          throw new Error(`Skill ZIP exceeds max file count ${TEAM_SKILL_BUNDLE_LIMITS.maxFiles}`);
+        }
+        if (size > TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes) {
+          throw new Error(
+            `Skill ZIP file exceeds max size ${TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes}: ${normalizedPath}`,
+          );
+        }
+        if (totalBytes > TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes) {
+          throw new Error(`Skill ZIP exceeds max total bytes ${TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes}`);
+        }
+        if (
+          basename(normalizedPath).toLocaleLowerCase("en-US") === "skill.md" &&
+          size > TEAM_SKILL_BUNDLE_LIMITS.maxSkillMarkdownBytes
+        ) {
+          throw new Error(`SKILL.md exceeds max size ${TEAM_SKILL_BUNDLE_LIMITS.maxSkillMarkdownBytes}`);
+        }
+      }
+      rawEntries.push({
+        sourcePath: entry.fileName,
+        normalizedPath,
+        kind,
+        mode: safeZipMode(entry, kind),
+        size,
+      });
+    });
+  } finally {
+    zipFile.close();
+  }
+
+  const manifestEntries = rawEntries.filter(
+    (entry) => entry.kind === "file" && basename(entry.normalizedPath).toLocaleLowerCase("en-US") === "skill.md",
+  );
+  if (manifestEntries.length !== 1) {
+    throw new Error("Skill ZIP must contain exactly one SKILL.md");
+  }
+  const manifest = manifestEntries[0];
+  if (!manifest) throw new Error("Skill ZIP must contain SKILL.md");
+  const manifestSegments = manifest.normalizedPath.split("/");
+  if (manifestSegments.length > 2 || manifestSegments.at(-1) !== "SKILL.md") {
+    throw new Error("SKILL.md must be at the ZIP root or inside one top-level directory");
+  }
+  const wrapper = manifestSegments.length === 2 ? manifestSegments[0] : null;
+  if (
+    wrapper &&
+    rawEntries.some((entry) => entry.normalizedPath !== wrapper && !entry.normalizedPath.startsWith(`${wrapper}/`))
+  ) {
+    throw new Error("A wrapped Skill ZIP cannot contain files outside its top-level directory");
+  }
+  if (wrapper && rawEntries.some((entry) => entry.normalizedPath === wrapper && entry.kind !== "directory")) {
+    throw new Error("A wrapped Skill ZIP anchor must be a directory");
+  }
+
+  const planned: ZipSkillEntry[] = [];
+  const outputKinds = new Map<string, "directory" | "file">();
+  const canonicalOutputPaths = new Map<string, string>();
+  for (const entry of rawEntries) {
+    const targetPath = wrapper
+      ? entry.normalizedPath === wrapper
+        ? ""
+        : entry.normalizedPath.slice(wrapper.length + 1)
+      : entry.normalizedPath;
+    if (!targetPath) {
+      planned.push({ ...entry, targetPath });
+      continue;
+    }
+    const segments = targetPath.split("/");
+    const portableError = getPortableTeamSkillRelativePathError(targetPath, entry.kind);
+    if (portableError) {
+      throw new Error(`Skill ZIP contains ${portableError}`);
+    }
+    if (foldPortableTeamSkillPath(segments[0] ?? "") === foldPortableTeamSkillPath(OWNERSHIP_MARKER)) {
+      throw new Error(`Skill ZIP may not provide reserved file ${OWNERSHIP_MARKER}`);
+    }
+    const spellingCollision = recordPortableTeamSkillPath(canonicalOutputPaths, targetPath);
+    if (spellingCollision) {
+      throw new Error(`Skill ZIP contains ${spellingCollision}`);
+    }
+    const folded = foldPortableTeamSkillPath(targetPath);
+    if (outputKinds.has(folded)) {
+      throw new Error(`Skill ZIP contains a duplicate extracted path: ${targetPath}`);
+    }
+    outputKinds.set(folded, entry.kind);
+    planned.push({ ...entry, targetPath });
+  }
+
+  for (const entry of planned) {
+    if (!entry.targetPath) continue;
+    const segments = entry.targetPath.split("/");
+    for (let index = 1; index < segments.length; index++) {
+      const ancestor = foldPortableTeamSkillPath(segments.slice(0, index).join("/"));
+      if (outputKinds.get(ancestor) === "file") {
+        throw new Error(`Skill ZIP file is used as a directory: ${entry.targetPath}`);
+      }
+    }
+  }
+  return planned;
+}
+
+function validateZipEntryPath(raw: string): string {
+  if (!raw || raw.includes("\0") || raw.includes("\\")) {
+    throw new Error("Skill ZIP contains an invalid path");
+  }
+  if (raw.startsWith("/") || /^[A-Za-z]:/.test(raw)) {
+    throw new Error(`Skill ZIP contains an absolute path: ${raw}`);
+  }
+  const normalized = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+  const segments = normalized.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error(`Skill ZIP contains an unsafe path: ${raw}`);
+  }
+  for (const segment of segments) {
+    const portableError = getPortableTeamSkillSegmentError(segment);
+    if (portableError) throw new Error(`Skill ZIP contains ${portableError}`);
+  }
+  return normalized;
+}
+
+function zipEntryKind(entry: Entry, normalizedPath: string): "directory" | "file" {
+  const unixMode = entry.versionMadeBy >>> 8 === 3 ? entry.externalFileAttributes >>> 16 : 0;
+  const unixType = unixMode & 0o170000;
+  if (unixType === 0o120000) throw new Error(`Skill ZIP cannot contain symlinks: ${normalizedPath}`);
+  if (unixType !== 0 && unixType !== 0o040000 && unixType !== 0o100000) {
+    throw new Error(`Skill ZIP cannot contain special files: ${normalizedPath}`);
+  }
+  const directory = entry.fileName.endsWith("/");
+  if (unixType === 0o040000 && !directory) {
+    throw new Error(`Skill ZIP directory entry must end with '/': ${normalizedPath}`);
+  }
+  if (unixType === 0o100000 && directory) {
+    throw new Error(`Skill ZIP regular file entry cannot end with '/': ${normalizedPath}`);
+  }
+  return directory || unixType === 0o040000 ? "directory" : "file";
+}
+
+function safeZipMode(entry: Entry, kind: "directory" | "file"): number {
+  if (entry.versionMadeBy >>> 8 !== 3) return kind === "directory" ? 0o700 : 0o600;
+  const mode = (entry.externalFileAttributes >>> 16) & 0o777;
+  // Keep safe read/execute intent while ensuring the owning Client can finish
+  // staging and never accepting group/other write bits from an uploaded ZIP.
+  if (kind === "directory") return 0o700 | (mode & 0o055);
+  const ownerExecute = (mode & 0o111) !== 0 ? 0o100 : 0;
+  return 0o600 | ownerExecute | (mode & 0o055);
+}
+
+function openZipBuffer(bytes: Buffer): Promise<ZipFile> {
+  return new Promise((resolvePromise, reject) => {
+    yauzl.fromBuffer(
+      bytes,
+      { lazyEntries: true, strictFileNames: true, validateEntrySizes: true },
+      (error, zipFile) => {
+        if (error || !zipFile) reject(error ?? new Error("Unable to open Skill ZIP"));
+        else resolvePromise(zipFile);
+      },
+    );
+  });
+}
+
+function forEachZipEntry(zipFile: ZipFile, visit: (entry: Entry) => Promise<void>): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    zipFile.once("error", fail);
+    zipFile.once("end", () => {
+      if (settled) return;
+      settled = true;
+      resolvePromise();
+    });
+    zipFile.on("entry", (entry) => {
+      void visit(entry).then(
+        () => zipFile.readEntry(),
+        (error) => {
+          zipFile.close();
+          fail(error);
+        },
+      );
+    });
+    zipFile.readEntry();
+  });
+}
+
+async function writeZipEntry(
+  zipFile: ZipFile,
+  entry: Entry,
+  targetPath: string,
+  mode: number,
+  expectedSize: number,
+): Promise<void> {
+  const stream = await new Promise<NodeJS.ReadableStream>((resolvePromise, reject) => {
+    zipFile.openReadStream(entry, (error, readable) => {
+      if (error || !readable) reject(error ?? new Error(`Unable to read ${entry.fileName}`));
+      else resolvePromise(readable);
+    });
+  });
+  let measured = 0;
+  const meter = new Transform({
+    transform(chunk: Buffer | Uint8Array, _encoding, callback) {
+      const size = Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.from(chunk).byteLength;
+      measured += size;
+      if (measured > expectedSize || measured > TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes) {
+        callback(new Error(`Skill ZIP entry size is invalid: ${entry.fileName}`));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  await pipeline(stream, meter, createWriteStream(targetPath, { flags: "wx", mode }));
+  if (measured !== expectedSize) {
+    throw new Error(`Skill ZIP entry size is invalid: ${entry.fileName}`);
+  }
+  await chmod(targetPath, mode);
+}
+
+async function rewriteSkillManifestName(stagingPath: string, effectiveName: string): Promise<void> {
+  const path = join(stagingPath, "SKILL.md");
+  const raw = await readFile(path);
+  let markdown: string;
+  try {
+    markdown = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    throw new Error("SKILL.md must be valid UTF-8");
+  }
+  const match = /^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/.exec(markdown);
+  if (!match?.[2]) throw new Error("SKILL.md must contain YAML frontmatter");
+  const document = parseDocument(match[2]);
+  if (document.errors.length > 0) {
+    throw new Error(`SKILL.md frontmatter is invalid: ${document.errors[0]?.message ?? "unknown error"}`);
+  }
+  document.set("name", effectiveName);
+  const frontmatter = document.toString().trimEnd();
+  const rewritten = `${match[1]}${frontmatter}${match[3]}${markdown.slice(match[0].length)}`;
+  await writeFile(path, rewritten, { encoding: "utf-8", mode: 0o600 });
 }
 
 async function copySanitizedSkillTree(sourceRoot: string, destinationRoot: string): Promise<void> {
@@ -1220,18 +1811,19 @@ async function copySanitizedDirectory(
   if (depth > MAX_SKILL_DEPTH) throw new Error(`Skill bundle exceeds max directory depth ${MAX_SKILL_DEPTH}`);
   const sourceDir = relativeDir ? join(sourceRoot, ...relativeDir.split("/")) : sourceRoot;
   const destinationDir = relativeDir ? join(destinationRoot, ...relativeDir.split("/")) : destinationRoot;
-  await mkdir(destinationDir, { recursive: true });
+  await mkdir(destinationDir, { recursive: true, mode: 0o700 });
+  await chmod(destinationDir, 0o700);
   const entries = (await readdir(sourceDir, { withFileTypes: true })).sort((left, right) =>
     left.name.localeCompare(right.name),
   );
   const caseInsensitiveNames = new Set<string>();
   for (const entry of entries) {
-    const folded = entry.name.toLocaleLowerCase("en-US");
+    const folded = foldPortableTeamSkillPath(entry.name);
     if (caseInsensitiveNames.has(folded)) {
       throw new Error(`Skill bundle contains a case-insensitive path collision at ${relativeDir || "."}`);
     }
     caseInsensitiveNames.add(folded);
-    if (!isPortableBundleSegment(entry.name)) {
+    if (getPortableTeamSkillSegmentError(entry.name)) {
       throw new Error(`Skill bundle contains an unsafe path segment: ${entry.name}`);
     }
     if (!relativeDir && entry.name === OWNERSHIP_MARKER) {
@@ -1262,34 +1854,19 @@ async function copySanitizedDirectory(
   }
 }
 
-function isPortableBundleSegment(name: string): boolean {
-  if (
-    name.length === 0 ||
-    name === "." ||
-    name === ".." ||
-    name.includes("/") ||
-    name.includes("\\") ||
-    containsControlCharacter(name) ||
-    /[<>:"|?*]/u.test(name) ||
-    name.endsWith(".") ||
-    name.endsWith(" ")
-  ) {
-    return false;
-  }
-  const windowsBase = name.split(".", 1)[0]?.toLocaleLowerCase("en-US") ?? "";
-  return !WINDOWS_RESERVED_NAMES.has(windowsBase);
-}
-
 async function digestManagedTarget(
   workspace: string,
   target: string,
-  options?: Readonly<{ followExpectedLegacySymlink?: boolean }>,
+  options?: Readonly<{
+    followExpectedLegacySymlink?: boolean;
+    modePlatform?: NodeJS.Platform;
+  }>,
 ): Promise<`sha256:${string}` | null> {
   assertManagedTarget(target);
   const path = resolveWorkspacePath(workspace, target, "target");
   try {
     const targetStat = await lstat(path);
-    if (targetStat.isDirectory()) return await digestDirectory(path);
+    if (targetStat.isDirectory()) return await digestDirectory(path, options?.modePlatform);
     if (targetStat.isSymbolicLink() && options?.followExpectedLegacySymlink) {
       const linked = resolve(dirname(path), await readlink(path));
       const [workspaceRealPath, linkedRealPath] = await Promise.all([realpath(workspace), realpath(linked)]);
@@ -1298,7 +1875,7 @@ async function digestManagedTarget(
       }
       const linkedStat = await stat(linkedRealPath);
       if (!linkedStat.isDirectory()) return null;
-      return await digestDirectory(linkedRealPath);
+      return await digestDirectory(linkedRealPath, options?.modePlatform);
     }
     return null;
   } catch (error) {
@@ -1307,20 +1884,26 @@ async function digestManagedTarget(
   }
 }
 
-async function digestDirectoryIfPresent(path: string): Promise<`sha256:${string}` | null> {
+async function digestDirectoryIfPresent(
+  path: string,
+  modePlatform?: NodeJS.Platform,
+): Promise<`sha256:${string}` | null> {
   try {
     const pathStat = await lstat(path);
     if (!pathStat.isDirectory()) return null;
-    return await digestDirectory(path);
+    return await digestDirectory(path, modePlatform);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
 }
 
-async function digestDirectory(root: string): Promise<`sha256:${string}`> {
+async function digestDirectory(
+  root: string,
+  modePlatform: NodeJS.Platform = process.platform,
+): Promise<`sha256:${string}`> {
   const hash = createHash("sha256");
-  await hashDirectoryRecursive(root, "", hash, 0, { files: 0, bytes: 0 }, null);
+  await hashDirectoryRecursive(root, "", hash, 0, { files: 0, bytes: 0 }, null, modePlatform);
   return `sha256:${hash.digest("hex")}`;
 }
 
@@ -1328,6 +1911,7 @@ async function digestBundledFinalTree(
   root: string,
   key: ManagedSkillEntry["key"],
   revision: string,
+  modePlatform: NodeJS.Platform = process.platform,
 ): Promise<`sha256:${string}`> {
   const hash = createHash("sha256");
   await hashDirectoryRecursive(
@@ -1341,6 +1925,7 @@ async function digestBundledFinalTree(
       content: Buffer.from(ownershipMarkerContent(key, revision), "utf-8"),
       mode: 0o600,
     },
+    modePlatform,
   );
   return `sha256:${hash.digest("hex")}`;
 }
@@ -1352,9 +1937,13 @@ async function hashDirectoryRecursive(
   depth: number,
   treeStats: SkillTreeStats,
   virtualRootFile: Readonly<{ name: string; content: Buffer; mode: number }> | null,
+  modePlatform: NodeJS.Platform,
 ): Promise<void> {
   if (depth > MAX_SKILL_DEPTH) throw new Error(`Skill tree exceeds max directory depth ${MAX_SKILL_DEPTH}`);
   const directory = relativeDir ? join(root, ...relativeDir.split("/")) : root;
+  const directoryStat = await lstat(directory);
+  if (!directoryStat.isDirectory()) throw new Error(`Skill tree directory is not a directory: ${relativeDir || "."}`);
+  assertManagedTreeModeSafe(directoryStat.mode, "directory", relativeDir || ".", modePlatform);
   const entries = await readdir(directory, { withFileTypes: true });
   const entryByName = new Map(entries.map((entry) => [entry.name, entry]));
   const names = entries.map((entry) => entry.name);
@@ -1362,13 +1951,14 @@ async function hashDirectoryRecursive(
   names.sort((left, right) => left.localeCompare(right));
   const caseInsensitiveNames = new Set<string>();
   for (const name of names) {
-    const folded = name.toLocaleLowerCase("en-US");
+    const folded = foldPortableTeamSkillPath(name);
     if (caseInsensitiveNames.has(folded)) {
       throw new Error(`Skill tree contains a case-insensitive path collision at ${relativeDir || "."}`);
     }
     caseInsensitiveNames.add(folded);
     const relativePath = relativeDir ? `${relativeDir}/${name}` : name;
     if (!relativeDir && virtualRootFile?.name === name && !entryByName.has(name)) {
+      assertManagedTreeModeSafe(virtualRootFile.mode, "file", relativePath, modePlatform);
       treeStats.files++;
       treeStats.bytes += virtualRootFile.content.byteLength;
       if (
@@ -1390,10 +1980,11 @@ async function hashDirectoryRecursive(
     if (entryStat.isSymbolicLink()) throw new Error(`Skill tree symlinks are not allowed: ${relativePath}`);
     if (entryStat.isDirectory()) {
       hash.update(`directory\0${relativePath}\0`);
-      await hashDirectoryRecursive(root, relativePath, hash, depth + 1, treeStats, virtualRootFile);
+      await hashDirectoryRecursive(root, relativePath, hash, depth + 1, treeStats, virtualRootFile, modePlatform);
       continue;
     }
     if (!entryStat.isFile()) throw new Error(`Skill tree special files are not allowed: ${relativePath}`);
+    assertManagedTreeModeSafe(entryStat.mode, "file", relativePath, modePlatform);
     treeStats.files++;
     treeStats.bytes += entryStat.size;
     if (
@@ -1409,40 +2000,51 @@ async function hashDirectoryRecursive(
   }
 }
 
-function normalizeRequestedSlug(input: string): string {
-  if (input.includes("/") || input.includes("\\") || containsControlCharacter(input)) {
-    throw new Error("Skill name contains a path separator or control character");
+function assertManagedTreeModeSafe(
+  mode: number,
+  kind: "directory" | "file",
+  relativePath: string,
+  platform: NodeJS.Platform,
+): void {
+  if (hasUnsafeManagedWriteMode(mode, platform)) {
+    throw new Error(`Skill tree ${kind} has unsafe group/other write permissions: ${relativePath}`);
   }
-  const slug = input
-    .normalize("NFKC")
-    .trim()
-    .toLocaleLowerCase("en-US")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  if (!isSafeSkillName(slug)) throw new Error(`Skill name "${input}" does not produce a safe slug`);
-  return slug;
 }
 
-function containsControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index++) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
+export function hasUnsafeManagedWriteMode(mode: number, platform: NodeJS.Platform = process.platform): boolean {
+  // Windows reports synthesized POSIX bits (commonly 0666) that do not
+  // represent ACL group/other write authority. Enforce this drift gate only
+  // where Node exposes meaningful POSIX permission bits.
+  return platform !== "win32" && (mode & 0o022) !== 0;
 }
 
 function isSafeSkillName(name: string): boolean {
-  if (name.length === 0 || name.length > MAX_SKILL_NAME_LENGTH) return false;
+  if (name.length === 0 || name.length > TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength) return false;
   if (name === "." || name === ".." || WINDOWS_RESERVED_NAMES.has(name.toLocaleLowerCase("en-US"))) return false;
   return /^[a-z0-9][a-z0-9-]*$/.test(name);
 }
 
 function suffixSkillName(base: string, suffix: string): string {
-  const trimmed = base.slice(0, MAX_SKILL_NAME_LENGTH - suffix.length).replace(/-+$/g, "");
+  const trimmed = base.slice(0, TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength - suffix.length).replace(/-+$/g, "");
   const result = `${trimmed}${suffix}`;
   if (!isSafeSkillName(result)) throw new Error(`cannot allocate safe suffixed Skill name for ${base}`);
   return result;
+}
+
+function teamSkillSource(skill: RuntimeResourceSkill): DesiredManagedSkill["source"] {
+  return skill.bundle
+    ? {
+        kind: "attachment-zip",
+        bundle: skill.bundle,
+        manifestName: skill.name,
+      }
+    : { kind: "inline-skill", skill };
+}
+
+function teamSkillRevision(skill: RuntimeResourceSkill): string {
+  return skill.bundle
+    ? `attachment:${skill.bundle.attachmentId}:${skill.bundle.sizeBytes}`
+    : inlineSkillRevision(skill);
 }
 
 function inlineSkillRevision(skill: RuntimeResourceSkill): string {
@@ -1549,9 +2151,19 @@ function assertManagedWorkspaceRootsSafe(workspace: string): void {
 function resolveWorkspacePath(
   workspace: string,
   portablePath: string,
-  kind: "target" | "temporary" | "lock" | "root" | "legacy-resource-file",
+  kind: "target" | "temporary" | "lock" | "root" | "legacy-resource-file" | "quarantine",
 ): string {
   if (kind === "target") assertManagedTarget(portablePath);
+  if (kind === "quarantine") {
+    const parts = portablePath.split("/");
+    if (
+      parts.length !== 2 ||
+      parts[0] !== ".first-tree-workspace" ||
+      !parts[1]?.startsWith(MANAGED_SKILLS_QUARANTINE_PREFIX)
+    ) {
+      throw new ManagedSkillsFatalError(`unsafe managed Skill quarantine path: ${portablePath}`);
+    }
+  }
   if (kind === "temporary") {
     if (portablePath.endsWith(".staging")) assertTemporaryTarget(portablePath, ".staging");
     else assertTemporaryTarget(portablePath, ".backup");
@@ -1567,7 +2179,7 @@ function resolveWorkspacePath(
   assertExistingPathChainIsDirectory(
     workspaceRoot,
     absolute,
-    kind === "root" || kind === "temporary",
+    kind === "root" || kind === "temporary" || kind === "quarantine",
     kind,
     portablePath,
   );

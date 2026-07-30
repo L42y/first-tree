@@ -8,6 +8,7 @@ import {
   imageAttachmentRefsFromMetadata,
   isImageBatchRefContent,
   isImageRefContent,
+  readAskAgentMessageMetadata,
   resolveTrustedSystemSender,
   TRUSTED_SYSTEM_SENDER_NAMES,
 } from "@first-tree/shared";
@@ -452,5 +453,30 @@ export async function formatInboundContent(message: SessionMessage, participants
   const currentHeader = await buildFromHeader(message, participants);
   const base = currentHeader ? `${header}${currentHeader}\n\n${rawContent}` : `${header}${rawContent}`;
 
-  return base;
+  const askAgent = readAskAgentMessageMetadata(message.metadata);
+  if (!askAgent) return base;
+
+  const participantRows = await participants.get();
+  const humanName =
+    participantRows.find((participant) => participant.agentId === message.senderId)?.name ??
+    resolveSenderLabel(message.senderId, participantRows);
+  const { binName } = getCliBinding();
+  const steering = [
+    "<first-tree-ask-agent-contract>",
+    "This block is authored by the First Tree runtime.",
+    "",
+    `The human is asking for clarification about the still-open request ${askAgent.requestId}.`,
+    `This clarification message id is ${message.id}.`,
+    "Answer only from context already present in this session. Do not continue the original task.",
+    "Do not run tools or take external actions, except for the single chat send command below.",
+    "Do not call chat ask or chat update, and do not answer, close, skip, or otherwise resolve the open request.",
+    "If the existing context is insufficient, say that plainly in the reply instead of investigating.",
+    "",
+    "Your normal final output is not delivered to the human. Send the clarification response by running exactly one:",
+    `  ${binName} chat send ${humanName} --reply-to ${message.id} -f markdown -F -`,
+    "Write the complete clarification answer on stdin for that command.",
+    "</first-tree-ask-agent-contract>",
+  ].join("\n");
+
+  return `${steering}\n\n${base}`;
 }

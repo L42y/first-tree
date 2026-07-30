@@ -2,9 +2,11 @@ import type { GithubEventCard, InvolveReason, NormalizedScmEvent } from "@first-
 import type { FastifyInstance } from "fastify";
 import type { GithubEntity } from "../api/webhooks/github-entity.js";
 import { createLogger } from "../observability/index.js";
+import { uuidv7 } from "../uuid.js";
 import type { AudienceTarget } from "./github-audience.js";
 import { findReuseChatForInvolved, refreshGithubChatTopic, resolveTargetChat } from "./github-entity-chat.js";
 import { type EntityStateSeed, setEntityTitle } from "./github-entity-state.js";
+import { applyMembershipWrite } from "./participant-mode.js";
 import { sendScmSystemCard } from "./scm-card-delivery.js";
 import {
   compareScmDeliveryEntries,
@@ -87,7 +89,11 @@ export async function deliverGithubEvent(
               },
               directedContext:
                 target.involveReason && target.involveLogin
-                  ? { reason: target.involveReason, externalUsername: target.involveLogin }
+                  ? {
+                      reason: target.involveReason,
+                      externalUsername: target.involveLogin,
+                      ...(target.teamAgentTask ? { teamAgentTask: target.teamAgentTask } : {}),
+                    }
                   : null,
             }
           : {
@@ -98,6 +104,13 @@ export async function deliverGithubEvent(
                 wakeAgentId: target.delegateAgentId,
                 externalUsername: target.involveLogin as string,
               },
+              directedContext: target.teamAgentTask
+                ? {
+                    reason: target.involveReason as InvolveReason,
+                    externalUsername: target.involveLogin as string,
+                    teamAgentTask: target.teamAgentTask,
+                  }
+                : null,
             },
     ),
     actorHumanId,
@@ -180,7 +193,16 @@ export async function deliverGithubEvent(
       const entries = [...delivery.entries.values()].sort(compareScmDeliveryEntries);
       const senderId = selectScmSenderId(entries);
       const cardContext = selectScmCardContext(entries);
-      const card = buildCard(event, cardContext.involveReason, cardContext.involveLogin);
+      const taskRun =
+        cardContext.teamAgentTask && cardContext.teamAgentTaskHumanAgentId
+          ? createGithubTaskRun(event, cardContext.teamAgentTask, cardContext.teamAgentTaskHumanAgentId)
+          : null;
+      const card = buildCard(
+        event,
+        cardContext.involveReason,
+        cardContext.involveLogin,
+        taskRun?.marker ?? cardContext.teamAgentTask,
+      );
       const mentionedUser = card.mentionedUser ?? undefined;
       // Native wake-set (S8): the delegates are passed as `metadata.mentions`,
       // so the generic fan-out wakes them — no GitHub-specific addressing
@@ -188,6 +210,9 @@ export async function deliverGithubEvent(
       // out by the message service (the card still lands as a silent row via
       // `allowRecipientlessSend`). The unread-mention red dot stays off because
       // delegates are non-human mention targets.
+      // The task marker scopes who may execute an App-directed request; it
+      // does not replace independent subscription / explicit wake lines that
+      // survived into this chat delivery.
       const mentions = scmWakeAgentIds(entries);
       await sendScmSystemCard(app, {
         chatId: delivery.chatId,
@@ -208,7 +233,10 @@ export async function deliverGithubEvent(
           // visual attribution shifts. Scoped to GitHub cards so an arbitrary
           // client cannot impersonate other sources.
           ...(mentionedUser ? { mentionedUser } : {}),
+          ...(card.teamAgentTask ? { teamAgentTask: card.teamAgentTask } : {}),
+          ...(taskRun ? taskRun.metadata : {}),
         },
+        allowGithubTaskRun: taskRun !== null,
       });
       stats.delivered += 1;
     } catch (err) {
@@ -317,6 +345,9 @@ async function resolveChatFor(
     isMentionMatched: true,
   });
   if (!resolved) return null;
+  if (target.directedContext?.teamAgentTask && target.directedContext.teamAgentTask.agentUuid === wakeAgentId) {
+    await applyMembershipWrite(app.db, resolved.chatId, [{ agentId: wakeAgentId }], { upgradeWatcherToSpeaker: true });
+  }
   return { chatId: resolved.chatId, created: resolved.created };
 }
 
@@ -330,6 +361,7 @@ function buildCard(
   event: NormalizedScmEvent,
   involveReason: InvolveReason | null,
   involveLogin: string | null,
+  teamAgentTask: { agentUuid: string; runId?: string } | null,
 ): GithubEventCard {
   const reason: GithubEventCard["reason"] = involveReason ?? "subscribed";
   const card: GithubEventCard = {
@@ -346,9 +378,47 @@ function buildCard(
     entity: {
       type: event.entity.type,
       key: event.entity.key,
-      url: event.entity.url ?? null,
+      url: event.entity.url ?? event.surface.url,
     },
   };
   if (involveLogin) card.mentionedUser = involveLogin;
+  if (teamAgentTask) card.teamAgentTask = teamAgentTask;
   return card;
+}
+
+function createGithubTaskRun(
+  event: NormalizedScmEvent,
+  task: { agentUuid: string },
+  managerHumanAgentId: string,
+): {
+  marker: { agentUuid: string; runId: string };
+  metadata: Record<string, unknown>;
+} {
+  const match = /#([1-9]\d*)$/u.exec(event.entity.key);
+  const entityNumber = match?.[1] ? Number(match[1]) : Number.NaN;
+  const entityUrl = event.entity.url ?? event.surface.url;
+  if (
+    (event.entity.type !== "issue" && event.entity.type !== "pull_request") ||
+    !Number.isSafeInteger(entityNumber) ||
+    entityNumber <= 0 ||
+    !entityUrl
+  ) {
+    throw new Error("Publishable GitHub task delivery is missing a supported immutable entity identity");
+  }
+  const runId = uuidv7();
+  return {
+    marker: { agentUuid: task.agentUuid, runId },
+    metadata: {
+      githubTaskRun: true,
+      githubTaskRunId: runId,
+      githubTaskOrganizationId: event.source.organizationId,
+      githubTaskAgentUuid: task.agentUuid,
+      githubTaskManagerHumanAgentId: managerHumanAgentId,
+      githubTaskRepository: event.entity.projectKey.toLowerCase(),
+      githubTaskEntityType: event.entity.type,
+      githubTaskEntityNumber: entityNumber,
+      githubTaskEntityUrl: entityUrl,
+      githubTaskReplySubmission: { state: "pending" },
+    },
+  };
 }

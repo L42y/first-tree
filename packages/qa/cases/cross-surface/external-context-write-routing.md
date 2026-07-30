@@ -1,0 +1,132 @@
+---
+id: external-context-write-routing
+description: Validate connected Codex and Claude Code routing from durable or implementation-only source artifacts into the guarded external Context Tree write workflow.
+areas: [cross-surface]
+surfaces: [cli, codex, claude-code, server, github, gitlab]
+---
+
+# External Context Source-Artifact Write Routing
+
+## Goal
+
+Confirm that a connected external Codex or Claude Code session sees the
+always-visible source-artifact routing contract before Skill selection. A
+concrete artifact that changes a durable decision, constraint, owner, or
+cross-domain relationship must route into `first-tree-write` and produce a
+cross-linked draft Tree PR/MR through the existing live authority path. An
+implementation-only artifact must stop with an explicit no-write decision and
+must not create Tree remote state.
+
+This case owns live provider behavior across SessionStart, Skill discovery,
+source-forge publication, guarded Tree authoring, and provider artifacts.
+Deterministic tests own canonical-asset projection, bundle parity, activation
+envelope size, and forbidden generic Team paths; they cannot satisfy this case.
+
+## Preconditions
+
+- Use the formal isolated Docker plus temporary-worktree QA cell. Keep product
+  source unchanged and store all run artifacts outside it.
+- Bridge to supported host installations of both Codex and Claude Code with
+  throwaway provider homes. Record exact provider, First Tree CLI, Plugin, and
+  candidate artifact versions.
+- Prepare disposable, provider-accessible source and Context Tree repositories
+  for a staging Team. Bind the source checkout through the supported
+  Team-scoped handoff, enable the external Plugin, and verify live connected
+  SessionStart independently for both providers.
+- Configure a current active Context Reviewer and usable forge identity so the
+  official external Write preflight can succeed. Use disposable branches and
+  repositories only; do not reuse production source or Tree artifacts.
+- Prepare two source changes with unambiguous outcomes:
+  - **durable:** changes a current cross-domain constraint or decision and has
+    a clear smallest normal Tree-node target;
+  - **implementation-only:** changes internal implementation without changing
+    a durable decision, constraint, ownership, or cross-domain relationship.
+- Capture redacted SessionStart output, Skill-load/tool traces, CLI preflight
+  receipts, forge state, PR/MR bodies, and branch lists. Never retain tokens,
+  private prompts, provider session credentials, or unredacted private URLs.
+
+## Operate
+
+Run the following matrix from fresh connected sessions:
+
+| Provider | Durable artifact | Implementation-only artifact |
+| --- | --- | --- |
+| Codex | required | required |
+| Claude Code | required | required |
+
+For each provider:
+
+1. Start in the exact bound disposable source checkout and capture the
+   connected SessionStart envelope before prompting the agent.
+2. Ask the session to read relevant Team Context, then implement and publish
+   the assigned source change as a concrete PR/MR. Do not explicitly request a
+   Tree update; the durable branch must rely on the connected standing route.
+3. For the durable artifact, observe the post-publication routing decision,
+   `first-tree-write` load, Double Test, target and linked-node reads, initial
+   and pre-publication hidden `context write` preflights, Tree verification,
+   and draft Tree PR/MR creation.
+4. For the implementation-only artifact, observe the routing/Double Test
+   decision and inspect the Tree repository and forge after completion.
+5. Inspect both source and Tree forge artifacts, cross-links, draft state,
+   branch heads, and provider traces. Leave source unmerged during the draft
+   assertion.
+6. In the durable path only, merge the disposable source artifact through an
+   authorized test operator, resume the provider session, and verify that it
+   reconciles the Tree change against merged source truth before marking the
+   Tree PR/MR ready. Do not merge the Tree PR/MR as part of this case.
+7. Reset all disposable provider, checkout, Team, branch, and forge state
+   before the next matrix cell.
+
+## Observe
+
+- Each connected envelope contains the full source-artifact routing facts:
+  durable trigger, implementation-only exclusion, no-artifact gate, and
+  source-first paired lifecycle. Disabled, unavailable, and needs-admin
+  sessions do not receive that contract or Tree authority.
+- Both providers load the same projected Write workflow after the durable
+  source PR/MR exists. Provider differences are limited to provider name and
+  guarded adapter mechanics; neither accepts a Team id from prompt/model input
+  or falls back to a Managed workspace path.
+- The durable path creates exactly one Tree branch and one cross-linked draft
+  Tree PR/MR from the smallest correct diff. It runs live preflight before
+  authoring and again before every push and PR/MR creation; SessionStart alone
+  is never treated as mutation authority.
+- Publishing the source PR/MR is not described as automatically transferring
+  permission to another repository. The observed Write intent is the standing
+  classification of that concrete durable artifact.
+- Before source merge, the Tree artifact remains draft. After source merge it
+  is reconciled against merged source truth before becoming ready.
+- The implementation-only path explains why the artifact fails the durable
+  write filter and creates no Tree branch, push, PR/MR, or hidden remote
+  mutation. The preceding task-scoped Tree read still occurs.
+- Reviewer readiness, forge identity, exact checkout binding, immutable
+  snapshot, and live authority failures remain fail-closed; no alternate Team
+  or cached authority is used.
+
+## Expected Result
+
+`PASS`: all four live provider/artifact combinations satisfy the observations,
+including guarded draft Tree publication for durable artifacts and zero Tree
+remote mutation for implementation-only artifacts.
+
+`FAIL`: a reproducible product defect skips durable routing, writes for an
+implementation-only artifact, treats SessionStart as mutation authority,
+infers another Team, bypasses live preflight/Reviewer/forge identity, loses
+draft/source-first ordering, or produces provider-divergent policy behavior.
+
+`BLOCKED`: either real provider bridge, staging Team binding, disposable forge
+repositories, current Reviewer, provider identity, or complete isolated
+product harness cannot be prepared.
+
+`INCONCLUSIVE`: only source, unit tests, mocks, generated bundle inspection, or
+an incomplete subset of the four live matrix cells was observed.
+
+## Evidence
+
+Keep the exact target commit and built artifact digests; provider, CLI, and
+Plugin versions; redacted connected SessionStart envelopes; Skill-load and
+adapter command traces; source and Tree PR/MR URLs and bodies; draft/ready
+transitions; cross-links; before/after branch lists; redacted initial and
+pre-publication preflight receipts; Tree verification output; and reset logs.
+Store all evidence in the temporary QA run directory outside the product
+repository.

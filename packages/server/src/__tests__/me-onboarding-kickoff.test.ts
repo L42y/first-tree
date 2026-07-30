@@ -207,8 +207,8 @@ describe("POST /me/onboarding/kickoff", () => {
     const [chat] = await app.db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
     expect(chat?.onboardingKickoffKey).toBe(`${joiner.humanAgentUuid}:${agent.uuid}:onboarding`);
 
-    // Suppressor stamped with the invitee_skip reason; completion NOT stamped —
-    // the standard connect-computer → create-agent journey stays pending.
+    // Suppressor stamped with the invitee_skip reason; completion is not
+    // stamped, so personal-agent setup stays resumable.
     const [joinerMember] = await app.db.select().from(members).where(eq(members.id, joiner.memberId)).limit(1);
     expect(joinerMember?.onboardingSuppressedAt).not.toBeNull();
     expect(joinerMember?.onboardingSuppressedReason).toBe("invitee_skip");

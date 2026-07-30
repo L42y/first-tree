@@ -17,6 +17,7 @@ import {
 } from "../handlers/opencode/index.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
+import { ManagedSkillsUnsafeDiscoveryError, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
 import { acquireOpenCodePrivateConfigLease } from "../runtime/opencode-private-config.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
 import { readSessionBriefingFingerprint } from "../runtime/session-briefing-fingerprint.js";
@@ -90,6 +91,19 @@ function deliveryToken() {
     retry: vi.fn(),
     terminalRejected: vi.fn(async () => {}),
   } satisfies DeliveryToken;
+}
+
+function reconciledSkillsResult(resourceConfigVersion = 1) {
+  return {
+    ok: true,
+    resourceConfigVersion,
+    installed: [],
+    skipped: [],
+    removed: [],
+    teamSkills: [],
+    failures: [],
+    staleTeamSnapshot: false,
+  };
 }
 
 const SYNTHETIC_PROVIDER_SCRIPT = `
@@ -260,6 +274,80 @@ function context(
 }
 
 describe("OpenCode V1 handler", () => {
+  it("passes an SDK-backed Team Skill bundle resolver to every projection refresh", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-team-skill-resolver-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const bytes = Buffer.from("bundle bytes");
+    const fetchAttachment = vi.fn(async () => ({
+      bytes,
+      mimeType: "application/zip",
+      filename: "review.zip",
+      size: bytes.byteLength,
+    }));
+    const sessionCtx = context([], []);
+    sessionCtx.sdk.fetchAttachment = fetchAttachment;
+    const reconcile = vi.mocked(reconcileManagedSkillsForConfig);
+    reconcile.mockClear();
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+      opencodeTurnTimeoutMs: 5_000,
+    });
+
+    await handler.start(message("m-team-skill", "use the complete skill"), sessionCtx, deliveryToken());
+
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    const resolver = reconcile.mock.calls[0]?.[4];
+    expect(resolver).toBeTypeOf("function");
+    await expect(
+      resolver?.({
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "zip",
+        sizeBytes: bytes.byteLength,
+      }),
+    ).resolves.toEqual(bytes);
+    expect(fetchAttachment).toHaveBeenCalledWith({ id: "11111111-1111-4111-8111-111111111111" });
+    await handler.shutdown();
+  });
+
+  it("retries unsafe managed-skill discovery before starting the provider turn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-managed-skills-unsafe-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const sessionCtx = context([], []);
+    const token = deliveryToken();
+    const reconcile = vi.mocked(reconcileManagedSkillsForConfig);
+    reconcile.mockClear();
+    reconcile
+      .mockResolvedValueOnce(reconciledSkillsResult())
+      .mockRejectedValueOnce(new ManagedSkillsUnsafeDiscoveryError("unsafe discovery"));
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+      opencodeTurnTimeoutMs: 5_000,
+    });
+
+    await handler.start(message("m-unsafe-skill", "must not reach OpenCode"), sessionCtx, token);
+
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(specs).toEqual([]);
+    expect(token.processingStarted).not.toHaveBeenCalled();
+    expect(token.complete).not.toHaveBeenCalled();
+    expect(token.retry).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-unsafe-skill" })],
+      "opencode_managed_skills_unsafe",
+    );
+    expect(vi.mocked(sessionCtx.log).mock.calls.flat().join("\n")).toContain("blocked provider turn: unsafe discovery");
+    await handler.shutdown();
+  });
+
   it("builds private MCP/agent config and provider-native argv", () => {
     const config = runtimeConfig().payload;
     expect(mapOpenCodeMcpServers(config, "scope-a")).toEqual({

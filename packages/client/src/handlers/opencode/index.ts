@@ -23,7 +23,11 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
-import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
+import {
+  isManagedSkillsUnsafeDiscoveryError,
+  type ReconciledTeamSkill,
+  reconcileManagedSkillsForConfig,
+} from "../../runtime/managed-skills.js";
 import {
   isSupportedOpenCodeVersion,
   OPENCODE_SUPPORTED_VERSION_RANGE,
@@ -47,6 +51,7 @@ import {
   writeSessionBriefingFingerprint,
 } from "../../runtime/session-briefing-fingerprint.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { chunkAssistantText } from "../assistant-text.js";
 import { formatAuthHint, isOpenCodeAuthError } from "../auth-error-hint.js";
@@ -435,8 +440,15 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     if (payload.kind !== "opencode") {
       throw new Error(`OpenCode handler received ${payload.kind} runtime config`);
     }
-    teamSkills = (await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log))
-      .teamSkills;
+    teamSkills = (
+      await reconcileManagedSkillsForConfig(
+        cwd,
+        runtimeProvider,
+        runtimeConfig,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+      )
+    ).teamSkills;
     const briefing = buildBriefing(sessionCtx, payload, cwd);
     ensureAgentBootstrap({
       workspace: cwd,
@@ -1067,6 +1079,11 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     try {
       return await promise;
     } catch (error) {
+      if (isManagedSkillsUnsafeDiscoveryError(error)) {
+        token.retry(messages, "opencode_managed_skills_unsafe");
+        sessionCtx.log(`blocked provider turn: ${error.message}`);
+        return false;
+      }
       const failure = redactErrorPreview(error instanceof Error ? error.message : String(error), 2000);
       return await settleFailure({
         failure,

@@ -20,6 +20,7 @@ import {
   isRedactedEnvValue,
   isSafeRepoLocalPath,
   normalizeRepoLocalPath,
+  runtimeResourceSkillSchema,
   updateAgentRuntimeConfigSchema,
 } from "../schemas/agent-runtime-config.js";
 
@@ -62,6 +63,66 @@ describe("agent runtime config — default model", () => {
     // must not silently replace it with the default.
     const parsed = agentRuntimeConfigPayloadSchema.parse({ model: "" });
     expect(parsed.model).toBe("");
+  });
+});
+
+describe("runtime Team Skill bundle compatibility", () => {
+  const legacy = {
+    resourceId: "resource-review",
+    name: "review",
+    description: "Review changes.",
+    body: "# Review",
+    metadata: { owner: "platform" },
+  };
+
+  it("keeps legacy inline Team Skills valid when the optional descriptor is absent", () => {
+    expect(runtimeResourceSkillSchema.parse(legacy)).toEqual(legacy);
+  });
+
+  it("accepts a strict immutable ZIP attachment descriptor", () => {
+    expect(
+      runtimeResourceSkillSchema.parse({
+        ...legacy,
+        bundle: {
+          attachmentId: "11111111-1111-4111-8111-111111111111",
+          format: "zip",
+          sizeBytes: 4096,
+        },
+      }),
+    ).toMatchObject({
+      bundle: {
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "zip",
+        sizeBytes: 4096,
+      },
+    });
+  });
+
+  it("rejects malformed, empty, or oversized bundle descriptors", () => {
+    for (const bundle of [
+      {
+        attachmentId: "not-an-attachment",
+        format: "zip",
+        sizeBytes: 1,
+      },
+      {
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "tar",
+        sizeBytes: 1,
+      },
+      {
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "zip",
+        sizeBytes: 0,
+      },
+      {
+        attachmentId: "11111111-1111-4111-8111-111111111111",
+        format: "zip",
+        sizeBytes: 10 * 1024 * 1024 + 1,
+      },
+    ]) {
+      expect(runtimeResourceSkillSchema.safeParse({ ...legacy, bundle }).success).toBe(false);
+    }
   });
 });
 

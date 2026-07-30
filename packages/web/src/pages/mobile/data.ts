@@ -13,7 +13,7 @@ export type MobileChatSignal = {
 
 export type MobileCardContent =
   | {
-      kind: "action" | "summary";
+      kind: "summary";
       primary: string;
       secondary: null;
     }
@@ -93,34 +93,17 @@ export function mobileChatPreview(row: MeChatRow): string {
 }
 
 /**
- * Allocate Work card content by state.
+ * Allocate Chat card content by state.
  *
- * Normal / pinned work shows the running chat summary. Unread, mention, and
- * working work split the compact dynamic budget into one current-state line
- * and one live-evidence line. Attention cards deliberately replace the summary
- * with the concrete request/failure evidence because that is what the viewer
- * must act on now.
+ * Chat status is carried by the row icon, not by moving or replacing the chat
+ * preview. Unread and working rows may add one compact evidence line, while
+ * request/recovery rows retain the same summary shape as ordinary chats.
  */
 export function mobileCardContent(row: MeChatRow): MobileCardContent {
   const signal = mobileChatSignal(row);
   const summary = cleanPreview(row.description);
   const latest = cleanPreview(row.lastMessagePreview);
   const fallback = summary || latest || "No messages yet.";
-
-  if (signal.attention) {
-    return {
-      kind: "action",
-      primary:
-        signal.tone === "error"
-          ? row.failedAgentIds.length === 1
-            ? "A managed agent run failed. Open to review the failure and recovery options."
-            : `${row.failedAgentIds.length} managed agent runs failed. Open to review the failures and recovery options.`
-          : row.openRequestCount === 1
-            ? "An open question is waiting for your response. Open to review the full request."
-            : `${row.openRequestCount} open questions are waiting for your response. Open to review them in order.`,
-      secondary: null,
-    };
-  }
 
   if (signal.tone === "unread") {
     const currentState = summary || latest || "No summary yet.";
@@ -148,43 +131,16 @@ export function mobileCardContent(row: MeChatRow): MobileCardContent {
   };
 }
 
-const AGE_MINUTE_MS = 60_000;
-const AGE_HOUR_MS = 3_600_000;
-const AGE_DAY_MS = 86_400_000;
-const AGE_WEEK_MS = 7 * AGE_DAY_MS;
-const AGE_MONTH_MS = 30 * AGE_DAY_MS;
-
 /**
- * Ultra-compact age for the attention feed: "now", "5m", "3h", "4d", "2w",
- * "3mo". Unlike `formatRowTime`, it never falls back to an absolute `MM/DD`
- * date — on a needs-attention surface, how long a question has been waiting
- * or a failure has sat unhandled is itself the signal; a dead date reads as
- * neither urgent nor stale. Returns "" for null/invalid input so the card
- * simply omits the slot.
- */
-export function formatMobileAge(iso: string | null): string {
-  if (!iso) return "";
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "";
-  const age = Date.now() - t;
-  if (age < AGE_MINUTE_MS) return "now";
-  if (age < AGE_HOUR_MS) return `${Math.floor(age / AGE_MINUTE_MS)}m`;
-  if (age < AGE_DAY_MS) return `${Math.floor(age / AGE_HOUR_MS)}h`;
-  if (age < AGE_WEEK_MS) return `${Math.floor(age / AGE_DAY_MS)}d`;
-  if (age < AGE_MONTH_MS) return `${Math.floor(age / AGE_WEEK_MS)}w`;
-  return `${Math.floor(age / AGE_MONTH_MS)}mo`;
-}
-
-/**
- * Materialize the server's complete attention and pinned projections for
- * mobile lists and tab badges. Priority rows can sit beyond the finite recency
- * page, so both groups must enter before the additive rows and be de-duplicated
- * by chat id.
+ * Materialize the server's complete pin projection for mobile lists. Pins can
+ * sit beyond the finite recency page, so they enter before the additive rows
+ * and are de-duplicated by chat id. Need you is request-level and has its own
+ * queue; recovery/open-ask/unread status never changes chat ordering.
  */
 export function mobileRowsFromList(data: ListMeChatsResponse | undefined): MeChatRow[] {
   if (!data) return [];
   const seen = new Set<string>();
-  return [...data.priorityRows.attention, ...data.priorityRows.pinned, ...data.rows].filter((row) => {
+  return [...data.priorityRows.pinned, ...data.rows].filter((row) => {
     if (seen.has(row.chatId)) return false;
     seen.add(row.chatId);
     return true;
@@ -193,47 +149,12 @@ export function mobileRowsFromList(data: ListMeChatsResponse | undefined): MeCha
 
 export function sortMobileChats(rows: readonly MeChatRow[]): MeChatRow[] {
   return [...rows].sort((a, b) => {
-    const signalA = mobileChatSignal(a);
-    const signalB = mobileChatSignal(b);
-    const bucketA = signalA.attention ? 0 : a.pinnedAt ? 1 : 2;
-    const bucketB = signalB.attention ? 0 : b.pinnedAt ? 1 : 2;
+    const bucketA = a.pinnedAt ? 0 : 1;
+    const bucketB = b.pinnedAt ? 0 : 1;
     const bucketDelta = bucketA - bucketB;
     if (bucketDelta !== 0) return bucketDelta;
-    const signalDelta = signalA.rank - signalB.rank;
-    if (signalDelta !== 0) return signalDelta;
-    if (bucketA === 1) {
-      const pinDelta = timestampValue(b.pinnedAt) - timestampValue(a.pinnedAt);
-      if (pinDelta !== 0) return pinDelta;
-    }
     return timestampValue(b.activityAt ?? b.lastMessageAt) - timestampValue(a.activityAt ?? a.lastMessageAt);
   });
-}
-
-/**
- * Now feed admission. A chat enters the needs-attention feed only when it
- * carries an AUTHORITATIVE active signal, read from the source-of-truth fields
- * rather than the display `mobileChatSignal` tone:
- *   - a caller-managed failed agent (`failedAgentIds`);
- *   - an open request directed at the caller (`openRequestCount`);
- *   - an explicit `@me` mention (`chatHasExplicitMentionToMe`) — NOT the
- *     broader `unreadMentionCount`, which also counts the implicit 1:1 DM
- *     auto-mention, so a plain unread reply does not qualify;
- *   - an in-flight turn (`busyAgentIds`) — NOT `liveActivity`, which is a
- *     descriptive label the session-status contract allows to linger after the
- *     authoritative busy projection is already false.
- * `idle` / watching-only chats stay in the Chat tab, not Now.
- */
-export function isNowFeedRow(row: MeChatRow): boolean {
-  return (
-    row.failedAgentIds.length > 0 ||
-    row.openRequestCount > 0 ||
-    row.chatHasExplicitMentionToMe ||
-    row.busyAgentIds.length > 0
-  );
-}
-
-export function countAttentionRows(rows: readonly MeChatRow[]): number {
-  return rows.reduce((total, row) => total + (mobileChatSignal(row).attention ? 1 : 0), 0);
 }
 
 export function countUnreadRows(rows: readonly MeChatRow[]): number {

@@ -31,6 +31,7 @@ const authMock = vi.hoisted(() => {
       dismissOnboarding: vi.fn(async () => undefined),
       restoreOnboarding: vi.fn(async () => undefined),
       markOnboardingCompleted: vi.fn(async () => undefined),
+      applyOnboardingKickoffStamp: vi.fn(),
       login: vi.fn(async () => undefined),
       adoptTokens: vi.fn(async () => undefined),
       selectOrganization: vi.fn(async () => undefined),
@@ -127,10 +128,10 @@ describe("MobileTeamPage", () => {
     await renderTeamPage(harness);
     await harness.waitFor(() => expect(harness.container.textContent).toContain("Gandy (you)"));
 
-    expect(harness.container.querySelector('a[href="/m/work?c=draft&with=human-agent-self"]')).toBeNull();
-    const teammateCard = harness.container.querySelector('a[href="/m/work?c=draft&with=human-agent-teammate"]');
+    expect(harness.container.querySelector('a[href="/m/chat?c=draft&with=human-agent-self"]')).toBeNull();
+    const teammateCard = harness.container.querySelector('a[href="/m/chat?c=draft&with=human-agent-teammate"]');
     expect(teammateCard).not.toBeNull();
-    expect(harness.container.querySelector('a[href="/m/work?c=draft&with=agent-1"]')).not.toBeNull();
+    expect(harness.container.querySelector('a[href="/m/chat?c=draft&with=agent-1"]')).not.toBeNull();
 
     // Q1: the whole card is the tap target — the title lives inside the anchor,
     // and the separate chat-icon button is gone.

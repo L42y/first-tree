@@ -6,6 +6,7 @@ import { registerDaemonInstallClaudeCommand } from "./install-claude.js";
 import { registerDaemonInstallCodexCommand } from "./install-codex.js";
 import { registerDaemonProbeCommand } from "./probe.js";
 import { registerDaemonRefreshUnitCommand } from "./refresh-unit.js";
+import { registerDaemonRepairOwnershipCommand } from "./repair-ownership.js";
 import { registerDaemonRestartCommand } from "./restart.js";
 import { registerDaemonStartCommand } from "./start.js";
 import { registerDaemonStatusCommand } from "./status.js";
@@ -21,6 +22,7 @@ export function registerDaemonCommands(program: Command): void {
   registerDaemonRestartCommand(daemon);
   registerDaemonStatusCommand(daemon);
   registerDaemonDoctorCommand(daemon);
+  registerDaemonRepairOwnershipCommand(daemon);
   registerDaemonProbeCommand(daemon);
   registerDaemonInstallCodexCommand(daemon);
   registerDaemonInstallClaudeCommand(daemon);

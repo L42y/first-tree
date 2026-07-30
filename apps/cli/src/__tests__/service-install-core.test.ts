@@ -315,7 +315,7 @@ describe("service install helpers", () => {
     setPlatform("darwin");
     const plistPath = join(home, "Library", "LaunchAgents", `${channelConfig.launchdLabel}.plist`);
     mkdirSync(dirname(plistPath), { recursive: true });
-    writeFileSync(plistPath, "plist");
+    writeFileSync(plistPath, renderPlist(join(home, "service-wrapper")));
 
     spawnSyncMock.mockReturnValueOnce({
       status: 0,
@@ -327,6 +327,7 @@ describe("service install helpers", () => {
       state: "active",
       pid: 123,
       detail: "pid 123",
+      configuredHome: process.env.FIRST_TREE_HOME,
     });
 
     spawnSyncMock.mockReturnValueOnce({ status: 3, stdout: "", stderr: "Could not find service" });
@@ -341,7 +342,7 @@ describe("service install helpers", () => {
     setPlatform("linux");
     const unitPath = join(process.env.XDG_CONFIG_HOME ?? "", "systemd", "user", channelConfig.serviceUnitFile);
     mkdirSync(dirname(unitPath), { recursive: true });
-    writeFileSync(unitPath, "unit");
+    writeFileSync(unitPath, renderSystemdUnit({ kind: "bin", program: "/opt/first-tree" }));
     spawnSyncMock
       .mockReturnValueOnce({ status: 0, stdout: "active\n", stderr: "" })
       .mockReturnValueOnce({ status: 0, stdout: "456\n", stderr: "" });
@@ -351,6 +352,7 @@ describe("service install helpers", () => {
       state: "active",
       pid: 456,
       detail: "pid 456",
+      configuredHome: process.env.FIRST_TREE_HOME,
     });
 
     spawnSyncMock.mockReturnValueOnce({ status: 3, stdout: "inactive\n", stderr: "" });

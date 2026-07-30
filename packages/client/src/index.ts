@@ -31,6 +31,7 @@ export {
   initClientSentry,
   rootLogger,
 } from "./observability/index.js";
+export { readCanonicalContextTreeWriteRouting } from "./runtime/agent-briefing.js";
 // Runtime
 export type { AgentSlotConfig } from "./runtime/agent-slot.js";
 export { AgentSlot } from "./runtime/agent-slot.js";

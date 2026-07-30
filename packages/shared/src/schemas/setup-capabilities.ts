@@ -16,6 +16,8 @@ export const setupBlockerCodeSchema = z.enum([
   "github_webhook_events_missing",
   "github_pull_requests_permission_required",
   "github_tree_repo_not_covered",
+  "github_app_slug_missing",
+  "github_app_task_reply_permission_required",
   "gitlab_webhook_not_seen",
   "gitlab_hook_source_not_identified",
   "gitlab_merge_request_event_not_seen",
@@ -33,6 +35,7 @@ export const setupBlockerCodeSchema = z.enum([
   "context_review_agent_no_runtime",
   "context_review_agent_runtime_unavailable",
   "context_review_state_changed",
+  "team_agent_conflicts_context_reviewer",
 ]);
 
 export const setupResolutionOwnerSchema = z.enum(["admin", "operator"]);
@@ -48,6 +51,8 @@ export const setupActionKindSchema = z.enum([
   "replace_review_agent",
   "open_agent_owner_flow",
   "manage_review_agent",
+  "configure_github_app",
+  "select_team_agent",
 ]);
 
 export const setupBlockerSchema = z

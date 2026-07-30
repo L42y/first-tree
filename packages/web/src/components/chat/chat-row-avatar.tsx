@@ -7,11 +7,11 @@
  *      Telegram-style split-disc composite (vertical bisection for 2,
  *      T-split for 3, 2x2 for exactly 4, 3 + "+N" tile for >=5). Each face
  *      is the peer's uploaded image, else a generated identicon.
- *   2. Attention. A single corner badge encodes the highest-priority
- *      "do I need to look here" signal: failed (an agent errored, red `!`)
- *      outranks an unread-mention count (red N, numeric up to 99 then "99+").
- *      Omitted when none apply. The activity axis ("an agent is producing
- *      output now") lives in the row's time slot (the scrolling `•••`), not here.
+ *   2. Conversation state. The list variant renders a compact cluster of every
+ *      applicable state marker: failed (`!`), open request (`?`), and unread
+ *      (dot). These signals remain independently visible when they coexist.
+ *      The activity axis ("an agent is producing output now") lives in the
+ *      row's time slot (the scrolling `•••`), not here.
  *
  * The avatar no longer carries the engaged breathe ring — "engaged but
  * idle" was low-value at list-scan distance and is expressed per-agent
@@ -151,12 +151,11 @@ export function ChatRowAvatar({
   /** `chat_user_state.unread_mention_count`. */
   unreadCount: number;
   /** Any speaker in this chat is in the composite `failed` state. Outranks
-   *  unread for the corner badge. */
+   *  unread only on the legacy numeric badge surface; list markers coexist. */
   failed?: boolean;
   /** Caller has an unanswered open question (`format=request`) directed at
    *  them here (`openRequestCount > 0`). Red `?` corner mark (same attention
-   *  red as failed/unread, told apart by glyph); ranks between failed and
-   *  unread. */
+   *  red as failed/unread, told apart by glyph). */
   needsYou?: boolean;
   /** Pixel diameter of the avatar disc. Default 36 fits the narrow rail. */
   size?: number;
@@ -170,10 +169,9 @@ export function ChatRowAvatar({
    *  clean identity disc. The state still feeds
    *  the avatar's `aria-label` regardless, so screen readers are unaffected. */
   badge?: boolean;
-  /** Mainstream-IM status marker: a plain coloured dot on the avatar's
-   *  TOP-right corner (no count). Failed uses a red `!`; unread uses a red
-   *  dot. Used by the conversation list (with `badge={false}`) so the avatar
-   *  carries the WeChat / iMessage / Telegram corner mark. */
+  /** Compact TOP-right conversation-state cluster. Failed uses `!`, an open
+   *  request uses `?`, and unread uses a plain dot. All applicable markers
+   *  render together. Used by the conversation list with `badge={false}`. */
   statusDot?: boolean;
   /** Optional native image loading policy. Dense mobile lists pass `lazy` so
    *  uploaded avatars outside the rendered viewport do not compete with the
@@ -217,7 +215,7 @@ export function ChatRowAvatar({
         <CompositeAvatar size={size} peers={peers} muted={muted} imageLoading={imageLoading} />
       )}
       {badge && <AttentionBadge failed={failed} unread={unreadCount} />}
-      {statusDot && <ListCornerMark failed={failed} needsYou={needsYou} unread={unreadCount > 0} />}
+      {statusDot && <ListCornerMarks failed={failed} needsYou={needsYou} unread={unreadCount > 0} />}
     </span>
   );
 }
@@ -230,47 +228,97 @@ const CORNER_MARK_SIZE = 13;
 const CORNER_OFFSET = -2;
 
 /**
- * Conversation-list corner marker (mainstream-IM placement: avatar top-right).
+ * Conversation-list corner markers (mainstream-IM placement: avatar top-right).
  *
- * One single attention colour (red) for all three states — they are told
- * apart by *form*, not hue (DESIGN.md pillar 3: "told apart by form, not
- * hue"; §13: signals stay colour-independent). The glyph encodes which:
+ * State colours come from the existing error/unread tokens, while form keeps
+ * the meanings distinguishable without relying on hue (DESIGN.md pillar 3:
+ * "told apart by form, not hue"; §13: signals stay colour-independent):
  *   - failed    → `!` (an agent errored)
  *   - needs_you → `?` (an unanswered open question directed at you)
  *   - unread    → a plain dot (no glyph)
- * Glyph-vs-plain-dot also mirrors the priority order failed > needs_you >
- * unread; renders nothing otherwise.
+ * Every active state renders. Slight overlap keeps the three-marker cluster
+ * within the avatar width while leaving each glyph/dot legible.
  */
-function ListCornerMark({ failed, needsYou, unread }: { failed: boolean; needsYou: boolean; unread: boolean }) {
-  if (failed) return <CornerMark background="var(--state-error)" fg="var(--fg-on-vivid)" glyph="!" />;
-  if (needsYou) return <CornerMark background="var(--state-error)" fg="var(--fg-on-vivid)" glyph="?" />;
-  if (unread) return <CornerMark background="var(--state-unread)" />;
-  return null;
+export type ListCornerMarkKind = "unread" | "needs-you" | "failed";
+
+export function listCornerMarkKinds({
+  failed,
+  needsYou,
+  unread,
+}: {
+  failed: boolean;
+  needsYou: boolean;
+  unread: boolean;
+}): ListCornerMarkKind[] {
+  const marks: ListCornerMarkKind[] = [];
+  if (unread) marks.push("unread");
+  if (needsYou) marks.push("needs-you");
+  if (failed) marks.push("failed");
+  return marks;
 }
 
-function CornerMark({ background, fg, glyph }: { background: string; fg?: string; glyph?: string }) {
-  const size = glyph ? CORNER_MARK_SIZE : CORNER_DOT_SIZE;
+function ListCornerMarks({ failed, needsYou, unread }: { failed: boolean; needsYou: boolean; unread: boolean }) {
+  const marks = listCornerMarkKinds({ failed, needsYou, unread });
+  if (marks.length === 0) return null;
   return (
     <span
+      data-chat-state-marks
       aria-hidden="true"
       style={{
         position: "absolute",
         top: CORNER_OFFSET,
         right: CORNER_OFFSET,
+        display: "inline-flex",
+        alignItems: "center",
+        zIndex: 3,
+      }}
+    >
+      {marks.map((mark, index) =>
+        mark === "failed" ? (
+          <CornerMark key={mark} kind={mark} glyph="!" overlap={index > 0} layer={index} />
+        ) : mark === "needs-you" ? (
+          <CornerMark key={mark} kind={mark} glyph="?" overlap={index > 0} layer={index} />
+        ) : (
+          <CornerMark key={mark} kind={mark} overlap={index > 0} layer={index} />
+        ),
+      )}
+    </span>
+  );
+}
+
+function CornerMark({
+  kind,
+  glyph,
+  overlap,
+  layer,
+}: {
+  kind: ListCornerMarkKind;
+  glyph?: string;
+  overlap: boolean;
+  layer: number;
+}) {
+  const size = glyph ? CORNER_MARK_SIZE : CORNER_DOT_SIZE;
+  return (
+    <span
+      data-chat-state-mark={kind}
+      aria-hidden="true"
+      style={{
+        position: "relative",
         minWidth: size,
         height: size,
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
         borderRadius: "50%",
-        background,
-        color: fg,
+        background: kind === "unread" ? "var(--state-unread)" : "var(--state-error)",
+        color: glyph ? "var(--fg-on-vivid)" : undefined,
         fontSize: "var(--text-caption)",
         fontWeight: 700,
         lineHeight: 1,
         border: "var(--hairline-bold) solid var(--bg-raised)",
         boxSizing: "content-box",
-        zIndex: 3,
+        marginLeft: overlap ? -4 : 0,
+        zIndex: layer,
         userSelect: "none",
       }}
     >

@@ -10,11 +10,16 @@ const writeText = vi.fn<(text: string) => Promise<void>>();
 
 /** Tiny probe component: exposes the hook's status as text + a copy button. */
 function Probe({ text }: { text: string }) {
-  const { status, copy } = useCopyFeedback();
+  const { status, copy, reset } = useCopyFeedback();
   return (
-    <button type="button" data-status={status satisfies CopyFeedbackStatus} onClick={() => void copy(text)}>
-      {status}
-    </button>
+    <>
+      <button type="button" data-status={status satisfies CopyFeedbackStatus} onClick={() => void copy(text)}>
+        {status}
+      </button>
+      <button type="button" onClick={reset}>
+        reset
+      </button>
+    </>
   );
 }
 
@@ -88,6 +93,52 @@ describe("useCopyFeedback", () => {
         vi.advanceTimersByTime(1_300);
       });
       expect(probeButton().textContent).toBe("idle");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a deferred clipboard result after reset", async () => {
+    let rejectCopy: ((reason?: unknown) => void) | undefined;
+    writeText.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectCopy = reject;
+        }),
+    );
+    h.render(<Probe text="stale" />);
+
+    await clickCopy();
+    await act(async () => h.container.querySelector<HTMLButtonElement>("button:last-of-type")?.click());
+    await act(async () => {
+      rejectCopy?.(new Error("late denial"));
+      await Promise.resolve();
+    });
+
+    expect(probeButton().textContent).toBe("idle");
+  });
+
+  it("does not schedule feedback after a deferred clipboard result resolves post-unmount", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveCopy: (() => void) | undefined;
+      writeText.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveCopy = resolve;
+          }),
+      );
+      h.render(<Probe text="unmounted" />);
+      await clickCopy();
+
+      h.cleanup();
+      await act(async () => {
+        resolveCopy?.();
+        await Promise.resolve();
+      });
+
+      expect(vi.getTimerCount()).toBe(0);
+      h = createDomHarness();
     } finally {
       vi.useRealTimers();
     }

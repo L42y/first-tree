@@ -2,6 +2,7 @@ import { CHAT_SOURCES, type ChatEngagementView, type ChatSource, chatEngagementV
 import { useCallback, useEffect, useState } from "react";
 import { Navigate, useLocation, useSearchParams } from "react-router";
 import { useAuth } from "../../auth/auth-context.js";
+import { isAskAgentNavLocked } from "../../components/chat/ask-agent-nav-lock.js";
 import { DocPreviewDrawer } from "../../components/doc-preview-drawer.js";
 import { useAdminWs } from "../../hooks/use-admin-ws.js";
 import { useWorkspaceViewport } from "../../hooks/use-viewport.js";
@@ -16,6 +17,7 @@ import {
   storeGroupMode,
 } from "./conversations/group-rows.js";
 import { ConversationList, DRAFT_CHAT_ID, type RailFilter } from "./conversations/index.js";
+import { NeedYouPage } from "./need-you/need-you-page.js";
 
 /**
  * Workspace shell — chat-first. The left rail is `ConversationList`; the
@@ -161,6 +163,7 @@ export function WorkspaceBody() {
   // filter affordances) and show the chat full-bleed.
   const isTrial = isLandingTrialSurface(location.pathname);
   const selectedChatId = searchParams.get("c");
+  const reviewingNeedYou = searchParams.get("review") === "need-you";
   const legacyAgentId = searchParams.get("a");
   const legacySource = searchParams.get("source");
   const engagement: ChatEngagementView = engagementViewParser.parse(searchParams.get("engagement"));
@@ -172,6 +175,14 @@ export function WorkspaceBody() {
   const group = parseGroupMode(searchParams.get("group")) ?? readStoredGroupMode();
 
   useAdminWs();
+
+  // Fail closed while an Ask agent attempt is pending. The attempt state
+  // lives inside the owning review surface (Need you page / Chat takeover),
+  // so every URL transition that would unmount that surface — a rail row, new
+  // chat, the Need you entry, or a filter that drops `?c=` — is refused by
+  // the callbacks below. Browser back/forward and the desktop top tabs /
+  // Jump-to palette are handled one level up in `Layout` (and in
+  // `MobileShell` on mobile routes), where the navigation guard is mounted.
 
   // Viewport-driven layout: at `narrow` (<768) the conversation list
   // collapses out of the inline three-pane shell and becomes a summon-able
@@ -232,10 +243,13 @@ export function WorkspaceBody() {
 
   const selectChat = useCallback(
     (chatId: string) => {
+      if (isAskAgentNavLocked()) return;
       // Preserve the current `?engagement=` (and any other) param so
       // switching chats doesn't reset the user's filter context.
       const next = new URLSearchParams(searchParams);
       next.set("c", chatId);
+      next.delete("review");
+      next.delete("showAsk");
       clearDocPreviewParams(next);
       setSearchParams(next);
       // Auto-dismiss the conversation-list overlay on narrow viewports —
@@ -247,22 +261,60 @@ export function WorkspaceBody() {
   );
 
   const openDraft = useCallback(() => {
+    if (isAskAgentNavLocked()) return;
     const next = new URLSearchParams(searchParams);
     next.set("c", DRAFT_CHAT_ID);
+    next.delete("review");
+    next.delete("showAsk");
     clearDocPreviewParams(next);
     setSearchParams(next);
   }, [searchParams, setSearchParams]);
 
   const clearSelectedChat = useCallback(() => {
+    if (isAskAgentNavLocked()) return;
     const next = new URLSearchParams(searchParams);
     next.delete("c");
+    next.delete("showAsk");
     clearDocPreviewParams(next);
     setSearchParams(next, { replace: true });
     setConvOverlayOpen(false);
   }, [searchParams, setSearchParams]);
 
+  const openNeedYou = useCallback(() => {
+    if (isAskAgentNavLocked()) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("review", "need-you");
+    next.delete("c");
+    next.delete("showAsk");
+    clearDocPreviewParams(next);
+    setSearchParams(next);
+    setConvOverlayOpen(false);
+  }, [searchParams, setSearchParams]);
+
+  const closeNeedYou = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("review");
+    next.delete("showAsk");
+    clearDocPreviewParams(next);
+    setSearchParams(next);
+  }, [searchParams, setSearchParams]);
+
+  const openFullChatFromNeedYou = useCallback(
+    (chatId: string) => {
+      const next = new URLSearchParams(searchParams);
+      next.delete("review");
+      next.set("c", chatId);
+      next.set("showAsk", "false");
+      clearDocPreviewParams(next);
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
+
   const setEngagement = useCallback(
     (view: ChatEngagementView) => {
+      // Drops `?c=`, which would unmount a pending Ask agent's owning surface.
+      if (isAskAgentNavLocked()) return;
       setSearchParams(nextParamsForEngagement(searchParams, view), { replace: true });
     },
     [searchParams, setSearchParams],
@@ -280,6 +332,8 @@ export function WorkspaceBody() {
 
   const setOrigin = useCallback(
     (next: ReadonlyArray<ChatSource>) => {
+      // Drops `?c=` — see `setEngagement`.
+      if (isAskAgentNavLocked()) return;
       setSearchParams(nextParamsForOrigin(searchParams, next), { replace: true });
     },
     [searchParams, setSearchParams],
@@ -287,6 +341,8 @@ export function WorkspaceBody() {
 
   const setParticipants = useCallback(
     (next: ReadonlyArray<string>) => {
+      // Drops `?c=` — see `setEngagement`.
+      if (isAskAgentNavLocked()) return;
       setSearchParams(nextParamsForParticipants(searchParams, next), { replace: true });
     },
     [searchParams, setSearchParams],
@@ -362,6 +418,7 @@ export function WorkspaceBody() {
       onClearFilters={clearFilters}
       group={group}
       onGroupChange={setGroup}
+      onOpenNeedYou={openNeedYou}
       width={conversationListWidth}
     />
   );
@@ -370,7 +427,7 @@ export function WorkspaceBody() {
   // overlay. Avoids trapping the user on NoChatView with no way back to
   // their chats (the inline rail is hidden, the hamburger only renders
   // inside ChatView). Same component reused, just stretched full-bleed.
-  if (isNarrow && !selectedChatId) {
+  if (isNarrow && !selectedChatId && !reviewingNeedYou) {
     return (
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 flex">{conversationList}</div>
@@ -386,14 +443,18 @@ export function WorkspaceBody() {
       {isNarrow ? null : conversationList}
 
       <main className="flex-1 flex flex-col overflow-hidden min-w-0" style={{ background: "var(--bg)" }}>
-        <CenterPanel
-          selectedChatId={selectedChatId}
-          onSelectChat={selectChat}
-          onClearChat={clearSelectedChat}
-          narrow={isNarrow}
-          onShowConversations={isNarrow ? () => setConvOverlayOpen(true) : null}
-          initialParticipantIds={participants}
-        />
+        {reviewingNeedYou ? (
+          <NeedYouPage mobile={isNarrow} onClose={closeNeedYou} onOpenFullChat={openFullChatFromNeedYou} />
+        ) : (
+          <CenterPanel
+            selectedChatId={selectedChatId}
+            onSelectChat={selectChat}
+            onClearChat={clearSelectedChat}
+            narrow={isNarrow}
+            onShowConversations={isNarrow ? () => setConvOverlayOpen(true) : null}
+            initialParticipantIds={participants}
+          />
+        )}
       </main>
       <DocPreviewDrawer />
 

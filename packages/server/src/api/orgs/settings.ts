@@ -3,12 +3,14 @@ import {
   ORG_SETTINGS_NAMESPACES,
   type OrgSettingNamespace,
   orgContextTreeFinalizeInputSchema,
+  orgGithubFeaturesInputSchema,
 } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, ConflictError, GoneError } from "../../errors.js";
 import { requireOrgAdmin, requireOrgMembership } from "../../scope/require-org.js";
 import { putLegacyContextReviewerSetting } from "../../services/context-reviewer-settings.js";
 import * as orgSettingsService from "../../services/org-settings.js";
+import { putTeamAgentAssignment } from "../../services/team-agent-settings.js";
 
 /**
  * Class B — `/api/v1/orgs/:orgId/settings/:namespace`.
@@ -96,6 +98,13 @@ export async function orgSettingsRoutes(app: FastifyInstance): Promise<void> {
           updatedBy: scope.userId,
           staleSeconds: app.config.runtime.presenceCleanupSeconds,
           githubAppCredentials: app.config.oauth?.githubApp,
+        });
+      }
+      if (namespace === "github_features") {
+        const input = orgGithubFeaturesInputSchema.parse(request.body);
+        return putTeamAgentAssignment(app.db, scope.organizationId, input.teamAgent.agentUuid, {
+          updatedBy: scope.userId,
+          appSlug: app.config.oauth?.githubApp?.slug,
         });
       }
       return orgSettingsService.putOrgSetting(app.db, scope.organizationId, namespace, request.body, {

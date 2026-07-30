@@ -1,8 +1,11 @@
 import type { AgentVisibility, GithubAppInstallationOutput } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { Bot, CircleCheck, MessageSquare, Plus, SendHorizontal } from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { HubClient } from "../api/activity.js";
+import { getApiSelectedOrganizationId, setApiSelectedOrganizationId } from "../api/client.js";
 import type { GithubRepo } from "../api/github.js";
+import { Avatar } from "../components/avatar.js";
 import type { ComputerConnection } from "../features/agent-setup/use-computer-connection.js";
 import { InviteAcceptCard, InviteAcceptError, InviteAcceptShell, InviteAcceptSkeleton } from "./invite-accept.js";
 import { COPY } from "./onboarding/copy.js";
@@ -13,11 +16,14 @@ import { StepConnectCode } from "./onboarding/steps/step-connect-code.js";
 import { StepConnectComputer } from "./onboarding/steps/step-connect-computer.js";
 import { StepCreateAgent } from "./onboarding/steps/step-create-agent.js";
 import { StepGetStarted } from "./onboarding/steps/step-get-started.js";
-import { StepJoinTeam } from "./onboarding/steps/step-join-team.js";
 import { StepStartChat } from "./onboarding/steps/step-start-chat.js";
 import { StepTeam } from "./onboarding/steps/step-team.js";
 import { getStepSequence, type OnboardingPath, type StepId } from "./onboarding/steps.js";
 import { MockTeamStepsA, MockTeamStepsB, MockWelcomeCeremonial } from "./onboarding-team-steps-mocks.js";
+import {
+  buildInviteeReadyBootstrap,
+  buildTeamAgentStartBootstrap,
+} from "./workspace/center/onboarding/bootstrap-prose.js";
 
 /**
  * DEV-only gallery of every onboarding screen + state, mounted at
@@ -155,7 +161,15 @@ const ASYNC_NOOP = async (): Promise<void> => {};
 // `selectedRuntime` / `setSelectedRuntime` are made interactive per-scenario in
 // WizardScenarioView (state-backed), so the runtime pills actually switch.
 const COMPUTER: Record<
-  "waiting" | "tokenError" | "detecting" | "noRuntime" | "ready" | "readyMulti" | "lostWhileReady",
+  | "waiting"
+  | "tokenError"
+  | "detecting"
+  | "noRuntime"
+  | "ready"
+  | "readyCodex"
+  | "readyMulti"
+  | "unsupportedByo"
+  | "lostWhileReady",
   ComputerConnection
 > = {
   waiting: {
@@ -209,12 +223,36 @@ const COMPUTER: Record<
     tokenError: null,
     retry: NOOP,
   },
+  // BYO provider projection with Codex as the only supported local surface.
+  readyCodex: {
+    connectedClient: HOST,
+    capabilitiesLoaded: true,
+    okRuntimes: ["codex"],
+    selectedRuntime: "codex",
+    setSelectedRuntime: NOOP,
+    cliCommand: SAMPLE_CLI,
+    tokenError: null,
+    retry: NOOP,
+  },
   // Multiple runtimes → the step renders the single-select runtime list.
   readyMulti: {
     connectedClient: HOST,
     capabilitiesLoaded: true,
     okRuntimes: ["claude-code", "codex", "claude-code-tui"],
     selectedRuntime: "claude-code",
+    setSelectedRuntime: NOOP,
+    cliCommand: SAMPLE_CLI,
+    tokenError: null,
+    retry: NOOP,
+  },
+  // A connected computer with only unsupported BYO surfaces. The real
+  // connect-computer step must keep Continue disabled and explain that Claude
+  // Code or Codex is still required.
+  unsupportedByo: {
+    connectedClient: HOST,
+    capabilitiesLoaded: true,
+    okRuntimes: ["cursor", "kimi"],
+    selectedRuntime: null,
     setSelectedRuntime: NOOP,
     cliCommand: SAMPLE_CLI,
     tokenError: null,
@@ -268,7 +306,9 @@ type NetProfile = {
   /** GET /orgs/:id/github-app-installation/exists */
   installExists?: boolean;
   /** GET /orgs/:id/settings/context_tree → { repo } */
-  contextTree?: string | null | "pending";
+  contextTree?: string | null | "pending" | "error" | "revokedAfterReady";
+  /** GET /orgs/:id/resources contains an active Team code repository. */
+  hasCodeRepository?: boolean;
   /**
    * GET /orgs/:id/github-app-installation/install-url — when set, the install
    * URL mint fails with this status, so clicking "Install on GitHub"
@@ -290,11 +330,15 @@ type NetProfile = {
   activeTeamRepo?: boolean;
   /** Fresh login bootstrap and exact-Team provider handoff used by the copy action. */
   personalContextHandoff?: boolean;
+  /** GET /context-enablement/handoff fails after readiness passed. */
+  handoffError?: boolean;
 };
 
 // The active scenario's net profile, read by the shim. Set during render of the
 // main panel (synchronous, before the keyed child subtree mounts and fetches).
 let activeNet: NetProfile = {};
+let activeScenarioNetId = "";
+let contextTreeReadCount = 0;
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 function jsonResponse(data: unknown): Response {
@@ -316,8 +360,10 @@ function handleNet(rawUrl: string): Promise<Response> | Response | null {
   const idx = rawUrl.indexOf("/api/v1");
   if (idx < 0) return null;
   const p = rawUrl.slice(idx + "/api/v1".length).split("?")[0];
-  const provider = new URL(rawUrl, window.location.origin).searchParams.get("provider");
 
+  if (p === "/bootstrap/config") {
+    return jsonResponse({ authProviders: { google: true, github: true } });
+  }
   if (p === "/me/organizations") {
     return jsonResponse([{ id: ORG_ID, name: "acme", displayName: TEAM_NAME, role: "admin" }]);
   }
@@ -390,27 +436,38 @@ function handleNet(rawUrl: string): Promise<Response> | Response | null {
   }
   if (p === `/orgs/${ORG_ID}/settings/context_tree`) {
     if (activeNet.contextTree === "pending") return new Promise<Response>(() => {});
+    if (activeNet.contextTree === "error") {
+      return statusResponse(500, JSON.stringify({ error: "context readiness unavailable" }));
+    }
+    if (activeNet.contextTree === "revokedAfterReady") {
+      contextTreeReadCount += 1;
+      return jsonResponse({ repo: contextTreeReadCount === 1 ? TREE_URL : null });
+    }
     return jsonResponse({ repo: activeNet.contextTree ?? null });
   }
-  if (activeNet.activeTeamRepo && p === `/orgs/${ORG_ID}/resources`) {
-    return jsonResponse([
-      {
-        id: "resource-web",
-        organizationId: ORG_ID,
-        type: "repo",
-        scope: "team",
-        ownerAgentId: null,
-        name: "acme/web",
-        repoCanonicalKey: "github.com/acme/web",
-        defaultEnabled: "recommended",
-        status: "active",
-        payload: { url: REPO_WEB },
-        createdBy: "member-preview",
-        updatedBy: "member-preview",
-        createdAt: NOW_ISO,
-        updatedAt: NOW_ISO,
-      },
-    ]);
+  if (p === `/orgs/${ORG_ID}/resources` && (activeNet.activeTeamRepo || activeNet.hasCodeRepository !== undefined)) {
+    return jsonResponse(
+      activeNet.activeTeamRepo || activeNet.hasCodeRepository
+        ? [
+            {
+              id: "resource-web",
+              organizationId: ORG_ID,
+              type: "repo",
+              scope: "team",
+              ownerAgentId: null,
+              name: "acme/web",
+              repoCanonicalKey: "github.com/acme/web",
+              defaultEnabled: "recommended",
+              status: "active",
+              payload: { url: REPO_WEB },
+              createdBy: "member-preview",
+              updatedBy: "member-preview",
+              createdAt: NOW_ISO,
+              updatedAt: NOW_ISO,
+            },
+          ]
+        : [],
+    );
   }
   if (activeNet.personalContextHandoff && p === "/me/connect-tokens") {
     return jsonResponse({
@@ -419,14 +476,25 @@ function handleNet(rawUrl: string): Promise<Response> | Response | null {
       binName: "first-tree",
     });
   }
-  if (activeNet.personalContextHandoff && p === `/orgs/${ORG_ID}/context-enablement/handoff`) {
-    const selectedProvider = provider === "codex" ? "codex" : "claude-code";
+  if (p === `/orgs/${ORG_ID}/context-enablement/handoff` && activeNet.handoffError) {
+    return statusResponse(500, JSON.stringify({ error: "handoff unavailable" }));
+  }
+  if (
+    p === `/orgs/${ORG_ID}/context-enablement/handoff` &&
+    (activeNet.personalContextHandoff || activeNet.hasCodeRepository)
+  ) {
+    const selectedProvider = rawUrl.includes("provider=codex") ? "codex" : "claude-code";
+    const intent = rawUrl.includes("intent=onboarding") ? "onboarding" : "settings";
     return jsonResponse({
+      protocolVersion: 1,
       organizationId: ORG_ID,
       teamDisplayName: TEAM_NAME,
       role: "member",
       provider: selectedProvider,
-      command: `'first-tree' context enable --provider '${selectedProvider}' --team '${ORG_ID}'`,
+      intent,
+      command:
+        `first-tree-dev context enable --provider '${selectedProvider}' --team '${ORG_ID}'` +
+        (intent === "onboarding" ? " --yes" : ""),
       workingDirectoryInstruction: "Run this once from the repository root.",
     });
   }
@@ -495,7 +563,7 @@ type PreviewView = "flow" | "states" | "experiments";
 type PreviewStepId = StepId | "connect-code";
 
 const PREVIEW_VIEWS: Array<{ id: PreviewView; label: string; subtitle: string }> = [
-  { id: "flow", label: "Flow", subtitle: "Primary journey. Real components, mocked state." },
+  { id: "flow", label: "Flow", subtitle: "Branch-complete journey with explicit destinations." },
   { id: "states", label: "States", subtitle: "State inventory. Real components, mocked state." },
   { id: "experiments", label: "Experiments", subtitle: "Design experiments. Not production components." },
 ];
@@ -528,6 +596,8 @@ type Scenario = {
   view?: PreviewView;
   wizard?: WizardSpec;
   invite?: ReactNode;
+  /** Explicit post-onboarding destination (First Tree Chat or external provider). */
+  destination?: ReactNode;
   /** A self-contained design mockup rendered full-bleed (no shell wrap). */
   mockup?: ReactNode;
 };
@@ -761,7 +831,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     },
   },
 
-  // ── INVITEE ────────────────────────────────────────────────────────────
+  // ── MEMBER / INVITEE ──────────────────────────────────────────────────
   {
     id: "inv-link-loading",
     label: "Loading",
@@ -779,9 +849,8 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "inv-link-signedout",
     label: "Join team · signed out",
-    group: "Invitee flow",
+    group: "Join-team invite states",
     role: "invitee",
-    view: "flow",
     invite: (
       <InviteAcceptCard
         preview={PREVIEW}
@@ -859,113 +928,515 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   },
 
   {
-    id: "inv-welcome",
-    label: "Join team",
-    group: "Invitee flow",
-    role: "invitee",
-    view: "flow",
-    wizard: { step: "join-team", flow: { teamDisplayName: "Acme Inc" } },
-  },
-
-  {
     id: "inv-fork-choose",
-    label: "Get started · fork",
-    group: "Invitee flow",
+    label: "Set up your First Tree agent",
+    group: "Recommended onboarding",
     role: "invitee",
     view: "flow",
-    // The fork renders only while the org offers a team-agent start; clicking
-    // "Quick start" advances into the live pick sub-state (the shim serves the
-    // roster below).
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
-      net: { orgAgents: TEAM_AGENTS, orgMembers: true },
+      net: {
+        orgAgents: TEAM_AGENTS,
+        orgMembers: true,
+        contextTree: TREE_URL,
+        hasCodeRepository: true,
+      },
     },
   },
   {
+    id: "inv-cc-waiting",
+    label: "Connect computer",
+    group: "Recommended onboarding",
+    role: "invitee",
+    view: "flow",
+    wizard: { step: "connect-computer", flow: { computer: COMPUTER.waiting } },
+  },
+  {
+    id: "inv-ca-form",
+    label: "Create agent",
+    group: "Recommended onboarding",
+    role: "invitee",
+    view: "flow",
+    wizard: { step: "create-agent", flow: { computer: COMPUTER.ready, agentPhase: "idle" } },
+  },
+  {
+    id: "inv-ko-ready",
+    label: "Start first chat",
+    group: "Recommended onboarding",
+    role: "invitee",
+    view: "flow",
+    wizard: {
+      step: "start-chat",
+      flow: { computer: COMPUTER.ready },
+      net: { contextTree: TREE_URL, installExists: true, hasCodeRepository: true },
+    },
+  },
+  {
+    id: "inv-workspace-personal-chat",
+    label: "Destination · first Agent Chat",
+    group: "Recommended onboarding",
+    role: "invitee",
+    view: "flow",
+    destination: <MemberChatDestination mode="personal-agent" />,
+  },
+  {
+    id: "inv-workspace-team-pick",
+    label: "Continue without · choose a Team agent",
+    group: "Continue without · Team agent available",
+    role: "invitee",
+    view: "flow",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true },
+      net: {
+        orgAgents: TEAM_AGENTS,
+        orgMembers: true,
+        contextTree: TREE_URL,
+        hasCodeRepository: true,
+      },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+  {
+    id: "inv-workspace-team-chat",
+    label: "Destination · first Agent Chat",
+    group: "Continue without · Team agent available",
+    role: "invitee",
+    view: "flow",
+    destination: <MemberChatDestination mode="team-agent" />,
+  },
+  {
+    id: "inv-progressive-no-team-agent",
+    label: "Recommended · no Team agent",
+    group: "Continue without · no Team agent",
+    role: "invitee",
+    view: "flow",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: false },
+      net: { orgAgents: [], orgMembers: true, contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+  {
+    id: "inv-workspace-personal-choice",
+    label: "Recommended · computer already connected",
+    group: "Progressive entry states",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { computer: COMPUTER.ready },
+    },
+  },
+  {
+    id: "inv-byo-setup",
+    label: "External Context · one-paste setup",
+    group: "Claude Code / Codex states",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.waiting },
+      net: { contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  // Context readiness is member-readable and read-only. It is checked only
+  // after the member explicitly continues without a personal agent.
+  {
+    id: "inv-choice-checking",
+    label: "Choice · checking Team Context",
+    group: "Continue without states",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true },
+      net: { contextTree: "pending", hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+  {
+    id: "inv-choice-no-team-agent",
+    label: "Choice · no Team agent",
+    group: "Continue without states",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: false },
+      net: { orgAgents: [], orgMembers: true, contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+  {
+    id: "inv-choice-context-unavailable",
+    label: "Choice · BYO unavailable",
+    group: "Continue without states",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true },
+      net: { contextTree: null, hasCodeRepository: false },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+  {
+    id: "inv-choice-context-error",
+    label: "Choice · readiness failed",
+    group: "Continue without states",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true },
+      net: { contextTree: "error", hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+
+  {
     id: "inv-fork-pick",
-    label: "Pick a team agent",
-    group: "Get-started fork states",
+    label: "Pick · ready",
+    group: "Team-agent picker states",
     role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: TEAM_AGENTS, orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
     id: "inv-fork-pick-loading",
     label: "Pick · loading",
-    group: "Get-started fork states",
+    group: "Team-agent picker states",
     role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: "pending", orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
     id: "inv-fork-pick-empty",
-    label: "Pick · no team agent",
-    group: "Get-started fork states",
+    label: "Pick · no usable agent",
+    group: "Team-agent picker states",
     role: "invitee",
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: [], orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
     },
   },
   {
     id: "inv-fork-pick-error",
     label: "Pick · roster failed",
-    group: "Get-started fork states",
+    group: "Team-agent picker states",
     role: "invitee",
-    // A rejected roster read is a DISTINCT state from empty: it names the
-    // failure and offers retry instead of falsely claiming no agent exists.
     wizard: {
       step: "get-started",
       flow: { offerTeamAgentStart: true },
       net: { orgAgents: "error", orgMembers: true },
-      body: <StepGetStarted defaultMode="pick" />,
+      body: <StepGetStarted defaultMode="continue-without" />,
+    },
+  },
+
+  {
+    id: "inv-byo-unsupported-provider",
+    label: "Provider choice · not inferred from Computer",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.unsupportedByo },
+      net: { contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  {
+    id: "inv-byo-codex-only",
+    label: "Provider choice · both remain available",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.readyCodex },
+      net: { contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  {
+    id: "inv-byo-computer-disconnected",
+    label: "Connection fallback · available",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.lostWhileReady },
+      net: { contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  {
+    id: "inv-byo-context-revoked",
+    label: "Team Context · unavailable",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.ready },
+      net: { contextTree: null, hasCodeRepository: false },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  {
+    id: "inv-byo-context-error",
+    label: "Team Context · check failed",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.ready },
+      net: { contextTree: "error", hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  {
+    id: "inv-byo-handoff-error",
+    label: "Enable handoff · failed",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.ready },
+      net: { contextTree: TREE_URL, hasCodeRepository: true, handoffError: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  {
+    id: "inv-byo-authority-changed",
+    label: "Team Context · changed while waiting",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: { offerTeamAgentStart: true, computer: COMPUTER.ready },
+      net: { contextTree: "revokedAfterReady", hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
+    },
+  },
+  {
+    id: "inv-byo-token-error",
+    label: "Connection fallback · unavailable",
+    group: "BYO readiness & recovery",
+    role: "invitee",
+    wizard: {
+      step: "get-started",
+      flow: {
+        offerTeamAgentStart: true,
+        computer: COMPUTER.tokenError,
+      },
+      net: { contextTree: TREE_URL, hasCodeRepository: true },
+      body: <StepGetStarted defaultMode="byo-setup" />,
     },
   },
 
   {
     id: "inv-ko-not-ready",
     label: "Team not ready · missing setup",
-    group: "Start-chat states",
+    group: "First Tree chat states",
     role: "invitee",
     // Missing tree, missing GitHub install, or an uncertain probe all collapse to
     // the one not-ready screen; the invitee cannot fix those separately here.
-    wizard: { step: "start-chat", net: { contextTree: null, installExists: false } },
+    wizard: {
+      step: "start-chat",
+      net: { contextTree: null, installExists: false, hasCodeRepository: false },
+    },
   },
   {
-    id: "inv-ko-ready",
+    id: "inv-start-chat-ready",
     label: "Start chat",
     group: "Invitee flow",
     role: "invitee",
-    view: "flow",
     wizard: {
       step: "start-chat",
       net: {
         contextTree: TREE_URL,
         installExists: true,
-        activeTeamRepo: true,
-        personalContextHandoff: true,
+        hasCodeRepository: true,
       },
     },
   },
   {
     id: "inv-ko-starting",
     label: "Starting…",
-    group: "Start-chat states",
+    group: "First Tree chat states",
     role: "invitee",
     wizard: { step: "start-chat", body: <WorkingState label={COPY.startChat.starting} /> },
   },
 ];
+
+/**
+ * The onboarding step components redirect into the normal chat route after
+ * kickoff, so the gallery needs an explicit destination frame to make the
+ * member journey reviewable end to end. This deliberately shows the stable
+ * first-chat contract (selected chat, visible bootstrap, agent working state,
+ * composer) without pretending to be a second interactive Chat implementation.
+ */
+function MemberChatDestination({ mode }: { mode: "team-agent" | "personal-agent" }) {
+  const teamAgent = mode === "team-agent";
+  const agentName = teamAgent ? "Dev Assistant" : "Gandy's assistant";
+  const agentHandle = teamAgent ? "@dev-assistant" : "@gandy-assistant";
+  const bootstrap = teamAgent ? buildTeamAgentStartBootstrap(agentName) : buildInviteeReadyBootstrap(agentName);
+
+  return (
+    <div className="flex h-full" style={{ background: "var(--bg)" }}>
+      <aside
+        className="flex flex-col"
+        style={{
+          width: 264,
+          flexShrink: 0,
+          borderRight: "var(--hairline) solid var(--border)",
+          background: "var(--bg-raised)",
+        }}
+      >
+        <div
+          className="flex items-center"
+          style={{
+            height: 56,
+            gap: "var(--sp-2)",
+            padding: "0 var(--sp-4)",
+            borderBottom: "var(--hairline) solid var(--border)",
+          }}
+        >
+          <MessageSquare className="h-4 w-4" aria-hidden style={{ color: "var(--fg-3)" }} />
+          <span className="text-body font-semibold">First Tree</span>
+          <button
+            type="button"
+            aria-label="New chat"
+            style={{
+              marginLeft: "auto",
+              border: 0,
+              padding: "var(--sp-1)",
+              borderRadius: "var(--radius-chip)",
+              background: "transparent",
+              color: "var(--fg-3)",
+            }}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
+        <div style={{ padding: "var(--sp-3)" }}>
+          <p className="text-caption mono" style={{ margin: "0 0 var(--sp-2)", color: "var(--fg-4)" }}>
+            TODAY
+          </p>
+          <div
+            className="flex items-center"
+            style={{
+              gap: "var(--sp-2_5)",
+              padding: "var(--sp-2_5) var(--sp-3)",
+              borderRadius: "var(--radius-input)",
+              background: "color-mix(in oklch, var(--primary) 10%, transparent)",
+            }}
+          >
+            <Avatar name={agentName} seed={agentHandle} size={28} />
+            <div className="min-w-0">
+              <div className="text-label font-medium truncate">Get settled on First Tree</div>
+              <div className="text-caption truncate" style={{ color: "var(--fg-4)" }}>
+                {agentName}
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header
+          className="flex items-center"
+          style={{
+            height: 56,
+            gap: "var(--sp-3)",
+            padding: "0 var(--sp-5)",
+            borderBottom: "var(--hairline) solid var(--border)",
+            background: "var(--bg-raised)",
+          }}
+        >
+          <Avatar name={agentName} seed={agentHandle} size={28} />
+          <div className="min-w-0">
+            <div className="text-body font-semibold truncate">Get settled on First Tree</div>
+            <div className="text-caption truncate" style={{ color: "var(--fg-4)" }}>
+              {agentName} · {teamAgent ? "Team agent" : "Your First Tree agent"}
+            </div>
+          </div>
+          <div
+            className="text-caption inline-flex items-center"
+            style={{
+              marginLeft: "auto",
+              gap: "var(--sp-1)",
+              color: teamAgent ? "var(--fg-3)" : "var(--success)",
+            }}
+          >
+            {teamAgent ? null : <CircleCheck className="h-3.5 w-3.5" />}
+            {teamAgent ? "Personal agent setup remains available" : "Onboarding complete"}
+          </div>
+        </header>
+
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          style={{ width: "min(48rem, 100%)", margin: "0 auto", padding: "var(--sp-7) var(--sp-6)" }}
+        >
+          <div className="flex-1 overflow-y-auto">
+            <div className="flex justify-end">
+              <div
+                className="text-label"
+                style={{
+                  maxWidth: "78%",
+                  whiteSpace: "pre-wrap",
+                  padding: "var(--sp-3) var(--sp-4)",
+                  borderRadius: "var(--radius-panel)",
+                  background: "var(--fg)",
+                  color: "var(--bg)",
+                }}
+              >
+                {bootstrap}
+              </div>
+            </div>
+
+            <div className="flex items-start" style={{ gap: "var(--sp-3)", marginTop: "var(--sp-6)" }}>
+              <Avatar name={agentName} seed={agentHandle} size={30} />
+              <div className="min-w-0">
+                <div className="text-label font-medium">{agentName}</div>
+                <div
+                  className="text-label inline-flex items-center"
+                  style={{ gap: "var(--sp-2)", marginTop: "var(--sp-2)", color: "var(--fg-3)" }}
+                >
+                  <Bot className="h-4 w-4" aria-hidden />
+                  {teamAgent ? "Starting your first Team-agent conversation…" : "Getting your first Agent Chat ready…"}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="flex items-end"
+            style={{
+              gap: "var(--sp-3)",
+              padding: "var(--sp-3) var(--sp-4)",
+              border: "var(--hairline) solid var(--border)",
+              borderRadius: "var(--radius-panel)",
+              background: "var(--bg-raised)",
+            }}
+          >
+            <span className="text-label flex-1" style={{ color: "var(--fg-4)" }}>
+              Message {agentHandle}
+            </span>
+            <SendHorizontal className="h-4 w-4" aria-hidden style={{ color: "var(--fg-4)" }} />
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Flow value + wizard renderer
@@ -988,6 +1459,7 @@ function baseFlow(path: OnboardingPath): OnboardingFlowValue {
     teamDisplayName: TEAM_NAME,
     orgHasOtherMembers: path === "invitee",
     computer: COMPUTER.waiting,
+    prepareByoBootstrap: NOOP,
     agentDisplayName: DEFAULT_AGENT_NAME,
     setAgentDisplayName: NOOP,
     visibility: "organization",
@@ -1009,7 +1481,6 @@ function baseFlow(path: OnboardingPath): OnboardingFlowValue {
     markTreeAutoDetectDone: NOOP,
     offerTeamAgentStart: false,
     completeAndEnterChat: ASYNC_NOOP,
-    skipAndEnterChat: ASYNC_NOOP,
     finishLater: ASYNC_NOOP,
   };
 }
@@ -1026,8 +1497,6 @@ function StepBody({ step }: { step: PreviewStepId }): ReactNode {
       return <StepCreateAgent />;
     case "start-chat":
       return <StepStartChat />;
-    case "join-team":
-      return <StepJoinTeam />;
     case "get-started":
       return <StepGetStarted />;
     default:
@@ -1131,7 +1600,7 @@ function WizardScenarioView({ spec, role }: { spec: WizardSpec; role: Role }) {
         {spec.step === "connect-code" ? (
           <GithubAccessPreviewShell>{body}</GithubAccessPreviewShell>
         ) : (
-          <Shell>{body}</Shell>
+          <Shell previewHasTeam>{body}</Shell>
         )}
       </OnboardingFlowContext.Provider>
     </QueryClientProvider>
@@ -1182,6 +1651,22 @@ function initialPreviewSelection(): { role: Role; scenarioId: string; view: Prev
 }
 
 export function OnboardingPreviewPage() {
+  const previousApiOrgRef = useRef(getApiSelectedOrganizationId());
+  // Production list APIs resolve their Team from the API client's selected-org
+  // projection before issuing a request. The preview supplies Auth context
+  // directly, so establish the same projection synchronously before a real
+  // step component mounts and restore the caller's value on unmount.
+  setApiSelectedOrganizationId(ORG_ID);
+  useEffect(() => {
+    // React Strict Mode replays the effect cleanup during development. Set the
+    // preview Team again on the replayed mount so interactions that start
+    // later (for example Continue without) keep using the fixture Team.
+    setApiSelectedOrganizationId(ORG_ID);
+    return () => {
+      setApiSelectedOrganizationId(previousApiOrgRef.current);
+    };
+  }, []);
+
   const initial = useMemo(() => initialPreviewSelection(), []);
   const [role, setRole] = useState<Role>(initial.role);
   const [view, setView] = useState<PreviewView>(initial.view);
@@ -1221,6 +1706,10 @@ export function OnboardingPreviewPage() {
   // Set the net profile for the active wizard scenario BEFORE the keyed child
   // subtree below mounts and fetches. Render is synchronous and parent-first,
   // so the shim sees the right profile by the time the step components fetch.
+  if (active?.id !== activeScenarioNetId) {
+    activeScenarioNetId = active?.id ?? "";
+    contextTreeReadCount = 0;
+  }
   activeNet = active?.wizard?.net ?? {};
   // Seed / clear the connect-code post-attempt marker for the matching scenario
   // (synchronous, before the keyed child mounts and its effect reads it).
@@ -1373,6 +1862,10 @@ export function OnboardingPreviewPage() {
       <main style={{ flex: 1, minWidth: 0, overflow: "hidden", position: "relative" }}>
         {active?.wizard ? (
           <WizardScenarioView key={active.id} spec={active.wizard} role={active.role} />
+        ) : active?.destination ? (
+          <div key={active.id} style={{ height: "100%", overflow: "hidden" }}>
+            {active.destination}
+          </div>
         ) : active?.mockup ? (
           <div key={active.id} style={{ height: "100%", overflow: "hidden" }}>
             {active.mockup}

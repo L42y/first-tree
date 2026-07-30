@@ -50,6 +50,7 @@ describe("daemon namespace — hidden service-maintenance subcommands", () => {
       "install-claude",
       "install-codex",
       "probe",
+      "repair-ownership",
       "restart",
       "start",
       "status",

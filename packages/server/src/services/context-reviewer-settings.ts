@@ -6,6 +6,7 @@ import {
   ORG_SETTINGS_NAMESPACES,
   type OrgContextTreeFeaturesOutput,
   type OrgContextTreeFeaturesStorage,
+  type OrgGithubFeaturesStorage,
   orgContextTreeFeaturesInputSchema,
   runtimeProviderSchema,
   type SetupBlocker,
@@ -86,6 +87,20 @@ async function readStorage(db: Database, organizationId: string): Promise<OrgCon
     )
     .limit(1);
   return ORG_SETTINGS_NAMESPACES.context_tree_features.storage.parse(row?.value ?? {});
+}
+
+async function readTeamAgentStorage(db: Database, organizationId: string): Promise<OrgGithubFeaturesStorage> {
+  const [row] = await db
+    .select({ value: organizationSettings.value })
+    .from(organizationSettings)
+    .where(
+      and(
+        eq(organizationSettings.organizationId, organizationId),
+        eq(organizationSettings.namespace, "github_features"),
+      ),
+    )
+    .limit(1);
+  return ORG_SETTINGS_NAMESPACES.github_features.storage.parse(row?.value ?? {});
 }
 
 function sameStorage(left: OrgContextTreeFeaturesStorage, right: OrgContextTreeFeaturesStorage): boolean {
@@ -265,6 +280,13 @@ export async function putContextReviewerAssignment(
       organizationId,
       agentUuid,
     });
+    const teamAgent = await readTeamAgentStorage(txDb, organizationId);
+    if (teamAgent.teamAgent.agentUuid === agent.uuid) {
+      fail(
+        blocker("team_agent_conflicts_context_reviewer", "select_team_agent"),
+        "Context Reviewer and Team Agent must be different Agents",
+      );
+    }
     const sameAgent = current.contextReviewer.agentUuid === agent.uuid;
     if (sameAgent) return;
 

@@ -64,6 +64,15 @@ import { ensureCanJoin, joinAsParticipant, leaveAsParticipant, resolveChatMember
 const CURSOR_VERSION = "v2";
 
 /**
+ * Expand-contract bridge for independently deployed Web and Server builds.
+ * The retired `attention` tier stays empty so an older Web can deserialize a
+ * newer response; current clients strip it and never use it for ordering.
+ */
+type LegacyCompatibleListMeChatsResponse = Omit<ListMeChatsResponse, "priorityRows"> & {
+  priorityRows: ListMeChatsResponse["priorityRows"] & { attention: MeChatRow[] };
+};
+
+/**
  * A decoded cursor is one of three cases so the caller can treat them
  * differently across a rollout:
  *   - `ok`     — a valid `v2|<iso>|<chatId>` cursor; resume from it.
@@ -195,11 +204,12 @@ export async function setChatEngagement(
 /**
  * Set or clear the caller's pin for this chat. UPSERT into `chat_user_state`
  * — `pinned_at = now()` to pin, `null` to unpin. Fully idempotent, including
- * the timestamp: `pinned_at` is the stable within-pinned-group sort anchor, so
- * re-pinning an already-pinned chat MUST keep the original stamp — an HTTP
- * retry or double-click must not silently reorder it. Pin is private per-user
- * state, so a write only ever touches the caller's own `(chat_id, agent_id)`
- * row and never another user's. Returns the persisted `pinned_at`.
+ * the timestamp: re-pinning an already-pinned chat keeps its original private
+ * audit anchor. Display order is independent of that timestamp: pinned chats
+ * use the same real-work activity order as ordinary chats. Pin is private
+ * per-user state, so a write only ever touches the caller's own
+ * `(chat_id, agent_id)` row and never another user's. Returns the persisted
+ * `pinned_at`.
  */
 export async function pinMeChat(
   db: Database,
@@ -362,9 +372,8 @@ const toChatDate = (v: Date | string | null): Date | null => {
 
 /**
  * Raw row shape returned by `selectMeChatRawRows` — the single-stream
- * projection every `listMeChats` sub-query (ordinary page, global pinned,
- * global attention candidates) shares so the three row sets are byte-identical
- * in shape.
+ * projection every `listMeChats` sub-query (ordinary page and global pinned)
+ * shares so both row sets are byte-identical in shape.
  */
 export type RawMeChatRow = {
   chat_id: string;
@@ -386,7 +395,7 @@ export type RawMeChatRow = {
   chat_has_explicit_mention_to_me: boolean;
 };
 
-/** First-wins de-dup by `chat_id` (a chat can be both pinned and an attention candidate). */
+/** First-wins de-dup by `chat_id` (a pinned chat is also in additive rows). */
 function dedupeRawByChatId(rows: RawMeChatRow[]): RawMeChatRow[] {
   const seen = new Set<string>();
   const out: RawMeChatRow[] = [];
@@ -400,9 +409,9 @@ function dedupeRawByChatId(rows: RawMeChatRow[]): RawMeChatRow[] {
 
 /**
  * The single-stream projection behind every `listMeChats` sub-query. Keeping
- * ONE SELECT guarantees the ordinary / pinned / attention row sets are
- * shape-identical — same columns, same source / entity / explicit-mention
- * derivation — so a chat looks the same wherever it surfaces.
+ * ONE SELECT guarantees the ordinary / pinned row sets are shape-identical —
+ * same columns, same source / entity / explicit-mention derivation — so a chat
+ * looks the same wherever it surfaces.
  *
  * SQL strategy:
  *   - `chats JOIN chat_membership LEFT JOIN chat_user_state`. Membership
@@ -422,9 +431,8 @@ function dedupeRawByChatId(rows: RawMeChatRow[]): RawMeChatRow[] {
  * `filters` carries the view-scoped predicates (unread / watching / engagement
  * / origin / participants), computed once and reused verbatim so every group
  * honours the active filter identically. `extra` is the per-sub-query predicate
- * (pinned / attention-candidate / cursor + priority-exclusion). `limit === null`
- * runs unbounded — the priority groups are naturally bounded by the user's pins
- * / open requests / managed agents.
+ * (pinned or cursor). `limit === null` runs unbounded for the user's complete
+ * pin projection.
  */
 async function selectMeChatRawRows(
   db: Database,
@@ -481,71 +489,19 @@ async function selectMeChatRawRows(
 }
 
 /**
- * Run the attention-candidate query: chats matching the caller's view `filters`
- * that COULD canonically be `failed` or have an open request. A chat qualifies
- * if it has an open request OR a caller-managed non-human speaker whose stored
- * error inputs mirror `computeErrored`'s branches exactly (minus the freshness /
- * reachability the canonical resolver still applies) — a strict SUPERSET of
- * failed (no false negatives) that still excludes the common HEALTHY managed
- * speaker that would otherwise make nearly every active chat a candidate on the
- * 30s poll:
- *   - session `errored` (C-axis lifecycle) always contributes;
- *   - an active session with a per-chat runtime stamp: only the per-chat
- *     `runtime_state = 'error'` is authoritative (D-axis);
- *   - an active session with NO per-chat stamp (old client): fall back to the
- *     agent-global `presence.runtime_state = 'error'`.
- * Gating the presence fallback on `runtime_state_at IS NULL` keeps one
- * agent-global error from admitting that agent's stamped-idle chats. `failed` is
- * never decided here; the enrichment pass confirms it canonically.
- *
- * Exported so a test can observe the candidate boundary directly (no mocking).
- */
-export async function selectAttentionCandidateRows(
-  db: Database,
-  params: { humanAgentId: string; organizationId: string; callerMemberId: string; filters: SQL; orderBy: SQL },
-): Promise<RawMeChatRow[]> {
-  const { humanAgentId, organizationId, callerMemberId, filters, orderBy } = params;
-  const managedFailureCandidate = sql`EXISTS (
-    SELECT 1 FROM chat_membership cm_s
-      JOIN agents a_s ON a_s.uuid = cm_s.agent_id
-      JOIN agent_chat_sessions acs ON acs.agent_id = a_s.uuid AND acs.chat_id = c.id
-      LEFT JOIN agent_presence ap ON ap.agent_id = a_s.uuid
-     WHERE cm_s.chat_id = c.id
-       AND cm_s.access_mode = 'speaker'
-       AND a_s.type <> 'human'
-       AND a_s.manager_id = ${callerMemberId}
-       AND (
-         acs.state = 'errored'
-         OR (acs.state = 'active' AND acs.runtime_state_at IS NOT NULL AND acs.runtime_state = 'error')
-         OR (acs.state = 'active' AND acs.runtime_state_at IS NULL AND ap.runtime_state = 'error')
-       ))`;
-  return selectMeChatRawRows(db, {
-    humanAgentId,
-    organizationId,
-    filters,
-    extra: sql`(COALESCE(cus.open_request_count, 0) > 0 OR ${managedFailureCandidate})`,
-    orderBy,
-    limit: null,
-  });
-}
-
-/**
  * Hydrate raw rows into `MeChatRow`s: participant chips, the live-dot / failed
  * / busy status projections (shared with `GET /chats/:id/agent-status`), and
- * the first-message title fallback. Returns `failedByChat` so the caller can
- * build the "Needs attention" group without re-deriving composite status in
- * SQL. `managedAgentIds` is the caller-scoped "mine" set (computed once and
- * shared across the priority + ordinary passes) that narrows `failed` to the
- * caller's own agents. `withTurnText: false` — the chat-list never renders turn
- * narration.
+ * the first-message title fallback. `managedAgentIds` narrows the recovery
+ * warning to the caller's own agents. `withTurnText: false` — the chat-list
+ * never renders turn narration.
  */
 async function enrichMeChatRows(
   db: Database,
   rawRows: RawMeChatRow[],
   params: { humanAgentId: string; managedAgentIds: ReadonlySet<string> },
-): Promise<{ rows: MeChatRow[]; failedByChat: Map<string, string[]> }> {
+): Promise<MeChatRow[]> {
   const { humanAgentId, managedAgentIds } = params;
-  if (rawRows.length === 0) return { rows: [], failedByChat: new Map() };
+  if (rawRows.length === 0) return [];
 
   const chatIds = rawRows.map((r) => r.chat_id);
 
@@ -691,40 +647,25 @@ async function enrichMeChatRows(
     };
   });
 
-  return { rows, failedByChat };
+  return rows;
 }
 
 /**
- * GET /me/chats — cursor-paginated conversation list with server-side priority
+ * GET /me/chats — cursor-paginated conversation list with a complete pin
  * projection.
  *
- * The response carries two whole-set priority groups plus the ordinary page:
- *   1. `priorityRows.attention` — extracted across the *full* matching set (not
- *      just the loaded page): a caller-managed non-human speaker in `failed`,
- *      OR an open request to the caller. Ordered failed-first then activity DESC.
- *   2. `priorityRows.pinned` — the caller's pinned chats (private per-user
- *      state), `pinned_at` DESC, minus anything already in attention.
- *   3. `rows` — the ordinary activity-ordered keyset page on `activity_at`.
- *
- * `failed` is a composite status derived by `resolveAgentChatStatuses`, not a
- * column, so attention is built via a CANDIDATE set (open request OR a
- * caller-managed non-human speaker whose session/runtime is actually in error —
- * a strict superset of `computeErrored`'s inputs) that the enrichment pass
- * resolves canonically — never a SQL re-implementation of the status folding.
+ * `priorityRows.pinned` is the caller's full private pin set (activity DESC);
+ * `rows` is the ordinary activity-ordered keyset page. Open asks and recovery
+ * remain on each row as independent status icons and never change ordering.
  *
  * ADDITIVE contract (deliberate, for safe rollout): `rows` is NOT filtered
- * against the priority ids. A pinned / attention chat appears in `rows` too, and
- * the client de-duplicates it against `priorityRows` when it renders the groups
- * (each chat shown once: attention > pinned > recency). This keeps the response
+ * against the priority ids. A pinned chat appears in `rows` too, and the client
+ * de-duplicates it when rendering (pinned > recency). This keeps the response
  * backward-compatible with the already-shipped web that reads only `rows` — a
  * server deploy ahead of the priority-aware client never makes a chat vanish.
  *
- * FIRST-PAGE gating: the two priority groups are computed only when there is no
- * `cursor` and returned empty on `load-more` pages (the client reads them from
- * the first page). This bounds cost — `resolveAgentChatStatuses` over the
- * candidate set runs once per list open, not per scroll page — and is exactly
- * what the additive `rows` above makes safe (later pages need no priority ids to
- * exclude).
+ * FIRST-PAGE gating: pins are computed only when there is no cursor and returned
+ * empty on load-more pages (the client reads them from page one).
  *
  * A recognized pre-PR (legacy) cursor is treated as a first-page request rather
  * than a 400, so a client that held one across the rollout recovers gracefully
@@ -736,7 +677,7 @@ export async function listMeChats(
   callerMemberId: string,
   organizationId: string,
   query: ListMeChatsQuery,
-): Promise<ListMeChatsResponse> {
+): Promise<LegacyCompatibleListMeChatsResponse> {
   const limit = query.limit;
   // Resolve the cursor into a keyset anchor. A recognized `legacy` cursor (a
   // pre-PR shape a client held across the rollout) restarts from page 1 — the
@@ -755,8 +696,7 @@ export async function listMeChats(
   const originPredicate = query.origin ? originsFilterSql(query.origin) : sql`TRUE`;
   const participantsPredicate = query.with ? participantsFilterSql(query.with) : sql`TRUE`;
 
-  // View-scoped filters shared by every group (ordinary + priority) so the
-  // active filter narrows all of them identically.
+  // View-scoped filters shared by ordinary + pinned rows.
   const filters = sql`(${!filterUnreadOnly}::bool OR COALESCE(cus.unread_mention_count, 0) > 0)
        AND (${!filterWatchingOnly}::bool OR cm.access_mode = 'watcher')
        AND ${engagementPredicate}
@@ -765,8 +705,8 @@ export async function listMeChats(
 
   // Caller-scoped "mine" set — the non-human agents the caller manages
   // (`agents.manager_id = caller.member_id`, one indexed read via
-  // `idx_agents_manager`). Shared across the priority + ordinary enrichment
-  // passes and drives the "mine" narrowing on `failed`. The `ne(type, 'human')`
+  // `idx_agents_manager`). Shared across the pin + ordinary enrichment passes
+  // and drives the "mine" narrowing on the recovery icon. The `ne(type, 'human')`
   // guard excludes the caller's own self-managed human agent — defensive today
   // (`resolveAgentChatStatuses` already filters non-human) but belt-and-braces
   // if a future change ever surfaces human statuses. Filtering by `manager_id`
@@ -788,40 +728,30 @@ export async function listMeChats(
     : sql`(c.activity_at < ${cursorTsIso}::timestamptz
            OR (c.activity_at = ${cursorTsIso}::timestamptz AND c.id < ${cursor.chatId}))`;
 
-  // --- Priority groups: FIRST PAGE ONLY -----------------------------------
-  // Whole-set projections the client reads once (from the first page). Gating
-  // them on `cursor === null` keeps `load-more` cheap AND is what lets `rows`
+  // --- Pinned projection: FIRST PAGE ONLY ---------------------------------
+  // Whole-set projection the client reads once (from the first page). Gating
+  // it on `cursor === null` keeps `load-more` cheap AND is what lets `rows`
   // stay ADDITIVE: later pages never exclude priority ids, so the ordinary
   // stream is the complete recency list — backward-compatible with a client that
   // ignores `priorityRows`. See docblock.
-  let attnCandidateRaw: RawMeChatRow[] = [];
   let pinnedRaw: RawMeChatRow[] = [];
   if (cursor === null) {
-    // Attention candidates — the bounded pre-canonical set the enrichment pass
-    // resolves (see `selectAttentionCandidateRows` for the superset rationale).
-    attnCandidateRaw = await selectAttentionCandidateRows(db, {
-      humanAgentId,
-      organizationId,
-      callerMemberId,
-      filters,
-      orderBy: activityOrder,
-    });
     pinnedRaw = await selectMeChatRawRows(db, {
       humanAgentId,
       organizationId,
       filters,
       extra: sql`cus.pinned_at IS NOT NULL`,
-      orderBy: sql`cus.pinned_at DESC, c.id DESC`,
+      orderBy: activityOrder,
       limit: null,
     });
   }
 
   // --- Ordinary page (EVERY page) -----------------------------------------
   // ADDITIVE: no priority-id exclusion. `rows` is the complete activity-ordered
-  // recency stream; a priority chat also appears here and the client
+  // recency stream; a pinned chat also appears here and the client
   // de-duplicates it against `priorityRows` when it renders the groups. This
   // keeps the response backward-compatible with the already-shipped web that
-  // reads only `rows` (a pinned / open-request / failed chat never vanishes).
+  // reads only `rows`.
   const ordinaryRaw = await selectMeChatRawRows(db, {
     humanAgentId,
     organizationId,
@@ -837,57 +767,39 @@ export async function listMeChats(
   const lastActivity = last ? toChatDate(last.activity_at) : null;
   const nextCursor = hasMore && last && lastActivity ? encodeCursor(lastActivity, last.chat_id) : null;
 
-  // First page: priority projections and the additive ordinary page overlap in
+  // First page: pins and the additive ordinary page overlap in
   // the common case. Hydrate their de-duplicated union once, then map the same
   // canonical rows back into each wire slice without changing the additive
   // response contract. Cursor pages have no priority projection and hydrate
   // only their ordinary page.
   if (cursor === null) {
     // Prefer the ordinary-page copy for overlaps because it comes from the
-    // latest of the three reads and is the canonical additive stream. Priority
-    // ordering still comes from its own raw slices below.
-    const firstPageRawUnion = dedupeRawByChatId([...pageRaw, ...attnCandidateRaw, ...pinnedRaw]);
-    const { rows: firstPageRows, failedByChat } = await enrichMeChatRows(db, firstPageRawUnion, {
+    // latest read and is the canonical additive stream. Pin ordering still
+    // comes from its own raw slice below.
+    const firstPageRawUnion = dedupeRawByChatId([...pageRaw, ...pinnedRaw]);
+    const firstPageRows = await enrichMeChatRows(db, firstPageRawUnion, {
       humanAgentId,
       managedAgentIds,
     });
     const rowById = new Map(firstPageRows.map((row) => [row.chatId, row]));
 
-    // Attention = candidates that qualify (failed OR open request), failed-first
-    // then activity DESC. Each candidate slice is already activity DESC from the
-    // query and `filter` preserves order.
-    const attnQualified = attnCandidateRaw.filter((row) => {
-      const hydrated = rowById.get(row.chat_id);
-      return failedByChat.has(row.chat_id) || (hydrated?.openRequestCount ?? 0) > 0;
-    });
-    const attention = [
-      ...attnQualified.filter((row) => failedByChat.has(row.chat_id)),
-      ...attnQualified.filter((row) => !failedByChat.has(row.chat_id)),
-    ]
-      .map((row) => rowById.get(row.chat_id))
-      .filter((row): row is MeChatRow => row !== undefined);
-    const attentionIds = new Set(attention.map((row) => row.chatId));
-
-    // Pinned excludes anything already surfaced in attention (attention wins),
-    // preserving the `pinned_at` DESC order. Re-check the canonical hydrated
-    // row so an overlap that changed between the priority reads and the later
-    // ordinary-page read never emits a pinned row with `pinnedAt: null`.
+    // Preserve activity DESC order. Re-check the canonical hydrated row so a
+    // pin changed between reads never emits a row with `pinnedAt: null`.
     const pinned = pinnedRaw
-      .filter((row) => !attentionIds.has(row.chat_id))
       .map((row) => rowById.get(row.chat_id))
       .filter((row): row is MeChatRow => row?.pinnedAt != null);
     const rows = pageRaw.map((row) => rowById.get(row.chat_id)).filter((row): row is MeChatRow => row !== undefined);
 
     return {
-      priorityRows: { attention, pinned },
+      priorityRows: { pinned, attention: [] },
       rows,
       nextCursor,
     };
   }
 
-  const { rows } = await enrichMeChatRows(db, pageRaw, { humanAgentId, managedAgentIds });
+  const rows = await enrichMeChatRows(db, pageRaw, { humanAgentId, managedAgentIds });
   return {
-    priorityRows: { attention: [], pinned: [] },
+    priorityRows: { pinned: [], attention: [] },
     rows,
     nextCursor,
   };

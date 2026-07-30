@@ -129,6 +129,12 @@ type AuthContextValue = {
    * Continue, invitee Confirm / Continue).
    */
   markOnboardingCompleted: () => Promise<void>;
+  /**
+   * Mirror a membership stamp already written atomically by the successful
+   * onboarding kickoff request. This is local projection only: it must never
+   * be called before the server confirms the chat exists.
+   */
+  applyOnboardingKickoffStamp: (stamp: "completed" | "invitee_skip") => void;
   login: (username: string, password: string) => Promise<void>;
   /**
    * Adopt a token pair handed in from a non-login surface (OAuth fragment
@@ -450,11 +456,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const markOnboardingCompleted = useCallback(async () => {
     // Optimistic: stamp immediately so first-run routing reads the new state
-    // on the very next render. Server stamp is canonical but isn't echoed
-    // back; the next /me fetch reconciles any drift. We don't roll back on
-    // error because the user has already finished Step 3 and is navigating
-    // away.
+    // on the very next render. The server stamp is canonical. Roll the local
+    // projection back and propagate failures so terminal flows without an
+    // already-created chat can remain on-screen and retry.
     const organizationId = currentMembership?.organizationId;
+    const priorAccountCompletedAt = onboardingCompletedAt;
+    const priorAccountDismissedAt = onboardingDismissedAt;
+    const priorMembershipCompletedAt = currentMembership?.onboardingCompletedAt ?? null;
+    const priorMembershipSuppressedAt = currentMembership?.onboardingSuppressedAt ?? null;
+    const priorMembershipSuppressedReason = currentMembership?.onboardingSuppressedReason ?? null;
     const optimistic = new Date().toISOString();
     setOnboardingCompletedAt((prev) => prev ?? optimistic);
     setOnboardingDismissedAt((prev) => prev ?? optimistic);
@@ -463,13 +473,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? optimistic,
       onboardingSuppressedReason: "completed",
     });
-    await postOnboardingCompleted(organizationId ?? undefined);
+    try {
+      await postOnboardingCompleted(organizationId ?? undefined);
+    } catch (error) {
+      setOnboardingCompletedAt(priorAccountCompletedAt);
+      setOnboardingDismissedAt(priorAccountDismissedAt);
+      patchMembershipOnboarding({
+        onboardingCompletedAt: priorMembershipCompletedAt,
+        onboardingSuppressedAt: priorMembershipSuppressedAt,
+        onboardingSuppressedReason: priorMembershipSuppressedReason,
+      });
+      throw error;
+    }
   }, [
+    onboardingCompletedAt,
+    onboardingDismissedAt,
     currentMembership?.onboardingCompletedAt,
     currentMembership?.onboardingSuppressedAt,
+    currentMembership?.onboardingSuppressedReason,
     currentMembership?.organizationId,
     patchMembershipOnboarding,
   ]);
+
+  const applyOnboardingKickoffStamp = useCallback(
+    (stamp: "completed" | "invitee_skip") => {
+      const stampedAt = new Date().toISOString();
+      setOnboardingDismissedAt((prev) => prev ?? stampedAt);
+      if (stamp === "completed") {
+        setOnboardingCompletedAt((prev) => prev ?? stampedAt);
+        patchMembershipOnboarding({
+          onboardingCompletedAt: currentMembership?.onboardingCompletedAt ?? stampedAt,
+          onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? stampedAt,
+          onboardingSuppressedReason: "completed",
+        });
+        return;
+      }
+      patchMembershipOnboarding({
+        onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? stampedAt,
+        onboardingSuppressedReason: currentMembership?.onboardingSuppressedReason ?? "invitee_skip",
+      });
+    },
+    [
+      currentMembership?.onboardingCompletedAt,
+      currentMembership?.onboardingSuppressedAt,
+      currentMembership?.onboardingSuppressedReason,
+      patchMembershipOnboarding,
+    ],
+  );
 
   // Fetch member info on initial load if already authenticated
   useEffect(() => {
@@ -508,6 +558,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         dismissOnboarding,
         restoreOnboarding,
         markOnboardingCompleted,
+        applyOnboardingKickoffStamp,
         login,
         adoptTokens,
         selectOrganization,

@@ -106,7 +106,7 @@ Repository permissions:
 - Contents: Read and write
 - Workflows: Read and write
 - Pull requests: Read and write
-- Issues: Read-only
+- Issues: Read and write
 - Metadata: Read-only
 
 Organization permissions:
@@ -114,7 +114,8 @@ Organization permissions:
 - Members: Read-only
 
 Existing installations must re-approve permission upgrades in GitHub before
-flows such as one-click Context Tree initialization can rely on the new grant.
+flows such as one-click Context Tree initialization and App-authored task
+replies can rely on the new grant.
 
 ### Subscribed Events
 

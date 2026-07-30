@@ -51,7 +51,7 @@ export function MobileWorkFiltersSheet({
     <div className="fixed inset-0 flex items-end" style={{ zIndex: 70 }} data-mobile-work-filters-root>
       <button
         type="button"
-        aria-label="Close Work filters"
+        aria-label="Close Chat filters"
         onClick={onClose}
         className="absolute inset-0 border-0"
         style={{ background: "var(--overlay-scrim)" }}
@@ -60,7 +60,7 @@ export function MobileWorkFiltersSheet({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Work filters"
+        aria-label="Chat filters"
         onKeyDown={onKeyDown}
         className="relative z-10 w-full border-t animate-in fade-in slide-in-from-bottom-4 duration-150"
         style={{
@@ -74,7 +74,7 @@ export function MobileWorkFiltersSheet({
         <div className="flex items-center" style={{ marginBottom: "var(--sp-3)" }}>
           <div className="min-w-0 flex-1">
             <h2 className="text-mobile-title" style={{ color: "var(--fg)", margin: 0 }}>
-              Filter Work
+              Filter Chat
             </h2>
             <p className="text-mobile-caption" style={{ color: "var(--fg-3)", margin: "var(--sp-1) 0 0" }}>
               Changes apply immediately.
@@ -83,7 +83,7 @@ export function MobileWorkFiltersSheet({
           <button
             ref={closeRef}
             type="button"
-            aria-label="Close Work filters"
+            aria-label="Close Chat filters"
             onClick={onClose}
             className="inline-flex h-11 w-11 items-center justify-center rounded-[var(--radius-input)] border"
             style={{ borderColor: "var(--border)", color: "var(--fg-3)" }}

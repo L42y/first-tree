@@ -22,6 +22,7 @@ export async function sendScmSystemCard(
     provider: "github" | "gitlab";
     content: unknown;
     metadata: Record<string, unknown>;
+    allowGithubTaskRun?: boolean;
     database?: Database;
     deferPostCommitEffects?: boolean;
   },
@@ -38,6 +39,7 @@ export async function sendScmSystemCard(
     },
     {
       allowSystemSender: true,
+      allowGithubTaskRun: input.allowGithubTaskRun,
       allowRecipientlessSend: true,
       dropInactiveMentionTargets: true,
       deferPostCommitEffects: input.deferPostCommitEffects,

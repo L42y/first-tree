@@ -3,6 +3,7 @@ import type {
   OrgContextTreeFeaturesOutput,
   OrgContextTreeInput,
   OrgContextTreeOutput,
+  OrgGithubFeaturesOutput,
   OrgSourceReposInput,
   OrgSourceReposOutput,
 } from "@first-tree/shared";
@@ -30,6 +31,10 @@ export function deleteContextTreeSetting(orgId: string): Promise<void> {
 
 export function getContextTreeFeaturesSetting(orgId: string): Promise<OrgContextTreeFeaturesOutput> {
   return api.get<OrgContextTreeFeaturesOutput>(path(orgId, "context_tree_features"));
+}
+
+export function getGithubFeaturesSetting(orgId: string): Promise<OrgGithubFeaturesOutput> {
+  return api.get<OrgGithubFeaturesOutput>(path(orgId, "github_features"));
 }
 
 export function putContextTreeFeaturesSetting(

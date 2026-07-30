@@ -181,10 +181,9 @@ describe("chat-first workspace service layer", () => {
       metadata: { mentions: [owner.humanAgentUuid] },
     });
 
-    // The `request` message opens a request to the human, so the chat surfaces
-    // in the attention group, not the ordinary `rows` — search all groups.
+    // The request is a row status and does not change chat ordering.
     const findChat = (res: Awaited<ReturnType<typeof listMeChats>>) =>
-      [...res.priorityRows.attention, ...res.priorityRows.pinned, ...res.rows].find((r) => r.chatId === chatId);
+      [...res.priorityRows.pinned, ...res.rows].find((r) => r.chatId === chatId);
 
     const before = await listMeChats(app.db, owner.humanAgentUuid, owner.memberId, owner.organizationId, {
       limit: 50,
@@ -899,7 +898,7 @@ describe("chat-first workspace service layer", () => {
       engagement: "all",
       cursor: legacy,
     });
-    expect(recovered.priorityRows).toEqual({ attention: [], pinned: [] });
+    expect(recovered.priorityRows).toEqual({ pinned: [], attention: [] });
     expect(Array.isArray(recovered.rows)).toBe(true);
 
     // A genuinely invalid cursor (here: an unsupported version) still surfaces as

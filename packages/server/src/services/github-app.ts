@@ -55,6 +55,8 @@ const REPOSITORY_URL = (owner: string, repo: string) =>
   `${GITHUB_API_BASE}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 const REPOSITORY_CONTENTS_URL = (owner: string, repo: string, path: string) =>
   `${REPOSITORY_URL(owner, repo)}/contents/${encodePath(path)}`;
+const ISSUE_COMMENTS_URL = (owner: string, repo: string, issueNumber: number) =>
+  `${REPOSITORY_URL(owner, repo)}/issues/${issueNumber}/comments`;
 const OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token";
 const OAUTH_AUTHORIZE_URL = "https://github.com/login/oauth/authorize";
 const USER_API_URL = `${GITHUB_API_BASE}/user`;
@@ -85,6 +87,13 @@ export type GithubAppCredentials = {
   appId: string;
   /** RSA private key in PKCS#8 PEM form (`-----BEGIN PRIVATE KEY-----…`). */
   privateKeyPem: string;
+};
+
+export type GithubIssueComment = {
+  id: number;
+  htmlUrl: string;
+  actor: string;
+  body: string;
 };
 
 /**
@@ -429,6 +438,73 @@ function parsePullRequestReview(value: unknown): GithubPullRequestReview {
     commitId: body.commit_id ?? null,
     body: body.body ?? "",
     state: body.state ?? null,
+  };
+}
+
+export async function createIssueComment(
+  installationToken: string,
+  input: { owner: string; repo: string; issueNumber: number; body: string },
+  opts: { fetcher?: typeof fetch } = {},
+): Promise<GithubIssueComment> {
+  const res = await (opts.fetcher ?? fetch)(ISSUE_COMMENTS_URL(input.owner, input.repo, input.issueNumber), {
+    method: "POST",
+    headers: { ...installationHeaders(installationToken), "Content-Type": "application/json" },
+    body: JSON.stringify({ body: input.body }),
+  });
+  if (!res.ok) {
+    throw new GithubAppApiError(res.status, `GitHub issue comment creation failed (${res.status})`);
+  }
+  return parseIssueComment(await res.json());
+}
+
+export async function listIssueCommentsForRun(
+  installationToken: string,
+  input: { owner: string; repo: string; issueNumber: number; marker: string; appSlug: string },
+  opts: { fetcher?: typeof fetch } = {},
+): Promise<GithubIssueComment[]> {
+  const matches: GithubIssueComment[] = [];
+  for (let page = 1; ; page += 1) {
+    const pageParam = page === 1 ? "" : `&page=${page}`;
+    const res = await (opts.fetcher ?? fetch)(
+      `${ISSUE_COMMENTS_URL(input.owner, input.repo, input.issueNumber)}?per_page=100${pageParam}`,
+      { headers: installationHeaders(installationToken) },
+    );
+    if (!res.ok) {
+      throw new GithubAppApiError(res.status, `GitHub issue comment list failed (${res.status})`);
+    }
+    const comments = (await res.json()) as unknown[];
+    matches.push(
+      ...comments
+        .map(parseIssueComment)
+        .filter((comment) => comment.actor === `${input.appSlug}[bot]` && comment.body.includes(input.marker)),
+    );
+    if (comments.length < 100) return matches;
+  }
+}
+
+function parseIssueComment(value: unknown): GithubIssueComment {
+  const body = value as {
+    id?: number;
+    html_url?: string;
+    user?: { login?: string };
+    body?: string | null;
+  };
+  const id = body.id;
+  if (
+    typeof id !== "number" ||
+    !Number.isInteger(id) ||
+    id <= 0 ||
+    typeof body.html_url !== "string" ||
+    !URL.canParse(body.html_url) ||
+    !body.user?.login
+  ) {
+    throw new GithubAppApiError(502, "GitHub issue comment response was malformed");
+  }
+  return {
+    id,
+    htmlUrl: body.html_url,
+    actor: body.user.login,
+    body: body.body ?? "",
   };
 }
 

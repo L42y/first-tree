@@ -671,7 +671,7 @@ describe("ChatView extra DOM branches", () => {
       pages: [
         {
           rows,
-          priorityRows: { attention: [], pinned: [renamedRow] },
+          priorityRows: { pinned: [renamedRow] },
           nextCursor: null,
         },
       ],
@@ -679,7 +679,7 @@ describe("ChatView extra DOM branches", () => {
     };
     const palette: ListMeChatsResponse = {
       rows,
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       nextCursor: null,
     };
 
@@ -735,7 +735,7 @@ describe("ChatView extra DOM branches", () => {
       pages: [
         {
           rows: [originalRow],
-          priorityRows: { attention: [], pinned: [] },
+          priorityRows: { pinned: [] },
           nextCursor: null,
         },
       ],

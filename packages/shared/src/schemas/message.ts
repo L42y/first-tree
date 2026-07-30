@@ -46,6 +46,36 @@ export const CLI_BODY_ORIGINS = {
 } as const;
 export type CliBodyOrigin = (typeof CLI_BODY_ORIGINS)[keyof typeof CLI_BODY_ORIGINS];
 
+/**
+ * Server-owned marker on a human's "Ask agent" clarification message.
+ *
+ * The browser never writes this metadata directly. It posts the visible
+ * clarification text to the request-scoped endpoint; the server validates the
+ * still-open request + its original asker, then stamps this marker and routes
+ * the message to that agent. Ordinary message sends strip the key, so the
+ * runtime may safely use it to attach a fixed steering envelope without
+ * persisting hidden prompt text in chat history.
+ */
+export const ASK_AGENT_METADATA_KEY = "askAgent";
+export const askAgentMessageMetadataSchema = z.object({
+  requestId: z.string().min(1),
+  agentId: z.string().min(1),
+});
+export type AskAgentMessageMetadata = z.infer<typeof askAgentMessageMetadataSchema>;
+
+export function readAskAgentMessageMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): AskAgentMessageMetadata | null {
+  const parsed = askAgentMessageMetadataSchema.safeParse(metadata?.[ASK_AGENT_METADATA_KEY]);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Human-authored visible body accepted by the request-scoped Ask agent route. */
+export const askAgentQuestionSchema = z.object({
+  content: z.string().trim().min(1).max(4_000),
+});
+export type AskAgentQuestion = z.infer<typeof askAgentQuestionSchema>;
+
 export const MESSAGE_FORMATS = {
   TEXT: "text",
   MARKDOWN: "markdown",

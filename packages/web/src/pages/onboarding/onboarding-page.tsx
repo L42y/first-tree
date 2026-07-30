@@ -6,7 +6,6 @@ import { OnboardingShell } from "./onboarding-shell.js";
 import { StepConnectComputer } from "./steps/step-connect-computer.js";
 import { StepCreateAgent } from "./steps/step-create-agent.js";
 import { StepGetStarted } from "./steps/step-get-started.js";
-import { StepJoinTeam } from "./steps/step-join-team.js";
 import { StepStartChat } from "./steps/step-start-chat.js";
 import { StepTeam } from "./steps/step-team.js";
 import { resolveOnboardingPath, shouldLeaveOnboarding } from "./steps.js";
@@ -27,13 +26,11 @@ import { resolveOnboardingPath, shouldLeaveOnboarding } from "./steps.js";
  * lets them finish; they leave via the explicit `completeAndEnterChat`
  * navigate at the end of start-chat (or `finishLater`).
  *
- * The ref freeze only protects the current component instance, so it cannot
- * help a full page reload: that builds a fresh `OnboardingPage` whose ref
- * starts null and recomputes the guard from `/me`. After create-agent a reload
- * sees `onboardingStep="completed"` + a ready org and would bounce out before
- * start-chat. The guard therefore also requires this membership's
- * `onboardingCompletedAt` stamp (written only by the start-chat/completion path),
- * so a reload mid-flow resumes the remaining step instead of leaving.
+ * The ref freeze only protects the current component instance, so a full page
+ * reload recomputes from `/me`. The membership completion stamp is therefore
+ * the terminal gate: it stays null between create-agent and start-chat, while
+ * Team-agent quick start writes only a resumable suppressor; optional external
+ * Context access does not write onboarding completion.
  */
 export function OnboardingPage() {
   const { meLoaded, role, onboardingStep, onboardingDismissedAt, onboardingCompletedAt, currentOrgHasPersonalAgent } =
@@ -77,8 +74,6 @@ function OnboardingBody() {
       return <StepCreateAgent />;
     case "start-chat":
       return <StepStartChat />;
-    case "join-team":
-      return <StepJoinTeam />;
     case "get-started":
       return <StepGetStarted />;
     default:

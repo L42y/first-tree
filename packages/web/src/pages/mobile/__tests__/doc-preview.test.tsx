@@ -29,7 +29,7 @@ describe("MobileWorkPage document-evidence surface", () => {
     harness = createDomHarness();
     meChatMocks.listMeChats.mockReset();
     meChatMocks.listMeChats.mockResolvedValue({
-      priorityRows: { attention: [], pinned: [] },
+      priorityRows: { pinned: [] },
       rows: [],
       nextCursor: null,
     });
@@ -39,10 +39,10 @@ describe("MobileWorkPage document-evidence surface", () => {
   it("mounts the document preview drawer so captured doc links are not a no-op", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     harness.render(
-      <MemoryRouter initialEntries={["/m/work"]}>
+      <MemoryRouter initialEntries={["/m/chat"]}>
         <QueryClientProvider client={queryClient}>
           <Routes>
-            <Route path="/m/work" element={<MobileWorkPage />} />
+            <Route path="/m/chat" element={<MobileWorkPage />} />
           </Routes>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -51,6 +51,6 @@ describe("MobileWorkPage document-evidence surface", () => {
     await harness.waitFor(() =>
       expect(harness.container.querySelector('[data-testid="mobile-doc-drawer"]')).not.toBeNull(),
     );
-    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active work"));
+    await harness.waitFor(() => expect(harness.container.textContent).toContain("No active chats"));
   });
 });

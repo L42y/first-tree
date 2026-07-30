@@ -427,7 +427,7 @@ describe("cross-user isolation — the original #366 / #367 bug scenario", () =>
     expect(bobRow?.liveActivity, "Bob's row: no live activity").toBeNull();
   });
 
-  it("wire response carries priorityRows (Fastify serializes the new field)", async () => {
+  it("wire response carries pins plus the empty legacy attention bucket", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const agent = await createAgent(app.db, {
@@ -460,13 +460,15 @@ describe("cross-user isolation — the original #366 / #367 bug scenario", () =>
     });
     expect(res.statusCode).toBe(200);
     const body = res.json<{
-      priorityRows: { attention: Array<{ chatId: string }>; pinned: Array<{ chatId: string }> };
-      rows: Array<{ chatId: string }>;
+      priorityRows: { pinned: Array<{ chatId: string }>; attention: Array<{ chatId: string }> };
+      rows: Array<{ chatId: string; openRequestCount: number }>;
     }>();
 
-    // The route has no Fastify response schema, so priorityRows must survive the
-    // default serializer end-to-end (the failure mode that would strip it).
-    expect(body.priorityRows.attention.some((r) => r.chatId === request.chatId)).toBe(true);
+    // The route has no Fastify response schema, so both the current pins and the
+    // empty expand-contract bucket required by an older Web must survive the
+    // default serializer. Attention remains retired as an ordering tier.
+    expect(body.rows.find((r) => r.chatId === request.chatId)?.openRequestCount).toBe(1);
     expect(body.priorityRows.pinned.some((r) => r.chatId === pinned.chatId)).toBe(true);
+    expect(body.priorityRows.attention).toEqual([]);
   });
 });
