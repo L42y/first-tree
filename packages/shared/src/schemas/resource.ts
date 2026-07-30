@@ -5,6 +5,7 @@ import {
   mcpStdioServerSchema,
   normalizeRepoLocalPath,
   PROMPT_APPEND_MAX_LENGTH,
+  runtimeSkillBundleSchema,
 } from "./agent-runtime-config.js";
 import { repoUrlSchema } from "./org-settings.js";
 
@@ -427,6 +428,7 @@ export const effectiveResourceRowSchema = z.object({
   mode: z.enum(["enabled", "disabled", "replaced", "unavailable"]),
   defaultEnabled: resourceDefaultEnabledSchema.nullable(),
   payload: z.unknown().nullable(),
+  skillBundle: runtimeSkillBundleSchema.optional(),
   repo: gitRepoSchema.nullable(),
   promptBody: z.string().nullable(),
   unavailableReason: z.string().nullable(),

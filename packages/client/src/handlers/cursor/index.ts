@@ -41,7 +41,11 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/handler.js";
 import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
-import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
+import {
+  isManagedSkillsUnsafeDiscoveryError,
+  type ReconciledTeamSkill,
+  reconcileManagedSkillsForConfig,
+} from "../../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
 import {
@@ -51,6 +55,7 @@ import {
   writeSessionBriefingFingerprint,
 } from "../../runtime/session-briefing-fingerprint.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { chunkAssistantText } from "../assistant-text.js";
 import { formatAuthHint, isCursorAuthError } from "../auth-error-hint.js";
@@ -1517,7 +1522,13 @@ export const createCursorHandler: HandlerFactory = (config) => {
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
       ).teamSkills;
       const briefing = buildBriefing(sessionCtx, payload, cwd);
       const fingerprint = computeBriefingFingerprint(briefing);
@@ -1525,6 +1536,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       writeAgentBriefing(cwd, briefing);
       return { fingerprint, changed: true };
     } catch (err) {
+      if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;
       sessionCtx.log(
         `active-session briefing refresh failed, delivering under prior briefing: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -1623,7 +1635,13 @@ export const createCursorHandler: HandlerFactory = (config) => {
 
     declareSourceRepos(payload, workspaceCwd);
     reconciledTeamSkills = (
-      await reconcileManagedSkillsForConfig(workspaceCwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+      await reconcileManagedSkillsForConfig(
+        workspaceCwd,
+        runtimeProvider,
+        runtimeConfig,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+      )
     ).teamSkills;
 
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);

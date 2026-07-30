@@ -17,6 +17,7 @@ import { agentContextReviewRunRoutes } from "./api/agent/context-review-runs.js"
 import { agentContextTreeInfoRoutes } from "./api/agent/context-tree-info.js";
 import { agentCronJobRoutes } from "./api/agent/cron-jobs.js";
 import { agentDocumentRoutes } from "./api/agent/documents.js";
+import { agentGithubTaskRunRoutes } from "./api/agent/github-task-runs.js";
 import { agentInboxRoutes } from "./api/agent/inbox.js";
 import { agentMeRoutes } from "./api/agent/me.js";
 import { agentMessageRoutes } from "./api/agent/messages.js";
@@ -657,6 +658,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
           await scope.register(agentMeRoutes);
           await scope.register(agentChatRoutes, { prefix: "/chats" });
           await scope.register(agentContextReviewRunRoutes, { prefix: "/chats" });
+          await scope.register(agentGithubTaskRunRoutes, { prefix: "/chats" });
           await scope.register(agentMessageRoutes, { prefix: "/chats" });
           await scope.register(agentCronJobRoutes, { prefix: "/chats" });
           await scope.register(agentInboxRoutes, { prefix: "/inbox" });

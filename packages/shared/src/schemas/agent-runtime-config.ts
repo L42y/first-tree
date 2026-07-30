@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_ATTACHMENT_BYTES } from "./attachment.js";
 import type { runtimeProviderSchema } from "./runtime-provider.js";
 
 /**
@@ -92,12 +93,28 @@ export const mcpServerSchema = z.discriminatedUnion("transport", [
 ]);
 export type McpServer = z.infer<typeof mcpServerSchema>;
 
+export const runtimeSkillBundleSchema = z
+  .object({
+    attachmentId: z.string().uuid(),
+    format: z.literal("zip"),
+    sizeBytes: z.number().int().positive().max(MAX_ATTACHMENT_BYTES),
+  })
+  .strict();
+export type RuntimeSkillBundle = z.infer<typeof runtimeSkillBundleSchema>;
+
 export const runtimeResourceSkillSchema = z.object({
   resourceId: z.string().min(1),
   name: z.string().min(1),
   description: z.string().default(""),
   body: z.string().default(""),
   metadata: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Immutable complete-directory source for modern Team Skills. Optional for
+   * rolling compatibility: older clients ignore it and keep consuming the
+   * derived inline fields, while new clients treat a present descriptor as
+   * authoritative.
+   */
+  bundle: runtimeSkillBundleSchema.optional(),
 });
 export type RuntimeResourceSkill = z.infer<typeof runtimeResourceSkillSchema>;
 

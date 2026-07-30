@@ -164,6 +164,7 @@ export function selectScmCardContext(entries: ScmDeliveryEntry[]): {
   involveReason: InvolveReason | null;
   involveLogin: string | null;
   teamAgentTask: { agentUuid: string } | null;
+  teamAgentTaskHumanAgentId: string | null;
 } {
   const involved = [...entries]
     .filter((entry) => entry.involveReason)
@@ -171,16 +172,17 @@ export function selectScmCardContext(entries: ScmDeliveryEntry[]): {
       (a, b) =>
         involveReasonRank(a.involveReason) - involveReasonRank(b.involveReason) || compareScmDeliveryEntries(a, b),
     )[0];
+  const taskEntry = [...entries]
+    .filter(
+      (entry): entry is ScmDeliveryEntry & { teamAgentTask: { agentUuid: string } } =>
+        entry.teamAgentTask !== null && entry.teamAgentTask.agentUuid === entry.wakeAgentId,
+    )
+    .sort(compareScmDeliveryEntries)[0];
   return {
     involveReason: involved?.involveReason ?? null,
     involveLogin: involved?.involveLogin ?? null,
-    teamAgentTask:
-      [...entries]
-        .filter(
-          (entry): entry is ScmDeliveryEntry & { teamAgentTask: { agentUuid: string } } =>
-            entry.teamAgentTask !== null && entry.teamAgentTask.agentUuid === entry.wakeAgentId,
-        )
-        .sort(compareScmDeliveryEntries)[0]?.teamAgentTask ?? null,
+    teamAgentTask: taskEntry?.teamAgentTask ?? null,
+    teamAgentTaskHumanAgentId: taskEntry?.humanAgentId ?? null,
   };
 }
 

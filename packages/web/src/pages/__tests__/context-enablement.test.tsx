@@ -32,10 +32,12 @@ describe("personal Context access", () => {
       binName: "first-tree-staging",
     });
     apiMocks.getContextEnablementHandoff.mockResolvedValue({
+      protocolVersion: 1,
       organizationId: "org-1",
       teamDisplayName: "Acme",
       role: "member",
       provider: "claude-code",
+      intent: "settings",
       command: "'first-tree-staging' context enable --provider 'claude-code' --team 'org-1'",
       workingDirectoryInstruction: "Run this once from the repository root.",
     });
@@ -271,18 +273,22 @@ describe("personal Context access", () => {
         bootstrapCommand: "bootstrap-command",
         handoffs: [
           {
+            protocolVersion: 1,
             organizationId: "org-1",
             teamDisplayName: "Acme",
             role: "admin",
             provider: "claude-code",
+            intent: "settings",
             command: "claude-command",
             workingDirectoryInstruction: "Run from the repository root.",
           },
           {
+            protocolVersion: 1,
             organizationId: "org-2",
             teamDisplayName: "Other",
             role: "admin",
             provider: "codex",
+            intent: "settings",
             command: "codex-command",
             workingDirectoryInstruction: "Run from the repository root.",
           },
@@ -298,10 +304,12 @@ describe("personal Context access", () => {
       bootstrapCommand: "bootstrap-command",
       handoffs: [
         {
+          protocolVersion: 1,
           organizationId: "org-1",
           teamDisplayName: "Acme",
           role: "member",
           provider: "claude-code",
+          intent: "onboarding",
           command: "claude-command",
           workingDirectoryInstruction: "Run from the repository root.",
         },
@@ -313,7 +321,7 @@ describe("personal Context access", () => {
     expect(prompt).toContain("claude-command");
     expect(prompt).not.toContain("Codex");
     expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
-    expect(prompt).not.toContain("onboarding completion has been recorded");
+    expect(prompt).not.toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");
   });
 

@@ -1,5 +1,6 @@
 import {
   addMeChatParticipantsSchema,
+  askAgentQuestionSchema,
   CHAT_ENGAGEMENT_STATUSES,
   type ChatEngagementStatus,
   followGithubEntityRequestSchema,
@@ -57,6 +58,7 @@ import {
   sendMessage,
 } from "../services/message.js";
 import { WIRE_RECIPIENT_MODE } from "../services/message-dispatcher.js";
+import { listRequestThread } from "../services/need-you.js";
 import { notifyRecipients } from "../services/notifier.js";
 import { resolveHumanScmBindingPair } from "../services/scm-attention-line.js";
 import { extractSummary } from "../services/session.js";
@@ -514,6 +516,60 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       items: items.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
     };
   });
+
+  /** Durable request/clarification thread, independent of the latest-50 window. */
+  app.get<{ Params: { chatId: string; requestId: string } }>("/:chatId/requests/:requestId/thread", async (request) => {
+    await requireChatAccess(request, app.db);
+    return listRequestThread(app.db, request.params.chatId, request.params.requestId);
+  });
+
+  /**
+   * Ask the original agent for clarification without resolving the request.
+   * The service validates the request again inside the message transaction and
+   * stamps the trusted Ask agent marker; this route accepts visible text only.
+   */
+  app.post<{ Params: { chatId: string; requestId: string } }>(
+    "/:chatId/requests/:requestId/ask-agent",
+    async (request, reply) => {
+      const { scope } = await requireChatAccess(request, app.db);
+      const body = askAgentQuestionSchema.parse(request.body);
+      await ensureParticipant(app.db, request.params.chatId, scope.humanAgentId);
+
+      const [parent] = await app.db
+        .select({ senderId: messages.senderId })
+        .from(messages)
+        .where(and(eq(messages.id, request.params.requestId), eq(messages.chatId, request.params.chatId)))
+        .limit(1);
+      if (!parent) throw new NotFoundError(`Message "${request.params.requestId}" not found in this chat`);
+
+      const result = await sendMessage(
+        app.db,
+        request.params.chatId,
+        scope.humanAgentId,
+        {
+          source: "web",
+          format: "markdown",
+          content: body.content,
+          metadata: { mentions: [parent.senderId] },
+          inReplyTo: request.params.requestId,
+        },
+        { askAgentRequestId: request.params.requestId },
+      );
+      notifyRecipients(app.notifier, result.recipients, result.message.id);
+
+      return reply.status(201).send({
+        id: result.message.id,
+        chatId: result.message.chatId,
+        senderId: result.message.senderId,
+        format: result.message.format,
+        content: result.message.content,
+        metadata: result.message.metadata,
+        inReplyTo: result.message.inReplyTo,
+        source: result.message.source,
+        createdAt: result.message.createdAt.toISOString(),
+      });
+    },
+  );
 
   // `POST /:chatId/join` (v1 supervision-check join) was removed alongside
   // its `chat.ts::joinChat` service — the v2 watcher-based path

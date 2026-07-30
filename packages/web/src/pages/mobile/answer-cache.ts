@@ -1,4 +1,4 @@
-import type { ListMeChatsResponse, MeChatRow, Message } from "@first-tree/shared";
+import type { ListMeChatsResponse, ListNeedYouRequestsResponse, MeChatRow, Message } from "@first-tree/shared";
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 
 type MeChatsCache = ListMeChatsResponse | InfiniteData<ListMeChatsResponse>;
@@ -17,7 +17,8 @@ export function locallyResolvedRequestIds(queryClient: QueryClient, chatId: stri
  * refetch leaves a window where the same cached request can be opened and sent
  * twice. A session-local request-id tombstone remains authoritative against a
  * delayed stale response, while the list/open-request caches update
- * synchronously so Now removes the resolved signal immediately.
+ * synchronously so Need you and the Chat row clear the resolved signal
+ * immediately.
  */
 export async function commitMobileAskResolution(
   queryClient: QueryClient,
@@ -27,6 +28,7 @@ export async function commitMobileAskResolution(
   await Promise.all([
     queryClient.cancelQueries({ queryKey: ["chat-open-requests", chatId] }),
     queryClient.cancelQueries({ queryKey: ["me", "chats"] }),
+    queryClient.cancelQueries({ queryKey: ["need-you"] }),
   ]);
 
   queryClient.setQueryData<string[]>(mobileResolvedRequestKey(chatId), (previous = []) =>
@@ -38,10 +40,20 @@ export async function commitMobileAskResolution(
   queryClient.setQueriesData<MeChatsCache>({ queryKey: ["me", "chats"] }, (previous) =>
     previous ? patchMeChatsCache(previous, chatId) : previous,
   );
+  queryClient.setQueriesData<ListNeedYouRequestsResponse>({ queryKey: ["need-you"] }, (previous) =>
+    previous
+      ? {
+          ...previous,
+          items: previous.items.filter((item) => item.request.id !== requestId),
+          total: Math.max(0, previous.total - (previous.items.some((item) => item.request.id === requestId) ? 1 : 0)),
+        }
+      : previous,
+  );
 
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ["chat-open-requests", chatId], refetchType: "none" }),
     queryClient.invalidateQueries({ queryKey: ["me", "chats"], refetchType: "none" }),
+    queryClient.invalidateQueries({ queryKey: ["need-you"], refetchType: "none" }),
     queryClient.invalidateQueries({ queryKey: ["chat-messages", chatId] }),
   ]);
 }
@@ -57,21 +69,9 @@ function patchMeChatsResponse(data: ListMeChatsResponse, chatId: string): ListMe
   const patchRow = (row: MeChatRow): MeChatRow =>
     row.chatId === chatId ? { ...row, openRequestCount: Math.max(0, row.openRequestCount - 1) } : row;
 
-  let demoted: MeChatRow | undefined;
-  const attention = data.priorityRows.attention.flatMap((row) => {
-    const patched = patchRow(row);
-    if (row.chatId === chatId && patched.openRequestCount === 0 && patched.failedAgentIds.length === 0) {
-      demoted = patched;
-      return [];
-    }
-    return [patched];
-  });
-  let pinned = data.priorityRows.pinned.map(patchRow);
-  if (demoted?.pinnedAt && !pinned.some((row) => row.chatId === chatId)) pinned = [demoted, ...pinned];
-
   return {
     ...data,
-    priorityRows: { attention, pinned },
+    priorityRows: { pinned: data.priorityRows.pinned.map(patchRow) },
     rows: data.rows.map(patchRow),
   };
 }

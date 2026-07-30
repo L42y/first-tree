@@ -73,6 +73,26 @@ describe("context integration bundle", () => {
       expect(hook).toContain('"matcher": "startup|resume|clear|compact"');
       expect(readSkill).toContain(`context read --provider ${provider}`);
       expect(writeSkill).toContain(`context write --provider ${provider}`);
+      const writeDescription = /^description: (.+)$/mu.exec(writeSkill)?.[1];
+      expect(writeDescription).toContain("connected SessionStart standing route classifies a concrete source artifact");
+      expect(writeDescription).toContain("for example, a PR/MR, forge Issue");
+      expect(writeDescription).toContain("meeting or decision note");
+      expect(writeDescription).toContain("commit discussion or review thread");
+      expect(writeDescription).not.toContain("source repo change you just completed");
+      expect(writeDescription).not.toContain("Audit finding");
+      expect(writeDescription).not.toContain("context-tree-audit");
+      expect(writeSkill).toContain("a source repo change you just completed");
+      expect(writeSkill).toContain("an evidence-backed `context-tree-audit` finding");
+      expect(writeSkill).toContain("This Source Gate\nremains intentionally broader than the generic automatic route.");
+      expect(writeSkill).toContain(
+        "Write intent comes only from an\n  explicit Tree-write request or the connected SessionStart standing route",
+      );
+      expect(writeSkill).toContain(
+        "Authorization to\n  publish the source PR/MR alone is not a separate or transitive intent rule.",
+      );
+      expect(writeSkill).toContain(
+        "standing classification selects this workflow but never\nbypasses its live write preflight",
+      );
       expect(readSkill).toContain("read\n`references/context-tree-policy.md` completely");
       expect(writeSkill).toContain("read\n`references/context-tree-policy.md` completely");
       expect(readSkill).toContain('first_tree_source_checkout="$(git rev-parse --show-toplevel)"');

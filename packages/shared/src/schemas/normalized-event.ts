@@ -71,6 +71,12 @@ export const githubAgentTaskSchema = z.union([
       agentUuid: z.string().min(1),
     })
     .strict(),
+  z
+    .object({
+      agentUuid: z.string().min(1),
+      runId: z.string().uuid(),
+    })
+    .strict(),
 ]);
 export type GithubAgentTask = z.infer<typeof githubAgentTaskSchema>;
 

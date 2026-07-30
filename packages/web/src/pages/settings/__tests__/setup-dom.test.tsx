@@ -332,10 +332,12 @@ beforeEach(() => {
     contextStatus: { severity: "ok", label: "Available", detail: null },
   });
   contextEnablementMocks.getContextEnablementHandoff.mockResolvedValue({
+    protocolVersion: 1,
     organizationId: "org-1",
     teamDisplayName: "Acme",
     role: "admin",
     provider: "claude-code",
+    intent: "settings",
     command: "first-tree-dev context enable --provider claude-code --team org-1",
     workingDirectoryInstruction: "Run this from the target repository.",
   });
@@ -1528,6 +1530,31 @@ describe("Settings Setup overview", () => {
     expect(controls.querySelector('a[href="/settings/integrations/github"]')).toBeNull();
     expect(controls.textContent).not.toContain("Manage GitHub");
     expect(controls.textContent).not.toContain("Manage Team Agents");
+    await act(async () => view.root.unmount());
+  });
+
+  it("shows the App comment permission upgrade on the independent Team Agent control", async () => {
+    orgSettingsMocks.getGithubFeaturesSetting.mockResolvedValue({
+      teamAgent: { agentUuid: null, agent: null },
+    });
+    teamAgentMocks.getTeamAgentCandidates.mockResolvedValue({
+      items: [],
+      blockers: [
+        {
+          code: "github_app_task_reply_permission_required",
+          resolutionOwner: "admin",
+          actionKind: "manage_github_installation",
+        },
+      ],
+    });
+
+    const view = await renderSettingsSetupPage();
+    const { controls } = await openTeamAgentControls(view);
+    await waitForText(
+      controls,
+      "The GitHub App installation must grant Issues and Pull requests write access for App-authored task replies.",
+    );
+    expect(controls.querySelector('a[href="/settings/integrations/github"]')).not.toBeNull();
     await act(async () => view.root.unmount());
   });
 

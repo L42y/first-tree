@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { askOptionSchema, askRequestSchema } from "../schemas/message.js";
+import {
+  askAgentMessageMetadataSchema,
+  askAgentQuestionSchema,
+  askOptionSchema,
+  askRequestSchema,
+  readAskAgentMessageMetadata,
+} from "../schemas/message.js";
 
 const OPT = { label: "Ship", description: "ship now" };
 
@@ -44,5 +50,21 @@ describe("askRequestSchema", () => {
   it("rejects multiSelect without options, allows it with options", () => {
     expect(askRequestSchema.safeParse({ multiSelect: true }).success).toBe(false);
     expect(askRequestSchema.safeParse({ options: [OPT, OPT], multiSelect: true }).success).toBe(true);
+  });
+});
+
+describe("Ask agent schemas", () => {
+  it("accepts a bounded visible question and trims it", () => {
+    expect(askAgentQuestionSchema.parse({ content: "  Explain option B.  " })).toEqual({
+      content: "Explain option B.",
+    });
+    expect(askAgentQuestionSchema.safeParse({ content: " " }).success).toBe(false);
+  });
+
+  it("reads only a complete trusted marker shape", () => {
+    const marker = { requestId: "request-1", agentId: "agent-1" };
+    expect(askAgentMessageMetadataSchema.parse(marker)).toEqual(marker);
+    expect(readAskAgentMessageMetadata({ askAgent: marker })).toEqual(marker);
+    expect(readAskAgentMessageMetadata({ askAgent: { requestId: "request-1" } })).toBeNull();
   });
 });

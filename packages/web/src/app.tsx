@@ -416,13 +416,13 @@ export function App() {
                     here; this route redirects back once setup is complete. */}
                 <Route path="/onboarding" element={<OnboardingPage />} />
                 <Route element={<MobileExperienceGate />}>
-                  <Route path="m" element={<Navigate to="/m/work" replace />} />
-                  <Route path="m/work" element={<MobileWorkPage />} />
+                  <Route path="m" element={<Navigate to="/m/chat" replace />} />
+                  <Route path="m/chat" element={<MobileWorkPage />} />
+                  <Route path="m/work" element={<LegacyMobileWorkRedirect />} />
                   <Route path="m/now" element={<LegacyMobileWorkRedirect />} />
-                  <Route path="m/chat" element={<LegacyMobileWorkRedirect />} />
                   <Route path="m/team" element={<MobileTeamPage />} />
                   <Route path="m/me" element={<MobileMePage />} />
-                  <Route path="m/*" element={<Navigate to="/m/work" replace />} />
+                  <Route path="m/*" element={<Navigate to="/m/chat" replace />} />
                 </Route>
                 <Route
                   element={
@@ -545,7 +545,7 @@ function LegacyUserSettingsRedirect() {
 
 function LegacyMobileWorkRedirect() {
   const location = useLocation();
-  return <Navigate to={{ pathname: "/m/work", search: location.search, hash: location.hash }} replace />;
+  return <Navigate to={{ pathname: "/m/chat", search: location.search, hash: location.hash }} replace />;
 }
 
 function WorkspaceEntry() {
@@ -553,7 +553,7 @@ function WorkspaceEntry() {
   const mobileExperience = useMobileExperienceState();
   if (!mobileExperience.settled) return null;
   if (mobileExperience.enabled && shouldOpenMobileRoot(location)) {
-    return <Navigate to="/m/work" replace />;
+    return <Navigate to="/m/chat" replace />;
   }
   return <WorkspacePage />;
 }

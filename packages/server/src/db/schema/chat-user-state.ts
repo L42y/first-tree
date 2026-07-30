@@ -21,7 +21,7 @@ import { index, integer, pgTable, primaryKey, text, timestamp } from "drizzle-or
  *     active on new message; deleted is sticky (only the user can
  *     restore from the chat detail page).
  *   - `pinned_at` — per-user pin (nullable timestamp). NULL = not
- *     pinned; the timestamp doubles as the within-group sort key.
+ *     pinned; the timestamp is the private pin-state/audit anchor.
  *
  * Future fields slated for this table: mute_until, draft,
  * custom_title, last_seen_at — each as a separate change.
@@ -63,10 +63,10 @@ export const chatUserState = pgTable(
      */
     engagementStatus: text("engagement_status").notNull().default("active"),
     /**
-     * Per-(chat, user) pin. A nullable timestamp (not a boolean) so it doubles
-     * as pin state (`IS NOT NULL` = pinned), an audit anchor, and a stable
-     * within-group sort key (`pinned_at DESC`). Pin is private per-user state —
-     * one user pinning a chat never affects another. NULL = not pinned.
+     * Per-(chat, user) pin. A nullable timestamp (not a boolean) so it carries
+     * pin state (`IS NOT NULL` = pinned) and an audit anchor. Pinned chats are
+     * ordered by real-work activity, not pin time. Pin is private per-user
+     * state — one user pinning a chat never affects another. NULL = not pinned.
      */
     pinnedAt: timestamp("pinned_at", { withTimezone: true }),
   },

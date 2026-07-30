@@ -183,18 +183,22 @@ async function previewPersonalAccessPrompt(): Promise<string> {
     bootstrapCommand: "'first-tree-staging' login 'preview-code'",
     handoffs: [
       {
+        protocolVersion: 1,
         organizationId: "org-preview",
         teamDisplayName: "Gandy's team",
         role: "admin",
         provider: "claude-code",
+        intent: "settings",
         command: "'first-tree-staging' context enable --provider 'claude-code' --team 'org-preview'",
         workingDirectoryInstruction: "Run this once from the repository root.",
       },
       {
+        protocolVersion: 1,
         organizationId: "org-preview",
         teamDisplayName: "Gandy's team",
         role: "admin",
         provider: "codex",
+        intent: "settings",
         command: "'first-tree-staging' context enable --provider 'codex' --team 'org-preview'",
         workingDirectoryInstruction: "Run this once from the repository root.",
       },
@@ -278,6 +282,7 @@ export function SetupPreviewPage() {
     onboardingDismissedAt: facts.onboardingSuppressedAt,
     onboardingCompletedAt: facts.onboardingCompletedAt,
   } as unknown as Parameters<typeof AuthContext.Provider>[0]["value"];
+
   const ownerControls =
     expandedOwnerControl !== "context-tree"
       ? {}

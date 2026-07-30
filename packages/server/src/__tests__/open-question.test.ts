@@ -848,10 +848,9 @@ describe("open_request_count surfaces in the listMeChats projection (needs_you r
       metadata: { mentions: [admin.humanAgentUuid], request: { question: "ship today?" } },
     });
 
-    // An open request routes the chat into the attention group (not ordinary
-    // `rows`), so search every group for it.
+    // Open-request state stays on the ordinary row unless the chat is pinned.
     const findChat = (res: Awaited<ReturnType<typeof listMeChats>>) =>
-      [...res.priorityRows.attention, ...res.priorityRows.pinned, ...res.rows].find((r) => r.chatId === chat.id);
+      [...res.priorityRows.pinned, ...res.rows].find((r) => r.chatId === chat.id);
 
     const listAfterRaise = await listMeChats(app.db, admin.humanAgentUuid, admin.memberId, admin.organizationId, {
       limit: 50,

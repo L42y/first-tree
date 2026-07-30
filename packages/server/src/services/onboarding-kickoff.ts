@@ -121,9 +121,8 @@ export type KickoffOnboardingArgs = {
    *   - "completed"    — terminal completion (audit stamp + suppressor,
    *     reason="completed"), the single-chat start-chat default;
    *   - "invitee_skip" — team-agent start: suppress auto-open only
-   *     (reason="invitee_skip"), never completion, so the member lands in the
-   *     workspace with the standard connect-computer → create-agent journey
-   *     still pending and resumable;
+   *     (reason="invitee_skip"), never completion, so the member's personal
+   *     agent setup stays pending and resumable;
    *   - "none"         — stamp nothing (support/background chats that defer
    *     completion until every required chat exists).
    */
@@ -333,10 +332,8 @@ export async function kickoffOnboarding(db: Database, args: KickoffOnboardingArg
   //    chat has succeeded ("none"). Completion mirrors POST
   //    /me/onboarding-completed: the audit stamp AND the suppressor
   //    (reason="completed") are written together. A team-agent start writes
-  //    only the suppressor with reason="invitee_skip": the member enters the
-  //    workspace through a teammate's org-visible agent, and the standard
-  //    connect-computer → create-agent journey stays pending (never stamped
-  //    complete) so it remains resumable.
+  //    only the suppressor with reason="invitee_skip", keeping the member's
+  //    personal-agent journey pending and resumable.
   if (args.stamp === "completed") {
     const now = new Date();
     await db

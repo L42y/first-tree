@@ -368,7 +368,7 @@ export async function githubOauthRoutes(app: FastifyInstance): Promise<void> {
               contents: "write",
               workflows: "write",
               pull_requests: "write",
-              issues: "read",
+              issues: "write",
               metadata: "read",
               members: "read",
             },

@@ -263,13 +263,13 @@ describe("resolveAudience", () => {
       makeEvent({
         orgId: admin.organizationId,
         entityType: "issue",
-        entityKey: "owner/repo#app-task",
+        entityKey: "owner/repo#41",
         actorLogin: admin.username,
         actorAuthorAssociation: reason === "mentioned" ? "MEMBER" : "NONE",
         targets: [{ externalUsername, reason }],
         kind: reason === "assigned" ? "assigned" : "commented",
       }),
-      { appSlug: "test-app-slug" },
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
     expect(resolution.targets).toEqual([
@@ -298,7 +298,7 @@ describe("resolveAudience", () => {
         targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
         kind: "commented",
       }),
-      { appSlug: "test-app-slug" },
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
     expect(resolution.targets).toEqual([]);
@@ -320,10 +320,36 @@ describe("resolveAudience", () => {
         targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
         kind: "commented",
       }),
-      { appSlug: "test-app-slug" },
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
     expect(resolution.targets).toEqual([]);
+  });
+
+  it.each([
+    ["issue", { issues: "read" }, "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED"],
+    ["pull_request", { pull_requests: "read" }, "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED"],
+    ["discussion", { issues: "write", pull_requests: "write" }, "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED"],
+    ["commit", { issues: "write", pull_requests: "write" }, "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED"],
+  ] as const)("fails closed with a stable blocker for an App-directed %s without a safe App comment publisher", async (entityType, permissions, blocker) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await configureTeamAgent(app, admin);
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType,
+        entityKey: entityType === "commit" ? "owner/repo@abc1234" : "owner/repo#19",
+        actorLogin: admin.username,
+        actorAuthorAssociation: "MEMBER",
+        targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
+        kind: "commented",
+      }),
+      { appSlug: "test-app-slug", appPermissions: permissions },
+    );
+    expect(resolution.targets).toEqual([]);
+    expect(resolution.appTaskBlocker).toBe(blocker);
   });
 
   it("routes the bound GitHub Context Tree repo to the Context Reviewer and other repos to the Team Agent", async () => {
@@ -349,14 +375,14 @@ describe("resolveAudience", () => {
         makeEvent({
           orgId: admin.organizationId,
           entityType: "issue",
-          entityKey: `${projectKey}#role`,
+          entityKey: `${projectKey}#42`,
           projectKey,
           actorLogin: "external",
           actorAuthorAssociation: "NONE",
           targets: [{ externalUsername: "test-app-slug[bot]", reason: "assigned" }],
           kind: "assigned",
         }),
-        { appSlug: "test-app-slug" },
+        { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
       );
 
     await expect(resolveAppAssignment("OWNER/CONTEXT-TREE")).resolves.toMatchObject({
@@ -399,13 +425,13 @@ describe("resolveAudience", () => {
       makeEvent({
         orgId: admin.organizationId,
         entityType: "issue",
-        entityKey: "owner/context-tree#gitlab-bound",
+        entityKey: "owner/context-tree#43",
         projectKey: "owner/context-tree",
         actorLogin: "external",
         targets: [{ externalUsername: "test-app-slug[bot]", reason: "assigned" }],
         kind: "assigned",
       }),
-      { appSlug: "test-app-slug" },
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
     expect(resolution.targets).toEqual([

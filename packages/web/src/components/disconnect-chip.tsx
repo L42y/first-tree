@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router";
 import { useDisconnectedComputers } from "../hooks/use-disconnected-computers.js";
+import { isAskAgentNavLocked, useAskAgentNavLocked } from "./chat/ask-agent-nav-lock.js";
 
 type DisconnectChipProps = {
   /** Icon-only rendering for md/narrow topbars where full text would crowd nav. */
@@ -15,18 +16,26 @@ type DisconnectChipProps = {
 export function DisconnectChip({ compact = false }: DisconnectChipProps) {
   const navigate = useNavigate();
   const { rows, firstHostname } = useDisconnectedComputers();
+  // The settings jump unmounts the surface that owns a pending Ask agent
+  // attempt — fail closed (inert + an imperative re-check) until it lifts.
+  const askAgentNavLocked = useAskAgentNavLocked();
   if (rows.length === 0) return null;
 
   const isMulti = rows.length > 1;
   const tooltip = isMulti
     ? `${rows.length} computers disconnected. Click to manage.`
     : `${firstHostname ?? "Your computer"} is disconnected. Click to manage.`;
+  const jumpToComputers = () => {
+    if (isAskAgentNavLocked()) return;
+    navigate("/settings/computers");
+  };
 
   if (compact) {
     return (
       <button
         type="button"
-        onClick={() => navigate("/settings/computers")}
+        onClick={jumpToComputers}
+        disabled={askAgentNavLocked}
         title={tooltip}
         aria-label={tooltip}
         className="inline-flex items-center justify-center cursor-pointer"
@@ -41,6 +50,7 @@ export function DisconnectChip({ compact = false }: DisconnectChipProps) {
           background: "var(--state-error-soft)",
           color: "color-mix(in oklch, var(--state-error) 80%, var(--fg))",
           flexShrink: 0,
+          opacity: askAgentNavLocked ? 0.5 : undefined,
         }}
       >
         <PulseDot />
@@ -51,7 +61,8 @@ export function DisconnectChip({ compact = false }: DisconnectChipProps) {
   return (
     <button
       type="button"
-      onClick={() => navigate("/settings/computers")}
+      onClick={jumpToComputers}
+      disabled={askAgentNavLocked}
       title={tooltip}
       aria-label={tooltip}
       className="inline-flex items-center cursor-pointer text-body font-medium"
@@ -67,6 +78,7 @@ export function DisconnectChip({ compact = false }: DisconnectChipProps) {
         color: "color-mix(in oklch, var(--state-error) 80%, var(--fg))",
         minWidth: 0,
         whiteSpace: "nowrap",
+        opacity: askAgentNavLocked ? 0.5 : undefined,
       }}
     >
       <PulseDot />

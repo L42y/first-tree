@@ -3,6 +3,7 @@ import {
   createWebTaskChatSchema,
   listMeChatSourceCountsQuerySchema,
   listMeChatsQuerySchema,
+  listNeedYouRequestsQuerySchema,
   paginationQuerySchema,
 } from "@first-tree/shared";
 import { and, desc, eq, lt, sql } from "drizzle-orm";
@@ -14,6 +15,7 @@ import { assertAllAgentsVisibleInOrg } from "../../scope/require-resource.js";
 import { createChat, listChatsForMember, resolveAgentIdsByNameInOrg } from "../../services/chat.js";
 import { assertNoLandingCampaignTrialAgents } from "../../services/landing-campaigns/guards.js";
 import { createMeChat, listMeChatSourceCounts, listMeChats } from "../../services/me-chat.js";
+import { listNeedYouRequests } from "../../services/need-you.js";
 import { notifyRecipients } from "../../services/notifier.js";
 import {
   campaignActionKickoffKey,
@@ -113,6 +115,16 @@ export async function orgChatRoutes(app: FastifyInstance): Promise<void> {
     const scope = await requireOrgMembership(request, app.db);
     const query = listMeChatSourceCountsQuerySchema.parse(request.query);
     return listMeChatSourceCounts(app.db, scope.humanAgentId, scope.organizationId, query);
+  });
+
+  /**
+   * GET /orgs/:orgId/chats/open-requests — the current human's exact
+   * request-level Need you queue across chats in this Team, oldest first.
+   */
+  app.get<{ Params: { orgId: string } }>("/open-requests", async (request) => {
+    const scope = await requireOrgMembership(request, app.db);
+    const query = listNeedYouRequestsQuerySchema.parse(request.query);
+    return listNeedYouRequests(app.db, scope.humanAgentId, scope.organizationId, query);
   });
 
   const createChatRouteOptions = {

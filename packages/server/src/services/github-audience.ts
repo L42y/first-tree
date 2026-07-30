@@ -1,6 +1,8 @@
 import {
   AGENT_STATUSES,
   AGENT_TYPES,
+  type GithubAppInstallationPermissions,
+  type GithubTaskReplyErrorCode,
   type InvolveReason,
   isDeclaredBoundVia,
   type NormalizedScmEvent,
@@ -93,10 +95,12 @@ export type AudienceTarget = {
 export type AudienceResolution = {
   targets: AudienceTarget[];
   actorHumanId: string | null;
+  appTaskBlocker: GithubTaskReplyErrorCode | null;
 };
 
 export type GithubAudienceOptions = {
   appSlug?: string | null;
+  appPermissions?: GithubAppInstallationPermissions;
 };
 
 const AUTHORIZED_TEXT_TASK_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -115,6 +119,31 @@ export function isGithubAppTargetLogin(login: string, appSlug: string | null | u
 
 export function isAuthorizedGithubTextTaskRequester(authorAssociation: string | null | undefined): boolean {
   return authorAssociation ? AUTHORIZED_TEXT_TASK_ASSOCIATIONS.has(authorAssociation.trim().toUpperCase()) : false;
+}
+
+export function isGithubTaskReplySupported(
+  entityType: NormalizedScmEvent["entity"]["type"],
+  permissions: GithubAppInstallationPermissions | undefined,
+): boolean {
+  if (entityType === "issue") return permissions?.issues === "write";
+  if (entityType === "pull_request") return permissions?.pull_requests === "write";
+  return false;
+}
+
+function githubTaskEntityNumber(event: NormalizedScmEvent): number | null {
+  const match = /#([1-9]\d*)$/u.exec(event.entity.key);
+  if (!match?.[1]) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function hasGithubTaskEntityUrl(event: NormalizedScmEvent): boolean {
+  const value = event.entity.url ?? event.surface.url;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 async function resolveGithubAppTaskAgent(
@@ -168,6 +197,7 @@ export async function resolveGithubAudience(
   const humanTargets = event.targets.filter(
     (target) => !isGithubAppTargetLogin(target.externalUsername, options.appSlug),
   );
+  let appTaskBlocker: GithubTaskReplyErrorCode | null = null;
 
   const subscribedRows = await db
     .select({
@@ -335,24 +365,34 @@ export async function resolveGithubAudience(
   }
 
   if (teamAgentTaskTarget) {
-    const taskAgent = await resolveGithubAppTaskAgent(db, event);
-    if (taskAgent) {
-      // Always model an App-directed request as a fresh personnel target, even
-      // when its attention line already exists. `resolveTargetChat` still
-      // reuses that mapping, while the personnel shape preserves a manager's
-      // self-directed @App request from actor-echo pruning.
-      involved.push({
-        humanAgentId: taskAgent.managerHumanAgentId,
-        delegateAgentId: taskAgent.uuid,
-        kind: "new",
-        chatId: null,
-        involveReason: teamAgentTaskTarget.reason,
-        involveLogin: teamAgentTaskTarget.externalUsername.toLowerCase(),
-        teamAgentTask: { agentUuid: taskAgent.uuid },
-      });
+    const supportedEntity =
+      (event.entity.type === "issue" || event.entity.type === "pull_request") &&
+      githubTaskEntityNumber(event) !== null &&
+      hasGithubTaskEntityUrl(event);
+    if (!supportedEntity) {
+      appTaskBlocker = "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED";
+    } else if (!isGithubTaskReplySupported(event.entity.type, options.appPermissions)) {
+      appTaskBlocker = "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED";
+    } else {
+      const taskAgent = await resolveGithubAppTaskAgent(db, event);
+      if (taskAgent) {
+        // Always model an App-directed request as a fresh personnel target, even
+        // when its attention line already exists. `resolveTargetChat` still
+        // reuses that mapping, while the personnel shape preserves a manager's
+        // self-directed @App request from actor-echo pruning.
+        involved.push({
+          humanAgentId: taskAgent.managerHumanAgentId,
+          delegateAgentId: taskAgent.uuid,
+          kind: "new",
+          chatId: null,
+          involveReason: teamAgentTaskTarget.reason,
+          involveLogin: teamAgentTaskTarget.externalUsername.toLowerCase(),
+          teamAgentTask: { agentUuid: taskAgent.uuid },
+        });
+      }
     }
   }
 
   const audience = [...subscribed, ...involved];
-  return { targets: audience, actorHumanId };
+  return { targets: audience, actorHumanId, appTaskBlocker };
 }

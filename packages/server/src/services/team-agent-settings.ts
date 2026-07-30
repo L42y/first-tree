@@ -12,6 +12,7 @@ import { organizations } from "../db/schema/organizations.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { loadValidContextReviewerAgent } from "./context-reviewer-common.js";
 import { listContextReviewerCandidates } from "./context-reviewer-readiness.js";
+import { findInstallationByOrg, type InstallationRow } from "./github-app-installations.js";
 import { getOrgSetting } from "./org-settings.js";
 
 export class TeamAgentSettingsError extends ConflictError {
@@ -70,6 +71,15 @@ async function readContextReviewerAgentUuid(db: Database, organizationId: string
   return ORG_SETTINGS_NAMESPACES.context_tree_features.storage.parse(row?.value ?? {}).contextReviewer.agentUuid;
 }
 
+function taskReplyInstallationBlocker(installation: InstallationRow | null): SetupBlocker | null {
+  if (!installation) return null;
+  if (installation.suspendedAt) return blocker("github_app_suspended", "manage_github_installation");
+  if (installation.permissions.issues !== "write" || installation.permissions.pull_requests !== "write") {
+    return blocker("github_app_task_reply_permission_required", "manage_github_installation");
+  }
+  return null;
+}
+
 async function writeStorage(
   db: Database,
   organizationId: string,
@@ -117,10 +127,13 @@ export async function listTeamAgentCandidates(
       blockers: [blocker("github_app_slug_missing", null, "operator")],
     };
   }
-  const [candidates, reviewerAgentUuid] = await Promise.all([
+  const [candidates, reviewerAgentUuid, installation] = await Promise.all([
     listContextReviewerCandidates(db, input),
     readContextReviewerAgentUuid(db, input.organizationId),
+    findInstallationByOrg(db, input.organizationId),
   ]);
+  const installationBlocker = taskReplyInstallationBlocker(installation);
+  if (installationBlocker) return { items: [], blockers: [installationBlocker] };
   return {
     items: candidates.items.filter((candidate) => candidate.uuid !== reviewerAgentUuid),
     blockers: candidates.items.some((candidate) => candidate.uuid !== reviewerAgentUuid)
@@ -148,6 +161,13 @@ export async function putTeamAgentAssignment(
     const current = await readStorage(tx, organizationId);
 
     if (agentUuid !== null) {
+      const installationBlocker = taskReplyInstallationBlocker(await findInstallationByOrg(tx, organizationId));
+      if (installationBlocker) {
+        throw new TeamAgentSettingsError(
+          installationBlocker,
+          "The GitHub App installation is not ready to publish App-authored task replies",
+        );
+      }
       const reviewerAgentUuid = await readContextReviewerAgentUuid(tx, organizationId);
       if (reviewerAgentUuid === agentUuid) {
         throw new TeamAgentSettingsError(

@@ -54,12 +54,8 @@ describe("1:1 chat wake-up + unread badge (explicit-mention contract)", () => {
       filter: "all",
       engagement: "all",
     });
-    // A `request` DM opens a request, routing the chat into the attention group
-    // rather than ordinary `rows` — search all groups for the unread counter.
-    return (
-      [...priorityRows.attention, ...priorityRows.pinned, ...rows].find((r) => r.chatId === chatId)
-        ?.unreadMentionCount ?? 0
-    );
+    // A request stays in the activity stream; pins remain additive.
+    return [...priorityRows.pinned, ...rows].find((r) => r.chatId === chatId)?.unreadMentionCount ?? 0;
   }
 
   async function notifyInboxRows(chatId: string, agentUuid: string) {

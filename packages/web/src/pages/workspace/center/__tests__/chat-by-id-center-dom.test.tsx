@@ -303,31 +303,31 @@ describe("ChatByIdView and CenterPanel", () => {
     const paletteKey = ["me", "chats", "palette"];
     const infinite = (
       rows: MeChatRow[],
-      priorityRows: ListMeChatsResponse["priorityRows"] = { attention: [], pinned: [] },
+      priorityRows: ListMeChatsResponse["priorityRows"] = { pinned: [] },
     ): InfiniteData<ListMeChatsResponse> => ({
       pages: [{ rows, nextCursor: null, priorityRows }],
       pageParams: [undefined],
     });
     queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
       allKey,
-      infinite([currentUnread, otherUnread], { attention: [], pinned: [currentUnread] }),
+      infinite([currentUnread, otherUnread], { pinned: [currentUnread] }),
     );
     queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
       unreadKey,
-      infinite([currentUnread, otherUnread], { attention: [], pinned: [currentUnread] }),
+      infinite([currentUnread, otherUnread], { pinned: [currentUnread] }),
     );
     queryClient.setQueryData<ListMeChatsResponse>(paletteKey, {
       rows: [currentUnread, otherUnread],
       nextCursor: null,
-      priorityRows: { attention: [currentUnread], pinned: [] },
+      priorityRows: { pinned: [currentUnread] },
     });
     queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
       mobileAllKey,
-      infinite([currentUnread, otherUnread], { attention: [currentUnread], pinned: [currentUnread] }),
+      infinite([currentUnread, otherUnread], { pinned: [currentUnread] }),
     );
     queryClient.setQueryData<InfiniteData<ListMeChatsResponse>>(
       mobileUnreadKey,
-      infinite([currentUnread, otherUnread], { attention: [currentUnread], pinned: [currentUnread] }),
+      infinite([currentUnread, otherUnread], { pinned: [currentUnread] }),
     );
     queryClient.setQueryData(mobileSourceCountsKey, {
       counts: { manual: { chatCount: 2, unreadChatCount: 2 } },
@@ -373,7 +373,7 @@ describe("ChatByIdView and CenterPanel", () => {
     // The bare-response (palette / mobile) shape is patched in place too.
     const patchedPalette = queryClient.getQueryData<ListMeChatsResponse>(paletteKey);
     expect(patchedPalette?.rows.find((row) => row.chatId === "chat-1")).toMatchObject({ unreadMentionCount: 0 });
-    expect(patchedPalette?.priorityRows.attention[0]).toMatchObject({
+    expect(patchedPalette?.priorityRows.pinned[0]).toMatchObject({
       unreadMentionCount: 0,
       chatHasExplicitMentionToMe: false,
     });
@@ -382,11 +382,9 @@ describe("ChatByIdView and CenterPanel", () => {
       unreadMentionCount: 0,
       chatHasExplicitMentionToMe: false,
     });
-    expect(mobileAll?.priorityRows.attention[0]).toMatchObject({ unreadMentionCount: 0 });
     expect(mobileAll?.priorityRows.pinned[0]).toMatchObject({ unreadMentionCount: 0 });
     const mobileUnread = queryClient.getQueryData<InfiniteData<ListMeChatsResponse>>(mobileUnreadKey)?.pages[0];
     expect(mobileUnread?.rows.map((row) => row.chatId)).toEqual(["chat-2"]);
-    expect(mobileUnread?.priorityRows.attention).toEqual([]);
     expect(mobileUnread?.priorityRows.pinned).toEqual([]);
     expect(queryClient.getQueryData(mobileSourceCountsKey)).toEqual({
       counts: { manual: { chatCount: 2, unreadChatCount: 2 } },

@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import type { MeChatRow } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMock = vi.hoisted(() => ({
@@ -38,6 +39,34 @@ function createStorage(): Storage {
   };
 }
 
+function meChatRow(overrides: Partial<MeChatRow> = {}): MeChatRow {
+  return {
+    chatId: overrides.chatId ?? "chat-1",
+    type: overrides.type ?? "group",
+    membershipKind: overrides.membershipKind ?? "participant",
+    createdByMe: overrides.createdByMe ?? false,
+    source: overrides.source ?? "manual",
+    entityType: overrides.entityType ?? null,
+    title: overrides.title ?? "Launch planning",
+    topic: overrides.topic ?? "Launch planning",
+    description: overrides.description ?? null,
+    participants: overrides.participants ?? [],
+    participantCount: overrides.participantCount ?? 1,
+    lastMessageAt: overrides.lastMessageAt ?? "2026-07-09T10:00:00.000Z",
+    lastMessagePreview: overrides.lastMessagePreview ?? "Please review the launch checklist.",
+    unreadMentionCount: overrides.unreadMentionCount ?? 0,
+    openRequestCount: overrides.openRequestCount ?? 0,
+    canReply: overrides.canReply ?? true,
+    engagementStatus: overrides.engagementStatus ?? "active",
+    liveActivity: overrides.liveActivity ?? null,
+    failedAgentIds: overrides.failedAgentIds ?? [],
+    busyAgentIds: overrides.busyAgentIds ?? [],
+    chatHasExplicitMentionToMe: overrides.chatHasExplicitMentionToMe ?? false,
+    pinnedAt: overrides.pinnedAt ?? null,
+    activityAt: overrides.activityAt ?? null,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   apiMock.get.mockResolvedValue({});
@@ -52,6 +81,33 @@ afterEach(() => {
 });
 
 describe("api wrapper paths", () => {
+  it("normalizes a legacy Attention pin without reviving the retired tier", async () => {
+    const meChats = await import("../me-chats.js");
+    const pinnedRequest = meChatRow({
+      chatId: "pinned-request",
+      pinnedAt: "2026-07-09T09:00:00.000Z",
+      openRequestCount: 1,
+    });
+    const unpinnedRequest = meChatRow({
+      chatId: "unpinned-request",
+      openRequestCount: 1,
+    });
+    apiMock.get.mockResolvedValueOnce({
+      priorityRows: {
+        pinned: [],
+        attention: [pinnedRequest, unpinnedRequest],
+      },
+      rows: [pinnedRequest, unpinnedRequest],
+      nextCursor: null,
+    });
+
+    const listed = await meChats.listMeChats();
+
+    expect(listed.priorityRows).toEqual({ pinned: [pinnedRequest] });
+    expect(listed.rows.map((row) => row.chatId)).toEqual(["pinned-request", "unpinned-request"]);
+    expect("attention" in listed.priorityRows).toBe(false);
+  });
+
   it("formats activity, org setting, organization, and overview requests", async () => {
     const activity = await import("../activity.js");
     const contextTree = await import("../context-tree.js");
@@ -74,6 +130,16 @@ describe("api wrapper paths", () => {
 
     await contextTree.getContextTreeSnapshot("org/id", "7d");
     await contextTree.initializeContextTree("org/id");
+    apiMock.get.mockResolvedValueOnce({
+      protocolVersion: 1,
+      organizationId: "org/id",
+      teamDisplayName: "Acme",
+      role: "member",
+      provider: "codex",
+      intent: "settings",
+      command: "'first-tree' context enable --provider 'codex' --team 'org/id'",
+      workingDirectoryInstruction: "Run this from the target checkout.",
+    });
     await contextEnablement.getContextEnablementHandoff("org/id", "codex");
     await orgSettings.getContextTreeSetting("org/id");
     await orgSettings.getRawContextTreeSetting("org/id");
@@ -127,7 +193,9 @@ describe("api wrapper paths", () => {
     expect(apiMock.post).toHaveBeenCalledWith("/me/connect-tokens");
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/context-tree/snapshot?window=7d");
     expect(apiMock.post).toHaveBeenCalledWith("/orgs/org%2Fid/context-tree/initialize", {});
-    expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/context-enablement/handoff?provider=codex");
+    expect(apiMock.get).toHaveBeenCalledWith(
+      "/orgs/org%2Fid/context-enablement/handoff?provider=codex&intent=settings",
+    );
     expect(apiMock.post).toHaveBeenCalledWith("/orgs/org%2Fid/resources/repositories/confirm", {
       expectedActiveRepositoryKeys: [],
       repositories: [{ name: "API", url: "https://github.com/acme/api.git" }],
@@ -248,7 +316,7 @@ describe("api wrapper paths", () => {
       with: ["agent-1", "agent-2"],
       watching: true,
     });
-    expect(listed.priorityRows).toEqual({ attention: [], pinned: [] });
+    expect(listed.priorityRows).toEqual({ pinned: [] });
     await meChats.listMeChatSourceCounts({ engagement: "archived", watching: true });
     await meChats.createMeChat({ participantIds: ["agent-1"] });
     await meChats.createMeTaskChat({
@@ -430,7 +498,7 @@ describe("api wrapper paths", () => {
       onboarding.reportOnboardingEvent("agent_created", { runtimeProvider: "codex" }),
     ).resolves.toBeUndefined();
     apiMock.post.mockRejectedValueOnce(new Error("offline"));
-    await expect(onboarding.markOnboardingCompleted()).resolves.toBeUndefined();
+    await expect(onboarding.markOnboardingCompleted()).rejects.toThrow("offline");
   });
 
   it("uploads agent avatars with optional auth and maps avatar upload errors", async () => {

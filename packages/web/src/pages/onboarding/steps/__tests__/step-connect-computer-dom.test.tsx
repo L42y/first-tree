@@ -45,6 +45,7 @@ function flow(overrides: Partial<OnboardingFlowValue> = {}): OnboardingFlowValue
     teamDisplayName: "Acme",
     orgHasOtherMembers: false,
     computer: computer(),
+    prepareByoBootstrap: vi.fn(),
     agentDisplayName: "Build Agent",
     setAgentDisplayName: vi.fn(),
     visibility: "private",
@@ -66,7 +67,6 @@ function flow(overrides: Partial<OnboardingFlowValue> = {}): OnboardingFlowValue
     markTreeAutoDetectDone: vi.fn(),
     offerTeamAgentStart: false,
     completeAndEnterChat: vi.fn(),
-    skipAndEnterChat: vi.fn(),
     finishLater: vi.fn(),
     ...overrides,
   };

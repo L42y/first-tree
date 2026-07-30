@@ -13,6 +13,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceDir = resolve(repoRoot, "packages/client/src/runtime/templates");
 const requiredTemplate = resolve(sourceDir, "agent-briefing.ejs");
 const canonicalPolicy = resolve(repoRoot, "packages/client/src/runtime/assets/context-tree-policy.md");
+const canonicalWriteRouting = resolve(repoRoot, "packages/client/src/runtime/assets/context-tree-write-routing.md");
 const targetDir = resolve(repoRoot, packageDirArg, "dist/templates");
 const runtimeAssetsDir = resolve(repoRoot, packageDirArg, "dist/runtime-assets");
 
@@ -21,6 +22,9 @@ if (!existsSync(requiredTemplate) || !statSync(requiredTemplate).isFile()) {
 }
 if (!existsSync(canonicalPolicy) || !statSync(canonicalPolicy).isFile()) {
   throw new Error(`Canonical Context Tree policy is missing: ${canonicalPolicy}`);
+}
+if (!existsSync(canonicalWriteRouting) || !statSync(canonicalWriteRouting).isFile()) {
+  throw new Error(`Canonical Context Tree write routing contract is missing: ${canonicalWriteRouting}`);
 }
 
 if (existsSync(targetDir)) {
@@ -37,3 +41,4 @@ await cp(sourceDir, targetDir, {
 });
 await mkdir(runtimeAssetsDir, { recursive: true });
 await cp(canonicalPolicy, resolve(runtimeAssetsDir, "context-tree-policy.md"));
+await cp(canonicalWriteRouting, resolve(runtimeAssetsDir, "context-tree-write-routing.md"));

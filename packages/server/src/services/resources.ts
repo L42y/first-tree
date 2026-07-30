@@ -13,6 +13,7 @@ import {
   findAssembledBriefingFingerprint,
   type GitRepo,
   getRepoLocalPathSafetyError,
+  MAX_ATTACHMENT_BYTES,
   type NoSecretMcpServer,
   normalizeRepoLocalPath,
   noSecretMcpServerSchema,
@@ -840,11 +841,28 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         id: attachments.id,
         organizationId: attachments.organizationId,
         lifecycleState: attachments.lifecycleState,
+        sizeBytes: attachments.sizeBytes,
+        payloadPresent: sql<boolean>`${attachments.data} is not null or ${attachments.objectKey} is not null`,
       })
       .from(attachments)
       .where(inArray(attachments.id, bundleIds));
-    const ready = new Set(
-      readyRows.filter((row) => row.lifecycleState === "ready").map((row) => `${row.organizationId}:${row.id}`),
+    const ready = new Map(
+      readyRows
+        .filter(
+          (row) =>
+            row.lifecycleState === "ready" &&
+            row.payloadPresent &&
+            row.sizeBytes > 0 &&
+            row.sizeBytes <= MAX_ATTACHMENT_BYTES,
+        )
+        .map((row) => [
+          `${row.organizationId}:${row.id}`,
+          {
+            attachmentId: row.id,
+            format: "zip" as const,
+            sizeBytes: row.sizeBytes,
+          },
+        ]),
     );
     for (const row of skillRows) {
       if (row.mode !== "enabled" || !row.resourceId) continue;
@@ -852,7 +870,12 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       // A null bundle is a legacy inline Skill during rolling backfill and
       // remains valid. Once a Resource points at a bundle, that reference is
       // authoritative and must fail closed if its object is unavailable.
-      if (!bundle || ready.has(`${bundle.organizationId}:${bundle.id}`)) continue;
+      if (!bundle) continue;
+      const readyBundle = ready.get(`${bundle.organizationId}:${bundle.id}`);
+      if (readyBundle) {
+        row.skillBundle = readyBundle;
+        continue;
+      }
       row.mode = "unavailable";
       row.unavailableReason = "skill_bundle_unavailable";
       unavailable.push({
@@ -938,6 +961,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           description: payload.description,
           body: payload.body,
           metadata: payload.metadata,
+          ...(row.skillBundle ? { bundle: row.skillBundle } : {}),
         };
       });
   }

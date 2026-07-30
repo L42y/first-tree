@@ -27,14 +27,21 @@ import { StepProgress } from "./step-progress.js";
  * Outcomes (the old "What you'll have" footer) were folded into each step's
  * `why` copy — one place for the user to read, less repetition, less density.
  */
-export function OnboardingShell({ children }: { children: ReactNode }) {
+export function OnboardingShell({
+  children,
+  previewHasTeam = false,
+}: {
+  children: ReactNode;
+  /** DEV gallery only: render the injected Team scenario without live auth membership data. */
+  previewHasTeam?: boolean;
+}) {
   const { activeStep, finishLater, hasAgent } = useOnboardingFlow();
   const { logout, memberships, currentOrgHasUsableAgent } = useAuth();
   const { addToast } = useToast();
   const navigate = useNavigate();
   const [setupAction, setSetupAction] = useState<"create" | "join" | null>(null);
   const copy = STEP_COPY[activeStep];
-  const needsTeam = memberships.length === 0;
+  const needsTeam = !previewHasTeam && memberships.length === 0;
 
   // "Finish later" is safe to offer whenever leaving lands somewhere useful:
   // the member has their own agent (`hasAgent`), OR the org already has a

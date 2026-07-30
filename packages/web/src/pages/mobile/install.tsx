@@ -36,7 +36,7 @@ export function MobileInstallPage() {
   }, [platform, source]);
 
   if (isStandalone()) {
-    return <Navigate to="/m/work" replace />;
+    return <Navigate to="/m/chat" replace />;
   }
 
   const onInstall = async (): Promise<void> => {
@@ -174,7 +174,7 @@ export function MobileInstallPage() {
             </div>
 
             <Button asChild variant="ghost" className="w-full">
-              <Link to="/m/work">Continue in browser</Link>
+              <Link to="/m/chat">Continue in browser</Link>
             </Button>
           </>
         )}

@@ -56,6 +56,7 @@ const DEFAULT_AUTH = {
   dismissOnboarding: async () => undefined,
   restoreOnboarding: async () => undefined,
   markOnboardingCompleted: async () => undefined,
+  applyOnboardingKickoffStamp: () => undefined,
   login: async () => undefined,
   adoptTokens: async () => undefined,
   selectOrganization: async () => undefined,
@@ -449,7 +450,7 @@ describe("extra preview pages", () => {
     await cleanupRendered(userMenu);
   });
 
-  it("renders request-dock modes and exercises reply and skip status branches", async () => {
+  it("renders request-dock modes and exercises submit and skip status branches", async () => {
     const rendered = await renderPreview(<RequestDockPreviewPage />);
 
     expect(text(rendered.container)).toContain("AskTakeover preview");
@@ -460,12 +461,12 @@ describe("extra preview pages", () => {
     expect(text(rendered.container)).toContain("cramped height");
 
     await click(buttonByText(rendered.container, "Ship to 20%"));
-    const enabledReply = [...rendered.container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Reply" && !button.disabled,
+    const enabledSubmit = [...rendered.container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Submit" && !button.disabled,
     );
-    if (!enabledReply) throw new Error("Enabled Reply button missing");
-    await click(enabledReply);
-    expect(text(rendered.container)).toContain("Reply");
+    if (!enabledSubmit) throw new Error("Enabled Submit button missing");
+    await click(enabledSubmit);
+    expect(text(rendered.container)).toContain("Submit");
     expect(text(rendered.container)).toContain("Ship to 20%");
 
     const firstSkip = [...rendered.container.querySelectorAll("button")].find(

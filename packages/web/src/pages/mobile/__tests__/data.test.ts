@@ -1,10 +1,7 @@
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  countAttentionRows,
   countUnreadRows,
-  formatMobileAge,
-  isNowFeedRow,
   mobileCardContent,
   mobileChatListSignal,
   mobileChatPreview,
@@ -52,7 +49,7 @@ function chatRow(overrides: Partial<MeChatRow> = {}): MeChatRow {
 }
 
 describe("mobile chat projection", () => {
-  it("uses canonical attention ordering and leaves unread/working/recent in time order", () => {
+  it("keeps request, recovery, unread, and working statuses in time order", () => {
     const recent = chatRow({ chatId: "recent", lastMessageAt: "2026-07-09T10:05:00.000Z" });
     const working = chatRow({
       chatId: "working",
@@ -68,15 +65,15 @@ describe("mobile chat projection", () => {
     const question = chatRow({ chatId: "question", openRequestCount: 1, lastMessageAt: "2026-07-09T10:01:00.000Z" });
 
     expect(sortMobileChats([recent, working, unread, failed, question]).map((row) => row.chatId)).toEqual([
-      "failed",
-      "question",
       "recent",
       "working",
       "unread",
+      "failed",
+      "question",
     ]);
   });
 
-  it("includes complete attention and pins, then de-duplicates additive rows", () => {
+  it("includes complete pins, then de-duplicates additive rows without promoting failures", () => {
     const failed = chatRow({ chatId: "failed", failedAgentIds: ["agent-1"] });
     const pinnedOnly = chatRow({
       chatId: "pinned-only",
@@ -91,13 +88,13 @@ describe("mobile chat projection", () => {
     const newer = chatRow({ chatId: "newer", lastMessageAt: "2026-07-09T11:00:00.000Z" });
     const duplicatePinned = { ...pinnedOnly, title: "Wrong additive copy" };
     const response: ListMeChatsResponse = {
-      priorityRows: { attention: [failed], pinned: [pinnedOnly, olderPin] },
+      priorityRows: { pinned: [pinnedOnly, olderPin] },
       rows: [newer, duplicatePinned, failed],
       nextCursor: null,
     };
 
     const rows = sortMobileChats(mobileRowsFromList(response));
-    expect(rows.map((row) => row.chatId)).toEqual(["failed", "pinned-only", "older-pin", "newer"]);
+    expect(rows.map((row) => row.chatId)).toEqual(["older-pin", "pinned-only", "newer", "failed"]);
     expect(rows.find((row) => row.chatId === "pinned-only")?.title).toBe("Launch planning");
   });
 
@@ -121,12 +118,12 @@ describe("mobile chat projection", () => {
 
     expect(
       sortMobileChats([messageUpdate, descriptionUpdate, olderWorking, question]).map((row) => row.chatId),
-    ).toEqual(["question", "description-update", "message-update", "working"]);
+    ).toEqual(["description-update", "message-update", "working", "question"]);
     expect(mobileChatListSignal(question).label).toBe("Needs answer");
     expect(mobileChatListSignal(olderWorking).label).toBe("Working");
   });
 
-  it("counts attention and unread rows separately for mobile tab badges", () => {
+  it("keeps row status labels separate from the unread tab badge", () => {
     const explicitMention = chatRow({ chatId: "explicit", chatHasExplicitMentionToMe: true });
     const rows = [
       chatRow({ chatId: "question", openRequestCount: 1 }),
@@ -136,7 +133,6 @@ describe("mobile chat projection", () => {
       chatRow({ chatId: "working", busyAgentIds: ["agent-2"] }),
     ];
 
-    expect(countAttentionRows(rows)).toBe(2);
     expect(countUnreadRows(rows)).toBe(1);
     expect(mobileChatSignal(explicitMention).label).toBe("Unread");
     expect(mobileChatSignal(explicitMention).attention).toBe(false);
@@ -162,8 +158,8 @@ describe("mobile chat projection", () => {
         }),
       ),
     ).toEqual({
-      kind: "action",
-      primary: "An open question is waiting for your response. Open to review the full request.",
+      kind: "summary",
+      primary: "Current: staging is green",
       secondary: null,
     });
 
@@ -176,8 +172,8 @@ describe("mobile chat projection", () => {
         }),
       ),
     ).toEqual({
-      kind: "action",
-      primary: "2 managed agent runs failed. Open to review the failures and recovery options.",
+      kind: "summary",
+      primary: "Current: staging is green",
       secondary: null,
     });
 
@@ -217,39 +213,6 @@ describe("mobile chat projection", () => {
   });
 });
 
-describe("isNowFeedRow (needs-attention admission)", () => {
-  it("admits chats with an authoritative active signal", () => {
-    expect(isNowFeedRow(chatRow({ failedAgentIds: ["agent-1"] }))).toBe(true);
-    expect(isNowFeedRow(chatRow({ openRequestCount: 1 }))).toBe(true);
-    expect(isNowFeedRow(chatRow({ chatHasExplicitMentionToMe: true }))).toBe(true);
-    expect(isNowFeedRow(chatRow({ busyAgentIds: ["agent-1"] }))).toBe(true);
-  });
-
-  it("excludes idle and watching-only chats", () => {
-    expect(isNowFeedRow(chatRow({}))).toBe(false);
-    expect(isNowFeedRow(chatRow({ membershipKind: "watching" }))).toBe(false);
-  });
-
-  it("does not admit a liveActivity-only row (description is not busy authority)", () => {
-    // A residual/cached liveActivity with no authoritative busyAgentIds must not
-    // keep a chat in the needs-attention feed.
-    expect(
-      isNowFeedRow(
-        chatRow({
-          busyAgentIds: [],
-          liveActivity: { agentId: "agent-1", kind: "tool_call", label: "Using Bash", startedAt: NOW },
-        }),
-      ),
-    ).toBe(false);
-  });
-
-  it("does not admit a plain unread 1:1 reply (implicit auto-mention only)", () => {
-    // unreadMentionCount also counts the implicit 1:1 DM auto-mention; only an
-    // explicit @me qualifies.
-    expect(isNowFeedRow(chatRow({ unreadMentionCount: 3, chatHasExplicitMentionToMe: false }))).toBe(false);
-  });
-});
-
 describe("mobileChatPreview", () => {
   it("peels inline markdown so the card preview shows plain text", () => {
     const preview = mobileChatPreview(
@@ -272,33 +235,5 @@ describe("mobileChatPreview", () => {
     expect(mobileChatPreview(chatRow({ description: null, lastMessagePreview: "![](https://x/y.png)" }))).toBe(
       "No messages yet.",
     );
-  });
-});
-
-describe("formatMobileAge", () => {
-  it("keeps waiting time relative and never rounds into the next unit early", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-14T12:00:00.000Z"));
-    try {
-      expect(formatMobileAge("2026-07-14T11:59:30.000Z")).toBe("now");
-      expect(formatMobileAge("2026-07-14T11:00:01.000Z")).toBe("59m");
-      expect(formatMobileAge("2026-07-13T12:00:01.000Z")).toBe("23h");
-      expect(formatMobileAge("2026-07-10T12:00:00.000Z")).toBe("4d");
-      expect(formatMobileAge("2026-06-30T12:00:00.000Z")).toBe("2w");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("omits invalid values and treats clock-skewed future timestamps as now", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-14T12:00:00.000Z"));
-    try {
-      expect(formatMobileAge(null)).toBe("");
-      expect(formatMobileAge("not-a-date")).toBe("");
-      expect(formatMobileAge("2026-07-14T12:05:00.000Z")).toBe("now");
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });
