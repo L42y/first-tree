@@ -30,6 +30,7 @@ const roots: string[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetManagedSkillsReconcileMock();
   clearOpenCodeDbGateCacheForTests();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -104,6 +105,37 @@ function reconciledSkillsResult(resourceConfigVersion = 1) {
     failures: [],
     staleTeamSnapshot: false,
   };
+}
+
+function resetManagedSkillsReconcileMock() {
+  const reconcile = vi.mocked(reconcileManagedSkillsForConfig);
+  reconcile.mockReset();
+  reconcile.mockImplementation(async (_workspace, _provider, config) => reconciledSkillsResult(config?.version ?? 0));
+  return reconcile;
+}
+
+function controlledOpenCodeSleep() {
+  const waits: Array<{
+    delayMs: number;
+    signal: AbortSignal;
+    complete: () => void;
+  }> = [];
+  const sleep = vi.fn(
+    (delayMs: number, signal: AbortSignal) =>
+      new Promise<boolean>((resolveDelay) => {
+        let settled = false;
+        const finish = (completed: boolean) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          resolveDelay(completed);
+        };
+        const onAbort = () => finish(false);
+        signal.addEventListener("abort", onAbort, { once: true });
+        waits.push({ delayMs, signal, complete: () => finish(true) });
+      }),
+  );
+  return { sleep, waits };
 }
 
 const SYNTHETIC_PROVIDER_SCRIPT = `
@@ -345,6 +377,185 @@ describe("OpenCode V1 handler", () => {
       "opencode_managed_skills_unsafe",
     );
     expect(vi.mocked(sessionCtx.log).mock.calls.flat().join("\n")).toContain("blocked provider turn: unsafe discovery");
+    await handler.shutdown();
+  });
+
+  it.each([
+    ["queued preflight", 2],
+    ["turn preflight", 4],
+  ] as const)("parks persistent unsafe discovery at the %s and resumes the ordered batch once", async (failurePoint, expectedUnsafeRefreshes) => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-managed-skills-parked-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const sessionCtx = context([], []);
+    const reconcile = resetManagedSkillsReconcileMock();
+    const { sleep, waits } = controlledOpenCodeSleep();
+    let queuedPhase = false;
+    let unsafe = true;
+    let queuedRefreshes = 0;
+    reconcile.mockImplementation(async () => {
+      if (!queuedPhase) return reconciledSkillsResult();
+      queuedRefreshes += 1;
+      const shouldFail = unsafe && (failurePoint === "queued preflight" || queuedRefreshes % 2 === 0);
+      if (shouldFail) throw new ManagedSkillsUnsafeDiscoveryError(`${failurePoint} unsafe`);
+      return reconciledSkillsResult();
+    });
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs, { capturedInputs: inputs }),
+      opencodeUnsafeDiscoverySleep: sleep,
+      opencodeTurnTimeoutMs: 5_000,
+    });
+    await handler.start(message("m-seed", "seed"), sessionCtx, deliveryToken());
+    queuedPhase = true;
+    const heldToken = deliveryToken();
+    const tailToken = deliveryToken();
+
+    expect(handler.inject(message("m-held", "held delivery"), heldToken)).toEqual({
+      kind: "owned",
+      mode: "queued",
+    });
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledTimes(1));
+    expect(handler.inject(message("m-tail", "later delivery"), tailToken)).toEqual({
+      kind: "owned",
+      mode: "queued",
+    });
+    waits[0]?.complete();
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledTimes(2));
+
+    expect(sleep.mock.calls.map(([delayMs]) => delayMs)).toEqual([1_000, 2_000]);
+    expect(queuedRefreshes).toBe(expectedUnsafeRefreshes);
+    expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(1);
+    expect(heldToken.processingStarted).not.toHaveBeenCalled();
+    expect(heldToken.complete).not.toHaveBeenCalled();
+    expect(heldToken.retry).not.toHaveBeenCalled();
+    expect(tailToken.processingStarted).not.toHaveBeenCalled();
+    expect(tailToken.complete).not.toHaveBeenCalled();
+    expect(tailToken.retry).not.toHaveBeenCalled();
+    const blockedLogs = vi
+      .mocked(sessionCtx.log)
+      .mock.calls.flat()
+      .filter((line) => String(line).includes("queued turn blocked by unsafe managed-skill discovery"));
+    expect(blockedLogs).toHaveLength(2);
+    expect(vi.mocked(sessionCtx.log).mock.calls.flat().join("\n")).not.toContain("OpenCode queued turn failed");
+
+    unsafe = false;
+    waits[1]?.complete();
+    await vi.waitFor(() => expect(heldToken.complete).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(tailToken.complete).toHaveBeenCalledTimes(1));
+
+    expect(heldToken.processingStarted).toHaveBeenCalledTimes(1);
+    expect(heldToken.retry).not.toHaveBeenCalled();
+    expect(tailToken.processingStarted).toHaveBeenCalledTimes(1);
+    expect(tailToken.retry).not.toHaveBeenCalled();
+    expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(3);
+    expect(inputs).toHaveLength(3);
+    expect(inputs[1]).toContain("held delivery");
+    expect(inputs[1]).not.toContain("later delivery");
+    expect(inputs[2]).toContain("later delivery");
+    for (const spec of specs.filter((entry) => entry.args[0] === "run").slice(1)) {
+      expect(spec.args).toEqual(expect.arrayContaining(["--session", "ses_new"]));
+    }
+    await handler.shutdown();
+  });
+
+  it.each(["suspend", "shutdown"] as const)("releases a parked unsafe batch exactly once on %s", async (lifecycle) => {
+    const root = mkdtempSync(join(tmpdir(), `ft-opencode-managed-skills-${lifecycle}-`));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const sessionCtx = context([], []);
+    const reconcile = resetManagedSkillsReconcileMock();
+    const { sleep, waits } = controlledOpenCodeSleep();
+    let queuedPhase = false;
+    reconcile.mockImplementation(async () => {
+      if (!queuedPhase) return reconciledSkillsResult();
+      throw new ManagedSkillsUnsafeDiscoveryError("persistent unsafe discovery");
+    });
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+      opencodeUnsafeDiscoverySleep: sleep,
+      opencodeTurnTimeoutMs: 5_000,
+    });
+    await handler.start(message("m-seed", "seed"), sessionCtx, deliveryToken());
+    queuedPhase = true;
+    const heldToken = deliveryToken();
+    const tailToken = deliveryToken();
+    expect(handler.inject(message("m-held", "held"), heldToken)).toEqual({
+      kind: "owned",
+      mode: "queued",
+    });
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledTimes(1));
+    expect(handler.inject(message("m-tail", "tail"), tailToken)).toEqual({
+      kind: "owned",
+      mode: "queued",
+    });
+    const reason = `test parked ${lifecycle}`;
+
+    if (lifecycle === "suspend") await handler.suspend(reason);
+    else await handler.shutdown(reason);
+
+    expect(waits[0]?.signal.aborted).toBe(true);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(heldToken.retry).toHaveBeenCalledTimes(1);
+    expect(heldToken.retry).toHaveBeenCalledWith(expect.objectContaining({ id: "m-held" }), reason);
+    expect(tailToken.retry).toHaveBeenCalledTimes(1);
+    expect(tailToken.retry).toHaveBeenCalledWith(expect.objectContaining({ id: "m-tail" }), reason);
+    expect(heldToken.processingStarted).not.toHaveBeenCalled();
+    expect(heldToken.complete).not.toHaveBeenCalled();
+    expect(tailToken.processingStarted).not.toHaveBeenCalled();
+    expect(tailToken.complete).not.toHaveBeenCalled();
+    expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(1);
+    expect(vi.mocked(sessionCtx.log).mock.calls.flat().join("\n")).not.toContain("OpenCode queued turn failed");
+    if (lifecycle === "suspend") await handler.shutdown();
+  });
+
+  it("keeps ordinary queued projection failures on the generic recovery path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-opencode-queued-generic-failure-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const sessionCtx = context([], []);
+    const reconcile = resetManagedSkillsReconcileMock();
+    let queuedPhase = false;
+    reconcile.mockImplementation(async () => {
+      if (!queuedPhase) return reconciledSkillsResult();
+      throw new Error("ordinary queued projection failure");
+    });
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+      opencodeTurnTimeoutMs: 5_000,
+    });
+    await handler.start(message("m-seed", "seed"), sessionCtx, deliveryToken());
+    queuedPhase = true;
+    const token = deliveryToken();
+
+    expect(handler.inject(message("m-generic", "generic failure"), token)).toEqual({
+      kind: "owned",
+      mode: "queued",
+    });
+    await vi.waitFor(() => expect(token.retry).toHaveBeenCalledTimes(1));
+
+    expect(token.retry).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "m-generic" }),
+      "opencode_queued_turn_failed",
+    );
+    expect(token.processingStarted).not.toHaveBeenCalled();
+    expect(token.complete).not.toHaveBeenCalled();
+    expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(1);
+    expect(vi.mocked(sessionCtx.log).mock.calls.flat().join("\n")).toContain(
+      "OpenCode queued turn failed: ordinary queued projection failure",
+    );
     await handler.shutdown();
   });
 

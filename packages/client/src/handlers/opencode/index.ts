@@ -69,6 +69,8 @@ const CONFIG_CONTENT_ENV_MAX_BYTES = 16 * 1024;
 const WINDOWS_ENV_BLOCK_MAX_CHARS = 30_000;
 const PROVIDER_ATTEMPT_WINDOW_TTL_MS = 30 * 60_000;
 const MAX_PROVIDER_ATTEMPT_WINDOWS = 512;
+const QUEUED_UNSAFE_DISCOVERY_RETRY_BASE_MS = 1_000;
+const QUEUED_UNSAFE_DISCOVERY_RETRY_MAX_MS = 30_000;
 
 export function isOpenCodePendingSessionId(sessionId: string): boolean {
   return sessionId.startsWith(OPENCODE_PENDING_SESSION_PREFIX);
@@ -275,6 +277,7 @@ export function openCodeProviderAttemptWindowSizeForTests(): number {
 }
 
 type OpenCodeRetrySleep = (delayMs: number, signal: AbortSignal) => Promise<boolean | undefined>;
+type QueuedDelivery = { message: SessionMessage; token: DeliveryToken };
 
 async function defaultOpenCodeRetrySleep(delayMs: number, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false;
@@ -291,6 +294,11 @@ async function defaultOpenCodeRetrySleep(delayMs: number, signal: AbortSignal): 
     const timer = setTimeout(() => finish(true), delayMs);
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function queuedUnsafeDiscoveryRetryDelayMs(attempt: number): number {
+  const exponent = Math.min(Math.max(attempt - 1, 0), 30);
+  return Math.min(QUEUED_UNSAFE_DISCOVERY_RETRY_BASE_MS * 2 ** exponent, QUEUED_UNSAFE_DISCOVERY_RETRY_MAX_MS);
 }
 
 export const createOpenCodeHandler: HandlerFactory = (config) => {
@@ -310,6 +318,8 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       ? config.opencodeTurnTimeoutMs
       : DEFAULT_TURN_TIMEOUT_MS;
   const retrySleep = (config.opencodeRetrySleep as OpenCodeRetrySleep | undefined) ?? defaultOpenCodeRetrySleep;
+  const unsafeDiscoverySleep =
+    (config.opencodeUnsafeDiscoverySleep as OpenCodeRetrySleep | undefined) ?? defaultOpenCodeRetrySleep;
   const configProjector =
     (config.opencodeConfigProjector as typeof projectOpenCodeConfig | undefined) ?? projectOpenCodeConfig;
   let cwd: string | null = null;
@@ -327,12 +337,17 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   let generation = 0;
   let drainScheduled = false;
   let drainInProgress = false;
+  let currentDrainPromise: Promise<void> | null = null;
+  let drainingBatch: QueuedDelivery[] | null = null;
+  let unsafeDiscoveryParkedBatch: QueuedDelivery[] | null = null;
+  let unsafeDiscoveryWaitAbort: AbortController | null = null;
+  let drainCancellationReason: string | null = null;
   let pendingChatContextPrompt: string | null = null;
   let projectionScope: string | null = null;
   let managedAgentName: string | null = null;
   const handlerGenerationId = randomUUID().replaceAll("-", "");
   let privateConfigLease: OpenCodePrivateConfigLease | null = null;
-  const queue: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
+  const queue: QueuedDelivery[] = [];
 
   function deliveryAttemptKey(sessionCtx: SessionContext, messages: readonly SessionMessage[]): string {
     const deliveryHead = messages[0];
@@ -872,6 +887,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     sessionCtx: SessionContext,
     messages: readonly SessionMessage[],
     token: DeliveryToken,
+    unsafeDiscoveryAction: "retry" | "throw" = "retry",
   ): Promise<boolean> {
     const workspaceCwd = cwd;
     const activeBinary = binary;
@@ -1080,6 +1096,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       return await promise;
     } catch (error) {
       if (isManagedSkillsUnsafeDiscoveryError(error)) {
+        if (unsafeDiscoveryAction === "throw") throw error;
         token.retry(messages, "opencode_managed_skills_unsafe");
         sessionCtx.log(`blocked provider turn: ${error.message}`);
         return false;
@@ -1134,10 +1151,18 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     return { briefing, workspaceCwd: cwd };
   }
 
-  async function runQueued(
-    drained: Array<{ message: SessionMessage; token: DeliveryToken }>,
-    sessionCtx: SessionContext,
-  ): Promise<void> {
+  function finishDrainingBatch(batch: QueuedDelivery[]): void {
+    if (unsafeDiscoveryParkedBatch === batch) unsafeDiscoveryParkedBatch = null;
+    if (drainingBatch === batch) drainingBatch = null;
+  }
+
+  function retryDrainingBatch(batch: QueuedDelivery[], reason: string): void {
+    if (drainingBatch !== batch && unsafeDiscoveryParkedBatch !== batch) return;
+    finishDrainingBatch(batch);
+    for (const entry of batch) entry.token.retry(entry.message, reason);
+  }
+
+  async function runQueued(drained: QueuedDelivery[], sessionCtx: SessionContext): Promise<void> {
     const token = drained[0]?.token;
     if (!token) return;
     const messages = drained.map((entry) => entry.message);
@@ -1146,21 +1171,50 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       for (const message of messages) parts.push(await sessionCtx.formatInboundContent(message));
     } catch (error) {
       sessionCtx.log(`OpenCode queued formatting failed: ${error instanceof Error ? error.message : String(error)}`);
-      for (const entry of drained) entry.token.retry(entry.message, "opencode_queued_format_failed");
+      retryDrainingBatch(drained, "opencode_queued_format_failed");
       return;
     }
-    const sessionKey = providerSessionId ?? pendingSyntheticId;
-    let fingerprint: string | null = null;
-    if (cwd && sessionKey) {
-      const projection = await refreshProjection(sessionCtx);
-      fingerprint = computeBriefingFingerprint(projection.briefing);
-      if (readSessionBriefingFingerprint(cwd, sessionKey) !== fingerprint) {
-        parts.unshift(buildBriefingUpdateNotice(join(cwd, "AGENTS.md")));
+
+    let unsafeAttempt = 0;
+    while (sessionActive && drainingBatch === drained) {
+      const sessionKey = providerSessionId ?? pendingSyntheticId;
+      let fingerprint: string | null = null;
+      try {
+        const turnParts = [...parts];
+        if (cwd && sessionKey) {
+          const projection = await refreshProjection(sessionCtx);
+          fingerprint = computeBriefingFingerprint(projection.briefing);
+          if (readSessionBriefingFingerprint(cwd, sessionKey) !== fingerprint) {
+            turnParts.unshift(buildBriefingUpdateNotice(join(cwd, "AGENTS.md")));
+          }
+        }
+        const delivered = await runTurn(turnParts.join("\n\n"), sessionCtx, messages, token, "throw");
+        if (delivered && fingerprint && cwd && sessionKey) {
+          writeSessionBriefingFingerprint(cwd, providerSessionId ?? sessionKey, fingerprint);
+        }
+        finishDrainingBatch(drained);
+        return;
+      } catch (error) {
+        if (!isManagedSkillsUnsafeDiscoveryError(error)) throw error;
+        if (!sessionActive || drainingBatch !== drained) return;
+
+        unsafeDiscoveryParkedBatch = drained;
+        unsafeAttempt += 1;
+        const delayMs = queuedUnsafeDiscoveryRetryDelayMs(unsafeAttempt);
+        sessionCtx.log(
+          `OpenCode queued turn blocked by unsafe managed-skill discovery; retrying in ${delayMs}ms: ${error.message}`,
+        );
+        const waitAbort = new AbortController();
+        unsafeDiscoveryWaitAbort = waitAbort;
+        const completedDelay = await unsafeDiscoverySleep(delayMs, waitAbort.signal);
+        if (unsafeDiscoveryWaitAbort === waitAbort) unsafeDiscoveryWaitAbort = null;
+        if (!completedDelay) {
+          if (!drainCancellationReason && sessionActive && drainingBatch === drained) {
+            throw new Error("OpenCode queued unsafe-discovery wait ended without lifecycle cancellation");
+          }
+          return;
+        }
       }
-    }
-    const delivered = await runTurn(parts.join("\n\n"), sessionCtx, messages, token);
-    if (delivered && fingerprint && cwd && sessionKey) {
-      writeSessionBriefingFingerprint(cwd, providerSessionId ?? sessionKey, fingerprint);
     }
   }
 
@@ -1168,6 +1222,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     if (
       drainScheduled ||
       drainInProgress ||
+      drainingBatch ||
       queue.length === 0 ||
       !ctx ||
       !sessionActive ||
@@ -1181,6 +1236,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       drainScheduled = false;
       if (
         drainInProgress ||
+        drainingBatch ||
         queue.length === 0 ||
         !ctx ||
         !sessionActive ||
@@ -1192,16 +1248,26 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       }
       const drained = queue.splice(0);
       const sessionCtx = ctx;
+      drainingBatch = drained;
       drainInProgress = true;
-      void runQueued(drained, sessionCtx)
+      const drainPromise = runQueued(drained, sessionCtx)
         .catch((error) => {
+          const cancellationReason = drainCancellationReason;
+          if (cancellationReason) {
+            retryDrainingBatch(drained, cancellationReason);
+            return;
+          }
           sessionCtx.log(`OpenCode queued turn failed: ${error instanceof Error ? error.message : String(error)}`);
-          for (const entry of drained) entry.token.retry(entry.message, "opencode_queued_turn_failed");
+          retryDrainingBatch(drained, "opencode_queued_turn_failed");
         })
         .finally(() => {
+          if (!drainCancellationReason && drainingBatch === drained) finishDrainingBatch(drained);
           drainInProgress = false;
+          if (currentDrainPromise === drainPromise) currentDrainPromise = null;
           scheduleDrain();
         });
+      currentDrainPromise = drainPromise;
+      void drainPromise;
     });
   }
 
@@ -1288,22 +1354,34 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     },
 
     async suspend(reason) {
+      const recoveryReason = reason ?? "opencode_suspend_before_terminal";
       sessionActive = false;
-      retryQueue(reason ?? "opencode_suspend_before_terminal");
+      drainCancellationReason = recoveryReason;
       generation++;
       currentAbort?.abort();
-      await currentTurnPromise;
+      unsafeDiscoveryWaitAbort?.abort();
+      await Promise.all([currentTurnPromise, currentDrainPromise]);
+      if (drainingBatch) retryDrainingBatch(drainingBatch, recoveryReason);
+      retryQueue(recoveryReason);
+      drainCancellationReason = null;
+      unsafeDiscoveryWaitAbort = null;
       currentAbort = null;
       currentTurnPromise = null;
       initialTurnPreparing = false;
     },
 
     async shutdown(reason) {
+      const recoveryReason = reason ?? "opencode_shutdown_before_terminal";
       sessionActive = false;
-      retryQueue(reason ?? "opencode_shutdown_before_terminal");
+      drainCancellationReason = recoveryReason;
       generation++;
       currentAbort?.abort();
-      await currentTurnPromise;
+      unsafeDiscoveryWaitAbort?.abort();
+      await Promise.all([currentTurnPromise, currentDrainPromise]);
+      if (drainingBatch) retryDrainingBatch(drainingBatch, recoveryReason);
+      retryQueue(recoveryReason);
+      drainCancellationReason = null;
+      unsafeDiscoveryWaitAbort = null;
       currentAbort = null;
       currentTurnPromise = null;
       cwd = null;
