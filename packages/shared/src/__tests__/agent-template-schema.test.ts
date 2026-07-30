@@ -185,6 +185,70 @@ describe("agentTemplatePayloadSchema", () => {
     expect(agentTemplateComponentSchema.safeParse(bad).success).toBe(false);
   });
 
+  it("rejects http/sse mcp urls carrying query or fragment data", () => {
+    const cases = [
+      { name: "github", transport: "http", url: "https://mcp.github.example/mcp?token=abc" },
+      { name: "github", transport: "http", url: "https://mcp.github.example/mcp#token=abc" },
+      { name: "github", transport: "sse", url: "https://mcp.github.example/sse?key=abc" },
+      { name: "github", transport: "sse", url: "https://mcp.github.example/sse#fragment" },
+    ];
+    for (const payload of cases) {
+      const bad = { ...VALID_MCP_COMPONENT, payload };
+      expect(agentTemplateComponentSchema.safeParse(bad).success).toBe(false);
+    }
+  });
+
+  it("fails invalid http/sse mcp urls as ordinary Zod failures without throwing", () => {
+    const cases = [
+      { name: "github", transport: "http", url: "not-a-url" },
+      { name: "github", transport: "sse", url: "not-a-url" },
+    ];
+    for (const payload of cases) {
+      const bad = { ...VALID_MCP_COMPONENT, payload };
+      let result: ReturnType<typeof agentTemplateComponentSchema.safeParse> | undefined;
+      expect(() => {
+        result = agentTemplateComponentSchema.safeParse(bad);
+      }).not.toThrow();
+      expect(result?.success).toBe(false);
+    }
+  });
+
+  it("rejects stdio mcp servers carrying command arguments", () => {
+    const bad = {
+      ...VALID_MCP_COMPONENT,
+      payload: { name: "local", transport: "stdio", command: "npx", args: ["--token=secret"] },
+    };
+    expect(agentTemplateComponentSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("accepts stdio mcp servers without arguments", () => {
+    const withoutArgs = {
+      ...VALID_MCP_COMPONENT,
+      payload: { name: "local", transport: "stdio", command: "github-mcp-server" },
+    };
+    expect(agentTemplateComponentSchema.safeParse(withoutArgs).success).toBe(true);
+    const emptyArgs = {
+      ...VALID_MCP_COMPONENT,
+      payload: { name: "local", transport: "stdio", command: "github-mcp-server", args: [] },
+    };
+    expect(agentTemplateComponentSchema.safeParse(emptyArgs).success).toBe(true);
+  });
+
+  it("rejects prompt bodies containing the generated-briefing marker", () => {
+    const bad = {
+      ...VALID_PROMPT_COMPONENT,
+      payload: {
+        body: "<!-- first-tree:generated -->\n# Working in First Tree\n...",
+        description: "Copied assembled briefing",
+      },
+    };
+    expect(agentTemplateComponentSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("accepts clean prompt bodies", () => {
+    expect(agentTemplateComponentSchema.safeParse(VALID_PROMPT_COMPONENT).success).toBe(true);
+  });
+
   it("skill components reuse the runtime complete-directory bundle descriptor", () => {
     const parsed = agentTemplateComponentSchema.parse(VALID_SKILL_COMPONENT);
     expect(parsed.type).toBe("skill");

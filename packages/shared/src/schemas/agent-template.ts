@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { runtimeSkillBundleSchema } from "./agent-runtime-config.js";
-import { noSecretMcpServerSchema, promptResourcePayloadSchema, skillResourcePayloadSchema } from "./resource.js";
+import { findAssembledBriefingFingerprint } from "../agent-briefing-guard.js";
+import { mcpStdioServerSchema, runtimeSkillBundleSchema } from "./agent-runtime-config.js";
+import { promptResourcePayloadSchema, skillResourcePayloadSchema } from "./resource.js";
 
 /**
  * Official Agent Template domain contract (schema/persistence only).
@@ -83,7 +84,18 @@ export const agentTemplatePromptComponentSchema = z
     // Strict-ify the reused Resource payload without copying it: the Template
     // canonical payload (and its future digest) must not silently strip
     // unknown nested fields.
-    payload: promptResourcePayloadSchema.strict(),
+    payload: promptResourcePayloadSchema.strict().superRefine((payload, ctx) => {
+      // Templates are another managed prompt-ingestion path, so the shared
+      // generated-briefing hard guard applies exactly as it does to
+      // server-side prompt writes (conclusive marker tier only).
+      const fingerprint = findAssembledBriefingFingerprint(payload.body);
+      if (fingerprint?.kind !== "generated-marker") return;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["body"],
+        message: `Prompt body contains the generated-briefing marker "${fingerprint.match}".`,
+      });
+    }),
   })
   .strict();
 export type AgentTemplatePromptComponent = z.infer<typeof agentTemplatePromptComponentSchema>;
@@ -105,12 +117,66 @@ export const agentTemplateSkillComponentSchema = z
   .strict();
 export type AgentTemplateSkillComponent = z.infer<typeof agentTemplateSkillComponentSchema>;
 
+/**
+ * Template MCP secret boundary. Templates are global content imported into
+ * arbitrary Teams, so their MCP definitions must not carry anything that
+ * could smuggle a credential across that boundary: no URL credentials, no
+ * URL query/fragment data, and no stdio command arguments. This is a
+ * Template-specific tightening — stricter than the Resource no-secret
+ * contract, which still permits query/fragment data and stdio arguments.
+ */
+function hasNoTemplateMcpUrlData(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    // Not a URL: the built-in z.string().url() check reports that failure.
+    // Refinements still run after a failed built-in check, so this function
+    // must stay exception-safe and never turn safeParse into a throw.
+    return true;
+  }
+  return parsed.username === "" && parsed.password === "" && parsed.search === "" && parsed.hash === "";
+}
+
+const TEMPLATE_MCP_URL_MESSAGE = "Template MCP URLs must not include credentials, query, or fragment data.";
+
+const agentTemplateMcpHttpServerSchema = z
+  .object({
+    name: z.string().min(1),
+    transport: z.literal("http"),
+    url: z.string().url().refine(hasNoTemplateMcpUrlData, TEMPLATE_MCP_URL_MESSAGE),
+  })
+  .strict();
+
+const agentTemplateMcpSseServerSchema = z
+  .object({
+    name: z.string().min(1),
+    transport: z.literal("sse"),
+    url: z.string().url().refine(hasNoTemplateMcpUrlData, TEMPLATE_MCP_URL_MESSAGE),
+  })
+  .strict();
+
+const agentTemplateMcpStdioServerSchema = mcpStdioServerSchema
+  .extend({
+    // Arguments are the stdio secret channel (--token=...); Templates must
+    // not carry any.
+    args: z.array(z.string()).max(0).optional(),
+  })
+  .strict();
+
+export const agentTemplateMcpServerSchema = z.discriminatedUnion("transport", [
+  agentTemplateMcpStdioServerSchema,
+  agentTemplateMcpHttpServerSchema,
+  agentTemplateMcpSseServerSchema,
+]);
+export type AgentTemplateMcpServer = z.infer<typeof agentTemplateMcpServerSchema>;
+
 /** MCP component: imports as a Team MCP Resource. Secrets are not allowed. */
 export const agentTemplateMcpComponentSchema = z
   .object({
     ...agentTemplateComponentBaseShape,
     type: z.literal("mcp"),
-    payload: noSecretMcpServerSchema,
+    payload: agentTemplateMcpServerSchema,
   })
   .strict();
 export type AgentTemplateMcpComponent = z.infer<typeof agentTemplateMcpComponentSchema>;
