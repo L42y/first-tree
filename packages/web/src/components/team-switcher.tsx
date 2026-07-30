@@ -1,7 +1,7 @@
 import type { Organization, OrgBrief } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Link2, Loader2, LogOut, Pencil, Plus, UserPlus, X } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { ChevronDown, Link2, Loader2, LogOut, Pencil, Plus, UserPlus } from "lucide-react";
+import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../api/client.js";
 import { leaveMembership } from "../api/members.js";
@@ -14,6 +14,7 @@ import { InviteDialog } from "./invite-dialog.js";
 import { TeamSetupModal } from "./team-setup-modal.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog.js";
+import { Input } from "./ui/input.js";
 
 // Floor for how long the "Switching to {name}…" veil stays up, so a fast
 // switch (cache clear + reconnect + /me) doesn't flash the veil for a single
@@ -64,19 +65,21 @@ export function TeamSwitcher({
   const [open, setOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [setupAction, setSetupAction] = useState<"create" | "join" | null>(null);
-  const [renaming, setRenaming] = useState(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
-  const [renameSaved, setRenameSaved] = useState(false);
   // Org id whose last switch attempt failed, so we can show a retry hint
   // without conflating it with a fresh attempt.
   const [switchError, setSwitchError] = useState<string | null>(null);
+  const renameInputId = useId();
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const initialMenuFocusRef = useRef<"first" | "last">("first");
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const renameSavedTimerRef = useRef<number | null>(null);
   const switchTimerRef = useRef<number | null>(null);
 
-  // Shared `me-organizations` cache: the inline rename path updates this key,
+  // Shared `me-organizations` cache: the rename dialog updates this key,
   // so the anchor + switch list refresh without a reload.
   // Best-effort — on failure the anchor still renders the current team from
   // useAuth (see currentOrg fallback below).
@@ -108,7 +111,10 @@ export function TeamSwitcher({
       if (open && ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const escHandler = (e: KeyboardEvent) => {
-      if (open && e.key === "Escape") setOpen(false);
+      if (open && e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     window.addEventListener("mousedown", handler);
     window.addEventListener("keydown", escHandler);
@@ -124,28 +130,20 @@ export function TeamSwitcher({
   }, [open]);
 
   useEffect(() => {
-    if (!renaming) setRenameDraft(currentOrg?.displayName ?? "");
-  }, [currentOrg?.displayName, renaming]);
+    if (!renameDialogOpen) setRenameDraft(currentOrg?.displayName ?? "");
+  }, [currentOrg?.displayName, renameDialogOpen]);
 
   useEffect(() => {
-    if (!open) {
-      setRenaming(false);
-      setRenameSaved(false);
-    }
+    if (!open) return;
+    const items = menuRef.current?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)');
+    if (!items?.length) return;
+    const target = initialMenuFocusRef.current === "last" ? items[items.length - 1] : items[0];
+    initialMenuFocusRef.current = "first";
+    target?.focus();
   }, [open]);
 
   useEffect(() => {
-    if (!renaming) return;
-    renameInputRef.current?.focus();
-    renameInputRef.current?.select();
-  }, [renaming]);
-
-  useEffect(() => {
     return () => {
-      if (renameSavedTimerRef.current !== null) {
-        window.clearTimeout(renameSavedTimerRef.current);
-        renameSavedTimerRef.current = null;
-      }
       if (switchTimerRef.current !== null) {
         window.clearTimeout(switchTimerRef.current);
         switchTimerRef.current = null;
@@ -164,13 +162,7 @@ export function TeamSwitcher({
         prev?.map((org) => (org.id === next.id ? { ...org, name: next.name, displayName: next.displayName } : org)),
       );
       setRenameDraft(next.displayName);
-      setRenaming(false);
-      setRenameSaved(true);
-      if (renameSavedTimerRef.current !== null) window.clearTimeout(renameSavedTimerRef.current);
-      renameSavedTimerRef.current = window.setTimeout(() => {
-        renameSavedTimerRef.current = null;
-        setRenameSaved(false);
-      }, 2000);
+      setRenameDialogOpen(false);
       void refreshMe();
     },
   });
@@ -248,16 +240,16 @@ export function TeamSwitcher({
   };
 
   const startRenaming = () => {
-    setRenameSaved(false);
     renameMutation.reset();
     setRenameDraft(currentOrg?.displayName ?? "");
-    setRenaming(true);
+    setOpen(false);
+    setRenameDialogOpen(true);
   };
 
   const cancelRenaming = () => {
     renameMutation.reset();
     setRenameDraft(currentOrg?.displayName ?? "");
-    setRenaming(false);
+    setRenameDialogOpen(false);
   };
 
   const openLeaveConfirm = () => {
@@ -273,10 +265,35 @@ export function TeamSwitcher({
     const nextName = renameDraft.trim();
     if (!currentOrg || !nextName || renameMutation.isPending) return;
     if (nextName === currentOrg.displayName) {
-      setRenaming(false);
+      setRenameDialogOpen(false);
       return;
     }
     renameMutation.mutate(nextName);
+  };
+
+  const handleMenuKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Tab") {
+      setOpen(false);
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') ?? [],
+    );
+    if (items.length === 0) return;
+    e.preventDefault();
+    const activeIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "Home") {
+      items[0]?.focus();
+      return;
+    }
+    if (e.key === "End") {
+      items[items.length - 1]?.focus();
+      return;
+    }
+    const direction = e.key === "ArrowDown" ? 1 : -1;
+    const nextIndex = activeIndex === -1 ? (direction === 1 ? 0 : items.length - 1) : activeIndex + direction;
+    items[(nextIndex + items.length) % items.length]?.focus();
   };
 
   // Hooks above run unconditionally; bail out only after them. No selected org
@@ -295,12 +312,22 @@ export function TeamSwitcher({
     <>
       <div ref={ref} className="relative" data-testid="team-switcher">
         <button
+          ref={triggerRef}
           type="button"
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={`Switch team, current: ${currentOrg.displayName}`}
           disabled={askAgentNavLocked}
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => {
+            initialMenuFocusRef.current = "first";
+            setOpen((v) => !v);
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+            e.preventDefault();
+            initialMenuFocusRef.current = e.key === "ArrowUp" ? "last" : "first";
+            setOpen(true);
+          }}
           className={cn(
             "inline-flex items-center border transition-colors",
             open
@@ -329,115 +356,91 @@ export function TeamSwitcher({
 
         {open && (
           <div
+            ref={menuRef}
             role="menu"
+            aria-label="Team menu"
+            onKeyDown={handleMenuKeyDown}
             // z-[46]: above the switch veil (45) so the in-menu spinner stays
             // visible during a switch, and above content overlays (conv-list /
             // right-rail z-30, doc drawer z-40); below dialogs (z-50).
             className="absolute left-0 z-[46] mt-2 overflow-hidden rounded-[var(--radius-panel)] border bg-popover shadow-[var(--shadow-md)]"
-            style={{ width: 270, borderColor: "var(--border)" }}
+            style={{ width: "var(--sp-70)", borderColor: "var(--border)" }}
           >
-            {/* ① Current team header — always shown. */}
-            <div className="border-b px-3.5 py-2.5" style={{ borderColor: "var(--border)" }}>
-              <div className="flex items-start gap-2.5">
+            {/* ① Current team identity and membership actions — always shown. */}
+            <div role="presentation" className="border-b px-3.5 py-2.5" style={{ borderColor: "var(--border)" }}>
+              <div
+                aria-hidden="true"
+                className="text-eyebrow"
+                style={{ color: "var(--fg-3)", marginBottom: "var(--sp-1_5)" }}
+              >
+                Current team
+              </div>
+              <div role="presentation" className="flex items-start gap-2.5">
                 <Avatar seed={currentOrg.id} name={currentOrg.displayName} size={26} />
-                {renaming ? (
-                  <form className="min-w-0 flex-1" onSubmit={handleRenameSubmit}>
-                    <div className="flex items-center" style={{ gap: "var(--sp-1)" }}>
-                      <input
-                        ref={renameInputRef}
-                        aria-label="Team name"
-                        value={renameDraft}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            e.stopPropagation();
-                            cancelRenaming();
-                          }
-                        }}
-                        disabled={renameMutation.isPending}
-                        className="min-w-0 flex-1 rounded-[var(--radius-input)] border bg-[var(--bg)] px-2 py-1 text-body outline-none focus:border-[var(--border-strong)]"
-                        style={{ borderColor: "var(--border)", color: "var(--fg)" }}
-                        maxLength={200}
-                      />
-                      <button
-                        type="submit"
-                        aria-label="Save team name"
-                        title="Save team name"
-                        disabled={renameDisabled}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-input)] border transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-45"
-                        style={{ borderColor: "var(--border)", color: "var(--fg)" }}
-                      >
-                        {renameMutation.isPending ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Check className="h-3.5 w-3.5" />
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Cancel team name edit"
-                        title="Cancel"
-                        disabled={renameMutation.isPending}
-                        onClick={cancelRenaming}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-input)] border transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-45"
-                        style={{ borderColor: "var(--border)", color: "var(--fg-3)" }}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    {renameMutation.error instanceof Error && (
-                      <div className="text-label" style={{ marginTop: "var(--sp-1)", color: "var(--state-error)" }}>
-                        {renameMutation.error.message}
-                      </div>
-                    )}
-                  </form>
-                ) : (
-                  <>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-subtitle truncate" style={{ color: "var(--fg)" }}>
-                        {currentOrg.displayName}
-                      </div>
-                      <div className="text-label truncate" style={{ color: "var(--fg-3)" }}>
-                        {currentOrg.role} · current team{renameSaved ? " · Saved" : ""}
-                      </div>
-                    </div>
-                    {canRenameTeam && (
-                      <button
-                        type="button"
-                        aria-label="Edit team name"
-                        title="Edit team name"
-                        onClick={startRenaming}
-                        disabled={askAgentNavLocked}
-                        className="inline-flex h-7 w-7 flex-none items-center justify-center rounded-[var(--radius-input)] border transition-colors hover:bg-[var(--bg-hover)]"
-                        style={{
-                          borderColor: "var(--border)",
-                          color: "var(--fg-3)",
-                          opacity: askAgentNavLocked ? 0.5 : undefined,
-                        }}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-subtitle" title={currentOrg.displayName} style={{ color: "var(--fg)" }}>
+                    {currentOrg.displayName}
+                  </div>
+                  <div className="truncate text-label" style={{ color: "var(--fg-3)" }}>
+                    {currentOrg.role === "admin" ? "Admin" : "Member"}
+                  </div>
+                </div>
+                {canRenameTeam && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    aria-label="Rename team"
+                    title="Rename team"
+                    onClick={startRenaming}
+                    disabled={askAgentNavLocked}
+                    className="inline-flex h-7 w-7 flex-none items-center justify-center rounded-[var(--radius-input)] border transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{
+                      borderColor: "var(--border)",
+                      color: "var(--fg-3)",
+                      opacity: askAgentNavLocked ? 0.5 : undefined,
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
                 )}
               </div>
+              {/* Invite is a current-team membership action, not a creation flow. */}
               <button
                 type="button"
                 role="menuitem"
+                tabIndex={-1}
+                disabled={askAgentNavLocked}
+                onClick={() => {
+                  if (isAskAgentNavLocked()) return;
+                  setOpen(false);
+                  setInviteOpen(true);
+                }}
+                className="mt-2 flex w-full items-center gap-2 rounded-[var(--radius-input)] px-2 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                <span>Invite teammates</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={openLeaveConfirm}
                 disabled={askAgentNavLocked}
                 className="mt-2 flex w-full items-center gap-2 rounded-[var(--radius-input)] px-2 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
                 style={{ color: "var(--state-error)", opacity: askAgentNavLocked ? 0.5 : undefined }}
               >
                 <LogOut className="h-3.5 w-3.5" />
-                <span>Leave this team</span>
+                <span>Leave team</span>
               </button>
             </div>
 
             {/* ② Switch list — other teams only; hidden for single-team users. */}
             {others.length > 0 && (
-              <div className="border-b" style={{ borderColor: "var(--border)" }}>
+              <div role="presentation" className="border-b" style={{ borderColor: "var(--border)" }}>
                 <div
+                  aria-hidden="true"
                   className="text-eyebrow"
                   style={{ color: "var(--fg-3)", padding: "var(--sp-1_25) var(--sp-3_5) var(--sp-0_75)" }}
                 >
@@ -457,6 +460,7 @@ export function TeamSwitcher({
                         key={o.id}
                         type="button"
                         role="menuitem"
+                        tabIndex={-1}
                         disabled={!!switchingOrg || askAgentNavLocked}
                         aria-busy={isBusy}
                         onClick={() => void handleSwitch(o)}
@@ -473,7 +477,9 @@ export function TeamSwitcher({
                             <Avatar seed={o.id} name={o.displayName} size={18} />
                           )}
                         </span>
-                        <span className="min-w-0 flex-1 truncate">{o.displayName}</span>
+                        <span className="min-w-0 flex-1 truncate" title={o.displayName}>
+                          {o.displayName}
+                        </span>
                         <RoleBadge role={o.role} dim />
                       </button>
                     );
@@ -481,6 +487,7 @@ export function TeamSwitcher({
                 </div>
                 {switchError && (
                   <div
+                    role="alert"
                     className="text-label"
                     style={{ padding: "var(--sp-1) var(--sp-3_5) var(--sp-1_5)", color: "var(--color-error)" }}
                   >
@@ -490,15 +497,23 @@ export function TeamSwitcher({
               </div>
             )}
 
-            {/* ③ Team management — always shown. Create/Join complete via
+            {/* ③ Add or join — always shown. Create/Join complete via
                 `TeamSetupModal`'s `selectOrganization` + `/onboarding` navigation,
                 so they are guarded exactly like the switch rows: inert while a
                 pending Ask agent attempt owns the surface, plus an imperative
                 re-check at the action boundary. */}
-            <div className="py-1">
+            <div role="presentation" className="py-1">
+              <div
+                aria-hidden="true"
+                className="text-eyebrow"
+                style={{ color: "var(--fg-3)", padding: "var(--sp-1_25) var(--sp-3_5) var(--sp-0_75)" }}
+              >
+                Add or join
+              </div>
               <button
                 type="button"
                 role="menuitem"
+                tabIndex={-1}
                 disabled={askAgentNavLocked}
                 onClick={() => {
                   if (isAskAgentNavLocked()) return;
@@ -509,11 +524,12 @@ export function TeamSwitcher({
                 style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>Create new team</span>
+                <span>Create team</span>
               </button>
               <button
                 type="button"
                 role="menuitem"
+                tabIndex={-1}
                 disabled={askAgentNavLocked}
                 onClick={() => {
                   if (isAskAgentNavLocked()) return;
@@ -523,28 +539,9 @@ export function TeamSwitcher({
                 className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
                 style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
               >
-                <UserPlus className="h-3.5 w-3.5" />
+                <Link2 className="h-3.5 w-3.5" />
                 <span>Join with invite link</span>
               </button>
-              {/* Invite teammates — org-scoped link, so only when a team is
-                  selected (mirrors the prior user-menu guard). */}
-              {organizationId && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={askAgentNavLocked}
-                  onClick={() => {
-                    if (isAskAgentNavLocked()) return;
-                    setOpen(false);
-                    setInviteOpen(true);
-                  }}
-                  className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left text-body transition-colors hover:bg-[var(--bg-hover)]"
-                  style={{ color: "var(--fg)", opacity: askAgentNavLocked ? 0.5 : undefined }}
-                >
-                  <Link2 className="h-3.5 w-3.5" />
-                  <span>Invite teammates</span>
-                </button>
-              )}
             </div>
           </div>
         )}
@@ -553,12 +550,81 @@ export function TeamSwitcher({
       <TeamSetupModal action={setupAction} onClose={() => setSetupAction(null)} />
       <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} />
       <Dialog
+        open={renameDialogOpen}
+        onOpenChange={(nextOpen) => {
+          if (nextOpen) {
+            setRenameDialogOpen(true);
+            return;
+          }
+          if (!renameMutation.isPending) cancelRenaming();
+        }}
+      >
+        <DialogContent
+          className="max-w-md"
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            renameInputRef.current?.focus();
+            renameInputRef.current?.select();
+          }}
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            triggerRef.current?.focus();
+          }}
+          onEscapeKeyDown={(e) => {
+            if (renameMutation.isPending) e.preventDefault();
+          }}
+          onInteractOutside={(e) => {
+            if (renameMutation.isPending) e.preventDefault();
+          }}
+        >
+          <form className="grid gap-4" onSubmit={handleRenameSubmit}>
+            <DialogHeader>
+              <DialogTitle>Rename team</DialogTitle>
+              <DialogDescription style={{ color: "var(--fg-2)" }}>
+                Update the display name for this team.
+              </DialogDescription>
+            </DialogHeader>
+            <label htmlFor={renameInputId} className="grid gap-1.5 text-label" style={{ color: "var(--fg-2)" }}>
+              Team name
+              <Input
+                id={renameInputId}
+                ref={renameInputRef}
+                aria-label="Team name"
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                disabled={renameMutation.isPending}
+                maxLength={200}
+              />
+            </label>
+            {renameMutation.error instanceof Error && (
+              <p role="alert" className="text-body" style={{ color: "var(--state-error)" }}>
+                {renameMutation.error.message}
+              </p>
+            )}
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={cancelRenaming} disabled={renameMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={renameDisabled}>
+                {renameMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {renameMutation.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
         open={leaveConfirmOpen}
         onOpenChange={(nextOpen) => {
           if (!nextOpen && !leaveMutation.isPending) setLeaveConfirmOpen(false);
         }}
       >
-        <DialogContent>
+        <DialogContent
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            triggerRef.current?.focus();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Leave {currentOrg.displayName}?</DialogTitle>
             <DialogDescription style={{ color: "var(--fg-2)" }}>
@@ -576,7 +642,7 @@ export function TeamSwitcher({
             </span>
           </div>
           {leaveMutation.error instanceof Error && (
-            <p className="text-body" style={{ color: "var(--state-error)" }}>
+            <p role="alert" className="text-body" style={{ color: "var(--state-error)" }}>
               {leaveMutation.error.message}
             </p>
           )}
@@ -615,10 +681,10 @@ function RoleBadge({ role, dim }: { role: string | null | undefined; dim?: boole
       style={{
         padding: "var(--hairline) var(--sp-1_75)",
         borderRadius: "var(--radius-chip)",
-        color: role === "admin" ? "var(--brand-dim)" : "var(--fg-3)",
+        color: "var(--fg-3)",
         border: "var(--hairline) solid var(--border)",
-        background: role === "admin" ? "var(--brand-bg)" : "var(--bg-sunken)",
-        opacity: dim ? 0.7 : undefined,
+        background: "var(--bg-sunken)",
+        opacity: dim ? 0.8 : undefined,
       }}
     >
       {role}

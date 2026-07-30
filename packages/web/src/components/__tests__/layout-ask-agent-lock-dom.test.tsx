@@ -360,10 +360,10 @@ describe("Layout Ask agent navigation lock", () => {
     // the other-team switch row, Leave, Create, Join, Invite.
     const teamTwoRow = menuItemByText(container, "Team Two");
     expect(teamTwoRow?.disabled).toBe(true);
-    const createRow = menuItemByText(container, "Create new team");
+    const createRow = menuItemByText(container, "Create team");
     expect(createRow?.disabled).toBe(true);
     expect(menuItemByText(container, "Join with invite link")?.disabled).toBe(true);
-    expect(menuItemByText(container, "Leave this team")?.disabled).toBe(true);
+    expect(menuItemByText(container, "Leave team")?.disabled).toBe(true);
     expect(menuItemByText(container, "Invite teammates")?.disabled).toBe(true);
 
     // The switch action boundary re-checks the lock: no cache-clearing
@@ -391,8 +391,8 @@ describe("Layout Ask agent navigation lock", () => {
 
     // …and Create reaches the setup modal.
     await click(trigger());
-    await waitForText("Create new team");
-    await click(menuItemByText(container, "Create new team"));
+    await waitForText("Create team");
+    await click(menuItemByText(container, "Create team"));
     await waitForText("Create a new team");
 
     await act(async () => root.unmount());

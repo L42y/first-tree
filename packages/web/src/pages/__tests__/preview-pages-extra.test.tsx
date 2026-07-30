@@ -502,7 +502,7 @@ describe("extra preview pages", () => {
     await click(buttonByText(rendered.container, "Single team"));
     await click(buttonByLabel(rendered.container, /Switch team/));
     expect(text(rendered.container)).not.toContain("Globex");
-    expect(text(rendered.container)).toContain("Create new team");
+    expect(text(rendered.container)).toContain("Create team");
 
     await click(buttonByText(rendered.container, "Compact anchor"));
     await click(buttonByText(rendered.container, "Theme"));
