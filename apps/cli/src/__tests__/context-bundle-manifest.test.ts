@@ -20,6 +20,7 @@ import type {
   ContextIntegrationProviderDriver,
   ProviderPluginProbe,
 } from "../core/context-integration/provider-driver.js";
+import { COMMAND_VERSION } from "../core/version.js";
 
 const roots: string[] = [];
 const originalFirstTreeHome = process.env.FIRST_TREE_HOME;
@@ -277,7 +278,7 @@ describe("context integration bundle", () => {
         "--out-dir",
         releaseRoot,
         "--version",
-        "0.5.17",
+        COMMAND_VERSION,
         "--channel",
         "dev",
       ],
@@ -384,7 +385,7 @@ describe("context integration bundle", () => {
         "--out-dir",
         releaseRoot,
         "--version",
-        "0.5.17",
+        COMMAND_VERSION,
         "--channel",
         "dev",
       ],
@@ -444,7 +445,7 @@ describe("context integration bundle", () => {
         "--out-dir",
         releaseRoot,
         "--version",
-        "0.5.17",
+        COMMAND_VERSION,
         "--channel",
         "dev",
       ],
@@ -496,7 +497,7 @@ describe("context integration bundle", () => {
         "--out-dir",
         releaseRoot,
         "--version",
-        "0.5.17",
+        COMMAND_VERSION,
         "--channel",
         "dev",
       ],
@@ -545,7 +546,7 @@ describe("context integration bundle", () => {
         "--out-dir",
         releaseRoot,
         "--version",
-        "0.5.17",
+        COMMAND_VERSION,
         "--channel",
         "dev",
       ],
@@ -589,7 +590,7 @@ describe("context integration bundle", () => {
         "--out-dir",
         releaseRoot,
         "--version",
-        "0.5.17",
+        COMMAND_VERSION,
         "--channel",
         "dev",
       ],
