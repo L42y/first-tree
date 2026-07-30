@@ -562,20 +562,58 @@ describe("managed Skill reconciler", () => {
     expect(resolver).toHaveBeenCalledTimes(1);
   });
 
-  it("creates bundled Core nested directories with explicit owner-safe modes", async () => {
+  it("normalizes npm-style bundled Core modes and keeps the projected digest stable", async () => {
     for (const name of CORE_SKILL_NAMES) {
-      chmodSync(join(bundledSkillsRoot, name, "references"), 0o777);
+      const skillRoot = join(bundledSkillsRoot, name);
+      const executable = join(skillRoot, "run.sh");
+      writeFileSync(executable, "#!/bin/sh\necho safe\n");
+      chmodSync(skillRoot, 0o775);
+      chmodSync(join(skillRoot, "references"), 0o775);
+      chmodSync(join(skillRoot, "SKILL.md"), 0o664);
+      chmodSync(join(skillRoot, "VERSION"), 0o664);
+      chmodSync(join(skillRoot, "references", "guide.md"), 0o664);
+      chmodSync(executable, 0o775);
     }
-    const result = await reconcileManagedSkills({
+    const installed = await reconcileManagedSkills({
       workspace,
       provider: "codex",
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
-    expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+    expect(installed.ok, JSON.stringify(installed.failures)).toBe(true);
     for (const name of CORE_SKILL_NAMES) {
-      expect(lstatSync(join(target(workspace, "codex", name), "references")).mode & 0o777).toBe(0o700);
+      const installedRoot = target(workspace, "codex", name);
+      expect(lstatSync(installedRoot).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(installedRoot, "references")).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(installedRoot, "SKILL.md")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(installedRoot, "VERSION")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(installedRoot, "references", "guide.md")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(installedRoot, "run.sh")).mode & 0o777).toBe(0o700);
     }
+
+    const stable = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+    expect(stable.ok, JSON.stringify(stable.failures)).toBe(true);
+    expect(stable.installed).toEqual([]);
+    expect(stable.skipped).toHaveLength(CORE_SKILL_NAMES.length);
+
+    const driftedRoot = target(workspace, "codex", CORE_SKILL_NAMES[0] ?? "");
+    chmodSync(driftedRoot, 0o775);
+    chmodSync(join(driftedRoot, "SKILL.md"), 0o664);
+    const repaired = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+      bundledSkillsRoot,
+    });
+    expect(repaired.ok, JSON.stringify(repaired.failures)).toBe(true);
+    expect(repaired.installed).toContain(`core:${CORE_SKILL_NAMES[0]}`);
+    expect(lstatSync(driftedRoot).mode & 0o777).toBe(0o700);
+    expect(lstatSync(join(driftedRoot, "SKILL.md")).mode & 0o777).toBe(0o600);
   });
 
   it("rewrites only the manifest name for an allocated collision target", async () => {
