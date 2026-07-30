@@ -572,4 +572,72 @@ describe("resource editors", () => {
     await pressEscape();
     await act(async () => root.unmount());
   });
+
+  it("renders app-owned English copy for the Skill file picker, not the locale-dependent native input", async () => {
+    const { root } = await render();
+    await click(byAria("Add Skill"));
+    await selectOption("skill-input-mode", "Upload ZIP or SKILL.md");
+
+    // The native input stays mounted (it owns accept + the change event) but is
+    // hidden; its browser-localized button text must never be what the user sees.
+    const fileInput = input("skill-file");
+    expect(fileInput.type).toBe("file");
+    expect(fileInput.className).toContain("hidden");
+    expect(fileInput.getAttribute("accept")).toBe(".zip,.md,application/zip,text/markdown,text/plain");
+
+    // App-owned English trigger + empty state, not type=submit.
+    const choose = byText("Choose file");
+    expect(choose).toBeTruthy();
+    expect(choose?.type).toBe("button");
+    expect(document.body.textContent).toContain("No file selected");
+    expect(document.body.textContent).not.toContain("未选择任何文件");
+
+    // The button opens the hidden input's picker.
+    const clickSpy = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
+    await click(choose);
+    expect(clickSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+
+    // After a selection, the chosen file name is rendered by the app.
+    const file = new File(["---\nname: rel\n---"], "SKILL.md", { type: "text/markdown" });
+    await act(async () => {
+      Object.defineProperty(fileInput, "files", { value: [file], configurable: true });
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(document.body.textContent).toContain("SKILL.md");
+    expect(document.body.textContent).not.toContain("No file selected");
+    await pressEscape();
+    await act(async () => root.unmount());
+  });
+
+  it("renders app-owned English copy for the Skill folder picker and reports the selection count", async () => {
+    const { root } = await render();
+    await click(byAria("Add Skill"));
+    await selectOption("skill-input-mode", "Choose Skill folder");
+
+    const folderInput = input("skill-folder");
+    expect(folderInput.type).toBe("file");
+    expect(folderInput.className).toContain("hidden");
+    expect(folderInput.multiple).toBe(true);
+    expect(folderInput.getAttribute("webkitdirectory")).not.toBeNull();
+
+    const choose = byText("Choose folder");
+    expect(choose).toBeTruthy();
+    expect(choose?.type).toBe("button");
+    expect(document.body.textContent).toContain("No folder selected");
+
+    await act(async () => {
+      Object.defineProperty(folderInput, "files", {
+        value: [new File(["a"], "SKILL.md"), new File(["b"], "helper.sh")],
+        configurable: true,
+      });
+      folderInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(document.body.textContent).toContain("2 files selected");
+    expect(document.body.textContent).not.toContain("No folder selected");
+    await pressEscape();
+    await act(async () => root.unmount());
+  });
 });
