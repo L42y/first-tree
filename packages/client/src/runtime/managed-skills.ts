@@ -210,6 +210,8 @@ type SkillTreeStats = {
   bytes: number;
 };
 
+type SkillTreeModePolicy = "enforce-safe" | "normalize-bundled";
+
 class ManagedSkillsFatalError extends Error {}
 export class ManagedSkillsUnsafeDiscoveryError extends Error {
   override readonly name = "ManagedSkillsUnsafeDiscoveryError";
@@ -617,7 +619,9 @@ async function digestLegacyTargetIfOwned(
   const targetDigest = await digestManagedTarget(workspace, target, { followExpectedLegacySymlink: true });
   if (!targetDigest) return null;
   if (ownershipProven) return targetDigest;
-  const bundledDigest = bundledPath ? await digestDirectoryIfPresent(bundledPath) : null;
+  const bundledDigest = bundledPath
+    ? await digestDirectoryIfPresent(bundledPath, undefined, "normalize-bundled")
+    : null;
   return bundledDigest === targetDigest ? targetDigest : null;
 }
 
@@ -879,7 +883,7 @@ async function ensureTargetOwnership(
     if (allocated.desired.kind === "core") {
       const sourceDigest =
         allocated.desired.source.kind === "bundled-directory"
-          ? await digestDirectoryIfPresent(allocated.desired.source.path)
+          ? await digestDirectoryIfPresent(allocated.desired.source.path, undefined, "normalize-bundled")
           : null;
       const targetDigest = await digestManagedTarget(workspace, allocated.target, {
         followExpectedLegacySymlink: true,
@@ -1848,8 +1852,9 @@ async function copySanitizedDirectory(
       throw new Error(`Skill bundle exceeds max total bytes ${MAX_SKILL_TOTAL_BYTES}`);
     }
     const content = await readFile(sourcePath);
-    await writeFile(destinationPath, content, { mode: entryStat.mode & 0o777 });
-    await chmod(destinationPath, entryStat.mode & 0o777);
+    const mode = normalizedBundledFileMode(entryStat.mode);
+    await writeFile(destinationPath, content, { mode });
+    await chmod(destinationPath, mode);
   }
 }
 
@@ -1886,11 +1891,12 @@ async function digestManagedTarget(
 async function digestDirectoryIfPresent(
   path: string,
   modePlatform?: NodeJS.Platform,
+  modePolicy: SkillTreeModePolicy = "enforce-safe",
 ): Promise<`sha256:${string}` | null> {
   try {
     const pathStat = await lstat(path);
     if (!pathStat.isDirectory()) return null;
-    return await digestDirectory(path, modePlatform);
+    return await digestDirectory(path, modePlatform, modePolicy);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -1900,9 +1906,10 @@ async function digestDirectoryIfPresent(
 async function digestDirectory(
   root: string,
   modePlatform: NodeJS.Platform = process.platform,
+  modePolicy: SkillTreeModePolicy = "enforce-safe",
 ): Promise<`sha256:${string}`> {
   const hash = createHash("sha256");
-  await hashDirectoryRecursive(root, "", hash, 0, { files: 0, bytes: 0 }, null, modePlatform);
+  await hashDirectoryRecursive(root, "", hash, 0, { files: 0, bytes: 0 }, null, modePlatform, modePolicy);
   return `sha256:${hash.digest("hex")}`;
 }
 
@@ -1925,6 +1932,7 @@ async function digestBundledFinalTree(
       mode: 0o600,
     },
     modePlatform,
+    "normalize-bundled",
   );
   return `sha256:${hash.digest("hex")}`;
 }
@@ -1937,12 +1945,15 @@ async function hashDirectoryRecursive(
   treeStats: SkillTreeStats,
   virtualRootFile: Readonly<{ name: string; content: Buffer; mode: number }> | null,
   modePlatform: NodeJS.Platform,
+  modePolicy: SkillTreeModePolicy,
 ): Promise<void> {
   if (depth > MAX_SKILL_DEPTH) throw new Error(`Skill tree exceeds max directory depth ${MAX_SKILL_DEPTH}`);
   const directory = relativeDir ? join(root, ...relativeDir.split("/")) : root;
   const directoryStat = await lstat(directory);
   if (!directoryStat.isDirectory()) throw new Error(`Skill tree directory is not a directory: ${relativeDir || "."}`);
-  assertManagedTreeModeSafe(directoryStat.mode, "directory", relativeDir || ".", modePlatform);
+  if (modePolicy === "enforce-safe") {
+    assertManagedTreeModeSafe(directoryStat.mode, "directory", relativeDir || ".", modePlatform);
+  }
   const entries = await readdir(directory, { withFileTypes: true });
   const entryByName = new Map(entries.map((entry) => [entry.name, entry]));
   const names = entries.map((entry) => entry.name);
@@ -1957,7 +1968,11 @@ async function hashDirectoryRecursive(
     caseInsensitiveNames.add(folded);
     const relativePath = relativeDir ? `${relativeDir}/${name}` : name;
     if (!relativeDir && virtualRootFile?.name === name && !entryByName.has(name)) {
-      assertManagedTreeModeSafe(virtualRootFile.mode, "file", relativePath, modePlatform);
+      const mode =
+        modePolicy === "normalize-bundled" ? normalizedBundledFileMode(virtualRootFile.mode) : virtualRootFile.mode;
+      if (modePolicy === "enforce-safe") {
+        assertManagedTreeModeSafe(mode, "file", relativePath, modePlatform);
+      }
       treeStats.files++;
       treeStats.bytes += virtualRootFile.content.byteLength;
       if (
@@ -1967,7 +1982,7 @@ async function hashDirectoryRecursive(
       ) {
         throw new Error(`Skill tree exceeds configured bundle limits at ${relativePath}`);
       }
-      hash.update(`file\0${relativePath}\0${virtualRootFile.mode & 0o111}\0${virtualRootFile.content.byteLength}\0`);
+      hash.update(`file\0${relativePath}\0${mode & 0o111}\0${virtualRootFile.content.byteLength}\0`);
       hash.update(virtualRootFile.content);
       hash.update("\0");
       continue;
@@ -1979,11 +1994,23 @@ async function hashDirectoryRecursive(
     if (entryStat.isSymbolicLink()) throw new Error(`Skill tree symlinks are not allowed: ${relativePath}`);
     if (entryStat.isDirectory()) {
       hash.update(`directory\0${relativePath}\0`);
-      await hashDirectoryRecursive(root, relativePath, hash, depth + 1, treeStats, virtualRootFile, modePlatform);
+      await hashDirectoryRecursive(
+        root,
+        relativePath,
+        hash,
+        depth + 1,
+        treeStats,
+        virtualRootFile,
+        modePlatform,
+        modePolicy,
+      );
       continue;
     }
     if (!entryStat.isFile()) throw new Error(`Skill tree special files are not allowed: ${relativePath}`);
-    assertManagedTreeModeSafe(entryStat.mode, "file", relativePath, modePlatform);
+    const mode = modePolicy === "normalize-bundled" ? normalizedBundledFileMode(entryStat.mode) : entryStat.mode;
+    if (modePolicy === "enforce-safe") {
+      assertManagedTreeModeSafe(mode, "file", relativePath, modePlatform);
+    }
     treeStats.files++;
     treeStats.bytes += entryStat.size;
     if (
@@ -1993,10 +2020,18 @@ async function hashDirectoryRecursive(
     ) {
       throw new Error(`Skill tree exceeds configured bundle limits at ${relativePath}`);
     }
-    hash.update(`file\0${relativePath}\0${entryStat.mode & 0o111}\0${entryStat.size}\0`);
+    hash.update(`file\0${relativePath}\0${mode & 0o111}\0${entryStat.size}\0`);
     hash.update(await readFile(path));
     hash.update("\0");
   }
+}
+
+function normalizedBundledFileMode(mode: number): number {
+  // npm materializes package data with the ambient umask, so the same
+  // published Core Skill may arrive as 0644/0755 or 0664/0775. Package-source
+  // write bits are not part of the Skill contract; provider discovery is.
+  // Project a deterministic owner-only mode while retaining executability.
+  return (mode & 0o111) === 0 ? 0o600 : 0o700;
 }
 
 function assertManagedTreeModeSafe(
