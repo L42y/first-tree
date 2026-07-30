@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { TeamSetupCapabilities } from "@first-tree/shared";
+import type { OrgContextTreeFeaturesOutput, OrgContextTreeOutput, TeamSetupCapabilities } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -171,23 +171,34 @@ async function renderSettingsSetupPage(initialEntry = "/") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
   });
+  const page = () => (
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <QueryClientProvider client={queryClient}>
+        <LocationProbe />
+        <Routes>
+          <Route path="/" element={<SettingsSetupPage />} />
+          <Route path="/settings/setup" element={<SettingsSetupPage />} />
+          <Route path="/settings/context" element={<SettingsContextTreePage />} />
+          <Route path="/settings/integrations/github" element={<div>GitHub settings</div>} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
   await act(async () => {
-    root.render(
-      <MemoryRouter initialEntries={[initialEntry]}>
-        <QueryClientProvider client={queryClient}>
-          <LocationProbe />
-          <Routes>
-            <Route path="/" element={<SettingsSetupPage />} />
-            <Route path="/settings/setup" element={<SettingsSetupPage />} />
-            <Route path="/settings/context" element={<SettingsContextTreePage />} />
-            <Route path="/settings/integrations/github" element={<div>GitHub settings</div>} />
-          </Routes>
-        </QueryClientProvider>
-      </MemoryRouter>,
-    );
+    root.render(page());
   });
   await flush();
-  return { host, root };
+  return {
+    host,
+    root,
+    queryClient,
+    rerender: async () => {
+      await act(async () => {
+        root.render(page());
+      });
+      await flush();
+    },
+  };
 }
 
 function LocationProbe() {
@@ -1099,6 +1110,175 @@ describe("Settings Setup overview", () => {
     expect(controls.textContent).toContain("release branch");
     expect(controls.textContent).toContain("Saved");
     expect(controls.querySelector('button[aria-label="Save"]')).not.toBeNull();
+    await act(async () => view.root.unmount());
+  });
+
+  it("drops binding editor state and a late save response when switching to a cached Team", async () => {
+    const teamACapabilities = capabilityFixture();
+    const teamBCapabilities: TeamSetupCapabilities = {
+      ...capabilityFixture({
+        binding: {
+          state: "bound",
+          provider: "gitlab",
+          repo: "https://gitlab.com/beta/context-tree.git",
+          branch: "stable",
+        },
+        review: {
+          reviewerAgent: { uuid: "reviewer-2", displayName: "Beta Reviewer" },
+        },
+      }),
+      organizationId: "org-2",
+    };
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockImplementation(async (organizationId: string) =>
+      organizationId === "org-2" ? teamBCapabilities : teamACapabilities,
+    );
+    orgSettingsMocks.getRawContextTreeSetting.mockImplementation(async (organizationId: string) =>
+      organizationId === "org-2"
+        ? {
+            repo: "https://gitlab.com/beta/context-tree.git",
+            branch: "stable",
+            provider: "gitlab",
+          }
+        : {
+            repo: "https://github.com/acme/context-tree.git",
+            branch: "main",
+            provider: "github",
+          },
+    );
+    let resolveTeamASave!: (value: OrgContextTreeOutput) => void;
+    orgSettingsMocks.putContextTreeSetting.mockImplementationOnce(
+      () =>
+        new Promise<OrgContextTreeOutput>((resolve) => {
+          resolveTeamASave = resolve;
+        }),
+    );
+
+    const view = await renderSettingsSetupPage("/settings/context");
+    const teamAControls = await waitForSelector<HTMLElement>(
+      view.host,
+      '[data-context-tree-settings="admin"] [data-setup-owner-controls="context-tree"]',
+    );
+    const edit = [...teamAControls.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Change repository or branch",
+    );
+    await act(async () => edit?.click());
+    const save = await waitForSelector<HTMLButtonElement>(teamAControls, 'button[aria-label="Save"]');
+    await act(async () => save.click());
+    await flush();
+    expect(orgSettingsMocks.putContextTreeSetting).toHaveBeenCalledWith("org-1", {
+      provider: null,
+      repo: "https://github.com/acme/context-tree.git",
+      branch: "main",
+    });
+
+    view.queryClient.setQueryData(["setup-capabilities", "org-2"], teamBCapabilities);
+    authMock.value = {
+      ...authMock.value,
+      organizationId: "org-2",
+      teamDisplayName: "Beta",
+    };
+    await view.rerender();
+
+    const teamBControls = await waitForSelector<HTMLElement>(
+      view.host,
+      '[data-context-tree-settings="admin"] [data-setup-owner-controls="context-tree"]',
+    );
+    expect(teamBControls.textContent).toContain("beta/context-tree · stable branch · GitLab");
+    expect(teamBControls.textContent).not.toContain("acme/context-tree");
+    expect(teamBControls.querySelector('input[placeholder*="github.com"]')).toBeNull();
+
+    await act(async () => {
+      resolveTeamASave({
+        repo: "https://github.com/acme/context-tree.git",
+        branch: "release",
+        provider: "github",
+      });
+    });
+    await flush();
+
+    expect(teamBControls.textContent).toContain("beta/context-tree · stable branch · GitLab");
+    expect(teamBControls.textContent).not.toContain("release branch");
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps a cached Team's Reviewer projection when the previous Team mutation settles late", async () => {
+    const teamACapabilities = capabilityFixture();
+    const teamBCapabilities: TeamSetupCapabilities = {
+      ...capabilityFixture({
+        review: {
+          adoption: "enabled",
+          health: "ready",
+          reviewerAgent: { uuid: "reviewer-2", displayName: "Beta Reviewer" },
+        },
+      }),
+      organizationId: "org-2",
+    };
+    setupCapabilityMocks.getTeamSetupCapabilitiesAt.mockImplementation(async (organizationId: string) =>
+      organizationId === "org-2" ? teamBCapabilities : teamACapabilities,
+    );
+    reviewerMocks.getContextReviewerCandidates.mockImplementation(async (organizationId: string) => ({
+      items: [
+        {
+          uuid: organizationId === "org-2" ? "reviewer-2" : "reviewer-1",
+          name: organizationId === "org-2" ? "beta-reviewer" : "context-reviewer",
+          displayName: organizationId === "org-2" ? "Beta Reviewer" : "Context Reviewer",
+          visibility: "organization",
+          runtime: { health: "ready", blockers: [] },
+        },
+      ],
+      blockers: [],
+    }));
+    let resolveTeamAEnablement!: (value: OrgContextTreeFeaturesOutput) => void;
+    reviewerMocks.putContextReviewerEnablement.mockImplementationOnce(
+      () =>
+        new Promise<OrgContextTreeFeaturesOutput>((resolve) => {
+          resolveTeamAEnablement = resolve;
+        }),
+    );
+
+    const view = await renderSettingsSetupPage("/settings/context");
+    const teamAReviewer = await waitForSelector<HTMLElement>(
+      view.host,
+      '[data-context-tree-settings="admin"] [data-setup-owner-controls="automatic-review"]',
+    );
+    const teamASwitch = teamAReviewer.querySelector<HTMLButtonElement>('[role="switch"]');
+    await act(async () => teamASwitch?.click());
+    await flush();
+    expect(reviewerMocks.putContextReviewerEnablement).toHaveBeenCalledWith("org-1", false);
+
+    view.queryClient.setQueryData(["setup-capabilities", "org-2"], teamBCapabilities);
+    authMock.value = {
+      ...authMock.value,
+      organizationId: "org-2",
+      teamDisplayName: "Beta",
+    };
+    await view.rerender();
+
+    const teamBReviewer = await waitForSelector<HTMLElement>(
+      view.host,
+      '[data-context-tree-settings="admin"] [data-setup-owner-controls="automatic-review"]',
+    );
+    await waitForText(teamBReviewer, "Beta Reviewer");
+    expect(teamBReviewer.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      resolveTeamAEnablement({
+        contextReviewer: {
+          enabled: false,
+          agentUuid: "reviewer-1",
+          reviewerAgent: {
+            uuid: "reviewer-1",
+            name: "context-reviewer",
+            displayName: "Context Reviewer",
+          },
+        },
+      });
+    });
+    await flush();
+
+    expect(teamBReviewer.textContent).toContain("Beta Reviewer");
+    expect(teamBReviewer.textContent).not.toContain("Context Reviewer");
+    expect(teamBReviewer.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
     await act(async () => view.root.unmount());
   });
 

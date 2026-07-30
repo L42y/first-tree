@@ -121,6 +121,7 @@ export function SettingsContextTreePage() {
           <div style={{ padding: "var(--sp-3) 0" }}>
             {isAdmin ? (
               <SetupContextTreeControls
+                key={`context-tree-${organizationId}`}
                 binding={binding}
                 availability={availability}
                 teamNonActionableGitlabWebContext={teamNonActionableGitlabWebContext}
@@ -150,7 +151,12 @@ export function SettingsContextTreePage() {
                 Available once this Team has a valid Context Tree binding.
               </p>
             ) : isAdmin ? (
-              <SetupReviewerControls review={review} embedded label="Enable automatic review" />
+              <SetupReviewerControls
+                key={`automatic-review-${organizationId}`}
+                review={review}
+                embedded
+                label="Enable automatic review"
+              />
             ) : (
               <ReadOnlyReview review={review} />
             )}
