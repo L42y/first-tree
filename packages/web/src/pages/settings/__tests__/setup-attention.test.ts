@@ -180,5 +180,22 @@ describe("Setup navigation attention", () => {
         onboardingCompletedAt: OBSERVED_AT,
       }),
     ).toBe(false);
+    expect(
+      personalSetupNeedsAttention({
+        currentOrgHasUsableAgent: false,
+        onboardingDismissedAt: OBSERVED_AT,
+        onboardingCompletedAt: OBSERVED_AT,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not show permanent personal setup attention for a completed admin with a usable agent", () => {
+    expect(
+      personalSetupNeedsAttention({
+        currentOrgHasUsableAgent: true,
+        onboardingDismissedAt: OBSERVED_AT,
+        onboardingCompletedAt: OBSERVED_AT,
+      }),
+    ).toBe(false);
   });
 });

@@ -69,11 +69,9 @@ export const kickoffOnboardingSchema = z
     // exists. Takes precedence over the older boolean `complete` when both are
     // present:
     //   - "completed"    — terminal completion (same as `complete: true`).
-    //   - "invitee_skip" — team-agent start: the member begins in a teammate's
-    //     org-visible agent chat WITHOUT their own runtime. Writes only the
-    //     auto-open suppressor (reason="invitee_skip"), never the completion
-    //     stamp, so the standard connect-computer → create-agent journey stays
-    //     pending and resumable from the workspace.
+    //   - "invitee_skip" — Team-agent quick start: write only the auto-open
+    //     suppressor (reason="invitee_skip"), never the completion stamp, so
+    //     personal-agent setup stays resumable.
     //   - "none"         — stamp nothing (same as `complete: false`).
     stamp: z.enum(["completed", "invitee_skip", "none"]).optional(),
     // Trusted landing-campaign action context. Direct and onboarding paths use

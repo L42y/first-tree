@@ -52,6 +52,7 @@ const authMock = vi.hoisted(() => {
       dismissOnboarding: async () => undefined,
       restoreOnboarding: async () => undefined,
       markOnboardingCompleted: async () => undefined,
+      applyOnboardingKickoffStamp: () => undefined,
       login: async () => undefined,
       adoptTokens: async () => undefined,
       selectOrganization: async () => undefined,
@@ -734,7 +735,7 @@ type FlowOverrides = Partial<Omit<OnboardingFlowValue, "activeStep">> & {
 function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
   const path: OnboardingPath = overrides.path ?? "admin";
   const sequence: readonly StepId[] = path === "admin" ? ADMIN_STEPS : INVITEE_STEPS;
-  const fallbackStep: StepId = path === "admin" ? "create-team" : "join-team";
+  const fallbackStep: StepId = path === "admin" ? "create-team" : "get-started";
   const requestedActiveStep = overrides.activeStep;
   const activeStep: StepId =
     requestedActiveStep && (sequence as readonly string[]).includes(requestedActiveStep)
@@ -767,6 +768,7 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
       tokenError: null,
       retry: () => undefined,
     },
+    prepareByoBootstrap: () => undefined,
     agentDisplayName: "Gandy's assistant",
     setAgentDisplayName: () => undefined,
     visibility: "organization",
@@ -788,7 +790,6 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
     markTreeAutoDetectDone: () => undefined,
     offerTeamAgentStart: false,
     completeAndEnterChat: async () => undefined,
-    skipAndEnterChat: async () => undefined,
     finishLater: async () => undefined,
   };
   return {
@@ -1270,7 +1271,6 @@ describe("page SSR smoke coverage", () => {
     const { StepCreateAgent } = await import("../onboarding/steps/step-create-agent.js");
     const { StepStartChat } = await import("../onboarding/steps/step-start-chat.js");
     const { StepTeam } = await import("../onboarding/steps/step-team.js");
-    const { StepJoinTeam } = await import("../onboarding/steps/step-join-team.js");
 
     const html = renderPage(
       <>
@@ -1314,9 +1314,6 @@ describe("page SSR smoke coverage", () => {
     expect(await renderOnboardingStep(<StepTeam />, { activeStep: "create-team" })).toContain(
       "What should we call your team?",
     );
-    expect(await renderOnboardingStep(<StepJoinTeam />, { path: "invitee", activeStep: "join-team" })).toContain(
-      "Acme",
-    );
     expect(await renderOnboardingStep(<StepConnectComputer />, { activeStep: "connect-computer" })).toContain(
       "gandy-macbook",
     );
@@ -1333,7 +1330,7 @@ describe("page SSR smoke coverage", () => {
       "Loading your repos",
     );
     expect(await renderOnboardingStep(<StepStartChat />, { activeStep: "start-chat" })).toContain(
-      "Start working with your agent",
+      "Start your first Agent Chat",
     );
     expect(
       await renderOnboardingStep(<StepStartChat />, {
@@ -1342,14 +1339,14 @@ describe("page SSR smoke coverage", () => {
         treeBindingPlan: "createBinding",
         treeUrl: "",
       }),
-    ).toContain("Start working with your agent");
+    ).toContain("Start your first Agent Chat");
     expect(
       await renderOnboardingStep(<StepStartChat />, {
         path: "invitee",
         activeStep: "start-chat",
         selectedRepoUrls: [],
       }),
-    ).toContain("Start working with your agent");
+    ).toContain("Start your first Agent Chat");
   });
 
   it("renders invite, GitHub App, settings, and layout surfaces", async () => {

@@ -332,10 +332,12 @@ beforeEach(() => {
     contextStatus: { severity: "ok", label: "Available", detail: null },
   });
   contextEnablementMocks.getContextEnablementHandoff.mockResolvedValue({
+    protocolVersion: 1,
     organizationId: "org-1",
     teamDisplayName: "Acme",
     role: "admin",
     provider: "claude-code",
+    intent: "settings",
     command: "first-tree-dev context enable --provider claude-code --team org-1",
     workingDirectoryInstruction: "Run this from the target repository.",
   });
