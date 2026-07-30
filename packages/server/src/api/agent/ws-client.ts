@@ -514,12 +514,29 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
       }
 
       function inboxInFlightChatBudgets(agentId: string): Array<{ chatId: string | null; remaining: number }> {
+        const budgets = new Map<string, { chatId: string | null; remaining: number }>();
         const byChat = inboxInFlightByAgent.get(agentId);
-        if (!byChat) return [];
-        return [...byChat.values()].map((bucket) => ({
-          chatId: bucket.chatId,
-          remaining: Math.max(0, inboxMaxInFlightPerAgentChat - bucket.entryIds.size),
-        }));
+        if (byChat) {
+          for (const bucket of byChat.values()) {
+            budgets.set(inboxChatKey(bucket.chatId), {
+              chatId: bucket.chatId,
+              remaining: Math.max(0, inboxMaxInFlightPerAgentChat - bucket.entryIds.size),
+            });
+          }
+        }
+        // A chat whose same-socket no-progress circuit is open must stay
+        // ineligible for every normal notify/repair/ACK fair drain on this
+        // socket, not just for scoped recover; only that chat's ACK or a
+        // fresh bind (both clear the circuit) may release its held debt.
+        // The zero budget overrides any ordinary in-flight remainder while
+        // other chats keep draining normally.
+        const circuitPrefix = `${agentId}\u0000`;
+        for (const [key, progress] of inboxRecoverProgress) {
+          if (!progress.open || !key.startsWith(circuitPrefix)) continue;
+          const chatId = key.slice(circuitPrefix.length);
+          budgets.set(inboxChatKey(chatId), { chatId, remaining: 0 });
+        }
+        return [...budgets.values()];
       }
 
       function logPerChatCaps(agentId: string, inboxId: string, inFlightCount: number): void {

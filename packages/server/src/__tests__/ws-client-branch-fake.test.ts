@@ -709,6 +709,134 @@ describe("Agent client WS branch fakes", () => {
     expect(recoverSpy).toHaveBeenCalledTimes(4);
   });
 
+  it("excludes a circuit-open chat from unrelated fair drains until ACK or fresh bind", async () => {
+    mockSuccessfulBindServices();
+    vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValue({ resetEntryIds: [101] });
+    const { handler, notifier } = routeHarness(
+      queuedDb([
+        [{ id: "user_1", status: "active" }],
+        // Every later select sees a row that satisfies both the bind-time
+        // `clients` check (userId, no retiredAt) and the agent-shape checks
+        // (clientId/status/runtimeProvider), so select-order drift in this
+        // branch-heavy flow cannot misalign the queue.
+        ...Array.from({ length: 30 }, () => [activeAgentRow({ userId: "user_1", retiredAt: null })]),
+      ]),
+    );
+    const socket = new FakeSocket();
+    await bindAgent(socket, handler);
+
+    const openCircuit = async (refs: string[]) => {
+      for (const ref of refs) {
+        await emitMessage(socket, {
+          type: "inbox:recover",
+          ref,
+          agentId: "agent_1",
+          chatId: "chat_no_progress",
+        });
+      }
+      expect(socket.sent).toContainEqual({
+        type: "inbox:recover:rejected",
+        ref: refs[refs.length - 1],
+        agentId: "agent_1",
+        chatId: "chat_no_progress",
+        reason: "recover_failed",
+      });
+    };
+    await openCircuit(["recover-1", "recover-2", "recover-3"]);
+
+    const fairSpy = vi.mocked(inboxService.claimBacklogForPushFair);
+    const lastBudgets = (): Array<{ chatId: string | null; remaining: number }> =>
+      (fairSpy.mock.calls.at(-1)?.[2]?.chatBudgets ?? []) as Array<{ chatId: string | null; remaining: number }>;
+
+    // An unrelated same-agent notify must not redeliver the protected
+    // chat's held debt: the fair claim receives a zero budget for it and a
+    // budget-aware claim would only emit the unrelated chat's work.
+    fairSpy.mockClear();
+    fairSpy.mockImplementationOnce(async (_db, _inboxId, opts) => {
+      const excluded = new Set(
+        opts.chatBudgets.filter((budget) => budget.remaining === 0).map((budget) => budget.chatId),
+      );
+      return [
+        inboxEntry({ id: 101, chatId: "chat_no_progress" }),
+        inboxEntry({ id: 102, chatId: "chat_other", messageId: "msg_2" }),
+      ].filter((entry) => !excluded.has(entry.chatId));
+    });
+    const pushHandler = (notifier.subscribe as ReturnType<typeof vi.fn>).mock.calls[0]?.[2] as
+      | ((messageId: string) => Promise<void>)
+      | undefined;
+    await pushHandler?.("msg_unrelated_chat");
+    await waitUntil(() => fairSpy.mock.calls.length > 0);
+    expect(lastBudgets()).toContainEqual({ chatId: "chat_no_progress", remaining: 0 });
+    await waitUntil(() =>
+      socket.sent.some((frame) => (frame as { type?: string; chatId?: string }).chatId === "chat_other"),
+    );
+    expect(socket.sent).not.toContainEqual(
+      expect.objectContaining({ type: "inbox:deliver", chatId: "chat_no_progress" }),
+    );
+
+    // Scoped recover for the protected chat stays rejected while open.
+    await emitMessage(socket, {
+      type: "inbox:recover",
+      ref: "recover-while-open",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+    });
+    expect(socket.sent).toContainEqual({
+      type: "inbox:recover:rejected",
+      ref: "recover-while-open",
+      agentId: "agent_1",
+      chatId: "chat_no_progress",
+      reason: "recover_failed",
+    });
+
+    // An ACK for an unrelated chat frees the in-flight slot but must NOT
+    // clear the protected chat's exclusion.
+    vi.mocked(inboxService.ackEntryByIdForBoundAgents).mockResolvedValueOnce({
+      ok: true,
+      throughEntry: inboxDbRow({ id: 102, chatId: "chat_other" }),
+      disposition: "acked",
+      ackedCount: 1,
+      ackedEntryIds: [102],
+    });
+    fairSpy.mockClear();
+    await emitMessage(socket, { type: "inbox:ack", entryId: 102, ref: "ack-other" });
+    await waitUntil(() => fairSpy.mock.calls.length > 0);
+    expect(lastBudgets()).toContainEqual({ chatId: "chat_no_progress", remaining: 0 });
+
+    // An ACK for the protected chat removes the exclusion before the ACK drain.
+    vi.mocked(inboxService.ackEntryByIdForBoundAgents).mockResolvedValueOnce({
+      ok: true,
+      throughEntry: inboxDbRow({ chatId: "chat_no_progress" }),
+      disposition: "acked",
+      ackedCount: 1,
+      ackedEntryIds: [101],
+    });
+    fairSpy.mockClear();
+    await emitMessage(socket, { type: "inbox:ack", entryId: 101, ref: "ack-progress" });
+    await waitUntil(() => fairSpy.mock.calls.length > 0);
+    expect(lastBudgets()).not.toContainEqual({ chatId: "chat_no_progress", remaining: 0 });
+
+    // Re-open the circuit; a fresh bind clears it before the bind drain.
+    await openCircuit(["recover-5", "recover-6", "recover-7"]);
+    fairSpy.mockClear();
+    await emitMessage(socket, {
+      type: "agent:bind",
+      agentId: "agent_1",
+      ref: "bind-fresh",
+      runtimeType: "claude-code",
+      runtimeVersion: "test",
+    });
+    await waitUntil(() =>
+      socket.sent.some(
+        (frame) =>
+          (frame as { type?: string; ref?: string }).type === "agent:bound" &&
+          (frame as { ref?: string }).ref === "bind-fresh",
+      ),
+    );
+    await waitUntil(() => fairSpy.mock.calls.length > 0);
+    expect(lastBudgets()).not.toContainEqual({ chatId: "chat_no_progress", remaining: 0 });
+  });
+
   it("stops a drain when the socket closes after backlog is claimed", async () => {
     mockSuccessfulBindServices();
     const { handler, notifier } = routeHarness(
