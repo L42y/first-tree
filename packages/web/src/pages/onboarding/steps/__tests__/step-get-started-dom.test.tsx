@@ -292,12 +292,13 @@ describe("StepGetStarted", () => {
     expect(value.prepareByoBootstrap).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Set up in your coding agent");
     expect(container.textContent).toContain("Setup prompt");
-    expect(container.textContent).toContain("Claude Code for Acme");
+    expect(container.textContent).toContain("Claude Code or Codex for Acme");
     expect(container.textContent).toContain("Connects this computer if needed");
     expect(container.textContent).toContain("enables Team Context for this local project");
-    expect(container.textContent).toContain("repository shared by your team");
+    expect(container.textContent).toContain("zero, one, or many source repositories");
     expect(container.textContent).toContain("first-tree login connect-token");
     expect(container.textContent).toContain("context enable --provider 'claude-code'");
+    expect(container.textContent).toContain("context enable --provider 'codex'");
     expect(buttonByText(container, "Copy setup prompt")).toBeTruthy();
     expect(container.querySelector("details")?.open).toBe(false);
     expect(container.querySelector("pre")?.closest('[data-clarity-mask="true"]')).not.toBeNull();
@@ -306,13 +307,14 @@ describe("StepGetStarted", () => {
     expect(container.textContent).toContain("does not create a First Tree agent");
     expect(container.textContent).not.toContain("Name your agent");
     expect(value.goNext).not.toHaveBeenCalled();
-    expect(buttonByText(container, "Claude Code")?.getAttribute("aria-pressed")).toBe("true");
-    expect(buttonByText(container, "Codex")?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttonByText(container, "Claude Code")).toBeUndefined();
+    expect(buttonByText(container, "Codex")).toBeUndefined();
 
     await click(buttonByText(container, "Copy setup prompt"));
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("context enable --provider 'claude-code'"));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("context enable --provider 'codex'"));
     expect(buttonByText(container, "Copied")).toBeTruthy();
-    expect(container.textContent).toContain("Paste into Claude Code opened at the project");
+    expect(container.textContent).toContain("Paste into Claude Code or Codex opened at the project");
     await flushQueries();
     expect(buttonByText(container, "Copied")).toBeTruthy();
   });
@@ -378,10 +380,8 @@ describe("StepGetStarted", () => {
     const container = await renderStep(value);
     await openByo(container);
 
-    expect(buttonByText(container, "Codex")).toBeTruthy();
-    expect(buttonByText(container, "Claude Code")).toBeTruthy();
-    await click(buttonByText(container, "Codex"));
-    await flushQueries();
+    expect(buttonByText(container, "Codex")).toBeUndefined();
+    expect(buttonByText(container, "Claude Code")).toBeUndefined();
     expect(container.textContent).toContain("--provider 'codex'");
     expect(container.textContent).toContain("/hooks");
     expect(mocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex", "onboarding");
@@ -406,9 +406,9 @@ describe("StepGetStarted", () => {
     const container = await renderStep(value);
     await openByo(container);
 
-    expect(buttonByText(container, "Claude Code")).toBeTruthy();
-    expect(buttonByText(container, "Codex")).toBeTruthy();
-    expect(container.textContent).toContain("Claude Code for Acme");
+    expect(buttonByText(container, "Claude Code")).toBeUndefined();
+    expect(buttonByText(container, "Codex")).toBeUndefined();
+    expect(container.textContent).toContain("Claude Code or Codex for Acme");
     expect(mocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code", "onboarding");
   });
 
@@ -426,11 +426,11 @@ describe("StepGetStarted", () => {
     const container = await renderStep(value);
     await openByo(container);
     await click(buttonByText(container, "Copy setup prompt"));
-    expect(container.textContent).toContain("Paste into Claude Code opened at the project");
+    expect(container.textContent).toContain("Paste into Claude Code or Codex opened at the project");
     expect(buttonByText(container, "Finish onboarding")).toBeUndefined();
   });
 
-  it("keeps BYO non-actionable when the Team has no ready Tree/repository pair", async () => {
+  it("keeps BYO non-actionable when the Team has no ready Context Tree", async () => {
     mocks.getContextTreeSetting.mockResolvedValueOnce({ repo: null });
     mocks.listTeamResourcesForOrg.mockResolvedValueOnce([]);
     const value = flow();

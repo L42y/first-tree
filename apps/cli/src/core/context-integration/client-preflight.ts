@@ -1,21 +1,39 @@
-import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
-import { type CanonicalResourceRepoKey, canonicalizeResourceRepoUrl, repoUrlSchema } from "@first-tree/shared";
+import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, posix, resolve, win32 } from "node:path";
+import type { ContextIntegrationProject, ContextIntegrationProvider } from "@first-tree/shared";
 import { loadCredentials } from "../bootstrap.js";
 import { channelConfig } from "../channel.js";
 
-export type ContextClientPreflight = {
-  checkoutRoot: string;
-  repositoryKey: CanonicalResourceRepoKey;
-  originUrl: string;
+const CODEX_PROJECTLESS_CLASSIFIER_VERSION = 1;
+const SESSION_CACHE_TTL_MS = 30 * 24 * 60 * 60_000;
+
+export type ContextProjectResolution =
+  | {
+      kind: "path";
+      project: Extract<ContextIntegrationProject, { kind: "path" }>;
+      source: "claude_project_dir" | "codex_cwd_best_effort" | "explicit_path";
+    }
+  | {
+      kind: "pathless";
+      project: Extract<ContextIntegrationProject, { kind: "pathless" }>;
+      source: "codex_documents_v1" | "explicit_pathless";
+    }
+  | {
+      kind: "unknown";
+      source: "claude_project_dir_missing" | "cwd_missing" | "path_unreadable";
+      message: string;
+    };
+
+export type ContextSessionHookInput = {
+  sessionId?: string;
+  cwd?: string;
 };
 
 export const contextClientPreflightErrorCode = {
   notSignedIn: "not_signed_in",
-  notGitCheckout: "not_git_checkout",
-  originUnreadable: "origin_unreadable",
-  originInvalid: "origin_invalid",
+  projectUnreadable: "project_unreadable",
+  projectUnknown: "project_unknown",
 } as const;
 
 export type ContextClientPreflightErrorCode =
@@ -33,7 +51,129 @@ export class ContextClientPreflightError extends Error {
   }
 }
 
-export function inspectContextClientPreflight(cwd = process.cwd()): ContextClientPreflight {
+export function inspectContextClientPreflight(
+  provider: ContextIntegrationProvider,
+  input: {
+    cwd?: string;
+    projectRoot?: string;
+    pathless?: boolean;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): ContextProjectResolution & { kind: "path" | "pathless" } {
+  assertSignedIn();
+  if (input.pathless === true && input.projectRoot) {
+    throw new ContextClientPreflightError(
+      contextClientPreflightErrorCode.projectUnknown,
+      "`--pathless` and `--project-root` cannot be used together.",
+      "Choose the pathless project or one attached project path.",
+    );
+  }
+  if (input.pathless === true) {
+    return { kind: "pathless", project: { kind: "pathless" }, source: "explicit_pathless" };
+  }
+  if (input.projectRoot) {
+    return requireKnownProject(resolvePathProject(input.projectRoot, "explicit_path"));
+  }
+  return requireKnownProject(
+    resolveProviderProject(provider, { cwd: input.cwd ?? process.cwd() }, input.env ?? process.env),
+  );
+}
+
+export function resolveSessionContextProject(
+  provider: ContextIntegrationProvider,
+  input: ContextSessionHookInput,
+  env: NodeJS.ProcessEnv = process.env,
+  classifierOptions: Parameters<typeof resolveProviderProject>[3] = {},
+): ContextProjectResolution {
+  const sessionId = validSessionId(input.sessionId) ? input.sessionId : undefined;
+  if (sessionId) {
+    const cached = readCachedSessionProject(sessionId, env);
+    if (cached) return cached;
+  }
+  const resolution = resolveProviderProject(provider, input, env, classifierOptions);
+  if (sessionId && resolution.kind !== "unknown") writeCachedSessionProject(sessionId, resolution, env);
+  return resolution;
+}
+
+export function resolveProviderProject(
+  provider: ContextIntegrationProvider,
+  input: Pick<ContextSessionHookInput, "cwd">,
+  env: NodeJS.ProcessEnv = process.env,
+  classifierOptions: {
+    platform?: NodeJS.Platform;
+    home?: string;
+    realpath?: typeof realpathSync;
+    stat?: typeof statSync;
+  } = {},
+): ContextProjectResolution {
+  if (provider === "claude-code") {
+    const projectRoot = env.CLAUDE_PROJECT_DIR;
+    if (!projectRoot) {
+      return {
+        kind: "unknown",
+        source: "claude_project_dir_missing",
+        message: "Claude Code did not provide CLAUDE_PROJECT_DIR for this session.",
+      };
+    }
+    return resolvePathProject(projectRoot, "claude_project_dir", classifierOptions);
+  }
+  if (!input.cwd) {
+    return {
+      kind: "unknown",
+      source: "cwd_missing",
+      message: "Codex did not provide a working directory for project classification.",
+    };
+  }
+  const canonical = resolvePathProject(input.cwd, "codex_cwd_best_effort", classifierOptions);
+  if (canonical.kind !== "path") return canonical;
+  const pathless = classifyCodexProjectlessPath(canonical.project.root, env, classifierOptions);
+  if (pathless) return { kind: "pathless", project: { kind: "pathless" }, source: "codex_documents_v1" };
+  return canonical;
+}
+
+export function classifyCodexProjectlessPath(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: { platform?: NodeJS.Platform; home?: string; realpath?: typeof realpathSync } = {},
+): boolean {
+  const platform = options.platform ?? process.platform;
+  const pathApi = platform === "win32" ? win32 : posix;
+  const home = options.home ?? (platform === "win32" ? env.USERPROFILE : homedir());
+  const bases = new Set<string>();
+  if (home) bases.add(pathApi.join(home, "Documents", "Codex"));
+  if (platform === "win32") {
+    for (const root of [env.OneDrive, env.OneDriveConsumer]) {
+      if (root) bases.add(pathApi.join(root, "Documents", "Codex"));
+    }
+  }
+  const normalizedCwd = normalizeForComparison(cwd, platform);
+  const comparableBases = new Set(bases);
+  for (const base of bases) {
+    try {
+      comparableBases.add((options.realpath ?? realpathSync)(base));
+    } catch {
+      // Synthetic platform tests and not-yet-created scratch roots still use
+      // the logical candidate. Existing redirected roots add their canonical
+      // target so cwd and base are compared in the same namespace.
+    }
+  }
+  for (const base of comparableBases) {
+    const relativePath = pathApi.relative(normalizeForComparison(base, platform), normalizedCwd);
+    if (
+      !relativePath ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${pathApi.sep}`) ||
+      pathApi.isAbsolute(relativePath)
+    ) {
+      continue;
+    }
+    const [date, slug] = relativePath.split(pathApi.sep);
+    if (date && slug && validIsoDate(date)) return true;
+  }
+  return false;
+}
+
+function assertSignedIn(): void {
   if (!loadCredentials()) {
     throw new ContextClientPreflightError(
       contextClientPreflightErrorCode.notSignedIn,
@@ -41,68 +181,138 @@ export function inspectContextClientPreflight(cwd = process.cwd()): ContextClien
       `Run \`${channelConfig.binName} login <code>\`, then rerun this command.`,
     );
   }
-
-  let absoluteCwd: string;
-  try {
-    absoluteCwd = realpathSync(resolve(cwd));
-  } catch (error) {
-    throw new ContextClientPreflightError(
-      contextClientPreflightErrorCode.notGitCheckout,
-      "The current directory is not a readable Git checkout.",
-      "Run this command inside the target Git checkout.",
-      { cause: error },
-    );
-  }
-  const checkoutRoot = runGit(
-    absoluteCwd,
-    ["rev-parse", "--show-toplevel"],
-    contextClientPreflightErrorCode.notGitCheckout,
-  );
-  const normalizedCheckoutRoot = realpathSync(checkoutRoot);
-  const originUrl = runGit(
-    normalizedCheckoutRoot,
-    ["remote", "get-url", "origin"],
-    contextClientPreflightErrorCode.originUnreadable,
-  );
-  try {
-    repoUrlSchema.parse(originUrl);
-  } catch (error) {
-    throw new ContextClientPreflightError(
-      contextClientPreflightErrorCode.originInvalid,
-      "The current Git checkout's `origin` is not a supported repository URL.",
-      "Set `origin` to a readable GitHub or GitLab repository URL, then rerun this command.",
-      { cause: error },
-    );
-  }
-
-  return {
-    checkoutRoot: normalizedCheckoutRoot,
-    repositoryKey: canonicalizeResourceRepoUrl(originUrl),
-    originUrl,
-  };
 }
 
-function runGit(
-  cwd: string,
-  args: readonly string[],
-  code: typeof contextClientPreflightErrorCode.notGitCheckout | typeof contextClientPreflightErrorCode.originUnreadable,
-): string {
+function requireKnownProject(
+  resolution: ContextProjectResolution,
+): ContextProjectResolution & { kind: "path" | "pathless" } {
+  if (resolution.kind !== "unknown") return resolution;
+  const unreadable = resolution.source === "path_unreadable";
+  throw new ContextClientPreflightError(
+    unreadable ? contextClientPreflightErrorCode.projectUnreadable : contextClientPreflightErrorCode.projectUnknown,
+    resolution.message,
+    unreadable
+      ? "Choose an existing readable project directory and rerun the command."
+      : "Pass `--pathless` for a pathless session or `--project-root <path>` for an attached project.",
+  );
+}
+
+function resolvePathProject(
+  path: string,
+  source: Extract<ContextProjectResolution, { kind: "path" }>["source"],
+  dependencies: {
+    realpath?: typeof realpathSync;
+    stat?: typeof statSync;
+  } = {},
+): ContextProjectResolution {
   try {
-    return execFileSync("git", ["-C", cwd, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    }).trim();
-  } catch (error) {
-    throw new ContextClientPreflightError(
-      code,
-      code === contextClientPreflightErrorCode.originUnreadable
-        ? "The current Git checkout has no readable `origin` remote."
-        : "The current directory is not a Git checkout.",
-      code === contextClientPreflightErrorCode.originUnreadable
-        ? "Add or repair `origin` with `git remote add origin <repository-url>` (or `git remote set-url origin <repository-url>`), then rerun this command."
-        : "Run this command inside the target Git checkout.",
-      { cause: error },
+    const root = (dependencies.realpath ?? realpathSync)(resolve(path));
+    const stat = (dependencies.stat ?? statSync)(root);
+    if (!stat.isDirectory()) throw new Error("project root is not a directory");
+    return { kind: "path", project: { kind: "path", root }, source };
+  } catch {
+    return {
+      kind: "unknown",
+      source: "path_unreadable",
+      message: `The project path is not readable: ${path}`,
+    };
+  }
+}
+
+function normalizeForComparison(path: string, platform: NodeJS.Platform): string {
+  const pathApi = platform === "win32" ? win32 : posix;
+  const normalized = pathApi.normalize(path);
+  return platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+}
+
+function validIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().startsWith(value);
+}
+
+type CachedSessionProject = {
+  schemaVersion: 1;
+  classifierVersion: number;
+  updatedAt: string;
+  resolution: Extract<ContextProjectResolution, { kind: "path" | "pathless" }>;
+};
+
+function sessionCachePath(sessionId: string, env: NodeJS.ProcessEnv): string | null {
+  const pluginData = env.PLUGIN_DATA ?? env.CLAUDE_PLUGIN_DATA;
+  return pluginData ? join(pluginData, "context-sessions", `${sessionId}.json`) : null;
+}
+
+function readCachedSessionProject(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+): CachedSessionProject["resolution"] | null {
+  const path = sessionCachePath(sessionId, env);
+  if (!path) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<CachedSessionProject>;
+    if (
+      parsed.schemaVersion !== 1 ||
+      parsed.classifierVersion !== CODEX_PROJECTLESS_CLASSIFIER_VERSION ||
+      typeof parsed.updatedAt !== "string" ||
+      !Number.isFinite(Date.parse(parsed.updatedAt)) ||
+      Date.now() - Date.parse(parsed.updatedAt) > SESSION_CACHE_TTL_MS ||
+      !validCachedResolution(parsed.resolution)
+    ) {
+      return null;
+    }
+    return parsed.resolution;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedSessionProject(
+  sessionId: string,
+  resolution: CachedSessionProject["resolution"],
+  env: NodeJS.ProcessEnv,
+): void {
+  const path = sessionCachePath(sessionId, env);
+  if (!path) return;
+  const temporary = `${path}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const value: CachedSessionProject = {
+      schemaVersion: 1,
+      classifierVersion: CODEX_PROJECTLESS_CLASSIFIER_VERSION,
+      updatedAt: new Date().toISOString(),
+      resolution,
+    };
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+function validCachedResolution(value: unknown): value is CachedSessionProject["resolution"] {
+  if (typeof value !== "object" || value === null) return false;
+  const kind = Reflect.get(value, "kind");
+  const project = Reflect.get(value, "project");
+  const source = Reflect.get(value, "source");
+  if (kind === "pathless") {
+    return (
+      typeof project === "object" &&
+      project !== null &&
+      Reflect.get(project, "kind") === "pathless" &&
+      (source === "codex_documents_v1" || source === "explicit_pathless")
     );
   }
+  return (
+    kind === "path" &&
+    typeof project === "object" &&
+    project !== null &&
+    Reflect.get(project, "kind") === "path" &&
+    typeof Reflect.get(project, "root") === "string" &&
+    ["claude_project_dir", "codex_cwd_best_effort", "explicit_path"].includes(String(source))
+  );
+}
+
+function validSessionId(value: string | undefined): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 && /^[A-Za-z0-9._-]+$/u.test(value);
 }

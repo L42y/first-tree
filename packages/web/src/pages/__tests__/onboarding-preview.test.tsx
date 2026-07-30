@@ -396,10 +396,10 @@ describe("onboarding preview review surface", () => {
     await waitForText(container, "first-tree login ft_");
     await waitForText(container, "context enable --provider 'claude-code' --team 'org-acme'");
     expect(container.textContent).toContain("Setup prompt");
-    expect(container.textContent).toContain("Claude Code for Gandy's team");
+    expect(container.textContent).toContain("Claude Code or Codex for Gandy's team");
     expect(container.textContent).toContain("Connects this computer if needed");
     expect(container.textContent).toContain("enables Team Context for this local project");
-    expect(container.textContent).toContain("repository shared by your team");
+    expect(container.textContent).toContain("zero, one, or many source repositories");
     expect(
       [...container.querySelectorAll("button")].filter((button) => button.textContent === "Copy setup prompt"),
     ).toHaveLength(1);
@@ -420,7 +420,7 @@ describe("onboarding preview review surface", () => {
       </MemoryRouter>,
     );
 
-    await waitForText(container, "Claude Code for Gandy's team");
+    await waitForText(container, "Claude Code or Codex for Gandy's team");
     await waitForText(container, "View full prompt");
     expect(container.textContent).not.toContain("Run this command in your terminal");
     expect(container.textContent).not.toContain("Run manually in Terminal");

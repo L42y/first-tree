@@ -25,7 +25,8 @@ describe("context activation contracts", () => {
     expect(canonicalResourceRepoKeySchema.safeParse(repositoryKey).success).toBe(false);
   });
 
-  it("accepts only repository identity in the org-scoped activation body", () => {
+  it("accepts the repo-independent v2 body and temporary legacy v1 body", () => {
+    expect(contextActivationRequestSchema.parse({ schemaVersion: 2 })).toEqual({ schemaVersion: 2 });
     expect(
       contextActivationRequestSchema.parse({
         schemaVersion: 1,
@@ -35,6 +36,12 @@ describe("context activation contracts", () => {
       schemaVersion: 1,
       repositoryKey: "github.com/acme/payments",
     });
+    expect(
+      contextActivationRequestSchema.safeParse({
+        schemaVersion: 2,
+        repositoryKey: "github.com/acme/payments",
+      }).success,
+    ).toBe(false);
     expect(
       contextActivationRequestSchema.safeParse({
         schemaVersion: 1,

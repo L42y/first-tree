@@ -18,6 +18,8 @@ import {
   type ConfirmTeamRepositoriesOutput,
   type ContextActivationRequest,
   type ContextActivationResponse,
+  type ContextActivationV2Request,
+  type ContextActivationV2Response,
   type ContextReviewSubmitRequest,
   type ContextReviewSubmitResponse,
   type ContextTreeSeedPreflightRequest,
@@ -33,7 +35,7 @@ import {
   confirmTeamRepositoriesOutputSchema,
   confirmTeamRepositoriesSchema,
   contextActivationRequestSchema,
-  contextActivationResponseSchema,
+  contextActivationV2ResponseSchema,
   contextTreeSeedPreflightRequestSchema,
   contextTreeSeedPreflightResponseSchema,
   contextTreeWritePreflightRequestSchema,
@@ -51,9 +53,12 @@ import {
   followGithubEntityConflictSchema,
   type GithubTaskReplyRequest,
   type GithubTaskReplyResponse,
+  type LegacyContextActivationRequest,
+  type LegacyContextActivationResponse,
   type ListCronJobsResponse,
   type ListDocCommentsResponse,
   type ListDocsResponse,
+  legacyContextActivationResponseSchema,
   type Message,
   type OrgContextTreeFeaturesOutput,
   type OrgContextTreeFeaturesStorage,
@@ -453,9 +458,19 @@ export class FirstTreeHubSDK {
   }
 
   /**
-   * Validate one handoff-selected Team against the current source repository.
+   * Validate one handoff-selected Team and its current Context Tree readiness.
    * The Server does not search other memberships or mint durable authority.
    */
+  async validateMemberContextActivation(
+    organizationId: string,
+    data: ContextActivationV2Request,
+    options?: { retry?: boolean; timeoutMs?: number },
+  ): Promise<ContextActivationV2Response>;
+  async validateMemberContextActivation(
+    organizationId: string,
+    data: LegacyContextActivationRequest,
+    options?: { retry?: boolean; timeoutMs?: number },
+  ): Promise<LegacyContextActivationResponse>;
   async validateMemberContextActivation(
     organizationId: string,
     data: ContextActivationRequest,
@@ -473,7 +488,9 @@ export class FirstTreeHubSDK {
         timeoutMs: options.timeoutMs,
       },
     );
-    return contextActivationResponseSchema.parse(response);
+    return body.schemaVersion === 2
+      ? contextActivationV2ResponseSchema.parse(response)
+      : legacyContextActivationResponseSchema.parse(response);
   }
 
   /**

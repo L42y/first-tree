@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -103,7 +103,7 @@ function installManifest() {
 }
 
 describe("Context integration cross-resource operation", () => {
-  it("fails closed before mutation when the provider Plugin is installed but disabled", () => {
+  it("fails enable closed before mutation when the provider Plugin is installed but disabled", () => {
     setupHome("first-tree-context-operation-disabled-");
     const manifest = installManifest();
     writeContextIntegrationInstallManifest(manifest);
@@ -124,8 +124,7 @@ describe("Context integration cross-resource operation", () => {
     const expectedConfig = readContextIntegrationConfig();
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path" as const, root: "/work/payments" },
       organizationId: "org-acme",
     };
     const plan = {
@@ -153,14 +152,6 @@ describe("Context integration cross-resource operation", () => {
     expect(() =>
       enableContextIntegrationOperation(disabledDriver, plan, binding, expectedConfig, "client_1234abcd"),
     ).toThrow("installed but disabled");
-    expect(() =>
-      disableContextIntegrationOperation(disabledDriver, {
-        all: true,
-        removePlugin: true,
-        expectedConfig,
-        expectedAccountClientId: "client_1234abcd",
-      }),
-    ).toThrow("installed but disabled");
     expect(install).not.toHaveBeenCalled();
     expect(uninstall).not.toHaveBeenCalled();
   });
@@ -171,8 +162,7 @@ describe("Context integration cross-resource operation", () => {
     const expectedConfig = readContextIntegrationConfig();
     writeContextBinding({
       provider: "codex",
-      checkoutRoot: "/work/other",
-      repositoryKey: "github.com/acme/other",
+      project: { kind: "path", root: "/work/other" },
       organizationId: "org-other",
     });
 
@@ -202,8 +192,7 @@ describe("Context integration cross-resource operation", () => {
         },
         {
           provider: "codex",
-          checkoutRoot: "/work/payments",
-          repositoryKey: "github.com/acme/payments",
+          project: { kind: "path", root: "/work/payments" },
           organizationId: "org-acme",
         },
         expectedConfig,
@@ -222,8 +211,7 @@ describe("Context integration cross-resource operation", () => {
     const manifest = installManifest();
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path" as const, root: "/work/payments" },
       organizationId: "org-acme",
     };
 
@@ -272,7 +260,7 @@ describe("Context integration cross-resource operation", () => {
     expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
   });
 
-  it("keeps the old binding and restores the old Plugin when provider uninstall fails", () => {
+  it("removes one binding without reading or changing user-scope Plugin state", () => {
     const home = setupHome("first-tree-context-operation-disable-");
     const provider = driver(true);
     const manifest = installManifest();
@@ -281,37 +269,35 @@ describe("Context integration cross-resource operation", () => {
     writeRollbackPlugin(stableMarketplace);
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path" as const, root: "/work/payments" },
       organizationId: "org-acme",
     };
     writeContextBinding(binding);
+    const otherBinding = {
+      provider: "codex" as const,
+      project: { kind: "pathless" as const },
+      organizationId: "org-other",
+    };
+    writeContextBinding(otherBinding);
     const expectedConfig = readContextIntegrationConfig();
 
-    expect(() =>
-      disableContextIntegrationOperation(
-        provider.value,
-        {
-          all: true,
-          removePlugin: true,
-          expectedConfig,
-          expectedAccountClientId: "client_1234abcd",
-        },
-        {
-          uninstall: () => {
-            throw new Error("provider uninstall failed");
-          },
-        },
-      ),
-    ).toThrow("provider uninstall failed");
-
-    expect(readContextIntegrationConfig()).toEqual(expectedConfig);
-    expect(readContextIntegrationInstallManifest("codex")).toEqual(manifest);
-    expect(provider.install).toHaveBeenCalledWith({
-      marketplaceRoot: stableMarketplace,
-      marketplaceName: "first-tree-dev",
-      pluginName: "first-tree-context",
+    expect(
+      disableContextIntegrationOperation("codex", {
+        project: binding.project,
+        expectedConfig,
+        expectedAccountClientId: "client_1234abcd",
+      }),
+    ).toEqual({
+      removed: [binding],
+      remaining: [otherBinding],
     });
+
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 2, bindings: [otherBinding] });
+    expect(readContextIntegrationInstallManifest("codex")).toEqual(manifest);
+    expect(readFileSync(join(home, "config", "client.yaml"), "utf8")).toBe("client:\n  id: client_1234abcd\n");
+    expect(existsSync(stableMarketplace)).toBe(true);
+    expect(provider.install).not.toHaveBeenCalled();
+    expect(provider.uninstall).not.toHaveBeenCalled();
     expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
   });
 
@@ -369,8 +355,7 @@ describe("Context integration cross-resource operation", () => {
     const manifest = installManifest();
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path", root: "/work/payments" },
       organizationId: "org-acme",
     };
     const operationId = "12345678-1234-4123-8123-123456789abc";
@@ -402,6 +387,128 @@ describe("Context integration cross-resource operation", () => {
     expect(provider.install).toHaveBeenCalled();
     expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
     expect(existsSync(recoveryRoot)).toBe(false);
+  });
+
+  it("migrates legacy v1 bindings while recovering an old release journal", () => {
+    const home = setupHome("first-tree-context-operation-v1-recovery-");
+    const provider = driver(false);
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
+    mkdirSync(recoveryRoot, { recursive: true });
+    mkdirSync(join(home, "state", "context"), { recursive: true });
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "binding_changed",
+        previousBindings: [
+          {
+            provider: "codex",
+            checkoutRoot: "/work/legacy-project",
+            repositoryKey: "github.com/acme/legacy",
+            organizationId: "org_acme",
+          },
+        ],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-28T00:00:00.000Z",
+      })}\n`,
+    );
+
+    expect(recoverContextIntegrationOperation(provider.value)).toBe(true);
+    expect(readContextIntegrationConfig()).toEqual({
+      schemaVersion: 2,
+      bindings: [
+        {
+          provider: "codex",
+          project: { kind: "path", root: "/work/legacy-project" },
+          organizationId: "org_acme",
+        },
+      ],
+    });
+    expect(provider.uninstall).toHaveBeenCalled();
+    const backupPath = join(home, "config", "context.yaml.v1.bak");
+    expect(readFileSync(backupPath, "utf8")).toContain("repositoryKey: github.com/acme/legacy");
+    expect(readFileSync(backupPath, "utf8")).toContain("checkoutRoot: /work/legacy-project");
+    expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
+
+    const secondOperationId = "22345678-1234-4123-8123-123456789abc";
+    mkdirSync(join(home, "state", "context", "operation-recovery", secondOperationId), { recursive: true });
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        operationId: secondOperationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "binding_changed",
+        previousBindings: [
+          {
+            provider: "codex",
+            checkoutRoot: "/work/later-project",
+            repositoryKey: "github.com/acme/later",
+            organizationId: "org_later",
+          },
+        ],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-28T00:00:00.000Z",
+      })}\n`,
+    );
+    expect(recoverContextIntegrationOperation(provider.value)).toBe(true);
+    expect(readFileSync(backupPath, "utf8")).toContain("repositoryKey: github.com/acme/legacy");
+    expect(readFileSync(backupPath, "utf8")).not.toContain("github.com/acme/later");
+  });
+
+  it("keeps the legacy recovery journal when its fixed backup cannot be preserved", () => {
+    const home = setupHome("first-tree-context-operation-v1-backup-failure-");
+    const provider = driver(false);
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    mkdirSync(join(home, "state", "context", "operation-recovery", operationId), { recursive: true });
+    mkdirSync(join(home, "config", "context.yaml.v1.bak"), { recursive: true });
+    const journalPath = join(home, "state", "context", "operation-journal.json");
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "binding_changed",
+        previousBindings: [
+          {
+            provider: "codex",
+            checkoutRoot: "/work/legacy-project",
+            repositoryKey: "github.com/acme/legacy",
+            organizationId: "org_acme",
+          },
+        ],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-28T00:00:00.000Z",
+      })}\n`,
+    );
+
+    expect(() => recoverContextIntegrationOperation(provider.value)).toThrow(
+      "Could not recover the incomplete First Tree Context operation",
+    );
+    expect(existsSync(journalPath)).toBe(true);
   });
 
   it("keeps a durable recovery snapshot when retrying the old provider install fails", () => {

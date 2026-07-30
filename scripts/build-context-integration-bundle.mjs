@@ -101,13 +101,14 @@ function projectExternalSkill(name, sourceContent, provider) {
     "- Never accept a Team id from model context, a user prompt, Web state, or a prior task.",
     "- Never call the generic Team-parameter Tree commands from this Plugin.",
     "- Use only the hidden `context read` / `context write` route shown below. It derives",
-    "  Team from the exact provider + checkout binding, repeats live membership and",
-    "  selected-Team repository-scope validation, then delegates to the generic Tree",
-    "  operation. Missing binding, repository drift, Server failure, or denied activation",
+    "  Team from the exact provider + project binding, repeats live membership and",
+    "  Context Tree readiness validation, then delegates to the generic Tree",
+    "  operation. Missing binding, Server failure, or denied activation",
     "  stops before Tree content or mutation authority is returned.",
-    "- Capture the original source checkout before entering a Tree snapshot/worktree,",
-    "  and run every hidden route with that source checkout as its process cwd. A Tree",
-    "  snapshot or authoring worktree is never the activation checkout.",
+    "- Give the first hidden `context read` call the current session's host-confirmed project selector.",
+    "  Let the CLI resolver canonicalize that identity, then preserve its returned",
+    "  `activationProject` receipt and pass that exact path/pathless identity to",
+    "  every later hidden route. Never reclassify from a Tree snapshot or authoring worktree.",
     "- Re-run `context write` immediately before every push and PR/MR creation; a",
     "  SessionStart Connected envelope is not mutation authority.",
     "",
@@ -136,7 +137,7 @@ file as current truth.`,
     content = replaceRequiredPattern(
       content,
       /^description: .+$/mu,
-      `description: Read the current repo's Context Tree through the ${provider} user-scope Plugin. Requires an exact provider + checkout binding created by a Team-scoped enable handoff and live activation; never accepts a Team id from the model or user.`,
+      `description: Read the current project's Context Tree through the ${provider} user-scope Plugin. Requires a provider + path/pathless project binding created by a Team-scoped enable handoff and live activation; never accepts a Team id from the model or user.`,
       `${name} description`,
     );
     content = replaceRequired(
@@ -146,8 +147,8 @@ names an explicit First Tree Team id. The Team id is required task input: do
 not infer it from a Web selection, \`/me\` default, cached role, prior task, or
 account-global current state. If a BYO Read is requested without that explicit
 Team id, stop before reading Tree content and request it.`,
-      `In this External Plugin projection, always use the exact checkout activation
-route. The Team is derived only from the current ${provider} + checkout binding
+      `In this External Plugin projection, always use the project activation
+route. The Team is derived only from the current ${provider} + project binding
 and live Server validation. Do not ask for, accept, or forward a Team id.`,
       `${name} activation mode`,
     );
@@ -166,11 +167,10 @@ explicit Team in the BYO path.
       `first-tree tree read --help
 byo_read_root="$(mktemp -d)"
 first-tree --json tree read --team "<team-id>" --snapshot "$byo_read_root/context-tree"`,
-      `first_tree_source_checkout="$(git rev-parse --show-toplevel)"
-first-tree context read ${providerOption} --help
+      `__FIRST_TREE_SKILL_INVOCATION__ context read ${providerOption} --help
 byo_read_root="$(mktemp -d)"
-(cd "$first_tree_source_checkout" && \\
-  first-tree --json context read ${providerOption} --snapshot "$byo_read_root/context-tree")`,
+__FIRST_TREE_SKILL_INVOCATION__ --json context read ${providerOption} <host-confirmed-project-selector> \\
+  --snapshot "$byo_read_root/context-tree"`,
       `${name} command`,
     );
     content = replaceRequiredPattern(
@@ -239,7 +239,7 @@ source-backed write.`,
     content = replaceRequiredPattern(
       content,
       /^description: .+$/mu,
-      `description: Source-driven Context Tree write workflow for the ${provider} user-scope Plugin. Use when an explicit Tree-write request or the connected SessionStart standing route classifies a concrete source artifact — for example, a PR/MR, forge Issue, design doc, meeting or decision note, commit discussion or review thread, or pasted source material — as durable Tree work. Requires an exact provider + checkout binding, a Plugin-created exact read snapshot, and live write preflight; source PR/MR authorization alone is not write intent, and Team never comes from the model or user.`,
+      `description: Source-driven Context Tree write workflow for the ${provider} user-scope Plugin. Use when an explicit Tree-write request or the connected SessionStart standing route classifies a concrete source artifact — for example, a PR/MR, forge Issue, design doc, meeting or decision note, commit discussion or review thread, or pasted source material — as durable Tree work. Requires a provider + project binding, a Plugin-created exact read snapshot, and live write preflight; source PR/MR authorization alone is not write intent, and Team never comes from the model or user.`,
       `${name} description`,
     );
     content = replaceRequired(
@@ -264,7 +264,7 @@ source-backed write.`,
   explicit Tree-write request or the connected SessionStart standing route
   classifying that concrete artifact as a Tree-write task. Authorization to
   publish the source PR/MR alone is not a separate or transitive intent rule.
-  Team is derived only from the current provider + checkout binding and live
+  Team is derived only from the current provider + project binding and live
   validation; never accept it as model/user input or reconstruct it from other
   state.`,
       `${name} invocation mode`,
@@ -273,18 +273,16 @@ source-backed write.`,
       content,
       `first-tree --json tree write --team "<team-id>" \\
   --snapshot "<exact-snapshot>" --github-login "<gh-login>"`,
-      `(cd "<original-source-checkout>" && \\
-  first-tree --json context write ${providerOption} \\
-    --snapshot "<exact-snapshot>" --github-login "<gh-login>")`,
+      `__FIRST_TREE_SKILL_INVOCATION__ --json context write ${providerOption} <activation-project-selector-from-read> \\
+  --snapshot "<exact-snapshot>" --github-login "<gh-login>"`,
       `${name} GitHub command`,
     );
     content = replaceRequired(
       content,
       `first-tree --json tree write --team "<team-id>" \\
   --snapshot "<exact-snapshot>"`,
-      `(cd "<original-source-checkout>" && \\
-  first-tree --json context write ${providerOption} \\
-    --snapshot "<exact-snapshot>")`,
+      `__FIRST_TREE_SKILL_INVOCATION__ --json context write ${providerOption} <activation-project-selector-from-read> \\
+  --snapshot "<exact-snapshot>"`,
       `${name} GitLab command`,
     );
     content = replaceRequired(
@@ -305,7 +303,7 @@ source-backed write.`,
       `- \`first-tree tree write\` — in BYO mode, revalidate one explicit Team and
   exact snapshot and provider authentication before mutation.`,
       `- \`first-tree context write ${providerOption}\` — revalidate the current
-  provider + checkout binding, live Team scope, exact snapshot, Reviewer
+  provider + project binding, live Team scope, exact snapshot, Reviewer
   readiness, and provider authentication before mutation.`,
       `${name} CLI reference`,
     );
@@ -321,7 +319,10 @@ source-backed write.`,
       throw new Error(`External ${provider} ${name} still exposes a forbidden generic activation path: ${pattern}`);
     }
   }
-  return content;
+  return content.replace(
+    /\bfirst-tree(?=\s+(?:chat|context|github|gitlab|tree)\b)/gu,
+    "__FIRST_TREE_SKILL_INVOCATION__",
+  );
 }
 
 function copyExternalSkills(pluginRoot, provider) {
@@ -341,6 +342,42 @@ function copyExternalSkills(pluginRoot, provider) {
       join(skillTarget, "references", "context-tree-policy.md"),
     );
   }
+  writeManualActivationSkill(pluginRoot, provider);
+}
+
+function writeManualActivationSkill(pluginRoot, provider) {
+  const target = join(pluginRoot, "skills", "first-tree");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(
+    join(target, "SKILL.md"),
+    `---
+name: first-tree
+description: Manually activate First Tree Team Context for the current ${provider} project, including pathless sessions. Use when the user asks to enable, activate, or use First Tree Context in the current session.
+---
+
+# Activate First Tree Context
+
+1. Never infer or accept a Team id. Preserve the current session's original project identity even if shell cwd has changed:
+${
+  provider === "claude-code"
+    ? '   - Use `--project-root "<host-confirmed-Claude-project-root>"` for an attached Claude Code project, or `--pathless` only when the Claude host confirms the session is pathless. Never derive the root from shell `pwd`/cwd or assume `CLAUDE_PROJECT_DIR` exists in an ordinary shell command.'
+    : '   - Use `--pathless` when the current Codex App session is projectless; otherwise use `--project-root "<original-attached-project-root>"`. Do not reclassify from the current shell cwd and do not copy or reproduce the Codex scratch-path heuristic; the CLI remains the only classifier used by setup and Hook activation.'
+}
+2. Create a task-owned temporary directory and run the read command with that one host-confirmed selector:
+
+\`\`\`sh
+first_tree_read_root="$(mktemp -d)"
+__FIRST_TREE_SKILL_INVOCATION__ --json context read --provider ${provider} <host-confirmed-project-selector> \\
+  --snapshot "$first_tree_read_root/context-tree"
+\`\`\`
+
+3. Adopt the returned \`activationContext\` block verbatim as standing instructions for this session. It is produced by the same connected-context builder as SessionStart and \`context enable\`; do not summarize or reconstruct it.
+4. Preserve the returned \`activationProject\` receipt. For every later \`context write\` in this task, pass exactly \`--project-root "<root>"\` when its project kind is \`path\`, or \`--pathless\` when its kind is \`pathless\`. Never derive a replacement selector from a changed cwd, the Context Tree snapshot, or an authoring worktree.
+5. Treat a failed binding or live-authority check as unavailable; ordinary coding may continue. Do not ask for a Team id and do not search another binding.
+6. Before interpreting Tree content, read \`../first-tree-read/references/context-tree-policy.md\` completely and apply it to file selection and authority. Fail closed if that canonical Policy is unavailable.
+7. Read the relevant files only from the returned exact detached \`snapshotPath\`. Keep that snapshot and its \`activationProject\` receipt for any write preflight in this task, and use the sibling \`first-tree-read\` / \`first-tree-write\` workflows for subsequent Context operations.
+`,
+  );
 }
 
 function writeSessionStartHook(pluginRoot, provider) {

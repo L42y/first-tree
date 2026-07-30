@@ -18,17 +18,17 @@ personal agent, and only then sees the paths that are actually available:
 
 Deterministic tests own rendering, readiness gates, picker filtering, and copy. This case owns the live boundaries those
 tests cannot prove: the real Team-agent kickoff, exact membership stamps, the external Context handoff for one Team and
-checkout, reload behavior, and the absence of accidental personal-agent or Chat creation.
+provider project, reload behavior, and the absence of accidental personal-agent or Chat creation.
 
 ## Preconditions
 
-- An isolated server stack with an organization that has an active code-repository Team resource and a populated,
-  bound Context Tree.
+- An isolated server stack with an organization that has a populated, bound Context Tree. Source repositories need not
+  be registered as Team resources.
 - **Owner**: an admin or member with a connected client and an active org-visible
   (`visibility=organization`) non-human agent bound to a live runtime.
 - **Invitee**: a fresh invited member with no connected client and no personal agent.
 - A second organization with no org-visible agent.
-- A third organization whose Context Tree or active Team repository is not ready.
+- A third organization whose Context Tree is not ready.
 
 ## Scenario
 
@@ -50,16 +50,17 @@ checkout, reload behavior, and the absence of accidental personal-agent or Chat 
 6. Repeat in the organization without an eligible Team agent. After **Continue without my own agent**, show that none is
    available without exposing an Admin setup action. If external Context access is ready, keep its secondary entry
    available; the recommended personal-agent journey remains resumable.
-7. Open the external Context entry. Select Claude Code or Codex and copy exactly one server-authored artifact. The UI
-   tells the member to paste it into the selected coding agent while that agent is open in the target repository
-   checkout; it never sends the member to a Terminal screen or creates a second copy step.
-8. Run the copied artifact from the target checkout. It may install or connect the normal First Tree Computer runtime
-   internally, then enables and verifies the exact Team/provider/repository/checkout binding. The provider conversation
-   remains outside First Tree Chat. No personal First Tree agent or onboarding kickoff chat is created, and
-   `onboarding_completed_at` remains null.
-9. Corrupt the local Plugin, change the checkout repository, remove the active Team repository, or unbind the Team
-   Context before final activation. The fail-closed verification rejects stale or mismatched authority and does not
-   claim success.
+7. Open the external Context entry and copy exactly one provider-neutral, server-authored prompt. Paste it into either
+   Claude Code or Codex; the current agent chooses its provider while the CLI alone classifies the current project.
+   The UI never sends the member to a Terminal screen or creates a second copy step.
+8. Run the copied artifact once from each supported project shape: a normal directory with no repositories, a parent
+   directory containing multiple repositories, and a Codex projectless scratch session. Path projects bind to their
+   canonical root and receive automatic SessionStart activation; the pathless binding completes setup without
+   automatic activation and becomes usable through the manual `first-tree` Skill. No personal First Tree agent or
+   onboarding kickoff chat is created, and `onboarding_completed_at` remains null.
+9. Add, remove, or change source repositories and their Team-resource registration. Context authority remains
+   unchanged. Separately corrupt the local Plugin, revoke membership, or unbind the Team Context before activation;
+   fail-closed verification rejects stale authority while ordinary coding continues.
 10. Return to First Tree after external setup. The member can use the product normally because onboarding auto-open was
     suppressed only by their explicit continue-without action, while the personal-agent journey remains resumable.
 11. Verify the Context Tree entry already present in Settings → Setup remains unchanged and can issue a fresh

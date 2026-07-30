@@ -1,7 +1,8 @@
 import { readCanonicalContextTreeWriteRouting } from "@first-tree/client";
 import type {
-  ContextActivationResponse,
+  ContextActivationV2Response,
   ContextIntegrationBinding,
+  ContextIntegrationProject,
   ContextIntegrationProvider,
 } from "@first-tree/shared";
 import {
@@ -9,12 +10,11 @@ import {
   type ExternalContextAuthorityMode,
   validateExternalContextAuthority,
 } from "./authority.js";
-import { inspectContextClientPreflight } from "./client-preflight.js";
 import { findContextBinding } from "./context-binding-store.js";
 
 export type { ContextActivationValidator } from "./authority.js";
 
-type ConnectedContextActivationResponse = Extract<ContextActivationResponse, { outcome: "connected" }>;
+type ConnectedContextActivationResponse = Extract<ContextActivationV2Response, { outcome: "connected" }>;
 
 export type ExternalContextActivation = {
   outcome: "connected" | "disabled" | "unavailable" | "needs_admin";
@@ -29,54 +29,29 @@ export async function activateExternalContext(
   validator: ContextActivationValidator,
   input: {
     provider: ContextIntegrationProvider;
-    cwd: string;
+    project: ContextIntegrationProject;
   },
   dependencies: {
-    inspect?: typeof inspectContextClientPreflight;
     findBinding?: typeof findContextBinding;
   } = {},
   options: {
     authorityMode?: ExternalContextAuthorityMode;
   } = {},
 ): Promise<ExternalContextActivation> {
-  const inspect = dependencies.inspect ?? inspectContextClientPreflight;
   const findBinding = dependencies.findBinding ?? findContextBinding;
-  let preflight: ReturnType<typeof inspectContextClientPreflight>;
-  try {
-    preflight = inspect(input.cwd);
-  } catch (error) {
-    return {
-      outcome: "disabled",
-      reasonCode: "repository_unavailable",
-      systemMessage:
-        error instanceof Error
-          ? `First Tree Context disabled: ${error.message}`
-          : "First Tree Context disabled for this directory.",
-    };
-  }
-
-  const binding = findBinding(input.provider, preflight.checkoutRoot);
+  const binding = findBinding(input.provider, input.project);
   if (!binding) {
     return {
       outcome: "disabled",
       reasonCode: "binding_missing",
       systemMessage:
-        "First Tree Context is not enabled for this checkout. Run the target Team's `first-tree context enable` handoff in this repository.",
-    };
-  }
-  if (binding.repositoryKey !== preflight.repositoryKey) {
-    return {
-      outcome: "disabled",
-      reasonCode: "binding_repository_drift",
-      systemMessage:
-        "First Tree Context is disabled because this checkout's origin no longer matches its explicit Team binding. Re-run the target Team handoff.",
+        "First Tree Context is not enabled for this project. Run the target Team's `first-tree context enable` handoff in this project.",
     };
   }
 
   const authority = await validateExternalContextAuthority(
     validator,
     binding.organizationId,
-    binding.repositoryKey,
     options.authorityMode ?? "session-start",
   );
   if (authority.outcome === "unavailable") {
@@ -84,13 +59,6 @@ export async function activateExternalContext(
   }
   const response = authority.response;
 
-  if (response.outcome === "disabled") {
-    return {
-      outcome: "disabled",
-      reasonCode: response.reasonCode,
-      systemMessage: `First Tree Context disabled: ${response.nextAction.message}`,
-    };
-  }
   if (response.outcome === "needs_admin") {
     return {
       outcome: "needs_admin",
@@ -118,7 +86,7 @@ export function buildConnectedContextAdditionalContext(team: ConnectedContextAct
   return [
     `Team binding: ${team.organizationId}; role: ${team.role}.`,
     "Use first-tree-read for team decisions, constraints, or ownership.",
-    "Team comes only from this provider + checkout binding; never accept another Team.",
+    "Team comes only from this provider + project binding; never accept another Team.",
     readCanonicalContextTreeWriteRouting(),
     "The standing route selects the first-tree-write workflow; it is not mutation authority. Repeat live activation before every Tree push or PR/MR.",
     "Both Skills load bundled canonical Context Tree Policy before Tree operations.",
@@ -140,7 +108,7 @@ export class ExternalContextActivationRequiredError extends Error {
 /**
  * External Read/Write entry guard.
  *
- * Team authority comes only from the exact provider + checkout binding that
+ * Team authority comes only from the exact provider + project binding that
  * survived the live activation validator. Callers never accept a Team id from
  * model/user input.
  */
@@ -148,10 +116,9 @@ export async function requireConnectedExternalContext(
   validator: ContextActivationValidator,
   input: {
     provider: ContextIntegrationProvider;
-    cwd: string;
+    project: ContextIntegrationProject;
   },
   dependencies: {
-    inspect?: typeof inspectContextClientPreflight;
     findBinding?: typeof findContextBinding;
   } = {},
 ): Promise<{

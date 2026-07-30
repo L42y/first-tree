@@ -5,12 +5,19 @@ import type {
   ContextIntegrationBinding,
   ContextIntegrationConfig,
   ContextIntegrationInstallManifest,
+  LegacyContextIntegrationConfig,
 } from "@first-tree/shared";
-import { contextIntegrationConfigSchema, contextIntegrationInstallManifestSchema } from "@first-tree/shared";
+import {
+  contextIntegrationConfigSchema,
+  contextIntegrationInstallManifestSchema,
+  legacyContextIntegrationConfigSchema,
+} from "@first-tree/shared";
 import { defaultHome } from "@first-tree/shared/config";
+import { channelConfig } from "../channel.js";
 import { readActiveContextAccountClientId } from "./account-state-guard.js";
 import {
   assertContextIntegrationConfig,
+  preserveLegacyContextIntegrationBackup,
   readContextIntegrationConfig,
   removeContextBindings,
   replaceContextIntegrationConfig,
@@ -23,7 +30,6 @@ import {
   contextIntegrationMarketplaceName,
   contextIntegrationMarketplaceSourcePath,
   installContextIntegration,
-  uninstallContextIntegration,
 } from "./installer.js";
 import {
   readContextIntegrationInstallManifest,
@@ -60,6 +66,10 @@ type OperationJournal = {
   startedAt: string;
 };
 
+type ParsedOperationJournal = OperationJournal & {
+  legacyPreviousConfig: LegacyContextIntegrationConfig | null;
+};
+
 export function enableContextIntegrationOperation(
   driver: ContextIntegrationProviderDriver,
   plan: ContextIntegrationInstallPlan,
@@ -89,7 +99,9 @@ export function enableContextIntegrationOperation(
         allowReplace: true,
         expectedPrevious:
           expectedConfig.bindings.find(
-            (candidate) => candidate.provider === binding.provider && candidate.checkoutRoot === binding.checkoutRoot,
+            (candidate) =>
+              candidate.provider === binding.provider &&
+              JSON.stringify(candidate.project) === JSON.stringify(binding.project),
           ) ?? null,
       });
       bindingChanged = true;
@@ -103,51 +115,28 @@ export function enableContextIntegrationOperation(
 }
 
 export function disableContextIntegrationOperation(
-  driver: ContextIntegrationProviderDriver,
+  provider: ContextIntegrationBinding["provider"],
   input: {
-    checkoutRoot?: string;
-    all: boolean;
-    removePlugin: boolean;
+    project: ContextIntegrationBinding["project"];
     expectedConfig: ContextIntegrationConfig;
     expectedAccountClientId: string;
   },
   dependencies: {
-    uninstall?: typeof uninstallContextIntegration;
     removeBindings?: typeof removeContextBindings;
   } = {},
 ): {
   removed: ContextIntegrationBinding[];
   remaining: ContextIntegrationBinding[];
-  pluginRemoved: boolean;
 } {
   return withContextIntegrationLock(() => {
     assertNoIncompleteOperation();
     assertExpectedAccount(input.expectedAccountClientId);
     assertContextIntegrationConfig(input.expectedConfig);
-    const providerBindings = input.expectedConfig.bindings.filter((binding) => binding.provider === driver.provider);
-    const pluginRemoved = input.removePlugin;
-    const snapshot = captureOperationSnapshot(driver, input.expectedConfig);
-    const journal = createOperationJournal("disable", driver, snapshot);
-    let providerChanged = false;
-    let bindingChanged = false;
-    try {
-      if (pluginRemoved) {
-        providerChanged = true;
-        (dependencies.uninstall ?? uninstallContextIntegration)(driver);
-        writeOperationJournal({ ...journal, phase: "provider_changed" });
-      }
-      const removal = (dependencies.removeBindings ?? removeContextBindings)(driver.provider, {
-        all: input.all,
-        checkoutRoot: input.checkoutRoot,
-        expectedProviderBindings: providerBindings,
-      });
-      bindingChanged = removal.removed.length > 0;
-      writeOperationJournal({ ...journal, phase: "binding_changed" });
-      completeOperation(snapshot);
-      return { ...removal, pluginRemoved };
-    } catch (error) {
-      rollbackOperation(driver, snapshot, { providerChanged, bindingChanged }, journal, error);
-    }
+    const providerBindings = input.expectedConfig.bindings.filter((binding) => binding.provider === provider);
+    return (dependencies.removeBindings ?? removeContextBindings)(provider, {
+      project: input.project,
+      expectedProviderBindings: providerBindings,
+    });
   });
 }
 
@@ -192,7 +181,7 @@ function captureOperationSnapshot(
 
   if (probe.installed && (!installManifest || !marketplaceSourceExisted)) {
     throw new Error(
-      `The existing ${driver.provider} Context Plugin lacks a complete First Tree rollback source. Run \`first-tree context repair --provider ${driver.provider}\` before changing bindings.`,
+      `The existing ${driver.provider} Context Plugin lacks a complete First Tree rollback source. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before changing bindings.`,
     );
   }
   if (probe.installed && !probe.enabled) {
@@ -268,7 +257,7 @@ function rollbackOperation(
     writeOperationJournal({ ...journal, phase: "rollback_failed" });
     throw new AggregateError(
       [originalError, ...rollbackErrors],
-      "First Tree Context operation failed and could not fully restore Plugin, manifest, and binding state. Run `first-tree context repair` before retrying.",
+      `First Tree Context operation failed and could not fully restore Plugin, manifest, and binding state. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before retrying.`,
     );
   }
   completeOperation(snapshot);
@@ -330,7 +319,7 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
     }
     const snapshot: OperationSnapshot = {
       accountClientId: journal.accountClientId,
-      config: { schemaVersion: 1, bindings: journal.previousBindings },
+      config: { schemaVersion: 2, bindings: journal.previousBindings },
       installManifest: journal.previousInstallManifest,
       providerInstalled: journal.providerInstalled,
       providerEnabled: journal.providerEnabled,
@@ -345,6 +334,7 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
     }
     const errors: unknown[] = [];
     try {
+      if (journal.legacyPreviousConfig) preserveLegacyContextIntegrationBackup(journal.legacyPreviousConfig);
       replaceContextIntegrationConfig(snapshot.config);
     } catch (error) {
       errors.push(error);
@@ -381,7 +371,7 @@ export function inspectContextIntegrationOperation(): {
     : null;
 }
 
-function readOperationJournal(): OperationJournal | null {
+function readOperationJournal(): ParsedOperationJournal | null {
   try {
     const parsed = JSON.parse(readFileSync(operationJournalPath(), "utf8")) as Partial<OperationJournal>;
     const operationIdValid =
@@ -405,10 +395,7 @@ function readOperationJournal(): OperationJournal | null {
     ) {
       throw new Error("invalid operation journal");
     }
-    const previousBindings = contextIntegrationConfigSchema.parse({
-      schemaVersion: 1,
-      bindings: parsed.previousBindings,
-    }).bindings;
+    const previous = parseOperationJournalBindings(parsed.previousBindings);
     const previousInstallManifest =
       parsed.previousInstallManifest === null
         ? null
@@ -421,8 +408,9 @@ function readOperationJournal(): OperationJournal | null {
     }
     return {
       ...(parsed as OperationJournal),
-      previousBindings,
+      previousBindings: previous.bindings,
       previousInstallManifest,
+      legacyPreviousConfig: previous.legacyConfig,
     };
   } catch (error) {
     if (isMissing(error)) return null;
@@ -430,10 +418,34 @@ function readOperationJournal(): OperationJournal | null {
   }
 }
 
+function parseOperationJournalBindings(value: unknown): {
+  bindings: ContextIntegrationBinding[];
+  legacyConfig: LegacyContextIntegrationConfig | null;
+} {
+  const current = contextIntegrationConfigSchema.safeParse({
+    schemaVersion: 2,
+    bindings: value,
+  });
+  if (current.success) return { bindings: current.data.bindings, legacyConfig: null };
+  const legacy = legacyContextIntegrationConfigSchema.parse({ schemaVersion: 1, bindings: value });
+  return {
+    bindings: contextIntegrationConfigSchema.parse({
+      schemaVersion: 2,
+      bindings: legacy.bindings.map((binding) => ({
+        provider: binding.provider,
+        project: { kind: "path", root: binding.checkoutRoot },
+        organizationId: binding.organizationId,
+      })),
+    }).bindings,
+    legacyConfig: legacy,
+  };
+}
+
 function assertNoIncompleteOperation(): void {
-  if (existsSync(operationJournalPath())) {
+  const incomplete = inspectContextIntegrationOperation();
+  if (incomplete) {
     throw new Error(
-      "A First Tree Context Plugin/binding operation is incomplete. Run `first-tree context repair` before retrying.",
+      `A First Tree Context Plugin/binding operation is incomplete. Run \`${channelConfig.binName} context repair --provider ${incomplete.provider}\` before retrying.`,
     );
   }
 }
