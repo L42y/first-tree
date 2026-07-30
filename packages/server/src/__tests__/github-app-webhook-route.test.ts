@@ -1,4 +1,5 @@
 import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
+import type { GithubAppInstallationPermissions } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agents } from "../db/schema/agents.js";
@@ -130,7 +131,12 @@ async function seedAgent(
 
 async function seedInstallation(
   app: App,
-  opts: { installationId: number; orgId: string | null; suspended?: boolean },
+  opts: {
+    installationId: number;
+    orgId: string | null;
+    suspended?: boolean;
+    permissions?: GithubAppInstallationPermissions;
+  },
 ): Promise<void> {
   await app.db.insert(githubAppInstallations).values({
     id: uuidv7(),
@@ -139,7 +145,7 @@ async function seedInstallation(
     accountLogin: "owner",
     accountGithubId: 1000 + opts.installationId,
     hubOrganizationId: opts.orgId,
-    permissions: { contents: "read", pull_requests: "write" },
+    permissions: opts.permissions ?? { contents: "read", pull_requests: "write", issues: "write" },
     events: ["pull_request", "issues"],
     suspendedAt: opts.suspended ? new Date(Date.now() - 1_000) : null,
   });
@@ -1777,12 +1783,23 @@ describe("POST /webhooks/github-app", () => {
       type: "github_event",
       reason: scenario.expectedReason,
       mentionedUser: scenario.expectedLogin,
-      teamAgentTask: { agentUuid: teamAgent },
+      teamAgentTask: { agentUuid: teamAgent, runId: expect.any(String) },
     });
     expect(message?.metadata).toMatchObject({
       mentions: [teamAgent],
-      teamAgentTask: { agentUuid: teamAgent },
+      teamAgentTask: { agentUuid: teamAgent, runId: expect.any(String) },
+      githubTaskRun: true,
+      githubTaskRunId: expect.any(String),
+      githubTaskAgentUuid: teamAgent,
+      githubTaskManagerHumanAgentId: admin.humanAgentUuid,
+      githubTaskRepository: "owner/repo",
+      githubTaskEntityType: "issue",
+      githubTaskEntityNumber: scenario.action === "opened" ? 12 : 13,
+      githubTaskReplySubmission: { state: "pending" },
     });
+    expect(message?.metadata.githubTaskRunId).toBe(
+      (message?.content as { teamAgentTask?: { runId?: string } }).teamAgentTask?.runId,
+    );
 
     const [entry] = await app.db
       .select({ notify: inboxEntries.notify })
@@ -1810,6 +1827,258 @@ describe("POST /webhooks/github-app", () => {
           row.metadata.teamAgentTask.agentUuid === teamAgent,
       ),
     ).toBe(true);
+  });
+
+  it("returns a stable permission blocker and creates no task run after an installation permission downgrade", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100036;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    await configureTeamAgent(app, admin);
+    await app.db
+      .update(githubAppInstallations)
+      .set({ permissions: { metadata: "read", issues: "read", pull_requests: "write" } })
+      .where(eq(githubAppInstallations.installationId, installationId));
+
+    const response = await postWebhook(app, "issues", {
+      action: "opened",
+      issue: {
+        number: 16,
+        title: "Permission downgraded",
+        html_url: "https://github.com/owner/repo/issues/16",
+        body: "@test-app-slug investigate",
+        assignees: [],
+        author_association: "MEMBER",
+      },
+      repository: { full_name: "owner/repo" },
+      sender: { login: "authorized-member", type: "User" },
+      installation: { id: installationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      audience: 0,
+      appTaskBlocker: "GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED",
+    });
+    expect(await app.db.select().from(messages)).toHaveLength(0);
+    expect(await app.db.select().from(githubEntityChatMappings)).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      label: "Discussion",
+      eventType: "discussion",
+      payload: (installationId: number) => ({
+        action: "created",
+        discussion: {
+          number: 17,
+          title: "Unsupported discussion task",
+          html_url: "https://github.com/owner/repo/discussions/17",
+          body: "@test-app-slug investigate",
+          author_association: "MEMBER",
+        },
+        repository: { full_name: "owner/repo" },
+        sender: { login: "authorized-member", type: "User" },
+        installation: { id: installationId },
+      }),
+    },
+    {
+      label: "Commit",
+      eventType: "commit_comment",
+      payload: (installationId: number) => ({
+        action: "created",
+        comment: {
+          body: "@test-app-slug investigate",
+          commit_id: "abc1234",
+          html_url: "https://github.com/owner/repo/commit/abc1234#commitcomment-1",
+          author_association: "MEMBER",
+        },
+        repository: { full_name: "owner/repo" },
+        sender: { login: "authorized-member", type: "User" },
+        installation: { id: installationId },
+      }),
+    },
+  ])("returns a stable unsupported blocker and zero task mutation for an App-targeted $label", async (scenario) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = scenario.eventType === "discussion" ? 100037 : 100038;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    await configureTeamAgent(app, admin);
+
+    const response = await postWebhook(app, scenario.eventType, scenario.payload(installationId));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      audience: 0,
+      appTaskBlocker: "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED",
+    });
+    expect(await app.db.select().from(messages)).toHaveLength(0);
+    expect(await app.db.select().from(githubEntityChatMappings)).toHaveLength(0);
+  });
+
+  it("does not turn an App-authored terminal comment webhook into another task run", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100039;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const teamAgent = await configureTeamAgent(app, admin);
+    const chat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [teamAgent],
+    });
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: teamAgent,
+      entityType: "issue",
+      entityKey: "owner/repo#18",
+      chatId: chat.id,
+      boundVia: "agent_declared",
+    });
+
+    const response = await postWebhook(app, "issue_comment", {
+      action: "created",
+      issue: {
+        number: 18,
+        title: "Completed App task",
+        html_url: "https://github.com/owner/repo/issues/18",
+        author_association: "NONE",
+      },
+      comment: {
+        body: "Completed.\n\n<!-- first-tree-github-task-reply-run:01900000-0000-7000-8000-000000000018 -->",
+        html_url: "https://github.com/owner/repo/issues/18#issuecomment-18",
+        user: { login: "test-app-slug[bot]", type: "Bot" },
+        author_association: "NONE",
+      },
+      repository: { full_name: "owner/repo" },
+      sender: { login: "test-app-slug[bot]", type: "Bot" },
+      installation: { id: installationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ delivered: 1 });
+    expect(response.json()).not.toHaveProperty("appTaskBlocker");
+    const delivered = await app.db.select().from(messages).where(eq(messages.chatId, chat.id));
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]?.metadata).toMatchObject({ mentions: [teamAgent] });
+    expect(delivered[0]?.metadata).not.toHaveProperty("teamAgentTask");
+    expect(delivered[0]?.metadata).not.toHaveProperty("githubTaskRun");
+    expect(delivered[0]?.content).not.toHaveProperty("teamAgentTask");
+    expect(await app.db.select().from(githubEntityChatMappings)).toHaveLength(1);
+  });
+
+  it("suppresses an App-authored task reply from trusted Context Review while preserving a same-Agent generic subscription", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100044;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const reviewer = await configureContextReviewer(app, admin);
+    const subscribedChat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [reviewer],
+    });
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: reviewer,
+      entityType: "pull_request",
+      entityKey: "owner/context-tree#42",
+      chatId: subscribedChat.id,
+      boundVia: "human_declared",
+    });
+
+    const basePayload = contextIssueCommentPayload(installationId);
+    const response = await postWebhook(app, "issue_comment", {
+      ...basePayload,
+      comment: {
+        ...basePayload.comment,
+        body: "Completed.\n\n<!-- first-tree-github-task-reply-run:01900000-0000-7000-8000-000000000042 -->",
+        user: { login: "TEST-APP-SLUG[BOT]", type: "Bot" },
+      },
+      sender: { login: "test-app-slug[bot]", type: "Bot" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      delivered: 1,
+      contextReviewer: { handled: false, reason: "github_task_reply_self_output" },
+    });
+    const chatRows = await app.db.select().from(chats);
+    expect(chatRows).toHaveLength(1);
+    expect(chatRows[0]?.id).toBe(subscribedChat.id);
+
+    const messageRows = await app.db.select().from(messages);
+    expect(messageRows).toHaveLength(1);
+    expect(messageRows[0]?.chatId).toBe(subscribedChat.id);
+    expect(messageRows[0]?.metadata).toMatchObject({
+      event: "issue_comment",
+      action: "created",
+      mentions: [reviewer],
+    });
+    expect(messageRows[0]?.metadata).not.toHaveProperty("contextReviewRunId");
+    expect(messageRows[0]?.metadata).not.toHaveProperty("contextTreeReviewer");
+    expect(messageRows[0]?.metadata).not.toHaveProperty("teamAgentTask");
+    expect(messageRows[0]?.metadata).not.toHaveProperty("githubTaskRun");
+    expect(messageRows[0]?.content).not.toHaveProperty("teamAgentTask");
+
+    const notified = await app.db
+      .select({ inboxId: inboxEntries.inboxId, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(eq(inboxEntries.messageId, messageRows[0]?.id ?? ""));
+    expect(notified).toEqual(
+      expect.arrayContaining([expect.objectContaining({ inboxId: `inbox_${reviewer}`, notify: true })]),
+    );
+  });
+
+  it.each([
+    {
+      label: "the configured App login with a human author type",
+      login: "test-app-slug[bot]",
+      type: "User",
+    },
+    {
+      label: "a different bot login",
+      login: "other-app[bot]",
+      type: "Bot",
+    },
+  ])("does not suppress trusted Context Review when a task reply marker comes from $label", async ({ login, type }) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = type === "User" ? 100045 : 100046;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const reviewer = await configureContextReviewer(app, admin);
+    vi.stubGlobal("fetch", contextReviewerGithubFetch());
+
+    const basePayload = contextIssueCommentPayload(installationId);
+    const response = await postWebhook(app, "issue_comment", {
+      ...basePayload,
+      comment: {
+        ...basePayload.comment,
+        body: "Injected marker.\n\n<!-- first-tree-github-task-reply-run:01900000-0000-7000-8000-000000000043 -->",
+        user: { login, type },
+      },
+      sender: { login, type },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      contextReviewer: { handled: true, reused: false },
+    });
+    const messageRows = await app.db.select().from(messages);
+    expect(messageRows).toHaveLength(1);
+    expect(messageRows[0]?.metadata).toMatchObject({
+      contextTreeReviewer: true,
+      mentions: [reviewer],
+    });
+    expect(messageRows[0]?.metadata.contextReviewRunId).toEqual(expect.any(String));
+    expect(messageRows[0]?.metadata).not.toHaveProperty("teamAgentTask");
+
+    const [reviewerNotification] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, messageRows[0]?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${reviewer}`)))
+      .limit(1);
+    expect(reviewerNotification?.notify).toBe(true);
   });
 
   it("reuses an existing human mapping, adds the Team Agent, and preserves the surviving followed wake", async () => {

@@ -49,6 +49,8 @@ import {
   type FollowGithubEntityConflict,
   type FollowGithubEntityResponse,
   followGithubEntityConflictSchema,
+  type GithubTaskReplyRequest,
+  type GithubTaskReplyResponse,
   type ListCronJobsResponse,
   type ListDocCommentsResponse,
   type ListDocsResponse,
@@ -727,6 +729,21 @@ export class FirstTreeHubSDK {
       { method: "POST", body: JSON.stringify(body) },
       // The server reconciles an unknown GitHub mutation. The client must not
       // replay a possibly committed submission after a transient response.
+      { retry: false },
+    );
+  }
+
+  /** Publish one server-authored App-directed GitHub task reply. */
+  async submitGithubTaskReply(
+    chatId: string,
+    runId: string,
+    body: GithubTaskReplyRequest,
+  ): Promise<GithubTaskReplyResponse> {
+    return this.requestJson<GithubTaskReplyResponse>(
+      `/api/v1/agent/chats/${encodeURIComponent(chatId)}/github-task-runs/${encodeURIComponent(runId)}/reply`,
+      { method: "POST", body: JSON.stringify(body) },
+      // An upstream timeout can hide a committed GitHub comment. The server
+      // reconciles the hidden run marker; the client never auto-replays.
       { retry: false },
     );
   }

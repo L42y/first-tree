@@ -1048,6 +1048,51 @@ describe("Team Agent assignment contract", () => {
     });
   });
 
+  it("blocks Team Agent configuration when the connected App cannot publish both Issue and PR comments", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const teamAgent = await createReviewer(app, admin, { displayName: "Team Agent" });
+    await upsertInstallationFromMetadata(app.db, {
+      installation: {
+        id: Number(`8${Math.floor(Math.random() * 1_000_000)}`),
+        accountType: "Organization",
+        accountLogin: "owner",
+        accountGithubId: Math.floor(Math.random() * 1_000_000_000),
+        permissions: { metadata: "read", issues: "read", pull_requests: "write" },
+        events: ["issues", "issue_comment", "pull_request"],
+        suspendedAt: null,
+      },
+      hubOrganizationId: admin.organizationId,
+    });
+
+    await expect(
+      listTeamAgentCandidates(app.db, {
+        organizationId: admin.organizationId,
+        appSlug: "test-app-slug",
+        now: observedAt,
+        staleSeconds: 60,
+      }),
+    ).resolves.toMatchObject({
+      items: [],
+      blockers: [
+        {
+          code: "github_app_task_reply_permission_required",
+          resolutionOwner: "admin",
+          actionKind: "manage_github_installation",
+        },
+      ],
+    });
+    await expect(
+      putTeamAgentAssignment(app.db, admin.organizationId, teamAgent.uuid, {
+        updatedBy: admin.userId,
+        appSlug: "test-app-slug",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      blocker: { code: "github_app_task_reply_permission_required" },
+    });
+  });
+
   it("exposes dedicated Team Agent endpoints to Team admins", async () => {
     const app = getApp();
     const admin = await createAdminContext(app);

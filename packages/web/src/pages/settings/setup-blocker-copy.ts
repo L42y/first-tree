@@ -9,6 +9,8 @@ const SETUP_BLOCKER_COPY = {
   github_tree_repo_not_covered: "The GitHub App cannot access this Context Tree repository.",
   github_app_slug_missing:
     "A deployment operator must configure the GitHub App login before App-target delegation can run.",
+  github_app_task_reply_permission_required:
+    "The GitHub App installation must grant Issues and Pull requests write access for App-authored task replies.",
   gitlab_webhook_not_seen: "Waiting for the first valid GitLab webhook.",
   gitlab_hook_source_not_identified:
     "Webhook traffic was received before source-specific health was available. Trigger an enabled event from the configured Hook.",
