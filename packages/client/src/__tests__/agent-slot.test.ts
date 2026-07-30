@@ -1,9 +1,12 @@
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClientConnection, SessionReconcileResult } from "../client-connection.js";
 import type { AgentSlotConfig } from "../runtime/agent-slot.js";
 import type { HandlerConfig } from "../runtime/handler.js";
+import { RuntimeSessionTokenFile } from "../runtime/runtime-session-token-file.js";
 import { type FirstTreeHubSDK, type RegisterResult, SdkError } from "../sdk.js";
 
 type FakeLogger = {
@@ -178,7 +181,12 @@ function makeFrame(overrides: Record<string, unknown> = {}) {
 }
 
 function installMocks(
-  options: { syncResult?: MockState["syncResult"]; syncDelayMs?: number; dispatchRejectEntryId?: number } = {},
+  options: {
+    syncResult?: MockState["syncResult"];
+    syncDelayMs?: number;
+    dispatchRejectEntryId?: number;
+    dataDir?: string;
+  } = {},
 ): MockState {
   vi.resetModules();
   const state: MockState = {
@@ -193,7 +201,7 @@ function installMocks(
   };
 
   vi.doMock("@first-tree/shared/config", () => ({
-    defaultDataDir: () => "/tmp/first-tree-test-data",
+    defaultDataDir: () => options.dataDir ?? "/tmp/first-tree-test-data",
   }));
   vi.doMock("../observability/logger.js", () => ({
     createLogger: () => state.logger,
@@ -312,6 +320,7 @@ async function makeSlot(options?: {
   dispatchRejectEntryId?: number;
   omitReconcileInterval?: boolean;
   deferSuspendOnSubprocess?: boolean;
+  dataDir?: string;
 }): Promise<{
   slot: import("../runtime/agent-slot.js").AgentSlot;
   connection: FakeClientConnection;
@@ -322,6 +331,7 @@ async function makeSlot(options?: {
     syncResult: options?.syncResult,
     syncDelayMs: options?.syncDelayMs,
     dispatchRejectEntryId: options?.dispatchRejectEntryId,
+    dataDir: options?.dataDir,
   });
   const sdk = makeSdk({
     agent: options?.agent,
@@ -784,6 +794,7 @@ describe("AgentSlot", () => {
       await Promise.resolve();
 
       expect(readFileSync(tokenFile, "utf8").trim()).toBe("runtime-token-2");
+      expect(connection.tokenProviders.get("agent-1")?.()).toBe("runtime-token-2");
     } finally {
       await slot.stop();
     }
@@ -791,6 +802,161 @@ describe("AgentSlot", () => {
     expect(existsSync(tokenFile)).toBe(false);
     expect(connection.clearRuntimeSessionTokenProvider).toHaveBeenCalledWith("agent-1", expect.any(Function));
     expect(connection.tokenProviders.has("agent-1")).toBe(false);
+  });
+
+  it("does not delete a newer token generation written by a replacement slot", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-owner-"));
+    const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
+    const { slot, connection } = await makeSlot({
+      dataDir,
+      activeRuntimeChatIds: ["chat-1"],
+      runtimeSessionToken: "runtime-token-A",
+    });
+    const replacementStore = new RuntimeSessionTokenFile(tokenFile);
+
+    try {
+      await slot.start();
+      replacementStore.persist("runtime-token-B");
+
+      expect(connection.tokenProviders.get("agent-1")?.()).toBe("runtime-token-B");
+      await slot.stop();
+
+      expect(replacementStore.read()).toBe("runtime-token-B");
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a slot unavailable when the per-agent mutation lock cannot be acquired", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-lock-"));
+    const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
+    mkdirSync(join(dataDir, "runtime-session-tokens"), { recursive: true, mode: 0o700 });
+    writeFileSync(`${tokenFile}.lock`, `${process.pid}\n`, { mode: 0o600 });
+    const { slot, connection, sdk, state } = await makeSlot({
+      dataDir,
+      runtimeSessionToken: "runtime-token-A",
+    });
+    const tokenStore = Reflect.get(slot, "runtimeSessionTokenStore");
+    if (typeof tokenStore !== "object" || tokenStore === null) throw new Error("runtime token store missing");
+    Reflect.set(tokenStore, "lockAcquireTimeoutMs", 20);
+    Reflect.set(tokenStore, "lockRetryDelayMs", 2);
+
+    try {
+      await expect(slot.start()).rejects.toThrow(/cannot become healthy/);
+
+      expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
+      expect(vi.mocked(sdk.register)).not.toHaveBeenCalled();
+      expect(state.sessions).toHaveLength(0);
+      expect(existsSync(tokenFile)).toBe(false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a slot unavailable when atomic token replacement fails", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-write-"));
+    const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
+    mkdirSync(tokenFile, { recursive: true });
+    const { slot, connection, sdk, state } = await makeSlot({
+      dataDir,
+      runtimeSessionToken: "runtime-token-A",
+    });
+
+    try {
+      await expect(slot.start()).rejects.toThrow(/cannot become healthy/);
+
+      expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
+      expect(vi.mocked(sdk.register)).not.toHaveBeenCalled();
+      expect(state.sessions).toHaveLength(0);
+      expect(existsSync(`${tokenFile}.lock`)).toBe(false);
+      expect(statSync(tokenFile).isDirectory()).toBe(true);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("failed-start cleanup preserves a generation written by a later bind", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-failed-start-"));
+    const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
+    const { slot, sdk } = await makeSlot({
+      dataDir,
+      runtimeSessionToken: "runtime-token-A",
+    });
+    const configFetch = deferred<never>();
+    vi.mocked(sdk.fetchAgentConfig).mockImplementationOnce(() => configFetch.promise);
+    const replacementStore = new RuntimeSessionTokenFile(tokenFile);
+
+    try {
+      const startPromise = slot.start();
+      await vi.waitFor(() => expect(readFileSync(tokenFile, "utf8").trim()).toBe("runtime-token-A"));
+      replacementStore.persist("runtime-token-B");
+      configFetch.reject(new SdkError(403, "config rejected"));
+
+      await expect(startPromise).rejects.toThrow(/rejected agent config/);
+      expect(replacementStore.read()).toBe("runtime-token-B");
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("failed-start cleanup removes the generation written by that slot", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-owned-failed-start-"));
+    const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
+    const { slot } = await makeSlot({
+      dataDir,
+      runtimeSessionToken: "runtime-token-A",
+      configError: new SdkError(403, "config rejected"),
+    });
+
+    try {
+      await expect(slot.start()).rejects.toThrow(/rejected agent config/);
+      expect(existsSync(tokenFile)).toBe(false);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops a healthy slot and preserves the file when reconnect persistence cannot lock", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-rebind-lock-"));
+    const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
+    const { slot, connection, state } = await makeSlot({
+      dataDir,
+      activeRuntimeChatIds: ["chat-1"],
+      runtimeSessionToken: "runtime-token-A",
+    });
+
+    try {
+      await slot.start();
+      const session = state.sessions[0];
+      if (!session) throw new Error("session missing");
+      const tokenStore = Reflect.get(slot, "runtimeSessionTokenStore");
+      if (typeof tokenStore !== "object" || tokenStore === null) throw new Error("runtime token store missing");
+      Reflect.set(tokenStore, "lockAcquireTimeoutMs", 20);
+      Reflect.set(tokenStore, "lockRetryDelayMs", 2);
+      writeFileSync(`${tokenFile}.lock`, `${process.pid}\n`, { mode: 0o600 });
+      connection.unbindAgent.mockClear();
+      session.noteBindRecoveryComplete.mockClear();
+
+      connection.emit("agent:bound", {
+        agentId: "agent-1",
+        displayName: "Agent One",
+        agentType: "agent",
+        sdk: makeSdk({ runtimeSessionToken: "runtime-token-B" }),
+        runtimeSessionToken: "runtime-token-B",
+      });
+
+      await vi.waitFor(() => expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1"));
+      await vi.waitFor(() => expect(state.logger.info).toHaveBeenCalledWith("stopped"));
+      expect(session.noteBindRecoveryComplete).not.toHaveBeenCalled();
+      expect(connection.tokenProviders.has("agent-1")).toBe(false);
+      expect(readFileSync(tokenFile, "utf8").trim()).toBe("runtime-token-A");
+      expect(state.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        "runtime session token cleanup failed; leaving any remaining file untouched",
+      );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("starts a fresh active-runtime-chat refresh after rebind even when the old refresh is in flight", async () => {
