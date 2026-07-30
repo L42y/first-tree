@@ -646,6 +646,13 @@ function SkillEditor({ state, save, onClose }: EditorProps) {
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [preparing, setPreparing] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  // The native file inputs stay mounted (they own accept/multiple/webkitdirectory
+  // and the change events) but are hidden: browsers render their button and
+  // empty-state label ("选择文件 / 未选择任何文件") in the OS locale, which leaks
+  // non-English copy into the English product. App-owned Button + status text
+  // trigger and describe them instead, so the copy is always English.
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   const prepareBundle = async (): Promise<PreparedSkillBundle> => {
     if (inputMode === "paste") {
@@ -731,27 +738,69 @@ function SkillEditor({ state, save, onClose }: EditorProps) {
                   </FieldShell>
                 ) : inputMode === "file" ? (
                   <FieldShell id="skill-file" label="ZIP or SKILL.md">
+                    <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-describedby="skill-file-status"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        Choose file
+                      </Button>
+                      {/* role="status" (polite live region, atomic) announces the
+                          selection change that the hidden input can no longer
+                          convey; aria-describedby ties it to the trigger. */}
+                      <p
+                        id="skill-file-status"
+                        role="status"
+                        className="text-label"
+                        style={{ color: "var(--fg-3)", margin: 0 }}
+                      >
+                        {selectedFile ? selectedFile.name : "No file selected"}
+                      </p>
+                    </div>
                     <Input
                       id="skill-file"
                       type="file"
                       accept=".zip,.md,application/zip,text/markdown,text/plain"
+                      className="hidden"
+                      ref={fileInputRef}
                       onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
                     />
                   </FieldShell>
                 ) : (
                   <FieldShell id="skill-folder" label="Skill folder">
+                    <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-describedby="skill-folder-status"
+                        onClick={() => folderInputRef.current?.click()}
+                      >
+                        Choose folder
+                      </Button>
+                      <p
+                        id="skill-folder-status"
+                        role="status"
+                        className="text-label"
+                        style={{ color: "var(--fg-3)", margin: 0 }}
+                      >
+                        {folderFiles.length > 0 ? `${folderFiles.length} files selected` : "No folder selected"}
+                      </p>
+                    </div>
                     <Input
                       id="skill-folder"
                       type="file"
                       multiple
-                      ref={(node) => node?.setAttribute("webkitdirectory", "")}
+                      className="hidden"
+                      ref={(node) => {
+                        folderInputRef.current = node;
+                        node?.setAttribute("webkitdirectory", "");
+                      }}
                       onChange={(event) => setFolderFiles(Array.from(event.target.files ?? []))}
                     />
-                    {folderFiles.length > 0 ? (
-                      <p className="text-label" style={{ color: "var(--fg-3)", margin: 0 }}>
-                        {folderFiles.length} files selected
-                      </p>
-                    ) : null}
                   </FieldShell>
                 )}
               </>
