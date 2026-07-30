@@ -7,7 +7,7 @@ import {
   encodeProviderRetryEventMessage,
 } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type ReactElement } from "react";
+import { act, type ReactElement, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ import type { MessageWithDelivery, PaginatedMessages } from "../../../../api/cha
 import type { ChatSessionEventsResponse, SessionEventRow } from "../../../../api/sessions.js";
 import { agentSessionsQueryKey } from "../../../../api/sessions.js";
 import { ToastProvider } from "../../../../components/ui/toast.js";
+import { chatDraftScope, loadDraft, saveDraft } from "../../../../lib/draft-store.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -2866,9 +2867,21 @@ describe("ChatView", () => {
       );
     };
     deferAll();
+    saveDraft(chatDraftScope(null, "chat-1"), { text: "draft for chat one" });
+    saveDraft(chatDraftScope(null, "chat-2"), { text: "draft for chat two" });
+    const draftCommits: Array<{ chatId: string; draft: string | null }> = [];
+    function ObservedChat({ chatId }: { chatId: string }) {
+      useLayoutEffect(() => {
+        draftCommits.push({
+          chatId,
+          draft: document.querySelector<HTMLTextAreaElement>("textarea")?.value ?? null,
+        });
+      }, [chatId]);
+      return <ChatView agentId="agent-1" chatId={chatId} />;
+    }
 
     const { container, queryClient, root } = await renderDom(
-      <ChatView agentId="agent-1" chatId="chat-1" />,
+      <ObservedChat chatId="chat-1" />,
       (client) => seedChat(client, chatDetail(), messages([])),
       "/",
     );
@@ -2882,6 +2895,7 @@ describe("ChatView", () => {
       () => container.querySelector('button[aria-label="Send"]') !== null,
       "send control after chat-1 confirmed",
     );
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("draft for chat one");
 
     // A transient poll failure AFTER the latch must not re-block the composer
     // or surface the retry panel — this viewing is already confirmed.
@@ -2897,12 +2911,13 @@ describe("ChatView", () => {
     // the stable composer remains visible but sending is unverified again.
     deferAll();
     seedChat(queryClient, chatDetail({ id: "chat-2" }), messages([]));
+    draftCommits.length = 0;
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={["/"]}>
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
-              <ChatView agentId="agent-1" chatId="chat-2" />
+              <ObservedChat chatId="chat-2" />
             </ToastProvider>
           </QueryClientProvider>
         </MemoryRouter>,
@@ -2914,6 +2929,10 @@ describe("ChatView", () => {
       container.querySelector<HTMLButtonElement>('button[aria-label="Checking for open questions"]')?.disabled,
     ).toBe(true);
     expect(container.textContent).not.toContain("Checking for open questions");
+    expect(draftCommits).toEqual([{ chatId: "chat-2", draft: "draft for chat two" }]);
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("draft for chat two");
+    expect(loadDraft(chatDraftScope(null, "chat-1"))?.text).toBe("draft for chat one");
+    expect(loadDraft(chatDraftScope(null, "chat-2"))?.text).toBe("draft for chat two");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     // chat-2 confirms: the stable composer stays put and the verification
@@ -2933,7 +2952,7 @@ describe("ChatView", () => {
         <MemoryRouter initialEntries={["/"]}>
           <QueryClientProvider client={queryClient}>
             <ToastProvider>
-              <ChatView agentId="agent-1" chatId="chat-1" />
+              <ObservedChat chatId="chat-1" />
             </ToastProvider>
           </QueryClientProvider>
         </MemoryRouter>,
