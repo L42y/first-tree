@@ -592,6 +592,14 @@ describe("resource editors", () => {
     expect(document.body.textContent).toContain("No file selected");
     expect(document.body.textContent).not.toContain("未选择任何文件");
 
+    // The hidden input's accessible value is gone with it, so the trigger must
+    // be tied to the status text (aria-describedby) and that text must be a
+    // live status that announces the selection after the dialog closes.
+    const status = document.getElementById("skill-file-status");
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.textContent?.trim()).toBe("No file selected");
+    expect(choose?.getAttribute("aria-describedby")).toBe("skill-file-status");
+
     // The button opens the hidden input's picker.
     const clickSpy = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
     await click(choose);
@@ -607,6 +615,8 @@ describe("resource editors", () => {
     await flush();
     expect(document.body.textContent).toContain("SKILL.md");
     expect(document.body.textContent).not.toContain("No file selected");
+    // The live status itself carries the selection (not just visible text).
+    expect(document.getElementById("skill-file-status")?.textContent?.trim()).toBe("SKILL.md");
     await pressEscape();
     await act(async () => root.unmount());
   });
@@ -627,6 +637,17 @@ describe("resource editors", () => {
     expect(choose?.type).toBe("button");
     expect(document.body.textContent).toContain("No folder selected");
 
+    const folderStatus = document.getElementById("skill-folder-status");
+    expect(folderStatus?.getAttribute("role")).toBe("status");
+    expect(folderStatus?.textContent?.trim()).toBe("No folder selected");
+    expect(choose?.getAttribute("aria-describedby")).toBe("skill-folder-status");
+
+    // The button opens the hidden input's picker (same contract as file mode).
+    const clickSpy = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
+    await click(choose);
+    expect(clickSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+
     await act(async () => {
       Object.defineProperty(folderInput, "files", {
         value: [new File(["a"], "SKILL.md"), new File(["b"], "helper.sh")],
@@ -637,6 +658,7 @@ describe("resource editors", () => {
     await flush();
     expect(document.body.textContent).toContain("2 files selected");
     expect(document.body.textContent).not.toContain("No folder selected");
+    expect(document.getElementById("skill-folder-status")?.textContent?.trim()).toBe("2 files selected");
     await pressEscape();
     await act(async () => root.unmount());
   });

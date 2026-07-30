@@ -739,10 +739,24 @@ function SkillEditor({ state, save, onClose }: EditorProps) {
                 ) : inputMode === "file" ? (
                   <FieldShell id="skill-file" label="ZIP or SKILL.md">
                     <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
-                      <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-describedby="skill-file-status"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
                         Choose file
                       </Button>
-                      <p className="text-label" style={{ color: "var(--fg-3)", margin: 0 }}>
+                      {/* role="status" (polite live region, atomic) announces the
+                          selection change that the hidden input can no longer
+                          convey; aria-describedby ties it to the trigger. */}
+                      <p
+                        id="skill-file-status"
+                        role="status"
+                        className="text-label"
+                        style={{ color: "var(--fg-3)", margin: 0 }}
+                      >
                         {selectedFile ? selectedFile.name : "No file selected"}
                       </p>
                     </div>
@@ -758,10 +772,21 @@ function SkillEditor({ state, save, onClose }: EditorProps) {
                 ) : (
                   <FieldShell id="skill-folder" label="Skill folder">
                     <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
-                      <Button type="button" variant="outline" size="sm" onClick={() => folderInputRef.current?.click()}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        aria-describedby="skill-folder-status"
+                        onClick={() => folderInputRef.current?.click()}
+                      >
                         Choose folder
                       </Button>
-                      <p className="text-label" style={{ color: "var(--fg-3)", margin: 0 }}>
+                      <p
+                        id="skill-folder-status"
+                        role="status"
+                        className="text-label"
+                        style={{ color: "var(--fg-3)", margin: 0 }}
+                      >
                         {folderFiles.length > 0 ? `${folderFiles.length} files selected` : "No folder selected"}
                       </p>
                     </div>
