@@ -28,6 +28,10 @@ export type AcquireWorkspaceFileLockOptions = Readonly<{
   onContention?: () => void;
 }>;
 
+export class WorkspaceFileLockTimeoutError extends Error {
+  override readonly name = "WorkspaceFileLockTimeoutError";
+}
+
 /**
  * Hold a kernel-backed exclusive lock on one persistent file.
  *
@@ -52,7 +56,9 @@ export async function acquireWorkspaceFileLock(
       }
       options.onContention?.();
       if (Date.now() - startedAt >= options.timeoutMs) {
-        throw new Error(`timed out waiting for managed skills workspace lock after ${options.timeoutMs}ms`);
+        throw new WorkspaceFileLockTimeoutError(
+          `timed out waiting for managed skills workspace lock after ${options.timeoutMs}ms`,
+        );
       }
       await delay(Math.min(250, 25 + Math.floor((Date.now() - startedAt) / 10)));
     }

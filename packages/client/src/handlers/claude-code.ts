@@ -66,6 +66,7 @@ import {
   writeSessionBriefingFingerprint,
 } from "../runtime/session-briefing-fingerprint.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../runtime/source-repos.js";
+import { teamSkillBundleResolverFromSdk } from "../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../runtime/workspace.js";
 import { chunkAssistantText } from "./assistant-text.js";
 import { formatAuthHint, isClaudeAuthError } from "./auth-error-hint.js";
@@ -1575,7 +1576,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     // at the old version until the next session restart.
     const providerEnv = buildEnv(sessionCtx);
     if (cwd) {
-      const reconcileResult = await reconcileManagedSkillsForConfig(cwd, runtimeProvider, cached, sessionCtx.log);
+      const reconcileResult = await reconcileManagedSkillsForConfig(
+        cwd,
+        runtimeProvider,
+        cached,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+      );
       reconciledTeamSkills = reconcileResult.teamSkills;
       const switchedBriefing = currentBriefing(sessionCtx, cwd, newPayload);
       writeAgentBriefing(cwd, switchedBriefing);
@@ -2173,7 +2180,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       // source-repo list names the paths + upstreams the agent manages.
       declareSourceRepos(cwd, payload);
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
       ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
@@ -2260,7 +2273,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         // `legacyCwd` here (set above), NOT the agent home, so provider-native
         // discovery and its managed transaction state are session-local.
         reconciledTeamSkills = (
-          await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+          await reconcileManagedSkillsForConfig(
+            cwd,
+            runtimeProvider,
+            runtimeConfig,
+            sessionCtx.log,
+            teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+          )
         ).teamSkills;
         const providerEnv = buildEnv(sessionCtx);
         writeAgentBriefing(legacyCwd, currentBriefing(sessionCtx, legacyCwd, payload));
@@ -2295,7 +2314,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       chatContextForPrompt = chatContext;
       declareSourceRepos(cwd, payload);
       reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(cwd, runtimeProvider, runtimeConfig, sessionCtx.log)
+        await reconcileManagedSkillsForConfig(
+          cwd,
+          runtimeProvider,
+          runtimeConfig,
+          sessionCtx.log,
+          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        )
       ).teamSkills;
 
       const providerEnv = buildEnv(sessionCtx);
