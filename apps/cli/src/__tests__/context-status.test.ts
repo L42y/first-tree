@@ -1,4 +1,4 @@
-import type { ContextActivationResponse } from "@first-tree/shared";
+import type { ContextActivationV2Response } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildContextEnableNextActions,
@@ -46,7 +46,7 @@ function driver(probe = pluginProbe()): ContextIntegrationProviderDriver {
   };
 }
 
-function validator(response: ContextActivationResponse): ContextActivationValidator {
+function validator(response: ContextActivationV2Response): ContextActivationValidator {
   return { validateMemberContextActivation: vi.fn(async () => response) };
 }
 

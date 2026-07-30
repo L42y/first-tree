@@ -103,7 +103,7 @@ function installManifest() {
 }
 
 describe("Context integration cross-resource operation", () => {
-  it("fails closed before mutation when the provider Plugin is installed but disabled", () => {
+  it("fails enable closed before mutation when the provider Plugin is installed but disabled", () => {
     setupHome("first-tree-context-operation-disabled-");
     const manifest = installManifest();
     writeContextIntegrationInstallManifest(manifest);
@@ -151,14 +151,6 @@ describe("Context integration cross-resource operation", () => {
 
     expect(() =>
       enableContextIntegrationOperation(disabledDriver, plan, binding, expectedConfig, "client_1234abcd"),
-    ).toThrow("installed but disabled");
-    expect(() =>
-      disableContextIntegrationOperation(disabledDriver, {
-        all: true,
-        removePlugin: true,
-        expectedConfig,
-        expectedAccountClientId: "client_1234abcd",
-      }),
     ).toThrow("installed but disabled");
     expect(install).not.toHaveBeenCalled();
     expect(uninstall).not.toHaveBeenCalled();
@@ -268,7 +260,7 @@ describe("Context integration cross-resource operation", () => {
     expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
   });
 
-  it("keeps the old binding and restores the old Plugin when provider uninstall fails", () => {
+  it("removes one binding without reading or changing user-scope Plugin state", () => {
     const home = setupHome("first-tree-context-operation-disable-");
     const provider = driver(true);
     const manifest = installManifest();
@@ -281,32 +273,31 @@ describe("Context integration cross-resource operation", () => {
       organizationId: "org-acme",
     };
     writeContextBinding(binding);
+    const otherBinding = {
+      provider: "codex" as const,
+      project: { kind: "pathless" as const },
+      organizationId: "org-other",
+    };
+    writeContextBinding(otherBinding);
     const expectedConfig = readContextIntegrationConfig();
 
-    expect(() =>
-      disableContextIntegrationOperation(
-        provider.value,
-        {
-          all: true,
-          removePlugin: true,
-          expectedConfig,
-          expectedAccountClientId: "client_1234abcd",
-        },
-        {
-          uninstall: () => {
-            throw new Error("provider uninstall failed");
-          },
-        },
-      ),
-    ).toThrow("provider uninstall failed");
-
-    expect(readContextIntegrationConfig()).toEqual(expectedConfig);
-    expect(readContextIntegrationInstallManifest("codex")).toEqual(manifest);
-    expect(provider.install).toHaveBeenCalledWith({
-      marketplaceRoot: stableMarketplace,
-      marketplaceName: "first-tree-dev",
-      pluginName: "first-tree-context",
+    expect(
+      disableContextIntegrationOperation("codex", {
+        project: binding.project,
+        expectedConfig,
+        expectedAccountClientId: "client_1234abcd",
+      }),
+    ).toEqual({
+      removed: [binding],
+      remaining: [otherBinding],
     });
+
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 2, bindings: [otherBinding] });
+    expect(readContextIntegrationInstallManifest("codex")).toEqual(manifest);
+    expect(readFileSync(join(home, "config", "client.yaml"), "utf8")).toBe("client:\n  id: client_1234abcd\n");
+    expect(existsSync(stableMarketplace)).toBe(true);
+    expect(provider.install).not.toHaveBeenCalled();
+    expect(provider.uninstall).not.toHaveBeenCalled();
     expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
   });
 

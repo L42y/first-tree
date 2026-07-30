@@ -79,21 +79,57 @@ describe("context binding store v2", () => {
     ).toThrow(ContextBindingsChangedError);
   });
 
-  it("removes only the requested project unless all is explicit", () => {
+  it("removes only the effective deepest project binding", () => {
     const storePaths = temporaryPaths("context-binding-remove-");
-    for (const root of ["/work/a", "/work/b"]) {
-      writeContextBinding(
-        { provider: "codex", project: { kind: "path", root }, organizationId: "org_acme" },
-        { paths: storePaths },
-      );
+    const parent = {
+      provider: "codex" as const,
+      project: { kind: "path" as const, root: "/work" },
+      organizationId: "org_parent",
+    };
+    const nested = {
+      provider: "codex" as const,
+      project: { kind: "path" as const, root: "/work/a" },
+      organizationId: "org_nested",
+    };
+    const pathless = {
+      provider: "codex" as const,
+      project: { kind: "pathless" as const },
+      organizationId: "org_pathless",
+    };
+    const otherProvider = {
+      provider: "claude-code" as const,
+      project: { kind: "path" as const, root: "/work/a" },
+      organizationId: "org_claude",
+    };
+    for (const binding of [parent, nested, pathless, otherProvider]) {
+      writeContextBinding(binding, { paths: storePaths });
     }
+
+    const effective = findContextBinding("codex", { kind: "path", root: "/work/a/src" }, storePaths);
+    expect(effective).toEqual(nested);
     expect(
       removeContextBindings("codex", {
-        project: { kind: "path", root: "/work/a" },
+        project: effective?.project ?? { kind: "path", root: "/missing" },
         paths: storePaths,
       }).removed,
-    ).toHaveLength(1);
-    expect(removeContextBindings("codex", { all: true, paths: storePaths }).removed).toHaveLength(1);
+    ).toEqual([nested]);
+    expect(readContextIntegrationConfig(storePaths).bindings).toEqual(
+      expect.arrayContaining([parent, pathless, otherProvider]),
+    );
+  });
+
+  it("keeps a valid v2 config after removing the final binding", () => {
+    const storePaths = temporaryPaths("context-binding-remove-final-");
+    const binding = {
+      provider: "codex" as const,
+      project: { kind: "pathless" as const },
+      organizationId: "org_pathless",
+    };
+    writeContextBinding(binding, { paths: storePaths });
+
+    expect(removeContextBindings("codex", { project: binding.project, paths: storePaths }).removed).toEqual([binding]);
+    expect(readContextIntegrationConfig(storePaths)).toEqual({ schemaVersion: 2, bindings: [] });
+    expect(readFileSync(storePaths.configPath, "utf8")).toContain("schemaVersion: 2");
   });
 
   it("atomically migrates v1, drops repository identity, and preserves a fixed backup", () => {

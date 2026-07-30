@@ -68,7 +68,7 @@ const contextActivationNextActionSchema = z
   })
   .strict();
 
-const legacyContextActivationResponseSchema = z.discriminatedUnion("outcome", [
+export const legacyContextActivationResponseSchema = z.discriminatedUnion("outcome", [
   z
     .object({
       schemaVersion: z.literal(1),
@@ -97,8 +97,9 @@ const legacyContextActivationResponseSchema = z.discriminatedUnion("outcome", [
     })
     .strict(),
 ]);
+export type LegacyContextActivationResponse = z.infer<typeof legacyContextActivationResponseSchema>;
 
-const contextActivationV2ResponseSchema = z.discriminatedUnion("outcome", [
+export const contextActivationV2ResponseSchema = z.discriminatedUnion("outcome", [
   z
     .object({
       schemaVersion: z.literal(2),
@@ -118,6 +119,7 @@ const contextActivationV2ResponseSchema = z.discriminatedUnion("outcome", [
     })
     .strict(),
 ]);
+export type ContextActivationV2Response = z.infer<typeof contextActivationV2ResponseSchema>;
 
 export const contextActivationResponseSchema = z.union([
   legacyContextActivationResponseSchema,

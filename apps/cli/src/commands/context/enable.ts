@@ -252,7 +252,7 @@ export function collectSetupRecoveryActions(
       `${verification.binding.reason} Re-run this \`${binName} context enable\` command; if the failure persists, do not delete the binding config — it also holds bindings for other providers and projects. Back it up, then repair its file permissions or YAML together with the member before retrying.`,
     );
   }
-  if (verification.activation.state === "disabled" || verification.activation.state === "needs_admin") {
+  if (verification.activation.state === "needs_admin") {
     actions.push(
       verification.activation.message +
         (verification.activation.settingsUrl ? ` (${verification.activation.settingsUrl})` : ""),

@@ -1156,7 +1156,7 @@ first-tree context
 ├── enable --provider claude-code|codex --team ID (--project-root DIR|--pathless) [--yes]
 ├── status --provider claude-code|codex [--project-root DIR|--pathless]
 ├── repair --provider claude-code|codex
-└── disable --provider claude-code|codex [--project-root DIR|--pathless|--all] [--yes]
+└── disable --provider claude-code|codex [--project-root DIR|--pathless] [--yes]
 ```
 
 Give the provider-neutral Web Setup prompt to the current coding agent. The
@@ -1200,10 +1200,12 @@ enabled state cannot be restored through the supported provider CLI. Because pro
 CLIs retain their local marketplace reference,
 First Tree keeps that source under
 `$FIRST_TREE_HOME/state/context/providers/<provider>/marketplace`; the
-installed Plugin cache remains provider-owned. `context disable` removes the
-selected project binding; `--all` removes every binding for that provider,
-uninstalls First Tree's Plugin, and removes the retained marketplace source
-when nothing still uses it. Provider-native hook trust remains provider-owned.
+installed Plugin cache remains provider-owned. `context disable` removes only
+the current effective project binding. It preserves the user-scope Plugin,
+retained marketplace source, local account, and every other project binding.
+Context already injected into the current session cannot be revoked; the
+change applies to future sessions and explicit activations. Provider-native
+hook trust remains provider-owned.
 
 `context activate` is an internal SessionStart bridge and is intentionally
 hidden from help. It always allows the provider session to continue, even when

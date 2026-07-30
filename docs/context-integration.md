@@ -131,28 +131,31 @@ replaces or restores this source, and successful uninstall removes it. This is
 machine state required by the provider lifecycle, not a second release cache
 or a new top-level First Tree directory.
 
-Enable and disable use one operation coordinator across provider Plugin state,
-the First Tree install manifest, and `config/context.yaml`. Its recovery
-journal records the prior bindings, prior manifest, and provider rollback
-source until every side commits. Repair uses the same durable coordinator, so
-an interrupted reinstall is recoverable rather than being represented only by
-the inner installer journal. A binding write or provider mutation failure
-restores all three; an incomplete rollback remains fail-closed for explicit
-repair.
+Enable uses one operation coordinator across provider Plugin state, the First
+Tree install manifest, and `config/context.yaml`. Its recovery journal records
+the prior bindings, prior manifest, and provider rollback source until every
+side commits. Repair uses the same durable coordinator, so an interrupted
+reinstall is recoverable rather than being represented only by the inner
+installer journal. Disable is a separate binding-only transaction: it never
+reads or mutates provider Plugin state.
 
 Context mutations and local Client account switching share one machine-state
 lock. An operation journal records the exact active Computer identity, and
 recovery refuses to restore bindings under a different logged-in account.
 Likewise, login/account switching refuses to move `context.yaml` while a
-Context install, enable, disable, repair, or recovery is active or incomplete.
+Context install, enable, disable, repair, or recovery is active.
 An installed-but-disabled provider Plugin is rejected before any local
 mutation because its prior enabled state cannot be restored portably through
 the supported provider CLI.
 
-`first-tree context disable --provider <provider>` removes only the selected
-path/pathless project binding. Add `--all` to remove every binding for that provider; the
-provider Plugin and marketplace are removed only when no bindings remain.
-Login credentials and the First Tree Client daemon are preserved.
+`first-tree context disable --provider <provider>` resolves the current
+path/pathless project and removes only its effective binding. A path project
+uses the deepest matching ancestor binding; pathless removes only the
+provider's pathless binding. No match returns idempotent `Already disabled`.
+The provider Plugin, marketplace, login credentials, other project bindings,
+and First Tree Client daemon are preserved. Context already injected into the
+current session cannot be revoked; the change applies to future sessions and
+explicit activations.
 
 An older First Tree binary may reject a newer embedded Plugin manifest. Restore
 the matching First Tree release first, then run `context repair`. Never edit

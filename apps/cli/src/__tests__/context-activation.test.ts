@@ -2,6 +2,7 @@ import { FirstTreeHubSDK, readCanonicalContextTreeWriteRouting } from "@first-tr
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activateExternalContext,
+  type ContextActivationValidator,
   ExternalContextActivationRequiredError,
   renderProviderSessionStartResponse,
   requireConnectedExternalContext,
@@ -367,7 +368,7 @@ describe("external Context activation", () => {
     expect(validate).toHaveBeenCalledTimes(2);
   });
 
-  it("handles a legacy v1 Team scope denial without retrying", async () => {
+  it("fails closed when a v2 caller receives a legacy v1 response", async () => {
     const validate = vi.fn(async () => ({
       schemaVersion: 1 as const,
       outcome: "disabled" as const,
@@ -384,15 +385,15 @@ describe("external Context activation", () => {
 
     await expect(
       requireConnectedExternalContext(
-        { validateMemberContextActivation: validate },
+        { validateMemberContextActivation: validate } as unknown as ContextActivationValidator,
         { provider: "codex", project },
         {
           findBinding: () => binding,
         },
       ),
     ).rejects.toMatchObject({
-      outcome: "disabled",
-      reasonCode: "repository_not_in_selected_team_scope",
+      outcome: "unavailable",
+      reasonCode: "authority_unavailable",
     });
     expect(validate).toHaveBeenCalledTimes(1);
   });

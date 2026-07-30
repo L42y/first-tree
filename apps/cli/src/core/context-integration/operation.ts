@@ -24,7 +24,6 @@ import {
   contextIntegrationMarketplaceName,
   contextIntegrationMarketplaceSourcePath,
   installContextIntegration,
-  uninstallContextIntegration,
 } from "./installer.js";
 import {
   readContextIntegrationInstallManifest,
@@ -106,51 +105,28 @@ export function enableContextIntegrationOperation(
 }
 
 export function disableContextIntegrationOperation(
-  driver: ContextIntegrationProviderDriver,
+  provider: ContextIntegrationBinding["provider"],
   input: {
-    project?: ContextIntegrationBinding["project"];
-    all: boolean;
-    removePlugin: boolean;
+    project: ContextIntegrationBinding["project"];
     expectedConfig: ContextIntegrationConfig;
     expectedAccountClientId: string;
   },
   dependencies: {
-    uninstall?: typeof uninstallContextIntegration;
     removeBindings?: typeof removeContextBindings;
   } = {},
 ): {
   removed: ContextIntegrationBinding[];
   remaining: ContextIntegrationBinding[];
-  pluginRemoved: boolean;
 } {
   return withContextIntegrationLock(() => {
     assertNoIncompleteOperation();
     assertExpectedAccount(input.expectedAccountClientId);
     assertContextIntegrationConfig(input.expectedConfig);
-    const providerBindings = input.expectedConfig.bindings.filter((binding) => binding.provider === driver.provider);
-    const pluginRemoved = input.removePlugin;
-    const snapshot = captureOperationSnapshot(driver, input.expectedConfig);
-    const journal = createOperationJournal("disable", driver, snapshot);
-    let providerChanged = false;
-    let bindingChanged = false;
-    try {
-      if (pluginRemoved) {
-        providerChanged = true;
-        (dependencies.uninstall ?? uninstallContextIntegration)(driver);
-        writeOperationJournal({ ...journal, phase: "provider_changed" });
-      }
-      const removal = (dependencies.removeBindings ?? removeContextBindings)(driver.provider, {
-        all: input.all,
-        project: input.project,
-        expectedProviderBindings: providerBindings,
-      });
-      bindingChanged = removal.removed.length > 0;
-      writeOperationJournal({ ...journal, phase: "binding_changed" });
-      completeOperation(snapshot);
-      return { ...removal, pluginRemoved };
-    } catch (error) {
-      rollbackOperation(driver, snapshot, { providerChanged, bindingChanged }, journal, error);
-    }
+    const providerBindings = input.expectedConfig.bindings.filter((binding) => binding.provider === provider);
+    return (dependencies.removeBindings ?? removeContextBindings)(provider, {
+      project: input.project,
+      expectedProviderBindings: providerBindings,
+    });
   });
 }
 

@@ -1,5 +1,5 @@
 import type {
-  ContextActivationResponse,
+  ContextActivationV2Response,
   ContextIntegrationBinding,
   ContextIntegrationProject,
   ContextIntegrationProvider,
@@ -33,9 +33,9 @@ type BindingStatus =
   | { state: "not_checked"; reason: string };
 
 type LiveActivationStatus =
-  | { state: "connected"; team: Extract<ContextActivationResponse, { outcome: "connected" }>["team"] }
+  | { state: "connected"; team: Extract<ContextActivationV2Response, { outcome: "connected" }>["team"] }
   | {
-      state: "disabled" | "needs_admin";
+      state: "needs_admin";
       reasonCode: string;
       message: string;
       settingsUrl: string | null;
@@ -197,7 +197,7 @@ function projectFailure(error: unknown): Extract<ProjectStatus, { state: "unavai
   };
 }
 
-function activationStatus(response: ContextActivationResponse): LiveActivationStatus {
+function activationStatus(response: ContextActivationV2Response): LiveActivationStatus {
   if (response.outcome === "connected") return { state: "connected", team: response.team };
   return {
     state: response.outcome,

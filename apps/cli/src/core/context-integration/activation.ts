@@ -1,6 +1,6 @@
 import { readCanonicalContextTreeWriteRouting } from "@first-tree/client";
 import type {
-  ContextActivationResponse,
+  ContextActivationV2Response,
   ContextIntegrationBinding,
   ContextIntegrationProject,
   ContextIntegrationProvider,
@@ -14,7 +14,7 @@ import { findContextBinding } from "./context-binding-store.js";
 
 export type { ContextActivationValidator } from "./authority.js";
 
-type ConnectedContextActivationResponse = Extract<ContextActivationResponse, { outcome: "connected" }>;
+type ConnectedContextActivationResponse = Extract<ContextActivationV2Response, { outcome: "connected" }>;
 
 export type ExternalContextActivation = {
   outcome: "connected" | "disabled" | "unavailable" | "needs_admin";
@@ -59,13 +59,6 @@ export async function activateExternalContext(
   }
   const response = authority.response;
 
-  if (response.outcome === "disabled") {
-    return {
-      outcome: "disabled",
-      reasonCode: response.reasonCode,
-      systemMessage: `First Tree Context disabled: ${response.nextAction.message}`,
-    };
-  }
   if (response.outcome === "needs_admin") {
     return {
       outcome: "needs_admin",

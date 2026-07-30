@@ -125,11 +125,10 @@ export function writeContextBinding(
 export function removeContextBindings(
   provider: ContextIntegrationProvider,
   options: {
-    project?: ContextIntegrationProject;
-    all?: boolean;
+    project: ContextIntegrationProject;
     expectedProviderBindings?: ContextIntegrationBinding[];
     paths?: ContextBindingStorePaths;
-  } = {},
+  },
 ): { removed: ContextIntegrationBinding[]; remaining: ContextIntegrationBinding[] } {
   const paths = options.paths ?? defaultContextBindingStorePaths();
   return withContextIntegrationLock(() => {
@@ -139,9 +138,7 @@ export function removeContextBindings(
       throw new ContextBindingsChangedError();
     }
     const removed = config.bindings.filter(
-      (binding) =>
-        binding.provider === provider &&
-        (options.all === true || (options.project && sameProject(binding.project, options.project))),
+      (binding) => binding.provider === provider && sameProject(binding.project, options.project),
     );
     const remaining = config.bindings.filter((binding) => !removed.includes(binding));
     writeContextIntegrationConfig({ schemaVersion: 2, bindings: remaining }, paths);

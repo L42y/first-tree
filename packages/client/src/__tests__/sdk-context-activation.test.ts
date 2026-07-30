@@ -76,6 +76,33 @@ describe("SDK Context activation", () => {
     });
   });
 
+  it("rejects a legacy response for a v2 activation request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              schemaVersion: 1,
+              outcome: "connected",
+              team: {
+                organizationId: "org_acme",
+                displayName: "Acme",
+                role: "member",
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
+    );
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: "https://first-tree.example",
+      getAccessToken: () => "member-token",
+    });
+
+    await expect(sdk.validateMemberContextActivation("org_acme", { schemaVersion: 2 })).rejects.toThrow();
+  });
+
   it("uses one attempt signal for token acquisition and the activation request", async () => {
     let tokenSignal: AbortSignal | undefined;
     const getAccessToken = vi.fn((options?: { signal?: AbortSignal }) => {

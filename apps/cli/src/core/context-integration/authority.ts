@@ -1,4 +1,4 @@
-import type { ContextActivationResponse } from "@first-tree/shared";
+import { type ContextActivationV2Response, contextActivationV2ResponseSchema } from "@first-tree/shared";
 import { classifyCliTransportError } from "../transport-error.js";
 
 export type ContextActivationValidator = {
@@ -8,7 +8,7 @@ export type ContextActivationValidator = {
       schemaVersion: 2;
     },
     options: { retry: false; timeoutMs: number },
-  ): Promise<ContextActivationResponse>;
+  ): Promise<ContextActivationV2Response>;
 };
 
 export type ExternalContextAuthorityMode = "session-start" | "explicit";
@@ -29,7 +29,7 @@ export type ExternalContextAuthorityUnavailable = {
 export type ExternalContextAuthorityResult =
   | {
       outcome: "validated";
-      response: ContextActivationResponse;
+      response: ContextActivationV2Response;
     }
   | ExternalContextAuthorityUnavailable;
 
@@ -66,13 +66,14 @@ export async function validateExternalContextAuthority(
   let failure: ClassifiedAuthorityFailure | undefined;
   for (let attempt = 0; attempt < policy.attempts; attempt++) {
     try {
-      const response = await validator.validateMemberContextActivation(
+      const rawResponse = await validator.validateMemberContextActivation(
         organizationId,
         {
           schemaVersion: 2,
         },
         { retry: false, timeoutMs: policy.timeoutMs },
       );
+      const response = contextActivationV2ResponseSchema.parse(rawResponse);
       return {
         outcome: "validated",
         response,

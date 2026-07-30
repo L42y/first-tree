@@ -368,12 +368,16 @@ export {
   type ContextActivationRequest,
   type ContextActivationResponse,
   type ContextActivationV2Request,
+  type ContextActivationV2Response,
   canonicalResourceRepoKeySchema,
   contextActivationRequestSchema,
   contextActivationResponseSchema,
   contextActivationV2RequestSchema,
+  contextActivationV2ResponseSchema,
   type LegacyContextActivationRequest,
+  type LegacyContextActivationResponse,
   legacyContextActivationRequestSchema,
+  legacyContextActivationResponseSchema,
 } from "./schemas/context-activation.js";
 export {
   CONTEXT_INTEGRATION_PROVIDERS,

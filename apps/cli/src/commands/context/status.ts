@@ -120,7 +120,7 @@ function renderActivation(status: ContextIntegrationStatus): void {
     );
     return;
   }
-  if (status.activation.state === "disabled" || status.activation.state === "needs_admin") {
+  if (status.activation.state === "needs_admin") {
     print.status("Live activation", `${status.activation.state} — ${status.activation.message}`);
     if (status.activation.settingsUrl) print.status("Activation action", status.activation.settingsUrl);
     return;
