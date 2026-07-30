@@ -15,7 +15,7 @@ export function materializeContextPluginPayload(
   pluginRoot: string,
   adapterDigest: string,
   invocation: ResolvedBinary = resolveCliInvocation(),
-): void {
+): string {
   const renderedInvocation = renderCliInvocation(invocation);
   const launcherPath = join(pluginRoot, LAUNCHER_PATH);
   writeFileSync(
@@ -44,6 +44,7 @@ export function materializeContextPluginPayload(
       ),
     );
   }
+  return renderedInvocation;
 }
 
 /**
@@ -54,6 +55,7 @@ export function verifyMaterializedContextPlugin(
   pluginRoot: string,
   release: ContextIntegrationRelease,
   provider: ContextIntegrationProvider,
+  renderedInvocation: string,
 ): string {
   assertLauncherExecutable(pluginRoot);
   const releaseRoot = providerPluginRoot(release.root, provider);
@@ -66,7 +68,6 @@ export function verifyMaterializedContextPlugin(
   }
 
   const adapterDigest = release.manifest.providers[provider].adapterDigest;
-  const renderedInvocation = renderCliInvocation(resolveCliInvocation());
   for (let index = 0; index < releaseFiles.length; index += 1) {
     const name = releaseNames[index] ?? "";
     const expected = materializedFile(name, readFileSync(releaseFiles[index] ?? ""), adapterDigest, renderedInvocation);
@@ -98,10 +99,14 @@ export function inspectContextPluginPayload(
   stablePluginRoot: string,
   release: ContextIntegrationRelease,
   provider: ContextIntegrationProvider,
+  renderedInvocation: string | undefined,
 ): string[] {
   if (!probe.installed || !probe.enabled) return [];
+  if (!renderedInvocation) {
+    return ["The Context Plugin install manifest does not record its materialized CLI invocation."];
+  }
   try {
-    const expectedDigest = verifyMaterializedContextPlugin(stablePluginRoot, release, provider);
+    const expectedDigest = verifyMaterializedContextPlugin(stablePluginRoot, release, provider, renderedInvocation);
     verifyProviderInstalledContextPlugin(probe, expectedDigest);
     return [];
   } catch (error) {

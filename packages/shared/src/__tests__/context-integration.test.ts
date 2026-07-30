@@ -110,9 +110,27 @@ describe("context integration contracts", () => {
         adapterDigest: DIGEST,
         marketplaceName: "first-tree",
         pluginName: "first-tree-context",
+        materializedInvocation: "/opt/first-tree/bin/first-tree",
         installedAt: "2026-07-28T00:00:00.000Z",
       }).policyDigest,
     ).toBe(DIGEST);
+
+    expect(
+      contextIntegrationInstallManifestSchema.safeParse({
+        schemaVersion: 1,
+        channel: "prod",
+        provider: "codex",
+        firstTreeVersion: "1.0.0",
+        bundleVersion: "1.0.0",
+        bundleDigest: DIGEST,
+        policyDigest: DIGEST,
+        adapterDigest: DIGEST,
+        marketplaceName: "first-tree",
+        pluginName: "first-tree-context",
+        materializedInvocation: "",
+        installedAt: "2026-07-28T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
 
     expect(
       contextIntegrationReleaseManifestSchema.parse({
