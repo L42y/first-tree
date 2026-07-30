@@ -1,10 +1,22 @@
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import {
   type ContextIntegrationBinding,
   type ContextIntegrationConfig,
+  type ContextIntegrationProject,
   type ContextIntegrationProvider,
   contextIntegrationConfigSchema,
+  legacyContextIntegrationConfigSchema,
 } from "@first-tree/shared";
 import { defaultConfigDir, defaultHome } from "@first-tree/shared/config";
 import { parse, stringify } from "yaml";
@@ -16,37 +28,59 @@ const heldLockPaths = new Set<string>();
 export type ContextBindingStorePaths = {
   configPath: string;
   lockPath: string;
+  legacyBackupPath?: string;
 };
 
 export function defaultContextBindingStorePaths(): ContextBindingStorePaths {
   return {
     configPath: join(defaultConfigDir(), "context.yaml"),
     lockPath: join(defaultHome(), "state", "context", "install.lock"),
+    legacyBackupPath: join(defaultConfigDir(), "context.yaml.v1.bak"),
   };
 }
 
 export function readContextIntegrationConfig(
   paths: ContextBindingStorePaths = defaultContextBindingStorePaths(),
 ): ContextIntegrationConfig {
+  let raw: string;
   try {
-    return contextIntegrationConfigSchema.parse(parse(readFileSync(paths.configPath, "utf8")));
+    raw = readFileSync(paths.configPath, "utf8");
   } catch (error) {
     if (isMissingFile(error)) {
-      return { schemaVersion: 1, bindings: [] };
+      return { schemaVersion: 2, bindings: [] };
     }
     throw new Error(`Invalid First Tree Context binding config at ${paths.configPath}.`, { cause: error });
   }
+  let parsed: unknown;
+  try {
+    parsed = parse(raw);
+  } catch (error) {
+    throw new Error(`Invalid First Tree Context binding config at ${paths.configPath}.`, { cause: error });
+  }
+  const current = contextIntegrationConfigSchema.safeParse(parsed);
+  if (current.success) return current.data;
+  const legacy = legacyContextIntegrationConfigSchema.safeParse(parsed);
+  if (!legacy.success) {
+    throw new Error(`Invalid First Tree Context binding config at ${paths.configPath}.`, {
+      cause: current.error,
+    });
+  }
+  return withContextIntegrationLock(() => migrateLegacyContextIntegrationConfig(paths), paths);
 }
 
 export function findContextBinding(
   provider: ContextIntegrationProvider,
-  checkoutRoot: string,
+  project: ContextIntegrationProject,
   paths: ContextBindingStorePaths = defaultContextBindingStorePaths(),
 ): ContextIntegrationBinding | null {
+  const candidates = readContextIntegrationConfig(paths).bindings.filter((binding) => binding.provider === provider);
+  if (project.kind === "pathless") {
+    return candidates.find((binding) => binding.project.kind === "pathless") ?? null;
+  }
   return (
-    readContextIntegrationConfig(paths).bindings.find(
-      (binding) => binding.provider === provider && binding.checkoutRoot === checkoutRoot,
-    ) ?? null
+    candidates
+      .filter((binding) => binding.project.kind === "path" && isPathAncestor(binding.project.root, project.root))
+      .sort((left, right) => projectSortKey(right.project).length - projectSortKey(left.project).length)[0] ?? null
   );
 }
 
@@ -62,7 +96,7 @@ export function writeContextBinding(
   return withContextIntegrationLock(() => {
     const config = readContextIntegrationConfig(paths);
     const index = config.bindings.findIndex(
-      (candidate) => candidate.provider === binding.provider && candidate.checkoutRoot === binding.checkoutRoot,
+      (candidate) => candidate.provider === binding.provider && sameProject(candidate.project, binding.project),
     );
     const previous = index >= 0 ? (config.bindings[index] ?? null) : null;
     if ("expectedPrevious" in options && !sameBinding(previous, options.expectedPrevious ?? null)) {
@@ -80,9 +114,10 @@ export function writeContextBinding(
     }
     nextBindings.sort(
       (left, right) =>
-        left.provider.localeCompare(right.provider) || left.checkoutRoot.localeCompare(right.checkoutRoot),
+        left.provider.localeCompare(right.provider) ||
+        projectSortKey(left.project).localeCompare(projectSortKey(right.project)),
     );
-    writeContextIntegrationConfig({ schemaVersion: 1, bindings: nextBindings }, paths);
+    writeContextIntegrationConfig({ schemaVersion: 2, bindings: nextBindings }, paths);
     return { previous, current: binding };
   }, paths);
 }
@@ -90,7 +125,7 @@ export function writeContextBinding(
 export function removeContextBindings(
   provider: ContextIntegrationProvider,
   options: {
-    checkoutRoot?: string;
+    project?: ContextIntegrationProject;
     all?: boolean;
     expectedProviderBindings?: ContextIntegrationBinding[];
     paths?: ContextBindingStorePaths;
@@ -105,10 +140,11 @@ export function removeContextBindings(
     }
     const removed = config.bindings.filter(
       (binding) =>
-        binding.provider === provider && (options.all === true || binding.checkoutRoot === options.checkoutRoot),
+        binding.provider === provider &&
+        (options.all === true || (options.project && sameProject(binding.project, options.project))),
     );
     const remaining = config.bindings.filter((binding) => !removed.includes(binding));
-    writeContextIntegrationConfig({ schemaVersion: 1, bindings: remaining }, paths);
+    writeContextIntegrationConfig({ schemaVersion: 2, bindings: remaining }, paths);
     return { removed, remaining };
   }, paths);
 }
@@ -136,7 +172,7 @@ export class ContextBindingReplacementRequiredError extends Error {
     readonly requested: ContextIntegrationBinding,
   ) {
     super(
-      `This checkout is already connected to Team ${previous.organizationId}; replacing it with ${requested.organizationId} requires explicit confirmation.`,
+      `This project is already connected to Team ${previous.organizationId}; replacing it with ${requested.organizationId} requires explicit confirmation.`,
     );
     this.name = "ContextBindingReplacementRequiredError";
   }
@@ -197,8 +233,7 @@ function sameBinding(left: ContextIntegrationBinding | null, right: ContextInteg
     (left !== null &&
       right !== null &&
       left.provider === right.provider &&
-      left.checkoutRoot === right.checkoutRoot &&
-      left.repositoryKey === right.repositoryKey &&
+      sameProject(left.project, right.project) &&
       left.organizationId === right.organizationId)
   );
 }
@@ -209,10 +244,52 @@ function sameBindingSet(
 ): boolean {
   if (left.length !== right.length) return false;
   const byIdentity = (binding: ContextIntegrationBinding): string =>
-    `${binding.provider}\0${binding.checkoutRoot}\0${binding.repositoryKey}\0${binding.organizationId}`;
+    `${binding.provider}\0${projectSortKey(binding.project)}\0${binding.organizationId}`;
   const leftIdentities = left.map(byIdentity).sort();
   const rightIdentities = right.map(byIdentity).sort();
   return leftIdentities.every((identity, index) => identity === rightIdentities[index]);
+}
+
+function migrateLegacyContextIntegrationConfig(paths: ContextBindingStorePaths): ContextIntegrationConfig {
+  let raw: string;
+  try {
+    raw = readFileSync(paths.configPath, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return { schemaVersion: 2, bindings: [] };
+    throw error;
+  }
+  const parsed = parse(raw);
+  const current = contextIntegrationConfigSchema.safeParse(parsed);
+  if (current.success) return current.data;
+  const legacy = legacyContextIntegrationConfigSchema.parse(parsed);
+  const backupPath = paths.legacyBackupPath ?? `${paths.configPath}.v1.bak`;
+  if (!existsSync(backupPath)) {
+    mkdirSync(dirname(backupPath), { recursive: true, mode: 0o700 });
+    writeFileSync(backupPath, raw, { mode: 0o600, flag: "wx" });
+  }
+  const migrated: ContextIntegrationConfig = {
+    schemaVersion: 2,
+    bindings: legacy.bindings.map((binding) => ({
+      provider: binding.provider,
+      project: { kind: "path", root: binding.checkoutRoot },
+      organizationId: binding.organizationId,
+    })),
+  };
+  writeContextIntegrationConfig(migrated, paths);
+  return migrated;
+}
+
+function sameProject(left: ContextIntegrationProject, right: ContextIntegrationProject): boolean {
+  return left.kind === right.kind && (left.kind === "pathless" || (right.kind === "path" && left.root === right.root));
+}
+
+function projectSortKey(project: ContextIntegrationProject): string {
+  return project.kind === "pathless" ? "\0pathless" : `path:${project.root}`;
+}
+
+function isPathAncestor(ancestor: string, target: string): boolean {
+  const path = relative(ancestor, target);
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 }
 
 function removeStaleLock(lockPath: string): void {

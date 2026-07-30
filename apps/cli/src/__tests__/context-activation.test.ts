@@ -7,21 +7,12 @@ import {
   requireConnectedExternalContext,
 } from "../core/context-integration/activation.js";
 
-const preflight = {
-  checkoutRoot: "/work/payments",
-  repositoryKey: "github.com/acme/payments",
-  originUrl: "git@github.com:acme/payments.git",
-} as const;
+const project = { kind: "path" as const, root: "/work/payments" };
 
-const binding = {
-  provider: "codex" as const,
-  checkoutRoot: preflight.checkoutRoot,
-  repositoryKey: preflight.repositoryKey,
-  organizationId: "org_acme",
-};
+const binding = { provider: "codex" as const, project, organizationId: "org_acme" };
 
 const connected = {
-  schemaVersion: 1 as const,
+  schemaVersion: 2 as const,
   outcome: "connected" as const,
   team: {
     organizationId: "org_acme",
@@ -50,7 +41,7 @@ describe("external Context activation", () => {
     const displayName = "界".repeat(200);
     const organizationId = "019dd8ff-64e9-72bb-b057-fdf60475b3eb";
     const validate = vi.fn(async () => ({
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       outcome: "connected" as const,
       team: {
         organizationId,
@@ -60,13 +51,11 @@ describe("external Context activation", () => {
     }));
     const result = await activateExternalContext(
       { validateMemberContextActivation: validate },
-      { provider: "codex", cwd: "/work/payments/src" },
+      { provider: "codex", project },
       {
-        inspect: () => preflight,
         findBinding: () => ({
           provider: "codex",
-          checkoutRoot: preflight.checkoutRoot,
-          repositoryKey: preflight.repositoryKey,
+          project,
           organizationId,
         }),
       },
@@ -75,8 +64,7 @@ describe("external Context activation", () => {
     expect(validate).toHaveBeenCalledWith(
       organizationId,
       {
-        schemaVersion: 1,
-        repositoryKey: "github.com/acme/payments",
+        schemaVersion: 2,
       },
       { retry: false, timeoutMs: 2_000 },
     );
@@ -99,12 +87,12 @@ describe("external Context activation", () => {
     expect(Buffer.byteLength(responseJson, "utf8")).toBeLessThan(2_048);
   });
 
-  it("does not infer a Team when the checkout has no explicit binding", async () => {
+  it("does not infer a Team when the project has no explicit binding", async () => {
     const validate = vi.fn();
     const result = await activateExternalContext(
       { validateMemberContextActivation: validate },
-      { provider: "claude-code", cwd: "/work/payments" },
-      { inspect: () => preflight, findBinding: () => null },
+      { provider: "claude-code", project },
+      { findBinding: () => null },
     );
 
     expect(result).toMatchObject({ outcome: "disabled", reasonCode: "binding_missing" });
@@ -113,40 +101,20 @@ describe("external Context activation", () => {
     await expect(
       requireConnectedExternalContext(
         { validateMemberContextActivation: validate },
-        { provider: "claude-code", cwd: "/work/payments" },
-        { inspect: () => preflight, findBinding: () => null },
+        { provider: "claude-code", project },
+        { findBinding: () => null },
       ),
     ).rejects.toBeInstanceOf(ExternalContextActivationRequiredError);
   });
 
-  it("fails closed on repository drift and SessionStart timeout without retrying or blocking coding", async () => {
-    const drift = await activateExternalContext(
-      { validateMemberContextActivation: vi.fn() },
-      { provider: "codex", cwd: "/work/payments" },
-      {
-        inspect: () => preflight,
-        findBinding: () => ({
-          provider: "codex",
-          checkoutRoot: preflight.checkoutRoot,
-          repositoryKey: "github.com/acme/other",
-          organizationId: "org_acme",
-        }),
-      },
-    );
-    expect(drift).toMatchObject({
-      outcome: "disabled",
-      reasonCode: "binding_repository_drift",
-    });
-    expect(drift.additionalContext).toBeUndefined();
-
+  it("fails closed on SessionStart timeout without retrying or blocking coding", async () => {
     const validate = vi.fn(async () => {
       throw timeoutError();
     });
     const unavailable = await activateExternalContext(
       { validateMemberContextActivation: validate },
-      { provider: "codex", cwd: "/work/payments" },
+      { provider: "codex", project },
       {
-        inspect: () => preflight,
         findBinding: () => binding,
       },
     );
@@ -156,17 +124,13 @@ describe("external Context activation", () => {
     });
     expect(unavailable.additionalContext).toBeUndefined();
     expect(validate).toHaveBeenCalledTimes(1);
-    expect(validate).toHaveBeenCalledWith(
-      "org_acme",
-      { schemaVersion: 1, repositoryKey: preflight.repositoryKey },
-      { retry: false, timeoutMs: 2_000 },
-    );
+    expect(validate).toHaveBeenCalledWith("org_acme", { schemaVersion: 2 }, { retry: false, timeoutMs: 2_000 });
     expect(renderProviderSessionStartResponse(unavailable)).toMatchObject({ continue: true });
 
     const needsAdmin = await activateExternalContext(
       {
         validateMemberContextActivation: async () => ({
-          schemaVersion: 1,
+          schemaVersion: 2,
           outcome: "needs_admin",
           team: {
             organizationId: "org_acme",
@@ -180,30 +144,23 @@ describe("external Context activation", () => {
           },
         }),
       },
-      { provider: "codex", cwd: "/work/payments" },
+      { provider: "codex", project },
       {
-        inspect: () => preflight,
-        findBinding: () => ({
-          provider: "codex",
-          checkoutRoot: preflight.checkoutRoot,
-          repositoryKey: preflight.repositoryKey,
-          organizationId: "org_acme",
-        }),
+        findBinding: () => binding,
       },
     );
     expect(needsAdmin.outcome).toBe("needs_admin");
     expect(needsAdmin.additionalContext).toBeUndefined();
   });
 
-  it("retries one transient explicit activation against the same Team and repository", async () => {
+  it("retries one transient explicit activation against the same Team", async () => {
     const validate = vi.fn().mockRejectedValueOnce(timeoutError()).mockResolvedValueOnce(connected);
 
     await expect(
       requireConnectedExternalContext(
         { validateMemberContextActivation: validate },
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -212,18 +169,8 @@ describe("external Context activation", () => {
       binding,
     });
     expect(validate).toHaveBeenCalledTimes(2);
-    expect(validate).toHaveBeenNthCalledWith(
-      1,
-      "org_acme",
-      { schemaVersion: 1, repositoryKey: preflight.repositoryKey },
-      { retry: false, timeoutMs: 5_000 },
-    );
-    expect(validate).toHaveBeenNthCalledWith(
-      2,
-      "org_acme",
-      { schemaVersion: 1, repositoryKey: preflight.repositoryKey },
-      { retry: false, timeoutMs: 5_000 },
-    );
+    expect(validate).toHaveBeenNthCalledWith(1, "org_acme", { schemaVersion: 2 }, { retry: false, timeoutMs: 5_000 });
+    expect(validate).toHaveBeenNthCalledWith(2, "org_acme", { schemaVersion: 2 }, { retry: false, timeoutMs: 5_000 });
   });
 
   it("bounds a stale-token refresh inside the SessionStart attempt signal", async () => {
@@ -256,9 +203,8 @@ describe("external Context activation", () => {
     await expect(
       activateExternalContext(
         sdk,
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -292,9 +238,8 @@ describe("external Context activation", () => {
     await expect(
       requireConnectedExternalContext(
         sdk,
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -318,9 +263,8 @@ describe("external Context activation", () => {
     await expect(
       activateExternalContext(
         sdk,
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -347,9 +291,8 @@ describe("external Context activation", () => {
     await expect(
       requireConnectedExternalContext(
         { validateMemberContextActivation: validate },
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -372,9 +315,8 @@ describe("external Context activation", () => {
     await expect(
       requireConnectedExternalContext(
         { validateMemberContextActivation: validate },
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -393,9 +335,8 @@ describe("external Context activation", () => {
     await expect(
       requireConnectedExternalContext(
         { validateMemberContextActivation: validate },
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -414,9 +355,8 @@ describe("external Context activation", () => {
     await expect(
       requireConnectedExternalContext(
         { validateMemberContextActivation: validate },
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),
@@ -427,7 +367,7 @@ describe("external Context activation", () => {
     expect(validate).toHaveBeenCalledTimes(2);
   });
 
-  it("does not retry a typed Team scope denial", async () => {
+  it("handles a legacy v1 Team scope denial without retrying", async () => {
     const validate = vi.fn(async () => ({
       schemaVersion: 1 as const,
       outcome: "disabled" as const,
@@ -445,9 +385,8 @@ describe("external Context activation", () => {
     await expect(
       requireConnectedExternalContext(
         { validateMemberContextActivation: validate },
-        { provider: "codex", cwd: "/work/payments" },
+        { provider: "codex", project },
         {
-          inspect: () => preflight,
           findBinding: () => binding,
         },
       ),

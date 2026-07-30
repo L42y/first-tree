@@ -5,8 +5,7 @@ export type ContextActivationValidator = {
   validateMemberContextActivation(
     organizationId: string,
     data: {
-      schemaVersion: 1;
-      repositoryKey: string;
+      schemaVersion: 2;
     },
     options: { retry: false; timeoutMs: number },
   ): Promise<ContextActivationResponse>;
@@ -55,13 +54,12 @@ const AUTHORITY_POLICIES: Record<
  * Perform one logical live-authority check.
  *
  * SessionStart stays latency-bounded and never retries. Explicit user/Skill
- * operations get one retry against the same exact Team + repository only for
+ * operations get one retry against the same exact Team only for
  * transport timeouts, network failures, and HTTP 5xx responses.
  */
 export async function validateExternalContextAuthority(
   validator: ContextActivationValidator,
   organizationId: string,
-  repositoryKey: string,
   mode: ExternalContextAuthorityMode,
 ): Promise<ExternalContextAuthorityResult> {
   const policy = AUTHORITY_POLICIES[mode];
@@ -71,8 +69,7 @@ export async function validateExternalContextAuthority(
       const response = await validator.validateMemberContextActivation(
         organizationId,
         {
-          schemaVersion: 1,
-          repositoryKey,
+          schemaVersion: 2,
         },
         { retry: false, timeoutMs: policy.timeoutMs },
       );

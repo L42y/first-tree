@@ -978,12 +978,7 @@ describe("Settings Setup overview", () => {
   });
 
   it("nests optional personal coding-agent access under a bound Context Tree without assuming this browser's Computer", async () => {
-    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
-      {
-        type: "repo",
-        status: "active",
-      },
-    ]);
+    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([]);
     contextEnablementMocks.getContextEnablementHandoff.mockImplementation(
       async (_organizationId: string, provider: "claude-code" | "codex") => ({
         organizationId: "org-1",
@@ -1037,12 +1032,7 @@ describe("Settings Setup overview", () => {
 
   it("lets a Member use personal Context access without loading Admin Tree or Reviewer controls", async () => {
     authMock.value = { ...authMock.value, role: "member" };
-    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([
-      {
-        type: "repo",
-        status: "active",
-      },
-    ]);
+    resourceMocks.listTeamResourcesForOrg.mockResolvedValue([]);
     contextEnablementMocks.getContextEnablementHandoff.mockImplementation(
       async (_organizationId: string, provider: "claude-code" | "codex") => ({
         organizationId: "org-1",
@@ -1080,15 +1070,24 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("does not render a Personal access blocker when its prerequisites are incomplete", async () => {
-    const view = await renderSettingsSetupPage();
-    const { controls } = await openContextTreeControls(view);
+  it("does not offer Personal access when the Context Tree binding is incomplete", () => {
+    const input = facts({
+      repositories: { state: "ready", value: 0 },
+      capabilities: {
+        state: "ready",
+        value: capabilityFixture({
+          binding: { state: "unbound" },
+        }),
+      },
+      contextTreeSnapshot: { state: "ready", value: null },
+    });
 
-    expect(controls.querySelector("[data-setup-personal-access]")).toBeNull();
-    expect(controls.textContent).not.toContain("Personal access");
+    expect(rowFor("context-tree", input).action).toEqual({
+      label: "Set up",
+      to: "/settings/setup#context-tree",
+      intent: "open-context-tree-controls",
+    });
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
-
-    await act(async () => view.root.unmount());
   });
 
   it("keeps the binding editor open and reflects the saved Server response immediately", async () => {

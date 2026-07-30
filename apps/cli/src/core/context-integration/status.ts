@@ -1,6 +1,7 @@
 import type {
   ContextActivationResponse,
   ContextIntegrationBinding,
+  ContextIntegrationProject,
   ContextIntegrationProvider,
 } from "@first-tree/shared";
 import semver from "semver";
@@ -17,12 +18,8 @@ import { contextIntegrationMarketplaceName } from "./installer.js";
 import type { ContextIntegrationProviderDriver, ProviderHookProbe, ProviderPluginProbe } from "./provider-driver.js";
 import { type ContextIntegrationRuntimeHealth, inspectContextIntegrationRuntime } from "./runtime-health.js";
 
-type CheckoutStatus =
-  | {
-      state: "ready";
-      root: string;
-      repositoryKey: string;
-    }
+type ProjectStatus =
+  | { state: "ready"; project: ContextIntegrationProject }
   | {
       state: "unavailable";
       reason: ContextClientPreflightErrorCode | "unknown";
@@ -31,54 +28,20 @@ type CheckoutStatus =
     };
 
 type BindingStatus =
-  | {
-      state: "exact";
-      organizationId: string;
-      repositoryKey: string;
-    }
-  | {
-      state: "missing";
-      nextAction: string;
-    }
-  | {
-      state: "repository_mismatch";
-      organizationId: string;
-      boundRepositoryKey: string;
-      currentRepositoryKey: string;
-      nextAction: string;
-    }
-  | {
-      state: "not_checked";
-      reason: string;
-    };
+  | { state: "exact"; organizationId: string }
+  | { state: "missing"; nextAction: string }
+  | { state: "not_checked"; reason: string };
 
 type LiveActivationStatus =
+  | { state: "connected"; team: Extract<ContextActivationResponse, { outcome: "connected" }>["team"] }
   | {
-      state: "connected";
-      team: Extract<ContextActivationResponse, { outcome: "connected" }>["team"];
-    }
-  | {
-      state: "disabled";
+      state: "disabled" | "needs_admin";
       reasonCode: string;
       message: string;
       settingsUrl: string | null;
     }
-  | {
-      state: "needs_admin";
-      reasonCode: string;
-      message: string;
-      settingsUrl: string | null;
-    }
-  | {
-      state: "unavailable";
-      reasonCode: string;
-      message: string;
-      nextAction: string;
-    }
-  | {
-      state: "not_checked";
-      reason: string;
-    };
+  | { state: "unavailable"; reasonCode: string; message: string; nextAction: string }
+  | { state: "not_checked"; reason: string };
 
 export type ContextIntegrationStatus = {
   provider: {
@@ -88,17 +51,10 @@ export type ContextIntegrationStatus = {
     minimumVersion: string;
     compatible: boolean;
   };
-  plugin: {
-    installed: boolean;
-    enabled: boolean;
-    installedPath: string | null;
-  };
+  plugin: { installed: boolean; enabled: boolean; installedPath: string | null };
   hook: ProviderHookProbe;
-  runtime: {
-    healthy: boolean;
-    issues: string[];
-  };
-  checkout: CheckoutStatus;
+  runtime: { healthy: boolean; issues: string[] };
+  project: ProjectStatus;
   binding: BindingStatus;
   activation: LiveActivationStatus;
 };
@@ -106,13 +62,16 @@ export type ContextIntegrationStatus = {
 type StatusDependencies = {
   inspectRuntime?: (driver: ContextIntegrationProviderDriver) => ContextIntegrationRuntimeHealth;
   inspectPreflight?: typeof inspectContextClientPreflight;
-  findBinding?: (provider: ContextIntegrationProvider, checkoutRoot: string) => ContextIntegrationBinding | null;
+  findBinding?: (
+    provider: ContextIntegrationProvider,
+    project: ContextIntegrationProject,
+  ) => ContextIntegrationBinding | null;
 };
 
 export async function inspectContextIntegrationStatus(
   driver: ContextIntegrationProviderDriver,
   validator: ContextActivationValidator,
-  cwd = process.cwd(),
+  selector: { cwd?: string; projectRoot?: string; pathless?: boolean } = {},
   dependencies: StatusDependencies = {},
 ): Promise<ContextIntegrationStatus> {
   const inspectRuntime = dependencies.inspectRuntime ?? inspectContextIntegrationRuntime;
@@ -122,13 +81,9 @@ export async function inspectContextIntegrationStatus(
   const plugin = health.probe;
   const marketplaceName = health.install?.marketplaceName ?? contextIntegrationMarketplaceName();
   const pluginName = health.install?.pluginName ?? "first-tree-context";
-  const hook = await inspectProviderHook(driver, plugin, {
-    marketplaceName,
-    pluginName,
-    cwd,
-  });
+  const hookCwd = selector.projectRoot ?? selector.cwd ?? process.cwd();
+  const hook = await inspectProviderHook(driver, plugin, { marketplaceName, pluginName, cwd: hookCwd });
   const minimumVersion = health.release?.manifest.providers[driver.provider].minimumVersion ?? driver.minimumVersion;
-
   const providerStatus = {
     name: driver.provider,
     available: plugin.binaryAvailable,
@@ -145,49 +100,36 @@ export async function inspectContextIntegrationStatus(
     enabled: plugin.enabled,
     installedPath: plugin.installedPath,
   };
-  const runtime = {
-    healthy: health.healthy,
-    issues: health.issues,
-  };
+  const runtime = { healthy: health.healthy, issues: health.issues };
 
-  let preflight: ReturnType<typeof inspectContextClientPreflight>;
+  let resolved: ReturnType<typeof inspectContextClientPreflight>;
   try {
-    preflight = inspectPreflight(cwd);
+    resolved = inspectPreflight(driver.provider, selector);
   } catch (error) {
-    const checkout = checkoutFailure(error);
+    const project = projectFailure(error);
     return {
       provider: providerStatus,
       plugin: pluginStatus,
       hook,
       runtime,
-      checkout,
-      binding: {
-        state: "not_checked",
-        reason: checkout.message,
-      },
-      activation: {
-        state: "not_checked",
-        reason: checkout.message,
-      },
+      project,
+      binding: { state: "not_checked", reason: project.message },
+      activation: { state: "not_checked", reason: project.message },
     };
   }
 
-  const checkout: CheckoutStatus = {
-    state: "ready",
-    root: preflight.checkoutRoot,
-    repositoryKey: preflight.repositoryKey,
-  };
+  const project: ProjectStatus = { state: "ready", project: resolved.project };
   let binding: ContextIntegrationBinding | null;
   try {
-    binding = resolveBinding(driver.provider, preflight.checkoutRoot);
+    binding = resolveBinding(driver.provider, resolved.project);
   } catch (error) {
-    const reason = `The exact checkout binding could not be read: ${message(error)}`;
+    const reason = `The project binding could not be read: ${message(error)}`;
     return {
       provider: providerStatus,
       plugin: pluginStatus,
       hook,
       runtime,
-      checkout,
+      project,
       binding: { state: "not_checked", reason },
       activation: { state: "not_checked", reason },
     };
@@ -198,56 +140,23 @@ export async function inspectContextIntegrationStatus(
       plugin: pluginStatus,
       hook,
       runtime,
-      checkout,
+      project,
       binding: {
         state: "missing",
-        nextAction: `Run the target Team's \`${channelConfig.binName} context enable\` handoff in this checkout.`,
+        nextAction: `Run the target Team's \`${channelConfig.binName} context enable\` handoff for this project.`,
       },
-      activation: {
-        state: "not_checked",
-        reason: "No exact provider + checkout binding exists.",
-      },
-    };
-  }
-  if (binding.repositoryKey !== preflight.repositoryKey) {
-    return {
-      provider: providerStatus,
-      plugin: pluginStatus,
-      hook,
-      runtime,
-      checkout,
-      binding: {
-        state: "repository_mismatch",
-        organizationId: binding.organizationId,
-        boundRepositoryKey: binding.repositoryKey,
-        currentRepositoryKey: preflight.repositoryKey,
-        nextAction: "Restore the bound `origin` or rerun the target Team's enable handoff.",
-      },
-      activation: {
-        state: "not_checked",
-        reason: "The checkout `origin` no longer matches its exact binding.",
-      },
+      activation: { state: "not_checked", reason: "No provider + project binding exists." },
     };
   }
 
-  const bindingStatus: BindingStatus = {
-    state: "exact",
-    organizationId: binding.organizationId,
-    repositoryKey: binding.repositoryKey,
-  };
-  const authority = await validateExternalContextAuthority(
-    validator,
-    binding.organizationId,
-    binding.repositoryKey,
-    "explicit",
-  );
+  const authority = await validateExternalContextAuthority(validator, binding.organizationId, "explicit");
   return {
     provider: providerStatus,
     plugin: pluginStatus,
     hook,
     runtime,
-    checkout,
-    binding: bindingStatus,
+    project,
+    binding: { state: "exact", organizationId: binding.organizationId },
     activation:
       authority.outcome === "validated"
         ? activationStatus(authority.response)
@@ -263,22 +172,15 @@ export async function inspectContextIntegrationStatus(
 function inspectProviderHook(
   driver: ContextIntegrationProviderDriver,
   plugin: ProviderPluginProbe,
-  input: {
-    marketplaceName: string;
-    pluginName: string;
-    cwd: string;
-  },
+  input: { marketplaceName: string; pluginName: string; cwd: string },
 ): Promise<ProviderHookProbe> {
   return driver.inspectHook({
     ...input,
-    plugin: {
-      installed: plugin.installed,
-      enabled: plugin.enabled,
-    },
+    plugin: { installed: plugin.installed, enabled: plugin.enabled },
   });
 }
 
-function checkoutFailure(error: unknown): Extract<CheckoutStatus, { state: "unavailable" }> {
+function projectFailure(error: unknown): Extract<ProjectStatus, { state: "unavailable" }> {
   if (error instanceof ContextClientPreflightError) {
     return {
       state: "unavailable",
@@ -290,18 +192,13 @@ function checkoutFailure(error: unknown): Extract<CheckoutStatus, { state: "unav
   return {
     state: "unavailable",
     reason: "unknown",
-    message: `The current checkout could not be inspected: ${message(error)}`,
-    nextAction: `Fix the reported checkout error, then rerun \`${channelConfig.binName} context status\`.`,
+    message: `The current project could not be inspected: ${message(error)}`,
+    nextAction: `Fix the reported project error, then rerun \`${channelConfig.binName} context status\`.`,
   };
 }
 
 function activationStatus(response: ContextActivationResponse): LiveActivationStatus {
-  if (response.outcome === "connected") {
-    return {
-      state: "connected",
-      team: response.team,
-    };
-  }
+  if (response.outcome === "connected") return { state: "connected", team: response.team };
   return {
     state: response.outcome,
     reasonCode: response.reasonCode,

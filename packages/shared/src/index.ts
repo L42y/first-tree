@@ -367,9 +367,13 @@ export {
   CONTEXT_ACTIVATION_SCHEMA_VERSION,
   type ContextActivationRequest,
   type ContextActivationResponse,
+  type ContextActivationV2Request,
   canonicalResourceRepoKeySchema,
   contextActivationRequestSchema,
   contextActivationResponseSchema,
+  contextActivationV2RequestSchema,
+  type LegacyContextActivationRequest,
+  legacyContextActivationRequestSchema,
 } from "./schemas/context-activation.js";
 export {
   CONTEXT_INTEGRATION_PROVIDERS,
@@ -380,6 +384,7 @@ export {
   type ContextIntegrationConfig,
   type ContextIntegrationInstallJournal,
   type ContextIntegrationInstallManifest,
+  type ContextIntegrationProject,
   type ContextIntegrationProvider,
   type ContextIntegrationReleaseManifest,
   contextEnablementHandoffQuerySchema,
@@ -389,8 +394,15 @@ export {
   contextIntegrationConfigSchema,
   contextIntegrationInstallJournalSchema,
   contextIntegrationInstallManifestSchema,
+  contextIntegrationPathlessProjectSchema,
+  contextIntegrationPathProjectSchema,
+  contextIntegrationProjectSchema,
   contextIntegrationProviderSchema,
   contextIntegrationReleaseManifestSchema,
+  type LegacyContextIntegrationBinding,
+  type LegacyContextIntegrationConfig,
+  legacyContextIntegrationBindingSchema,
+  legacyContextIntegrationConfigSchema,
 } from "./schemas/context-integration.js";
 export {
   CONTEXT_REVIEW_BODY_MAX_BYTES,

@@ -124,8 +124,7 @@ describe("Context integration cross-resource operation", () => {
     const expectedConfig = readContextIntegrationConfig();
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path" as const, root: "/work/payments" },
       organizationId: "org-acme",
     };
     const plan = {
@@ -171,8 +170,7 @@ describe("Context integration cross-resource operation", () => {
     const expectedConfig = readContextIntegrationConfig();
     writeContextBinding({
       provider: "codex",
-      checkoutRoot: "/work/other",
-      repositoryKey: "github.com/acme/other",
+      project: { kind: "path", root: "/work/other" },
       organizationId: "org-other",
     });
 
@@ -202,8 +200,7 @@ describe("Context integration cross-resource operation", () => {
         },
         {
           provider: "codex",
-          checkoutRoot: "/work/payments",
-          repositoryKey: "github.com/acme/payments",
+          project: { kind: "path", root: "/work/payments" },
           organizationId: "org-acme",
         },
         expectedConfig,
@@ -222,8 +219,7 @@ describe("Context integration cross-resource operation", () => {
     const manifest = installManifest();
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path" as const, root: "/work/payments" },
       organizationId: "org-acme",
     };
 
@@ -281,8 +277,7 @@ describe("Context integration cross-resource operation", () => {
     writeRollbackPlugin(stableMarketplace);
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path" as const, root: "/work/payments" },
       organizationId: "org-acme",
     };
     writeContextBinding(binding);
@@ -369,8 +364,7 @@ describe("Context integration cross-resource operation", () => {
     const manifest = installManifest();
     const binding = {
       provider: "codex" as const,
-      checkoutRoot: "/work/payments",
-      repositoryKey: "github.com/acme/payments",
+      project: { kind: "path", root: "/work/payments" },
       organizationId: "org-acme",
     };
     const operationId = "12345678-1234-4123-8123-123456789abc";

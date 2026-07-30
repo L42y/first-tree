@@ -30,7 +30,7 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
         "--yes",
       ].join(" "),
       workingDirectoryInstruction:
-        "Run this once from inside the code repository where this Team's Context should be enabled; any subdirectory works.",
+        "Run this once with either an explicit attached project root or explicit pathless project selector.",
     });
   });
 }

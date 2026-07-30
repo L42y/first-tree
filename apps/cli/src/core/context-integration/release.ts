@@ -56,6 +56,9 @@ export function verifyContextIntegrationRelease(release: ContextIntegrationRelea
       const path = join(pluginRoot, "skills", skill, "references", "context-tree-policy.md");
       policyDigests.add(sha256(readFileSync(path)));
     }
+    if (!existsSync(join(pluginRoot, "skills", "first-tree", "SKILL.md"))) {
+      throw new Error(`External ${provider} Plugin must expose the first-tree manual activation Skill.`);
+    }
     if (existsSync(join(pluginRoot, "skills", "first-tree-seed"))) {
       throw new Error(`External ${provider} Plugin must not expose first-tree-seed.`);
     }

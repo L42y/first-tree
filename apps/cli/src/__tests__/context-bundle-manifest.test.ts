@@ -67,6 +67,7 @@ describe("context integration bundle", () => {
       const hook = readFileSync(join(pluginRoot, "hooks", "hooks.json"), "utf8");
       const readSkill = readFileSync(join(pluginRoot, "skills", "first-tree-read", "SKILL.md"), "utf8");
       const writeSkill = readFileSync(join(pluginRoot, "skills", "first-tree-write", "SKILL.md"), "utf8");
+      const manualSkill = readFileSync(join(pluginRoot, "skills", "first-tree", "SKILL.md"), "utf8");
       projectedSkills.set(provider, { read: readSkill, write: writeSkill });
       expect(hook).toContain('"timeout": 5');
       expect(hook).not.toContain('"timeout": 3');
@@ -95,8 +96,13 @@ describe("context integration bundle", () => {
       );
       expect(readSkill).toContain("read\n`references/context-tree-policy.md` completely");
       expect(writeSkill).toContain("read\n`references/context-tree-policy.md` completely");
-      expect(readSkill).toContain('first_tree_source_checkout="$(git rev-parse --show-toplevel)"');
-      expect(writeSkill).toContain('cd "<original-source-checkout>"');
+      expect(readSkill).toContain('first_tree_project_root="<attached-project-root>"');
+      expect(readSkill).toContain("replace --project-root with --pathless");
+      expect(writeSkill).toContain("<project-selector>");
+      expect(manualSkill).toContain(`context read --provider ${provider}`);
+      expect(manualSkill).toContain("--pathless");
+      expect(manualSkill).toContain("../first-tree-read/references/context-tree-policy.md");
+      expect(manualSkill).not.toContain("--team");
       expect(readSkill).not.toMatch(/tree read --team/u);
       expect(writeSkill).not.toMatch(/tree write --team/u);
       expect(readSkill).not.toContain("Resolve the managed workspace");

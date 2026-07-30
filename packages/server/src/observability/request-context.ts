@@ -112,12 +112,12 @@ export function stampClientResource(request: FastifyRequest, clientId: string): 
   span.setAttribute(FIRST_TREE_ATTR.CLIENT_ID, clientId);
 }
 
-/** Record bounded Context activation telemetry without emitting raw repo identity. */
+/** Record bounded Context activation telemetry without emitting local project identity. */
 export function stampContextActivation(
   request: FastifyRequest,
   input: {
     outcome: string;
-    repositoryKeyHash: string;
+    contractVersion: number;
     latencyMs: number;
     reasonCode?: string;
   },
@@ -125,7 +125,7 @@ export function stampContextActivation(
   const span = rootSpanOf(request);
   if (!span) return;
   span.setAttribute("context.activation.outcome", input.outcome);
-  span.setAttribute("context.activation.repository_key_hash", input.repositoryKeyHash);
+  span.setAttribute("context.activation.contract_version", input.contractVersion);
   span.setAttribute("context.activation.latency_ms", Math.round(input.latencyMs));
   if (input.reasonCode) span.setAttribute("context.activation.reason_code", input.reasonCode);
 }

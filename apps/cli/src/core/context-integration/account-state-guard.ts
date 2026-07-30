@@ -1,6 +1,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { defaultHome, readConfigFile } from "@first-tree/shared/config";
+import { channelConfig } from "../channel.js";
 
 const heldAccountLocks = new Set<string>();
 
@@ -41,7 +42,7 @@ export function assertClientSwitchCanStart(home = defaultHome()): void {
   ];
   if (blockers.some((path) => existsSync(path))) {
     throw new Error(
-      "A First Tree Context Plugin/binding operation is active or incomplete. Run `first-tree context repair` for the current account before switching accounts.",
+      `A First Tree Context Plugin/binding operation is active or incomplete. Run \`${channelConfig.binName} context repair --provider <claude-code|codex>\` for the affected provider before switching accounts.`,
     );
   }
 }

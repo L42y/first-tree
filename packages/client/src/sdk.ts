@@ -453,7 +453,7 @@ export class FirstTreeHubSDK {
   }
 
   /**
-   * Validate one handoff-selected Team against the current source repository.
+   * Validate one handoff-selected Team and its current Context Tree readiness.
    * The Server does not search other memberships or mint durable authority.
    */
   async validateMemberContextActivation(

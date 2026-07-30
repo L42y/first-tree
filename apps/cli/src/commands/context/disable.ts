@@ -10,12 +10,20 @@ import { print } from "../../core/output.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
 import { createContextIntegrationDriver, parseContextProvider } from "./shared.js";
 
-type DisableOptions = { provider?: string; all?: boolean; yes?: boolean };
+type DisableOptions = {
+  provider?: string;
+  all?: boolean;
+  yes?: boolean;
+  projectRoot?: string;
+  pathless?: boolean;
+};
 
 function configure(command: Command): void {
   command
     .requiredOption("--provider <provider>", "claude-code or codex")
     .option("--all", "remove every binding for this provider")
+    .option("--project-root <directory>", "attached provider project root")
+    .option("--pathless", "remove the provider's pathless project binding")
     .option("--yes", "accept the displayed cleanup plan");
 }
 
@@ -27,10 +35,18 @@ export async function runContextDisable(context: CommandContext): Promise<void> 
   const install = readContextIntegrationInstallManifest(provider);
   const marketplaceName = install?.marketplaceName ?? contextIntegrationMarketplaceName();
   const pluginPresent = install !== null || driver.probe(marketplaceName, "first-tree-context").installed;
-  const checkoutRoot = options.all === true ? undefined : inspectContextClientPreflight().checkoutRoot;
+  const project =
+    options.all === true
+      ? undefined
+      : inspectContextClientPreflight(provider, {
+          projectRoot: options.projectRoot,
+          pathless: options.pathless,
+        }).project;
   const config = readContextIntegrationConfig();
   const existing = config.bindings.filter(
-    (binding) => binding.provider === provider && (options.all === true || binding.checkoutRoot === checkoutRoot),
+    (binding) =>
+      binding.provider === provider &&
+      (options.all === true || (project && JSON.stringify(binding.project) === JSON.stringify(project))),
   );
   if (existing.length === 0 && (options.all !== true || !pluginPresent)) {
     if (context.options.json) print.result({ provider, removed: [], pluginRemoved: false });
@@ -49,7 +65,7 @@ export async function runContextDisable(context: CommandContext): Promise<void> 
 
   const result = disableContextIntegrationOperation(driver, {
     all: options.all === true,
-    checkoutRoot,
+    project,
     removePlugin: remainingCount === 0 && pluginPresent,
     expectedConfig: config,
     expectedAccountClientId,
@@ -63,7 +79,7 @@ export const contextDisableCommand: SubcommandModule = {
   name: "disable",
   alias: "",
   summary: "",
-  description: "Disable First Tree Context for this checkout or provider.",
+  description: "Disable First Tree Context for this project or provider.",
   configure,
   action: runContextDisable,
 };

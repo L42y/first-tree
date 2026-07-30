@@ -1,6 +1,6 @@
 ---
 id: external-context-hook-status
-description: Validate Codex Context enable consent guidance and layered status across provider, Plugin, Hook, checkout, binding, and live Team activation.
+description: Validate Codex Context enable consent guidance and layered status across provider, Plugin, Hook, project, binding, and live Team activation.
 areas: [cross-surface]
 surfaces: [cli, codex, server]
 ---
@@ -16,13 +16,14 @@ repository/Team activation.
 
 ## Preconditions
 
-- Use the formal isolated QA run cell and a disposable ordinary Git repository
-  with a readable GitHub `origin`; do not use the product checkout as the
-  experience fixture.
+- Use the formal isolated QA run cell and a disposable ordinary parent
+  directory containing two Git repositories; do not use the product worktree
+  as the experience fixture.
 - Bridge to a supported host Codex installation using a throwaway
   `CODEX_HOME`. The run must exercise the real Codex Plugin lifecycle,
   interactive `/hooks` surface, and app-server `hooks/list` response.
-- Use a staging First Tree account and disposable Team/repository scope. Keep
+- Use a staging First Tree account and disposable Team with a ready Context
+  Tree. Keep both source repositories absent from Team resources. Keep
   credentials outside committed artifacts and redact the Team id if the
   evidence leaves the QA environment.
 - Begin once with no Hook trust state and once with an already trusted and
@@ -30,8 +31,8 @@ repository/Team activation.
 
 ## Operate
 
-- Run the Team-authored `context enable --provider codex` handoff from the
-  disposable checkout.
+- Run the Team-authored `context enable --provider codex` handoff with the
+  ordinary parent as `--project-root`.
 - Follow only the displayed consent steps: open Codex, run `/hooks`, find First
   Tree Context → SessionStart, enable it, trust it, and start a new session.
 - Re-run the same Team-authored enable command after consent, in human and JSON
@@ -43,8 +44,8 @@ repository/Team activation.
 - Disable the Hook while retaining trust, then change the installed Hook
   definition so Codex reports modified trust; inspect status after each state.
 - Repeat enable with the already trusted and enabled Hook.
-- Separately inspect status while signed out, outside any Git repository, and
-  inside a signed-in Git repository with no readable `origin`.
+- Repeat with `--pathless`; confirm setup can complete without Hook consent and
+  the bundled `first-tree` Skill manually activates the current session.
 
 ## Observe
 
@@ -61,33 +62,33 @@ repository/Team activation.
   adopt it in the current session; the `setup` object in JSON mirrors the
   verdict.
 - Provider compatibility, Plugin installed, Plugin enabled, Hook trusted, Hook
-  enabled, checkout, exact binding, and live activation are separate fields in
+  enabled, project, project binding, and live activation are separate fields in
   human and JSON output.
 - Codex `trusted + enabled` renders Hook trusted/enabled as `Yes`; repeating
   enable does not incorrectly ask for another review.
 - Trusted but disabled, untrusted, and modified Hook states remain distinct and
   include the correct `/hooks` repair action.
-- The exact checkout binding remains visible when live activation is
+- The project binding remains visible when live activation is
   temporarily unavailable; no cached Team authority is presented as
   connected.
-- Signed out, non-Git directory, and missing `origin` each retain their actual
-  cause and a specific repair action.
-- A new Codex session runs SessionStart and reports live activation connected
-  only for the exact disposable checkout binding.
+- The ordinary non-Git parent and both nested repositories resolve the same
+  longest-ancestor project binding without Git remote inspection.
+- A known Codex scratch path is pathless/no-auto; an attached project session
+  auto-activates only its matching path binding.
 
 ## Expected Result
 
 `PASS`: all state transitions are read from real provider/server surfaces,
 consent remains provider-owned, trusted/enabled state is reported accurately,
-and every status layer and checkout failure stays distinct.
+and every status layer and project-resolution failure stays distinct.
 
 `FAIL`: status claims review is required after Codex reports trusted, conflates
-Hook enablement with Plugin enablement, hides the exact binding when the server
-is unavailable, merges checkout failures, bypasses consent, or reports live
-activation for another checkout/Team.
+Hook enablement with Plugin enablement, hides the project binding when the server
+is unavailable, merges project-resolution failures, bypasses consent, or
+reports live activation for another project/Team.
 
 `BLOCKED`: the isolated Codex bridge, staging account, disposable Team scope, or
-ordinary repository fixture cannot be prepared.
+ordinary multi-repository project fixture cannot be prepared.
 
 `INCONCLUSIVE`: only source/tests/mocks were observed, the provider state could
 not be captured, or the state transition evidence is incomplete.
@@ -97,4 +98,4 @@ not be captured, or the state transition evidence is incomplete.
 Keep the enable/status human output, redacted JSON envelopes, Codex `/hooks`
 screenshots for each state, the matching `hooks/list` rows, SessionStart output,
 and server activation response/log correlation. Record provider and CLI
-versions and the disposable checkout commit.
+versions, the bound project path, and the disposable source-repository commits.

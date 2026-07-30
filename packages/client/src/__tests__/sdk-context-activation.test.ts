@@ -48,6 +48,34 @@ describe("SDK Context activation", () => {
     );
   });
 
+  it("sends the repository-independent v2 contract", async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({ schemaVersion: 2 });
+      return new Response(
+        JSON.stringify({
+          schemaVersion: 2,
+          outcome: "connected",
+          team: {
+            organizationId: "org_acme",
+            displayName: "Acme",
+            role: "member",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: "https://first-tree.example",
+      getAccessToken: () => "member-token",
+    });
+
+    await expect(sdk.validateMemberContextActivation("org_acme", { schemaVersion: 2 })).resolves.toMatchObject({
+      schemaVersion: 2,
+      outcome: "connected",
+    });
+  });
+
   it("uses one attempt signal for token acquisition and the activation request", async () => {
     let tokenSignal: AbortSignal | undefined;
     const getAccessToken = vi.fn((options?: { signal?: AbortSignal }) => {

@@ -10,7 +10,7 @@ surfaces: [cli, client]
 ## Goal
 
 Confirm that a user-scoped Claude Code or Codex Context Plugin activates only for
-the exact enabled checkout, remains within the provider hook's execution budget,
+the resolved enabled project, remains within the provider hook's execution budget,
 and gives explicit Context operations a bounded recovery path when live authority
 is temporarily slow or unavailable.
 
@@ -25,18 +25,19 @@ together.
 - Run the target release artifact in an isolated QA cell with a real supported
   Claude Code or Codex provider bridge.
 - Install the Context Plugin through the real user-scope lifecycle and enable it
-  for one exact source checkout through a Team-scoped handoff.
-- Keep a second checkout of the same repository unbound as a negative control.
-- Use only throwaway Team/repository data and credentials. Do not reuse or mutate
-  an operator's Plugin installation, account state, or checkout binding.
+  for one ordinary parent project through a Team-scoped handoff.
+- Keep a second path project and a pathless session unbound as negative controls.
+- Use only throwaway Team data and credentials. Source repositories must remain
+  absent from Team resources.
 - Establish provider readiness with `runtime-provider-readiness` before treating
   a hook transcript as product evidence.
 
 ## Operate And Observe
 
-- Start, resume, clear, and compact a provider session in the bound checkout.
+- Start, resume, clear, and compact a provider session in the bound project.
   Observe the real SessionStart hook transcript and measure end-to-end hook time.
-- Repeat in the unbound checkout and confirm no Team Context is injected.
+- Repeat in the unbound and pathless sessions and confirm no Team Context is
+  auto-injected; then manually activate the bound pathless project.
 - Exercise `context status`, guarded Read, and guarded Write preflight through the
   shipped CLI artifact while the activation endpoint is healthy.
 - Repeat with an access token that requires refresh. Introduce slow refresh,
@@ -45,16 +46,16 @@ together.
   extending the operation behind the provider hook.
 - Introduce controlled transient authority conditions for timeout, network
   failure, and server 5xx. Verify an explicit operation retries only the same
-  exact Team and repository, at most once, and reports a stable safe reason if it
+  exact Team, at most once, and reports a stable safe reason if it
   still cannot activate.
 - Introduce authentication/authorization failure, a client 4xx, revoked
-  membership, and repository-scope removal. Verify these do not retry as
+  membership, and invalid Tree binding. Verify these do not retry as
   transient failures and do not fall back to another Team or cached authority.
 - Make live authority slower than the SessionStart internal budget. Confirm the
   provider hook completes within its outer budget with a controlled unavailable
   result, normal coding remains usable, and no Context is injected.
 
-Record provider version, Plugin release digest, bound checkout identity, exact
+Record provider version, Plugin release digest, resolved project kind/reason, exact
 Team identifier, hook transcript, operation output, endpoint fault used, attempt
 count, and latency. Redact credentials and private Context content.
 

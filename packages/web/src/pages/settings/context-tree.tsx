@@ -4,7 +4,6 @@ import { ArrowRight } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Link, useLocation } from "react-router";
 import { getContextTreeSnapshot } from "../../api/context-tree.js";
-import { listTeamResourcesForOrg } from "../../api/resources.js";
 import { getTeamSetupCapabilitiesAt, setupCapabilitiesQueryKey } from "../../api/setup-capabilities.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
@@ -50,13 +49,6 @@ export function SettingsContextTreePage() {
       organizationId ? getContextTreeSnapshot(organizationId, "7d") : Promise.reject(new Error("no organization")),
     enabled: !!organizationId && contextBound,
   });
-  const repositoriesQuery = useQuery({
-    queryKey: ["settings", "context-tree", "team-resources", organizationId],
-    queryFn: () =>
-      organizationId ? listTeamResourcesForOrg(organizationId) : Promise.reject(new Error("no organization")),
-    enabled: !!organizationId && contextBound,
-  });
-
   const availability: ContextTreeAvailability = !contextBound
     ? null
     : snapshotQuery.isPending
@@ -65,10 +57,6 @@ export function SettingsContextTreePage() {
         ? "unknown"
         : snapshotQuery.data.snapshotStatus;
   const teamNonActionableGitlabWebContext = isTeamNonActionableGitlabWebContext(snapshotQuery.data);
-  const hasCodeRepository =
-    repositoriesQuery.data?.some((resource) => resource.type === "repo" && resource.status === "active") ?? false;
-  const personalAccessReady = contextBound && hasCodeRepository;
-
   useEffect(() => {
     if (role === null || !capabilitiesQuery.isSuccess) return;
     const target =
@@ -173,21 +161,11 @@ export function SettingsContextTreePage() {
       >
         <Section title="Coding-agent access" description="Use this Team's Context Tree from Claude Code or Codex.">
           <div style={{ padding: "var(--sp-3) 0" }}>
-            {repositoriesQuery.isPending && contextBound ? (
-              <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
-                Checking repository access…
-              </p>
-            ) : repositoriesQuery.isError && contextBound ? (
-              <p className="text-body" role="alert" style={{ margin: 0, color: "var(--state-error)" }}>
-                Failed to check coding-agent access.
-              </p>
-            ) : personalAccessReady ? (
+            {contextBound ? (
               <ContextPersonalAccess organizationId={organizationId} />
             ) : (
               <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
-                {contextBound
-                  ? "Add an active code repository before generating the coding-agent setup prompt."
-                  : "Available once this Team has a valid Context Tree binding."}
+                Available once this Team has a valid Context Tree binding.
               </p>
             )}
           </div>

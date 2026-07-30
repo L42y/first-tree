@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { canonicalizeResourceRepoUrl } from "./resource.js";
 
-export const CONTEXT_ACTIVATION_SCHEMA_VERSION = 1 as const;
+export const CONTEXT_ACTIVATION_SCHEMA_VERSION = 2 as const;
 
 /**
  * Canonical repository keys are the credential-free output of
@@ -33,12 +33,21 @@ export const canonicalResourceRepoKeySchema = z
   );
 export type CanonicalResourceRepoKey = z.infer<typeof canonicalResourceRepoKeySchema>;
 
-export const contextActivationRequestSchema = z
+export const legacyContextActivationRequestSchema = z
   .object({
-    schemaVersion: z.literal(CONTEXT_ACTIVATION_SCHEMA_VERSION),
+    schemaVersion: z.literal(1),
     repositoryKey: canonicalResourceRepoKeySchema,
   })
   .strict();
+export type LegacyContextActivationRequest = z.infer<typeof legacyContextActivationRequestSchema>;
+
+export const contextActivationV2RequestSchema = z.object({ schemaVersion: z.literal(2) }).strict();
+export type ContextActivationV2Request = z.infer<typeof contextActivationV2RequestSchema>;
+
+export const contextActivationRequestSchema = z.union([
+  legacyContextActivationRequestSchema,
+  contextActivationV2RequestSchema,
+]);
 export type ContextActivationRequest = z.infer<typeof contextActivationRequestSchema>;
 
 const contextActivationTeamSchema = z
@@ -59,10 +68,10 @@ const contextActivationNextActionSchema = z
   })
   .strict();
 
-export const contextActivationResponseSchema = z.discriminatedUnion("outcome", [
+const legacyContextActivationResponseSchema = z.discriminatedUnion("outcome", [
   z
     .object({
-      schemaVersion: z.literal(CONTEXT_ACTIVATION_SCHEMA_VERSION),
+      schemaVersion: z.literal(1),
       outcome: z.literal("disabled"),
       team: contextActivationTeamSchema,
       reasonCode: z.literal("repository_not_in_selected_team_scope"),
@@ -71,14 +80,14 @@ export const contextActivationResponseSchema = z.discriminatedUnion("outcome", [
     .strict(),
   z
     .object({
-      schemaVersion: z.literal(CONTEXT_ACTIVATION_SCHEMA_VERSION),
+      schemaVersion: z.literal(1),
       outcome: z.literal("connected"),
       team: contextActivationAuthorizedTeamSchema,
     })
     .strict(),
   z
     .object({
-      schemaVersion: z.literal(CONTEXT_ACTIVATION_SCHEMA_VERSION),
+      schemaVersion: z.literal(1),
       outcome: z.literal("needs_admin"),
       team: contextActivationAuthorizedTeamSchema,
       reasonCode: z.enum(["context_tree_unbound", "context_tree_binding_invalid", "context_tree_provider_unresolved"]),
@@ -87,5 +96,31 @@ export const contextActivationResponseSchema = z.discriminatedUnion("outcome", [
       }),
     })
     .strict(),
+]);
+
+const contextActivationV2ResponseSchema = z.discriminatedUnion("outcome", [
+  z
+    .object({
+      schemaVersion: z.literal(2),
+      outcome: z.literal("connected"),
+      team: contextActivationAuthorizedTeamSchema,
+    })
+    .strict(),
+  z
+    .object({
+      schemaVersion: z.literal(2),
+      outcome: z.literal("needs_admin"),
+      team: contextActivationAuthorizedTeamSchema,
+      reasonCode: z.enum(["context_tree_unbound", "context_tree_binding_invalid", "context_tree_provider_unresolved"]),
+      nextAction: contextActivationNextActionSchema.extend({
+        settingsUrl: z.string().min(1),
+      }),
+    })
+    .strict(),
+]);
+
+export const contextActivationResponseSchema = z.union([
+  legacyContextActivationResponseSchema,
+  contextActivationV2ResponseSchema,
 ]);
 export type ContextActivationResponse = z.infer<typeof contextActivationResponseSchema>;

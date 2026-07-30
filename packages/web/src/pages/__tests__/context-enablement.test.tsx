@@ -32,16 +32,18 @@ describe("personal Context access", () => {
       installerUrl: "https://example.com/install.sh",
       binName: "first-tree-staging",
     });
-    apiMocks.getContextEnablementHandoff.mockResolvedValue({
-      protocolVersion: 1,
-      organizationId: "org-1",
-      teamDisplayName: "Acme",
-      role: "member",
-      provider: "claude-code",
-      intent: "settings",
-      command: "'first-tree-staging' context enable --provider 'claude-code' --team 'org-1'",
-      workingDirectoryInstruction: "Run this once from the repository root.",
-    });
+    apiMocks.getContextEnablementHandoff.mockImplementation(
+      async (_organizationId: string, provider: "claude-code" | "codex", intent = "settings") => ({
+        protocolVersion: 1,
+        organizationId: "org-1",
+        teamDisplayName: "Acme",
+        role: "member",
+        provider,
+        intent,
+        command: `'first-tree-staging' context enable --provider '${provider}' --team 'org-1'`,
+        workingDirectoryInstruction: "Run with an explicit project selector.",
+      }),
+    );
   });
 
   afterEach(async () => {
@@ -91,11 +93,13 @@ describe("personal Context access", () => {
     await clickAndFlush(buttonByText(host, "Preview prompt"));
 
     expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
-    expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code");
+    expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code", "onboarding");
+    expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex", "onboarding");
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     const preview = promptPreview();
     expect(preview?.value).toContain("'first-tree-staging' login 'short-lived-code'");
     expect(preview?.value).toContain("context enable --provider 'claude-code' --team 'org-1'");
+    expect(preview?.value).toContain("context enable --provider 'codex' --team 'org-1'");
     expect(preview?.closest('[data-clarity-mask="true"]')).not.toBeNull();
     expect(document.body.textContent).toContain("Nothing runs until you paste them into Claude Code or Codex.");
     expect(document.body.textContent).toContain("Contains a temporary sign-in code. Don't share it.");
@@ -117,7 +121,7 @@ describe("personal Context access", () => {
     expect(apiMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
   });
 
-  it("copies only the selected provider handoff", async () => {
+  it("copies one provider-neutral onboarding prompt without a provider picker", async () => {
     apiMocks.getContextEnablementHandoff.mockImplementation(
       async (_organizationId: string, provider: "claude-code" | "codex") => ({
         organizationId: "org-1",
@@ -130,17 +134,12 @@ describe("personal Context access", () => {
     );
     await render(true);
 
-    const codex = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Codex",
-    );
-    await act(async () => codex?.click());
     await clickAndFlush(buttonByText(host, "Copy setup prompt"));
 
-    expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(1);
-    expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "codex");
+    expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(2);
     const copiedPrompt = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0];
     expect(copiedPrompt).toContain("--provider 'codex'");
-    expect(copiedPrompt).not.toContain("--provider 'claude-code'");
+    expect(copiedPrompt).toContain("--provider 'claude-code'");
     expect(copiedPrompt).toContain("/hooks");
   });
 
@@ -198,15 +197,17 @@ describe("personal Context access", () => {
     expect(host.textContent).not.toContain("Copied —");
   });
 
-  it("rejects a server handoff for a different provider", async () => {
-    apiMocks.getContextEnablementHandoff.mockResolvedValueOnce({
-      organizationId: "org-1",
-      teamDisplayName: "Acme",
-      role: "member",
-      provider: "codex",
-      command: "'first-tree-staging' context enable --provider 'codex' --team 'org-1'",
-      workingDirectoryInstruction: "Run this once from the repository root.",
-    });
+  it("rejects a server handoff for a different Team", async () => {
+    apiMocks.getContextEnablementHandoff.mockImplementation(
+      async (_organizationId: string, provider: "claude-code" | "codex") => ({
+        organizationId: provider === "codex" ? "org-other" : "org-1",
+        teamDisplayName: "Acme",
+        role: "member",
+        provider,
+        command: `'first-tree-staging' context enable --provider '${provider}' --team 'org-1'`,
+        workingDirectoryInstruction: "Run with an explicit project selector.",
+      }),
+    );
     await render(true);
 
     await clickAndFlush(buttonByText(host, "Copy setup prompt"));
@@ -263,7 +264,9 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("--provider 'claude-code' --team 'org-1'");
     expect(copiedPrompt).toContain("If you are Codex:");
     expect(copiedPrompt).toContain("--provider 'codex' --team 'org-1'");
-    expect(copiedPrompt).toContain("Do not run both and do not add, remove, or change command flags.");
+    expect(copiedPrompt).toContain("do not run both commands");
+    expect(copiedPrompt).toContain("--project-root '<canonical-project-root>'");
+    expect(copiedPrompt).toContain("--pathless");
     expect(copiedPrompt).toContain("Do not mark onboarding complete.");
     expect(host.textContent).toContain("Setup prompt copied.");
     expect(host.textContent).not.toContain("Copied — paste it into");
@@ -303,7 +306,7 @@ describe("personal Context access", () => {
     ).toThrow("expected Team");
   });
 
-  it("builds a one-provider onboarding artifact without exposing the other provider", () => {
+  it("builds a backward-compatible one-provider onboarding artifact", () => {
     const prompt = buildByoSetupPrompt({
       organizationId: "org-1",
       bootstrapCommand: "bootstrap-command",
@@ -324,7 +327,7 @@ describe("personal Context access", () => {
 
     expect(prompt).toContain("bootstrap-command");
     expect(prompt).toContain("claude-command");
-    expect(prompt).not.toContain("Codex");
+    expect(prompt).toContain("claude-command");
     expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
     expect(prompt).not.toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");

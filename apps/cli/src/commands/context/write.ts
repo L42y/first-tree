@@ -3,6 +3,8 @@ import {
   ExternalContextActivationRequiredError,
   requireConnectedExternalContext,
 } from "../../core/context-integration/activation.js";
+import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
+import { contextRepairCommand } from "../../core/context-integration/repair-guidance.js";
 import { inspectContextIntegrationRuntime } from "../../core/context-integration/runtime-health.js";
 import { ContextTreeWritePreflightCliError, preflightContextTreeWrite } from "../../core/context-tree-write.js";
 import { isJsonMode, print } from "../../core/output.js";
@@ -14,12 +16,16 @@ type ContextWriteOptions = {
   provider?: string;
   snapshot?: string;
   githubLogin?: string;
+  projectRoot?: string;
+  pathless?: boolean;
 };
 
 function configure(command: Command): void {
   command
     .requiredOption("--provider <provider>", "provider Plugin owner")
     .requiredOption("--snapshot <directory>", "exact snapshot created by the external Context Read route")
+    .option("--project-root <directory>", "attached provider project root")
+    .option("--pathless", "use the provider's explicit pathless project binding")
     .option("--github-login <login>", "current local gh login for a GitHub PR author");
 }
 
@@ -30,7 +36,7 @@ export async function runContextWrite(context: CommandContext): Promise<void> {
   if (!health.healthy) {
     print.fail(
       "context_plugin_repair_required",
-      `${health.issues.join(" ")} Run \`first-tree context repair --provider ${provider}\`.`,
+      `${health.issues.join(" ")} Run \`${contextRepairCommand(provider)}\`.`,
       1,
     );
   }
@@ -38,7 +44,10 @@ export async function runContextWrite(context: CommandContext): Promise<void> {
   try {
     const activation = await requireConnectedExternalContext(sdk, {
       provider,
-      cwd: process.cwd(),
+      project: inspectContextClientPreflight(provider, {
+        projectRoot: options.projectRoot,
+        pathless: options.pathless,
+      }).project,
     });
     const preflight = await preflightContextTreeWrite(
       {
@@ -78,7 +87,7 @@ export const contextWriteCommand: SubcommandModule = {
   hidden: true,
   alias: "",
   summary: "",
-  description: "Internal external-Plugin Write route with exact checkout activation.",
+  description: "Internal external-Plugin Write route with project activation.",
   configure,
   action: runContextWrite,
 };

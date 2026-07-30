@@ -8,6 +8,7 @@ import type {
 } from "@first-tree/shared";
 import { contextIntegrationConfigSchema, contextIntegrationInstallManifestSchema } from "@first-tree/shared";
 import { defaultHome } from "@first-tree/shared/config";
+import { channelConfig } from "../channel.js";
 import { readActiveContextAccountClientId } from "./account-state-guard.js";
 import {
   assertContextIntegrationConfig,
@@ -89,7 +90,9 @@ export function enableContextIntegrationOperation(
         allowReplace: true,
         expectedPrevious:
           expectedConfig.bindings.find(
-            (candidate) => candidate.provider === binding.provider && candidate.checkoutRoot === binding.checkoutRoot,
+            (candidate) =>
+              candidate.provider === binding.provider &&
+              JSON.stringify(candidate.project) === JSON.stringify(binding.project),
           ) ?? null,
       });
       bindingChanged = true;
@@ -105,7 +108,7 @@ export function enableContextIntegrationOperation(
 export function disableContextIntegrationOperation(
   driver: ContextIntegrationProviderDriver,
   input: {
-    checkoutRoot?: string;
+    project?: ContextIntegrationBinding["project"];
     all: boolean;
     removePlugin: boolean;
     expectedConfig: ContextIntegrationConfig;
@@ -138,7 +141,7 @@ export function disableContextIntegrationOperation(
       }
       const removal = (dependencies.removeBindings ?? removeContextBindings)(driver.provider, {
         all: input.all,
-        checkoutRoot: input.checkoutRoot,
+        project: input.project,
         expectedProviderBindings: providerBindings,
       });
       bindingChanged = removal.removed.length > 0;
@@ -192,7 +195,7 @@ function captureOperationSnapshot(
 
   if (probe.installed && (!installManifest || !marketplaceSourceExisted)) {
     throw new Error(
-      `The existing ${driver.provider} Context Plugin lacks a complete First Tree rollback source. Run \`first-tree context repair --provider ${driver.provider}\` before changing bindings.`,
+      `The existing ${driver.provider} Context Plugin lacks a complete First Tree rollback source. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before changing bindings.`,
     );
   }
   if (probe.installed && !probe.enabled) {
@@ -268,7 +271,7 @@ function rollbackOperation(
     writeOperationJournal({ ...journal, phase: "rollback_failed" });
     throw new AggregateError(
       [originalError, ...rollbackErrors],
-      "First Tree Context operation failed and could not fully restore Plugin, manifest, and binding state. Run `first-tree context repair` before retrying.",
+      `First Tree Context operation failed and could not fully restore Plugin, manifest, and binding state. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before retrying.`,
     );
   }
   completeOperation(snapshot);
@@ -330,7 +333,7 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
     }
     const snapshot: OperationSnapshot = {
       accountClientId: journal.accountClientId,
-      config: { schemaVersion: 1, bindings: journal.previousBindings },
+      config: { schemaVersion: 2, bindings: journal.previousBindings },
       installManifest: journal.previousInstallManifest,
       providerInstalled: journal.providerInstalled,
       providerEnabled: journal.providerEnabled,
@@ -406,7 +409,7 @@ function readOperationJournal(): OperationJournal | null {
       throw new Error("invalid operation journal");
     }
     const previousBindings = contextIntegrationConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       bindings: parsed.previousBindings,
     }).bindings;
     const previousInstallManifest =
@@ -431,9 +434,10 @@ function readOperationJournal(): OperationJournal | null {
 }
 
 function assertNoIncompleteOperation(): void {
-  if (existsSync(operationJournalPath())) {
+  const incomplete = inspectContextIntegrationOperation();
+  if (incomplete) {
     throw new Error(
-      "A First Tree Context Plugin/binding operation is incomplete. Run `first-tree context repair` before retrying.",
+      `A First Tree Context Plugin/binding operation is incomplete. Run \`${channelConfig.binName} context repair --provider ${incomplete.provider}\` before retrying.`,
     );
   }
 }

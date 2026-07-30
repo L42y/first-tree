@@ -9,30 +9,33 @@ import {
 const DIGEST = `sha256:${"a".repeat(64)}`;
 
 describe("context integration contracts", () => {
-  it("parses exact provider and checkout bindings", () => {
+  it("parses provider path and pathless project bindings", () => {
     const parsed = contextIntegrationConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       bindings: [
         {
           provider: "codex",
-          checkoutRoot: "/work/payments",
-          repositoryKey: "github.com/acme/payments",
+          project: { kind: "path", root: "/work/payments" },
+          organizationId: "org_acme",
+        },
+        {
+          provider: "claude-code",
+          project: { kind: "pathless" },
           organizationId: "org_acme",
         },
       ],
     });
-    expect(parsed.bindings).toHaveLength(1);
+    expect(parsed.bindings).toHaveLength(2);
   });
 
   it("rejects unsupported providers", () => {
     expect(
       contextIntegrationConfigSchema.safeParse({
-        schemaVersion: 1,
+        schemaVersion: 2,
         bindings: [
           {
             provider: "remote",
-            checkoutRoot: "/work/payments",
-            repositoryKey: "github.com/acme/payments",
+            project: { kind: "path", root: "/work/payments" },
             organizationId: "org_acme",
           },
         ],

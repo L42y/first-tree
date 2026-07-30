@@ -350,7 +350,7 @@ export const COPY = {
     pickBack: "Back",
     byoSetupTitle: "Set up in your coding agent",
     byoSetupWhy:
-      "Open Claude Code or Codex in the code project you want to work on, then paste one prompt. Setup applies only to that local copy, which must come from a repository shared by your team.",
+      "Open Claude Code or Codex in the local project you want to work on, then paste one prompt. The project may be an ordinary folder with zero, one, or many source repositories.",
     byoBoundary:
       "This does not create a First Tree agent. Your coding-agent conversation stays outside First Tree Chat.",
     byoProviderLabel: "Which coding agent are you using?",
