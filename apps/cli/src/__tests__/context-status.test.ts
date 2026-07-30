@@ -1,6 +1,12 @@
 import type { ContextActivationResponse } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
-import { buildContextEnableNextActions } from "../commands/context/enable.js";
+import {
+  buildContextEnableNextActions,
+  buildSetupNextActions,
+  collectMissingSetupLayers,
+  collectSetupRecoveryActions,
+  renderSetupVerdictLine,
+} from "../commands/context/enable.js";
 import { renderHookEnabled, renderHookTrust } from "../commands/context/status.js";
 import type { ContextActivationValidator } from "../core/context-integration/activation.js";
 import {
@@ -280,7 +286,7 @@ describe("Context enable Hook guidance", () => {
       "Run `/hooks`.",
       "Find First Tree Context → SessionStart, enable its checkbox, and choose Trust.",
       "Exit and start a new Codex session in this checkout.",
-      "Run `first-tree-staging context status --provider codex`; confirm Hook trusted/enabled are Yes and Live activation is Connected.",
+      "Re-run the same `first-tree-staging context enable` command; setup is complete only when it reports Setup: Complete.",
     ]);
   });
 
@@ -311,6 +317,226 @@ describe("Context enable Hook guidance", () => {
 
     expect(actions.join(" ")).toContain("enable its checkbox");
     expect(actions.join(" ")).not.toContain("choose Trust");
+  });
+});
+
+describe("Context enable setup verdict", () => {
+  const greenVerification = {
+    provider: { name: "codex" as const, available: true, version: "1.0.0", minimumVersion: "0.5.0", compatible: true },
+    plugin: { installed: true, enabled: true, installedPath: "/tmp/plugin" },
+    hook: { trust: "trusted" as const, enabled: true, source: "provider_api" as const, issues: [] },
+    runtime: { healthy: true, issues: [] },
+    checkout: { state: "ready" as const, root: "/work/repo", repositoryKey: "github.com/acme/repo" },
+    binding: { state: "exact" as const, organizationId: "org-1", repositoryKey: "github.com/acme/repo" },
+    activation: {
+      state: "connected" as const,
+      team: { organizationId: "org-1", displayName: "Acme", role: "member" as const },
+    },
+  };
+
+  it("reports complete only when every layer is green", () => {
+    expect(collectMissingSetupLayers("codex", greenVerification)).toEqual([]);
+    expect(collectMissingSetupLayers("claude-code", greenVerification)).toEqual([]);
+  });
+
+  it("lists the missing Codex hook layers", () => {
+    expect(
+      collectMissingSetupLayers("codex", {
+        ...greenVerification,
+        hook: { trust: "review_required", enabled: false, source: "provider_api", issues: [] },
+      }),
+    ).toEqual(["Hook trusted: No", "Hook enabled: No"]);
+  });
+
+  it("ignores hook layers for Claude Code and flags binding and activation drift", () => {
+    expect(
+      collectMissingSetupLayers("claude-code", {
+        ...greenVerification,
+        hook: { trust: "provider_managed", enabled: false, source: "provider_managed", issues: [] },
+        binding: { state: "missing", nextAction: "Run context enable from the target checkout." },
+        activation: { state: "not_checked", reason: "binding missing" },
+      }),
+    ).toEqual(["Exact binding: missing", "Live activation: not_checked"]);
+  });
+
+  it("renders the literal verdict anchor the setup prompt requires", () => {
+    expect(renderSetupVerdictLine({ complete: true, missingLayers: [] })).toBe(
+      "Setup: Complete — every layer verified",
+    );
+    expect(renderSetupVerdictLine({ complete: false, missingLayers: ["Hook trusted: No", "Hook enabled: No"] })).toBe(
+      "Setup: Incomplete — Hook trusted: No; Hook enabled: No",
+    );
+  });
+
+  it("stays Incomplete when the installed payload is unhealthy despite green plugin flags", () => {
+    expect(
+      collectMissingSetupLayers("claude-code", {
+        ...greenVerification,
+        runtime: { healthy: false, issues: ["The installed Plugin payload does not match the current release."] },
+      }),
+    ).toEqual(["Plugin payload healthy: No"]);
+    expect(
+      collectMissingSetupLayers("codex", {
+        ...greenVerification,
+        provider: { ...greenVerification.provider, compatible: false },
+      }),
+    ).toEqual(["Provider compatible: No"]);
+  });
+
+  it("flags an unavailable checkout as its own layer", () => {
+    expect(
+      collectMissingSetupLayers("claude-code", {
+        ...greenVerification,
+        checkout: {
+          state: "unavailable",
+          reason: "not_signed_in",
+          message: "First Tree is not signed in.",
+          nextAction: "Run `first-tree-staging login <code>`, then rerun this command.",
+        },
+        binding: { state: "not_checked", reason: "checkout unavailable" },
+        activation: { state: "not_checked", reason: "checkout unavailable" },
+      }),
+    ).toEqual(["Checkout: unavailable", "Exact binding: not_checked", "Live activation: not_checked"]);
+  });
+});
+
+describe("Context enable recovery actions", () => {
+  const greenVerification = {
+    provider: { name: "codex" as const, available: true, version: "1.0.0", minimumVersion: "0.5.0", compatible: true },
+    runtime: { healthy: true, issues: [] },
+    hook: { trust: "trusted" as const, enabled: true, source: "provider_api" as const, issues: [] },
+    checkout: { state: "ready" as const, root: "/work/repo", repositoryKey: "github.com/acme/repo" },
+    binding: { state: "exact" as const, organizationId: "org-1", repositoryKey: "github.com/acme/repo" },
+    activation: {
+      state: "connected" as const,
+      team: { organizationId: "org-1", displayName: "Acme", role: "member" as const },
+    },
+  };
+
+  it("returns nothing when every layer is green", () => {
+    expect(collectSetupRecoveryActions("claude-code", greenVerification, "first-tree-staging")).toEqual([]);
+  });
+
+  it("surfaces a repair step for an unhealthy payload", () => {
+    const actions = collectSetupRecoveryActions(
+      "claude-code",
+      {
+        ...greenVerification,
+        runtime: { healthy: false, issues: ["The installed Plugin payload does not match the current release."] },
+      },
+      "first-tree-staging",
+    );
+    expect(actions).toEqual([
+      "The installed Plugin payload does not match the current release. Run `first-tree-staging context repair --provider claude-code`.",
+    ]);
+  });
+
+  it("keeps a transient activation failure actionable", () => {
+    const actions = collectSetupRecoveryActions(
+      "claude-code",
+      {
+        ...greenVerification,
+        activation: {
+          state: "unavailable",
+          reasonCode: "validation_unavailable",
+          message: "First Tree could not validate Team Context.",
+          nextAction: "Check connectivity and re-run this command.",
+        },
+      },
+      "first-tree-staging",
+    );
+    expect(actions).toEqual([
+      "First Tree could not validate Team Context. Check connectivity and re-run this command.",
+    ]);
+  });
+
+  it("passes through the binding repair instruction", () => {
+    const actions = collectSetupRecoveryActions(
+      "codex",
+      {
+        ...greenVerification,
+        binding: { state: "missing", nextAction: "Run context enable from the target checkout." },
+      },
+      "first-tree-staging",
+    );
+    expect(actions).toEqual(["Run context enable from the target checkout."]);
+  });
+
+  it("surfaces the checkout repair when the second preflight fails", () => {
+    const actions = collectSetupRecoveryActions(
+      "claude-code",
+      {
+        ...greenVerification,
+        checkout: {
+          state: "unavailable",
+          reason: "not_signed_in",
+          message: "First Tree is not signed in.",
+          nextAction: "Run `first-tree-staging login <code>`, then rerun this command.",
+        },
+        binding: { state: "not_checked", reason: "checkout unavailable" },
+        activation: { state: "not_checked", reason: "checkout unavailable" },
+      },
+      "first-tree-staging",
+    );
+    expect(actions).toEqual([
+      "First Tree is not signed in. Run `first-tree-staging login <code>`, then rerun this command.",
+    ]);
+  });
+
+  it("surfaces the unreadable-binding diagnostic for Claude Code", () => {
+    const reason =
+      "The exact checkout binding could not be read: Invalid First Tree Context binding config at /home/u/.first-tree/config/context.yaml.";
+    const verification = {
+      ...greenVerification,
+      hook: { trust: "provider_managed" as const, enabled: false, source: "provider_managed" as const, issues: [] },
+      binding: { state: "not_checked" as const, reason },
+      activation: { state: "not_checked" as const, reason },
+    };
+    const actions = buildSetupNextActions(
+      "claude-code",
+      verification,
+      { complete: false, missingLayers: ["Exact binding: not_checked", "Live activation: not_checked"] },
+      "first-tree-staging",
+    );
+    expect(actions).toEqual([
+      `${reason} Re-run this \`first-tree-staging context enable\` command; if the failure persists, do not delete the binding config — it also holds bindings for other providers and checkouts. Back it up, then repair its file permissions or YAML together with the member before retrying.`,
+    ]);
+    expect(actions[0]).not.toMatch(/remove/i);
+  });
+
+  it("keeps the binding diagnostic ahead of the trusted-Hook Codex status reminder", () => {
+    const reason = "The exact checkout binding could not be read: EACCES: permission denied.";
+    const verification = {
+      ...greenVerification,
+      binding: { state: "not_checked" as const, reason },
+      activation: { state: "not_checked" as const, reason },
+    };
+    const actions = buildSetupNextActions(
+      "codex",
+      verification,
+      { complete: false, missingLayers: ["Exact binding: not_checked", "Live activation: not_checked"] },
+      "first-tree-staging",
+    );
+    expect(actions).toEqual([
+      `${reason} Re-run this \`first-tree-staging context enable\` command; if the failure persists, do not delete the binding config — it also holds bindings for other providers and checkouts. Back it up, then repair its file permissions or YAML together with the member before retrying.`,
+      "Run `first-tree-staging context status --provider codex` to verify every layer remains connected.",
+    ]);
+    expect(actions[0]).not.toMatch(/remove/i);
+  });
+
+  it("never leaves an Incomplete verdict without a next step", () => {
+    const actions = buildSetupNextActions(
+      "claude-code",
+      {
+        ...greenVerification,
+        hook: { trust: "provider_managed" as const, enabled: false, source: "provider_managed" as const, issues: [] },
+      },
+      { complete: false, missingLayers: ["Plugin enabled: No"] },
+      "first-tree-staging",
+    );
+    expect(actions).toEqual([
+      "Fix the layers listed in the Setup line, then re-run this `first-tree-staging context enable` command.",
+    ]);
   });
 });
 
