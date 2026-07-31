@@ -1431,7 +1431,9 @@ describe("Agent client WS edge protocol coverage", () => {
         ref: "event-after-evict",
         agentId: agent.uuid,
         chatId,
-        reason: "session_evicted",
+        // Deliberately the pre-existing reason — old clients strict-parse the
+        // rejection frame and would drop an unknown enum value.
+        reason: "persist_failed",
       });
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chatId, { limit: 10 })).items).toEqual([]);
 
@@ -1453,6 +1455,60 @@ describe("Agent client WS edge protocol coverage", () => {
             (message as { ref?: string }).ref === "event-live",
         ),
       ).resolves.toMatchObject({ type: "session:event:accepted", ref: "event-live" });
+    } finally {
+      await closeSocket(ws);
+    }
+  });
+
+  it("registers wire capabilities and resolves apply-ack waiters from session:command:applied frames", async () => {
+    const seed = await createAdminContext(app, { username: `ws-apply-ack-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "apply-ack" });
+
+    const ws = await openAuthenticatedSocket(await signAccess(seed.userId, seed.memberId, seed.organizationId));
+    ws.send(
+      JSON.stringify({
+        type: "client:register",
+        clientId: seed.clientId,
+        hostname: "edge-host",
+        os: "linux",
+        wireCapabilities: { wsSessionTerminateApplyAck: true },
+      }),
+    );
+    await waitForFrame(ws, (message) => (message as { type?: string }).type === "client:registered");
+
+    try {
+      await expect(bindAgent(ws, agent.uuid, "bind-apply-ack")).resolves.toMatchObject({ type: "agent:bound" });
+
+      // The capability advertised at register is visible on the live connection.
+      expect(connectionManager.agentSupportsTerminateApplyAck(agent.uuid)).toBe(true);
+      expect(connectionManager.getAgentLiveClientId(agent.uuid)).toBe(seed.clientId);
+
+      // A well-formed ack resolves the HTTP route's waiter with its payload.
+      const waiter = connectionManager.waitForClientReply(seed.clientId, "reset-ref-1");
+      ws.send(
+        JSON.stringify({
+          type: "session:command:applied",
+          ref: "reset-ref-1",
+          agentId: agent.uuid,
+          chatId: "chat-ack",
+          command: "session:terminate",
+          applied: true,
+        }),
+      );
+      await expect(waiter).resolves.toMatchObject({
+        ref: "reset-ref-1",
+        agentId: agent.uuid,
+        chatId: "chat-ack",
+        command: "session:terminate",
+        applied: true,
+      });
+
+      // A malformed ack is dropped without disturbing the socket.
+      ws.send(JSON.stringify({ type: "session:command:applied", ref: "x" }));
+      ws.send(JSON.stringify({ type: "heartbeat" }));
+      await expect(
+        waitForFrame(ws, (message) => (message as { type?: string }).type === "heartbeat:ack"),
+      ).resolves.toMatchObject({ type: "heartbeat:ack" });
     } finally {
       await closeSocket(ws);
     }

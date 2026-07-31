@@ -45,9 +45,11 @@ export function AgentSuspendConfirmDialog({
 }
 
 /**
- * Chat-session Reset — the Participants-roster recovery action. Irreversible
- * for the live session (unlike Pause), so it gets a confirm step, but the
- * scope stays narrow: only this agent's session in this chat.
+ * Chat-session Reset — the Participants-roster recovery action. Offered only
+ * for a stopped (suspended/failed) session, so the copy describes clearing a
+ * saved session, never interrupting a run. Irreversible for the session
+ * (unlike Pause), so it gets a confirm step, but the scope stays narrow:
+ * only this agent's session in this chat.
  */
 export function AgentSessionResetConfirmDialog({
   open,
@@ -70,11 +72,11 @@ export function AgentSessionResetConfirmDialog({
         </DialogHeader>
         <div className="space-y-3">
           <DialogDescription style={{ color: "var(--fg-2)" }}>
-            This stops the current run and clears the agent's session in this chat.
+            This clears the agent's stopped session in this chat.
           </DialogDescription>
           <p className="text-body" style={{ color: "var(--fg-2)" }}>
-            Chat history is kept. Actions the agent already took outside this chat cannot be undone. The current run
-            stops and does not resume by itself. Send a new message to start a fresh session.
+            Chat history is kept. Actions the agent already took outside this chat cannot be undone. Send a new message
+            to start a fresh session.
           </p>
         </div>
         <DialogFooter>

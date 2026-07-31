@@ -21,6 +21,7 @@ import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
+import * as connectionManager from "./connection-manager.js";
 
 /**
  * Single source of truth for per-(agent,chat) composite status.
@@ -542,6 +543,10 @@ export async function resolveAgentChatStatuses(
           // runtime frame self-heals.
           activity: working ? activity : null,
           statusReason,
+          // Live-connection capability gate for the Web chat-session
+          // Reset: only a client that answers session:terminate with an
+          // apply-ack can prove the old provider mapping is gone.
+          sessionResetSupported: connectionManager.agentSupportsTerminateApplyAck(agentId),
         }),
       );
     }

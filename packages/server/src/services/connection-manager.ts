@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { ClientWireCapabilities } from "@first-tree/shared";
 import type { WebSocket } from "ws";
 
 /** WS close code: agent already connected from another client. */
@@ -66,12 +67,14 @@ export function forceDisconnect(agentId: string, reason?: string, expectedClient
 type ClientEntry = {
   ws: WebSocket;
   agentIds: Set<string>;
+  /** Negotiated at `client:register`; absent for older clients. */
+  capabilities?: ClientWireCapabilities;
 };
 
 const clientConnections = new Map<string, ClientEntry>();
 const agentToClient = new Map<string, string>();
 
-export function setClientConnection(clientId: string, ws: WebSocket): void {
+export function setClientConnection(clientId: string, ws: WebSocket, capabilities?: ClientWireCapabilities): void {
   const existing = clientConnections.get(clientId);
   if (existing && existing.ws !== ws && existing.ws.readyState <= 1) {
     // Close the previous connection to prevent clientId takeover
@@ -83,7 +86,7 @@ export function setClientConnection(clientId: string, ws: WebSocket): void {
       activeConnections.delete(agentId);
     }
   }
-  clientConnections.set(clientId, { ws, agentIds: new Set() });
+  clientConnections.set(clientId, { ws, agentIds: new Set(), capabilities });
 }
 
 export function getClientConnection(clientId: string): WebSocket | undefined {
@@ -210,6 +213,27 @@ export function sendToAgent(agentId: string, message: Record<string, unknown>): 
   return true;
 }
 
+/**
+ * Does the agent's CURRENT live client connection support the terminate
+ * apply-ack (`wsSessionTerminateApplyAck`)? Gates the Web chat-session
+ * Reset: without it the server cannot prove the client dropped the old
+ * provider-session mapping, so Reset must stay hidden.
+ */
+export function agentSupportsTerminateApplyAck(agentId: string): boolean {
+  const clientId = agentToClient.get(agentId);
+  if (!clientId) return false;
+  const entry = clientConnections.get(clientId);
+  return entry !== undefined && entry.ws.readyState === 1 && entry.capabilities?.wsSessionTerminateApplyAck === true;
+}
+
+/** The clientId of the agent's current live connection, if any. */
+export function getAgentLiveClientId(agentId: string): string | undefined {
+  const clientId = agentToClient.get(agentId);
+  if (!clientId) return undefined;
+  const entry = clientConnections.get(clientId);
+  return entry && entry.ws.readyState === 1 ? clientId : undefined;
+}
+
 export function forceDisconnectClient(clientId: string): string[] {
   const entry = clientConnections.get(clientId);
   if (!entry) return [];
@@ -275,6 +299,15 @@ export function resolveClientReply(clientId: string, ref: string, value: unknown
   pendingClientReplies.delete(ref);
   pending.resolve(value);
   return true;
+}
+
+/** Drop one pending waiter (e.g. the command frame could not be sent). */
+export function cancelClientReply(clientId: string, ref: string, error: Error): void {
+  const pending = pendingClientReplies.get(ref);
+  if (!pending || pending.clientId !== clientId) return;
+  clearTimeout(pending.timer);
+  pendingClientReplies.delete(ref);
+  pending.reject(error);
 }
 
 export function rejectPendingRepliesForClient(clientId: string, error: Error): void {

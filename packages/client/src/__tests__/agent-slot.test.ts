@@ -74,6 +74,7 @@ class FakeClientConnection extends EventEmitter {
   reportSessionEvent = vi.fn();
   reportSessionEventConfirmed = vi.fn(async () => {});
   reportSessionRuntime = vi.fn();
+  reportSessionCommandApplied = vi.fn();
   sendSessionReconcile = vi.fn();
 
   constructor(private readonly sdk: unknown) {
@@ -654,6 +655,65 @@ describe("AgentSlot", () => {
 
     connection.emit("inbox:deliver", "inbox-1", makeFrame({ entryId: 99 }));
     expect(session.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("acks a ref'd session:terminate only after handleCommand has fully resolved", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    // No ref → legacy fire-and-forget path, never an ack.
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-1", type: "session:terminate" });
+    await Promise.resolve();
+    expect(session.handleCommand).toHaveBeenCalledWith("chat-1", "session:terminate");
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    // Ref'd terminate: the ack must NOT fire while the apply is in flight —
+    // the server treats it as proof the provider mapping is already gone.
+    const pending = deferred<void>();
+    session.handleCommand.mockReturnValueOnce(pending.promise);
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-2",
+      type: "session:terminate",
+      ref: "ref-1",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(session.handleCommand).toHaveBeenCalledWith("chat-2", "session:terminate");
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    pending.resolve();
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-1",
+        agentId: "agent-1",
+        chatId: "chat-2",
+        command: "session:terminate",
+        applied: true,
+      }),
+    );
+
+    // A failed apply reports applied:false — never a success ack.
+    session.handleCommand.mockRejectedValueOnce(new Error("boom"));
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-3",
+      type: "session:terminate",
+      ref: "ref-2",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-2",
+        agentId: "agent-1",
+        chatId: "chat-3",
+        command: "session:terminate",
+        applied: false,
+      }),
+    );
+
+    await slot.stop();
   });
 
   it("buffers bind-time inbox pushes until the SessionManager exists", async () => {

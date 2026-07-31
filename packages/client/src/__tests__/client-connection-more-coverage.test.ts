@@ -733,4 +733,25 @@ describe("ClientConnection — additional branch coverage", () => {
 
     priv(connection).clearTimers();
   });
+
+  it("declares the terminate apply-ack capability and forwards command refs", async () => {
+    const connection = await makeConnection();
+    const socket = await openRegisteredConnection(connection);
+
+    const registerFrame = socket.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .find((message) => message.type === "client:register");
+    expect(registerFrame?.wireCapabilities).toEqual({ wsSessionTerminateApplyAck: true });
+
+    const commands: unknown[] = [];
+    connection.on("session:command", (command) => commands.push(command));
+    socket.emitMessage({ type: "session:terminate", agentId: "agent-1", chatId: "chat-9", ref: "reset-1" });
+    socket.emitMessage({ type: "session:terminate", agentId: "agent-1", chatId: "chat-9" });
+    expect(commands).toEqual([
+      { type: "session:terminate", agentId: "agent-1", chatId: "chat-9", ref: "reset-1" },
+      { type: "session:terminate", agentId: "agent-1", chatId: "chat-9" },
+    ]);
+
+    priv(connection).clearTimers();
+  });
 });

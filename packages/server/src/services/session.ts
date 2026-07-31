@@ -11,6 +11,7 @@ import { messages } from "../db/schema/messages.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import type { Notifier } from "./notifier.js";
+import * as sessionEventService from "./session-event.js";
 
 export const SUMMARY_MAX_LENGTH = 50;
 
@@ -418,6 +419,78 @@ export async function archiveSession(
   notifier?: Notifier,
 ): Promise<StateTransitionResult> {
   return transitionSessionState(db, agentId, chatId, "evicted", ["suspended", "errored"], organizationId, notifier);
+}
+
+/**
+ * Atomically finalize an apply-acked terminate (the Web chat-session Reset
+ * path): under the session row lock, re-confirm the row is still stopped
+ * (`suspended` | `errored`), transition it to `evicted`, delete its session
+ * events, and refresh presence counts — all in ONE transaction. A cleanup
+ * failure rolls the eviction back, so the row stays stopped and the Reset
+ * remains retryable after a reload; a row re-activated by a new message
+ * while the ack was in flight fails the transition (`transitioned: false`)
+ * instead of evicting the fresh session.
+ */
+export async function finalizeTerminatedSession(
+  db: Database,
+  agentId: string,
+  chatId: string,
+  organizationId: string,
+  notifier?: Notifier,
+): Promise<StateTransitionResult> {
+  const now = new Date();
+  let finalState: SessionState | null = null;
+  let transitioned = false;
+
+  await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({ state: agentChatSessions.state })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
+      .for("update");
+
+    if (!existing) return;
+    const current = existing.state as SessionState;
+    finalState = current;
+    if (current !== "suspended" && current !== "errored") return;
+
+    await tx
+      .update(agentChatSessions)
+      .set({ state: "evicted", updatedAt: now })
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)));
+
+    await sessionEventService.clearEvents(tx as unknown as Database, agentId, chatId);
+
+    const [counts] = await tx
+      .select({
+        active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
+        total: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} != 'evicted')::int`,
+      })
+      .from(agentChatSessions)
+      .where(eq(agentChatSessions.agentId, agentId));
+
+    await tx
+      .update(agentPresence)
+      .set({
+        activeSessions: counts?.active ?? 0,
+        totalSessions: counts?.total ?? 0,
+        lastSeenAt: now,
+      })
+      .where(eq(agentPresence.agentId, agentId));
+
+    finalState = "evicted";
+    transitioned = true;
+  });
+
+  if (finalState === null) {
+    throw new NotFoundError(`Session (${agentId}, ${chatId}) not found`);
+  }
+
+  if (transitioned && notifier) {
+    notifier.notifySessionStateChange(agentId, chatId, "evicted", organizationId).catch(() => {});
+  }
+
+  return { state: finalState, transitioned };
 }
 
 export type ArchiveAgentSessionsResult = {

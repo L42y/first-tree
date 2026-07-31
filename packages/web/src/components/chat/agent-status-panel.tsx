@@ -100,22 +100,19 @@ export function canResumeStatus(status: AgentChatStatus | null): boolean {
 }
 
 /**
- * Reset (clear the chat session) is offered only when the agent is reachable
- * AND a resettable session exists: a live (`active`) or `suspended` session,
- * or a failed one (session state `errored` projects as engagement `none` with
- * the errored axis set). Offline agents are excluded — V1 reset composes the
- * existing online-only suspend/terminate commands, so a disconnected client
- * must fail closed rather than pretend the reset landed. `none` + not errored
- * means there is no session to clear. Exported for tests.
+ * Reset (clear the chat session) is offered only for a STOPPED session —
+ * `suspended`, or failed (session state `errored` projects as engagement
+ * `none` with the errored axis set) — on a reachable agent whose live client
+ * declares the terminate apply-ack capability (`sessionResetSupported`).
+ * Active sessions never offer Reset, even when idle: a running agent must be
+ * paused first, so Reset never tears down an in-flight turn. Offline agents
+ * and old clients are excluded because the apply-ack is the only proof the
+ * old provider-session mapping is gone. Exported for tests.
  */
 export function canResetSessionStatus(status: AgentChatStatus | null): boolean {
-  if (!status || !status.reachable) return false;
-  return status.engagement !== "none" || status.errored;
+  if (!status || !status.reachable || status.sessionResetSupported !== true) return false;
+  return status.engagement === "suspended" || (status.engagement === "none" && status.errored);
 }
-
-/** Reset failure when a state-changing command never reached the client. */
-const RESET_CLIENT_UNREACHABLE =
-  "The agent's client is disconnected, so the reset command could not be delivered. Try again once it reconnects.";
 
 function AgentStatusRow({
   chatId,
@@ -149,31 +146,20 @@ function AgentStatusRow({
       queryClient.invalidateQueries({ queryKey: ["activity"] });
     },
   });
-  // Reset composes the existing online-only commands — no new session
-  // protocol: a live session is suspended first (terminate is a deliberate
-  // no-op on `active`), suspended/errored sessions terminate directly. The
-  // server clears session events and pushes `session:terminate` so the client
-  // drops its local provider-session mapping; the next explicitly-addressed
-  // message starts a fresh session. Chat history is untouched.
+  // Reset is offered only for stopped sessions (suspended / errored) on a
+  // capable online client, so a single terminate in apply-ack mode is the
+  // whole operation: the server holds the request until the client confirms
+  // it dropped the local provider-session mapping, then atomically evicts and
+  // clears traces. A 200 + evicted response IS the fresh-session proof; every
+  // failure arrives as an HTTP error and leaves the stopped row untouched,
+  // so the action stays retryable (even after a reload).
   const resetMut = useMutation({
     mutationFn: async () => {
-      if (status?.engagement === "active") {
-        const suspended = await suspendSession(agent.agentId, chatId);
-        if (!suspended.delivered) throw new Error(RESET_CLIENT_UNREACHABLE);
-      }
-      const result = await terminateSession(agent.agentId, chatId);
+      const result = await terminateSession(agent.agentId, chatId, { waitForApply: true });
       if (result.state !== "evicted") {
-        // Terminate is a deliberate no-op on an active row — e.g. an addressed
-        // message landed between suspend and terminate and reactivated the
-        // session. No terminate frame was sent and no traces were cleared, so
-        // this must surface as a retryable failure, never as a success toast.
-        throw new Error("The session became active again before it could be cleared. Try again.");
-      }
-      if (!result.delivered) {
-        // The server evicted the session and cleared its traces, but the
-        // terminate command never reached the client, which may still hold the
-        // old provider session. Retrying re-sends the command idempotently.
-        throw new Error(RESET_CLIENT_UNREACHABLE);
+        // Defensive: the apply-ack route only returns 200 for evicted rows —
+        // anything else must surface as a retryable failure, never success.
+        throw new Error("The session could not be cleared. Try again.");
       }
     },
     onSuccess: () => {

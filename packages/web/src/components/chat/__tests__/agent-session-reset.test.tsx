@@ -55,6 +55,9 @@ const BASE_STATUS: Omit<AgentChatStatusInput, "agentId"> = {
   errored: false,
   working: false,
   engagement: "none",
+  // The default test client supports the terminate apply-ack; visibility
+  // tests override this to cover old clients.
+  sessionResetSupported: true,
 };
 
 function status(agentId: string, overrides: Partial<AgentChatStatusInput> = {}): AgentChatStatus {
@@ -181,6 +184,7 @@ describe("AgentStatusPanel — chat session Reset", () => {
       state: "evicted",
       transitioned: true,
       delivered: true,
+      applied: true,
     });
   });
 
@@ -200,7 +204,7 @@ describe("AgentStatusPanel — chat session Reset", () => {
   }
 
   it("keeps Reset out of the participants row; the card offers exactly one Reset action", async () => {
-    renderPanel({ engagement: "active" });
+    renderPanel({ engagement: "suspended" });
     await waitForSettled(h, () => expect(h.container.textContent).toContain("Nova"));
 
     // The row itself carries no Reset affordance — only Pause/Resume may appear.
@@ -215,15 +219,41 @@ describe("AgentStatusPanel — chat session Reset", () => {
     expect(resetButtons[0]?.textContent).toContain("Reset");
   });
 
+  it("hides Reset for active sessions — working or idle (pause the agent first)", async () => {
+    renderPanel({ engagement: "active", working: true });
+    let card = await openCard(h);
+    expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
+
+    h.cleanup();
+    h = createDomHarness();
+    queryClient = createQueryClient();
+    renderPanel({ engagement: "active" });
+    card = await openCard(h);
+    expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
+  });
+
   it("hides Reset for viewers without manage permission", async () => {
-    renderPanel({ engagement: "active" }, false);
+    renderPanel({ engagement: "suspended" }, false);
     const card = await openCard(h);
     expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
   });
 
   it("hides Reset when the agent is offline", async () => {
-    renderPanel({ reachable: false, engagement: "active" });
+    renderPanel({ reachable: false, engagement: "suspended" });
     const card = await openCard(h);
+    expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
+  });
+
+  it("hides Reset when the client lacks the apply-ack capability (old client)", async () => {
+    renderPanel({ engagement: "suspended", sessionResetSupported: false });
+    let card = await openCard(h);
+    expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
+
+    h.cleanup();
+    h = createDomHarness();
+    queryClient = createQueryClient();
+    renderPanel({ engagement: "suspended", sessionResetSupported: undefined });
+    card = await openCard(h);
     expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
   });
 
@@ -233,11 +263,12 @@ describe("AgentStatusPanel — chat session Reset", () => {
     expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
   });
 
-  it("active session: confirm runs suspend → terminate in order, toasts success, invalidates queries", async () => {
-    renderPanel({ engagement: "active" });
+  it("suspended session: confirm calls only terminate in apply-ack mode, toasts success, invalidates queries", async () => {
+    renderPanel({ engagement: "suspended" });
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     const dialog = await openConfirmFromCard(h);
+    expect(dialog.textContent).toContain("clears the agent's stopped session");
     expect(dialog.textContent).toContain("Chat history is kept");
     expect(sessionApiMocks.suspendSession).not.toHaveBeenCalled();
     expect(sessionApiMocks.terminateSession).not.toHaveBeenCalled();
@@ -245,12 +276,9 @@ describe("AgentStatusPanel — chat session Reset", () => {
     await click(h, dialogButton(dialog, "Reset"));
 
     await waitForSettled(h, () =>
-      expect(sessionApiMocks.terminateSession).toHaveBeenCalledWith("agent-nova", "chat-1"),
+      expect(sessionApiMocks.terminateSession).toHaveBeenCalledWith("agent-nova", "chat-1", { waitForApply: true }),
     );
-    expect(sessionApiMocks.suspendSession).toHaveBeenCalledWith("agent-nova", "chat-1");
-    expect(sessionApiMocks.suspendSession.mock.invocationCallOrder[0]).toBeLessThan(
-      sessionApiMocks.terminateSession.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
+    expect(sessionApiMocks.suspendSession).not.toHaveBeenCalled();
 
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Session reset"));
     expect(document.body.textContent).toContain("start fresh");
@@ -265,30 +293,20 @@ describe("AgentStatusPanel — chat session Reset", () => {
     expect(invalidatedKeys).toContain(JSON.stringify(["activity"]));
   });
 
-  it("suspended session: confirm terminates directly without suspending", async () => {
-    renderPanel({ engagement: "suspended" });
-    const dialog = await openConfirmFromCard(h);
-    await click(h, dialogButton(dialog, "Reset"));
-
-    await waitForSettled(h, () =>
-      expect(sessionApiMocks.terminateSession).toHaveBeenCalledWith("agent-nova", "chat-1"),
-    );
-    expect(sessionApiMocks.suspendSession).not.toHaveBeenCalled();
-  });
-
-  it("failed session (errored, engagement none): confirm terminates directly", async () => {
+  it("failed session (errored, engagement none): confirm terminates directly in apply-ack mode", async () => {
     renderPanel({ engagement: "none", errored: true });
     const dialog = await openConfirmFromCard(h);
     await click(h, dialogButton(dialog, "Reset"));
 
     await waitForSettled(h, () =>
-      expect(sessionApiMocks.terminateSession).toHaveBeenCalledWith("agent-nova", "chat-1"),
+      expect(sessionApiMocks.terminateSession).toHaveBeenCalledWith("agent-nova", "chat-1", { waitForApply: true }),
     );
     expect(sessionApiMocks.suspendSession).not.toHaveBeenCalled();
+    await waitForSettled(h, () => expect(document.body.textContent).toContain("Session reset"));
   });
 
   it("cancel closes the dialog without any session call", async () => {
-    renderPanel({ engagement: "active" });
+    renderPanel({ engagement: "suspended" });
     const dialog = await openConfirmFromCard(h);
     await click(h, dialogButton(dialog, "Cancel"));
 
@@ -297,7 +315,7 @@ describe("AgentStatusPanel — chat session Reset", () => {
     expect(sessionApiMocks.terminateSession).not.toHaveBeenCalled();
   });
 
-  it("pending: confirm disables while the mutation is in flight", async () => {
+  it("pending: confirm disables while the apply-ack wait is in flight", async () => {
     let resolveTerminate: (value: unknown) => void = () => {};
     sessionApiMocks.terminateSession.mockReturnValue(
       new Promise((resolve) => {
@@ -321,123 +339,70 @@ describe("AgentStatusPanel — chat session Reset", () => {
         state: "evicted",
         transitioned: true,
         delivered: true,
+        applied: true,
       });
     });
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Session reset"));
   });
 
-  it("failure: shows a retryable error toast, keeps the dialog open, no fake success", async () => {
-    sessionApiMocks.terminateSession.mockRejectedValue(new Error("client disconnected"));
+  it("failure (disconnect/timeout/applied:false/conflict): error toast, dialog stays open, no fake success", async () => {
+    sessionApiMocks.terminateSession.mockRejectedValue(new Error("client did not confirm the terminate"));
     renderPanel({ engagement: "suspended" });
     const dialog = await openConfirmFromCard(h);
     await click(h, dialogButton(dialog, "Reset"));
 
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
-    expect(document.body.textContent).toContain("client disconnected");
-    expect(document.body.textContent).not.toContain("Session reset");
-    // Dialog stays open so the user can retry.
-    expect(confirmDialog()).not.toBeNull();
-  });
-
-  it("a no-op terminate (reactivated mid-reset) is a retryable failure, never a success", async () => {
-    // The server returns 200 { transitioned: false, state: "active" } when an
-    // addressed message reactivates the row before terminate lands. No
-    // session:terminate frame was sent and no traces were cleared, so the UI
-    // must not toast success.
-    sessionApiMocks.terminateSession.mockResolvedValue({
-      agentId: "agent-nova",
-      chatId: "chat-1",
-      state: "active",
-      transitioned: false,
-      delivered: true,
-    });
-    renderPanel({ engagement: "active" });
-    const dialog = await openConfirmFromCard(h);
-    await click(h, dialogButton(dialog, "Reset"));
-
-    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
-    expect(document.body.textContent).toContain("became active again");
+    expect(document.body.textContent).toContain("client did not confirm");
     expect(document.body.textContent).not.toContain("Session reset");
     expect(confirmDialog()).not.toBeNull();
   });
 
-  it("undelivered suspend (client disconnected mid-reset) fails honestly and never reaches terminate", async () => {
-    sessionApiMocks.suspendSession.mockResolvedValue({
-      agentId: "agent-nova",
-      chatId: "chat-1",
-      state: "suspended",
-      transitioned: true,
-      delivered: false,
-    });
-    renderPanel({ engagement: "active" });
-    const dialog = await openConfirmFromCard(h);
-    await click(h, dialogButton(dialog, "Reset"));
-
-    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
-    expect(document.body.textContent).toContain("client is disconnected");
-    expect(document.body.textContent).not.toContain("Session reset");
-    expect(sessionApiMocks.terminateSession).not.toHaveBeenCalled();
-    expect(confirmDialog()).not.toBeNull();
-  });
-
-  it("undelivered terminate (evicted server-side, client missed the command) is a retryable failure", async () => {
-    // The session IS evicted and traces ARE cleared, but the client may still
-    // hold the old provider session — so no success toast; retry re-sends the
-    // command through the idempotent endpoint.
-    sessionApiMocks.terminateSession.mockResolvedValue({
-      agentId: "agent-nova",
-      chatId: "chat-1",
-      state: "evicted",
-      transitioned: true,
-      delivered: false,
-    });
+  it("a failed reset leaves the stopped session intact, so the entry and retry survive a status refetch", async () => {
+    // In apply-ack mode a failure never touches the DB: the row stays
+    // suspended, so after the refetch the card action is still there — the
+    // recovery entry survives reloads, and the open dialog can retry inline.
+    sessionApiMocks.terminateSession.mockRejectedValueOnce(new Error("Timed out waiting for the computer to reply"));
     renderPanel({ engagement: "suspended" });
     const dialog = await openConfirmFromCard(h);
-    await click(h, dialogButton(dialog, "Reset"));
-
-    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
-    expect(document.body.textContent).toContain("client is disconnected");
-    expect(document.body.textContent).not.toContain("Session reset");
-    expect(confirmDialog()).not.toBeNull();
-  });
-
-  it("a failed reset stays retryable after the row refetches as evicted, and the retry converges", async () => {
-    // Server evicted + traces cleared, but the terminate command missed the
-    // client (delivered: false on the first attempt only). The error path
-    // invalidates the status query; the production refetch then projects the
-    // row as engagement none / not errored, so the card action disappears —
-    // the still-open dialog must remain the retry affordance.
-    sessionApiMocks.terminateSession.mockResolvedValueOnce({
-      agentId: "agent-nova",
-      chatId: "chat-1",
-      state: "evicted",
-      transitioned: true,
-      delivered: false,
-    });
-    renderPanel({ engagement: "suspended" });
-    const dialog = await openConfirmFromCard(h);
-
-    // Swap the status projection BEFORE the failure invalidation fires its
-    // refetch, so the refetch really returns the post-reset evicted row.
-    agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([status("agent-nova", { engagement: "none" })]);
     const statusCallsBefore = agentStatusApiMocks.fetchChatAgentStatuses.mock.calls.length;
     await click(h, dialogButton(dialog, "Reset"));
 
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
-    // Prove the refetch landed: another fetch happened and the row re-rendered
-    // from Paused (suspended) to Idle (evicted → engagement none) — the row is
-    // no longer reset-eligible, yet the open dialog must survive.
     await waitForSettled(h, () => {
       expect(agentStatusApiMocks.fetchChatAgentStatuses.mock.calls.length).toBeGreaterThan(statusCallsBefore);
-      expect(h.container.textContent).toContain("Idle");
+      expect(h.container.textContent).toContain("Paused");
     });
     expect(confirmDialog()).not.toBeNull();
 
-    // Retry from the still-open dialog: the idempotent terminate re-sends the
-    // command (as after a client reconnect), delivery lands, success.
+    // Retry from the still-open dialog: client reconnected, ack lands, success.
     await click(h, dialogButton(confirmDialog() as HTMLElement, "Reset"));
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Session reset"));
     expect(sessionApiMocks.terminateSession).toHaveBeenCalledTimes(2);
     expect(confirmDialog()).toBeNull();
+
+    // And the card action itself remains available for a stopped session.
+    const card = await openCard(h);
+    await waitForSettled(h, () => {
+      expect(card.querySelector('button[aria-label="Reset session"]')).not.toBeNull();
+    });
+  });
+
+  it("a 200 with a non-evicted state is treated as a failure, never a success", async () => {
+    // Defensive: the apply-ack route only 200s for evicted rows, but the UI
+    // must not toast success on any other state.
+    sessionApiMocks.terminateSession.mockResolvedValue({
+      agentId: "agent-nova",
+      chatId: "chat-1",
+      state: "suspended",
+      transitioned: false,
+      delivered: true,
+    });
+    renderPanel({ engagement: "suspended" });
+    const dialog = await openConfirmFromCard(h);
+    await click(h, dialogButton(dialog, "Reset"));
+
+    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
+    expect(document.body.textContent).not.toContain("Session reset");
+    expect(confirmDialog()).not.toBeNull();
   });
 });

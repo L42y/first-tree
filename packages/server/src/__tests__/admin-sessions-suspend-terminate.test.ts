@@ -5,7 +5,13 @@ import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import * as activityService from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
-import { bindAgentToClient, removeClientConnection, setClientConnection } from "../services/connection-manager.js";
+import {
+  bindAgentToClient,
+  removeClientConnection,
+  resolveClientReply,
+  setClientConnection,
+  setClientReplyTimeoutMsForTests,
+} from "../services/connection-manager.js";
 import { sendMessage } from "../services/message.js";
 import * as sessionService from "../services/session.js";
 import * as sessionEventService from "../services/session-event.js";
@@ -661,5 +667,269 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     ]);
 
     expect(await readState(app, target.uuid, chat.id)).toBe("active");
+  });
+});
+
+describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path", () => {
+  const getApp = useTestApp();
+
+  async function seedSession(app: FastifyInstance, agentId: string, chatId: string, state: string) {
+    await app.db
+      .insert(agentChatSessions)
+      .values({ agentId, chatId, state })
+      .onConflictDoUpdate({
+        target: [agentChatSessions.agentId, agentChatSessions.chatId],
+        set: { state, updatedAt: new Date() },
+      });
+  }
+
+  async function readState(app: FastifyInstance, agentId: string, chatId: string): Promise<string | null> {
+    const { and, eq } = await import("drizzle-orm");
+    const [row] = await app.db
+      .select({ state: agentChatSessions.state })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    return row?.state ?? null;
+  }
+
+  async function setup(state: string, opts: { capable?: boolean; connected?: boolean } = {}) {
+    const app = getApp();
+    const { capable = true, connected = true } = opts;
+    const admin = await createAdminContext(app, { username: `apply-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `apply-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Apply target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    await seedSession(app, agent.uuid, chat.id, state);
+
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    if (connected) {
+      setClientConnection(
+        admin.clientId,
+        ws as unknown as WebSocket,
+        capable ? { wsSessionTerminateApplyAck: true } : undefined,
+      );
+      bindAgentToClient(admin.clientId, agent.uuid);
+    }
+    return { app, admin, agent, chat, ws };
+  }
+
+  function terminateReq(app: FastifyInstance, admin: { accessToken: string }, agentId: string, chatId: string) {
+    return app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agentId}/sessions/${chatId}/terminate?waitForApply=true`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+    });
+  }
+
+  /** Wait until the route sent the ref'd command, then ack it through the reply channel. */
+  async function ackSentCommand(
+    ws: { send: ReturnType<typeof vi.fn> },
+    clientId: string,
+    overrides: Record<string, unknown> = {},
+  ): Promise<void> {
+    await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+    const frame = JSON.parse(ws.send.mock.calls[0]?.[0] as string) as { ref: string; agentId: string; chatId: string };
+    const resolved = resolveClientReply(clientId, frame.ref, {
+      command: "session:terminate",
+      agentId: frame.agentId,
+      chatId: frame.chatId,
+      applied: true,
+      ...overrides,
+    });
+    expect(resolved).toBe(true);
+  }
+
+  it("holds the request until the ack, then atomically evicts and clears events", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "pre-reset event" },
+    });
+
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      // The command goes out with a ref; the HTTP request is still in flight.
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      const frame = JSON.parse(ws.send.mock.calls[0]?.[0] as string);
+      expect(frame).toMatchObject({ type: "session:terminate", chatId: chat.id, agentId: agent.uuid });
+      expect(typeof frame.ref).toBe("string");
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", transitioned: true, delivered: true, applied: true });
+      expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+      // Cleanup committed with the transition — no polling.
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("accepts an errored session (failed sessions reset directly)", async () => {
+    const { app, admin, agent, chat, ws } = await setup("errored");
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", applied: true });
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("rejects an active session with 409 before sending any command", async () => {
+    const { app, admin, agent, chat, ws } = await setup("active");
+    try {
+      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      expect(res.statusCode).toBe(409);
+      expect(ws.send).not.toHaveBeenCalled();
+      expect(await readState(app, agent.uuid, chat.id)).toBe("active");
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("is an idempotent 200 for an already-evicted session without sending a command", async () => {
+    const { app, admin, agent, chat, ws } = await setup("evicted");
+    try {
+      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", transitioned: false, applied: true });
+      expect(ws.send).not.toHaveBeenCalled();
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("fails 503 without touching the DB when the client lacks the apply-ack capability", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended", { capable: false });
+    try {
+      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      expect(res.statusCode).toBe(503);
+      expect(ws.send).not.toHaveBeenCalled();
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("fails 503 when the client is disconnected", async () => {
+    const { app, admin, agent, chat } = await setup("suspended", { connected: false });
+    const res = await terminateReq(app, admin, agent.uuid, chat.id);
+    expect(res.statusCode).toBe(503);
+    expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+  });
+
+  it("applied:false fails the request and leaves the stopped session untouched", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "still here" },
+    });
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId, { applied: false });
+      const res = await pending;
+      expect(res.statusCode).toBe(503);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("an ack with mismatched chat/agent/command cannot resolve the wait", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId, { chatId: "some-other-chat" });
+      const res = await pending;
+      expect(res.statusCode).toBe(503);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("a disconnect while waiting rejects the request and frees the waiter", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    const pending = terminateReq(app, admin, agent.uuid, chat.id);
+    await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+    const frame = JSON.parse(ws.send.mock.calls[0]?.[0] as string) as { ref: string };
+    // Socket dies before the client processes the command.
+    removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    const res = await pending;
+    expect(res.statusCode).toBe(503);
+    expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    // The waiter was released — a late ack resolves nothing.
+    expect(resolveClientReply(admin.clientId, frame.ref, { applied: true })).toBe(false);
+  });
+
+  it("a slow/no ack times out without a waiter leak", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    setClientReplyTimeoutMsForTests(50);
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      const frame = JSON.parse(ws.send.mock.calls[0]?.[0] as string) as { ref: string };
+      const res = await pending;
+      expect(res.statusCode).toBe(503);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+      expect(resolveClientReply(admin.clientId, frame.ref, { applied: true })).toBe(false);
+    } finally {
+      setClientReplyTimeoutMsForTests(null);
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("a session re-activated while waiting for the ack conflicts without evicting or clearing", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "new turn trace" },
+    });
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      // A new addressed message re-activates the session before the ack lands.
+      await activityService.upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId);
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(409);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("active");
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("a cleanup failure rolls the whole transaction back — row stays stopped and retryable", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "stubborn trace" },
+    });
+    const clearSpy = vi.spyOn(sessionEventService, "clearEvents").mockRejectedValueOnce(new Error("delete failed"));
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(500);
+      // Rollback: not evicted, events intact — a later retry can still converge.
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+    } finally {
+      clearSpy.mockRestore();
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
   });
 });

@@ -200,13 +200,27 @@ export const sessionEventMessageSchema = z.object({
 });
 export type SessionEventMessage = z.infer<typeof sessionEventMessageSchema>;
 
-export const sessionEventRejectedReasonSchema = z.enum([
-  "agent_not_bound",
-  "malformed",
-  "persist_failed",
-  "session_evicted",
-]);
+export const sessionEventRejectedReasonSchema = z.enum(["agent_not_bound", "malformed", "persist_failed"]);
 export type SessionEventRejectedReason = z.infer<typeof sessionEventRejectedReasonSchema>;
+
+/**
+ * Client→Server apply-acknowledgement for a ref'd `session:terminate`
+ * command. Sent ONLY after the client's `SessionManager.handleCommand(...,
+ * "session:terminate")` has fully resolved — local handler stopped, provider
+ * session mapping dropped — so the server can treat `applied: true` as proof
+ * the old provider session is gone before it evicts and clears traces.
+ * `applied: false` (or no ack at all) means the reset must fail and stay
+ * retryable.
+ */
+export const sessionCommandAppliedFrameSchema = z.object({
+  type: z.literal("session:command:applied"),
+  ref: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1),
+  command: z.literal("session:terminate"),
+  applied: z.boolean(),
+});
+export type SessionCommandAppliedFrame = z.infer<typeof sessionCommandAppliedFrameSchema>;
 
 export const sessionEventAcceptedFrameSchema = z.object({
   type: z.literal("session:event:accepted"),

@@ -361,12 +361,42 @@ export class AgentSlot {
         agentId: string;
         chatId: string;
         type: "session:suspend" | "session:resume" | "session:terminate";
+        ref?: string;
       }) => {
-        if (cmd.agentId === this.config.agentId && this.sessionManager) {
-          this.sessionManager.handleCommand(cmd.chatId, cmd.type).catch((err) => {
-            this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
-          });
+        if (cmd.agentId !== this.config.agentId || !this.sessionManager) return;
+        if (cmd.type === "session:terminate" && cmd.ref) {
+          // Apply-ack path (chat-session Reset): the server holds the HTTP
+          // request open until this ack lands, so the ack must only fire
+          // after handleCommand has fully resolved — handler stopped,
+          // provider-session mapping dropped. A failed apply reports
+          // applied:false so the operator can retry; never ack early.
+          const ref = cmd.ref;
+          this.sessionManager
+            .handleCommand(cmd.chatId, cmd.type)
+            .then(() => {
+              this.clientConnection.reportSessionCommandApplied({
+                ref,
+                agentId: cmd.agentId,
+                chatId: cmd.chatId,
+                command: "session:terminate",
+                applied: true,
+              });
+            })
+            .catch((err) => {
+              this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
+              this.clientConnection.reportSessionCommandApplied({
+                ref,
+                agentId: cmd.agentId,
+                chatId: cmd.chatId,
+                command: "session:terminate",
+                applied: false,
+              });
+            });
+          return;
         }
+        this.sessionManager.handleCommand(cmd.chatId, cmd.type).catch((err) => {
+          this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
+        });
       };
       this.clientConnection.on("session:command", onCommand);
       this.listeners.push({ event: "session:command", fn: onCommand });

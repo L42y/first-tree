@@ -1,6 +1,6 @@
 ---
 id: chat-session-reset
-description: Validate that a manager can reset a managed agent's chat session from the Participants hovercard and that the next addressed message starts a genuinely fresh session.
+description: Validate that a manager can reset a managed agent's stopped chat session from the Participants hovercard, with success gated on the client's terminate apply-ack, and that the next addressed message starts a genuinely fresh session.
 areas: [cross-surface]
 surfaces: [web, server, client]
 ---
@@ -9,16 +9,19 @@ surfaces: [web, server, client]
 
 ## Goal
 
-Confirm the Workspace Participants recovery action clears one agent's session
-in one chat through the real Web → Server → Client path: the `Reset` action
-lives only inside the agent's hovercard, the confirm dialog tells the truth
-about scope, and after a successful reset the next explicitly addressed
-message starts a new provider session while chat history stays intact.
+Confirm the Workspace Participants recovery action clears one agent's
+**stopped** session in one chat through the real Web → Server → Client path:
+`Reset` lives only inside the agent's hovercard, only for suspended or failed
+sessions on an online client with terminate apply-ack support, and a
+success is shown only after the client has confirmed it dropped the local
+provider-session mapping. The next explicitly addressed message must start a
+new provider session while chat history stays intact.
 
-The deterministic product tests own the visibility matrix, the suspend →
-terminate sequencing, and the `errored → evicted` transition. This case owns
-the live multi-surface behavior they cannot prove: real Client command
-delivery, live-activity trace clearing, and fresh-session creation.
+The deterministic product tests own the visibility matrix, the ack/timeout/
+disconnect/conflict contracts, the atomic evict+clear, and the late-event
+fence. This case owns the live multi-surface behavior they cannot prove:
+real command round-trips, real provider-session turnover, and the
+disconnect-during-reset recovery journey.
 
 ## Preconditions
 
@@ -31,41 +34,47 @@ delivery, live-activity trace clearing, and fresh-session creation.
 
 ## Operate and observe
 
-- Open the Participants roster and confirm no row-level Reset affordance
-  exists. Open the agent's hovercard and confirm a single `Reset` action.
-- While the agent is mid-turn (working), choose Reset and confirm. Observe
-  that the run stops and does not resume by itself, the success toast appears,
-  and the live activity/trace surface for that chat session clears. Verify
-  chat messages remain. A queued follow-up message may still be delivered to
-  the fresh session — only the interrupted run is guaranteed not to continue.
+- While the agent is active (working or idle), open its hovercard and confirm
+  there is NO `Reset` action. Pause the agent, then reopen the card: a single
+  `Reset` action appears for the suspended session.
+- Choose Reset and confirm. Observe the pending state, then the success toast;
+  the live activity/trace surface for that chat session clears and chat
+  messages remain. The interrupted run does not resume by itself; a queued
+  follow-up message may still be delivered to the fresh session.
 - Send a new explicitly addressed message. Confirm a fresh session starts —
   a new provider session with no inherited private context — and the status
   returns to working/ready through the normal path.
-- Repeat the reset against a suspended session and against a failed
-  (session-errored) session; both must reset directly and recover on the next
-  addressed message.
-- With a second, unmanaged account (or a second agent in the same chat),
-  confirm Reset is absent and the other agent's session is untouched.
-- Disconnect the agent's Client and confirm Reset is not offered while the
-  agent is offline.
+- Repeat against a failed (session-errored) session; it resets directly and
+  recovers on the next addressed message.
+- Disconnect the client mid-reset (after the command frame is sent, before
+  the agent applies it). Reset must fail honestly, the session must stay
+  suspended/errored, and the entry must still be there after a page reload.
+  Reconnect and retry: the client applies, acks, and Reset succeeds.
+- With an old client build that lacks the apply-ack capability, confirm Reset
+  never appears even for stopped sessions. With a second, unmanaged account
+  (or a second agent in the same chat), confirm Reset is absent and the other
+  agent's session is untouched.
 
 ## Evidence
 
-Keep the hovercard/dialog/recovery recording, the `session:suspend` and
-`session:terminate` WebSocket frames (when applicable), the terminate API
-responses, and before/after proof that the provider session identity changed
-while the chat message history did not.
+Keep the hovercard/dialog/recovery recording, the ref'd `session:terminate`
+command and matching `session:command:applied` frames, the terminate API
+responses (including the failure cases), and before/after proof that the
+provider session identity changed while the chat message history did not.
 
 ## Expected result
 
-`PASS` when every resettable state (active, suspended, failed) resets through
-the card action, traces clear without deleting chat history, a fresh session
-starts on the next addressed message, and unauthorized/offline/no-session
-states never offer the action.
+`PASS` when suspended and failed sessions reset through the card action with
+apply-ack proof, active sessions never offer Reset, traces clear without
+deleting chat history, a fresh provider session starts on the next addressed
+message, a disconnect during the wait fails honestly and stays retryable
+across reload/reconnect, and old clients or unmanaged viewers never see the
+action.
 
-`FAIL` when Reset appears outside the confirmed contract (row-level, human
-cards, unmanaged viewers, offline agents), when a reset deletes chat history,
-or when the old session's private context survives into the next turn.
+`FAIL` when Reset appears for an active session or an incapable client, when
+success is shown without the client apply-ack, when a reset deletes chat
+history, or when the old session's private context survives into the next
+turn.
 
 `BLOCKED` when the isolated cell cannot run a real managed agent turn.
 

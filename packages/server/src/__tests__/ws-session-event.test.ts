@@ -429,7 +429,7 @@ describe("Agent WS — session event protocol (S10)", () => {
     const ws = await openBoundSocket(seed);
     const chatId = `chat-${crypto.randomUUID()}`;
     const ref = `event-${crypto.randomUUID()}`;
-    const appendSpy = vi.spyOn(sessionEventService, "appendEvent").mockRejectedValueOnce(new Error("db down"));
+    const appendSpy = vi.spyOn(sessionEventService, "appendLiveEvent").mockRejectedValueOnce(new Error("db down"));
 
     try {
       ws.send(

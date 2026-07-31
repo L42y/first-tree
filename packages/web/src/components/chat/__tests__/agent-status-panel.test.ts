@@ -48,27 +48,33 @@ describe("canResumeStatus — Resume only for suspended sessions", () => {
   });
 });
 
-describe("canResetSessionStatus — Reset only for a reachable agent with a session", () => {
-  it("active session → true (Reset suspends, then terminates)", () => {
-    expect(canResetSessionStatus(mk({ engagement: "active" }))).toBe(true);
+describe("canResetSessionStatus — Reset only for a stopped session on a capable online client", () => {
+  it("suspended session with apply-ack support → true", () => {
+    expect(canResetSessionStatus(mk({ engagement: "suspended", sessionResetSupported: true }))).toBe(true);
   });
 
-  it("suspended session → true (Reset terminates directly)", () => {
-    expect(canResetSessionStatus(mk({ engagement: "suspended" }))).toBe(true);
+  it("errored session (engagement none + errored axis) with apply-ack support → true", () => {
+    expect(canResetSessionStatus(mk({ engagement: "none", errored: true, sessionResetSupported: true }))).toBe(true);
   });
 
-  it("errored session (engagement none + errored axis) → true", () => {
-    expect(canResetSessionStatus(mk({ engagement: "none", errored: true }))).toBe(true);
+  it("active session → false, working or idle (pause first)", () => {
+    expect(canResetSessionStatus(mk({ engagement: "active", sessionResetSupported: true }))).toBe(false);
+    expect(canResetSessionStatus(mk({ engagement: "active", working: true, sessionResetSupported: true }))).toBe(false);
   });
 
   it("no session (engagement none, not errored) → false", () => {
-    expect(canResetSessionStatus(mk({ engagement: "none" }))).toBe(false);
+    expect(canResetSessionStatus(mk({ engagement: "none", sessionResetSupported: true }))).toBe(false);
   });
 
-  it("offline (unreachable) → false even with a live session", () => {
-    expect(canResetSessionStatus(mk({ reachable: false, engagement: "active" }))).toBe(false);
-    expect(canResetSessionStatus(mk({ reachable: false, engagement: "suspended" }))).toBe(false);
-    expect(canResetSessionStatus(mk({ reachable: false, engagement: "none", errored: true }))).toBe(false);
+  it("offline (unreachable) → false even for a stopped session", () => {
+    expect(canResetSessionStatus(mk({ reachable: false, engagement: "suspended", sessionResetSupported: true }))).toBe(
+      false,
+    );
+  });
+
+  it("without the apply-ack capability (old client) → false", () => {
+    expect(canResetSessionStatus(mk({ engagement: "suspended" }))).toBe(false);
+    expect(canResetSessionStatus(mk({ engagement: "suspended", sessionResetSupported: false }))).toBe(false);
   });
 
   it("null status → false", () => {

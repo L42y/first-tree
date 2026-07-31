@@ -16,6 +16,7 @@ import {
   PROVIDER_MODELS_RESULT_TYPE,
   providerModelsResultFrameSchema,
   runtimeStateMessageSchema,
+  sessionCommandAppliedFrameSchema,
   sessionEventMessageSchema,
   sessionEventRejectedReasonSchema,
   sessionReconcileRequestSchema,
@@ -1062,7 +1063,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
 
               clientId = data.clientId;
               setWsConnectionAttrs(socket, { "client.id": data.clientId });
-              connectionManager.setClientConnection(data.clientId, socket);
+              connectionManager.setClientConnection(data.clientId, socket, data.wireCapabilities);
               socket.send(JSON.stringify({ type: "client:registered", clientId: data.clientId }));
 
               // Backfill `agent:pinned` for any agent already bound to this
@@ -1548,7 +1549,13 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                           ref: payload.ref,
                           agentId,
                           chatId: payload.chatId,
-                          reason: sessionEventRejectedReasonSchema.enum.session_evicted,
+                          // Deliberately the pre-existing reason: old clients
+                          // strict-parse the rejection frame, and an unknown
+                          // enum value would make them drop it and hang the
+                          // pending event until timeout. The session is being
+                          // torn down anyway; the client only needs the
+                          // pending ref resolved.
+                          reason: sessionEventRejectedReasonSchema.enum.persist_failed,
                         }),
                       );
                     }
@@ -1626,6 +1633,21 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   }
                 }
               });
+            } else if (type === "session:command:applied") {
+              // Apply-ack for a ref'd session command (today only
+              // session:terminate from the Web Reset flow). Resolve the HTTP
+              // waiter registered by the terminate route; the waiter itself
+              // validates ref + agent + chat + command before evicting.
+              const parsedAck = sessionCommandAppliedFrameSchema.safeParse(msg);
+              if (!parsedAck.success) {
+                app.log.warn(
+                  { clientId, issues: parsedAck.error.issues.map((i) => i.message) },
+                  "malformed session:command:applied frame — dropping",
+                );
+                return;
+              }
+              if (!clientId) return;
+              connectionManager.resolveClientReply(clientId, parsedAck.data.ref, parsedAck.data);
             } else if (type === "inbox:ack") {
               const payloadResult = inboxAckFrameSchema.safeParse(msg);
               if (!payloadResult.success) {
