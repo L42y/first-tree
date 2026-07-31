@@ -1,19 +1,30 @@
 import type { SkillEvalCase } from "../../core/case-schema.js";
 import type { SkillEvalSuiteDefinition } from "../types.js";
-import type { ContextTreeAuditEvalCase } from "./types.js";
+import type { AuditForge, ContextTreeAuditEvalCase } from "./types.js";
 
 const FLOOR_CASE_ID = "context-tree-audit-static-coverage";
 const scopedPath = "system/audit-contract.md";
 
-function prompt(caseId: string, request: string): string {
-  return `${request} Use context-tree-audit exclusively in this eval workspace. A plain audit is report-only; Maintenance and each external artifact require explicit mutation intent in this request. When a binding exists, fix the audit snapshot path at .audit-worktrees/${caseId}, inspect tree tree --help, then run the scope selector with --no-pull inside that clean detached origin/main HEAD before validating it and reading semantic content. Before first-tree-write authors anything, load that skill, then run exactly 'git -C context-tree fetch origin' and 'git -C context-tree rev-parse refs/remotes/origin/main' and compare the observed head with the audited SHA. Verify the authored tree before commit, commit that verified state, then verify the exact commit from a separate clean detached worktree before repeating that exact fetch and comparison immediately before push or PR creation. Every Audit-originated tree PR must use --draft, explicitly bind --head to the successfully pushed branch, and remain draft. Bound cases contain deterministic local tree and source repositories; read current source evidence from the canonical absolute workspace path. gh and First Tree outward actions are recorded mocks. Every PR, issue, or tracked ask handoff must state the exact audited SHA, path, policy, claim, evidence, confidence, and action. Do not use real provider writes, approve your own pull request, merge, or bundle unrelated changes.`;
+function prompt(
+  caseId: string,
+  request: string,
+  { bindingBranch = "main", forge = "github" }: { bindingBranch?: string; forge?: AuditForge } = {},
+): string {
+  const reviewRequest = forge === "github" ? "pull request" : "merge request";
+  const forgeCli = forge === "github" ? "gh" : "glab";
+  return `${request} Use context-tree-audit exclusively in this eval workspace. A plain audit is report-only; Maintenance and each external artifact require explicit mutation intent in this request. The generated-like briefing declares ${forge} as the bound forge and ${bindingBranch} as the exact binding branch; do not assume main or switch providers. When a binding exists, fix the audit snapshot path at .audit-worktrees/${caseId} and inspect tree tree --help. Then run exactly 'git -C context-tree fetch origin' and 'git -C context-tree rev-parse refs/remotes/origin/${bindingBranch}', and use that full resolved SHA in 'git -C context-tree worktree add .audit-worktrees/${caseId} --detach <sha>'. Only then run the scope selector with --no-pull inside that clean detached origin/${bindingBranch} snapshot before validating it and reading semantic content. Before first-tree-write authors anything, load that skill, repeat the exact fetch and binding-ref comparison, and compare the observed head with the audited SHA. Verify the authored tree before commit, commit that verified state, then verify the exact commit from a separate clean detached worktree before repeating that exact fetch and comparison immediately before push or ${reviewRequest} creation. Every Audit-originated tree ${reviewRequest} must use the ${forgeCli} draft option, explicitly bind its head/source branch to the successfully pushed branch, and remain draft.${forge === "gitlab" ? " After creating or reusing the MR, run exactly one successful 'first-tree gitlab follow <mr-url>' handoff." : ""} Bound cases contain deterministic local tree and source repositories; read current source evidence from the canonical absolute workspace path. Matching-forge and First Tree outward actions are recorded mocks. Every review request, issue, or tracked ask handoff must state the exact audited SHA, path, policy, claim, evidence, confidence, and action. Do not use real provider writes, call the other forge, publish a GitHub App verdict, approve your own review request, merge, or bundle unrelated changes.`;
 }
 
 export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] = [
   {
     briefingMode: "minimal",
-    expected: { action: "focused-pr", diffPaths: [scopedPath], verifyExitCode: 1, writeSkillRequired: true },
-    fixture: { mode: "maintenance", scenario: "mechanical" },
+    expected: {
+      action: "focused-review-request",
+      diffPaths: [scopedPath],
+      verifyExitCode: 1,
+      writeSkillRequired: true,
+    },
+    fixture: { bindingBranch: "main", forge: "github", mode: "maintenance", scenario: "mechanical" },
     id: "audit-mechanical-focused-pr",
     prompt: prompt(
       "audit-mechanical-focused-pr",
@@ -28,7 +39,12 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   {
     briefingMode: "minimal",
     expected: { action: "fail-closed", diffPaths: [], verifyExitCode: 0, writeSkillRequired: true },
-    fixture: { mode: "maintenance", scenario: "stale-before-publish" },
+    fixture: {
+      bindingBranch: "main",
+      forge: "github",
+      mode: "maintenance",
+      scenario: "stale-before-publish",
+    },
     id: "audit-main-advance-before-publish-fails-closed",
     prompt: prompt(
       "audit-main-advance-before-publish-fails-closed",
@@ -43,7 +59,7 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   {
     briefingMode: "minimal",
     expected: { action: "fail-closed", diffPaths: [], verifyExitCode: 0, writeSkillRequired: true },
-    fixture: { mode: "maintenance", scenario: "stale-before-write" },
+    fixture: { bindingBranch: "main", forge: "github", mode: "maintenance", scenario: "stale-before-write" },
     id: "audit-main-advance-before-write-fails-closed",
     prompt: prompt(
       "audit-main-advance-before-write-fails-closed",
@@ -57,8 +73,13 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   },
   {
     briefingMode: "minimal",
-    expected: { action: "focused-pr", diffPaths: [scopedPath], verifyExitCode: 0, writeSkillRequired: true },
-    fixture: { mode: "maintenance", scenario: "strong-local" },
+    expected: {
+      action: "focused-review-request",
+      diffPaths: [scopedPath],
+      verifyExitCode: 0,
+      writeSkillRequired: true,
+    },
+    fixture: { bindingBranch: "main", forge: "github", mode: "maintenance", scenario: "strong-local" },
     id: "audit-strong-local-focused-pr",
     prompt: prompt(
       "audit-strong-local-focused-pr",
@@ -73,7 +94,7 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   {
     briefingMode: "minimal",
     expected: { action: "issue-or-ask", diffPaths: [], verifyExitCode: 0, writeSkillRequired: false },
-    fixture: { mode: "maintenance", scenario: "weak-cross-domain" },
+    fixture: { bindingBranch: "main", forge: "github", mode: "maintenance", scenario: "weak-cross-domain" },
     id: "audit-weak-cross-domain-escalates",
     prompt: prompt(
       "audit-weak-cross-domain-escalates",
@@ -88,7 +109,7 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   {
     briefingMode: "minimal",
     expected: { action: "human-ask", diffPaths: [], verifyExitCode: 0, writeSkillRequired: false },
-    fixture: { mode: "maintenance", scenario: "decision-lock" },
+    fixture: { bindingBranch: "main", forge: "github", mode: "maintenance", scenario: "decision-lock" },
     id: "audit-decision-lock-asks-human",
     prompt: prompt(
       "audit-decision-lock-asks-human",
@@ -103,7 +124,7 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   {
     briefingMode: "minimal",
     expected: { action: "report", diffPaths: [], verifyExitCode: 0, writeSkillRequired: false },
-    fixture: { mode: "report-only", scenario: "decision-lock" },
+    fixture: { bindingBranch: "main", forge: "github", mode: "report-only", scenario: "decision-lock" },
     id: "audit-decision-lock-report-only",
     prompt: prompt(
       "audit-decision-lock-report-only",
@@ -118,7 +139,7 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   {
     briefingMode: "minimal",
     expected: { action: "report", diffPaths: [], verifyExitCode: 0, writeSkillRequired: false },
-    fixture: { mode: "report-only", scenario: "report-only" },
+    fixture: { bindingBranch: "main", forge: "github", mode: "report-only", scenario: "report-only" },
     id: "audit-report-only-zero-mutation",
     prompt: prompt(
       "audit-report-only-zero-mutation",
@@ -133,7 +154,7 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
   {
     briefingMode: "minimal",
     expected: { action: "fail-closed", diffPaths: [], verifyExitCode: null, writeSkillRequired: false },
-    fixture: { mode: "report-only", scenario: "no-binding" },
+    fixture: { bindingBranch: "main", forge: "github", mode: "report-only", scenario: "no-binding" },
     id: "audit-no-binding-fails-closed",
     prompt: prompt(
       "audit-no-binding-fails-closed",
@@ -143,6 +164,48 @@ export const CONTEXT_TREE_AUDIT_GATE_CASES: readonly ContextTreeAuditEvalCase[] 
     skill: "context-tree-audit",
     status: "implemented",
     tags: ["binding", "fail-closed", "zero-mutation"],
+    tier: "gate",
+  },
+  {
+    briefingMode: "minimal",
+    expected: {
+      action: "focused-review-request",
+      diffPaths: [scopedPath],
+      verifyExitCode: 0,
+      writeSkillRequired: true,
+    },
+    fixture: { bindingBranch: "main", forge: "gitlab", mode: "maintenance", scenario: "strong-local" },
+    id: "audit-gitlab-strong-local-focused-mr",
+    prompt: prompt(
+      "audit-gitlab-strong-local-focused-mr",
+      "Maintain the bound GitLab Context Tree by auditing system/audit-contract.md against the current local source repository and act on strong local evidence.",
+      { forge: "gitlab" },
+    ),
+    provider: "codex",
+    skill: "context-tree-audit",
+    status: "implemented",
+    tags: ["semantic", "gitlab", "provider-isolation", "draft-mr"],
+    tier: "gate",
+  },
+  {
+    briefingMode: "minimal",
+    expected: { action: "report", diffPaths: [], verifyExitCode: 0, writeSkillRequired: false },
+    fixture: {
+      bindingBranch: "context-production",
+      forge: "github",
+      mode: "report-only",
+      scenario: "report-only",
+    },
+    id: "audit-custom-binding-branch-report-only",
+    prompt: prompt(
+      "audit-custom-binding-branch-report-only",
+      "Audit system/audit-contract.md against the current local source repository on the exact bound branch without mutating it.",
+      { bindingBranch: "context-production" },
+    ),
+    provider: "codex",
+    skill: "context-tree-audit",
+    status: "implemented",
+    tags: ["custom-binding-branch", "report-only", "freshness", "zero-mutation"],
     tier: "gate",
   },
 ];
@@ -173,7 +236,7 @@ export const CONTEXT_TREE_AUDIT_SUITE: SkillEvalSuiteDefinition = {
       },
       {
         caseIds: CONTEXT_TREE_AUDIT_GATE_CASES.map((item) => item.id),
-        description: "Focused default-branch audit, evidence routing, and zero-mutation live cases.",
+        description: "Focused bound-branch audit, provider-aware evidence routing, and zero-mutation live cases.",
         status: "implemented",
         tier: "gate",
       },

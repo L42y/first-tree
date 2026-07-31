@@ -386,7 +386,7 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(familyMap).toContain("The generated Context Tree Policy is always present");
     expect(familyMap).toMatch(/\|\s*`first-tree-read`\s*\| read relevant Context Tree files before acting/);
     expect(familyMap).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
-    expect(familyMap).toMatch(/\|\s*`context-tree-review`\s*\| a trusted GitHub App Context Review run/);
+    expect(familyMap).toMatch(/\|\s*`context-tree-review`\s*\| a trusted provider-scoped Context Reviewer run/);
     expect(familyMap).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
 
     const treelessFamily = topLevelSection(
@@ -400,7 +400,7 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(treelessFamily).toContain("first-tree-qa");
     expect(treelessFamily).toMatch(/\|\s*`first-tree-read`\s*\| read relevant Context Tree files before acting/);
     expect(treelessFamily).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
-    expect(treelessFamily).toMatch(/\|\s*`context-tree-review`\s*\| a trusted GitHub App Context Review run/);
+    expect(treelessFamily).toMatch(/\|\s*`context-tree-review`\s*\| a trusted provider-scoped Context Reviewer run/);
     expect(treelessFamily).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
     expect(treelessFamily).toMatch(/without a binding, the audit fails closed/);
     expect(treelessFamily).toContain("These skills install in every workspace");
@@ -804,8 +804,10 @@ describe("buildAgentBriefing — Context Tree", () => {
     );
     expect(tree).toContain("load `first-tree-write`");
     expect(tree).toContain("load `first-tree-read`");
-    expect(tree).toContain("Load `context-tree-review` only for GitHub PRs");
-    expect(tree).toContain("Load\n`context-tree-audit` exclusively for audits");
+    expect(tree).toContain("Load `context-tree-review` for trusted Context");
+    expect(tree).toContain("Reviewer runs and explicit GitHub Context Tree PR or GitLab MR reviews");
+    expect(tree).toContain("Load `context-tree-audit` exclusively for");
+    expect(tree).toContain("audits");
     expect(tree).toContain("**Normal content**");
     expect(tree).toContain("**Archive/supporting content**");
     expect(tree).toContain("**Member content**");
@@ -813,8 +815,11 @@ describe("buildAgentBriefing — Context Tree", () => {
 
     expect(tree).toContain("repo/path/feature/domain/owner/source signal");
     expect(tree).toContain("code, CLI, review, repo,\npath, bug, and error tasks");
-    expect(tree).toContain("GitLab MRs use ordinary GitLab review on a stable head");
-    expect(tree).toContain("never enter the GitHub-only Context Reviewer state machine");
+    expect(tree).toContain("GitHub publishes the App verdict");
+    expect(tree).toContain("GitLab uses the Reviewer's local");
+    expect(tree).toContain("exact-SHA merge and never");
+    expect(tree).toContain("uses the GitHub App publisher");
+    expect(tree).not.toContain("ordinary GitLab review");
     expect(tree).toContain("first-tree tree tree --help");
     expect(tree).toContain("tree tree` selectors");
     expect(tree).toContain("root `NODE.md`");
@@ -958,15 +963,18 @@ describe("buildAgentBriefing — Skills", () => {
     }
   });
 
-  it("keeps GitLab tree reviews outside the GitHub-only Context Reviewer route", () => {
+  it("routes GitHub and GitLab tree reviews through provider-aware Context Reviewer semantics", () => {
     for (const contextTreePath of ["/tree", null]) {
       const briefing = buildAgentBriefing(makeOpts({ contextTreePath }));
       const reviewRow = briefing.split("\n").find((line) => line.startsWith("| `context-tree-review`"));
       const seedRow = briefing.split("\n").find((line) => line.startsWith("| `first-tree-seed`"));
 
       expect(reviewRow, `context-tree-review row missing for contextTreePath=${contextTreePath}`).toBeDefined();
-      expect(reviewRow).toContain("GitHub Context Tree pull request");
-      expect(reviewRow).toContain("GitLab MRs use ordinary GitLab review");
+      expect(reviewRow).toContain("GitHub Context Tree PR or GitLab MR");
+      expect(reviewRow).toContain("GitHub publishes an App verdict");
+      expect(reviewRow).toContain("GitLab uses Reviewer-local notes, repair, push, and exact-SHA merge");
+      expect(reviewRow).toContain("without the GitHub publisher");
+      expect(reviewRow).not.toContain("ordinary GitLab review");
       expect(seedRow, `first-tree-seed row missing for contextTreePath=${contextTreePath}`).toContain(
         "GitHub or GitLab URL",
       );

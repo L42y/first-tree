@@ -9,6 +9,7 @@ import { createEvalReporter } from "../../core/reporter.js";
 import { createFirstTreeShim } from "../../core/shims/first-tree.js";
 import { createGhShim } from "../../core/shims/gh.js";
 import { createGitShim } from "../../core/shims/git.js";
+import { createGlabShim } from "../../core/shims/glab.js";
 import { inspectFixtureState, setupFixture } from "./fixture.js";
 import { casePassed, deriveMetrics } from "./grader.js";
 import { buildGrading, writeCaseSummaries } from "./summary.js";
@@ -36,6 +37,7 @@ export async function runContextTreeAuditCase(
     recordedModelVerifyPath: fixture.verifyResultPath ?? undefined,
   });
   createGhShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
+  createGlabShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
   createGitShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
   const runner = await runAgentProvider(
     {
@@ -55,9 +57,11 @@ export async function runContextTreeAuditCase(
   const grading = buildGrading(evalCase, metrics, passed);
   const observability = deriveRunObservability(events);
   const summary: AuditCaseRunSummary = {
+    bindingBranch: evalCase.fixture.bindingBranch,
     caseId: evalCase.id,
     driftNote: null,
     expectedAction: evalCase.expected.action,
+    forge: evalCase.fixture.forge,
     firstResponseLatencyMs: observability.firstResponseLatencyMs,
     grading,
     gradingJsonPath: paths.gradingJsonPath,

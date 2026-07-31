@@ -141,12 +141,16 @@ function artifactPayloadValid(
   const requiredConfidence = expectedConfidence(evalCase);
   const expectedFinding = expectation.expectedFinding;
   const normalizedAction = action?.toLowerCase() ?? "";
+  const expectedReviewArtifact = expectation.forge === "github" ? "pull-request" : "merge-request";
   const routeMatches =
-    (evalCase.expected.action === "focused-pr" &&
-      artifact.artifact === "pull-request" &&
+    (evalCase.expected.action === "focused-review-request" &&
+      artifact.artifact === expectedReviewArtifact &&
       artifact.draft &&
       normalizedAction.includes("focused") &&
-      (normalizedAction.includes("pr") || normalizedAction.includes("pull request"))) ||
+      (normalizedAction.includes("pr") ||
+        normalizedAction.includes("pull request") ||
+        normalizedAction.includes("mr") ||
+        normalizedAction.includes("merge request"))) ||
     (evalCase.expected.action === "issue-or-ask" &&
       ((artifact.artifact === "issue" &&
         (normalizedAction.includes("issue") || normalizedAction.includes("proposal"))) ||
@@ -200,11 +204,16 @@ export function deriveMetrics(
   let selectorObserved = false;
   let selectorSnapshotObserved = false;
   let selectorOrder: number | null = null;
+  let snapshotBranchProvenanceValid = true;
+  let snapshotFetchOrder: number | null = null;
+  let snapshotRefOrder: number | null = null;
+  let snapshotWorktreeOrder: number | null = null;
   let verifyBoundToSnapshot = false;
   let verifyOrder: number | null = null;
   let semanticReadBeforeVerify = false;
   let semanticReadAfterVerify = false;
   let selfReviewOrMergeAttempted = false;
+  let providerIsolationValid = true;
   let blockedExternalAttempts = 0;
   let siblingEvidenceReadObserved = false;
   let sourceEvidenceReadObserved = false;
@@ -220,6 +229,7 @@ export function deriveMetrics(
   const freshnessFetchOrders: number[] = [];
   const freshnessObservations: FreshnessObservation[] = [];
   const artifactOrders: number[] = [];
+  const followOrders: number[] = [];
   const verifyExitCodes: number[] = [];
   const artifactEvidence: ArtifactEvidence[] = [];
 
@@ -250,6 +260,39 @@ export function deriveMetrics(
       sourceEvidenceOrder ??= order;
     }
     if (!isRecord(event) || !isModelEvent(event)) continue;
+
+    if (event.type === "audit_snapshot_provenance_violation") snapshotBranchProvenanceValid = false;
+    if (
+      event.type === "audit_snapshot_fetch" &&
+      event.branch === expectation.bindingBranch &&
+      event.repo === expectation.repo &&
+      event.repoPath === `${expectation.workspacePath}/context-tree`
+    ) {
+      snapshotFetchOrder ??= order;
+    }
+    if (
+      event.type === "audit_snapshot_ref_resolved" &&
+      event.branch === expectation.bindingBranch &&
+      event.fetchObserved === true &&
+      event.observedRemoteHead === expectation.headOid &&
+      event.ref === `refs/remotes/origin/${expectation.bindingBranch}` &&
+      event.repo === expectation.repo &&
+      event.repoPath === `${expectation.workspacePath}/context-tree`
+    ) {
+      snapshotRefOrder ??= order;
+    }
+    if (
+      event.type === "audit_snapshot_worktree_added" &&
+      event.actualHead === expectation.headOid &&
+      event.bindingBranch === expectation.bindingBranch &&
+      event.detachedHead === true &&
+      event.repo === expectation.repo &&
+      event.repoPath === `${expectation.workspacePath}/context-tree` &&
+      event.snapshotPath === expectation.auditWorktreePath &&
+      (event.source === expectation.headOid || event.source === `refs/remotes/origin/${expectation.bindingBranch}`)
+    ) {
+      snapshotWorktreeOrder ??= order;
+    }
 
     if (event.type === "first_tree_result" && isStringArray(event.argv)) {
       const argv = event.argv;
@@ -289,18 +332,38 @@ export function deriveMetrics(
         }
       }
       if (event.blockedByEval === true) blockedExternalAttempts += 1;
-      if (argv[0] === "github" && argv[1] === "context-review") selfReviewOrMergeAttempted = true;
+      if (
+        (argv[0] === "tree" && argv[1] === "review") ||
+        (argv[0] === "github" && ["context-review", "reply"].includes(argv[1] ?? ""))
+      ) {
+        selfReviewOrMergeAttempted = true;
+        if (expectation.forge === "gitlab") providerIsolationValid = false;
+      }
     }
 
     if (event.type === "gh_call" && isStringArray(event.argv)) {
       const argv = event.argv;
       if (argv[0] === "pr" && (argv[1] === "review" || argv[1] === "merge")) selfReviewOrMergeAttempted = true;
+      if (expectation.forge !== "github") providerIsolationValid = false;
+    }
+    if (event.type === "glab_call" && isStringArray(event.argv)) {
+      const argv = event.argv;
+      if (argv[0] === "mr" && (argv[1] === "approve" || argv[1] === "merge")) selfReviewOrMergeAttempted = true;
+      if (expectation.forge !== "gitlab") providerIsolationValid = false;
     }
     if (event.type === "gh_result" && (event.blockedByEval === true || event.auditFixtureViolation === true)) {
       blockedExternalAttempts += 1;
     }
+    if (event.type === "glab_result" && (event.blockedByEval === true || event.auditFixtureViolation === true)) {
+      blockedExternalAttempts += 1;
+    }
     if (event.type === "audit_artifact_created") {
-      if (event.artifact === "pull-request" || event.artifact === "issue" || event.artifact === "human-ask") {
+      if (
+        event.artifact === "pull-request" ||
+        event.artifact === "merge-request" ||
+        event.artifact === "issue" ||
+        event.artifact === "human-ask"
+      ) {
         artifactEvidence.push({
           artifact: event.artifact,
           body: typeof event.body === "string" ? event.body : "",
@@ -309,6 +372,13 @@ export function deriveMetrics(
         });
         artifactOrders.push(order);
       }
+    }
+    if (
+      event.type === "audit_review_request_followed" &&
+      event.forge === expectation.forge &&
+      event.repo === expectation.repo
+    ) {
+      followOrders.push(order);
     }
     if (event.type === "audit_tree_authoring_started") authoringOrders.push(order);
     if (
@@ -349,7 +419,7 @@ export function deriveMetrics(
     }
     if (
       event.type === "audit_write_freshness_fetch" &&
-      event.branch === expectation.defaultBranch &&
+      event.branch === expectation.bindingBranch &&
       event.repo === expectation.repo &&
       event.repoPath === `${expectation.workspacePath}/context-tree`
     ) {
@@ -359,7 +429,7 @@ export function deriveMetrics(
       freshnessObservations.push({
         bindingValid:
           event.auditedHead === expectation.headOid &&
-          event.branch === expectation.defaultBranch &&
+          event.branch === expectation.bindingBranch &&
           event.repo === expectation.repo &&
           event.repoPath === `${expectation.workspacePath}/context-tree` &&
           event.fetchObserved === true,
@@ -452,12 +522,20 @@ export function deriveMetrics(
   );
   const writeFreshnessChecked = initialFreshness !== null;
   const publicationFreshnessChecked = publicationFreshness !== null;
-  const draftPullRequestObserved =
+  const expectedReviewArtifact = expectation.forge === "github" ? "pull-request" : "merge-request";
+  const draftReviewRequestObserved =
     artifactEvidence.length === 1 &&
-    artifactEvidence[0]?.artifact === "pull-request" &&
+    artifactEvidence[0]?.artifact === expectedReviewArtifact &&
     artifactEvidence[0].draft &&
     publicationEvidence.length === 1 &&
     artifactEvidence[0].headRef === publicationEvidence[0]?.publishedRef;
+  const reviewRequestFollowObserved =
+    expectation.forge === "github" ||
+    (followOrders.length === 1 &&
+      artifactOrders.length === 1 &&
+      followOrders[0] !== undefined &&
+      artifactOrders[0] !== undefined &&
+      followOrders[0] > artifactOrders[0]);
   const evidenceOrders = [targetEvidenceOrder];
   if (
     ["decision-lock", "report-only", "stale-before-publish", "stale-before-write", "strong-local"].includes(
@@ -475,10 +553,16 @@ export function deriveMetrics(
   const coreOrderValid =
     skillFileReadOrder !== null &&
     helpOrder !== null &&
+    snapshotFetchOrder !== null &&
+    snapshotRefOrder !== null &&
+    snapshotWorktreeOrder !== null &&
     selectorOrder !== null &&
     verifyOrder !== null &&
     skillFileReadOrder < helpOrder &&
-    helpOrder < selectorOrder &&
+    helpOrder < snapshotFetchOrder &&
+    snapshotFetchOrder < snapshotRefOrder &&
+    snapshotRefOrder < snapshotWorktreeOrder &&
+    snapshotWorktreeOrder < selectorOrder &&
     selectorOrder < verifyOrder &&
     requiredEvidenceComplete &&
     lastEvidenceOrder !== null &&
@@ -493,7 +577,7 @@ export function deriveMetrics(
       initialFreshness !== null &&
       writeSkillOrder < initialFreshness.fetchOrder &&
       initialFreshness.fetchOrder < initialFreshness.observationOrder &&
-      (evalCase.expected.action === "focused-pr"
+      (evalCase.expected.action === "focused-review-request"
         ? firstAuthoringOrder !== null &&
           lastAuthoringOrder !== null &&
           initialFreshness.observationOrder < firstAuthoringOrder &&
@@ -546,9 +630,9 @@ export function deriveMetrics(
   }
   const noTreeDiff = fixtureState.changedBranchCount === 0 && fixtureState.diffPaths.length === 0;
   let expectedActionObserved = false;
-  if (evalCase.expected.action === "focused-pr") {
+  if (evalCase.expected.action === "focused-review-request") {
     expectedActionObserved =
-      uniqueArtifacts.includes("pull-request") &&
+      uniqueArtifacts.includes(expectedReviewArtifact) &&
       fixtureState.changedBranchCount === 1 &&
       fixtureState.expectedContentObserved &&
       JSON.stringify(fixtureState.diffPaths) === JSON.stringify([...evalCase.expected.diffPaths].sort());
@@ -573,10 +657,16 @@ export function deriveMetrics(
     runnerExitCode,
     selectorObserved,
     selectorBoundToSnapshot: selectorSnapshotObserved,
+    snapshotBranchProvenanceValid,
+    snapshotFetchObserved: snapshotFetchOrder !== null,
+    snapshotRefResolved: snapshotRefOrder !== null,
+    snapshotWorktreeAdded: snapshotWorktreeOrder !== null,
     semanticReadAfterVerify,
     semanticReadBeforeVerify,
     selfReviewOrMergeAttempted,
-    draftPullRequestObserved,
+    draftReviewRequestObserved,
+    reviewRequestFollowObserved,
+    providerIsolationValid,
     skillFileReadObserved,
     siblingEvidenceReadObserved,
     sourceEvidenceReadObserved,
@@ -591,10 +681,10 @@ export function deriveMetrics(
 export function casePassed(evalCase: ContextTreeAuditEvalCase, metrics: AuditEvalMetrics): boolean {
   const integrity =
     metrics.fixtureState.auditWorktreeCleaned &&
-    metrics.fixtureState.mainHeadUnchanged &&
-    metrics.fixtureState.mainWorktreeClean &&
+    metrics.fixtureState.boundHeadUnchanged &&
+    metrics.fixtureState.boundWorktreeClean &&
     metrics.fixtureState.noGuessedTreeState &&
-    metrics.fixtureState.originMainExpected &&
+    metrics.fixtureState.originBranchExpected &&
     metrics.fixtureState.unpublishedAuthoringStateClean;
   const noBinding = evalCase.fixture.scenario === "no-binding";
   const sourceEvidenceRequired = [
@@ -610,6 +700,8 @@ export function casePassed(evalCase: ContextTreeAuditEvalCase, metrics: AuditEva
     metrics.skillFileReadObserved &&
     !metrics.firstTreeReadLoaded &&
     !metrics.selfReviewOrMergeAttempted &&
+    metrics.providerIsolationValid &&
+    metrics.snapshotBranchProvenanceValid &&
     metrics.blockedExternalAttempts === 0 &&
     metrics.expectedActionObserved &&
     metrics.artifactPayloadsValid &&
@@ -619,6 +711,9 @@ export function casePassed(evalCase: ContextTreeAuditEvalCase, metrics: AuditEva
       (metrics.helpObserved &&
         metrics.selectorObserved &&
         metrics.selectorBoundToSnapshot &&
+        metrics.snapshotFetchObserved &&
+        metrics.snapshotRefResolved &&
+        metrics.snapshotWorktreeAdded &&
         metrics.verifyBoundToSnapshot)) &&
     (noBinding || metrics.verifyExitCodes.includes(evalCase.expected.verifyExitCode ?? -1)) &&
     (noBinding || !metrics.semanticReadBeforeVerify) &&
@@ -626,8 +721,10 @@ export function casePassed(evalCase: ContextTreeAuditEvalCase, metrics: AuditEva
     (!sourceEvidenceRequired || metrics.sourceEvidenceReadObserved) &&
     (!siblingEvidenceRequired || metrics.siblingEvidenceReadObserved) &&
     (!evalCase.expected.writeSkillRequired || (metrics.writeSkillReadObserved && metrics.writeFreshnessChecked)) &&
-    (evalCase.expected.action !== "focused-pr" ||
-      (metrics.publicationFreshnessChecked && metrics.draftPullRequestObserved)) &&
+    (evalCase.expected.action !== "focused-review-request" ||
+      (metrics.publicationFreshnessChecked &&
+        metrics.draftReviewRequestObserved &&
+        metrics.reviewRequestFollowObserved)) &&
     (evalCase.fixture.scenario !== "stale-before-publish" || metrics.publicationFreshnessChecked)
   );
 }

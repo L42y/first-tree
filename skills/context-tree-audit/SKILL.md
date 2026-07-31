@@ -1,6 +1,6 @@
 ---
 name: context-tree-audit
-description: Audit stored normal content on the bound Context Tree's current default branch when a human explicitly asks to audit the whole tree, a domain, or specific normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems. Do not use for ordinary task reads, source-backed writes, Context Tree PR/MR reviews, or empty-tree setup.
+description: Audit stored normal content on the bound Context Tree's actual binding branch when a human explicitly asks to audit the whole tree, a domain, or specific normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems. Do not use for ordinary task reads, source-backed writes, Context Tree PR/MR reviews, or empty-tree setup.
 ---
 
 # Context Tree Audit
@@ -8,7 +8,7 @@ description: Audit stored normal content on the bound Context Tree's current def
 ## Purpose
 
 Audit a stable snapshot of stored normal content on the bound Context Tree's
-current default branch and route each evidence-backed finding to the smallest
+actual binding branch and route each evidence-backed finding to the smallest
 safe follow-up.
 
 The workspace-generated `AGENTS.md` / `CLAUDE.md` Context Tree Policy is the
@@ -40,8 +40,10 @@ Choose the execution mode from the request:
 ## Stable Snapshot
 
 1. Read `.first-tree/workspace.json` and the generated Tree Location section.
-   Resolve the bound tree checkout, upstream, and default branch. Fail closed
-   on a missing binding, repository mismatch, or ambiguous branch.
+   Resolve the bound tree checkout, upstream, and actual binding branch. Use
+   the branch declared in Tree Location; never assume `main` or substitute the
+   checkout's current branch. Fail closed on a missing binding, repository
+   mismatch, or ambiguous branch.
 2. From the bound checkout, inspect `first-tree tree tree --help` before using
    its current selectors.
 3. Fetch the bound upstream branch and resolve its exact remote HEAD SHA. If
@@ -126,13 +128,14 @@ merge request created from this audit, merge, change repository governance,
 create a new CLI surface, or claim scheduled execution. A GitHub tree PR
 continues through `context-tree-review`. A GitLab tree MR also continues
 through `context-tree-review`, but Audit leaves it draft so that run remains
-read-only. After creating or reusing a GitLab MR, run `first-tree gitlab follow
-<mr-url>`. Audit never creates a Reviewer Chat, marks either artifact ready,
+read-only. Create every review request with the matching forge. After creating
+or reusing a GitLab draft MR, run `first-tree gitlab follow <mr-url>`. Audit
+never creates a Reviewer Chat, marks either artifact ready,
 publishes a verdict, approves it, repairs it, or merges it.
 
 ## Completion Report
 
-Report the repository, default branch, exact audited SHA, scope, validator
+Report the repository, binding branch, exact audited SHA, scope, validator
 result, findings grouped by confidence and action, artifacts actually created,
 snapshot cleanup result, and any decision that blocks the next step. State
 explicitly when the run was report-only or freshness could not be confirmed.

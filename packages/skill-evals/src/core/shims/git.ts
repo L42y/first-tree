@@ -18,6 +18,7 @@ const REAL_GIT = ${JSON.stringify(realGit)};
 const EVENTS_PATH = process.env.FIRST_TREE_EVAL_EVENTS || ${JSON.stringify(paths.eventsPath)};
 const AUDIT_FIXTURE_PATH = ${JSON.stringify(options.auditFixturePath)};
 const FETCH_STATE_PATH = AUDIT_FIXTURE_PATH + ".fetch-state";
+const SNAPSHOT_STATE_PATH = AUDIT_FIXTURE_PATH + ".snapshot-state";
 
 function append(event) {
   appendFileSync(EVENTS_PATH, JSON.stringify({ timestamp: new Date().toISOString(), ...event }) + "\\n", "utf8");
@@ -36,6 +37,24 @@ function isAuditSnapshotAdd(command, fixture, repoPath) {
     (arg) => resolve(process.cwd(), arg) === fixture.auditWorktreePath || resolve(repoPath, arg) === fixture.auditWorktreePath,
   );
   return command.includes("--detach") && targetsSnapshot && !command.includes("-b") && !command.includes("-B");
+}
+
+function auditSnapshotSource(command, fixture, repoPath) {
+  const candidates = command.slice(2).filter((arg) => {
+    if (arg.startsWith("-")) return false;
+    const resolvedFromCwd = resolve(process.cwd(), arg);
+    const resolvedFromRepo = resolve(repoPath, arg);
+    return resolvedFromCwd !== fixture.auditWorktreePath && resolvedFromRepo !== fixture.auditWorktreePath;
+  });
+  return candidates.at(-1) || null;
+}
+
+function readSnapshotState() {
+  try {
+    return JSON.parse(readFileSync(SNAPSHOT_STATE_PATH, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 function isDetachedReadWorktreeAdd(command) {
@@ -108,9 +127,34 @@ function publicationTarget(command, repoPath) {
   };
 }
 
+function remoteOriginRevisions(expression) {
+  const revisions = [];
+  for (const rangePart of expression.split("...").flatMap((part) => part.split(".."))) {
+    const candidate = rangePart.startsWith("^") ? rangePart.slice(1) : rangePart;
+    const prefix = candidate.startsWith("refs/remotes/origin/")
+      ? "refs/remotes/origin/"
+      : candidate.startsWith("origin/")
+        ? "origin/"
+        : null;
+    if (!prefix) continue;
+    const remainder = candidate.slice(prefix.length);
+    const suffixIndexes = [
+      remainder.indexOf("~"),
+      remainder.indexOf("^"),
+      remainder.indexOf(":"),
+      remainder.indexOf("@{"),
+    ].filter((index) => index >= 0);
+    const suffixIndex = suffixIndexes.length > 0 ? Math.min(...suffixIndexes) : remainder.length;
+    const branch = remainder.slice(0, suffixIndex);
+    if (branch) revisions.push({ attemptedRef: candidate, branch });
+  }
+  return revisions;
+}
+
 const argv = process.argv.slice(2);
 const fixture = JSON.parse(readFileSync(AUDIT_FIXTURE_PATH, "utf8"));
 const context = commandContext(argv);
+const phase = process.env.FIRST_TREE_EVAL_PHASE || "model";
 const mainTreePath = resolve(fixture.workspacePath, "context-tree");
 const mainCommonDir = gitCommonDir(mainTreePath);
 const removal = worktreeRemoval(context.command, context.repoPath);
@@ -119,14 +163,60 @@ const exactFetch =
   context.command.length === 2 &&
   context.command[0] === "fetch" &&
   context.command[1] === "origin";
+const bindingRemoteRef = "refs/remotes/origin/" + fixture.bindingBranch;
+const revParseRevisionArgs =
+  context.command[0] === "rev-parse" ? context.command.slice(1).filter((arg) => !arg.startsWith("-")) : [];
+const remoteOriginRefs = revParseRevisionArgs.flatMap(remoteOriginRevisions);
+const wrongBindingRefs = remoteOriginRefs.filter((revision) => revision.branch !== fixture.bindingBranch);
 const exactHeadRead =
   context.repoPath === mainTreePath &&
-  context.command.length === 2 &&
   context.command[0] === "rev-parse" &&
-  context.command[1] === "refs/remotes/origin/" + fixture.defaultBranch;
+  revParseRevisionArgs.length === 1 &&
+  revParseRevisionArgs[0] === bindingRemoteRef;
+const wrongBindingHeadRead = context.repoPath === mainTreePath && wrongBindingRefs.length > 0;
+const snapshotAlreadyExists = fixture.auditWorktreePath && existsSync(fixture.auditWorktreePath);
+const snapshotAdd = isAuditSnapshotAdd(context.command, fixture, context.repoPath);
+const snapshotSource = snapshotAdd ? auditSnapshotSource(context.command, fixture, context.repoPath) : null;
+const snapshotState = readSnapshotState();
+const snapshotAddProvenanceValid =
+  snapshotAdd &&
+  context.repoPath === mainTreePath &&
+  snapshotState.fetchObserved === true &&
+  snapshotState.resolvedRef === "refs/remotes/origin/" + fixture.bindingBranch &&
+  snapshotState.resolvedHead === fixture.headOid &&
+  (snapshotSource === fixture.headOid || snapshotSource === snapshotState.resolvedRef);
 
 const authoringCommand = isAuthoringCommand(context.command, fixture, context.repoPath);
 const publicationCommand = isPublicationCommand(context.command);
+
+if (wrongBindingHeadRead) {
+  for (const revision of wrongBindingRefs) {
+    append({
+      type: "audit_snapshot_provenance_violation",
+      phase,
+      attemptedRef: revision.attemptedRef,
+      attemptedBranch: revision.branch,
+      bindingBranch: fixture.bindingBranch,
+      repo: fixture.repo,
+      repoPath: context.repoPath,
+    });
+  }
+  process.stderr.write("Audit fixture rejected a remote ref outside the exact binding branch.\\n");
+  process.exit(2);
+}
+
+if (snapshotAdd && !snapshotAddProvenanceValid) {
+  append({
+    type: "audit_snapshot_provenance_violation",
+    phase,
+    attemptedSource: snapshotSource,
+    bindingBranch: fixture.bindingBranch,
+    repo: fixture.repo,
+    repoPath: context.repoPath,
+  });
+  process.stderr.write("Audit fixture requires fetch and exact binding-ref resolution before snapshot creation.\\n");
+  process.exit(2);
+}
 
 const result = spawnSync(REAL_GIT, argv, {
   cwd: process.cwd(),
@@ -136,6 +226,31 @@ const result = spawnSync(REAL_GIT, argv, {
 });
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
+
+if (snapshotAdd && result.status === 0 && fixture.auditWorktreePath) {
+  const snapshotHead = spawnSync(REAL_GIT, ["-C", fixture.auditWorktreePath, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  });
+  const symbolicHead = spawnSync(REAL_GIT, ["-C", fixture.auditWorktreePath, "symbolic-ref", "-q", "HEAD"], {
+    encoding: "utf8",
+  });
+  const valid =
+    snapshotHead.status === 0 &&
+    snapshotHead.stdout.trim() === fixture.headOid &&
+    symbolicHead.status !== 0 &&
+    gitCommonDir(fixture.auditWorktreePath) === mainCommonDir;
+  append({
+    type: valid ? "audit_snapshot_worktree_added" : "audit_snapshot_provenance_violation",
+    phase,
+    actualHead: snapshotHead.status === 0 ? snapshotHead.stdout.trim() : null,
+    bindingBranch: fixture.bindingBranch,
+    detachedHead: symbolicHead.status !== 0,
+    repo: fixture.repo,
+    repoPath: context.repoPath,
+    snapshotPath: fixture.auditWorktreePath,
+    source: snapshotSource,
+  });
+}
 
 if (authoringCommand && result.status === 0) {
   const commitHead =
@@ -147,7 +262,7 @@ if (authoringCommand && result.status === 0) {
       context.command[0] === "commit" && commitHead?.status === 0
         ? "audit_tree_commit_succeeded"
         : "audit_tree_authoring_started",
-    phase: process.env.FIRST_TREE_EVAL_PHASE || "model",
+    phase,
     argv,
     command: context.command,
     committedHead: commitHead?.status === 0 ? commitHead.stdout.trim() : null,
@@ -167,7 +282,7 @@ if (
 ) {
   append({
     type: "audit_tree_verify_worktree_removed",
-    phase: process.env.FIRST_TREE_EVAL_PHASE || "model",
+    phase,
     ...removal,
   });
 }
@@ -181,7 +296,7 @@ if (
 ) {
   append({
     type: "audit_tree_publication_succeeded",
-    phase: process.env.FIRST_TREE_EVAL_PHASE || "model",
+    phase,
     argv,
     command: context.command,
     cwd: process.cwd(),
@@ -194,20 +309,52 @@ if (
 
 if (exactFetch && result.status === 0) {
   writeFileSync(FETCH_STATE_PATH, JSON.stringify({ fetchedAt: new Date().toISOString() }), "utf8");
+  if (!snapshotAlreadyExists) {
+    writeFileSync(SNAPSHOT_STATE_PATH, JSON.stringify({ fetchObserved: true }), "utf8");
+    append({
+      type: "audit_snapshot_fetch",
+      phase,
+      branch: fixture.bindingBranch,
+      repo: fixture.repo,
+      repoPath: context.repoPath,
+    });
+  }
   append({
     type: "audit_write_freshness_fetch",
-    phase: process.env.FIRST_TREE_EVAL_PHASE || "model",
-    branch: fixture.defaultBranch,
+    phase,
+    branch: fixture.bindingBranch,
     repo: fixture.repo,
     repoPath: context.repoPath,
   });
 }
 if (exactHeadRead && result.status === 0) {
+  if (!snapshotAlreadyExists) {
+    const currentSnapshotState = readSnapshotState();
+    writeFileSync(
+      SNAPSHOT_STATE_PATH,
+      JSON.stringify({
+        ...currentSnapshotState,
+        resolvedHead: result.stdout.trim(),
+        resolvedRef: bindingRemoteRef,
+      }),
+      "utf8",
+    );
+    append({
+      type: "audit_snapshot_ref_resolved",
+      phase,
+      branch: fixture.bindingBranch,
+      fetchObserved: currentSnapshotState.fetchObserved === true,
+      observedRemoteHead: result.stdout.trim(),
+      ref: bindingRemoteRef,
+      repo: fixture.repo,
+      repoPath: context.repoPath,
+    });
+  }
   append({
     type: "audit_write_freshness_observed",
-    phase: process.env.FIRST_TREE_EVAL_PHASE || "model",
+    phase,
     auditedHead: fixture.headOid,
-    branch: fixture.defaultBranch,
+    branch: fixture.bindingBranch,
     fetchObserved: existsSync(FETCH_STATE_PATH),
     observedRemoteHead: result.stdout.trim(),
     repo: fixture.repo,
