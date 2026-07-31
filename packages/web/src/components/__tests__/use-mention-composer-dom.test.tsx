@@ -332,3 +332,47 @@ describe("useMentionComposer — candidate-arrival upgrade", () => {
     expect(harness.canonical).toBe("hi @alice-w! @bob ");
   });
 });
+
+describe("useMentionComposer — upgrade monotonicity", () => {
+  it("ignores roster removal, replacement, and displayName-only changes after an upgrade", () => {
+    mount();
+    act(() => harness.setCandidates([]));
+    act(() => harness.setCanonical("hi @alice-w"));
+    act(() => harness.setCandidates([alice, bob]));
+    expect(ta().value).toBe("hi @Alice Wang");
+    expect(harness.composer?.tokens).toEqual([{ agentId: "a1", name: "alice-w", start: 3, end: 14 }]);
+    // displayName change for a resolved agent → model untouched.
+    act(() => harness.setCandidates([{ ...alice, displayName: "Alice W." }, bob]));
+    expect(ta().value).toBe("hi @Alice Wang");
+    expect(harness.composer?.tokens).toEqual([{ agentId: "a1", name: "alice-w", start: 3, end: 14 }]);
+    // Roster removal → no degradation, model untouched.
+    act(() => harness.setCandidates([bob]));
+    expect(ta().value).toBe("hi @Alice Wang");
+    expect(harness.composer?.tokens).toEqual([{ agentId: "a1", name: "alice-w", start: 3, end: 14 }]);
+    // Replacement (alice out, a different agent with the same slug-shape in) → untouched.
+    act(() =>
+      harness.setCandidates([bob, { agentId: "a9", name: "alice-w", displayName: "Impostor", managedByMe: false }]),
+    );
+    expect(ta().value).toBe("hi @Alice Wang");
+    expect(harness.composer?.tokens).toEqual([{ agentId: "a1", name: "alice-w", start: 3, end: 14 }]);
+    expect(harness.canonical).toBe("hi @alice-w");
+  });
+
+  it("keeps filling in unresolved mentions as the roster arrives in batches", () => {
+    mount();
+    act(() => harness.setCandidates([]));
+    act(() => harness.setCanonical("@alice-w and @bob look"));
+    // First batch resolves Alice only.
+    act(() => harness.setCandidates([alice]));
+    expect(ta().value).toBe("@Alice Wang and @bob look");
+    expect(harness.composer?.tokens).toEqual([{ agentId: "a1", name: "alice-w", start: 0, end: 11 }]);
+    // Second batch adds Bob — Alice's identity is preserved in order.
+    act(() => harness.setCandidates([alice, bob]));
+    expect(ta().value).toBe("@Alice Wang and @Bob look");
+    expect(harness.composer?.tokens).toEqual([
+      { agentId: "a1", name: "alice-w", start: 0, end: 11 },
+      { agentId: "a2", name: "bob", start: 16, end: 20 },
+    ]);
+    expect(harness.canonical).toBe("@alice-w and @bob look");
+  });
+});

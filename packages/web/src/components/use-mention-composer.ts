@@ -128,10 +128,17 @@ export function useMentionComposer({
   // still purely that hydrate (upgradeEligibleRef), a roster arriving —
   // in one batch or several — re-resolves the SAME canonical text into
   // display labels + tokens. Canonical content and agentIds never change
-  // (rehydrate is a pure projection; serialize round-trips). The stable
-  // signature dep avoids re-running on array-identity-only changes.
+  // (rehydrate is a pure projection; serialize round-trips). Acceptance
+  // is MONOTONE: a rehydrate is applied only when every previously
+  // resolved token's identity survives in order (new tokens may be
+  // inserted) AND at least one new token appears — candidate removals,
+  // replacements, and displayName-only changes leave the model untouched
+  // (eligibility stays open for a later genuinely-additive roster). This
+  // is deliberately NOT live-roster revalidation. The JSON signature dep
+  // is collision-free (displayName may contain any character) and avoids
+  // re-running on array-identity-only changes.
   const candidatesSignature = useMemo(
-    () => candidates.map((c) => `${c.agentId}:${c.name ?? ""}:${c.displayName ?? ""}`).join("|"),
+    () => JSON.stringify(candidates.map((c) => [c.agentId, c.name ?? null, c.displayName ?? null])),
     [candidates],
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: candidatesSignature IS the dep — its value controls when we re-resolve; the body reads the roster via candidatesRef.
@@ -139,16 +146,17 @@ export function useMentionComposer({
     if (!upgradeEligibleRef.current) return;
     const hydrated = hydrateComposerDisplay(lastCanonicalRef.current, candidatesRef.current);
     setModel((prev) => {
-      if (
-        hydrated.text === prev.text &&
-        hydrated.tokens.length === prev.tokens.length &&
-        hydrated.tokens.every((t, i) => {
-          const p = prev.tokens[i];
-          return p && t.agentId === p.agentId && t.name === p.name && t.start === p.start && t.end === p.end;
-        })
-      ) {
-        return prev;
+      const identity = (t: ComposerMentionToken): string => `${t.agentId}${t.name}`;
+      const prevIds = prev.tokens.map(identity);
+      const nextIds = hydrated.tokens.map(identity);
+      // prevIds must be an ordered subsequence of nextIds, and the token
+      // set must strictly grow.
+      let i = 0;
+      for (const id of nextIds) {
+        if (i < prevIds.length && id === prevIds[i]) i++;
       }
+      const preserved = i === prevIds.length;
+      if (!preserved || nextIds.length <= prevIds.length) return prev;
       modelRef.current = hydrated;
       return hydrated;
     });
