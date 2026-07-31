@@ -80,6 +80,8 @@ export type CreateTestAppOptions = {
   runtimeHttpTokenEnforcement?: boolean;
   runtimeSwitchFaultInjection?: boolean;
   allowedOrganizationId?: string;
+  /** Official Agent Template publisher org (FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID). */
+  agentTemplatePublisherOrgId?: string;
   gitlabEgressAllowlist?: NonNullable<Config["gitlab"]>["egressAllowlist"];
   /**
    * Drop `oauth.githubApp.slug` from the test config. Used by the
@@ -171,6 +173,9 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
     },
     ...(opts.allowedOrganizationId !== undefined
       ? { access: { allowedOrganizationId: opts.allowedOrganizationId.trim() || undefined } }
+      : {}),
+    ...(opts.agentTemplatePublisherOrgId !== undefined
+      ? { agentTemplates: { publisherOrgId: opts.agentTemplatePublisherOrgId } }
       : {}),
     oauth: {
       ...(opts.googleOAuth

@@ -309,6 +309,18 @@ export const serverConfigSchema = defineConfig({
       env: "FIRST_TREE_ALLOWED_ORGANIZATION_ID",
     }),
   }),
+  agentTemplates: optional({
+    /**
+     * Organization whose current active admins act as the official Agent
+     * Template publisher. Only members of this Team may maintain the global
+     * catalog, and official Skill bundles must be attachments owned by this
+     * Team. Unset disables the publisher API (fail closed); the public
+     * read-only catalog stays available.
+     */
+    publisherOrgId: field(optionalTrimmedStringSchema, {
+      env: "FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID",
+    }),
+  }),
   // Context Tree (repo / branch / localPath) and GitHub integration
   // (webhook secret / allowed org) used to live here as global config.
   // They are now per-org settings in the `organization_settings` table —

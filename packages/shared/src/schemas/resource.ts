@@ -74,8 +74,11 @@ export const repoResourcePayloadSchema = z.object({
 });
 export type RepoResourcePayload = z.infer<typeof repoResourcePayloadSchema>;
 
+/** Maximum Prompt Resource body length, shared by the schema and size envelopes. */
+export const PROMPT_RESOURCE_BODY_MAX_CHARS = 32 * 1024;
+
 export const promptResourcePayloadSchema = z.object({
-  body: z.string().max(32 * 1024),
+  body: z.string().max(PROMPT_RESOURCE_BODY_MAX_CHARS),
   description: z.string().max(1000).optional(),
 });
 export type PromptResourcePayload = z.infer<typeof promptResourcePayloadSchema>;
