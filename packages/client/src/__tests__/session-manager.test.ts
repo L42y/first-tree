@@ -3081,3 +3081,89 @@ describe("SessionManager completion disposition", () => {
     await sm.shutdown();
   });
 });
+
+describe("SessionManager replay fence reconcile", () => {
+  it("clears the chat fence when recovery redelivery commits the ACK, then admits later deliveries", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sm-fence-reconcile-"));
+    try {
+      const fencePath = join(root, "fence.json");
+      // ACK rejects once (transient), then succeeds on the redelivery retry.
+      const ackEntry = vi
+        .fn<(entryId: number) => Promise<void>>()
+        .mockRejectedValueOnce(new Error("ack boom"))
+        .mockResolvedValue(undefined);
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+      let capturedCtx: SessionContext | undefined;
+      let capturedFence: ReplayFenceStore | undefined;
+      const handler = createMockHandler({
+        start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
+          capturedCtx = ctx;
+          return "session-id-mock";
+        }),
+      });
+      const sm = createSessionManager({
+        handler,
+        ackEntry,
+        recoverChat,
+        replayFencePath: fencePath,
+        handlerFactory: (config) => {
+          capturedFence = config.replayFence as ReplayFenceStore;
+          return handler;
+        },
+      });
+
+      await sm.dispatch(mockEntry({ id: 31, chatId: "chat-rec", messageId: "msg-31" }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+
+      // The handler fenced the delivery when its unsafe tool started, using
+      // the same store object the manager reconciles against.
+      capturedFence?.fence({
+        chatId: "chat-rec",
+        messageId: "msg-31",
+        provider: "kimi-code",
+        toolName: "Write",
+        toolUseId: "write-1",
+        fencedAt: new Date().toISOString(),
+      });
+
+      // The completion's ACK fails: disposition keeps custody, fence stays.
+      const disposition = await capturedCtx?.finishTurn(
+        {
+          inboxEntryId: 31,
+          id: "msg-31",
+          chatId: "chat-rec",
+          senderId: "s",
+          format: "text",
+          content: "",
+          metadata: {},
+        },
+        { status: "success", terminal: true },
+      );
+      expect(disposition).toBe("retry");
+      const retained = new ReplayFenceStore(fencePath);
+      retained.load();
+      expect(retained.hasFenceForChat("chat-rec")).toBe(true);
+
+      // Recovery redelivers the terminal entry; the retried ACK commits and
+      // the reconcile path clears the fence without any handler involvement.
+      // The first re-dispatch lets the in-flight recovery finish; the second
+      // is the redelivery frame that retries the ACK.
+      await sm.dispatch(mockEntry({ id: 31, chatId: "chat-rec", messageId: "msg-31" }));
+      await sm.dispatch(mockEntry({ id: 31, chatId: "chat-rec", messageId: "msg-31" }));
+      await vi.waitFor(() => {
+        const reloaded = new ReplayFenceStore(fencePath);
+        reloaded.load();
+        expect(reloaded.hasFenceForChat("chat-rec")).toBe(false);
+      });
+      expect(ackEntry).toHaveBeenCalledTimes(2);
+
+      // The chat is unblocked: the next delivery routes into the provider.
+      await sm.dispatch(mockEntry({ id: 32, chatId: "chat-rec", messageId: "msg-32" }));
+      expect(handler.inject).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -540,6 +540,7 @@ export class SessionManager {
       ackEntry: config.ackEntry,
       recoverChat: config.recoverChat,
       onWorkChanged: (chatId) => this.projectSessionRuntime(chatId),
+      onDeliveriesCommitted: (chatId, messageIds) => this.reconcileReplayFences(chatId, messageIds),
       log: config.log,
     });
     this.registry = config.registryPath ? new SessionRegistry(config.registryPath) : null;
@@ -1102,6 +1103,27 @@ export class SessionManager {
     if (this.replayFenceUnavailable) return true;
     if (!this.replayFence) return false;
     return this.replayFence.hasFenceForChat(chatId);
+  }
+
+  /**
+   * Clear replay fences for deliveries whose ACK committed — including the
+   * recovery/redelivery retry path, which never passes through the handler's
+   * own completion cleanup. A clear that fails to persist leaves the chat
+   * fenced; make that loudly operator-visible instead of a silent stall.
+   */
+  private reconcileReplayFences(chatId: string, messageIds: readonly string[]): void {
+    if (!this.replayFence) return;
+    for (const messageId of messageIds) {
+      try {
+        this.replayFence.clear(chatId, messageId);
+      } catch (err) {
+        this.config.log.error(
+          { err, chatId, messageId },
+          "replay fence could not be cleared after confirmed ACK; chat stays fenced until the store is repaired",
+        );
+        this.config.onSessionRuntimeChange?.(chatId, "error");
+      }
+    }
   }
 
   private createHandler(): AgentHandler {

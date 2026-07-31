@@ -163,28 +163,34 @@ function kimiEventError(event: { code: string; message: string; retryable?: bool
 }
 
 /**
- * Marker the patched SDK's event dispatch rethrows instead of swallowing
- * (`safeEmitLive`), so a failed replay-fence write aborts `prepareToolCall`
- * BEFORE the tool task starts. Without the marker the SDK's live-event path
- * catches listener errors and the unsafe effect would still execute.
+ * Host pre-effect hook the patched SDK invokes at its awaited
+ * `authorizeToolExecution` boundary — before any runnable tool task is
+ * created. Registered globally because the SDK bundle and this handler share
+ * one process, while the SDK's public RPC bridge cannot carry function
+ * values. The SDK converts a hook throw into a blocked tool call, so a
+ * failed replay-fence write provably stops the unsafe effect (the SDK's
+ * live-event path cannot deliver this guarantee: listener errors are
+ * swallowed and the event bridge is async).
  */
-const REPLAY_FENCE_BLOCK_FLAG = "__firstTreeReplayFenceBlock";
+type HostBeforeToolCallInfo = {
+  sessionId?: string;
+  agentId?: string;
+  toolName: string;
+  toolCallId: string;
+  args: unknown;
+};
 
-function replayFenceBlockError(cause: Error): Error {
-  const error = new Error(`replay fence persistence failed: ${cause.message}`) as Error & {
-    __firstTreeReplayFenceBlock?: boolean;
+const beforeToolCallHooks = new Map<string, (info: HostBeforeToolCallInfo) => void>();
+
+function ensureGlobalBeforeToolCallHook(): void {
+  const globalScope = globalThis as {
+    __firstTreeBeforeToolCall?: (info: HostBeforeToolCallInfo) => Promise<void> | void;
   };
-  error.name = "KimiReplayFenceError";
-  error[REPLAY_FENCE_BLOCK_FLAG] = true;
-  return error;
-}
-
-function isReplayFenceBlockError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { __firstTreeReplayFenceBlock?: boolean })[REPLAY_FENCE_BLOCK_FLAG] === true
-  );
+  if (globalScope.__firstTreeBeforeToolCall) return;
+  globalScope.__firstTreeBeforeToolCall = (info) => {
+    const hook = typeof info.sessionId === "string" ? beforeToolCallHooks.get(info.sessionId) : undefined;
+    hook?.(info);
+  };
 }
 
 export function formatKimiCodeError(error: Error): string {
@@ -442,7 +448,6 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     attempt: ProviderAttempt,
     observation: TurnObservation,
     resolveEnded: () => void,
-    messages: readonly SessionMessage[],
   ): void {
     sessionCtx.recordProviderActivity();
     const isMainAgent = event.agentId === KIMI_MAIN_AGENT_ID;
@@ -472,19 +477,13 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
           refs: cwd ? nativeToolRefs(event.name, event.args, cwd) : [],
         };
         activeTools.set(toolUseId, tool);
-        if (!kimiToolIsReadOnly(event.name, event.args)) {
+        // The durable fence itself is written earlier, at the SDK's awaited
+        // authorize boundary (see the hook registered in observeOneAttempt),
+        // which also marks replay safety for calls it allows through. A call
+        // the hook just blocked (fenceError set) produced no effect, so it
+        // must not mark the turn unsafe.
+        if (!kimiToolIsReadOnly(event.name, event.args) && !observation.fenceError) {
           observation.unsafeToolEffectStarted = true;
-          if (!observation.unsafeFenced) {
-            observation.unsafeFenced = true;
-            const fenceFailure = fenceUnsafeDelivery(sessionCtx.chatId, messages, event.name, toolUseId);
-            if (fenceFailure) {
-              observation.fenceError = fenceFailure;
-              // Throw the marked error so the SDK aborts this tool call
-              // before the effect executes; the catch below only records
-              // the observation for settlement.
-              throw replayFenceBlockError(fenceFailure);
-            }
-          }
         }
         attempt.setReplaySafety(observation.unsafeToolEffectStarted ? "unsafe" : "pre_visible");
         emitToolCall(sessionCtx, toolUseId, tool, "pending");
@@ -538,20 +537,48 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     });
     const unsubscribe = activeSession.onEvent((event) => {
       try {
-        processKimiEvent(event, sessionCtx, attempt, observation, resolveEnded, messages);
+        processKimiEvent(event, sessionCtx, attempt, observation, resolveEnded);
       } catch (error) {
-        // Replay-fence blocks must propagate back into the SDK's tool
-        // dispatch so the unsafe effect never starts; every other listener
-        // error stays a local translation failure.
-        if (isReplayFenceBlockError(error)) throw error;
         sessionCtx.log(`kimi event translation failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
+    // Durably fence the delivery at the SDK's awaited authorize boundary —
+    // the only point where a persistence failure can still prevent the
+    // unsafe effect. The patched SDK converts a hook throw into a blocked
+    // tool call before the runnable task exists.
+    ensureGlobalBeforeToolCallHook();
+    beforeToolCallHooks.set(activeSession.id, beforeToolCallHook);
+    function beforeToolCallHook(info: HostBeforeToolCallInfo): void {
+      if (kimiToolIsReadOnly(info.toolName, info.args)) return;
+      if (observation.unsafeFenced) {
+        // A previous unsafe call was already fenced and allowed through.
+        observation.unsafeToolEffectStarted = true;
+        attempt.setReplaySafety("unsafe");
+        return;
+      }
+      observation.unsafeFenced = true;
+      const agentId = typeof info.agentId === "string" && info.agentId.length > 0 ? info.agentId : KIMI_MAIN_AGENT_ID;
+      const toolUseId = agentId === KIMI_MAIN_AGENT_ID ? info.toolCallId : `${agentId}:${info.toolCallId}`;
+      const fenceFailure = fenceUnsafeDelivery(sessionCtx.chatId, messages, info.toolName, toolUseId);
+      if (fenceFailure) {
+        // The throw makes the SDK block this call, so no unsafe effect has
+        // happened: deliberately do NOT mark replay safety unsafe here —
+        // settlement may safely retain custody for redelivery.
+        observation.fenceError = fenceFailure;
+        throw new Error(`replay fence persistence failed: ${fenceFailure.message}`);
+      }
+      // Fence persisted — the delivery is protected even if this effect
+      // executes and the process dies afterwards.
+      observation.unsafeToolEffectStarted = true;
+      attempt.setReplaySafety("unsafe");
+    }
     try {
       await activeSession.prompt(prompt);
       if (!observation.ended) await endedPromise;
       return observation;
     } finally {
+      if (beforeToolCallHooks.get(activeSession.id) === beforeToolCallHook)
+        beforeToolCallHooks.delete(activeSession.id);
       unsubscribe();
     }
   }
@@ -638,13 +665,13 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         return false;
       }
 
-      const fenceFailure = observation?.fenceError ?? (thrown && isReplayFenceBlockError(thrown) ? thrown : null);
+      const fenceFailure = observation?.fenceError ?? null;
       if (fenceFailure) {
-        // Fail closed: the unsafe tool call was aborted before its effect
-        // executed (the marked throw propagates through the SDK's tool
-        // dispatch), so custody here is purely about durability. Route the
-        // failure through the provider-attempt pipeline so a terminal
-        // settlement emits the durable provider-failure notice boundary
+        // Fail closed: the unsafe tool call was blocked at the SDK's awaited
+        // authorize boundary before its effect executed, so custody here is
+        // purely about durability. Route the failure through the
+        // provider-attempt pipeline so a terminal settlement emits the
+        // durable provider-failure notice boundary
         // before any consumed ACK.
         attempt.recordSignal({ kind: "local_error", error: fenceFailure });
         const fenceSettlement = attempt.settle({ attempt: attemptNumber });

@@ -68,6 +68,13 @@ type InboxDeliveryCoordinatorConfig = {
   ackEntry: (entryId: number) => Promise<void>;
   recoverChat?: (chatId: string) => Promise<void>;
   onWorkChanged: (chatId: string) => void;
+  /**
+   * Called after concrete ledger entries are durably committed through a
+   * confirmed ACK — including the recovery/redelivery retry path, which is
+   * the only settlement route left when the original completion could not
+   * ACK. Consumers reconcile per-delivery safety facts (replay fences) here.
+   */
+  onDeliveriesCommitted?: (chatId: string, messageIds: readonly string[]) => void;
   log: pino.Logger;
 };
 
@@ -555,6 +562,12 @@ export class InboxDeliveryCoordinator {
       this.deduplicator.drop(tracked.dedupKey);
       this.recentlySettled.isDuplicate(
         this.settledKey({ chatId, entryId: tracked.entryId, messageId: tracked.messageId }),
+      );
+    }
+    if (committed.length > 0) {
+      this.config.onDeliveriesCommitted?.(
+        chatId,
+        committed.map((tracked) => tracked.messageId),
       );
     }
     if (current.entries.length === 0 && current.recoveryDebt === "required") {

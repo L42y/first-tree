@@ -44,12 +44,42 @@ class FakeSession {
     const events = this.scripts.shift();
     if (!events) throw new Error("fake Kimi session called more times than scripted");
     for (const event of events) {
+      await invokeAuthorizeHook(this.id, event);
       for (const listener of this.listeners) listener(event);
     }
   }
 
   async getUsage(): Promise<SessionUsage> {
     return this.usage;
+  }
+}
+
+type GlobalBeforeToolCall = (info: {
+  sessionId?: string;
+  agentId?: string;
+  toolName: string;
+  toolCallId: string;
+  args: unknown;
+}) => Promise<void> | void;
+
+// Invokes the handler-registered global pre-effect hook exactly where the
+// patched SDK's awaited authorizeToolExecution boundary would call it:
+// before the tool task starts. Returns false when the hook blocked the call.
+async function invokeAuthorizeHook(sessionId: string, value: KimiEvent): Promise<boolean> {
+  if (value.type !== "tool.call.started") return true;
+  const hook = (globalThis as { __firstTreeBeforeToolCall?: GlobalBeforeToolCall }).__firstTreeBeforeToolCall;
+  if (!hook) return true;
+  try {
+    await hook({
+      sessionId,
+      agentId: value.agentId,
+      toolName: value.name,
+      toolCallId: value.toolCallId,
+      args: value.args,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -68,6 +98,7 @@ class GatedFakeSession extends FakeSession {
   }
 
   emit(value: KimiEvent): void {
+    void invokeAuthorizeHook(this.id, value);
     for (const listener of this.listeners) listener(value);
   }
 
@@ -83,12 +114,11 @@ async function flushAsyncWork(): Promise<void> {
   }
 }
 
-// Models the patched SDK's tool-dispatch contract: the live-event listener
-// runs BEFORE the tool effect starts; unmarked listener errors are swallowed,
-// while errors marked `__firstTreeReplayFenceBlock` abort the dispatch so the
-// effect never runs. This mirrors `prepareToolCall` awaiting the tool.call
-// dispatch before creating the runnable task, plus the First Tree patch that
-// rethrows marked errors out of `safeEmitLive`.
+// Models the patched SDK's pre-effect contract: the awaited authorize hook
+// runs BEFORE the tool task starts; a hook throw blocks the tool so its
+// effect never runs (the blocked call still emits its tool.call event, like
+// the SDK's settleError path), while an allowed unsafe call counts as an
+// executed effect.
 class EffectGateFakeSession extends FakeSession {
   effectCount = 0;
   private readonly scriptEvents: KimiEvent[];
@@ -101,24 +131,11 @@ class EffectGateFakeSession extends FakeSession {
   override async prompt(input: string): Promise<void> {
     this.prompts.push(input);
     for (const value of this.scriptEvents) {
-      try {
-        for (const listener of this.listeners) {
-          listener(value);
-        }
-      } catch (error) {
-        // Swallow unmarked listener errors like the SDK's safeEmitLive;
-        // rethrow only the replay-fence block marker.
-        if (
-          typeof error === "object" &&
-          error !== null &&
-          (error as { __firstTreeReplayFenceBlock?: boolean }).__firstTreeReplayFenceBlock === true
-        ) {
-          throw error;
-        }
-      }
-      if (value.type === "tool.call.started" && !kimiToolIsReadOnly(value.name, value.args)) {
+      const allowed = await invokeAuthorizeHook(this.id, value);
+      if (value.type === "tool.call.started" && allowed && !kimiToolIsReadOnly(value.name, value.args)) {
         this.effectCount += 1;
       }
+      for (const listener of this.listeners) listener(value);
     }
   }
 }
@@ -802,9 +819,10 @@ describe("Kimi background subagent lifecycle", () => {
     expect(source).toMatch(
       /getReadyAgent\("main"\);\s*\n\s*if \(main !== void 0 && this\.options\.drainAgentTasksOnStop\)/,
     );
-    // safeEmitLive must rethrow marked replay-fence block errors instead of
-    // swallowing them, so a failed fence write aborts the tool dispatch.
-    expect(source).toContain("__firstTreeReplayFenceBlock");
+    // The awaited authorize boundary must invoke the host pre-effect hook,
+    // and agents must carry session/agent identity for hook routing.
+    expect(source).toContain("__firstTreeBeforeToolCall");
+    expect(source).toContain("agent.sessionId = this.options.id");
   });
 });
 

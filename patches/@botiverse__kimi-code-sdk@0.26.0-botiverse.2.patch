@@ -1,22 +1,25 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index 2d300d14b5e5375b0c4a90cc578341b62983f07b..0800efda1a4390c2261ba7b4f695e56500519fe9 100644
+index 2d300d14b5e5375b0c4a90cc578341b62983f07b..84926bb10d7761499a9670da0bdeae10158e789d 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -74311,7 +74311,12 @@ function safeEmitLive(emit, event) {
- 	let maybePromise;
- 	try {
- 		maybePromise = emit(event);
--	} catch {
-+	} catch (error) {
-+		// Botiverse mirror: host lifecycle fences (e.g. First Tree's replay
-+		// fence) mark errors that must abort the in-flight tool dispatch
-+		// instead of being swallowed, so a failed durable write can never let
-+		// an unsafe tool effect proceed.
-+		if (error && typeof error === "object" && error.__firstTreeReplayFenceBlock === true) throw error;
- 		return;
- 	}
- 	if (maybePromise !== void 0 && maybePromise !== null && typeof maybePromise.then === "function" && typeof maybePromise.catch === "function") maybePromise.catch(() => {});
-@@ -133036,6 +133041,7 @@ var Session$1 = class {
+@@ -100625,6 +100625,16 @@ var TurnFlow = class {
+ 							if (cached !== null) return { syntheticResult: cached };
+ 						},
+ 						authorizeToolExecution: async (ctx) => {
++							const hostBeforeToolCall = globalThis.__firstTreeBeforeToolCall;
++							if (typeof hostBeforeToolCall === "function") {
++								await hostBeforeToolCall({
++									sessionId: this.agent.sessionId,
++									agentId: this.agent.agentId ?? (this.agent.homedir ? basename$1(this.agent.homedir) : this.agent.type),
++									toolName: ctx.toolCall.name,
++									toolCallId: ctx.toolCall.id,
++									args: ctx.args
++								});
++							}
+ 							return this.agent.permission.beforeToolCall(ctx);
+ 						},
+ 						finalizeToolResult: async (ctx) => {
+@@ -133036,6 +133046,7 @@ var Session$1 = class {
  		this.agents.clear();
  		const { warning } = agents["main"] === void 0 ? { warning: void 0 } : await this.resumeAgent("main");
  		const main = this.getReadyAgent("main");
@@ -24,7 +27,16 @@ index 2d300d14b5e5375b0c4a90cc578341b62983f07b..0800efda1a4390c2261ba7b4f695e565
  		const profile = DEFAULT_AGENT_PROFILES["agent"];
  		if (main !== void 0 && profile !== void 0 && main.config.systemPrompt === "") await this.bootstrapAgentProfile(main, profile);
  		await this.triggerSessionStart("resume");
-@@ -153788,7 +153794,8 @@ var KimiCore = class {
+@@ -133487,6 +133498,8 @@ var Session$1 = class {
+ 			roleAdditional: this.roleAdditional,
+ 			systemPromptContextProvider: () => prepareSystemPromptContext(this.systemContextKaos(agent.kaos.getcwd()), this.options.kimiHomeDir, { additionalDirs: agent.getAdditionalDirs() })
+ 		});
++		agent.sessionId = this.options.id;
++		agent.agentId = id;
+ 		return agent;
+ 	}
+ 	permissionOptions(parentAgentId, input) {
+@@ -153788,7 +153801,8 @@ var KimiCore = class {
  			pluginCommands,
  			appVersion: this.appVersion,
  			additionalDirs,
