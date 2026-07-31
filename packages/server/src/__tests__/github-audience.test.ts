@@ -8,11 +8,13 @@ import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappin
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { putContextReviewerAssignment } from "../services/context-reviewer-settings.js";
 import {
+  type GithubProviderTaskContext,
   isGithubAppTargetLogin,
   resolveGithubAudience as resolveAudienceResolution,
   resolveGithubActorHumanId,
 } from "../services/github-audience.js";
 import { putOrgSetting } from "../services/org-settings.js";
+import type { ScmAudienceTarget } from "../services/scm-audience-composition.js";
 import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 
@@ -22,7 +24,52 @@ async function resolveAudience(
   db: Parameters<typeof resolveAudienceResolution>[0],
   event: Parameters<typeof resolveAudienceResolution>[1],
 ) {
-  return (await resolveAudienceResolution(db, event)).targets;
+  return projectAudienceTargets((await resolveAudienceResolution(db, event)).targets);
+}
+
+function projectAudienceTargets(targets: ScmAudienceTarget<GithubProviderTaskContext>[]) {
+  return targets.map((target) => {
+    if (target.entry.kind === "existing_line") {
+      return {
+        humanAgentId: target.entry.line.humanAgentId,
+        delegateAgentId: target.entry.line.wakeAgentId,
+        kind: "existing" as const,
+        chatId: target.entry.line.chatId,
+        involveReason: target.directedContext?.reason ?? null,
+        involveLogin: target.directedContext?.externalUsername ?? null,
+        provenance: target.entry.line.provenance,
+      };
+    }
+    if (target.entry.kind === "legacy_route") {
+      return {
+        humanAgentId: null,
+        delegateAgentId: null,
+        kind: "legacy" as const,
+        chatId: target.entry.route.chatId,
+        involveReason: null,
+        involveLogin: null,
+      };
+    }
+    if (target.entry.kind === "provider_task_target") {
+      return {
+        humanAgentId: target.entry.humanAgentId,
+        delegateAgentId: target.entry.wakeAgentId,
+        kind: "new" as const,
+        chatId: null,
+        involveReason: target.entry.reason,
+        involveLogin: target.entry.externalUsername,
+        teamAgentTask: { agentUuid: target.entry.providerContext.agentUuid },
+      };
+    }
+    return {
+      humanAgentId: target.entry.humanAgentId,
+      delegateAgentId: target.entry.wakeAgentId,
+      kind: "new" as const,
+      chatId: null,
+      involveReason: target.entry.reason,
+      involveLogin: target.entry.externalUsername,
+    };
+  });
 }
 
 async function seedAgent(
@@ -272,7 +319,7 @@ describe("resolveAudience", () => {
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
-    expect(resolution.targets).toEqual([
+    expect(projectAudienceTargets(resolution.targets)).toEqual([
       expect.objectContaining({
         humanAgentId: admin.humanAgentUuid,
         delegateAgentId: teamAgentUuid,
@@ -301,7 +348,7 @@ describe("resolveAudience", () => {
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
-    expect(resolution.targets).toEqual([]);
+    expect(projectAudienceTargets(resolution.targets)).toEqual([]);
   });
 
   it("ignores an unauthorized public text mention while preserving ordinary audience routing", async () => {
@@ -323,7 +370,7 @@ describe("resolveAudience", () => {
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
-    expect(resolution.targets).toEqual([]);
+    expect(projectAudienceTargets(resolution.targets)).toEqual([]);
   });
 
   it.each([
@@ -348,7 +395,7 @@ describe("resolveAudience", () => {
       }),
       { appSlug: "test-app-slug", appPermissions: permissions },
     );
-    expect(resolution.targets).toEqual([]);
+    expect(projectAudienceTargets(resolution.targets)).toEqual([]);
     expect(resolution.appTaskBlocker).toBe(blocker);
   });
 
@@ -369,8 +416,8 @@ describe("resolveAudience", () => {
       { updatedBy: admin.userId },
     );
 
-    const resolveAppAssignment = (projectKey: string) =>
-      resolveAudienceResolution(
+    const resolveAppAssignment = async (projectKey: string) => {
+      const resolution = await resolveAudienceResolution(
         app.db,
         makeEvent({
           orgId: admin.organizationId,
@@ -384,6 +431,8 @@ describe("resolveAudience", () => {
         }),
         { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
       );
+      return { ...resolution, targets: projectAudienceTargets(resolution.targets) };
+    };
 
     await expect(resolveAppAssignment("OWNER/CONTEXT-TREE")).resolves.toMatchObject({
       targets: [
@@ -434,13 +483,15 @@ describe("resolveAudience", () => {
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
 
-    expect(resolution.targets).toEqual([
+    expect(projectAudienceTargets(resolution.targets)).toEqual([
       expect.objectContaining({
         delegateAgentId: teamAgentUuid,
         teamAgentTask: { agentUuid: teamAgentUuid },
       }),
     ]);
-    expect(resolution.targets).not.toEqual([expect.objectContaining({ delegateAgentId: reviewerUuid })]);
+    expect(projectAudienceTargets(resolution.targets)).not.toEqual([
+      expect.objectContaining({ delegateAgentId: reviewerUuid }),
+    ]);
   });
 
   it("returns subscribed mappings (existing) when no fresh involves", async () => {
@@ -579,6 +630,67 @@ describe("resolveAudience", () => {
         chatId: null,
         involveReason: "review_requested",
         involveLogin: humanName.toLowerCase(),
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      { externalUsername: "placeholder", reason: "assigned" as const },
+      { externalUsername: "placeholder", reason: "mentioned" as const },
+    ],
+    [
+      { externalUsername: "placeholder", reason: "mentioned" as const },
+      { externalUsername: "placeholder", reason: "assigned" as const },
+    ],
+  ])("lets shared composition choose mentioned independent of GitHub target order", async (...orderedTargets) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const delegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `priority-delegate-${randomUUID().slice(0, 6)}`,
+    });
+    const humanName = `priority-human-${randomUUID().slice(0, 6)}`;
+    const human = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: humanName,
+      delegateMention: delegate,
+      type: "human",
+    });
+    const chatId = await seedChat(app, admin.organizationId, human);
+    const entityKey = `owner/repo#${Math.floor(Math.random() * 100_000)}`;
+    await seedMapping(app, {
+      orgId: admin.organizationId,
+      humanId: human,
+      delegateId: delegate,
+      entityType: "pull_request",
+      entityKey,
+      chatId,
+    });
+
+    const audience = await resolveAudience(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "pull_request",
+        entityKey,
+        actorLogin: "outsider",
+        targets: orderedTargets.map((target) => ({ ...target, externalUsername: humanName })),
+        kind: "opened",
+      }),
+    );
+
+    expect(audience).toEqual([
+      {
+        humanAgentId: human,
+        delegateAgentId: delegate,
+        kind: "existing",
+        chatId,
+        involveReason: "mentioned",
+        involveLogin: humanName,
+        provenance: "identity_target",
       },
     ]);
   });
@@ -749,13 +861,10 @@ describe("resolveAudience", () => {
     expect(new Set(audience.map((a) => a.chatId))).toEqual(new Set([chatA, chatB]));
   });
 
-  it("dedups involves by human even when the existing mapping uses a different delegate", async () => {
-    // Regression for the assignee-creates-new-chat bug. The chat-binding was
-    // written under (human, delegateA) when the agent first created the
-    // entity. A later assign webhook arrives with involves=[human]; the human
-    // is configured with delegateMention=delegateB. Audience must dedup by
-    // human alone so the involves path does NOT add a sibling `kind: "new"`
-    // row — the entity is already routed to the existing chat.
+  it("does not let a same-human carrier line replace the current delegate target", async () => {
+    // An agent follow may borrow the target human as a stable carrier while a
+    // different agent owns the wake side. Personnel routing must retain that
+    // line and append the exact current-delegate target.
     const app = getApp();
     const admin = await createTestAdmin(app);
     const delegateA = await seedAgent(app, {
@@ -798,12 +907,18 @@ describe("resolveAudience", () => {
       }),
     );
 
-    expect(audience).toHaveLength(1);
+    expect(audience).toHaveLength(2);
     expect(audience[0]?.kind).toBe("existing");
     expect(audience[0]?.delegateAgentId).toBe(delegateA);
     expect(audience[0]?.chatId).toBe(chatId);
-    expect(audience[0]?.involveReason).toBe("assigned");
-    expect(audience[0]?.involveLogin).toBe(humanName.toLowerCase());
+    expect(audience[0]?.involveReason).toBeNull();
+    expect(audience[1]).toMatchObject({
+      kind: "new",
+      humanAgentId: human,
+      delegateAgentId: delegateB,
+      involveReason: "assigned",
+      involveLogin: humanName.toLowerCase(),
+    });
   });
 
   it("keeps subscribed targets when actor is an unresolved app bot", async () => {
@@ -945,7 +1060,7 @@ describe("resolveAudience", () => {
         kind: "synchronized",
       }),
     );
-    const audience = resolution.targets;
+    const audience = projectAudienceTargets(resolution.targets);
     expect(audience).toHaveLength(2);
     expect(new Set(audience.map((a) => a.humanAgentId))).toEqual(new Set([human, otherHuman]));
     expect(resolution.actorHumanId).toBe(human);
@@ -1070,7 +1185,7 @@ describe("resolveAudience", () => {
 
     expect(resolution.actorHumanId).toBe(creator);
     expect(resolution.targets).toHaveLength(1);
-    expect(resolution.targets[0]).toMatchObject({
+    expect(projectAudienceTargets(resolution.targets)[0]).toMatchObject({
       humanAgentId: creator,
       kind: "new",
       involveReason: "assigned",
@@ -1121,7 +1236,7 @@ describe("resolveAudience", () => {
         kind: "opened",
       }),
     );
-    const audience = resolution.targets;
+    const audience = projectAudienceTargets(resolution.targets);
 
     expect(resolution.actorHumanId).toBe(creator);
     expect(audience).toHaveLength(2);
@@ -1166,7 +1281,7 @@ describe("resolveAudience", () => {
         kind: "opened",
       }),
     );
-    const audience = resolution.targets;
+    const audience = projectAudienceTargets(resolution.targets);
 
     expect(resolution.actorHumanId).toBe(creator);
     expect(audience).toHaveLength(1);

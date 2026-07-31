@@ -1,14 +1,16 @@
 import type { NormalizedScmEvent } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AudienceTarget } from "../services/github-audience.js";
+import type { GithubProviderTaskContext } from "../services/github-audience.js";
+import type { ScmAudienceTarget } from "../services/scm-audience-composition.js";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
 type MockBag = {
-  findReuseChatForInvolved: MockFn;
+  decideGithubPersonnelTargetChat: MockFn;
   refreshGithubChatTopic: MockFn;
   resolveTargetChat: MockFn;
+  applyMembershipWrite: MockFn;
   setEntityTitle: MockFn;
   sendMessage: MockFn;
   notifyRecipients: MockFn;
@@ -48,27 +50,59 @@ function makeApp(): FastifyInstance {
   return { db: { id: "db" }, notifier: { id: "notifier" } } as unknown as FastifyInstance;
 }
 
-function existingTarget(overrides: Partial<AudienceTarget> = {}): AudienceTarget {
+type TargetOverrides = {
+  humanAgentId: string;
+  delegateAgentId: string;
+  chatId: string;
+  involveReason: "review_requested" | "mentioned" | "assigned" | null;
+  involveLogin: string | null;
+};
+
+function existingTarget(overrides: Partial<TargetOverrides> = {}): ScmAudienceTarget<GithubProviderTaskContext> {
+  const humanAgentId = overrides.humanAgentId ?? "human-1";
+  const delegateAgentId = overrides.delegateAgentId ?? "delegate-1";
+  const chatId = overrides.chatId ?? "chat-1";
+  const involveReason = overrides.involveReason ?? null;
+  const involveLogin = overrides.involveLogin ?? null;
   return {
-    humanAgentId: "human-1",
-    delegateAgentId: "delegate-1",
-    kind: "existing",
-    chatId: "chat-1",
-    involveReason: null,
-    involveLogin: null,
-    ...overrides,
+    entry: {
+      kind: "existing_line",
+      line: {
+        kind: "attention_line",
+        humanAgentId,
+        wakeAgentId: delegateAgentId,
+        chatId,
+        provenance: "identity_target",
+      },
+    },
+    ...(involveReason && involveLogin
+      ? { directedContext: { reason: involveReason, externalUsername: involveLogin } }
+      : {}),
   };
 }
 
-function newTarget(overrides: Partial<AudienceTarget> = {}): AudienceTarget {
+function newTarget(overrides: Partial<TargetOverrides> = {}): ScmAudienceTarget<GithubProviderTaskContext> {
   return {
-    humanAgentId: "human-1",
-    delegateAgentId: "delegate-1",
-    kind: "new",
-    chatId: null,
-    involveReason: "mentioned",
-    involveLogin: "alice",
-    ...overrides,
+    entry: {
+      kind: "personnel_target",
+      humanAgentId: overrides.humanAgentId ?? "human-1",
+      wakeAgentId: overrides.delegateAgentId ?? "delegate-1",
+      reason: overrides.involveReason ?? "mentioned",
+      externalUsername: overrides.involveLogin ?? "alice",
+    },
+  };
+}
+
+function providerTaskTarget(): ScmAudienceTarget<GithubProviderTaskContext> {
+  return {
+    entry: {
+      kind: "provider_task_target",
+      humanAgentId: "human-task",
+      wakeAgentId: "delegate-task",
+      reason: "mentioned",
+      externalUsername: "test-app-slug",
+      providerContext: { kind: "github_app_task", agentUuid: "delegate-task" },
+    },
   };
 }
 
@@ -79,9 +113,10 @@ async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
   vi.resetModules();
 
   const mocks: MockBag = {
-    findReuseChatForInvolved: vi.fn(async () => null),
+    decideGithubPersonnelTargetChat: vi.fn(async () => ({ kind: "strict_new_line" })),
     refreshGithubChatTopic: vi.fn(async () => undefined),
     resolveTargetChat: vi.fn(async () => ({ chatId: "chat-created", created: true, boundVia: "direct" })),
+    applyMembershipWrite: vi.fn(async () => undefined),
     setEntityTitle: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => ({ message: { id: "message-1" }, recipients: ["recipient-1"] })),
     notifyRecipients: vi.fn(),
@@ -89,12 +124,15 @@ async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
   };
 
   vi.doMock("../services/github-entity-chat.js", () => ({
-    findReuseChatForInvolved: mocks.findReuseChatForInvolved,
+    decideGithubPersonnelTargetChat: mocks.decideGithubPersonnelTargetChat,
     refreshGithubChatTopic: mocks.refreshGithubChatTopic,
     resolveTargetChat: mocks.resolveTargetChat,
   }));
   vi.doMock("../services/github-entity-state.js", () => ({
     setEntityTitle: mocks.setEntityTitle,
+  }));
+  vi.doMock("../services/participant-mode.js", () => ({
+    applyMembershipWrite: mocks.applyMembershipWrite,
   }));
   vi.doMock("../services/message.js", () => ({
     sendMessage: mocks.sendMessage,
@@ -110,6 +148,7 @@ async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
 afterEach(() => {
   vi.doUnmock("../services/github-entity-chat.js");
   vi.doUnmock("../services/github-entity-state.js");
+  vi.doUnmock("../services/participant-mode.js");
   vi.doUnmock("../services/message.js");
   vi.doUnmock("../services/notifier.js");
   vi.resetModules();
@@ -198,17 +237,9 @@ describe("deliverGithubEvent dependency edge paths", () => {
     event.entity.url = undefined;
     event.surface.url = "https://github.com/owner/repo/pull/1";
 
-    const stats = await deliverGithubEvent(makeApp(), event, [
-      existingTarget({
-        humanAgentId: "human-task",
-        delegateAgentId: "delegate-task",
-        involveReason: "mentioned",
-        involveLogin: "test-app-slug",
-        teamAgentTask: { agentUuid: "delegate-task" },
-      }),
-    ]);
+    const stats = await deliverGithubEvent(makeApp(), event, [providerTaskTarget()]);
 
-    expect(stats).toEqual({ delivered: 1, newChats: 0, failed: 0 });
+    expect(stats).toEqual({ delivered: 1, newChats: 1, failed: 0 });
     expect(sentPayloads).toHaveLength(1);
     expect(sentPayloads[0]).toMatchObject({
       content: {

@@ -3,9 +3,9 @@ import {
   AGENT_TYPES,
   type GithubAppInstallationPermissions,
   type GithubTaskReplyErrorCode,
-  type InvolveReason,
   isDeclaredBoundVia,
   type NormalizedScmEvent,
+  type ScmAudienceEntry,
 } from "@first-tree/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
@@ -15,6 +15,12 @@ import { loadValidContextReviewerAgent } from "./context-reviewer-common.js";
 import { normalizeGithubRepo } from "./context-reviewer-pr.js";
 import { githubEntityKeyCandidates } from "./github-entity-key.js";
 import { getOrgContextReviewRuntime } from "./org-settings.js";
+import {
+  composeScmAudience,
+  type ScmAudienceTarget,
+  type ScmPersonnelTarget,
+  type ScmProviderTaskTarget,
+} from "./scm-audience-composition.js";
 import { getTeamAgentUuid } from "./team-agent-settings.js";
 
 /**
@@ -46,11 +52,11 @@ export function evaluateDelegateTarget(
  * Resolve the GitHub actor to the represented First Tree human when possible.
  *
  * GitHub tells us which login triggered the event; it does not tell us which
- * local agent, if any, performed the action. Echo pruning is therefore
+ * local agent, if any, performed the action. Echo wake suppression is therefore
  * human-scoped: if the actor login maps to an org-local human agent, delivery
- * can remove entries that belong to that same human. Unknown humans, external
- * users, and bot/app senders return null and are delivered without self
- * pruning.
+ * can silence matching existing lines while retaining their card routes.
+ * Unknown humans, external users, and bot/app senders return null and are
+ * delivered without guessed suppression.
  */
 export async function resolveGithubActorHumanId(
   db: Database,
@@ -71,29 +77,13 @@ export async function resolveGithubActorHumanId(
   return agentRow?.uuid ?? null;
 }
 
-/** One candidate delivery entry from Stage 2. */
-export type AudienceTarget = {
-  humanAgentId: string;
-  delegateAgentId: string;
-  kind: "existing" | "new";
-  /** Set only when `kind === "existing"`. */
-  chatId: string | null;
-  /** Set when this delivery is also a target-human route. */
-  involveReason: InvolveReason | null;
-  /**
-   * Lower-cased GitHub login that caused this target route. Stage 3 reads it
-   * to fill the card's `mentionedUser` field so a chat targeted at user X
-   * never displays "Y was mentioned" because two involves shared the same
-   * reason.
-   */
-  involveLogin: string | null;
-  /** The configured GitHub App was the directed target for this one Agent. */
-  teamAgentTask?: { agentUuid: string };
-  provenance?: "explicit" | "identity_target" | "related_entity";
+export type GithubProviderTaskContext = {
+  kind: "github_app_task";
+  agentUuid: string;
 };
 
 export type AudienceResolution = {
-  targets: AudienceTarget[];
+  targets: ScmAudienceTarget<GithubProviderTaskContext>[];
   actorHumanId: string | null;
   appTaskBlocker: GithubTaskReplyErrorCode | null;
 };
@@ -171,14 +161,8 @@ async function resolveGithubAppTaskAgent(
  *
  *   audience = follow mappings ∪ target deliveries
  *
- * `subscribed` reads every `(human, delegate)` row already bound to
- * `(org, entity)` in `github_entity_chat_mappings`. `involved` walks
- * `event.targets` as target-human candidates. A target human first reuses
- * their existing mapping(s) on the entity; only humans without a mapping fall
- * back to their default delegate and produce a `kind: "new"` row.
- *
- * Echo pruning happens in delivery, before fresh-chat resolution, so self-only
- * events do not write cards and mixed events keep the other humans' entries.
+ * Provider code resolves rows and external identities; shared SCM composition
+ * owns exact-pair target matching and preserves every distinct route.
  */
 export async function resolveGithubAudience(
   db: Database,
@@ -271,34 +255,35 @@ export async function resolveGithubAudience(
     return row.humanAgentName !== null && involvedLogins.has(row.humanAgentName.toLowerCase());
   };
 
-  const subscribed: AudienceTarget[] = [...earliestByAttentionLine.values()]
+  const existingEntries: Array<Extract<ScmAudienceEntry, { kind: "existing_line" }>> = [
+    ...earliestByAttentionLine.values(),
+  ]
     .filter(keepSubscribedOpened)
     .map((row) => ({
-      humanAgentId: row.humanAgentId,
-      delegateAgentId: row.delegateAgentId,
-      kind: "existing",
-      chatId: row.chatId,
-      involveReason: null,
-      involveLogin: null,
-      provenance: isDeclaredBoundVia(row.boundVia)
-        ? "explicit"
-        : row.boundVia === "fixes_link"
-          ? "related_entity"
-          : "identity_target",
+      kind: "existing_line",
+      line: {
+        kind: "attention_line",
+        humanAgentId: row.humanAgentId,
+        wakeAgentId: row.delegateAgentId,
+        chatId: row.chatId,
+        provenance: isDeclaredBoundVia(row.boundVia)
+          ? "explicit"
+          : row.boundVia === "fixes_link"
+            ? "related_entity"
+            : "identity_target",
+      },
     }));
 
-  const subscribedByHuman = new Map<string, AudienceTarget[]>();
-  for (const target of subscribed) {
-    const rows = subscribedByHuman.get(target.humanAgentId);
-    if (rows) rows.push(target);
-    else subscribedByHuman.set(target.humanAgentId, [target]);
-  }
-
-  const involved: AudienceTarget[] = [];
+  const personnelTargets: ScmPersonnelTarget[] = [];
   if (humanTargets.length > 0) {
     const candidateLogins = humanTargets.map((target) => target.externalUsername.toLowerCase());
-    const reasonByLogin = new Map<string, InvolveReason>();
-    for (const target of humanTargets) reasonByLogin.set(target.externalUsername.toLowerCase(), target.reason);
+    const targetsByLogin = new Map<string, typeof humanTargets>();
+    for (const target of humanTargets) {
+      const login = target.externalUsername.toLowerCase();
+      const targets = targetsByLogin.get(login);
+      if (targets) targets.push(target);
+      else targetsByLogin.set(login, [target]);
+    }
 
     const candidates = await db
       .select({
@@ -338,32 +323,25 @@ export async function resolveGithubAudience(
     for (const c of candidates) {
       if (c.status !== AGENT_STATUSES.ACTIVE || !c.name) continue;
       const candidateLogin = c.name.toLowerCase();
-      const reason = reasonByLogin.get(candidateLogin);
-      if (!reason) continue;
-
-      const existingForHuman = subscribedByHuman.get(c.id);
-      if (existingForHuman) {
-        for (const target of existingForHuman) {
-          target.involveReason = reason;
-          target.involveLogin = candidateLogin;
-        }
-        continue;
-      }
+      const directedTargets = targetsByLogin.get(candidateLogin);
+      if (!directedTargets) continue;
 
       if (!c.delegateMention) continue;
       const verdict = evaluateDelegateTarget(delegateById.get(c.delegateMention), organizationId);
       if (verdict !== "ok") continue;
-      involved.push({
-        humanAgentId: c.id,
-        delegateAgentId: c.delegateMention,
-        kind: "new",
-        chatId: null,
-        involveReason: reason,
-        involveLogin: candidateLogin,
-      });
+      for (const target of directedTargets) {
+        personnelTargets.push({
+          kind: "personnel_target",
+          reason: target.reason,
+          humanAgentId: c.id,
+          wakeAgentId: c.delegateMention,
+          externalUsername: candidateLogin,
+        });
+      }
     }
   }
 
+  const providerTaskTargets: ScmProviderTaskTarget<GithubProviderTaskContext>[] = [];
   if (teamAgentTaskTarget) {
     const supportedEntity =
       (event.entity.type === "issue" || event.entity.type === "pull_request") &&
@@ -376,23 +354,18 @@ export async function resolveGithubAudience(
     } else {
       const taskAgent = await resolveGithubAppTaskAgent(db, event);
       if (taskAgent) {
-        // Always model an App-directed request as a fresh personnel target, even
-        // when its attention line already exists. `resolveTargetChat` still
-        // reuses that mapping, while the personnel shape preserves a manager's
-        // self-directed @App request from actor-echo pruning.
-        involved.push({
+        providerTaskTargets.push({
+          kind: "provider_task_target",
+          reason: teamAgentTaskTarget.reason,
           humanAgentId: taskAgent.managerHumanAgentId,
-          delegateAgentId: taskAgent.uuid,
-          kind: "new",
-          chatId: null,
-          involveReason: teamAgentTaskTarget.reason,
-          involveLogin: teamAgentTaskTarget.externalUsername.toLowerCase(),
-          teamAgentTask: { agentUuid: taskAgent.uuid },
+          wakeAgentId: taskAgent.uuid,
+          externalUsername: teamAgentTaskTarget.externalUsername.toLowerCase(),
+          providerContext: { kind: "github_app_task", agentUuid: taskAgent.uuid },
         });
       }
     }
   }
 
-  const audience = [...subscribed, ...involved];
+  const audience = composeScmAudience({ existingEntries, personnelTargets, providerTaskTargets });
   return { targets: audience, actorHumanId, appTaskBlocker };
 }
