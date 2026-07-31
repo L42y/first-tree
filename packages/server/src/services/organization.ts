@@ -61,28 +61,25 @@ export async function getOrganization(db: Database, id: string) {
   return org;
 }
 
+/**
+ * Update the mutable fields of an organization row. The slug is not among
+ * them, so nothing here can violate a unique constraint and no conflict
+ * handling is needed — see `updateOrganizationSchema` for why the slug has no
+ * update path.
+ */
 export async function updateOrganization(db: Database, id: string, data: UpdateOrganization) {
   const updates: Partial<typeof organizations.$inferInsert> = { updatedAt: new Date() };
-  if (data.name !== undefined) updates.name = data.name;
   if (data.displayName !== undefined) updates.displayName = data.displayName;
   if (data.maxAgents !== undefined) updates.maxAgents = data.maxAgents;
   if (data.maxMessagesPerMinute !== undefined) updates.maxMessagesPerMinute = data.maxMessagesPerMinute;
   if (data.features !== undefined) updates.features = data.features;
 
-  try {
-    const [org] = await db.update(organizations).set(updates).where(eq(organizations.id, id)).returning();
+  const [org] = await db.update(organizations).set(updates).where(eq(organizations.id, id)).returning();
 
-    if (!org) {
-      throw new NotFoundError(`Organization "${id}" not found`);
-    }
-    return org;
-  } catch (err) {
-    const pgCode = (err as { code?: string })?.code ?? (err as { cause?: { code?: string } })?.cause?.code ?? "";
-    if (pgCode === "23505") {
-      throw new ConflictError(`Organization name "${data.name}" is already taken`);
-    }
-    throw err;
+  if (!org) {
+    throw new NotFoundError(`Organization "${id}" not found`);
   }
+  return org;
 }
 
 /**

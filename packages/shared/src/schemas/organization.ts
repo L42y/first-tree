@@ -24,17 +24,14 @@ export type CreateOrganization = z.infer<typeof createOrganizationSchema>;
 /** Input type (before Zod defaults are applied) — use in service function signatures. */
 export type CreateOrganizationInput = z.input<typeof createOrganizationSchema>;
 
+/**
+ * `name` is intentionally absent. The slug is a server-derived internal
+ * identifier that is unique across the whole deployment, so an update path for
+ * it would let one tenant claim or probe another tenant's slug and would put a
+ * conflict back in front of a user who never chose the value. Provisioning
+ * callers still set it explicitly at creation.
+ */
 export const updateOrganizationSchema = z.object({
-  name: z
-    .string()
-    .min(2)
-    .max(50)
-    .regex(
-      /^[a-z0-9][a-z0-9-]*$/,
-      "Must start with a letter or digit and contain only lowercase alphanumeric and hyphens",
-    )
-    .refine((v) => !UUID_PATTERN.test(v), "Name must not be a UUID format")
-    .optional(),
   displayName: z.string().min(1).max(200).optional(),
   maxAgents: z.number().int().min(0).optional(),
   maxMessagesPerMinute: z.number().int().min(0).optional(),
