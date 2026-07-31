@@ -3,6 +3,7 @@ import {
   type ContextTreeActiveBinding,
   type ContextTreeProvider,
   type ContextTreeSettingState,
+  canonicalGitRepoUrl,
   classifyContextTreeSetting,
   contextTreeActiveBindingSchema,
   contextTreeBranchSchema,
@@ -421,24 +422,40 @@ export async function getOrgContextTreeSettingState(db: Database, orgId: string)
  * Without it, two teams whose names derive the same repo name end up sharing
  * one tree, and the second team silently reads and writes the first team's
  * decisions.
+ *
+ * Comparison is on canonical repository identity, never on URL text. The
+ * binding contract accepts HTTPS, `ssh://`, and scp-like SSH spellings with an
+ * optional `.git`, so a team bound through one transport must still be found
+ * when the lookup arrives through another — a text comparison would report no
+ * conflict and hand over a repository that is already someone's tree.
+ *
+ * Candidates are canonicalized in application code rather than SQL because the
+ * canonical form is the shared cross-package rule; the scan is bounded by teams
+ * that have a tree bound at all, and this runs once per initialization.
  */
 export async function findOrgBoundToContextTreeRepo(
   db: Database,
   excludeOrgId: string,
   repoUrl: string,
 ): Promise<string | null> {
-  const [row] = await db
-    .select({ organizationId: organizationSettings.organizationId })
+  const target = canonicalGitRepoUrl(repoUrl);
+  if (!target) return null;
+
+  const rows = await db
+    .select({
+      organizationId: organizationSettings.organizationId,
+      repo: sql<string | null>`${organizationSettings.value}->>'repo'`,
+    })
     .from(organizationSettings)
     .where(
       and(
         eq(organizationSettings.namespace, "context_tree"),
         ne(organizationSettings.organizationId, excludeOrgId),
-        sql`lower(${organizationSettings.value}->>'repo') = ${repoUrl.toLowerCase()}`,
+        sql`${organizationSettings.value}->>'repo' IS NOT NULL`,
       ),
-    )
-    .limit(1);
-  return row?.organizationId ?? null;
+    );
+
+  return rows.find((row) => canonicalGitRepoUrl(row.repo) === target)?.organizationId ?? null;
 }
 
 /**
@@ -753,11 +770,43 @@ async function resolveStoredContextTreeProvider(
   return { ...storage, provider: undefined };
 }
 
+/**
+ * Refuse a binding that would point this team at another team's Context Tree.
+ *
+ * A Context Tree repository backs one team: sharing one merges two teams'
+ * decisions, constraints, and ownership into a single tree. This runs on every
+ * binding write — Cloud provisioning, manual Settings binding, and the
+ * `tree init` callback alike — because the repository is the thing being
+ * claimed regardless of which surface names it.
+ *
+ * The advisory lock is what makes the check a decision rather than a guess.
+ * The caller already holds its own organization row, which does nothing to
+ * stop a *different* organization from passing this same check concurrently
+ * and committing a second binding to the same tree. Serializing on the
+ * repository identity closes that window; it is transaction-scoped, so it is
+ * released with the surrounding write either way.
+ */
+async function assertContextTreeRepoNotHeldByAnotherOrg(
+  db: Database,
+  orgId: string,
+  repo: string | undefined,
+): Promise<void> {
+  const canonical = canonicalGitRepoUrl(repo);
+  if (!canonical || !repo) return;
+
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${canonical}))`);
+  const holder = await findOrgBoundToContextTreeRepo(db, orgId, repo);
+  if (holder) {
+    throw new ConflictError("That repository is already another team's Context Tree");
+  }
+}
+
 export async function assertContextTreeBindingTargetAuthorized(
   db: Database,
   orgId: string,
   binding: OrgSettingStorage<"context_tree">,
 ): Promise<void> {
+  await assertContextTreeRepoNotHeldByAnotherOrg(db, orgId, binding.repo);
   if (!binding.provider || !binding.repo) return;
   const resolution = resolveContextTreeProvider({
     repo: binding.repo,

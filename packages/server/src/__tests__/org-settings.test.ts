@@ -217,6 +217,67 @@ describe("org-settings service", () => {
     expect(re).toEqual(out);
   });
 
+  // A Context Tree repository backs one team, and the repository is the thing
+  // being claimed no matter which surface names it — so every binding write
+  // enforces exclusivity, not only the Cloud provisioner that derives a name.
+  for (const [spelling, alias] of [
+    ["clone URL", "https://github.com/example/shared-tree.git"],
+    ["HTTPS without .git", "https://github.com/example/shared-tree"],
+    ["ssh:// URL", "ssh://git@github.com/example/shared-tree.git"],
+    ["scp-like SSH", "git@github.com:example/shared-tree.git"],
+  ] as const) {
+    it(`putOrgSetting refuses a repo another team holds, given as a ${spelling}`, async () => {
+      const app = getApp();
+      const holder = await createTestAdmin(app);
+      const claimant = await createTestAdmin(app);
+      const claimantOrgId = uuidv7();
+      await app.db
+        .insert(organizations)
+        .values({ id: claimantOrgId, name: `claimant-${randomUUID().slice(0, 8)}`, displayName: "Claimant" });
+
+      await orgSettingsService.putOrgSetting(
+        app.db,
+        holder.organizationId,
+        "context_tree",
+        { repo: "https://github.com/example/shared-tree.git", branch: "main" },
+        { updatedBy: holder.userId },
+      );
+
+      await expect(
+        orgSettingsService.putOrgSetting(
+          app.db,
+          claimantOrgId,
+          "context_tree",
+          { repo: alias, branch: "main" },
+          { updatedBy: claimant.userId },
+        ),
+      ).rejects.toThrow(/already another team's Context Tree/i);
+    });
+  }
+
+  it("putOrgSetting still lets a team rewrite its own binding", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+
+    await orgSettingsService.putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      { repo: "https://github.com/example/own-tree.git", branch: "main" },
+      { updatedBy: admin.userId },
+    );
+    // Same repository, different spelling: exclusivity is about *other* teams,
+    // so a team re-stating its own binding must not lock itself out.
+    const out = await orgSettingsService.putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      { repo: "git@github.com:example/own-tree.git", branch: "v2" },
+      { updatedBy: admin.userId },
+    );
+    expect(out).toMatchObject({ branch: "v2" });
+  });
+
   it("putOrgSetting input semantics: undefined unchanged, null clears, value sets", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);

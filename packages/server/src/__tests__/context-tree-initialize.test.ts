@@ -648,39 +648,49 @@ owners: [${ACCOUNT_LOGIN}]
     });
   });
 
-  it("refuses to adopt a derived repo already bound to another team", async () => {
-    const app = getApp();
-    const admin = await createTestAdmin(app);
-    const installationId = await seedInstallation(app, admin.organizationId);
-    await renameOrg(app, admin.organizationId, "Acme Labs");
+  // A name only ever guesses at ownership; the binding table is the fact. The
+  // binding contract accepts HTTPS, ssh://, and scp-like SSH spellings with an
+  // optional `.git`, and every one of them names the same repository — so the
+  // conflict must be found through canonical identity, not URL text.
+  for (const spelling of ["clone URL", "HTTPS without .git", "ssh:// URL", "scp-like SSH"] as const) {
+    it(`refuses to adopt a derived repo another team holds as a ${spelling}`, async () => {
+      const app = getApp();
+      const admin = await createTestAdmin(app);
+      const installationId = await seedInstallation(app, admin.organizationId);
+      await renameOrg(app, admin.organizationId, "Acme Labs");
 
-    // A name only ever guesses at ownership; the binding table is the fact.
-    // Park this exact repo on a different team and initialization must refuse
-    // rather than adopt a tree that already belongs to someone else.
-    const otherOrgId = await createOrganization(app, `other-${crypto.randomUUID().slice(0, 8)}`);
-    await putOrgSetting(
-      app.db,
-      otherOrgId,
-      "context_tree",
-      { repo: CLONE_URL, branch: "main" },
-      {
-        updatedBy: admin.userId,
-      },
-    );
+      const alias = {
+        "clone URL": CLONE_URL,
+        "HTTPS without .git": HTML_URL,
+        "ssh:// URL": `ssh://git@github.com/${ACCOUNT_LOGIN}/${REPO_NAME}.git`,
+        "scp-like SSH": `git@github.com:${ACCOUNT_LOGIN}/${REPO_NAME}.git`,
+      }[spelling];
 
-    const fetchSpy = mockFetch(async (url) => {
-      if (url === installationTokenUrl(installationId)) return installationTokenResponse();
-      return new Response(`unexpected fetch ${url}`, { status: 500 });
+      const otherOrgId = await createOrganization(app, `other-${crypto.randomUUID().slice(0, 8)}`);
+      await putOrgSetting(
+        app.db,
+        otherOrgId,
+        "context_tree",
+        { repo: alias, branch: "main" },
+        {
+          updatedBy: admin.userId,
+        },
+      );
+
+      const fetchSpy = mockFetch(async (url) => {
+        if (url === installationTokenUrl(installationId)) return installationTokenResponse();
+        return new Response(`unexpected fetch ${url}`, { status: 500 });
+      });
+
+      const res = await initialize(app, admin);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: "context_tree_repo_owned_by_other_org" });
+      // Only the installation token was minted — no repo was created or adopted.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(await getOrgContextTreeBinding(app.db, admin.organizationId)).toBeNull();
     });
-
-    const res = await initialize(app, admin);
-
-    expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ code: "context_tree_repo_owned_by_other_org" });
-    // Only the installation token was minted — no repo was created or adopted.
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(await getOrgContextTreeBinding(app.db, admin.organizationId)).toBeNull();
-  });
+  }
 
   it("returns 409 repo_unavailable when an existing deterministic repo is not readable by the installation", async () => {
     const app = getApp();
