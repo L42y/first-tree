@@ -10,6 +10,7 @@ import { createRunPaths } from "../../../core/paths.js";
 import { createFirstTreeShim } from "../../../core/shims/first-tree.js";
 import { createGhShim } from "../../../core/shims/gh.js";
 import { createGitShim } from "../../../core/shims/git.js";
+import { createGlabShim } from "../../../core/shims/glab.js";
 import { CONTEXT_TREE_AUDIT_GATE_CASES } from "../cases.js";
 import { inspectFixtureState, readRecordedVerifyExitCode, setupFixture } from "../fixture.js";
 
@@ -53,10 +54,10 @@ describe("context-tree-audit fixture", () => {
         changedBranchCount: 0,
         diffPaths: [],
         expectedContentObserved: true,
-        mainHeadUnchanged: true,
-        mainWorktreeClean: true,
+        boundHeadUnchanged: true,
+        boundWorktreeClean: true,
         noGuessedTreeState: true,
-        originMainExpected: true,
+        originBranchExpected: true,
         unpublishedAuthoringStateClean: true,
       });
     } finally {
@@ -138,10 +139,10 @@ describe("context-tree-audit fixture", () => {
         changedBranchCount: 0,
         diffPaths: [],
         expectedContentObserved: true,
-        mainHeadUnchanged: true,
-        mainWorktreeClean: true,
+        boundHeadUnchanged: true,
+        boundWorktreeClean: true,
         noGuessedTreeState: true,
-        originMainExpected: true,
+        originBranchExpected: true,
         unpublishedAuthoringStateClean: true,
       });
     } finally {
@@ -312,10 +313,10 @@ describe("context-tree-audit fixture", () => {
         changedBranchCount: 0,
         diffPaths: [],
         expectedContentObserved: true,
-        mainHeadUnchanged: true,
-        mainWorktreeClean: true,
+        boundHeadUnchanged: true,
+        boundWorktreeClean: true,
         noGuessedTreeState: true,
-        originMainExpected: true,
+        originBranchExpected: true,
         unpublishedAuthoringStateClean: true,
       });
       expect(readEvents(paths.eventsPath)).toContainEqual(
@@ -626,6 +627,284 @@ describe("context-tree-audit fixture", () => {
           type: "audit_tree_publication_succeeded",
         }),
       );
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("binds fixture state and freshness observations to a non-main branch", () => {
+    const evalCase = CONTEXT_TREE_AUDIT_GATE_CASES.find(
+      (item) => item.id === "audit-custom-binding-branch-report-only",
+    );
+    if (!evalCase) throw new Error("Missing custom binding branch audit case.");
+    const paths = createRunPaths({
+      caseId: evalCase.id,
+      packageRoot,
+      startedAt: "2026-07-31T00:00:13.000Z",
+    });
+    try {
+      const fixture = setupFixture(evalCase, paths);
+      if (!fixture.treePath || !fixture.originPath) throw new Error("Custom branch fixture is not bound.");
+      const agents = readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8");
+      expect(agents).toContain("branch `context-production`");
+      expect(agents).toContain("forge default branch is `main`");
+      expect(agents).toContain("never substitute the forge default");
+      expect(fixture.expectation.bindingBranch).toBe("context-production");
+      expect(
+        spawnSync("git", ["--git-dir", fixture.originPath, "rev-parse", "refs/heads/context-production"], {
+          encoding: "utf8",
+        }).status,
+      ).toBe(0);
+      expect(
+        spawnSync("git", ["--git-dir", fixture.originPath, "rev-parse", "--verify", "refs/heads/main"], {
+          encoding: "utf8",
+        }).status,
+      ).toBe(0);
+
+      const modelPaths = { ...paths, binDir: join(paths.workspacePath, ".first-tree-eval", "bin") };
+      mkdirSync(modelPaths.binDir, { recursive: true });
+      createGhShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
+      createGitShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
+      const env = { ...process.env, FIRST_TREE_EVAL_EVENTS: paths.eventsPath, FIRST_TREE_EVAL_PHASE: "model" };
+      expect(
+        spawnSync(
+          join(modelPaths.binDir, "gh"),
+          [
+            "repo",
+            "view",
+            "--repo",
+            fixture.expectation.repo,
+            "--json",
+            "defaultBranchRef",
+            "--jq",
+            ".defaultBranchRef.name",
+          ],
+          { cwd: paths.workspacePath, encoding: "utf8", env },
+        ).stdout.trim(),
+      ).toBe("main");
+      expect(
+        spawnSync(join(modelPaths.binDir, "git"), ["-C", "context-tree", "fetch", "origin"], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(0);
+      const resolved = spawnSync(
+        join(modelPaths.binDir, "git"),
+        ["-C", "context-tree", "rev-parse", "refs/remotes/origin/context-production"],
+        { cwd: paths.workspacePath, encoding: "utf8", env },
+      );
+      expect(resolved.stdout.trim()).toBe(fixture.expectation.headOid);
+      expect(
+        spawnSync(
+          join(modelPaths.binDir, "git"),
+          [
+            "-C",
+            "context-tree",
+            "worktree",
+            "add",
+            fixture.expectation.auditWorktreePath ?? "",
+            "--detach",
+            resolved.stdout.trim(),
+          ],
+          { cwd: paths.workspacePath, encoding: "utf8", env },
+        ).status,
+      ).toBe(0);
+      expect(
+        spawnSync(
+          join(modelPaths.binDir, "git"),
+          ["-C", "context-tree", "rev-parse", "--verify", "refs/remotes/origin/main"],
+          {
+            cwd: paths.workspacePath,
+            encoding: "utf8",
+            env,
+          },
+        ).status,
+      ).toBe(2);
+      expect(
+        spawnSync(join(modelPaths.binDir, "git"), ["-C", "context-tree", "rev-parse", "origin/main"], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(2);
+      expect(
+        spawnSync(join(modelPaths.binDir, "git"), ["-C", "context-tree", "rev-parse", "origin/main^{commit}"], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(2);
+      expect(
+        spawnSync(
+          join(modelPaths.binDir, "git"),
+          ["-C", "context-tree", "rev-parse", "refs/remotes/origin/context-production", "refs/remotes/origin/main"],
+          {
+            cwd: paths.workspacePath,
+            encoding: "utf8",
+            env,
+          },
+        ).status,
+      ).toBe(2);
+      expect(
+        spawnSync(
+          join(modelPaths.binDir, "git"),
+          ["-C", "context-tree", "rev-parse", "--verify", "refs/remotes/origin/context-production"],
+          {
+            cwd: paths.workspacePath,
+            encoding: "utf8",
+            env,
+          },
+        ).stdout.trim(),
+      ).toBe(fixture.expectation.headOid);
+      expect(readEvents(paths.eventsPath)).toContainEqual(
+        expect.objectContaining({
+          branch: "context-production",
+          type: "audit_write_freshness_observed",
+        }),
+      );
+      expect(readEvents(paths.eventsPath)).toContainEqual(
+        expect.objectContaining({
+          bindingBranch: "context-production",
+          detachedHead: true,
+          type: "audit_snapshot_worktree_added",
+        }),
+      );
+      expect(readEvents(paths.eventsPath)).toContainEqual(
+        expect.objectContaining({
+          attemptedBranch: "main",
+          attemptedRef: "origin/main",
+          type: "audit_snapshot_provenance_violation",
+        }),
+      );
+      expect(readEvents(paths.eventsPath)).toContainEqual(
+        expect.objectContaining({
+          attemptedBranch: "main",
+          attemptedRef: "origin/main^{commit}",
+          type: "audit_snapshot_provenance_violation",
+        }),
+      );
+      expect(
+        spawnSync("git", ["worktree", "remove", fixture.expectation.auditWorktreePath ?? ""], {
+          cwd: fixture.treePath,
+          encoding: "utf8",
+        }).status,
+      ).toBe(0);
+      expect(inspectFixtureState(fixture)).toEqual({
+        auditWorktreeCleaned: true,
+        changedBranchCount: 0,
+        diffPaths: [],
+        expectedContentObserved: true,
+        boundHeadUnchanged: true,
+        boundWorktreeClean: true,
+        noGuessedTreeState: true,
+        originBranchExpected: true,
+        unpublishedAuthoringStateClean: true,
+      });
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("records one GitLab draft MR and follow while rejecting cross-provider and review mutations", () => {
+    const evalCase = CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.id === "audit-gitlab-strong-local-focused-mr");
+    if (!evalCase) throw new Error("Missing GitLab strong-local audit case.");
+    const paths = createRunPaths({
+      caseId: evalCase.id,
+      packageRoot,
+      startedAt: "2026-07-31T00:00:14.000Z",
+    });
+    try {
+      const fixture = setupFixture(evalCase, paths);
+      if (!fixture.treePath) throw new Error("GitLab audit fixture is not bound.");
+      const modelPaths = { ...paths, binDir: join(paths.workspacePath, ".first-tree-eval", "bin") };
+      mkdirSync(modelPaths.binDir, { recursive: true });
+      createFirstTreeShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
+      createGhShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
+      createGitShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
+      createGlabShim(modelPaths, { auditFixturePath: fixture.auditFixturePath });
+      const env = { ...process.env, FIRST_TREE_EVAL_EVENTS: paths.eventsPath, FIRST_TREE_EVAL_PHASE: "model" };
+
+      expect(spawnSync("git", ["branch", "audit-gitlab"], { cwd: fixture.treePath, encoding: "utf8" }).status).toBe(0);
+      expect(
+        spawnSync(join(modelPaths.binDir, "git"), ["-C", "context-tree", "push", "origin", "audit-gitlab"], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(0);
+      const mrArgs = [
+        "mr",
+        "create",
+        "--repo",
+        fixture.expectation.repo,
+        "--source-branch",
+        "audit-gitlab",
+        "--description",
+        "Audit finding",
+        "--draft",
+      ];
+      const mr = spawnSync(join(modelPaths.binDir, "glab"), mrArgs, {
+        cwd: paths.workspacePath,
+        encoding: "utf8",
+        env,
+      });
+      expect(mr.status).toBe(0);
+      const mrUrl = mr.stdout.trim();
+      expect(
+        spawnSync(join(modelPaths.binDir, "first-tree"), ["gitlab", "follow", mrUrl], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(0);
+
+      expect(
+        spawnSync(join(modelPaths.binDir, "gh"), ["pr", "create", "--repo", fixture.expectation.repo], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(2);
+      expect(
+        spawnSync(join(modelPaths.binDir, "glab"), ["mr", "approve", "77", "--repo", fixture.expectation.repo], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(2);
+      expect(
+        spawnSync(join(modelPaths.binDir, "glab"), ["mr", "merge", "77", "--repo", fixture.expectation.repo], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(2);
+      expect(
+        spawnSync(join(modelPaths.binDir, "first-tree"), ["tree", "review", "--run", "audit"], {
+          cwd: paths.workspacePath,
+          encoding: "utf8",
+          env,
+        }).status,
+      ).toBe(2);
+
+      const events = readEvents(paths.eventsPath);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          artifact: "merge-request",
+          draft: true,
+          headRef: "refs/heads/audit-gitlab",
+          type: "audit_artifact_created",
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          forge: "gitlab",
+          type: "audit_review_request_followed",
+          url: mrUrl,
+        }),
+      );
+      expect(events.filter((event) => (event as { type?: unknown }).type === "audit_artifact_created")).toHaveLength(1);
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }

@@ -486,6 +486,40 @@ const phase = process.env.FIRST_TREE_EVAL_PHASE || "model";
 append({ type: "first_tree_call", phase, argv, cwd: process.cwd() });
 trace("first-tree call: " + commandLine(argv));
 
+if (AUDIT_FIXTURE_PATH && argv[0] === "gitlab" && argv[1] === "follow") {
+  const fixture = JSON.parse(readFileSync(AUDIT_FIXTURE_PATH, "utf8"));
+  const url = argv[2] || "";
+  const expectedUrl = "https://gitlab.example/owner/context-tree/-/merge_requests/77";
+  const valid =
+    fixture.forge === "gitlab" &&
+    argv.length === 3 &&
+    url === expectedUrl &&
+    readFileSync(EVENTS_PATH, "utf8").includes('"artifact":"merge-request"');
+  if (!valid) {
+    finish(argv, phase, 2, "", "Audit fixture rejected GitLab follow handoff.\\n", {
+      auditFixtureViolation: true,
+      blockedByEval: true,
+    });
+  }
+  append({
+    type: "audit_review_request_followed",
+    phase,
+    forge: "gitlab",
+    repo: fixture.repo,
+    url,
+  });
+  finish(argv, phase, 0, "Recorded GitLab follow in skill eval.\\n", "", {
+    recordedOnly: true,
+  });
+}
+
+if (AUDIT_FIXTURE_PATH && argv[0] === "tree" && argv[1] === "review") {
+  finish(argv, phase, 2, "", "Audit must not publish a Context Reviewer verdict.\\n", {
+    auditFixtureViolation: true,
+    blockedByEval: true,
+  });
+}
+
 if (REVIEW_FIXTURE_PATH && argv[0] === "org" && argv[1] === "context-tree" && argv[2] === "review-config") {
   const fixture = JSON.parse(readFileSync(REVIEW_FIXTURE_PATH, "utf8"));
   const gitlab = fixture.forgeProvider === "gitlab";
@@ -748,7 +782,14 @@ if (AUDIT_FIXTURE_PATH && phase === "model" && argv[0] === "tree" && argv[1] ===
     ) {
       const advanced = spawnSync(
         "git",
-        ["--git-dir", fixture.originPath, "update-ref", "refs/heads/main", fixture.advancedHeadOid, fixture.headOid],
+        [
+          "--git-dir",
+          fixture.originPath,
+          "update-ref",
+          "refs/heads/" + fixture.bindingBranch,
+          fixture.advancedHeadOid,
+          fixture.headOid,
+        ],
         { encoding: "utf8" },
       );
       auditOriginAdvanced = advanced.status === 0;
@@ -910,7 +951,14 @@ if (RECORDED_MODEL_VERIFY_PATH && phase === "model" && argv[0] === "tree" && arg
     if (fixture.scenario === "stale-before-write" && fixture.originPath && fixture.advancedHeadOid) {
       const advanced = spawnSync(
         "git",
-        ["--git-dir", fixture.originPath, "update-ref", "refs/heads/main", fixture.advancedHeadOid, fixture.headOid],
+        [
+          "--git-dir",
+          fixture.originPath,
+          "update-ref",
+          "refs/heads/" + fixture.bindingBranch,
+          fixture.advancedHeadOid,
+          fixture.headOid,
+        ],
         { encoding: "utf8" },
       );
       auditOriginAdvanced = advanced.status === 0;

@@ -7,14 +7,16 @@ import type { AuditFixtureExpectation, AuditFixtureState, ContextTreeAuditEvalCa
 const expectation: AuditFixtureExpectation = {
   advancedHeadOid: null,
   auditWorktreePath: "/workspace/.audit-worktrees/audit-strong-local-focused-pr",
-  defaultBranch: "main",
-  expectedAction: "focused-pr",
+  bindingBranch: "main",
+  expectedAction: "focused-review-request",
   expectedDiffPaths: ["system/audit-contract.md"],
   expectedFinding: {
     claimTokens: ["retention", "30"],
     evidenceTokens: ["audit-retention.txt", "90"],
     policyTokens: ["code", "tree", "drift"],
   },
+  forgeDefaultBranch: "main",
+  forge: "github",
   headOid: "abc123",
   mode: "maintenance",
   originPath: "/run/context-tree-origin.git",
@@ -29,16 +31,22 @@ const state: AuditFixtureState = {
   changedBranchCount: 1,
   diffPaths: ["system/audit-contract.md"],
   expectedContentObserved: true,
-  mainHeadUnchanged: true,
-  mainWorktreeClean: true,
+  boundHeadUnchanged: true,
+  boundWorktreeClean: true,
   noGuessedTreeState: true,
-  originMainExpected: true,
+  originBranchExpected: true,
   unpublishedAuthoringStateClean: true,
 };
 
 function strongCase(): ContextTreeAuditEvalCase {
   const found = CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.fixture.scenario === "strong-local");
   if (!found) throw new Error("Missing strong-local audit case.");
+  return found;
+}
+
+function gitlabStrongCase(): ContextTreeAuditEvalCase {
+  const found = CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.id === "audit-gitlab-strong-local-focused-mr");
+  if (!found) throw new Error("Missing GitLab strong-local audit case.");
   return found;
 }
 
@@ -63,6 +71,34 @@ function passingEvents(): unknown[] {
   return [
     command("cat .agents/skills/context-tree-audit/SKILL.md"),
     { argv: ["tree", "tree", "--help"], exitCode: 0, phase: "model", type: "first_tree_result" },
+    {
+      branch: "main",
+      phase: "model",
+      repo: "owner/context-tree",
+      repoPath: "/workspace/context-tree",
+      type: "audit_snapshot_fetch",
+    },
+    {
+      branch: "main",
+      fetchObserved: true,
+      observedRemoteHead: "abc123",
+      phase: "model",
+      ref: "refs/remotes/origin/main",
+      repo: "owner/context-tree",
+      repoPath: "/workspace/context-tree",
+      type: "audit_snapshot_ref_resolved",
+    },
+    {
+      actualHead: "abc123",
+      bindingBranch: "main",
+      detachedHead: true,
+      phase: "model",
+      repo: "owner/context-tree",
+      repoPath: "/workspace/context-tree",
+      snapshotPath: "/workspace/.audit-worktrees/audit-strong-local-focused-pr",
+      source: "abc123",
+      type: "audit_snapshot_worktree_added",
+    },
     {
       actualHead: "abc123",
       argv: ["tree", "tree", "--no-pull", "-P", "audit-contract"],
@@ -198,8 +234,12 @@ describe("context-tree-audit grader", () => {
 
   it("rejects semantic reads before the bound validator", () => {
     const events = passingEvents();
-    const read = events.splice(4, 1)[0];
-    events.splice(2, 0, read);
+    const readIndex = events.findIndex(
+      (event) => (event as { event?: { item?: { type?: string } } }).event?.item?.type === "file_read",
+    );
+    const read = events.splice(readIndex, 1)[0];
+    const verifyIndex = events.findIndex((event) => (event as { argv?: string[] }).argv?.[1] === "verify");
+    events.splice(verifyIndex, 0, read);
     expect(passes(events)).toBe(false);
   });
 
@@ -218,14 +258,24 @@ describe("context-tree-audit grader", () => {
 
   it("rejects a selector executed from the mutable main checkout", () => {
     const events = passingEvents();
-    const selector = events[2] as Record<string, unknown>;
+    const selector = events.find(
+      (event) =>
+        (event as { argv?: string[] }).argv?.[0] === "tree" &&
+        (event as { argv?: string[] }).argv?.[1] === "tree" &&
+        !(event as { argv?: string[] }).argv?.includes("--help"),
+    ) as Record<string, unknown>;
     selector.cwd = "/workspace/context-tree";
     expect(passes(events)).toBe(false);
   });
 
   it("rejects a detached selector that can refresh past the audited head", () => {
     const events = passingEvents();
-    const selector = events[2] as { argv: string[] };
+    const selector = events.find(
+      (event) =>
+        (event as { argv?: string[] }).argv?.[0] === "tree" &&
+        (event as { argv?: string[] }).argv?.[1] === "tree" &&
+        !(event as { argv?: string[] }).argv?.includes("--help"),
+    ) as { argv: string[] };
     selector.argv = selector.argv.filter((arg) => arg !== "--no-pull");
     expect(passes(events)).toBe(false);
   });
@@ -253,14 +303,32 @@ describe("context-tree-audit grader", () => {
     const events = passingEvents();
     const artifact = events.pop();
     if (!artifact) throw new Error("Missing artifact event.");
-    events.splice(4, 0, artifact);
+    const verifyIndex = events.findIndex((event) => (event as { argv?: string[] }).argv?.[1] === "verify");
+    events.splice(verifyIndex, 0, artifact);
     expect(passes(events)).toBe(false);
   });
 
   it("rejects validation before snapshot scope selection", () => {
     const events = passingEvents();
-    const selector = events.splice(2, 1)[0];
-    events.splice(4, 0, selector);
+    const selectorIndex = events.findIndex(
+      (event) =>
+        (event as { argv?: string[] }).argv?.[0] === "tree" &&
+        (event as { argv?: string[] }).argv?.[1] === "tree" &&
+        !(event as { argv?: string[] }).argv?.includes("--help"),
+    );
+    const selector = events.splice(selectorIndex, 1)[0];
+    const verifyIndex = events.findIndex((event) => (event as { argv?: string[] }).argv?.[1] === "verify");
+    events.splice(verifyIndex + 1, 0, selector);
+    expect(passes(events)).toBe(false);
+  });
+
+  it("rejects a bound audit without exact binding-branch snapshot provenance", () => {
+    const events = passingEvents().filter(
+      (event) =>
+        !["audit_snapshot_fetch", "audit_snapshot_ref_resolved", "audit_snapshot_worktree_added"].includes(
+          (event as { type?: string }).type ?? "",
+        ),
+    );
     expect(passes(events)).toBe(false);
   });
 
@@ -277,7 +345,10 @@ describe("context-tree-audit grader", () => {
     const events = passingEvents();
     const fetchIndex = events.findIndex((event) => (event as { type?: string }).type === "audit_write_freshness_fetch");
     const fetch = events.splice(fetchIndex, 1)[0];
-    events.splice(4, 0, fetch);
+    const writeSkillIndex = events.findIndex(
+      (event) => commandText(event) === "cat .agents/skills/first-tree-write/SKILL.md",
+    );
+    events.splice(writeSkillIndex, 0, fetch);
     expect(passes(events)).toBe(false);
   });
 
@@ -507,8 +578,11 @@ describe("context-tree-audit grader", () => {
     });
     let metrics = deriveMetrics(events, evalCase, weakExpectation, noDiffState, 0);
     expect(casePassed(evalCase, metrics)).toBe(false);
+    const sourceIndex = events.findIndex(
+      (event) => commandText(event) === "cat /workspace/source-repo/config/audit-retention.txt",
+    );
     events.splice(
-      5,
+      sourceIndex,
       0,
       command("cat /workspace/.audit-worktrees/audit-strong-local-focused-pr/system/retention-policy.md"),
     );
@@ -566,6 +640,62 @@ describe("context-tree-audit grader", () => {
     expect(passes(events)).toBe(false);
   });
 
+  it("accepts one GitLab draft MR only after its provider-native follow handoff", () => {
+    const evalCase = gitlabStrongCase();
+    const gitlabExpectation: AuditFixtureExpectation = {
+      ...expectation,
+      forge: "gitlab",
+    };
+    const events = passingEvents();
+    const artifact = events.at(-1) as Record<string, unknown>;
+    artifact.artifact = "merge-request";
+    artifact.body =
+      "Audited SHA: abc123\nPath: system/audit-contract.md\nPolicy: Code vs Tree Drift Authority\nClaim: Retention claim is 30 days and stale\nEvidence: source-repo/config/audit-retention.txt says 90\nConfidence: strong\nAction: focused tree MR";
+    events.push({
+      forge: "gitlab",
+      phase: "model",
+      repo: "owner/context-tree",
+      type: "audit_review_request_followed",
+      url: "https://gitlab.example/owner/context-tree/-/merge_requests/77",
+    });
+    expect(casePassed(evalCase, deriveMetrics(events, evalCase, gitlabExpectation, state, 0))).toBe(true);
+
+    const withoutFollow = events.filter(
+      (event) => (event as { type?: string }).type !== "audit_review_request_followed",
+    );
+    expect(casePassed(evalCase, deriveMetrics(withoutFollow, evalCase, gitlabExpectation, state, 0))).toBe(false);
+  });
+
+  it("rejects provider crossover, GitHub publication, and GitLab self-review or merge", () => {
+    const gitlabCase = gitlabStrongCase();
+    const gitlabExpectation: AuditFixtureExpectation = { ...expectation, forge: "gitlab" };
+    const base = passingEvents();
+    const artifact = base.at(-1) as Record<string, unknown>;
+    artifact.artifact = "merge-request";
+    artifact.body =
+      "Audited SHA: abc123\nPath: system/audit-contract.md\nPolicy: Code vs Tree Drift Authority\nClaim: Retention claim is 30 days and stale\nEvidence: source-repo/config/audit-retention.txt says 90\nConfidence: strong\nAction: focused tree MR";
+    base.push({
+      forge: "gitlab",
+      phase: "model",
+      repo: "owner/context-tree",
+      type: "audit_review_request_followed",
+      url: "https://gitlab.example/owner/context-tree/-/merge_requests/77",
+    });
+
+    for (const forbidden of [
+      { argv: ["pr", "create"], phase: "model", type: "gh_call" },
+      { argv: ["tree", "review", "--run", "audit"], exitCode: 2, phase: "model", type: "first_tree_result" },
+      { argv: ["mr", "approve", "77"], phase: "model", type: "glab_call" },
+      { argv: ["mr", "merge", "77"], phase: "model", type: "glab_call" },
+    ]) {
+      const events = [...base, forbidden];
+      expect(casePassed(gitlabCase, deriveMetrics(events, gitlabCase, gitlabExpectation, state, 0))).toBe(false);
+    }
+
+    const githubEvents = [...passingEvents(), { argv: ["mr", "create"], phase: "model", type: "glab_call" }];
+    expect(passes(githubEvents)).toBe(false);
+  });
+
   it("accepts only a non-mutating handoff when main advanced before write", () => {
     const evalCase = CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.fixture.scenario === "stale-before-write");
     if (!evalCase) throw new Error("Missing stale-before-write audit case.");
@@ -576,7 +706,11 @@ describe("context-tree-audit grader", () => {
       scenario: "stale-before-write",
     };
     const staleState: AuditFixtureState = { ...state, changedBranchCount: 0, diffPaths: [] };
-    const events = passingEvents().slice(0, 9);
+    const passing = passingEvents();
+    const firstFreshnessObservation = passing.findIndex(
+      (event) => (event as { type?: string }).type === "audit_write_freshness_observed",
+    );
+    const events = passing.slice(0, firstFreshnessObservation + 1);
     const freshness = events.at(-1) as Record<string, unknown> | undefined;
     if (!freshness) throw new Error("Missing freshness observation.");
     freshness.observedRemoteHead = "def456";
@@ -629,12 +763,74 @@ describe("context-tree-audit grader", () => {
     if (!evalCase) throw new Error("Missing report-only audit case.");
     const reportExpectation = { ...expectation, expectedAction: "report" as const, mode: "report-only" as const };
     const reportState = { ...state, changedBranchCount: 0, diffPaths: [] };
-    const readOnlyEvents = passingEvents().slice(0, 6);
+    const passing = passingEvents();
+    const sourceIndex = passing.findIndex(
+      (event) => commandText(event) === "cat /workspace/source-repo/config/audit-retention.txt",
+    );
+    const readOnlyEvents = passing.slice(0, sourceIndex + 1);
     let metrics = deriveMetrics(readOnlyEvents, evalCase, reportExpectation, reportState, 0);
     expect(casePassed(evalCase, metrics)).toBe(true);
     readOnlyEvents.push(passingEvents().at(-1));
     metrics = deriveMetrics(readOnlyEvents, evalCase, reportExpectation, reportState, 0);
     expect(casePassed(evalCase, metrics)).toBe(false);
+  });
+
+  it("requires report-only custom-branch provenance and rejects an origin/main fallback attempt", () => {
+    const evalCase = CONTEXT_TREE_AUDIT_GATE_CASES.find(
+      (item) => item.id === "audit-custom-binding-branch-report-only",
+    );
+    if (!evalCase) throw new Error("Missing custom binding branch audit case.");
+    const customPath = "/workspace/.audit-worktrees/audit-custom-binding-branch-report-only";
+    const customExpectation: AuditFixtureExpectation = {
+      ...expectation,
+      auditWorktreePath: customPath,
+      bindingBranch: "context-production",
+      expectedAction: "report",
+      mode: "report-only",
+    };
+    const reportState = { ...state, changedBranchCount: 0, diffPaths: [] };
+    const passing = passingEvents();
+    const sourceIndex = passing.findIndex(
+      (event) => commandText(event) === "cat /workspace/source-repo/config/audit-retention.txt",
+    );
+    const events = passing.slice(0, sourceIndex + 1);
+    for (const event of events) {
+      if (typeof event !== "object" || event === null) continue;
+      const record = event as Record<string, unknown>;
+      if (record.type === "audit_snapshot_fetch") record.branch = "context-production";
+      if (record.type === "audit_snapshot_ref_resolved") {
+        record.branch = "context-production";
+        record.ref = "refs/remotes/origin/context-production";
+      }
+      if (record.type === "audit_snapshot_worktree_added") {
+        record.bindingBranch = "context-production";
+        record.snapshotPath = customPath;
+      }
+      if (
+        record.type === "first_tree_result" &&
+        Array.isArray(record.argv) &&
+        record.argv[0] === "tree" &&
+        record.argv[1] === "tree" &&
+        !record.argv.includes("--help")
+      ) {
+        record.cwd = customPath;
+      }
+      if (record.type === "codex_event") {
+        const wrapped = record.event as { item?: { path?: string } };
+        if (wrapped.item?.path?.endsWith("/system/audit-contract.md")) {
+          wrapped.item.path = `${customPath}/system/audit-contract.md`;
+        }
+      }
+    }
+    expect(casePassed(evalCase, deriveMetrics(events, evalCase, customExpectation, reportState, 0))).toBe(true);
+
+    events.splice(3, 0, {
+      attemptedRef: "refs/remotes/origin/main",
+      bindingBranch: "context-production",
+      phase: "model",
+      type: "audit_snapshot_provenance_violation",
+    });
+    expect(casePassed(evalCase, deriveMetrics(events, evalCase, customExpectation, reportState, 0))).toBe(false);
   });
 
   it("keeps a plain decision-lock audit report-only", () => {
@@ -652,7 +848,11 @@ describe("context-tree-audit grader", () => {
       scenario: "decision-lock",
     };
     const reportState = { ...state, changedBranchCount: 0, diffPaths: [] };
-    const events = passingEvents().slice(0, 6);
+    const passing = passingEvents();
+    const sourceIndex = passing.findIndex(
+      (event) => commandText(event) === "cat /workspace/source-repo/config/audit-retention.txt",
+    );
+    const events = passing.slice(0, sourceIndex + 1);
     let metrics = deriveMetrics(events, evalCase, lockedExpectation, reportState, 0);
     expect(casePassed(evalCase, metrics)).toBe(true);
     events.push({

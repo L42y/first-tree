@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  FIRST_TREE_CORE_SKILL_NAMES,
   foldPortableTeamSkillPath,
   getPortableTeamSkillRelativePathError,
   getPortableTeamSkillSegmentError,
@@ -53,6 +54,11 @@ describe("skillDescriptorSchema", () => {
 describe("portable Team Skill contract", () => {
   it("normalizes provider target slugs and rejects reserved or oversized results", () => {
     expect(normalizeTeamSkillTargetSlug("Review_Check")).toBe("review-check");
+    expect(FIRST_TREE_CORE_SKILL_NAMES).toEqual(expect.arrayContaining(["context-tree-review", "context-tree-audit"]));
+    for (const name of FIRST_TREE_CORE_SKILL_NAMES) {
+      expect(() => normalizeTeamSkillTargetSlug(name)).toThrow();
+    }
+    expect(normalizeTeamSkillTargetSlug("first-tree-team-helper")).toBe("first-tree-team-helper");
     for (const name of ["first_tree_read", "first-tree-read-", "CON", "a".repeat(64)]) {
       expect(() => normalizeTeamSkillTargetSlug(name)).toThrow();
     }
