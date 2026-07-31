@@ -71,6 +71,8 @@ type SessionManagerInternals = {
     };
   };
   _activeCount: number;
+  registerPendingTeardown(chatId: string, handler: AgentHandler): void;
+  detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void;
   acquireActiveSlot(
     chatId: string,
     message: SessionMessage | null,
@@ -3055,6 +3057,124 @@ describe("SessionManager edge coverage", () => {
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
+  });
+
+  it("drains teardown debt registered while a terminate is in flight before it may ack", async () => {
+    const boom = new Error("late debt shutdown failed");
+    let signalFirstShutdownStarted: (() => void) | undefined;
+    let resolveFirstShutdown: (() => void) | undefined;
+    const firstShutdownStarted = new Promise<void>((resolve) => {
+      signalFirstShutdownStarted = resolve;
+    });
+    const firstShutdownGate = new Promise<void>((resolve) => {
+      resolveFirstShutdown = resolve;
+    });
+    const debtHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalFirstShutdownStarted?.();
+          await firstShutdownGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const evictedHandler = handler({
+      shutdown: vi.fn().mockRejectedValueOnce(boom).mockResolvedValue(undefined),
+    });
+    const sm = makeManager({ maxSessions: 1 });
+    const i = internals(sm);
+    const chatId = "chat-late-debt-drain";
+    // A suspended session still in `sessions` — a concurrent eviction can
+    // detach its handler while the terminate below is mid-drain.
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: evictedHandler, status: "suspended" }));
+    i.registerPendingTeardown(chatId, debtHandler);
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    let terminateSettled = false;
+    void terminate.then(
+      () => {
+        terminateSettled = true;
+      },
+      () => {
+        terminateSettled = true;
+      },
+    );
+    await firstShutdownStarted;
+
+    // Concurrent max-session eviction detaches the still-present session's
+    // handler — a NEW debt the in-flight terminate's snapshot never saw.
+    i.evictIfNeeded();
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
+    expect(terminateSettled).toBe(false);
+
+    // Releasing the first shutdown must NOT ack: the drain loops until the
+    // set is stably empty, so the late debt is torn down too — and its
+    // failure rejects the apply.
+    resolveFirstShutdown?.();
+    await expect(terminate).rejects.toBe(boom);
+    expect(i.pendingTeardowns.get(chatId)?.has(debtHandler)).toBe(false);
+    expect(i.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Retry converges: the late debt's teardown succeeds, set drained.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(debtHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(evictedHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("manager shutdown joins and tears down detached pending handlers", async () => {
+    let signalDetachShutdownStarted: (() => void) | undefined;
+    let rejectDetachShutdown: ((err: unknown) => void) | undefined;
+    const detachShutdownStarted = new Promise<void>((resolve) => {
+      signalDetachShutdownStarted = resolve;
+    });
+    const detachShutdownGate = new Promise<void>((_resolve, reject) => {
+      rejectDetachShutdown = reject;
+    });
+    const registerOnlyHandler = handler();
+    const failedDetachHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalDetachShutdownStarted?.();
+        await detachShutdownGate;
+      }),
+    });
+    const sharedHandler = handler();
+    const sm = makeManager();
+    const i = internals(sm);
+    // A register-only debt (no shutdown in flight) and a debt whose detach
+    // shutdown is still gated, plus the same handler registered under two
+    // chats to prove dedupe.
+    i.registerPendingTeardown("chat-pending-register-only", registerOnlyHandler);
+    i.registerPendingTeardown("chat-pending-shared-1", sharedHandler);
+    i.registerPendingTeardown("chat-pending-shared-2", sharedHandler);
+    i.detachHandlerWithPendingTeardown("chat-pending-detach", failedDetachHandler, "test_detach");
+    await detachShutdownStarted;
+
+    // Manager shutdown is the last owner of detached handlers: it must join
+    // the gated in-flight shutdown instead of returning past it.
+    const stopped = sm.shutdown();
+    let stopSettled = false;
+    void stopped.then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopSettled).toBe(false);
+
+    rejectDetachShutdown?.(new Error("detach shutdown failed"));
+    await stopped;
+
+    // Register-only debt got a fresh teardown; the gated detach debt was
+    // joined (one attempt, not two); the shared handler was torn down once
+    // despite two chat registrations. allSettled semantics: the failed join
+    // does not reject manager shutdown.
+    expect(registerOnlyHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(failedDetachHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(sharedHandler.shutdown).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an active-slot terminate when handler shutdown fails, then lets a retry succeed", async () => {

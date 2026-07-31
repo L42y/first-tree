@@ -956,8 +956,13 @@ export class SessionManager {
         // debt registered and rejects — the retry re-attempts it (coalescing
         // joins any still in-flight shutdown's raw face), so the loop
         // converges instead of acking over a live old run.
-        const pendingTeardown = this.pendingTeardowns.get(chatId);
-        if (pendingTeardown) {
+        // Drain to a STABLE empty: awaiting one shutdown can let another
+        // lifecycle path register fresh debt for this chat mid-drain (e.g. a
+        // concurrent max-session eviction of the still-present session), so
+        // loop until a full scan finds nothing left.
+        for (;;) {
+          const pendingTeardown = this.pendingTeardowns.get(chatId);
+          if (!pendingTeardown || pendingTeardown.size === 0) break;
           for (const pendingHandler of [...pendingTeardown]) {
             try {
               await this.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
@@ -1064,12 +1069,25 @@ export class SessionManager {
       }
     }
 
+    const attemptedHandlers = new Set<AgentHandler>();
     const shutdowns = [...this.sessions.values()].map((session) => {
       this.invalidateRouteTransition(session, reason ?? "manager_shutdown");
-      return session.activeSlotHeld
-        ? this.shutdownHandler(session.handler, reason ?? "manager_shutdown")
-        : Promise.resolve();
+      if (!session.activeSlotHeld) return Promise.resolve();
+      attemptedHandlers.add(session.handler);
+      return this.shutdownHandler(session.handler, reason ?? "manager_shutdown");
     });
+    // Detached handlers recorded as teardown debt have no entry left to reach
+    // them — manager shutdown is their last owner. Best-effort stop for each
+    // unique one (deduped across chats and against session handlers;
+    // coalescing joins any still in-flight shutdown), with the same
+    // allSettled semantics as the session loop above.
+    for (const pending of this.pendingTeardowns.values()) {
+      for (const pendingHandler of pending) {
+        if (attemptedHandlers.has(pendingHandler)) continue;
+        attemptedHandlers.add(pendingHandler);
+        shutdowns.push(this.shutdownHandler(pendingHandler, reason ?? "manager_shutdown"));
+      }
+    }
     await Promise.allSettled(shutdowns);
 
     const reportSuspendedSessions = opts.reportSuspendedSessions ?? true;
