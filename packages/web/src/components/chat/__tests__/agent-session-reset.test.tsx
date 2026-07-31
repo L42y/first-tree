@@ -330,4 +330,25 @@ describe("AgentStatusPanel — chat session Reset", () => {
     // Dialog stays open so the user can retry.
     expect(confirmDialog()).not.toBeNull();
   });
+
+  it("a no-op terminate (reactivated mid-reset) is a retryable failure, never a success", async () => {
+    // The server returns 200 { transitioned: false, state: "active" } when an
+    // addressed message reactivates the row before terminate lands. No
+    // session:terminate frame was sent and no traces were cleared, so the UI
+    // must not toast success.
+    sessionApiMocks.terminateSession.mockResolvedValue({
+      agentId: "agent-nova",
+      chatId: "chat-1",
+      state: "active",
+      transitioned: false,
+    });
+    renderPanel({ engagement: "active" });
+    const dialog = await openConfirmFromCard(h);
+    await click(h, dialogButton(dialog, "Reset"));
+
+    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
+    expect(document.body.textContent).toContain("became active again");
+    expect(document.body.textContent).not.toContain("Session reset");
+    expect(confirmDialog()).not.toBeNull();
+  });
 });

@@ -156,7 +156,14 @@ function AgentStatusRow({
       if (status?.engagement === "active") {
         await suspendSession(agent.agentId, chatId);
       }
-      await terminateSession(agent.agentId, chatId);
+      const result = await terminateSession(agent.agentId, chatId);
+      if (result.state !== "evicted") {
+        // Terminate is a deliberate no-op on an active row — e.g. an addressed
+        // message landed between suspend and terminate and reactivated the
+        // session. No terminate frame was sent and no traces were cleared, so
+        // this must surface as a retryable failure, never as a success toast.
+        throw new Error("The session became active again before it could be cleared. Try again.");
+      }
     },
     onSuccess: () => {
       setResetOpen(false);
@@ -173,6 +180,8 @@ function AgentStatusRow({
     onError: (error) => {
       // Fail honestly: the dialog stays open so the user can retry, and no
       // success toast appears for a half-completed suspend → terminate pair.
+      // Refresh the row so the retry acts on the real session state.
+      queryClient.invalidateQueries({ queryKey: chatAgentStatusQueryKey(chatId) });
       addToast({
         title: "Reset failed",
         description: error instanceof Error ? error.message : "The session could not be reset. Try again.",

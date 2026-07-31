@@ -95,8 +95,15 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         scope.organizationId,
         app.notifier,
       );
+      if (result.state === "evicted") {
+        // Awaited, not fire-and-forget: the Web Reset flow refetches session
+        // events as soon as this response arrives, so a success response must
+        // not race the trace cleanup. Runs on the idempotent already-evicted
+        // path too, so a retry after a cleanup failure still completes it. A
+        // cleanup failure rejects the request instead of pretending success.
+        await sessionEventService.clearEvents(app.db, agent.uuid, request.params.chatId);
+      }
       if (result.transitioned) {
-        sessionEventService.clearEvents(app.db, agent.uuid, request.params.chatId).catch(() => {});
         sendToAgent(agent.uuid, { type: "session:terminate", chatId: request.params.chatId });
       }
       return reply.status(200).send({
