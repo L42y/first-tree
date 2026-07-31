@@ -1295,7 +1295,7 @@ describe("OpenCode V1 handler", () => {
     expect(inputs).toHaveLength(2);
     expect(inputs[0]).toContain("<first-tree-current-chat-context");
     expect(inputs[1]).toContain("<first-tree-current-chat-context");
-    expect(existsSync(join(root, ".first-tree-workspace", "session-briefings", "ses_new.json"))).toBe(true);
+    expect(readSessionBriefingFingerprint(root, "ses_new")).not.toBeNull();
     await manager.shutdown();
   });
 
