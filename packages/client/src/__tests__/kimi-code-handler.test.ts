@@ -13,6 +13,7 @@ import type { AgentRuntimeConfigPayload, SessionEvent } from "@first-tree/shared
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createKimiCodeHandler, formatKimiCodeError, kimiToolIsReadOnly } from "../handlers/kimi-code.js";
 import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../runtime/handler.js";
+import type { ReplayFenceEntry } from "../runtime/replay-fence.js";
 import { mockCtxPlumbing } from "./test-helpers.js";
 
 class FakeSession {
@@ -187,6 +188,7 @@ function makeHandler(
     workspaceRoot,
     runtimeProvider: "kimi-code",
     kimiKaosFactory: async () => fakeKaos,
+    replayFence: makeFence(),
     kimiHarnessFactory: () => ({
       createSession: async (options: CreateSessionOptions) => {
         captures.create = options;
@@ -200,6 +202,42 @@ function makeHandler(
     }),
     ...extraConfig,
   });
+}
+
+type FakeFence = {
+  entries: ReplayFenceEntry[];
+  fence: ReturnType<typeof vi.fn>;
+  clear: ReturnType<typeof vi.fn>;
+};
+
+function makeFence(): FakeFence {
+  const fence: FakeFence = {
+    entries: [],
+    fence: vi.fn((entry: ReplayFenceEntry) => {
+      fence.entries.push(entry);
+    }),
+    clear: vi.fn((chatId: string, messageId: string) => {
+      const index = fence.entries.findIndex((entry) => entry.chatId === chatId && entry.messageId === messageId);
+      if (index >= 0) fence.entries.splice(index, 1);
+    }),
+  };
+  return fence;
+}
+
+function unsafeWriteTurn(sessionId: string, text = "wrote file"): KimiEvent[] {
+  return [
+    event(sessionId, { type: "turn.started", turnId: 1 }),
+    event(sessionId, {
+      type: "tool.call.started",
+      turnId: 1,
+      toolCallId: "write-1",
+      name: "Write",
+      args: { path: "marker.txt", content: "INTERRUPT_UNSAFE_ONCE" },
+    }),
+    event(sessionId, { type: "tool.result", turnId: 1, toolCallId: "write-1", output: "ok" }),
+    event(sessionId, { type: "assistant.delta", turnId: 1, delta: text }),
+    event(sessionId, { type: "turn.ended", turnId: 1, reason: "completed" }),
+  ];
 }
 
 describe("Kimi Code handler", () => {
@@ -719,6 +757,164 @@ describe("Kimi background subagent lifecycle", () => {
     expect(source).toMatch(
       /getReadyAgent\("main"\);\s*\n\s*if \(main !== void 0 && this\.options\.drainAgentTasksOnStop\)/,
     );
+  });
+});
+
+describe("Kimi replay fence", () => {
+  it("fences the delivery at the first unsafe tool start and clears it after settled completion", async () => {
+    const id = "kimi-session-fence-success";
+    const fence = makeFence();
+    const fakeSession = new FakeSession(id, [unsafeWriteTurn(id)]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const token = makeToken();
+
+    await handler.start(message("m1", "write the marker"), makeContext([]), token);
+
+    expect(fence.fence).toHaveBeenCalledTimes(1);
+    expect(fence.clear).toHaveBeenCalledWith("chat-kimi", "m1");
+    expect(fence.entries).toEqual([]);
+    expect(token.completed).toEqual([{ status: "success" }]);
+  });
+
+  it("fences on the resume path with the same create/resume custody", async () => {
+    const id = "kimi-session-fence-resume";
+    const fence = makeFence();
+    const fakeSession = new FakeSession(id, [unsafeWriteTurn(id)]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const token = makeToken();
+
+    await handler.resume(message("m2", "continue writing"), id, makeContext([]), token);
+
+    expect(fence.fence).toHaveBeenCalledTimes(1);
+    expect(fence.clear).toHaveBeenCalledWith("chat-kimi", "m2");
+    expect(fence.entries).toEqual([]);
+    expect(token.completed).toEqual([{ status: "success" }]);
+  });
+
+  it("records the child-prefixed tool id when a subagent's write starts first", async () => {
+    const id = "kimi-session-fence-child";
+    const fence = makeFence();
+    const fakeSession = new FakeSession(id, [
+      [
+        event(id, { type: "turn.started", turnId: 1 }),
+        childEvent(id, "agent-0", {
+          type: "tool.call.started",
+          turnId: 2,
+          toolCallId: "tool_childwrite",
+          name: "Bash",
+          args: { command: "echo INTERRUPT_UNSAFE_ONCE >> marker.txt" },
+        }),
+        childEvent(id, "agent-0", { type: "tool.result", turnId: 2, toolCallId: "tool_childwrite", output: "ok" }),
+        childEvent(id, "agent-0", { type: "turn.ended", turnId: 2, reason: "completed" }),
+        event(id, { type: "assistant.delta", turnId: 1, delta: "child wrote" }),
+        event(id, { type: "turn.ended", turnId: 1, reason: "completed" }),
+      ],
+    ]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const token = makeToken();
+
+    await handler.start(message("m1", "run a background writer"), makeContext([]), token);
+
+    expect(fence.fence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: "chat-kimi",
+        messageId: "m1",
+        provider: "kimi-code",
+        toolName: "Bash",
+        toolUseId: "agent-0:tool_childwrite",
+      }),
+    );
+    expect(fence.entries).toEqual([]);
+    expect(token.completed).toEqual([{ status: "success" }]);
+  });
+
+  it("keeps the fence when the turn is interrupted instead of settled", async () => {
+    const id = "kimi-session-fence-interrupt";
+    const fence = makeFence();
+    const fakeSession = new GatedFakeSession(id);
+    fakeSession.cancel.mockImplementation(async () => {
+      fakeSession.emit(event(id, { type: "turn.ended", turnId: 1, reason: "cancelled" }));
+    });
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+    const startPromise = handler.start(message("m1", "write then hang"), makeContext(events), token);
+
+    await fakeSession.promptSeen;
+    fakeSession.emit(event(id, { type: "turn.started", turnId: 1 }));
+    fakeSession.emit(
+      event(id, {
+        type: "tool.call.started",
+        turnId: 1,
+        toolCallId: "write-1",
+        name: "Write",
+        args: { path: "marker.txt", content: "INTERRUPT_UNSAFE_ONCE" },
+      }),
+    );
+    await flushAsyncWork();
+    expect(fence.entries).toHaveLength(1);
+
+    await handler.suspend("process_crash_simulation");
+    await startPromise;
+
+    // No settlement happened, so nothing may clear the fence and nothing may
+    // be ACKed: the delivery stays recovery debt for the restart gate.
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toContain("kimi_turn_cancelled");
+    expect(fence.clear).not.toHaveBeenCalled();
+    expect(fence.entries).toHaveLength(1);
+  });
+
+  it("settles as a terminal consumed error when the fence cannot be persisted", async () => {
+    const id = "kimi-session-fence-failure";
+    const fence = makeFence();
+    fence.fence.mockImplementation(() => {
+      throw new Error("disk full");
+    });
+    const fakeSession = new FakeSession(id, [unsafeWriteTurn(id)]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+
+    await handler.start(message("m1", "write the marker"), makeContext(events), token);
+
+    expect(token.completed).toEqual([
+      { status: "error", completion: "consumed", reason: "replay_fence_persist_failed" },
+    ]);
+    expect(events.some((item) => item.kind === "assistant_text")).toBe(false);
+    expect(events).toContainEqual({
+      kind: "error",
+      payload: { source: "runtime", message: "replay fence persistence failed: disk full" },
+    });
+    expect(events.filter((item) => item.kind === "turn_end")).toEqual([
+      { kind: "turn_end", payload: { status: "error" } },
+    ]);
+  });
+
+  it("fails closed when no replay fence store is configured, while read-only turns still run", async () => {
+    const id = "kimi-session-fence-missing";
+    const fakeSession = new FakeSession(id, [unsafeWriteTurn(id), successfulTurn(id, "read only ok")]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: undefined });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+
+    await handler.start(message("m1", "write the marker"), makeContext(events), token);
+
+    expect(token.completed).toEqual([
+      { status: "error", completion: "consumed", reason: "replay_fence_persist_failed" },
+    ]);
+    expect(events.some((item) => item.kind === "assistant_text")).toBe(false);
+  });
+
+  it("does not require the fence store for a read-only turn", async () => {
+    const id = "kimi-session-fence-readonly";
+    const fakeSession = new FakeSession(id, [successfulTurn(id, "read only ok")]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: undefined });
+    const token = makeToken();
+
+    await handler.start(message("m1", "read things"), makeContext([]), token);
+
+    expect(token.completed).toEqual([{ status: "success" }]);
   });
 });
 

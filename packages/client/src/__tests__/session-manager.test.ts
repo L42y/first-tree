@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +23,7 @@ import type {
   TurnOutcome,
 } from "../runtime/handler.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
+import { ReplayFenceStore } from "../runtime/replay-fence.js";
 import { SessionManager } from "../runtime/session-manager.js";
 import { type FirstTreeHubSDK, SdkError } from "../sdk.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
@@ -208,6 +209,7 @@ function createSessionManager(opts: {
   confirmSessionEvent?: (chatId: string, event: SessionEvent) => Promise<void>;
   subprocessProbe?: SubprocessProbe;
   registryPath?: string;
+  replayFencePath?: string;
 }) {
   const handler = opts.handler ?? createMockHandler();
   const factory: HandlerFactory = opts.handlerFactory ?? (() => handler);
@@ -239,6 +241,7 @@ function createSessionManager(opts: {
     sdk,
     log: opts.log ?? silentLogger(),
     registryPath: opts.registryPath,
+    replayFencePath: opts.replayFencePath,
     ackEntry: opts.ackEntry ?? mockAckEntry(),
     recoverChat: opts.recoverChat,
     recoverRuntimeSessionProof: opts.recoverRuntimeSessionProof,
@@ -2807,5 +2810,156 @@ describe("SessionManager subprocess-aware suspend/eviction", () => {
     expect(handlers[1]?.suspend).toHaveBeenCalledTimes(1);
 
     await sm.shutdown();
+  });
+});
+
+describe("SessionManager replay fence gate", () => {
+  function seedFence(path: string, chatId: string, messageId: string): void {
+    const store = new ReplayFenceStore(path);
+    store.load();
+    store.fence({
+      chatId,
+      messageId,
+      provider: "kimi-code",
+      toolName: "Bash",
+      toolUseId: "agent-0:tool_1",
+      fencedAt: new Date().toISOString(),
+    });
+  }
+
+  function makeTmp(): string {
+    return mkdtempSync(join(tmpdir(), "sm-replay-fence-"));
+  }
+
+  it("withholds a replay-fenced redelivery: no provider start, no ACK, debt retained", async () => {
+    const root = makeTmp();
+    try {
+      const fencePath = join(root, "fence.json");
+      seedFence(fencePath, "chat-1", "msg-1");
+      const handler = createMockHandler();
+      const ackEntry = mockAckEntry();
+      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath });
+
+      // The crashed delivery is redelivered after restart: it must NOT be
+      // re-entered into the provider and must NOT be ACKed.
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
+      expect(handler.start).not.toHaveBeenCalled();
+      expect(handler.resume).not.toHaveBeenCalled();
+      expect(handler.inject).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+
+      // A different, unfenced delivery for the same chat runs normally.
+      await sm.dispatch(mockEntry({ id: 2, chatId: "chat-1", messageId: "msg-2" }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("withholds a fenced redelivery even with a persisted provider session mapping", async () => {
+    const root = makeTmp();
+    try {
+      const fencePath = join(root, "fence.json");
+      const registryPath = join(root, "registry.json");
+      seedFence(fencePath, "chat-1", "msg-1");
+      writeFileSync(
+        registryPath,
+        JSON.stringify({
+          version: 1,
+          entries: {
+            "chat-1": {
+              claudeSessionId: "kimi-session-persisted",
+              lastActivity: new Date().toISOString(),
+              status: "suspended",
+            },
+          },
+        }),
+        "utf-8",
+      );
+      const handler = createMockHandler();
+      const ackEntry = mockAckEntry();
+      const sm = createSessionManager({ handler, ackEntry, registryPath, replayFencePath: fencePath });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
+
+      expect(handler.resume).not.toHaveBeenCalled();
+      expect(handler.start).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("admits the same delivery once its fence was cleared by a settled completion", async () => {
+    const root = makeTmp();
+    try {
+      const fencePath = join(root, "fence.json");
+      seedFence(fencePath, "chat-1", "msg-1");
+      const cleared = new ReplayFenceStore(fencePath);
+      cleared.load();
+      cleared.clear("chat-1", "msg-1");
+      const handler = createMockHandler();
+      const sm = createSessionManager({ handler, replayFencePath: fencePath });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
+
+      expect(handler.start).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the fence store is corrupted", async () => {
+    const root = makeTmp();
+    try {
+      const fencePath = join(root, "fence.json");
+      writeFileSync(fencePath, "{ corrupted", "utf-8");
+      const handler = createMockHandler();
+      const ackEntry = mockAckEntry();
+      const log = recordingLogger();
+      const sm = createSessionManager({ handler, ackEntry, log: log.logger, replayFencePath: fencePath });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
+
+      expect(handler.start).not.toHaveBeenCalled();
+      expect(handler.resume).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+      expect(log.records.some((record) => typeof record.level === "number" && record.level >= 50)).toBe(true);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("hands the replay fence store to handlers through handlerConfig", async () => {
+    const root = makeTmp();
+    try {
+      const fencePath = join(root, "fence.json");
+      let captured: HandlerConfig | undefined;
+      const handler = createMockHandler();
+      const sm = createSessionManager({
+        replayFencePath: fencePath,
+        handlerFactory: (config) => {
+          captured = config;
+          return handler;
+        },
+      });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
+
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      expect(captured?.replayFence).toBeInstanceOf(ReplayFenceStore);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

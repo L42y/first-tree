@@ -63,6 +63,7 @@ import {
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
+import { ReplayFenceStore } from "./replay-fence.js";
 import { createResultSink, type Trigger } from "./result-sink.js";
 import {
   isRuntimeSessionProofFailure,
@@ -342,6 +343,15 @@ type SessionManagerConfig = {
   sdk: FirstTreeHubSDK;
   log: pino.Logger;
   registryPath?: string;
+  /**
+   * Durable replay-fence store path. When set, the manager loads safety
+   * facts about provider-entered deliveries that already produced unsafe
+   * tool effects, refuses to start/resume a provider turn for a fenced
+   * (chatId, messageId) redelivery (leaving it as unacknowledged recovery
+   * debt), and hands the store to handlers via `handlerConfig.replayFence`.
+   * A store that fails to load fails closed: every dispatch is withheld.
+   */
+  replayFencePath?: string;
   /** Step 4: optional config cache for refresh-before-dispatch on configVersion bump. */
   agentConfigCache?: AgentConfigCache;
   /** Stable file path updated on every runtime-session rebind for long-lived child CLI calls. */
@@ -493,6 +503,13 @@ export class SessionManager {
    */
   private readonly currentTrigger = new Map<string, Trigger>();
   private readonly registry: SessionRegistry | null;
+  private readonly replayFence: ReplayFenceStore | null;
+  /**
+   * Set when the replay-fence store could not be loaded. Fail-closed: every
+   * dispatch is withheld as recovery debt until an operator repairs the
+   * store, because we can no longer tell safe redeliveries from unsafe ones.
+   */
+  private replayFenceUnavailable: string | null = null;
   private readonly pendingQueue: PendingMessage[] = [];
   /** Chats whose terminate command has closed admission but is still draining cleanup. */
   private readonly terminatingChats = new Set<string>();
@@ -526,6 +543,20 @@ export class SessionManager {
       log: config.log,
     });
     this.registry = config.registryPath ? new SessionRegistry(config.registryPath) : null;
+    if (config.replayFencePath) {
+      this.replayFence = new ReplayFenceStore(config.replayFencePath);
+      try {
+        this.replayFence.load();
+      } catch (err) {
+        this.replayFenceUnavailable = err instanceof Error ? err.message : String(err);
+        this.config.log.error(
+          { err, path: config.replayFencePath },
+          "replay fence store failed to load; withholding all provider dispatch fail-closed",
+        );
+      }
+    } else {
+      this.replayFence = null;
+    }
     this.idleTimer = setInterval(() => this.evictIdle(), 10_000);
     // Independent of `evictIdle` (which early-continues on freshly-active
     // sessions): re-affirm working / error sessions so the
@@ -1067,10 +1098,18 @@ export class SessionManager {
     entry.deferredMessages = [];
   }
 
+  private isReplayFenced(chatId: string, message: SessionMessage): boolean {
+    if (this.replayFenceUnavailable) return true;
+    if (!this.replayFence) return false;
+    return this.replayFence.isFenced(chatId, message.id);
+  }
+
   private createHandler(): AgentHandler {
-    const handlerCfg = this.config.agentConfigCache
-      ? { ...this.config.handlerConfig, agentConfigCache: this.config.agentConfigCache }
-      : this.config.handlerConfig;
+    const handlerCfg = {
+      ...this.config.handlerConfig,
+      ...(this.config.agentConfigCache ? { agentConfigCache: this.config.agentConfigCache } : {}),
+      ...(this.replayFence ? { replayFence: this.replayFence } : {}),
+    };
     return this.config.handlerFactory(handlerCfg);
   }
 
@@ -1612,6 +1651,17 @@ export class SessionManager {
     }
     if (this.terminatingChats.has(chatId)) {
       this.config.log.info({ chatId, messageId: message.id }, "delivery held while session termination is pending");
+      return;
+    }
+    if (this.isReplayFenced(chatId, message)) {
+      // A previous provider turn for this concrete delivery already produced
+      // a non-read-only tool effect before an interruption. Re-entering the
+      // provider would replay that effect, so the delivery stays
+      // unacknowledged recovery debt until an operator resolves it.
+      this.config.log.error(
+        { chatId, messageId: message.id },
+        "withholding provider re-entry for replay-fenced delivery; unsafe tool effect fenced before interruption",
+      );
       return;
     }
     const existing = this.sessions.get(chatId);

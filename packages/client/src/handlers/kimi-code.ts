@@ -49,6 +49,7 @@ import { deliveryTokenFromSessionContext } from "../runtime/handler.js";
 import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../runtime/provider-retry-policy.js";
+import type { ReplayFenceWriter } from "../runtime/replay-fence.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../runtime/source-repos.js";
 import { teamSkillBundleResolverFromSdk } from "../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../runtime/workspace.js";
@@ -119,8 +120,16 @@ type TurnObservation = {
   assistantText: string;
   ended: Extract<KimiEvent, { type: "turn.ended" }> | null;
   error: Error | null;
+  /**
+   * Set when the first unsafe tool effect could not be fenced durably. The
+   * turn must then settle as a terminal consumed error: continuing without a
+   * persisted fence would leave a crash-window where redelivery replays the
+   * effect.
+   */
+  fenceError: Error | null;
   thinkingEmitted: boolean;
   unsafeToolEffectStarted: boolean;
+  unsafeFenced: boolean;
 };
 
 type PreparedSession = {
@@ -215,6 +224,58 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
   const harnessFactory = (config.kimiHarnessFactory as KimiHarnessFactory | undefined) ?? createKimiHarness;
   const kaosFactory = (config.kimiKaosFactory as KimiKaosFactory | undefined) ?? (() => LocalKaos.create());
   const maxRetries = maxProviderTurnRetryAttempts();
+  const replayFence = (config.replayFence as ReplayFenceWriter | undefined) ?? null;
+
+  /**
+   * Durably fence every message of the current delivery the moment the first
+   * non-read-only tool call starts, so a crash after this point can never
+   * re-enter the provider for the same delivery. Returns the failure when the
+   * safety fact could not be persisted (or no store was wired) — callers must
+   * fail closed, never continue unfenced.
+   */
+  function fenceUnsafeDelivery(
+    chatId: string,
+    messages: readonly SessionMessage[],
+    toolName: string,
+    toolUseId: string,
+  ): Error | null {
+    if (!replayFence) return new Error("replay fence store is not configured");
+    for (const msg of messages) {
+      try {
+        replayFence.fence({
+          chatId,
+          messageId: msg.id,
+          provider: runtimeProvider,
+          toolName,
+          toolUseId,
+          fencedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        return error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    return null;
+  }
+
+  /** Clear fences once their delivery's terminal settlement is confirmed. */
+  function clearFencedDelivery(
+    sessionCtx: SessionContext,
+    messages: readonly SessionMessage[],
+    completion: unknown,
+  ): void {
+    if (!replayFence || completion === "retry") return;
+    for (const msg of messages) {
+      try {
+        replayFence.clear(sessionCtx.chatId, msg.id);
+      } catch (error) {
+        // The delivery is ACKed, so no redelivery can re-enter it; a stale
+        // fence is benign but must be visible.
+        sessionCtx.log(
+          `kimi replay fence clear failed for ${msg.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -356,6 +417,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     attempt: ProviderAttempt,
     observation: TurnObservation,
     resolveEnded: () => void,
+    messages: readonly SessionMessage[],
   ): void {
     sessionCtx.recordProviderActivity();
     const isMainAgent = event.agentId === KIMI_MAIN_AGENT_ID;
@@ -385,7 +447,13 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
           refs: cwd ? nativeToolRefs(event.name, event.args, cwd) : [],
         };
         activeTools.set(toolUseId, tool);
-        if (!kimiToolIsReadOnly(event.name, event.args)) observation.unsafeToolEffectStarted = true;
+        if (!kimiToolIsReadOnly(event.name, event.args)) {
+          observation.unsafeToolEffectStarted = true;
+          if (!observation.unsafeFenced) {
+            observation.unsafeFenced = true;
+            observation.fenceError = fenceUnsafeDelivery(sessionCtx.chatId, messages, event.name, toolUseId);
+          }
+        }
         attempt.setReplaySafety(observation.unsafeToolEffectStarted ? "unsafe" : "pre_visible");
         emitToolCall(sessionCtx, toolUseId, tool, "pending");
         break;
@@ -421,13 +489,16 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     prompt: string,
     sessionCtx: SessionContext,
     attempt: ProviderAttempt,
+    messages: readonly SessionMessage[],
   ): Promise<TurnObservation> {
     const observation: TurnObservation = {
       assistantText: "",
       ended: null,
       error: null,
+      fenceError: null,
       thinkingEmitted: false,
       unsafeToolEffectStarted: false,
+      unsafeFenced: false,
     };
     let resolveEnded = (): void => {};
     const endedPromise = new Promise<void>((resolvePromise) => {
@@ -435,7 +506,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     });
     const unsubscribe = activeSession.onEvent((event) => {
       try {
-        processKimiEvent(event, sessionCtx, attempt, observation, resolveEnded);
+        processKimiEvent(event, sessionCtx, attempt, observation, resolveEnded, messages);
       } catch (error) {
         sessionCtx.log(`kimi event translation failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -521,13 +592,28 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       let observation: TurnObservation | null = null;
       let thrown: Error | null = null;
       try {
-        observation = await observeOneAttempt(activeSession, prompt, sessionCtx, attempt);
+        observation = await observeOneAttempt(activeSession, prompt, sessionCtx, attempt, messages);
       } catch (error) {
         thrown = error instanceof Error ? error : new Error(String(error));
       }
 
       if (!sessionActive) {
         token.retry(messages, "kimi_turn_cancelled");
+        return false;
+      }
+
+      if (observation?.fenceError) {
+        // Fail closed: the unsafe tool effect could not be fenced durably,
+        // so consume the delivery as a terminal error instead of leaving an
+        // unfenced crash window where redelivery would replay the effect.
+        const fenceMessage = `replay fence persistence failed: ${observation.fenceError.message}`;
+        sessionCtx.emitEvent({ kind: "error", payload: { source: "runtime", message: fenceMessage } });
+        sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+        await token.complete(messages, {
+          status: "error",
+          completion: "consumed",
+          reason: "replay_fence_persist_failed",
+        });
         return false;
       }
 
@@ -547,11 +633,17 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
             payload: { source: "runtime", message: `forward failed: ${message}` },
           });
           sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-          await token.complete(messages, { status: "error", completion: "consumed", reason: "forward_failed" });
+          const forwardCompletion = await token.complete(messages, {
+            status: "error",
+            completion: "consumed",
+            reason: "forward_failed",
+          });
+          clearFencedDelivery(sessionCtx, messages, forwardCompletion);
           return false;
         }
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
-        await token.complete(messages, { status: "success" });
+        const completion = await token.complete(messages, { status: "success" });
+        clearFencedDelivery(sessionCtx, messages, completion);
         return true;
       }
 
@@ -591,11 +683,12 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       await emitUsage(sessionCtx, activeSession, usageBaseline);
       sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
       sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-      await token.complete(messages, {
+      const failureCompletion = await token.complete(messages, {
         status: "error",
         completion: "consumed",
         reason: settlement.decision.reasonCode,
       });
+      clearFencedDelivery(sessionCtx, messages, failureCompletion);
       return false;
     }
 

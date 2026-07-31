@@ -308,6 +308,7 @@ export class AgentSlot {
       this.throwIfRuntimeSessionTokenMutationFailed();
 
       const registryPath = join(defaultDataDir(), "sessions", `${this.config.name}.json`);
+      const replayFencePath = join(defaultDataDir(), "sessions", `${this.config.name}.replay-fence.json`);
 
       const ackEntry = (entryId: number) => this.clientConnection.sendInboxAck(entryId, agent.agentId);
       const recoverChat = (chatId: string) => this.clientConnection.sendInboxRecover(agent.agentId, chatId);
@@ -350,6 +351,7 @@ export class AgentSlot {
         sdk,
         log: this.logger,
         registryPath,
+        replayFencePath,
         agentConfigCache: this.agentConfigCache,
         runtimeSessionTokenFile: this.runtimeSessionTokenFile,
         ackEntry,
