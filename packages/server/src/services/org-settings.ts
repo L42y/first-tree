@@ -413,6 +413,35 @@ export async function getOrgContextTreeSettingState(db: Database, orgId: string)
 }
 
 /**
+ * Find another organization already bound to `repoUrl`, if any.
+ *
+ * A Context Tree repo belongs to exactly one team. Provisioning derives a repo
+ * name and adopts an existing repo when GitHub reports the name is taken, so
+ * "the name matches" is only ever a guess about ownership — this is the fact.
+ * Without it, two teams whose names derive the same repo name end up sharing
+ * one tree, and the second team silently reads and writes the first team's
+ * decisions.
+ */
+export async function findOrgBoundToContextTreeRepo(
+  db: Database,
+  excludeOrgId: string,
+  repoUrl: string,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ organizationId: organizationSettings.organizationId })
+    .from(organizationSettings)
+    .where(
+      and(
+        eq(organizationSettings.namespace, "context_tree"),
+        ne(organizationSettings.organizationId, excludeOrgId),
+        sql`lower(${organizationSettings.value}->>'repo') = ${repoUrl.toLowerCase()}`,
+      ),
+    )
+    .limit(1);
+  return row?.organizationId ?? null;
+}
+
+/**
  * Read the Context Tree binding plus row freshness. Onboarding recovery uses
  * `updatedAt` to distinguish a tree binding created after the user completed
  * the value-first work chat from an older, already-adopted team tree.

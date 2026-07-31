@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { contextTreeRepoName } from "../services/context-tree-repo-provisioner.js";
 
 type ProvisionerContext = Awaited<ReturnType<typeof setupProvisioner>>;
 
@@ -196,5 +197,36 @@ describe("context tree repo provisioner edges", () => {
       ctx.ensureInstallationOwnedContextTreeRepo(input(ctx, { installation: userInstallation })),
     ).resolves.toBe(repo);
     expect(ctx.mocks.createUserRepo).not.toHaveBeenCalled();
+  });
+});
+
+describe("contextTreeRepoName", () => {
+  const ORG_A = "019fb647-c333-7dc2-8e8d-ba4701597d70";
+  const ORG_B = "019fb912-77a1-7b30-9e42-05c3d9f81b6a";
+
+  it("keeps the readable base and appends the org discriminator", () => {
+    expect(contextTreeRepoName("ACME Robotics", ORG_A)).toMatch(/^acme-robotics-[0-9a-f]{8}-context-tree$/);
+  });
+
+  it("separates teams whose display names derive the same base", () => {
+    // Names with no ASCII alphanumerics all fall back to the same `"team"`
+    // base, and display names are deliberately not unique, so the base alone
+    // cannot identify a team. Two teams sharing one repo name let the second
+    // adopt the first team's tree.
+    const collidingBases = [
+      ["电商平台", "设计团队"],
+      ["Design Team", "Design Team"],
+    ] as const;
+    for (const [left, right] of collidingBases) {
+      expect(contextTreeRepoName(left, ORG_A)).not.toBe(contextTreeRepoName(right, ORG_B));
+    }
+  });
+
+  it("is stable for one organization so a retry adopts its own repo", () => {
+    expect(contextTreeRepoName("Acme Labs", ORG_A)).toBe(contextTreeRepoName("Acme Labs", ORG_A));
+  });
+
+  it("does not exceed the GitHub repo name limit", () => {
+    expect(contextTreeRepoName("x".repeat(300), ORG_A).length).toBeLessThanOrEqual(100);
   });
 });

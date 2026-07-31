@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   createOrganizationRepo,
   GithubAppApiError,
@@ -27,6 +28,9 @@ import type { GithubUserToken } from "./github-user-token.js";
  * it has been granted access (always true for an "all repositories" install, but
  * a "selected repositories" install must add the freshly-created repo first).
  */
+
+const REPO_SUFFIX = "-context-tree";
+const GITHUB_REPO_NAME_MAX_LENGTH = 100;
 
 export class ContextTreeRepoProvisionError extends Error {
   constructor(
@@ -220,4 +224,36 @@ function mapUpstreamError(err: unknown, message: string): ContextTreeRepoProvisi
 
 function contextTreeRepoDescription(teamName: string): string {
   return `${teamName} Context Tree`;
+}
+
+/**
+ * Derive the Context Tree repo name for one team.
+ *
+ * The name carries a per-organization discriminator because it must be unique
+ * within the GitHub account that hosts it, while the team name it is derived
+ * from is not: display names are deliberately non-unique, and every name
+ * without ASCII alphanumerics — any all-CJK team name — slugifies to the same
+ * `"team"` fallback. Without the discriminator, two teams under one GitHub
+ * account derive one name and the adopt-on-conflict step above hands the
+ * second team the first team's tree.
+ *
+ * The discriminator hashes the organization id rather than slicing it: ids are
+ * opaque text, and a uuidv7's leading bytes are a timestamp, so same-day
+ * organizations would share any prefix taken from one.
+ */
+export function contextTreeRepoName(teamName: string, organizationId: string): string {
+  const discriminator = `-${createHash("sha256").update(organizationId).digest("hex").slice(0, 8)}`;
+  const maxBaseLength = GITHUB_REPO_NAME_MAX_LENGTH - REPO_SUFFIX.length - discriminator.length;
+  const base = slugifyRepoBase(teamName).slice(0, maxBaseLength).replace(/-+$/g, "") || "team";
+  return `${base}${discriminator}${REPO_SUFFIX}`;
+}
+
+function slugifyRepoBase(value: string): string {
+  const ascii = value.normalize("NFKD").replace(/[̀-ͯ]/g, "");
+  const slug = ascii
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+  return slug || "team";
 }
