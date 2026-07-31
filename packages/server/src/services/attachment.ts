@@ -205,6 +205,66 @@ async function assertOrganizationQuota(
 /** Everything in `AttachmentRow` except the PostgreSQL payload and legacy pointer. */
 export type AttachmentMeta = Omit<AttachmentRow, "data" | "objectKey">;
 
+/**
+ * Copy a ready attachment's bytes into another organization as a brand-new
+ * ready row, inside the caller's transaction. Used by Agent Template
+ * adoption: the adopting Team gets its own byte copy of the official Skill
+ * bundle, so the Publisher Team's attachment lifecycle can never break an
+ * adopted Resource. Quota accounting follows the normal upload path; a
+ * failing copy rolls back with the surrounding transaction and leaves no
+ * orphan.
+ */
+export async function copyAttachmentForOrganization(
+  db: Database,
+  blobStore: AttachmentBlobStore,
+  sourceId: string,
+  targetOrganizationId: string,
+  uploadedBy: string,
+): Promise<AttachmentRow> {
+  // Quota-first, matching the normal upload path: the target Team's advisory
+  // lock is always taken before any source row lock, so concurrent
+  // adoptions cannot interleave source-lock → quota-lock into a cycle.
+  await lockOrganizationAttachmentQuota(db, targetOrganizationId);
+  const [source] = await db.select().from(attachments).where(eq(attachments.id, sourceId)).for("update").limit(1);
+  if (!source || source.lifecycleState !== "ready" || (source.data === null && source.objectKey === null)) {
+    throw new BadRequestError("Source attachment is not a ready attachment with available bytes");
+  }
+  let bytes: Buffer;
+  if (source.data) {
+    if (source.data.byteLength !== source.sizeBytes) {
+      throw new BadRequestError("Source attachment byte length does not match its metadata");
+    }
+    bytes = source.data;
+  } else if (source.objectKey) {
+    // Legacy external-store row: read through the blob store and persist the
+    // copy PostgreSQL-backed like every new upload.
+    bytes = await readAttachmentBody(await blobStore.get(source.objectKey), source.sizeBytes);
+  } else {
+    throw new BadRequestError("Source attachment bytes are unavailable");
+  }
+  await assertOrganizationQuota(db, targetOrganizationId, {
+    additionalObjects: 1,
+    additionalBytes: bytes.byteLength,
+  });
+  const id = randomUUID();
+  const [row] = await db
+    .insert(attachments)
+    .values({
+      id,
+      organizationId: targetOrganizationId,
+      objectKey: null,
+      lifecycleState: "ready",
+      mimeType: source.mimeType,
+      filename: source.filename,
+      sizeBytes: bytes.byteLength,
+      data: bytes,
+      uploadedBy,
+    })
+    .returning();
+  if (!row) throw new Error("Attachment copy insert returned no row");
+  return row;
+}
+
 export type AttachmentReader = Pick<Database, "select">;
 
 export async function loadAttachmentMeta(db: AttachmentReader, id: string): Promise<AttachmentMeta | null> {

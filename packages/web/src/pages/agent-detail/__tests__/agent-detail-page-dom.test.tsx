@@ -177,6 +177,7 @@ function config(overrides: Partial<AgentRuntimeConfig> = {}): AgentRuntimeConfig
 function agentResources(overrides: Partial<AgentResourcesOutput> = {}): AgentResourcesOutput {
   return {
     version: overrides.version ?? 7,
+    templateIds: overrides.templateIds ?? [],
     effective: overrides.effective ?? {
       version: overrides.version ?? 7,
       repos: [],

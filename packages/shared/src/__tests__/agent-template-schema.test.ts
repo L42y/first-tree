@@ -16,6 +16,7 @@ import {
   publishAgentTemplateSchema,
   retireAgentTemplateSchema,
   updateAgentTemplateSchema,
+  updateAgentTemplatesSchema,
 } from "../schemas/agent-template.js";
 import { PROMPT_RESOURCE_BODY_MAX_CHARS } from "../schemas/resource.js";
 
@@ -679,5 +680,52 @@ describe("PostgreSQL text compatibility", () => {
       agentTemplatePayloadSchema.safeParse({ schemaVersion: 1, public: VALID_PUBLIC_PROFILE, components: [literal] })
         .success,
     ).toBe(true);
+  });
+});
+
+describe("agent template replace-set write", () => {
+  it("accepts a strict expectedVersion + canonical templateIds body", () => {
+    const ok = updateAgentTemplatesSchema.safeParse({
+      expectedVersion: 3,
+      templateIds: [TEMPLATE_ID_B, TEMPLATE_ID_A],
+    });
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      expect(ok.data.templateIds).toEqual([TEMPLATE_ID_A, TEMPLATE_ID_B]);
+    }
+
+    expect(updateAgentTemplatesSchema.safeParse({ expectedVersion: 0, templateIds: [] }).success).toBe(false);
+    expect(updateAgentTemplatesSchema.safeParse({ expectedVersion: 1.5, templateIds: [] }).success).toBe(false);
+    expect(
+      updateAgentTemplatesSchema.safeParse({ expectedVersion: 1, templateIds: [TEMPLATE_ID_A, TEMPLATE_ID_A] }).success,
+    ).toBe(false);
+    expect(
+      updateAgentTemplatesSchema.safeParse({
+        expectedVersion: 1,
+        templateIds: [TEMPLATE_ID_A, TEMPLATE_ID_B, TEMPLATE_ID_C, TEMPLATE_ID_D],
+      }).success,
+    ).toBe(false);
+    expect(
+      updateAgentTemplatesSchema.safeParse({ expectedVersion: 1, templateIds: [], add: [TEMPLATE_ID_A] }).success,
+    ).toBe(false);
+  });
+});
+
+describe("createAgentSchema templateIds", () => {
+  it("canonicalizes, dedupes, and caps adopted Templates on create", async () => {
+    const { createAgentSchema } = await import("../schemas/agent.js");
+    const base = { type: "agent", displayName: "Templated" };
+    const ok = createAgentSchema.safeParse({ ...base, templateIds: [TEMPLATE_ID_B, TEMPLATE_ID_A] });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(ok.data.templateIds).toEqual([TEMPLATE_ID_A, TEMPLATE_ID_B]);
+
+    expect(createAgentSchema.safeParse({ ...base, templateIds: [TEMPLATE_ID_A, TEMPLATE_ID_A] }).success).toBe(false);
+    expect(
+      createAgentSchema.safeParse({
+        ...base,
+        templateIds: [TEMPLATE_ID_A, TEMPLATE_ID_B, TEMPLATE_ID_C, TEMPLATE_ID_D],
+      }).success,
+    ).toBe(false);
+    expect(createAgentSchema.safeParse(base).success).toBe(true);
   });
 });

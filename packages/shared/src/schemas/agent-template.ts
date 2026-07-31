@@ -510,6 +510,19 @@ export const retireAgentTemplateSchema = z
   .strict();
 export type RetireAgentTemplate = z.infer<typeof retireAgentTemplateSchema>;
 
+/**
+ * Full replace-set write for an Agent's adopted Templates against the
+ * shared `agent_configs.version` optimistic lock. No add/remove/order API —
+ * the caller always submits the complete target set.
+ */
+export const updateAgentTemplatesSchema = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    templateIds: agentTemplateIdsSchema,
+  })
+  .strict();
+export type UpdateAgentTemplates = z.infer<typeof updateAgentTemplatesSchema>;
+
 /** Safe replacement pointer on a retired Template's public detail. */
 export const agentTemplateReplacementSummarySchema = z
   .object({

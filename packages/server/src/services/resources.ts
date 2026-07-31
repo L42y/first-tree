@@ -1362,6 +1362,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     async getAgentResources(agentId) {
       const agent = await loadAgent(agentId);
       const effective = await resolveEffectiveResources(agentId);
+      const [configRow] = await db
+        .select({ templateIds: agentConfigs.templateIds })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, agentId))
+        .limit(1);
       const bindingRows = await db
         .select()
         .from(agentResourceBindings)
@@ -1380,6 +1385,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         .orderBy(resources.type, resources.name);
       return {
         version: effective.version,
+        templateIds: configRow?.templateIds ?? [],
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),
@@ -1411,6 +1417,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             `Agent resources "${agentId}" version mismatch: expected ${input.expectedVersion}, got ${current?.version ?? "missing"}`,
           );
         }
+        const existingBindings = await targetDb
+          .select()
+          .from(agentResourceBindings)
+          .where(eq(agentResourceBindings.agentId, agentId));
+        const existingById = new Map(existingBindings.map((row) => [row.id, row]));
         await targetDb.delete(agentResourceBindings).where(eq(agentResourceBindings.agentId, agentId));
         for (let idx = 0; idx < input.bindings.length; idx++) {
           const binding = input.bindings[idx];
@@ -1419,8 +1430,24 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           const resourceId = binding.agentExtraRepo
             ? await findOrCreateAgentRepoResource(targetDb, agentId, agent.organizationId, binding, actorId)
             : (binding.resourceId ?? null);
+          // Preserve the original row — including Template provenance — when
+          // the caller round-trips an unchanged binding (order included). A
+          // semantic change turns the row into a fresh manual binding with
+          // no provenance.
+          const nextOrder = binding.order ?? idx + 1;
+          const prior = binding.id ? existingById.get(binding.id) : undefined;
+          const carryProvenance =
+            prior !== undefined &&
+            prior.type === binding.type &&
+            prior.mode === binding.mode &&
+            prior.resourceId === resourceId &&
+            prior.replacesResourceId === (binding.replacesResourceId ?? null) &&
+            prior.inlinePromptBody === (binding.inlinePromptBody ?? null) &&
+            prior.repoRef === (binding.repoRef ?? null) &&
+            prior.repoLocalPath === (binding.repoLocalPath ?? null) &&
+            prior.order === nextOrder;
           await targetDb.insert(agentResourceBindings).values({
-            id: uuidv7(),
+            id: carryProvenance ? prior.id : uuidv7(),
             organizationId: agent.organizationId,
             agentId,
             type: binding.type,
@@ -1430,14 +1457,23 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             inlinePromptBody: binding.inlinePromptBody ?? null,
             repoRef: binding.repoRef ?? null,
             repoLocalPath: binding.repoLocalPath ?? null,
-            order: binding.order ?? idx + 1,
-            createdBy: actorId,
-            updatedBy: actorId,
+            order: nextOrder,
+            originTemplateId: carryProvenance ? prior.originTemplateId : null,
+            originComponentKey: carryProvenance ? prior.originComponentKey : null,
+            createdBy: carryProvenance ? prior.createdBy : actorId,
+            updatedBy: carryProvenance ? prior.updatedBy : actorId,
+            createdAt: carryProvenance ? prior.createdAt : undefined,
+            updatedAt: carryProvenance ? prior.updatedAt : undefined,
           });
         }
       });
       await notifyAgents([agentId]);
       const effective = await resolveEffectiveResources(agentId);
+      const [configRow] = await db
+        .select({ templateIds: agentConfigs.templateIds })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, agentId))
+        .limit(1);
       const bindingRows = await db
         .select()
         .from(agentResourceBindings)
@@ -1456,6 +1492,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         .orderBy(resources.type, resources.name);
       return {
         version: effective.version,
+        templateIds: configRow?.templateIds ?? [],
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),

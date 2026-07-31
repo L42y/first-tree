@@ -246,7 +246,9 @@ export {
   type RetireAgentTemplate,
   retireAgentTemplateSchema,
   type UpdateAgentTemplate,
+  type UpdateAgentTemplates,
   updateAgentTemplateSchema,
+  updateAgentTemplatesSchema,
 } from "./schemas/agent-template.js";
 export {
   ATTACHMENT_FILENAME_HEADER,

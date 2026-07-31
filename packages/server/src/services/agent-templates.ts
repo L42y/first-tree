@@ -250,7 +250,7 @@ async function compileTemplateComponents(
  * the persisted projection. Fails closed on any drift — a schema-valid row
  * whose summary no longer matches its bytes must never become adoptable.
  */
-async function assertSkillComponentMatchesBundle(
+export async function assertSkillComponentMatchesBundle(
   db: Database,
   blobStore: AttachmentBlobStore,
   publisherOrgId: string,

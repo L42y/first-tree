@@ -195,6 +195,7 @@ function promptRow(overrides: Partial<EffectivePromptRow> = {}): EffectivePrompt
 function agentResources(overrides: Partial<AgentResourcesOutput> = {}): AgentResourcesOutput {
   return {
     version: overrides.version ?? 9,
+    templateIds: overrides.templateIds ?? [],
     effective: overrides.effective ?? {
       version: overrides.version ?? 9,
       repos: [],
