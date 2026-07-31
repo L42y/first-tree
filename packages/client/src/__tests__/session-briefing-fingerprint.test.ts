@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,6 +12,12 @@ import {
 } from "../runtime/session-briefing-fingerprint.js";
 
 const SESSION_ID = "019d9a97-90b0-716b-8317-a8c0be8430d7";
+
+/** Mirror of the module's storage key: sha256(sessionId) — the raw id must never be a path segment. */
+function fingerprintFilePath(workspace: string, sessionId: string): string {
+  const stem = createHash("sha256").update(sessionId, "utf8").digest("hex");
+  return join(workspace, SESSION_BRIEFINGS_DIR_REL, `${stem}.json`);
+}
 
 let workspace: string;
 
@@ -60,17 +67,61 @@ describe("read/write round-trip", () => {
 
 describe("readSessionBriefingFingerprint resilience", () => {
   it("returns null on malformed JSON", () => {
-    const path = join(workspace, SESSION_BRIEFINGS_DIR_REL, `${SESSION_ID}.json`);
     writeSessionBriefingFingerprint(workspace, SESSION_ID, "seed-so-dir-exists");
-    writeFileSync(path, "{not json", "utf-8");
+    writeFileSync(fingerprintFilePath(workspace, SESSION_ID), "{not json", "utf-8");
     expect(readSessionBriefingFingerprint(workspace, SESSION_ID)).toBeNull();
   });
 
   it("returns null for an unknown schema version (future writer)", () => {
-    const path = join(workspace, SESSION_BRIEFINGS_DIR_REL, `${SESSION_ID}.json`);
     writeSessionBriefingFingerprint(workspace, SESSION_ID, "seed");
-    writeFileSync(path, JSON.stringify({ schemaVersion: 2, fingerprint: "x" }), "utf-8");
+    writeFileSync(
+      fingerprintFilePath(workspace, SESSION_ID),
+      JSON.stringify({ schemaVersion: 2, fingerprint: "x" }),
+      "utf-8",
+    );
     expect(readSessionBriefingFingerprint(workspace, SESSION_ID)).toBeNull();
+  });
+});
+
+describe("path containment (opaque provider session ids)", () => {
+  // Ids satisfying each provider's loose id grammar but containing path
+  // segments: OpenCode only requires a `ses` prefix, and persisted/resumed
+  // ids are accepted as arbitrary non-empty strings.
+  const traversalId = "ses/../../../.first-tree/workspace";
+  const backslashId = "..\\..\\evil";
+  const hostileIds = [traversalId, "../../package", backslashId, "ses_/absolute/looking/path"];
+
+  it("round-trips hostile opaque ids without leaving the runtime dir", () => {
+    for (const [index, id] of hostileIds.entries()) {
+      const fp = computeBriefingFingerprint(`briefing-${index}`);
+      writeSessionBriefingFingerprint(workspace, id, fp);
+      expect(readSessionBriefingFingerprint(workspace, id)).toBe(fp);
+    }
+  });
+
+  it("keeps hostile-id fingerprints isolated per id (no sanitization collisions)", () => {
+    writeSessionBriefingFingerprint(workspace, traversalId, computeBriefingFingerprint("a"));
+    writeSessionBriefingFingerprint(workspace, backslashId, computeBriefingFingerprint("b"));
+    expect(readSessionBriefingFingerprint(workspace, traversalId)).toBe(computeBriefingFingerprint("a"));
+    expect(readSessionBriefingFingerprint(workspace, backslashId)).toBe(computeBriefingFingerprint("b"));
+  });
+
+  it("writes every artifact inside SESSION_BRIEFINGS_DIR_REL and never touches other workspace files", () => {
+    const workspaceJson = join(workspace, ".first-tree", "workspace.json");
+    mkdirSync(join(workspace, ".first-tree"), { recursive: true });
+    writeFileSync(workspaceJson, '{"sentinel":true}', "utf-8");
+    for (const id of hostileIds) {
+      writeSessionBriefingFingerprint(workspace, id, computeBriefingFingerprint(id));
+    }
+    const dir = join(workspace, SESSION_BRIEFINGS_DIR_REL);
+    const entries = readdirSync(dir);
+    expect(entries.length).toBe(hostileIds.length);
+    for (const entry of entries) {
+      expect(entry).toMatch(/^[0-9a-f]{64}\.json$/);
+    }
+    // nothing escaped: no files directly under the runtime dir or workspace root
+    expect(readdirSync(join(workspace, ".first-tree-workspace"))).toEqual(["session-briefings"]);
+    expect(readFileSync(workspaceJson, "utf-8")).toBe('{"sentinel":true}');
   });
 });
 

@@ -47,8 +47,22 @@ export function computeBriefingFingerprint(briefing: string): string {
   return createHash("sha256").update(briefing, "utf8").digest("hex");
 }
 
+/**
+ * File-system-safe stem for a session's fingerprint file. The session id is a
+ * provider-owned opaque value with no documented character guarantee (and the
+ * OpenCode protocol even permits caller-supplied ids), so it must never become
+ * a path segment: `join` would happily resolve `..` out of the runtime dir and
+ * `renameSync` would then overwrite arbitrary workspace files. Hashing keeps
+ * every artifact inside `SESSION_BRIEFINGS_DIR_REL` while remaining a stable
+ * 1:1 key. Deliberately NOT a character-allowlist / basename sanitization —
+ * those can collide distinct ids.
+ */
+function sessionFingerprintStem(sessionId: string): string {
+  return createHash("sha256").update(sessionId, "utf8").digest("hex");
+}
+
 function sessionFingerprintPath(workspacePath: string, sessionId: string): string {
-  return join(workspacePath, SESSION_BRIEFINGS_DIR_REL, `${sessionId}.json`);
+  return join(workspacePath, SESSION_BRIEFINGS_DIR_REL, `${sessionFingerprintStem(sessionId)}.json`);
 }
 
 type SessionBriefingRecord = {
@@ -87,7 +101,7 @@ export function writeSessionBriefingFingerprint(workspacePath: string, sessionId
     mkdirSync(dir, { recursive: true });
     const record: SessionBriefingRecord = { schemaVersion: 1, fingerprint };
     const finalPath = sessionFingerprintPath(workspacePath, sessionId);
-    const tmpPath = join(dir, `.${sessionId}.${randomBytes(6).toString("hex")}.tmp`);
+    const tmpPath = join(dir, `.${sessionFingerprintStem(sessionId)}.${randomBytes(6).toString("hex")}.tmp`);
     writeFileSync(tmpPath, JSON.stringify(record), "utf-8");
     renameSync(tmpPath, finalPath);
   } catch {
