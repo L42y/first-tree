@@ -278,6 +278,7 @@ describe("resolveContextTreeRelativePath — tree PR worktree (repo identity)", 
   });
 
   it("emits shell read refs for tree files read inside the tree PR worktree", () => {
+    const repoHeadCommit = git(treeWorktree, "rev-parse", "HEAD");
     const refs = toolFileRefsFromShellCommand({
       command: `cat ${join(treeWorktree, "NODE.md")}`,
       cwd: root,
@@ -292,6 +293,7 @@ describe("resolveContextTreeRelativePath — tree PR worktree (repo identity)", 
         localPath: join(treeWorktree, "NODE.md"),
         repoUrl: "https://github.com/acme/first-tree-context.git",
         repoBranch: "main",
+        repoHeadCommit,
         repoRelativePath: "NODE.md",
         pathKind: "file",
       },

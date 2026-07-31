@@ -237,6 +237,14 @@ export const contextTreeIoEventSchema = z.object({
   source: contextTreeIoSourceSchema,
   targetKind: contextTreeIoTargetKindSchema,
   targetPath: z.string(),
+  // Optional for rolling Client/Server compatibility. This is the local
+  // checkout HEAD observed for the read, not a claim that dirty content
+  // matched the commit.
+  treeHeadCommit: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/)
+    .nullable()
+    .optional(),
   chatId: z.string().nullable(),
   chatTitle: z.string().nullable(),
   viewerCanAccess: z.boolean(),

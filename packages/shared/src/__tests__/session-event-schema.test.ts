@@ -31,6 +31,48 @@ describe("sessionEventSchema", () => {
       expect(r.success).toBe(true);
     });
 
+    it("accepts a file ref with an exact checkout HEAD commit", () => {
+      const r = sessionEventSchema.safeParse({
+        kind: "tool_call",
+        payload: {
+          toolUseId: "t1",
+          name: "Read",
+          args: { file_path: "/tree/NODE.md" },
+          status: "ok",
+          toolFileRefs: [
+            {
+              origin: "tool_arg",
+              repoUrl: "https://github.com/acme/tree",
+              repoRelativePath: "NODE.md",
+              repoHeadCommit: "a".repeat(40),
+            },
+          ],
+        },
+      });
+      expect(r.success).toBe(true);
+    });
+
+    it("rejects a malformed checkout HEAD commit", () => {
+      const r = sessionEventSchema.safeParse({
+        kind: "tool_call",
+        payload: {
+          toolUseId: "t1",
+          name: "Read",
+          args: { file_path: "/tree/NODE.md" },
+          status: "ok",
+          toolFileRefs: [
+            {
+              origin: "tool_arg",
+              repoUrl: "https://github.com/acme/tree",
+              repoRelativePath: "NODE.md",
+              repoHeadCommit: "not-a-commit",
+            },
+          ],
+        },
+      });
+      expect(r.success).toBe(false);
+    });
+
     it("accepts each valid status", () => {
       for (const status of ["pending", "ok", "error"] as const) {
         const r = sessionEventSchema.safeParse({

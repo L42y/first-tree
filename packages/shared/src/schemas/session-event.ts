@@ -21,6 +21,13 @@ export const toolFileRefSchema = z.object({
   localPath: z.string().min(1).optional(),
   repoUrl: z.string().min(1).optional(),
   repoBranch: z.string().min(1).optional(),
+  // The checkout HEAD observed for the successful read. This identifies the
+  // candidate Git snapshot without claiming that a dirty local file
+  // necessarily matched that commit.
+  repoHeadCommit: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/i)
+    .optional(),
   repoRelativePath: z.string().min(1).optional(),
   pathKind: toolFileRefPathKindSchema.optional(),
   origin: toolFileRefOriginSchema,

@@ -315,6 +315,7 @@ function normalizeFileRef(
   ref: ToolFileRef,
   bindingRepo: string,
   bindingBranch: string,
+  includeRepoHeadCommit: boolean,
 ): { ok: true; normalized: NormalizedFileRef } | { ok: false; reason: ContextTreeIoSkipReason } {
   const parsed = toolFileRefSchema.safeParse(ref);
   if (!parsed.success) return { ok: false, reason: "ref_schema_invalid" };
@@ -329,6 +330,10 @@ function normalizeFileRef(
   if (!parsed.data.repoRelativePath) return { ok: false, reason: "ref_path_invalid" };
   const targetPath = normalizeTargetPath(parsed.data.repoRelativePath, targetKind);
   if (!targetPath) return { ok: false, reason: "ref_path_invalid" };
+  const refMetadata = { ...(parsed.data.metadata ?? {}) };
+  // Reserved provenance must come only from the validated top-level field.
+  // Never let caller-controlled generic metadata smuggle it onto writes.
+  delete refMetadata.repoHeadCommit;
 
   return {
     ok: true,
@@ -338,9 +343,12 @@ function normalizeFileRef(
       targetKind,
       targetPath,
       metadata: {
-        ...(parsed.data.metadata ?? {}),
+        ...refMetadata,
         origin: parsed.data.origin,
         ...(parsed.data.localPath ? { localPath: parsed.data.localPath } : {}),
+        ...(includeRepoHeadCommit && parsed.data.repoHeadCommit
+          ? { repoHeadCommit: parsed.data.repoHeadCommit.toLowerCase() }
+          : {}),
       },
     },
   };
@@ -370,7 +378,7 @@ function buildContextTreeIoDecision(input: {
   for (const { ref, sourceIndex } of refs) {
     const refDerivation = ref.origin === GIT_STATUS_DELTA_REF_ORIGIN ? GIT_STATUS_DELTA_DERIVATION : baseDerivation;
     if (!refDerivation) continue;
-    const normalized = normalizeFileRef(ref, input.bindingRepo, input.bindingBranch);
+    const normalized = normalizeFileRef(ref, input.bindingRepo, input.bindingBranch, refDerivation.action === "read");
     if (!normalized.ok) {
       firstRejectedReason ??= normalized.reason;
       continue;
@@ -773,6 +781,7 @@ function allEventsSql(organizationId: string, sinceIso: string) {
         e.source,
         e.target_kind,
         e.target_path,
+        e.metadata,
         e.chat_id,
         e.created_at
       FROM context_tree_io_events e
@@ -1085,6 +1094,7 @@ export async function summarizeContextTreeIo(
       source: string;
       target_kind: string;
       target_path: string;
+      tree_head_commit: string | null;
       raw_chat_id: string;
       joined_chat_id: string | null;
       chat_topic: string | null;
@@ -1101,6 +1111,7 @@ export async function summarizeContextTreeIo(
         all_events.source,
         all_events.target_kind,
         all_events.target_path,
+        all_events.metadata->>'repoHeadCommit' AS tree_head_commit,
         all_events.chat_id AS raw_chat_id,
         c.id AS joined_chat_id,
         c.topic AS chat_topic,
@@ -1134,6 +1145,7 @@ export async function summarizeContextTreeIo(
       source: contextTreeIoSourceSchema.parse(row.source),
       targetKind: row.target_kind === "directory" || row.target_kind === "repo" ? row.target_kind : "file",
       targetPath: row.target_path,
+      treeHeadCommit: row.tree_head_commit && /^[0-9a-f]{40}$/.test(row.tree_head_commit) ? row.tree_head_commit : null,
       chatId: sameOrgChat ? row.raw_chat_id : null,
       chatTitle: sameOrgChat ? row.chat_topic : null,
       viewerCanAccess: sameOrgChat && accessibleChatIds.has(row.raw_chat_id),

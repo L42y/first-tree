@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearGitRepoIdentityCacheForTests,
   findGitRepoRoot,
+  gitHeadCommitForRepoPath,
   gitRemoteOriginUrl,
   gitRepoRootMatchingRemote,
 } from "../runtime/git-repo-identity.js";
@@ -63,6 +64,18 @@ describe("git-repo-identity", () => {
 
   it("matches a checkout whose ssh remote equals the https binding URL", () => {
     expect(gitRepoRootMatchingRemote(join(treeClone, "NODE.md"), TREE_URL_HTTPS)).toBe(treeClone);
+  });
+
+  it("returns the exact checkout HEAD only for the expected repository", () => {
+    const expectedHead = git(treeClone, "rev-parse", "HEAD");
+    expect(gitHeadCommitForRepoPath(join(treeClone, "NODE.md"), TREE_URL_HTTPS)).toBe(expectedHead);
+    expect(gitHeadCommitForRepoPath(join(treeClone, "NODE.md"), SOURCE_URL)).toBeNull();
+  });
+
+  it("keeps HEAD provenance honest when the working-tree file is dirty", () => {
+    const expectedHead = git(treeClone, "rev-parse", "HEAD");
+    writeFileSync(join(treeClone, "NODE.md"), "dirty local content");
+    expect(gitHeadCommitForRepoPath(join(treeClone, "NODE.md"), TREE_URL_HTTPS)).toBe(expectedHead);
   });
 
   it("matches a linked git worktree (.git file) of the tree repo", () => {
