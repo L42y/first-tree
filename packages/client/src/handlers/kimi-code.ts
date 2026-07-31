@@ -70,8 +70,23 @@ type KimiManagedMcpSessionOptions = {
   readonly mcpServers?: Readonly<Record<string, KimiManagedMcpServer>>;
 };
 
-type KimiCreateSessionOptions = CreateSessionOptions & KimiManagedMcpSessionOptions;
-type KimiResumeSessionInput = ResumeSessionInput & KimiManagedMcpSessionOptions;
+// The pinned SDK applies `drainAgentTasksOnStop` on the create path only; a
+// pnpm patch (`patches/@botiverse__kimi-code-sdk@*.patch`) threads the same
+// flag through resume. Its declaration file predates the additive resume
+// field, so First Tree expresses it through a local intersection type.
+type KimiDrainSessionOption = { drainAgentTasksOnStop?: boolean };
+type KimiCreateSessionOptions = CreateSessionOptions & KimiManagedMcpSessionOptions & KimiDrainSessionOption;
+type KimiResumeSessionInput = ResumeSessionInput & KimiManagedMcpSessionOptions & KimiDrainSessionOption;
+
+// Hold the provider turn open until background subagents (`kind === "agent"`)
+// settle and the main agent has consumed their completions, so First Tree only
+// ACKs a delivery after the whole background workload is done.
+const KIMI_DRAIN_AGENT_TASKS_ON_STOP = true;
+
+// Only the main agent drives the logical parent turn: its text is chat output
+// and only its `turn.ended` may settle a delivery. Subagent events share the
+// same event stream while the drain flag keeps the turn open.
+const KIMI_MAIN_AGENT_ID = "main";
 
 export function mapKimiMcpServers(payload: AgentRuntimeConfigPayload): Record<string, KimiManagedMcpServer> {
   const servers: Record<string, KimiManagedMcpServer> = {};
@@ -343,43 +358,55 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     resolveEnded: () => void,
   ): void {
     sessionCtx.recordProviderActivity();
+    const isMainAgent = event.agentId === KIMI_MAIN_AGENT_ID;
     switch (event.type) {
       case "turn.started":
-        if (!observation.unsafeToolEffectStarted) attempt.setReplaySafety("pre_visible");
+        if (isMainAgent && !observation.unsafeToolEffectStarted) attempt.setReplaySafety("pre_visible");
         break;
       case "assistant.delta":
-        observation.assistantText += event.delta;
+        if (isMainAgent) observation.assistantText += event.delta;
         break;
       case "thinking.delta":
-        if (!observation.thinkingEmitted) {
+        if (isMainAgent && !observation.thinkingEmitted) {
           observation.thinkingEmitted = true;
           sessionCtx.emitEvent({ kind: "thinking", payload: {} });
         }
         break;
       case "tool.call.started": {
+        // Tool effects are real side effects regardless of which agent ran
+        // them, so keep every agent's calls observable. Namespace subagent ids
+        // so parallel child calls cannot collide with each other or the main
+        // agent's raw ids.
+        const toolUseId = isMainAgent ? event.toolCallId : `${event.agentId}:${event.toolCallId}`;
         const tool: ActiveTool = {
           name: event.name,
           args: event.args,
           startedAt: Date.now(),
           refs: cwd ? nativeToolRefs(event.name, event.args, cwd) : [],
         };
-        activeTools.set(event.toolCallId, tool);
+        activeTools.set(toolUseId, tool);
         if (!kimiToolIsReadOnly(event.name, event.args)) observation.unsafeToolEffectStarted = true;
         attempt.setReplaySafety(observation.unsafeToolEffectStarted ? "unsafe" : "pre_visible");
-        emitToolCall(sessionCtx, event.toolCallId, tool, "pending");
+        emitToolCall(sessionCtx, toolUseId, tool, "pending");
         break;
       }
       case "tool.result": {
-        const tool = activeTools.get(event.toolCallId);
+        const toolUseId = isMainAgent ? event.toolCallId : `${event.agentId}:${event.toolCallId}`;
+        const tool = activeTools.get(toolUseId);
         if (!tool) break;
-        emitToolCall(sessionCtx, event.toolCallId, tool, event.isError ? "error" : "ok", event.output);
-        activeTools.delete(event.toolCallId);
+        emitToolCall(sessionCtx, toolUseId, tool, event.isError ? "error" : "ok", event.output);
+        activeTools.delete(toolUseId);
         break;
       }
       case "error":
-        observation.error = kimiEventError(event);
+        if (isMainAgent) {
+          observation.error = kimiEventError(event);
+        } else {
+          sessionCtx.log(`kimi subagent ${event.agentId} error: ${event.message}`);
+        }
         break;
       case "turn.ended":
+        if (!isMainAgent) break;
         observation.ended = event;
         if (event.error) observation.error = kimiEventError(event.error);
         resolveEnded();
@@ -772,6 +799,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         kaos: prepared.kaos,
         additionalDirs: prepared.additionalDirs,
         roleAdditional: prepared.roleAdditional,
+        drainAgentTasksOnStop: KIMI_DRAIN_AGENT_TASKS_ON_STOP,
         ...(prepared.payload.model ? { model: prepared.payload.model } : {}),
         ...(prepared.payload.mcpServers.length > 0 ? { mcpServers } : {}),
       };
@@ -806,6 +834,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         kaos: prepared.kaos,
         additionalDirs: prepared.additionalDirs,
         roleAdditional: prepared.roleAdditional,
+        drainAgentTasksOnStop: KIMI_DRAIN_AGENT_TASKS_ON_STOP,
         ...(prepared.payload.mcpServers.length > 0 ? { mcpServers } : {}),
       };
       const kimiHome = prepared.payload.env.find((entry) => entry.key === "KIMI_CODE_HOME")?.value.trim() ?? null;

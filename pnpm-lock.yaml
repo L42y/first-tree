@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@botiverse/kimi-code-sdk@0.26.0-botiverse.2':
+    hash: ab8351a223dcf9d292d0ad17805ab911904378a30b3cfd16240ce56f7b051f47
+    path: patches/@botiverse__kimi-code-sdk@0.26.0-botiverse.2.patch
+
 importers:
 
   .:
@@ -28,7 +33,7 @@ importers:
         version: 0.3.187(@anthropic-ai/sdk@0.105.0(zod@4.3.6))(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(zod@4.3.6)
       '@botiverse/kimi-code-sdk':
         specifier: 0.26.0-botiverse.2
-        version: 0.26.0-botiverse.2
+        version: 0.26.0-botiverse.2(patch_hash=ab8351a223dcf9d292d0ad17805ab911904378a30b3cfd16240ce56f7b051f47)
       '@inquirer/prompts':
         specifier: ^8.3.0
         version: 8.3.2(@types/node@22.19.15)
@@ -110,7 +115,7 @@ importers:
         version: 0.3.187(@anthropic-ai/sdk@0.105.0(zod@4.3.6))(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(zod@4.3.6)
       '@botiverse/kimi-code-sdk':
         specifier: 0.26.0-botiverse.2
-        version: 0.26.0-botiverse.2
+        version: 0.26.0-botiverse.2(patch_hash=ab8351a223dcf9d292d0ad17805ab911904378a30b3cfd16240ce56f7b051f47)
       '@openai/codex-sdk':
         specifier: ^0.144.1
         version: 0.144.1
@@ -5886,7 +5891,7 @@ snapshots:
   '@biomejs/cli-win32-x64@2.4.8':
     optional: true
 
-  '@botiverse/kimi-code-sdk@0.26.0-botiverse.2':
+  '@botiverse/kimi-code-sdk@0.26.0-botiverse.2(patch_hash=ab8351a223dcf9d292d0ad17805ab911904378a30b3cfd16240ce56f7b051f47)':
     dependencies:
       '@antfu/utils': 9.3.0
       smol-toml: 1.7.0

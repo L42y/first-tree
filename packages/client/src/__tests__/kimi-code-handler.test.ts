@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -53,6 +54,10 @@ class FakeSession {
 
 function event(sessionId: string, value: Record<string, unknown>): KimiEvent {
   return { agentId: "main", sessionId, ...value } as KimiEvent;
+}
+
+function childEvent(sessionId: string, agentId: string, value: Record<string, unknown>): KimiEvent {
+  return { agentId, sessionId, ...value } as KimiEvent;
 }
 
 function successfulTurn(sessionId: string, text = "done"): KimiEvent[] {
@@ -181,6 +186,7 @@ describe("Kimi Code handler", () => {
     expect(captures.create).toMatchObject({
       workDir: workspaceRoot,
       permission: "yolo",
+      drainAgentTasksOnStop: true,
     });
     expect(captures.create).not.toHaveProperty("model");
     expect(captures.create).not.toHaveProperty("mcpServers");
@@ -284,7 +290,7 @@ describe("Kimi Code handler", () => {
 
     await handler.resume(message("m2", "continue"), "kimi-session-2", makeContext([]), makeToken());
 
-    expect(captures.resume).toMatchObject({ id: "kimi-session-2" });
+    expect(captures.resume).toMatchObject({ id: "kimi-session-2", drainAgentTasksOnStop: true });
     expect(captures.resume).toHaveProperty("mcpServers", {
       docs: { transport: "stdio", command: "docs-server" },
     });
@@ -494,6 +500,154 @@ describe("Kimi Code handler", () => {
         outputTokens: 6,
       },
     });
+  });
+});
+
+describe("Kimi background subagent lifecycle", () => {
+  it("holds the parent turn open across a child stream and completes exactly once", async () => {
+    const id = "kimi-session-subagent";
+    const fakeSession = new FakeSession(id, [
+      [
+        event(id, { type: "turn.started", turnId: 1 }),
+        childEvent(id, "sub-1", { type: "turn.started", turnId: 2 }),
+        childEvent(id, "sub-1", { type: "thinking.delta", turnId: 2, delta: "child reasoning" }),
+        childEvent(id, "sub-1", { type: "assistant.delta", turnId: 2, delta: "child leaked text" }),
+        childEvent(id, "sub-1", {
+          type: "tool.call.started",
+          turnId: 2,
+          toolCallId: "child-tool-1",
+          name: "Write",
+          args: { path: "child-out.txt", content: "from child" },
+        }),
+        childEvent(id, "sub-1", { type: "tool.result", turnId: 2, toolCallId: "child-tool-1", output: "ok" }),
+        // The child ends first; this must not settle the parent attempt.
+        childEvent(id, "sub-1", { type: "turn.ended", turnId: 2, reason: "completed" }),
+        event(id, { type: "assistant.delta", turnId: 1, delta: "parent answer" }),
+        event(id, { type: "turn.ended", turnId: 1, reason: "completed" }),
+      ],
+    ]);
+    const handler = makeHandler(fakeSession, {});
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+
+    await handler.start(message("m1", "run a background subagent"), makeContext(events), token);
+
+    const assistantTexts = events.filter((item) => item.kind === "assistant_text").map((item) => item.payload.text);
+    expect(assistantTexts).toEqual(["parent answer"]);
+    const toolCalls = events.filter((item) => item.kind === "tool_call");
+    expect(toolCalls).toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ toolUseId: "sub-1:child-tool-1", name: "Write", status: "pending" }),
+      }),
+    );
+    expect(toolCalls).toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({ toolUseId: "sub-1:child-tool-1", status: "ok" }),
+      }),
+    );
+    expect(events.filter((item) => item.kind === "turn_end")).toEqual([
+      { kind: "turn_end", payload: { status: "success" } },
+    ]);
+    expect(token.completed).toEqual([{ status: "success" }]);
+  });
+
+  it("keeps parallel child tool-call ids collision-safe while main ids stay raw", async () => {
+    const id = "kimi-session-parallel-subagents";
+    const fakeSession = new FakeSession(id, [
+      [
+        event(id, { type: "turn.started", turnId: 1 }),
+        childEvent(id, "sub-a", {
+          type: "tool.call.started",
+          turnId: 2,
+          toolCallId: "dup",
+          name: "Write",
+          args: { path: "a.txt", content: "a" },
+        }),
+        childEvent(id, "sub-b", {
+          type: "tool.call.started",
+          turnId: 3,
+          toolCallId: "dup",
+          name: "Write",
+          args: { path: "b.txt", content: "b" },
+        }),
+        event(id, {
+          type: "tool.call.started",
+          turnId: 1,
+          toolCallId: "main-1",
+          name: "Read",
+          args: { path: "a.txt" },
+        }),
+        childEvent(id, "sub-a", { type: "tool.result", turnId: 2, toolCallId: "dup", output: "ok a" }),
+        childEvent(id, "sub-b", { type: "tool.result", turnId: 3, toolCallId: "dup", output: "ok b" }),
+        event(id, { type: "tool.result", turnId: 1, toolCallId: "main-1", output: "a" }),
+        childEvent(id, "sub-a", { type: "turn.ended", turnId: 2, reason: "completed" }),
+        childEvent(id, "sub-b", { type: "turn.ended", turnId: 3, reason: "completed" }),
+        event(id, { type: "assistant.delta", turnId: 1, delta: "both done" }),
+        event(id, { type: "turn.ended", turnId: 1, reason: "completed" }),
+      ],
+    ]);
+    const handler = makeHandler(fakeSession, {});
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+
+    await handler.start(message("m1", "run two background subagents"), makeContext(events), token);
+
+    const settled = events.flatMap((item) =>
+      item.kind === "tool_call" && item.payload.status === "ok"
+        ? [[item.payload.toolUseId, item.payload.resultPreview]]
+        : [],
+    );
+    expect(settled).toEqual([
+      ["sub-a:dup", "ok a"],
+      ["sub-b:dup", "ok b"],
+      ["main-1", "a"],
+    ]);
+    expect(events.filter((item) => item.kind === "turn_end")).toEqual([
+      { kind: "turn_end", payload: { status: "success" } },
+    ]);
+    expect(token.completed).toEqual([{ status: "success" }]);
+  });
+
+  it("ignores a child failure for parent settlement when the main turn still completes", async () => {
+    const id = "kimi-session-subagent-failure";
+    const failure = { code: "provider.rate_limit", message: "child rate limited", retryable: false };
+    const fakeSession = new FakeSession(id, [
+      [
+        event(id, { type: "turn.started", turnId: 1 }),
+        childEvent(id, "sub-1", { type: "error", ...failure }),
+        childEvent(id, "sub-1", { type: "turn.ended", turnId: 2, reason: "failed", error: failure }),
+        event(id, { type: "assistant.delta", turnId: 1, delta: "parent survived" }),
+        event(id, { type: "turn.ended", turnId: 1, reason: "completed" }),
+      ],
+    ]);
+    const handler = makeHandler(fakeSession, {});
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+
+    await handler.start(message("m1", "tolerate a failed subagent"), makeContext(events), token);
+
+    expect(events).toContainEqual({ kind: "assistant_text", payload: { text: "parent survived" } });
+    expect(events.some((item) => item.kind === "error")).toBe(false);
+    expect(events.filter((item) => item.kind === "turn_end")).toEqual([
+      { kind: "turn_end", payload: { status: "success" } },
+    ]);
+    expect(token.completed).toEqual([{ status: "success" }]);
+  });
+
+  it("installs the dependency patch that applies drainAgentTasksOnStop on resume", () => {
+    // The pinned SDK only honors drainAgentTasksOnStop on the create path; the
+    // pnpm patch makes resume symmetrical. The SDK core session cannot be
+    // constructed without a full runtime, so this guard resolves the exact
+    // installed artifact the client package loads and pins the two behavior
+    // sites: threading the flag into the resumed core session options and
+    // applying it to the resumed main agent.
+    const require = createRequire(import.meta.url);
+    const sdkEntry = require.resolve("@botiverse/kimi-code-sdk");
+    const source = readFileSync(sdkEntry, "utf8");
+    expect(source).toContain("drainAgentTasksOnStop: input.drainAgentTasksOnStop");
+    expect(source).toMatch(
+      /getReadyAgent\("main"\);\s*\n\s*if \(main !== void 0 && this\.options\.drainAgentTasksOnStop\)/,
+    );
   });
 });
 
