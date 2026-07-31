@@ -83,13 +83,29 @@ type SessionEntry = {
    * this to fail the Reset apply instead of acking over a handler that was
    * never confirmed suspended. Cleared when a new suspend begins.
    */
-  suspendError: unknown | null;
   /**
-   * Failure of the last terminate-driven strict teardown. Recorded because
-   * the slot is already released by then, so without it a retry terminate
-   * would skip every teardown branch and ack over a possibly-live handler.
+   * Failure of the last in-flight suspend, recorded because `suspending`
+   * swallows rejections by contract. A terminate joining that suspend reads
+   * this to fail the Reset apply instead of acking over a handler that was
+   * never confirmed suspended. Boxed (`{ error }`) because a Promise can
+   * reject with a falsey value — truthiness of the raw error is not a
+   * failure signal. Cleared when a new suspend begins.
    */
-  teardownError: unknown | null;
+  suspendError: { error: unknown } | null;
+  /**
+   * Whether the suspend boundary already shut down `handler` successfully
+   * (canceled-transition / retired-handler path). When true, terminate must
+   * not tear the handler down a second time — the shutdown outcome is
+   * already known (`suspendError` records the failure case).
+   */
+  handlerStoppedBySuspend: boolean;
+  /**
+   * Failure of the last terminate-driven strict teardown (boxed like
+   * `suspendError`). Recorded because the slot is already released by then,
+   * so without it a retry terminate would skip every teardown branch and
+   * ack over a possibly-live handler.
+   */
+  teardownError: { error: unknown } | null;
   /**
    * Transient-retry bookkeeping (Bug 1 fix). When handler.start / handler.resume
    * throws a classified-transient error we schedule a retry instead of
@@ -434,6 +450,15 @@ function resumableProviderSessionId(...candidates: Array<string | null | undefin
     if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
   }
   return null;
+}
+
+/**
+ * Normalize a recorded suspend/teardown failure for the terminate reject
+ * boundary. Recorded errors can be falsey (a Promise may reject(null)), and
+ * throwing a falsey value would make the rejection uninspectable downstream.
+ */
+function asTerminateError(kind: "suspend" | "teardown", error: unknown): Error {
+  return error instanceof Error ? error : new Error(`session ${kind} failed: ${String(error)}`);
 }
 
 function previousAvailable(entry: SessionEntry): boolean {
@@ -865,7 +890,7 @@ export class SessionManager {
         // apply instead of acking over a possibly-live handler.
         const joinedSuspend = session?.suspending != null;
         if (session?.suspending) await session.suspending;
-        if (joinedSuspend && session?.suspendError) throw session.suspendError;
+        if (joinedSuspend && session?.suspendError) throw asTerminateError("suspend", session.suspendError.error);
         const activeSlotHeld = session?.activeSlotHeld === true;
         if (session) this.releaseActiveSlot(session);
         // The teardown boundary — strict in every case, because a
@@ -876,19 +901,22 @@ export class SessionManager {
         // suspendError/teardownError says the old run was never confirmed
         // stopped (retry path: `suspending` is null again and the slot is
         // already released, so without the recorded errors no teardown branch
-        // would fire). A teardown failure is recorded on the entry so a
-        // genuine retry re-attempts it instead of turning into a false
-        // success; on success the entry is deleted below, retiring the
-        // recorded errors with it.
+        // would fire). `handlerStoppedBySuspend` marks the case where the
+        // suspend boundary already completed the shutdown — tearing down
+        // again would double-shutdown. A teardown failure is recorded on the
+        // entry (boxed: rejections can be falsey) so a genuine retry
+        // re-attempts it instead of turning into a false success; on success
+        // the entry is deleted below, retiring the recorded errors with it.
         const needsTeardown =
           session != null &&
+          !session.handlerStoppedBySuspend &&
           (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
         if (session && needsTeardown) {
           try {
             await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
           } catch (err) {
-            session.teardownError = err;
-            throw err;
+            session.teardownError = { error: err };
+            throw asTerminateError("teardown", err);
           }
         }
 
@@ -1692,6 +1720,7 @@ export class SessionManager {
       lastActivity: Date.now(),
       suspending: null,
       suspendError: null,
+      handlerStoppedBySuspend: false,
       teardownError: null,
       retryAttempt: 0,
       retryNextAt: null,
@@ -2521,6 +2550,7 @@ export class SessionManager {
   ): void {
     // A new suspend supersedes any earlier suspend outcome.
     entry.suspendError = null;
+    entry.handlerStoppedBySuspend = false;
     const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
     // A canceled fresh start has never established a provider-neutral resume
     // handle. Keeping that entry as "suspended" would make redelivery call
@@ -2540,9 +2570,17 @@ export class SessionManager {
     this.sessionRuntimeStates.delete(entry.chatId);
     this.recomputeRuntimeState();
     entry.suspending = prepare
-      .then(() => {
+      .then(async () => {
         if (canceledTransition || this.retiredHandlers.has(entry.handler)) {
-          void this.shutdownHandler(canceledTransition?.handler ?? entry.handler, opts.reason);
+          // The suspend boundary must cover this teardown end-to-end:
+          // returning (not void-ing) the shutdown keeps `entry.suspending`
+          // in flight until the handler is confirmed stopped, and the
+          // observeFailure face routes a shutdown rejection into the catch
+          // below (recorded as suspendError) where a Reset terminate can see
+          // it. Only a CONFIRMED stop arms the no-double-teardown flag.
+          const target = canceledTransition?.handler ?? entry.handler;
+          await this.shutdownHandler(target, opts.reason, { observeFailure: true });
+          if (target === entry.handler) entry.handlerStoppedBySuspend = true;
           return;
         }
         return entry.handler.suspend(opts.reason);
@@ -2550,10 +2588,10 @@ export class SessionManager {
       .catch((err) => {
         // `suspending` keeps its legacy resolve-always contract for
         // dispatch/resume awaiters, but a terminate joining this suspend
-        // must still observe the failure — record it on the entry so the
-        // Reset apply can reject instead of acking over a handler that was
-        // never confirmed suspended.
-        entry.suspendError = err;
+        // must still observe the failure — record it (boxed: rejections can
+        // be falsey) on the entry so the Reset apply can reject instead of
+        // acking over a handler that was never confirmed suspended/stopped.
+        entry.suspendError = { error: err };
         this.config.log.warn({ chatId: entry.chatId, err }, "suspend preparation error");
       })
       .then(() => undefined)

@@ -28,8 +28,9 @@ type SessionRecord = {
   activeSlotHeld: boolean;
   lastActivity: number;
   suspending: Promise<void> | null;
-  suspendError: unknown | null;
-  teardownError: unknown | null;
+  suspendError: { error: unknown } | null;
+  handlerStoppedBySuspend: boolean;
+  teardownError: { error: unknown } | null;
   retryAttempt: number;
   retryNextAt: number | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -281,6 +282,7 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     lastActivity: Date.now(),
     suspending: null,
     suspendError: null,
+    handlerStoppedBySuspend: false,
     teardownError: null,
     retryAttempt: 0,
     retryNextAt: null,
@@ -2620,11 +2622,13 @@ describe("SessionManager edge coverage", () => {
       },
     );
     resolvePrepare?.();
-    // The strict terminate coalesces onto the prior in-flight shutdown (no
-    // second shutdown call) and must stay pending while it is gated.
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    // The suspend boundary now covers the gated shutdown end-to-end:
+    // `suspending` stays in flight until the handler is confirmed stopped,
+    // so the joined terminate stays pending too (no second shutdown call).
     await Promise.resolve();
     await Promise.resolve();
+    await Promise.resolve();
+    expect(i.sessions.get(chatId)?.suspending).not.toBe(null);
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(terminateSettled).toBe(false);
 
@@ -2690,9 +2694,12 @@ describe("SessionManager edge coverage", () => {
       terminateSettled = true;
     });
     resolvePrepare?.();
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    // The suspend boundary covers the gated shutdown: `suspending` (and the
+    // joined terminate) stays in flight until the shutdown settles.
     await Promise.resolve();
     await Promise.resolve();
+    await Promise.resolve();
+    expect(i.sessions.get(chatId)?.suspending).not.toBe(null);
     expect(terminateSettled).toBe(false);
 
     resolveShutdown?.();
@@ -2703,6 +2710,115 @@ describe("SessionManager edge coverage", () => {
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(terminateSettled).toBe(true);
     expect(i.sessions.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("keeps the suspend boundary in flight until the canceled-transition shutdown settles", async () => {
+    const boom = new Error("canceled-transition shutdown failed");
+    let signalShutdownStarted: (() => void) | undefined;
+    let rejectShutdown: ((err: unknown) => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((_resolve, reject) => {
+      rejectShutdown = reject;
+    });
+    const targetHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalShutdownStarted?.();
+          await shutdownGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-suspend-covers-transition-shutdown";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: targetHandler,
+        status: "active",
+        routeTransition: { generation: 0, handler: targetHandler, phase: "resume" },
+      }),
+    );
+    i._activeCount = 1;
+
+    // Prepare is NOT gated: it settles immediately. The suspend boundary
+    // must still stay in flight — it now covers the canceled transition's
+    // gated shutdown of the retired handler end-to-end.
+    await sm.handleCommand(chatId, "session:suspend");
+    await shutdownStarted;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(i.sessions.get(chatId)?.suspending).not.toBe(null);
+
+    // The terminate joins that boundary and must not settle (ack) while the
+    // handler shutdown is still gated.
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    let terminateSettled = false;
+    void terminate.then(
+      () => {
+        terminateSettled = true;
+      },
+      () => {
+        terminateSettled = true;
+      },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(terminateSettled).toBe(false);
+
+    // The gated shutdown rejects: the suspend boundary records the failure
+    // and the joined terminate rejects (applied:false), entry retained.
+    rejectShutdown?.(boom);
+    await expect(terminate).rejects.toBe(boom);
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Retry converges: strict teardown re-runs (now resolving) and the apply
+    // completes.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("treats a falsey suspend rejection as a failure and rejects the terminate", async () => {
+    let signalSuspendStarted: (() => void) | undefined;
+    let rejectSuspend: ((err: unknown) => void) | undefined;
+    const suspendStarted = new Promise<void>((resolve) => {
+      signalSuspendStarted = resolve;
+    });
+    const suspendGate = new Promise<void>((_resolve, reject) => {
+      rejectSuspend = reject;
+    });
+    const targetHandler = handler({
+      suspend: vi.fn().mockImplementation(async () => {
+        signalSuspendStarted?.();
+        await suspendGate;
+      }),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-falsey-suspend-rejection";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await suspendStarted;
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    // A Promise can reject(null): the boxed failure marker must not lose it —
+    // the apply still rejects (normalized to an Error), never applied:true.
+    rejectSuspend?.(null);
+    await expect(terminate).rejects.toThrow(/session suspend failed/);
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
