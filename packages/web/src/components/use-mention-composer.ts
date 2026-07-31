@@ -146,7 +146,7 @@ export function useMentionComposer({
     if (!upgradeEligibleRef.current) return;
     const hydrated = hydrateComposerDisplay(lastCanonicalRef.current, candidatesRef.current);
     setModel((prev) => {
-      const identity = (t: ComposerMentionToken): string => `${t.agentId}${t.name}`;
+      const identity = (t: ComposerMentionToken): string => JSON.stringify([t.agentId, t.name]);
       const prevIds = prev.tokens.map(identity);
       const nextIds = hydrated.tokens.map(identity);
       // prevIds must be an ordered subsequence of nextIds, and the token
