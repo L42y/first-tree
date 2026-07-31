@@ -100,10 +100,12 @@ describe("discoverProviderModels — grok", () => {
     },
   };
 
+  const resolvedOk = { ok: true as const, binary: "/fake/bin/grok", version: "0.2.117" };
+
   it("returns the provider-cli catalog parsed from the initialize _meta.modelState", async () => {
     const catalog = await discoverProviderModels("grok", {
       now: () => new Date("2026-07-31T00:00:00Z"),
-      findGrokBinary: () => "/fake/bin/grok",
+      resolveGrokBinary: () => resolvedOk,
       fetchGrokModelMeta: async () => ({ ok: true as const, meta: modelStateMeta }),
     });
     expect(catalog).toEqual({
@@ -120,15 +122,36 @@ describe("discoverProviderModels — grok", () => {
   });
 
   it("degrades to unavailable when the binary is missing", async () => {
-    const catalog = await discoverProviderModels("grok", { findGrokBinary: () => null });
+    const catalog = await discoverProviderModels("grok", {
+      resolveGrokBinary: () => ({ ok: false as const, error: "grok binary not found on this host", transient: false }),
+    });
     expect(catalog.source).toBe("unavailable");
     expect(catalog.models).toEqual([]);
     expect(catalog.error).toContain("not found");
   });
 
+  it("degrades to unavailable when the launch-verified version gate rejects the binary", async () => {
+    let spawned = false;
+    const catalog = await discoverProviderModels("grok", {
+      resolveGrokBinary: () => ({
+        ok: false as const,
+        error: "resolved grok failed validation: grok 0.1.0 is outside the supported range >=0.2.117 <0.3.0",
+        transient: false,
+      }),
+      fetchGrokModelMeta: async () => {
+        spawned = true;
+        return { ok: true as const, meta: modelStateMeta };
+      },
+    });
+    expect(catalog.source).toBe("unavailable");
+    expect(catalog.error).toContain("supported range");
+    // The gated binary must never be spawned for discovery.
+    expect(spawned).toBe(false);
+  });
+
   it("degrades to unavailable when the initialize handshake fails", async () => {
     const catalog = await discoverProviderModels("grok", {
-      findGrokBinary: () => "/fake/bin/grok",
+      resolveGrokBinary: () => resolvedOk,
       fetchGrokModelMeta: async () => ({ ok: false as const, error: "grok ACP model discovery timed out" }),
     });
     expect(catalog.source).toBe("unavailable");
@@ -137,7 +160,7 @@ describe("discoverProviderModels — grok", () => {
 
   it("degrades to unavailable when the response carries no model state", async () => {
     const catalog = await discoverProviderModels("grok", {
-      findGrokBinary: () => "/fake/bin/grok",
+      resolveGrokBinary: () => resolvedOk,
       fetchGrokModelMeta: async () => ({ ok: true as const, meta: null }),
     });
     expect(catalog.source).toBe("unavailable");

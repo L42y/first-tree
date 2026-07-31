@@ -114,6 +114,19 @@ export function isGrokPendingSessionId(sessionId: string): boolean {
  */
 const GROK_CLIENT_VERSION = "0";
 
+/**
+ * ACP v1 stop reasons that are prompt COMPLETIONS: the provider finished the
+ * turn and the accumulated output is the turn's result. Only `cancelled`
+ * takes the abort/redelivery path; any OTHER unknown value stays a provider
+ * error (conservative against future wire additions).
+ */
+const GROK_COMPLETION_STOP_REASONS: ReadonlySet<string> = new Set([
+  "end_turn",
+  "max_tokens",
+  "max_turn_requests",
+  "refusal",
+]);
+
 type GrokRetrySleep = (delayMs: number, signal: AbortSignal) => Promise<void>;
 
 function defaultGrokRetrySleep(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -178,6 +191,10 @@ export const createGrokHandler: HandlerFactory = (config) => {
   const resolveBinary =
     (config.grokBinaryResolver as typeof resolveGrokRuntimeBinary | undefined) ?? resolveGrokRuntimeBinary;
   const retrySleep = (config.grokRetrySleep as GrokRetrySleep | undefined) ?? defaultGrokRetrySleep;
+  const eofCloseWaitMs =
+    typeof config.grokEofCloseWaitMs === "number" && config.grokEofCloseWaitMs > 0
+      ? config.grokEofCloseWaitMs
+      : undefined;
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -592,6 +609,12 @@ export const createGrokHandler: HandlerFactory = (config) => {
     let retryStatus: "success" | "error" = "error";
     let providerCompleted = false;
     let anyUserVisible = false;
+    /**
+     * Carried across attempts exactly like anyUserVisible: a side effect from
+     * an earlier attempt must keep EVERY later attempt's replay-safety at
+     * unsafe — resetting it per attempt could auto-replay after a write.
+     */
+    let anyToolEffect = false;
 
     const promise = (async () => {
       for (let attempt = 0; ; attempt++) {
@@ -599,7 +622,7 @@ export const createGrokHandler: HandlerFactory = (config) => {
           attempt: new ProviderAttempt({ provider: runtimeProvider, scope: "provider_turn", source: "stream" }),
           sawInit: false,
           userVisibleEmitted: anyUserVisible,
-          toolEffectStarted: false,
+          toolEffectStarted: anyToolEffect,
           thinkingEmitted: false,
           assistantText: "",
           turnCompleted: null,
@@ -627,6 +650,7 @@ export const createGrokHandler: HandlerFactory = (config) => {
           resumeSessionId: providerSessionId,
           mcpServers: turnPayload.mcpServers,
           promptText: providerInput,
+          ...(eofCloseWaitMs ? { eofCloseWaitMs } : {}),
           onInitialized: () => {
             if (turnGeneration === generation && !abort.signal.aborted) state.sawInit = true;
           },
@@ -648,6 +672,7 @@ export const createGrokHandler: HandlerFactory = (config) => {
         if (abort.signal.aborted || turnGeneration !== generation) return;
 
         anyUserVisible = anyUserVisible || state.userVisibleEmitted;
+        anyToolEffect = anyToolEffect || state.toolEffectStarted;
         // Billed tokens are billed regardless of how the turn settles — keep
         // the latest usage the provider reported so failed/consumed turns
         // still emit token_usage.
@@ -679,13 +704,14 @@ export const createGrokHandler: HandlerFactory = (config) => {
         };
 
         const prompt = outcome.prompt;
-        if (prompt && prompt.stopReason === "end_turn" && !outcome.spawnError && !outcome.failure) {
-          if (!outcome.cleanExit) {
-            // Non-zero exit AFTER a successful prompt response: the completed
-            // turn stands (verified Grok quirk on some builds).
+        const isCompletionStop = prompt !== null && GROK_COMPLETION_STOP_REASONS.has(prompt.stopReason);
+        if (prompt && isCompletionStop && !outcome.spawnError && !outcome.failure && outcome.cleanExit) {
+          // Every ACP v1 completion stop reason (end_turn / max_tokens /
+          // max_turn_requests / refusal) settles the turn with the
+          // accumulated output — the full drain MUST have exited 0.
+          if (prompt.stopReason !== "end_turn") {
             sessionCtx.log(
-              `grok process exited ${outcome.exitCode ?? `signal ${outcome.signal ?? "unknown"}`} ` +
-                "after a completed prompt; the completed turn stands",
+              `grok turn completed with stopReason "${prompt.stopReason}"; settling the accumulated output`,
             );
           }
           // Prompt-id correlation: discard replayed usage that belongs to a
@@ -716,23 +742,35 @@ export const createGrokHandler: HandlerFactory = (config) => {
         // Failure path. Auth / capacity / protocol failures commonly produce
         // NO prompt response — classify from the failure phase error, the
         // stopReason, or the stderr tail + exit status (mirror cursor's
-        // failureText assembly).
+        // failureText assembly). A COMPLETED prompt whose process did not
+        // exit 0 is a failure input too: the "full drain exits 0" boundary
+        // never silently ACKs a dirty exit as success.
         updateReplaySafety(state);
         const stderrText = outcome.stderrTail.trim();
         const phaseErrorText = outcome.failure ? outcome.failure.error.message.trim() : "";
-        const stopReasonText = prompt ? `grok turn stopped with stopReason "${prompt.stopReason}"` : "";
+        const dirtyExitText =
+          prompt && isCompletionStop
+            ? `grok process exited ${outcome.exitCode ?? `signal ${outcome.signal ?? "unknown"}`} ` +
+              "after a completed prompt (exit 0 required)"
+            : "";
+        const stopReasonText =
+          prompt && !isCompletionStop ? `grok turn stopped with stopReason "${prompt.stopReason}"` : "";
         const failureText =
           outcome.spawnError?.message ??
           (phaseErrorText
             ? stderrText
               ? `${phaseErrorText}\nstderr: ${stderrText}`
               : phaseErrorText
-            : stopReasonText
+            : dirtyExitText
               ? stderrText
-                ? `${stopReasonText}\nstderr: ${stderrText}`
-                : stopReasonText
-              : stderrText ||
-                `grok exited ${outcome.exitCode ?? `signal ${outcome.signal ?? "unknown"}`} without completing the prompt`);
+                ? `${dirtyExitText}\nstderr: ${stderrText}`
+                : dirtyExitText
+              : stopReasonText
+                ? stderrText
+                  ? `${stopReasonText}\nstderr: ${stderrText}`
+                  : stopReasonText
+                : stderrText ||
+                  `grok exited ${outcome.exitCode ?? `signal ${outcome.signal ?? "unknown"}`} without completing the prompt`);
         const failureError =
           outcome.spawnError && (outcome.spawnError as NodeJS.ErrnoException).code === "ENOENT"
             ? new Error(formatGrokBinaryMissingMessage(`the bound grok binary disappeared: ${activeBinary}`))

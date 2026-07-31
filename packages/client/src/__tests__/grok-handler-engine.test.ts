@@ -33,6 +33,7 @@ const releaseFile = process.env.GROK_FAKE_RELEASE_FILE || "";
 const replyText = process.env.GROK_FAKE_TEXT || "Hello world";
 const toolName = process.env.GROK_FAKE_TOOL || "";
 const toolPath = process.env.GROK_FAKE_TOOL_PATH || "notes.md";
+const stopReason = process.env.GROK_FAKE_STOP_REASON || "end_turn";
 const mcpHttp = process.env.GROK_FAKE_MCP_HTTP !== "0";
 const mcpSse = process.env.GROK_FAKE_MCP_SSE !== "0";
 let buffer = "";
@@ -65,7 +66,7 @@ function emitPromptNotifications(sid) {
 function finishPrompt(req) {
   const sid = req.params.sessionId;
   emitPromptNotifications(sid);
-  respond(req.id, { stopReason: scenario === "cancelled" ? "cancelled" : "end_turn", _meta: { sessionId: sid, promptId: "prompt-1", totalTokens: 49, inputTokens: 42, outputTokens: 7, cachedReadTokens: 10, modelId: "grok-4" } });
+  respond(req.id, { stopReason: scenario === "cancelled" ? "cancelled" : stopReason, _meta: { sessionId: sid, promptId: "prompt-1", totalTokens: 49, inputTokens: 42, outputTokens: 7, cachedReadTokens: 10, modelId: "grok-4" } });
 }
 function handle(req) {
   logRequest(req);
@@ -99,11 +100,21 @@ function handle(req) {
   }
   if (req.method === "session/prompt") {
     if (scenario === "prompt_error_rate_limit") { respondError(req.id, "429 Too Many Requests: the provider is overloaded, retry later"); return; }
+    if (scenario === "text_prompt_error_rate_limit") { emitPromptNotifications(req.params.sessionId); respondError(req.id, "429 Too Many Requests: the provider is overloaded, retry later"); return; }
+    if (scenario === "tool_unknown_death") { emitToolUpdates(req.params.sessionId); process.stderr.write("weird unclassified crash\\n"); process.exit(1); }
     if (scenario === "stderr_death") { process.stderr.write("fatal: backend unreachable\\n"); process.exit(1); }
+    if (scenario === "unknown_death") { process.stderr.write("weird unclassified crash\\n"); process.exit(1); }
     if (scenario === "hold") {
       const timer = setInterval(() => {
         if (releaseFile && fs.existsSync(releaseFile)) { clearInterval(timer); finishPrompt(req); }
       }, 25);
+      return;
+    }
+    if (scenario === "hold_after_prompt") {
+      // Answer the prompt, then never exit (ignores stdin EOF) — the bounded
+      // close barrier must reclaim this process.
+      finishPrompt(req);
+      setInterval(() => {}, 1000);
       return;
     }
     finishPrompt(req);
@@ -128,6 +139,7 @@ process.stdin.on("data", (chunk) => {
   }
 });
 process.stdin.on("end", () => {
+  if (scenario === "hold_after_prompt") return; // deliberately ignores EOF
   process.exit(scenario === "nonzero_exit" ? 3 : 0);
 });
 `;
@@ -481,7 +493,36 @@ describe("grok handler — per-turn ACP transport", () => {
     expect(token.completed.length + token.retried.length).toBeGreaterThan(0);
   });
 
-  it("non-zero exit AFTER a completed prompt lets the completed turn stand", async () => {
+  it.each([
+    "end_turn",
+    "max_tokens",
+    "max_turn_requests",
+    "refusal",
+  ])("stopReason %s with a clean exit settles the turn with the accumulated output", async (stopReason) => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor(`stop-${stopReason}`, { GROK_FAKE_STOP_REASON: stopReason });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv));
+    const token = makeToken();
+    const forwarded: string[] = [];
+
+    await handler.start(
+      makeMessage("m1", "hi"),
+      makeContext({ events, forwardResult: async (text) => void forwarded.push(text) }),
+      token,
+    );
+
+    expect(specs).toHaveLength(1);
+    expect(token.completed).toMatchObject([{ status: "success", terminal: true }]);
+    expect(forwarded).toEqual(["Hello world"]);
+    const assistantTexts = events.filter((e) => e.kind === "assistant_text");
+    expect(assistantTexts).toHaveLength(1);
+    expect(assistantTexts[0]?.payload.text).toBe("Hello world");
+    expect(events.some((e) => e.kind === "token_usage")).toBe(true);
+    expect(events.at(-1)).toMatchObject({ kind: "turn_end", payload: { status: "success" } });
+  });
+
+  it("non-zero exit AFTER a completed prompt is a failure input, never a silent success", async () => {
     const events: SessionEvent[] = [];
     const logs: string[] = [];
     const specs: ProviderProcessSpec[] = [];
@@ -491,9 +532,73 @@ describe("grok handler — per-turn ACP transport", () => {
 
     await handler.start(makeMessage("m1", "hi"), makeContext({ events, logs }), token);
 
-    expect(token.completed).toMatchObject([{ status: "success" }]);
-    expect(events.at(-1)).toMatchObject({ kind: "turn_end", payload: { status: "success" } });
-    expect(logs.some((line) => line.includes("completed turn stands"))).toBe(true);
+    // The full drain must exit 0: exit 3 after end_turn routes through
+    // ProviderAttempt — assistant text was already visible, so an unknown
+    // failure is an unsafe replay and settles consumed-terminal (no ACK of
+    // a success, no auto-retry of a dirty turn).
+    expect(token.completed).toMatchObject([{ status: "error", completion: "consumed", reason: "unsafe_replay" }]);
+    expect(events.at(-1)).toMatchObject({ kind: "turn_end", payload: { status: "error" } });
+    const providerEvents = events
+      .filter((e) => e.kind === "error")
+      .map((e) => parseProviderRetryEventMessage(e.payload.message))
+      .filter((e) => e !== null);
+    expect(providerEvents[0]).toMatchObject({ event: "provider_failure_terminal", reasonCode: "unsafe_replay" });
+    expect(logs.some((line) => line.includes("completed turn stands"))).toBe(false);
+    // Billed usage from the completed prompt is still accounted.
+    expect(events.some((e) => e.kind === "token_usage")).toBe(true);
+  });
+
+  it("a process that answers the prompt but never exits is reclaimed and settled as a failure", async () => {
+    const events: SessionEvent[] = [];
+    const logs: string[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const children: SpawnedChild[] = [];
+    const fakeEnv = fakeEnvFor("eofignore", { GROK_FAKE_SCENARIO: "hold_after_prompt" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv, children), { grokEofCloseWaitMs: 200 });
+    const token = makeToken();
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events, logs }), token);
+
+    expect(logs.some((line) => line.includes("did not exit after stdin EOF"))).toBe(true);
+    const child = children[0];
+    if (!child) throw new Error("unreachable");
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    }
+    expect(child.signalCode).toBe("SIGTERM");
+    expect(token.completed).toMatchObject([{ status: "error", completion: "consumed" }]);
+    expect(events.at(-1)).toMatchObject({ kind: "turn_end", payload: { status: "error" } });
+  });
+
+  it("a write-tool side effect forbids auto-replay of a later attempt's unknown failure", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("unsafeacross");
+    // Attempt 1: assistant text (user-visible) + retryable capacity failure →
+    // the policy grants one retry. Attempt 2: runs the write tool
+    // (search_replace) then dies with an unknown error — the unsafe state must
+    // forbid any further auto-replay.
+    const handler = makeHandler(
+      createFakeAcpSupervisor(specs, [
+        { ...fakeEnv, GROK_FAKE_SCENARIO: "text_prompt_error_rate_limit" },
+        { ...fakeEnv, GROK_FAKE_SCENARIO: "tool_unknown_death", GROK_FAKE_TOOL: "search_replace" },
+      ]),
+    );
+    const token = makeToken();
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events }), token);
+
+    // Exactly 2 attempts: attempt 2's unknown failure must NOT auto-replay —
+    // the write tool's side effect (tracked per attempt and carried across
+    // attempts) forces the unsafe_replay terminal stop.
+    expect(specs).toHaveLength(2);
+    const providerEvents = events
+      .filter((e) => e.kind === "error")
+      .map((e) => parseProviderRetryEventMessage(e.payload.message))
+      .filter((e) => e !== null);
+    expect(providerEvents.map((e) => e.event)).toEqual(["provider_retry_scheduled", "provider_failure_terminal"]);
+    expect(providerEvents[1]).toMatchObject({ reasonCode: "unsafe_replay", replaySafety: "unsafe" });
+    expect(token.completed).toMatchObject([{ status: "error", completion: "consumed", reason: "unsafe_replay" }]);
   });
 
   it("a cancelled stopReason settles as an aborted turn (redelivery, never consumed)", async () => {

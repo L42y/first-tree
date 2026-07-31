@@ -6,7 +6,7 @@ import { parse as parseToml } from "smol-toml";
 import { fetchGrokAcpInitializeMeta } from "../../handlers/grok/acp-session.js";
 import { parseGrokModelState } from "../../handlers/grok/events.js";
 import { findCursorExecutableOnPath } from "../cursor-binary.js";
-import { findGrokExecutableOnPath } from "../grok-binary.js";
+import { type GrokRuntimeBinaryResolution, resolveGrokRuntimeBinary } from "../grok-binary.js";
 import { runCommand } from "./launch-probe.js";
 
 /** Ceiling for `agent models` — account catalog fetch can be network-bound. */
@@ -22,7 +22,12 @@ export type DiscoverModelsDeps = {
     binary: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
-  findGrokBinary?: (env?: Record<string, string | undefined>) => string | null;
+  /**
+   * Launch-verified grok resolution (supported version range gate). Discovery
+   * spawns the binary, so it must go through `resolveGrokRuntimeBinary`
+   * semantics — never the existence-only probe path.
+   */
+  resolveGrokBinary?: (env: NodeJS.ProcessEnv) => GrokRuntimeBinaryResolution;
   fetchGrokModelMeta?: (
     binary: string,
     env: NodeJS.ProcessEnv,
@@ -201,17 +206,21 @@ async function discoverKimiModels(deps: DiscoverModelsDeps): Promise<ProviderMod
 }
 
 /**
- * Grok model discovery: spawn the CLI in ACP stdio mode and run ONLY the
- * `initialize` handshake (empty clientCapabilities, unauthenticated metadata
- * — never touches credentials), then parse `_meta.modelState` from the
- * response. The catalog marks the provider's current model as the default.
+ * Grok model discovery: resolve the binary through the SAME launch-verified
+ * resolution the handler uses (`resolveGrokRuntimeBinary` — the capability
+ * probe stays install-only, but discovery actually spawns, so the supported
+ * version range must gate it and probe/discovery/handler agree on the same
+ * binary), then run ONLY the `initialize` handshake (empty
+ * clientCapabilities, unauthenticated metadata — never touches credentials)
+ * and parse `_meta.modelState` from the response. The catalog marks the
+ * provider's current model as the default.
  */
 async function discoverGrokModels(deps: DiscoverModelsDeps): Promise<ProviderModelCatalog> {
   const env = deps.env ?? process.env;
-  const findBinary = deps.findGrokBinary ?? findGrokExecutableOnPath;
-  const binary = findBinary(env);
-  if (!binary) {
-    return unavailable("grok", "grok binary not found on this host", deps);
+  const resolveBinary = deps.resolveGrokBinary ?? ((processEnv) => resolveGrokRuntimeBinary(processEnv));
+  const resolution = resolveBinary(env);
+  if (!resolution.ok) {
+    return unavailable("grok", resolution.error.slice(0, 500), deps);
   }
   const fetchMeta =
     deps.fetchGrokModelMeta ??
@@ -222,7 +231,7 @@ async function discoverGrokModels(deps: DiscoverModelsDeps): Promise<ProviderMod
         timeoutMs: GROK_MODELS_TIMEOUT_MS,
         clientVersion: "0",
       }));
-  const result = await fetchMeta(binary, env);
+  const result = await fetchMeta(resolution.binary, env);
   if (!result.ok) {
     return unavailable("grok", result.error.slice(0, 500), deps);
   }

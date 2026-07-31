@@ -128,6 +128,8 @@ export type GrokAcpAttemptInput = {
   resumeSessionId: string | null;
   mcpServers: AgentRuntimeConfigPayload["mcpServers"];
   promptText: string;
+  /** Bounded wait for process close after stdin EOF on the success path. */
+  eofCloseWaitMs?: number;
   /** Fired once initialize completed and capabilities validated (replay-ladder "saw provider" rung). */
   onInitialized?: () => void;
   /** Fired as soon as session/new or session/load confirms the active session id. */
@@ -465,13 +467,22 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
     }
 
     // 4. Settlement barrier: drain queued notification handlers, then end
-    // stdin and require the process to close (Grok exits 0 on clean EOF).
+    // stdin and require the process to close with exit 0 (Grok exits 0 on
+    // clean EOF). The close wait is BOUNDED: a process that answered the
+    // prompt but never exits is reclaimed through the terminate path and
+    // lands as a non-clean exit (a failure input, never a silent success).
     while (pendingNotifications.size > 0) {
       await Promise.all([...pendingNotifications]);
     }
     childStdin.end();
     if (input.abortSignal.aborted) terminate();
+    const eofDeadline = setTimeout(() => {
+      input.log("grok ACP: process did not exit after stdin EOF; terminating the process tree");
+      terminate();
+    }, input.eofCloseWaitMs ?? FINAL_CLOSE_WAIT_MS);
+    eofDeadline.unref?.();
     await closeWait;
+    clearTimeout(eofDeadline);
     return outcome();
   } finally {
     input.abortSignal.removeEventListener("abort", onAbort);
@@ -484,71 +495,131 @@ export type GrokAcpModelStateFetch = { ok: true; meta: Record<string, unknown> |
 /**
  * Initialize-only ACP handshake for model discovery: spawn the CLI, run
  * `initialize` (unauthenticated metadata — never touches credentials),
- * capture the response `_meta`, end stdin, and await exit with a bounded
- * timeout. Discovery never reaches session/new.
+ * capture the response `_meta`, then reclaim the process through a bounded
+ * EOF→close barrier. EVERY path reclaims the child: stdin EOF, then a
+ * bounded wait, then process-tree terminate. Success requires a clean
+ * exit 0 — an early return after initialize would leak the process and ACK
+ * a catalog whose transport never drained.
  */
 export async function fetchGrokAcpInitializeMeta(input: {
   binary: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   clientVersion: string;
+  /** Bounded wait for process close after stdin EOF (tests shorten this). */
+  eofCloseWaitMs?: number;
 }): Promise<GrokAcpModelStateFetch> {
-  return await new Promise<GrokAcpModelStateFetch>((resolve) => {
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(input.binary, [...GROK_ACP_BASE_ARGS, "stdio"], {
-        env: input.env,
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
-    } catch (err) {
-      resolve({ ok: false, error: toError(err).message });
-      return;
-    }
-    if (!child.stdin || !child.stdout) {
-      resolve({ ok: false, error: "grok ACP child stdio is not piped" });
-      return;
-    }
-    let stderrTail = "";
-    let settled = false;
-    const finish = (result: GrokAcpModelStateFetch): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already gone */
-      }
-      finish({ ok: false, error: `grok ACP model discovery timed out after ${input.timeoutMs}ms` });
-    }, input.timeoutMs);
-    timer.unref?.();
-
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
+  const eofCloseWaitMs = input.eofCloseWaitMs ?? FINAL_CLOSE_WAIT_MS;
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(input.binary, [...GROK_ACP_BASE_ARGS, "stdio"], {
+      env: input.env,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      ...(process.platform === "win32" ? {} : { detached: true }),
     });
-    child.on("error", (err) => finish({ ok: false, error: toError(err).message }));
+  } catch (err) {
+    return { ok: false, error: toError(err).message };
+  }
+  if (!child.stdin || !child.stdout) {
+    return { ok: false, error: "grok ACP child stdio is not piped" };
+  }
+  const childStdin = child.stdin;
+  const childStdout = child.stdout;
 
-    const stream = ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout));
-    const connection = client({ name: "first-tree" }).connect(stream);
-    void (async () => {
-      try {
-        const initResponse = await connection.agent.request("initialize", {
-          protocolVersion: GROK_ACP_PROTOCOL_VERSION,
-          clientCapabilities: {},
-          clientInfo: { name: "first-tree", version: input.clientVersion },
-        });
-        const meta = asMeta(initResponse._meta);
-        child.stdin?.end();
-        finish({ ok: true, meta });
-      } catch (err) {
-        finish({ ok: false, error: stderrTail.trim() || toError(err).message });
-      }
-    })();
+  let stderrTail = "";
+  let spawnError: Error | undefined;
+  let closed: { exitCode: number | null; signal: NodeJS.Signals | null } | null = null;
+  let resolveClose: () => void = () => {};
+  const closeWait = new Promise<void>((resolve) => {
+    resolveClose = resolve;
   });
+  const killTree = (signal: NodeJS.Signals): void => {
+    try {
+      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch {
+      // The process may already be gone.
+    }
+  };
+  let terminated = false;
+  const terminate = (): void => {
+    if (terminated) return;
+    terminated = true;
+    killTree("SIGTERM");
+    const hardKill = setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS);
+    hardKill.unref?.();
+    const finalDeadline = setTimeout(() => {
+      closed ??= { exitCode: null, signal: "SIGKILL" };
+      resolveClose();
+    }, KILL_GRACE_MS + FINAL_CLOSE_WAIT_MS);
+    finalDeadline.unref?.();
+  };
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    terminate();
+  }, input.timeoutMs);
+  timer.unref?.();
+
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
+  });
+  child.on("error", (err) => {
+    spawnError = toError(err);
+    closed ??= { exitCode: null, signal: null };
+    resolveClose();
+  });
+  child.on("close", (exitCode, signal) => {
+    closed = { exitCode, signal };
+    resolveClose();
+  });
+
+  const stream = ndJsonStream(Writable.toWeb(childStdin), Readable.toWeb(childStdout));
+  const connection = client({ name: "first-tree" }).connect(stream);
+
+  let meta: Record<string, unknown> | null = null;
+  let initError: Error | null = null;
+  try {
+    const initResponse = await connection.agent.request("initialize", {
+      protocolVersion: GROK_ACP_PROTOCOL_VERSION,
+      clientCapabilities: {},
+      clientInfo: { name: "first-tree", version: input.clientVersion },
+    });
+    meta = asMeta(initResponse._meta);
+  } catch (err) {
+    initError = toError(err);
+  }
+
+  // Reclaim the process on EVERY path: EOF first, bounded wait, then
+  // process-tree terminate. Never resolve while the child is still running.
+  try {
+    childStdin.end();
+  } catch {
+    /* already gone */
+  }
+  const eofDeadline = setTimeout(() => terminate(), eofCloseWaitMs);
+  eofDeadline.unref?.();
+  await closeWait;
+  clearTimeout(eofDeadline);
+  clearTimeout(timer);
+
+  if (timedOut) return { ok: false, error: `grok ACP model discovery timed out after ${input.timeoutMs}ms` };
+  if (spawnError) return { ok: false, error: spawnError.message };
+  if (initError) return { ok: false, error: stderrTail.trim() || initError.message };
+  // `closed` is assigned from event callbacks; read it through a function so
+  // TS does not narrow it to null from the initializer (microsoft/TypeScript#9998).
+  const finalClose = ((): { exitCode: number | null; signal: NodeJS.Signals | null } | null => closed)();
+  if (finalClose?.exitCode !== 0) {
+    return {
+      ok: false,
+      error:
+        `grok ACP model discovery process exited ${finalClose?.exitCode ?? `signal ${finalClose?.signal ?? "unknown"}`} ` +
+        "after initialize (exit 0 required)",
+    };
+  }
+  return { ok: true, meta };
 }
