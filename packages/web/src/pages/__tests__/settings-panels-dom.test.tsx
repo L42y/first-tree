@@ -420,7 +420,7 @@ describe("settings panels", () => {
     await act(async () => desktop.root.unmount());
 
     const account = await renderDom(<SettingsLayout />, "/settings/account");
-    expect(account.container.textContent).toContain("Manage your profile and sign-in methods.");
+    expect(account.container.textContent).toContain("Manage your profile and ways to sign in.");
     expect(account.container.textContent).toContain("Account child");
     await act(async () => account.root.unmount());
 
