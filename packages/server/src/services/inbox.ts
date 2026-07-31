@@ -582,24 +582,26 @@ type AckPrefixRow = Pick<ClaimedEntry, "id" | "status" | "deliveredAt">;
  * Restricts the ACK prefix scan to rows that can still change state.
  *
  * Spelled as an inline literal instead of `ne(inboxEntries.status, "acked")`
- * on purpose, and this is load-bearing rather than stylistic. A partial index
- * is usable only when the planner can prove the query implies its predicate.
- * `connectDatabase` leaves postgres-js on its default `prepare: true`, so
- * queries become named prepared statements and PostgreSQL may switch to a
- * generic plan after five executions; a generic plan keeps a bound parameter
- * as a `Param` node, which proves nothing. The scan then falls back to
- * `idx_inbox_chat_silent` and filters the whole partition — restoring the
- * O(history) behavior in production, silently, while every benchmark that
- * passes constants still looks fast. Observed on the default
- * `plan_cache_mode = auto` (not only under `force_generic_plan`):
+ * on purpose. A partial index is usable only when the planner can prove the
+ * query implies its predicate, and a generic plan keeps a bound parameter as a
+ * `Param` node, which proves nothing — the scan then filters the whole
+ * partition and the O(history) behavior comes back.
  *
- *   status <> 'acked'  ->  Index Scan using idx_inbox_unacked_cursor
- *   status <> $n       ->  Index Scan using idx_inbox_chat_silent,
- *                          Rows Removed by Filter: <entire chat history>
+ * Whether PostgreSQL actually uses a generic plan is its own cost-based
+ * decision, and it is dataset-dependent rather than guaranteed. Driving this
+ * service through the real postgres-js path (`prepare: true`, default
+ * `plan_cache_mode = auto`) against a 60k-row history, PostgreSQL 16 and 17
+ * both kept re-planning as custom for 20+ executions, and the bound-parameter
+ * spelling did *not* degrade there; a custom plan substitutes the constant, so
+ * either spelling matches the index. The switch has been observed on other
+ * data, and an operator can force it globally with `plan_cache_mode =
+ * force_generic_plan`, in which case only the literal keeps the index.
  *
- * Do not "normalize" this into a Drizzle comparison helper. Exported so
- * `inbox-ack-scaling.test.ts` can assert it still compiles to zero bind
- * parameters.
+ * So this is not working around an observed production regression: it removes
+ * the dependency on a planner decision the code does not control, for the cost
+ * of one inlined constant. Do not "normalize" it into a Drizzle comparison
+ * helper. Exported so `inbox-ack-scaling.test.ts` can assert it still compiles
+ * to zero bind parameters.
  *
  * The *exclusion* spelling is load-bearing too, independently of the planner.
  * `status IN ('pending', 'delivered')` selects the same rows today and would
