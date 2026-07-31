@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { classifyShellCommandIo, type ShellIoPathKindHint, type ToolFileRef } from "@first-tree/shared";
-import { gitRepoRootMatchingRemote } from "./git-repo-identity.js";
+import { gitHeadCommitForRepoPath, gitRepoRootMatchingRemote } from "./git-repo-identity.js";
 
 export type ShellCommandFileRefsInput = {
   command: string;
@@ -115,6 +115,19 @@ function pathKindOf(
   }
 }
 
+/**
+ * Add the checkout HEAD observed for a successful Context Tree read.
+ *
+ * The value is deliberately named `repoHeadCommit`: it does not assert that a
+ * dirty working-tree file matched HEAD. It gives later auditors an exact
+ * candidate snapshot to compare against without storing Tree content.
+ */
+export function withContextTreeRepoHeadCommit(ref: ToolFileRef, absolutePath: string): ToolFileRef {
+  if (!ref.repoUrl) return ref;
+  const repoHeadCommit = gitHeadCommitForRepoPath(canonicalizeFsPath(absolutePath), ref.repoUrl);
+  return repoHeadCommit ? { ...ref, repoHeadCommit } : ref;
+}
+
 export function toolFileRefsFromShellCommand(input: ShellCommandFileRefsInput): ToolFileRef[] {
   if (!input.contextTreePath || !input.contextTreeRepoUrl) return [];
 
@@ -134,14 +147,19 @@ export function toolFileRefsFromShellCommand(input: ShellCommandFileRefsInput): 
     });
     if (repoRelativePath === null) continue;
 
-    refs.push({
-      origin: "tool_arg",
-      localPath: absolutePath,
-      repoUrl: input.contextTreeRepoUrl,
-      ...(input.contextTreeBranch ? { repoBranch: input.contextTreeBranch } : {}),
-      repoRelativePath,
-      pathKind: pathKindOf(absolutePath, repoRelativePath, pathArg.pathKindHint),
-    });
+    refs.push(
+      withContextTreeRepoHeadCommit(
+        {
+          origin: "tool_arg",
+          localPath: absolutePath,
+          repoUrl: input.contextTreeRepoUrl,
+          ...(input.contextTreeBranch ? { repoBranch: input.contextTreeBranch } : {}),
+          repoRelativePath,
+          pathKind: pathKindOf(absolutePath, repoRelativePath, pathArg.pathKindHint),
+        },
+        absolutePath,
+      ),
+    );
   }
   return refs;
 }

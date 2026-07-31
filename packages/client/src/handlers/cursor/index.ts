@@ -22,6 +22,7 @@ import {
   type ContextTreeAttribution,
   resolveContextTreeRelativePath,
   toolFileRefsFromShellCommand,
+  withContextTreeRepoHeadCommit,
 } from "../../runtime/context-tree-file-refs.js";
 import {
   type ContextTreeGitWriteTracker,
@@ -741,20 +742,19 @@ export const createCursorHandler: HandlerFactory = (config) => {
     const attribution: ContextTreeAttribution = { contextTreePath, contextTreeRepoUrl };
     const absolutePath = isAbsolute(filePath) ? resolve(filePath) : resolve(cwd, filePath);
     const repoRelativePath = resolveContextTreeRelativePath(absolutePath, attribution);
-    return [
-      {
-        origin,
-        localPath: filePath,
-        pathKind: "file",
-        ...(contextTreeRepoUrl && repoRelativePath && repoRelativePath !== "/"
-          ? {
-              repoUrl: contextTreeRepoUrl,
-              ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
-              repoRelativePath,
-            }
-          : {}),
-      },
-    ];
+    const ref: ToolFileRef = {
+      origin,
+      localPath: filePath,
+      pathKind: "file",
+      ...(contextTreeRepoUrl && repoRelativePath && repoRelativePath !== "/"
+        ? {
+            repoUrl: contextTreeRepoUrl,
+            ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
+            repoRelativePath,
+          }
+        : {}),
+    };
+    return [origin === "tool_arg" ? withContextTreeRepoHeadCommit(ref, absolutePath) : ref];
   }
 
   /** Terminal-tool ref assembly: provider-derived refs + git-status-delta refs. */

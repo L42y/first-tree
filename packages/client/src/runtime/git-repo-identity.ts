@@ -107,3 +107,27 @@ export function gitRepoRootMatchingRemote(canonicalPath: string, repoUrl: string
   if (!remote || canonicalGitRepoUrl(remote) !== expected) return null;
   return root;
 }
+
+/**
+ * Exact HEAD commit of the checkout enclosing `canonicalPath`, provided that
+ * checkout belongs to `repoUrl`. This intentionally does not inspect file
+ * cleanliness: the value identifies the checkout snapshot observed at read
+ * time, while downstream evidence may independently verify whether the read
+ * content matched that commit.
+ */
+export function gitHeadCommitForRepoPath(canonicalPath: string, repoUrl: string): string | null {
+  const root = gitRepoRootMatchingRemote(canonicalPath, repoUrl);
+  if (!root) return null;
+  try {
+    const commit = execFileSync("git", ["-C", root, "rev-parse", "--verify", "HEAD^{commit}"], {
+      timeout: 2000,
+      maxBuffer: 1024 * 1024,
+    })
+      .toString("utf8")
+      .trim()
+      .toLowerCase();
+    return /^[0-9a-f]{40}$/.test(commit) ? commit : null;
+  } catch {
+    return null;
+  }
+}

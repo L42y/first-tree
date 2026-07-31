@@ -32,6 +32,7 @@ import {
   type ContextTreeAttribution,
   resolveContextTreeRelativePath,
   toolFileRefsFromShellCommand,
+  withContextTreeRepoHeadCommit,
 } from "../runtime/context-tree-file-refs.js";
 import {
   type ContextTreeGitWriteTracker,
@@ -286,20 +287,19 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     const attribution: ContextTreeAttribution = { contextTreePath, contextTreeRepoUrl };
     const repoRelativePath = resolveContextTreeRelativePath(absolutePath, attribution);
     const pathKind = name === "Grep" || name === "Glob" ? ("directory" as const) : ("file" as const);
-    return [
-      {
-        origin: "tool_arg",
-        localPath: absolutePath,
-        pathKind,
-        ...(contextTreeRepoUrl && repoRelativePath
-          ? {
-              repoUrl: contextTreeRepoUrl,
-              ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
-              repoRelativePath,
-            }
-          : {}),
-      },
-    ];
+    const ref: ToolFileRef = {
+      origin: "tool_arg",
+      localPath: absolutePath,
+      pathKind,
+      ...(contextTreeRepoUrl && repoRelativePath
+        ? {
+            repoUrl: contextTreeRepoUrl,
+            ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
+            repoRelativePath,
+          }
+        : {}),
+    };
+    return [kimiToolIsReadOnly(name, args) ? withContextTreeRepoHeadCommit(ref, absolutePath) : ref];
   }
 
   function emitToolCall(
