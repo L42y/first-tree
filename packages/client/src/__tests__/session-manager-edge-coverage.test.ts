@@ -3168,13 +3168,73 @@ describe("SessionManager edge coverage", () => {
     rejectDetachShutdown?.(new Error("detach shutdown failed"));
     await stopped;
 
-    // Register-only debt got a fresh teardown; the gated detach debt was
-    // joined (one attempt, not two); the shared handler was torn down once
-    // despite two chat registrations. allSettled semantics: the failed join
-    // does not reject manager shutdown.
+    // Register-only debt got a fresh teardown; the shared handler was torn
+    // down once despite two chat registrations. allSettled semantics: the
+    // failed join does not reject manager shutdown — but the sweep does give
+    // the failed stop one best-effort retry (the detach attempt plus the
+    // retry, both rejecting here, hence two calls).
     expect(registerOnlyHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(failedDetachHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(failedDetachHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(sharedHandler.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("manager shutdown quiesces an in-flight suspend before sweeping teardown debt", async () => {
+    const boom = new Error("cancel shutdown failed");
+    let signalShutdownStarted: (() => void) | undefined;
+    let rejectShutdown: ((err: unknown) => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((_resolve, reject) => {
+      rejectShutdown = reject;
+    });
+    const startHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalShutdownStarted?.();
+          await shutdownGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-shutdown-quiesce-suspend";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: startHandler,
+        status: "active",
+        routeTransition: { generation: 0, handler: startHandler, phase: "start" },
+      }),
+    );
+    i._activeCount = 1;
+
+    // Canceled fresh-start suspend: the slot is released immediately while
+    // the suspend boundary covers the handler shutdown — gated here.
+    await sm.handleCommand(chatId, "session:suspend");
+    await shutdownStarted;
+
+    // Manager shutdown must quiesce the in-flight suspend boundary: it must
+    // NOT return while the handler shutdown it covers is still gated.
+    const stopped = sm.shutdown();
+    let stopSettled = false;
+    void stopped.then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopSettled).toBe(false);
+
+    // The gated stop FAILS. The suspend boundary records the teardown debt
+    // as it settles (during quiesce, while the entry is still installed), so
+    // the sweep still captures the handler and retries the teardown — the
+    // second attempt succeeds and no handler is left unowned.
+    rejectShutdown?.(boom);
+    await stopped;
+
+    expect(stopSettled).toBe(true);
+    expect(startHandler.shutdown).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an active-slot terminate when handler shutdown fails, then lets a retry succeed", async () => {

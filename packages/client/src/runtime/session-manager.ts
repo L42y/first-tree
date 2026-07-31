@@ -1070,11 +1070,28 @@ export class SessionManager {
     }
 
     const attemptedHandlers = new Set<AgentHandler>();
+    // Tracks handlers whose stop FAILED during the sweep: the raw face
+    // observes the rejection (allSettled still waits them), and the
+    // post-sweep retry pass below gives exactly those one last best-effort
+    // attempt — manager shutdown is the final owner able to.
+    const stopFailed = new Set<AgentHandler>();
+    const trackStop = (handler: AgentHandler): Promise<void> =>
+      this.shutdownHandler(handler, reason ?? "manager_shutdown", { observeFailure: true }).then(
+        () => {},
+        () => {
+          stopFailed.add(handler);
+        },
+      );
     const shutdowns = [...this.sessions.values()].map((session) => {
       this.invalidateRouteTransition(session, reason ?? "manager_shutdown");
-      if (!session.activeSlotHeld) return Promise.resolve();
+      // Stop every session handler whose stop is unconfirmed: the
+      // active-slot case, plus a suspend boundary still in flight — its
+      // handler may be mid-shutdown (joined via coalescing) or not started
+      // at all. A suspended session whose boundary already settled keeps
+      // its handler for resume, as before.
+      if (!session.activeSlotHeld && session.suspending === null) return Promise.resolve();
       attemptedHandlers.add(session.handler);
-      return this.shutdownHandler(session.handler, reason ?? "manager_shutdown");
+      return trackStop(session.handler);
     });
     // Detached handlers recorded as teardown debt have no entry left to reach
     // them — manager shutdown is their last owner. Best-effort stop for each
@@ -1085,10 +1102,28 @@ export class SessionManager {
       for (const pendingHandler of pending) {
         if (attemptedHandlers.has(pendingHandler)) continue;
         attemptedHandlers.add(pendingHandler);
-        shutdowns.push(this.shutdownHandler(pendingHandler, reason ?? "manager_shutdown"));
+        shutdowns.push(trackStop(pendingHandler));
       }
     }
     await Promise.allSettled(shutdowns);
+
+    // Suspend boundaries settling DURING the sweep can register fresh
+    // teardown debt (a canceled fresh-start whose stop just failed). Wait
+    // for any still in flight — awaiting `suspending` covers its finally,
+    // which is where the debt lands — then give the stops that failed one
+    // best-effort retry. Bounded on purpose: manager shutdown stays
+    // best-effort and never blocks on a handler that will not die.
+    await Promise.allSettled(
+      [...this.sessions.values()]
+        .map((session) => session.suspending)
+        .filter((pending): pending is Promise<void> => pending !== null),
+    );
+    for (const pending of this.pendingTeardowns.values()) {
+      for (const pendingHandler of pending) {
+        if (!stopFailed.has(pendingHandler)) continue;
+        await this.shutdownHandler(pendingHandler, reason ?? "manager_shutdown");
+      }
+    }
 
     const reportSuspendedSessions = opts.reportSuspendedSessions ?? true;
     if (reportSuspendedSessions) {
@@ -2733,16 +2768,18 @@ export class SessionManager {
         // Keep the unestablished entry addressable until preparation settles:
         // dispatch() uses its suspending promise as the same-chat admission
         // fence while operator ACK/recovery decisions are still in flight.
-        if (canceledUnestablishedStart && this.sessions.get(entry.chatId) === entry) {
-          // The entry goes away, but its teardown debt must not: a handler
-          // whose stop was never confirmed (the suspend-boundary shutdown
-          // failed, or it stopped a different transition handler) stays
-          // joinable so a later ref'd terminate can strictly finish it.
+        if (canceledUnestablishedStart) {
+          // Debt registration must NOT depend on the entry still being
+          // installed: even if another path already removed it (its own
+          // detach registers too — Set semantics make a duplicate a no-op),
+          // an unconfirmed-stop handler must stay joinable.
           if (entry.handlerStoppedBySuspend !== entry.handler) {
             this.registerPendingTeardown(entry.chatId, entry.handler);
           }
-          this.sessions.delete(entry.chatId);
-          this.currentTrigger.delete(entry.chatId);
+          if (this.sessions.get(entry.chatId) === entry) {
+            this.sessions.delete(entry.chatId);
+            this.currentTrigger.delete(entry.chatId);
+          }
         }
       });
     this.persistRegistry();
