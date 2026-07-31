@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_TEMPLATE_MCP_STRING_MAX,
   AGENT_TEMPLATE_STATUSES,
+  AGENT_TEMPLATE_WRITE_BODY_LIMIT,
   agentTemplateComponentSchema,
   agentTemplateDetailSchema,
   agentTemplateIdsSchema,
@@ -9,11 +11,13 @@ import {
   agentTemplateSlugSchema,
   agentTemplateStatusSchema,
   createAgentTemplateSchema,
+  MAX_AGENT_TEMPLATE_COMPONENTS,
   MAX_AGENT_TEMPLATE_IDS,
   publishAgentTemplateSchema,
   retireAgentTemplateSchema,
   updateAgentTemplateSchema,
 } from "../schemas/agent-template.js";
+import { PROMPT_RESOURCE_BODY_MAX_CHARS } from "../schemas/resource.js";
 
 const TEMPLATE_ID_A = "0190f000-0000-7000-8000-00000000000a";
 const TEMPLATE_ID_B = "0190f000-0000-7000-8000-00000000000b";
@@ -393,5 +397,170 @@ describe("catalog governance contracts", () => {
     expect(agentTemplateDetailSchema.safeParse(detail).success).toBe(true);
     expect(agentTemplateDetailSchema.safeParse({ ...detail, secret: true }).success).toBe(false);
     expect(agentTemplateDetailSchema.safeParse({ ...detail, createdAt: "whenever" }).success).toBe(false);
+  });
+});
+
+describe("MCP runtime-faithful contract", () => {
+  it("requires the canonical MCP name pattern on http/sse payloads", () => {
+    for (const name of ["GitHub MCP", "with space", "-leading-dash", "name/with", ""]) {
+      const bad = { ...VALID_MCP_COMPONENT, payload: { name, transport: "http", url: "https://mcp.example/x" } };
+      expect(agentTemplateComponentSchema.safeParse(bad).success).toBe(false);
+    }
+    for (const name of ["github", "github-mcp", "mcp_2", "A-valid"]) {
+      const good = { ...VALID_MCP_COMPONENT, payload: { name, transport: "http", url: "https://mcp.example/x" } };
+      expect(agentTemplateComponentSchema.safeParse(good).success).toBe(true);
+    }
+  });
+
+  it("rejects duplicate MCP payload names case-insensitively, across transports and keys", () => {
+    const httpGithub = {
+      key: "a",
+      type: "mcp",
+      name: "A",
+      payload: { name: "github", transport: "http", url: "https://mcp.example/a" },
+    };
+    const httpGithubCase = {
+      key: "b",
+      type: "mcp",
+      name: "B",
+      payload: { name: "GitHub", transport: "http", url: "https://mcp.example/b" },
+    };
+    const stdioGithub = {
+      key: "c",
+      type: "mcp",
+      name: "C",
+      payload: { name: "GITHUB", transport: "stdio", command: "github-mcp" },
+    };
+
+    const payloadDup = agentTemplatePayloadSchema.safeParse({
+      schemaVersion: 1,
+      public: VALID_PUBLIC_PROFILE,
+      components: [httpGithub, httpGithubCase],
+    });
+    expect(payloadDup.success).toBe(false);
+    if (!payloadDup.success) {
+      expect(payloadDup.error.issues.some((issue) => issue.path.join(".") === "components.1.payload.name")).toBe(true);
+    }
+
+    const crossTransport = agentTemplatePayloadSchema.safeParse({
+      schemaVersion: 1,
+      public: VALID_PUBLIC_PROFILE,
+      components: [httpGithub, stdioGithub],
+    });
+    expect(crossTransport.success).toBe(false);
+
+    const createDup = createAgentTemplateSchema.safeParse({
+      slug: "dup-mcp",
+      name: "Dup",
+      public: VALID_PUBLIC_PROFILE,
+      components: [httpGithub, httpGithubCase],
+    });
+    expect(createDup.success).toBe(false);
+
+    const updateDup = updateAgentTemplateSchema.safeParse({
+      expectedUpdatedAt: "2026-07-31T03:00:23.568911Z",
+      components: [httpGithub, stdioGithub],
+    });
+    expect(updateDup.success).toBe(false);
+
+    const distinct = agentTemplatePayloadSchema.safeParse({
+      schemaVersion: 1,
+      public: VALID_PUBLIC_PROFILE,
+      components: [
+        httpGithub,
+        { key: "b", type: "mcp", name: "B", payload: { name: "gitlab", transport: "stdio", command: "gitlab-mcp" } },
+      ],
+    });
+    expect(distinct.success).toBe(true);
+  });
+});
+
+describe("write-size contract", () => {
+  it("links the component cap and the write body limit", () => {
+    expect(MAX_AGENT_TEMPLATE_COMPONENTS).toBe(100);
+    expect(Number.isFinite(AGENT_TEMPLATE_WRITE_BODY_LIMIT)).toBe(true);
+    // The limit must cover the largest schema-valid payload: 100 full-size
+    // Prompt bodies at the 6x worst JSON escape inflation.
+    expect(AGENT_TEMPLATE_WRITE_BODY_LIMIT).toBeGreaterThanOrEqual(
+      MAX_AGENT_TEMPLATE_COMPONENTS * PROMPT_RESOURCE_BODY_MAX_CHARS * 6,
+    );
+
+    const components = Array.from({ length: MAX_AGENT_TEMPLATE_COMPONENTS }, (_, index) => ({
+      ...VALID_PROMPT_COMPONENT,
+      key: `prompt-${index}`,
+    }));
+    const atCap = createAgentTemplateSchema.safeParse({
+      slug: "at-cap",
+      name: "At Cap",
+      public: VALID_PUBLIC_PROFILE,
+      components,
+    });
+    expect(atCap.success).toBe(true);
+    const overCap = createAgentTemplateSchema.safeParse({
+      slug: "over-cap",
+      name: "Over Cap",
+      public: VALID_PUBLIC_PROFILE,
+      components: [...components, { ...VALID_PROMPT_COMPONENT, key: "prompt-100" }],
+    });
+    expect(overCap.success).toBe(false);
+  });
+
+  it("covers the fully-filled maximum contract within the body limit", () => {
+    // U+0000 requires a six-byte JSON escape, so filling every free-text
+    // field with it produces the largest schema-valid write. slug/keys use
+    // their longest legal ASCII forms instead.
+    const escaped = (length: number) => String.fromCharCode(0).repeat(length);
+    const payload = {
+      slug: "a".repeat(100),
+      name: escaped(200),
+      public: {
+        tagline: escaped(200),
+        purpose: escaped(2000),
+        targetUsers: escaped(1000),
+        userValue: escaped(2000),
+        instructionsSummary: escaped(2000),
+        toolsAndSkillsSummary: escaped(2000),
+      },
+      components: Array.from({ length: MAX_AGENT_TEMPLATE_COMPONENTS }, (_, index) => ({
+        key: `${"p".repeat(97)}${String(index).padStart(3, "0")}`,
+        type: "prompt",
+        name: escaped(200),
+        payload: { body: escaped(PROMPT_RESOURCE_BODY_MAX_CHARS), description: escaped(1000) },
+      })),
+    };
+    // The shape itself is schema-valid — the escape cost is transport-only.
+    expect(createAgentTemplateSchema.safeParse(payload).success).toBe(true);
+    const bytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+    expect(bytes).toBeGreaterThan(MAX_AGENT_TEMPLATE_COMPONENTS * PROMPT_RESOURCE_BODY_MAX_CHARS * 4);
+    expect(bytes).toBeLessThan(AGENT_TEMPLATE_WRITE_BODY_LIMIT);
+  });
+
+  it("caps Template MCP urls and stdio commands at 8 KiB", () => {
+    const longUrl = `https://mcp.example/${"a".repeat(AGENT_TEMPLATE_MCP_STRING_MAX)}`;
+    const urlTooLong = {
+      ...VALID_MCP_COMPONENT,
+      payload: { name: "github", transport: "http", url: longUrl },
+    };
+    expect(agentTemplateComponentSchema.safeParse(urlTooLong).success).toBe(false);
+    const urlAtCap = {
+      ...VALID_MCP_COMPONENT,
+      payload: {
+        name: "github",
+        transport: "sse",
+        url: `https://mcp.example/${"a".repeat(AGENT_TEMPLATE_MCP_STRING_MAX - 24)}`,
+      },
+    };
+    expect(agentTemplateComponentSchema.safeParse(urlAtCap).success).toBe(true);
+
+    const commandTooLong = {
+      ...VALID_MCP_COMPONENT,
+      payload: { name: "github", transport: "stdio", command: "x".repeat(AGENT_TEMPLATE_MCP_STRING_MAX + 1) },
+    };
+    expect(agentTemplateComponentSchema.safeParse(commandTooLong).success).toBe(false);
+    const commandAtCap = {
+      ...VALID_MCP_COMPONENT,
+      payload: { name: "github", transport: "stdio", command: "x".repeat(AGENT_TEMPLATE_MCP_STRING_MAX) },
+    };
+    expect(agentTemplateComponentSchema.safeParse(commandAtCap).success).toBe(true);
   });
 });

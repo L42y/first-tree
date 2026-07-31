@@ -985,6 +985,75 @@ describe("Agent Template catalog", () => {
       expect(deactivated.statusCode).toBe(403);
     });
   });
+
+  describe("write-size envelope", () => {
+    function oversizedPromptComponents() {
+      const body = "x".repeat(32 * 1024);
+      return Array.from({ length: 33 }, (_, index) => ({
+        key: `prompt-${index}`,
+        type: "prompt",
+        name: `Prompt ${index}`,
+        payload: { body, description: "Full-size prompt" },
+      }));
+    }
+
+    it("accepts a schema-valid create request larger than the default 1 MiB body limit", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const body = createBody(oversizedPromptComponents());
+      // Guard the premise: this request really exceeds Fastify's default cap.
+      expect(Buffer.byteLength(JSON.stringify(body), "utf8")).toBeGreaterThan(1024 * 1024);
+
+      const reply = await call(app, publisher, "POST", INTERNAL_URL, body);
+      expect(reply.statusCode).toBe(201);
+      expect(reply.json<{ payload: { components: unknown[] } }>().payload.components).toHaveLength(33);
+    });
+
+    it("accepts a schema-valid update request larger than the default 1 MiB body limit", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const draft = await createDraft(app, publisher);
+      const body = {
+        expectedUpdatedAt: draft.updatedAt,
+        components: oversizedPromptComponents(),
+      };
+      expect(Buffer.byteLength(JSON.stringify(body), "utf8")).toBeGreaterThan(1024 * 1024);
+
+      const reply = await call(app, publisher, "PATCH", `${INTERNAL_URL}/${draft.id}`, body);
+      expect(reply.statusCode).toBe(200);
+      expect(reply.json<{ payload: { components: unknown[] } }>().payload.components).toHaveLength(33);
+    });
+  });
+
+  describe("MCP name contract over HTTP", () => {
+    it("rejects duplicate MCP names case-insensitively and non-canonical names", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+
+      const duplicates = createBody([
+        {
+          key: "a",
+          type: "mcp",
+          name: "A",
+          payload: { name: "github", transport: "http", url: "https://mcp.example/a" },
+        },
+        { key: "b", type: "mcp", name: "B", payload: { name: "GitHub", transport: "stdio", command: "github-mcp" } },
+      ]);
+      const dupReply = await call(app, publisher, "POST", INTERNAL_URL, duplicates);
+      expect(dupReply.statusCode).toBe(400);
+
+      const nonCanonical = createBody([
+        {
+          key: "a",
+          type: "mcp",
+          name: "A",
+          payload: { name: "GitHub MCP", transport: "http", url: "https://mcp.example/a" },
+        },
+      ]);
+      const nameReply = await call(app, publisher, "POST", INTERNAL_URL, nonCanonical);
+      expect(nameReply.statusCode).toBe(400);
+    });
+  });
 });
 
 describe("Agent Template catalog without publisher config", () => {

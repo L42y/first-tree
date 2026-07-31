@@ -190,8 +190,10 @@ export {
 } from "./schemas/agent-status.js";
 export {
   AGENT_TEMPLATE_COMPONENT_KEY_REGEX,
+  AGENT_TEMPLATE_MCP_STRING_MAX,
   AGENT_TEMPLATE_SLUG_REGEX,
   AGENT_TEMPLATE_STATUSES,
+  AGENT_TEMPLATE_WRITE_BODY_LIMIT,
   type AgentTemplateComponent,
   type AgentTemplateComponentInput,
   type AgentTemplateComponentKey,
@@ -236,6 +238,7 @@ export {
   agentTemplateTimestampSchema,
   type CreateAgentTemplate,
   createAgentTemplateSchema,
+  MAX_AGENT_TEMPLATE_COMPONENTS,
   MAX_AGENT_TEMPLATE_IDS,
   type PublishAgentTemplate,
   publishAgentTemplateSchema,
@@ -1240,6 +1243,7 @@ export {
   effectiveResourceRowSchema,
   type NoSecretMcpServer,
   noSecretMcpServerSchema,
+  PROMPT_RESOURCE_BODY_MAX_CHARS,
   type PromptResourcePayload,
   promptResourcePayloadSchema,
   RESOURCE_DEFAULT_ENABLED,

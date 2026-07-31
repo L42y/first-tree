@@ -1,4 +1,5 @@
 import {
+  AGENT_TEMPLATE_WRITE_BODY_LIMIT,
   createAgentTemplateSchema,
   publishAgentTemplateSchema,
   retireAgentTemplateSchema,
@@ -41,14 +42,17 @@ export async function internalAgentTemplateRoutes(app: FastifyInstance): Promise
     return getAgentTemplate(app.db, request.params.id);
   });
 
-  app.post("/", async (request, reply) => {
+  // Finite route body limit sized from the shared write contract — the
+  // default ~1 MiB cap would reject schema-valid payloads (see
+  // AGENT_TEMPLATE_WRITE_BODY_LIMIT). publish/retire stay small-bodied.
+  app.post("/", { bodyLimit: AGENT_TEMPLATE_WRITE_BODY_LIMIT }, async (request, reply) => {
     const scope = await publisherScope(request);
     const body = createAgentTemplateSchema.parse(request.body);
     const detail = await createAgentTemplate(app.db, app.attachmentBlobStore, scope, body);
     return reply.status(201).send(detail);
   });
 
-  app.patch<{ Params: { id: string } }>("/:id", async (request) => {
+  app.patch<{ Params: { id: string } }>("/:id", { bodyLimit: AGENT_TEMPLATE_WRITE_BODY_LIMIT }, async (request) => {
     const scope = await publisherScope(request);
     const body = updateAgentTemplateSchema.parse(request.body);
     return updateAgentTemplate(app.db, app.attachmentBlobStore, scope, request.params.id, body);

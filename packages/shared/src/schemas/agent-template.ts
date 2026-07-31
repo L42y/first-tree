@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { findAssembledBriefingFingerprint } from "../agent-briefing-guard.js";
-import { mcpStdioServerSchema, runtimeSkillBundleSchema } from "./agent-runtime-config.js";
-import { promptResourcePayloadSchema, skillResourcePayloadSchema } from "./resource.js";
+import {
+  mcpHttpServerSchema,
+  mcpSseServerSchema,
+  mcpStdioServerSchema,
+  runtimeSkillBundleSchema,
+} from "./agent-runtime-config.js";
+import { PROMPT_RESOURCE_BODY_MAX_CHARS, promptResourcePayloadSchema, skillResourcePayloadSchema } from "./resource.js";
 
 /**
  * Official Agent Template domain contract (schema/persistence only).
@@ -140,24 +145,44 @@ function hasNoTemplateMcpUrlData(value: string): boolean {
 
 const TEMPLATE_MCP_URL_MESSAGE = "Template MCP URLs must not include credentials, query, or fragment data.";
 
-const agentTemplateMcpHttpServerSchema = z
-  .object({
-    name: z.string().min(1),
-    transport: z.literal("http"),
-    url: z.string().url().refine(hasNoTemplateMcpUrlData, TEMPLATE_MCP_URL_MESSAGE),
+/**
+ * Bounded envelope for Template MCP URLs and stdio commands. 8 KiB is loose
+ * for any real executable path or query/fragment-free endpoint, and makes
+ * the Template write contract provably finite (see
+ * AGENT_TEMPLATE_WRITE_BODY_LIMIT). Runtime schemas stay uncapped; this is
+ * Template-specific.
+ */
+export const AGENT_TEMPLATE_MCP_STRING_MAX = 8 * 1024;
+
+/**
+ * Template HTTP/SSE variants derive from the runtime schemas so the
+ * canonical MCP name pattern/message has exactly one source. `headers` is
+ * omitted (a secret channel), and the URL gains the Template no-secret
+ * refine plus the bounded envelope.
+ */
+const agentTemplateMcpHttpServerSchema = mcpHttpServerSchema
+  .omit({ headers: true })
+  .extend({
+    // Reuse the runtime URL validity, then add the Template cap and the
+    // no-secret refine — one source for the base rules.
+    url: mcpHttpServerSchema.shape.url
+      .max(AGENT_TEMPLATE_MCP_STRING_MAX)
+      .refine(hasNoTemplateMcpUrlData, TEMPLATE_MCP_URL_MESSAGE),
   })
   .strict();
 
-const agentTemplateMcpSseServerSchema = z
-  .object({
-    name: z.string().min(1),
-    transport: z.literal("sse"),
-    url: z.string().url().refine(hasNoTemplateMcpUrlData, TEMPLATE_MCP_URL_MESSAGE),
+const agentTemplateMcpSseServerSchema = mcpSseServerSchema
+  .omit({ headers: true })
+  .extend({
+    url: mcpSseServerSchema.shape.url
+      .max(AGENT_TEMPLATE_MCP_STRING_MAX)
+      .refine(hasNoTemplateMcpUrlData, TEMPLATE_MCP_URL_MESSAGE),
   })
   .strict();
 
 const agentTemplateMcpStdioServerSchema = mcpStdioServerSchema
   .extend({
+    command: mcpStdioServerSchema.shape.command.max(AGENT_TEMPLATE_MCP_STRING_MAX),
     // Arguments are the stdio secret channel (--token=...); Templates must
     // not carry any.
     args: z.array(z.string()).max(0).optional(),
@@ -212,11 +237,57 @@ export const agentTemplatePublicProfileSchema = z
   .strict();
 export type AgentTemplatePublicProfile = z.infer<typeof agentTemplatePublicProfileSchema>;
 
+/** Maximum number of importable components in one Template. */
+export const MAX_AGENT_TEMPLATE_COMPONENTS = 100;
+
+/**
+ * Route-level JSON body limit for the Template write endpoints, sized from
+ * the accepted contract. The dominant term is the Prompt worst case: up to
+ * MAX_AGENT_TEMPLATE_COMPONENTS components, each with a
+ * PROMPT_RESOURCE_BODY_MAX_CHARS body, at 6x — the worst JSON escape
+ * inflation for schema-valid control characters; U+0000 requires a
+ * six-byte JSON escape. The 4x factor used for documents
+ * only covers common UTF-8 and would undercut legal Template payloads
+ * (~19.8 MiB). The 2 MiB headroom covers every other bounded write-source
+ * string (slugs, names, descriptions, component keys, the public profile,
+ * and MCP names/URLs/commands capped at AGENT_TEMPLATE_MCP_STRING_MAX) plus
+ * JSON structure. The real content cap stays with the schemas; this limit
+ * only keeps the HTTP transport from rejecting contract-valid requests
+ * while remaining finite.
+ */
+export const AGENT_TEMPLATE_WRITE_BODY_LIMIT =
+  MAX_AGENT_TEMPLATE_COMPONENTS * PROMPT_RESOURCE_BODY_MAX_CHARS * 6 + 2 * 1024 * 1024;
+
+/**
+ * MCP server names key provider projections case-insensitively, so they
+ * must be unique case-insensitively within one Template — across transports
+ * and independent of component keys.
+ */
+function assertUniqueTemplateMcpNames(components: ReadonlyArray<{ type: string }>, ctx: z.RefinementCtx): void {
+  const seen = new Set<string>();
+  for (const [index, component] of components.entries()) {
+    if (component.type !== "mcp" || !("payload" in component)) continue;
+    const payload: unknown = component.payload;
+    if (typeof payload !== "object" || payload === null || !("name" in payload)) continue;
+    const name = payload.name;
+    if (typeof name !== "string") continue;
+    const identity = name.toLowerCase();
+    if (seen.has(identity)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["components", index, "payload", "name"],
+        message: "MCP server names must be unique case-insensitively within a Template.",
+      });
+    }
+    seen.add(identity);
+  }
+}
+
 export const agentTemplatePayloadSchema = z
   .object({
     schemaVersion: z.literal(1),
     public: agentTemplatePublicProfileSchema,
-    components: z.array(agentTemplateComponentSchema).max(100),
+    components: z.array(agentTemplateComponentSchema).max(MAX_AGENT_TEMPLATE_COMPONENTS),
   })
   .strict()
   .superRefine((payload, ctx) => {
@@ -231,6 +302,7 @@ export const agentTemplatePayloadSchema = z
       }
       seen.add(component.key);
     }
+    assertUniqueTemplateMcpNames(payload.components, ctx);
   });
 export type AgentTemplatePayload = z.infer<typeof agentTemplatePayloadSchema>;
 
@@ -311,10 +383,13 @@ export const createAgentTemplateSchema = z
     slug: agentTemplateSlugSchema,
     name: agentTemplateNameSchema,
     public: agentTemplatePublicProfileSchema,
-    components: z.array(agentTemplateComponentInputSchema).max(100),
+    components: z.array(agentTemplateComponentInputSchema).max(MAX_AGENT_TEMPLATE_COMPONENTS),
   })
   .strict()
-  .superRefine((input, ctx) => assertUniqueComponentInputKeys(input.components, ctx));
+  .superRefine((input, ctx) => {
+    assertUniqueComponentInputKeys(input.components, ctx);
+    assertUniqueTemplateMcpNames(input.components, ctx);
+  });
 export type CreateAgentTemplate = z.infer<typeof createAgentTemplateSchema>;
 
 /**
@@ -328,7 +403,7 @@ export const updateAgentTemplateSchema = z
     slug: agentTemplateSlugSchema.optional(),
     name: agentTemplateNameSchema.optional(),
     public: agentTemplatePublicProfileSchema.optional(),
-    components: z.array(agentTemplateComponentInputSchema).max(100).optional(),
+    components: z.array(agentTemplateComponentInputSchema).max(MAX_AGENT_TEMPLATE_COMPONENTS).optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
@@ -343,7 +418,10 @@ export const updateAgentTemplateSchema = z
         message: "At least one of slug, name, public, or components must be provided.",
       });
     }
-    if (input.components) assertUniqueComponentInputKeys(input.components, ctx);
+    if (input.components) {
+      assertUniqueComponentInputKeys(input.components, ctx);
+      assertUniqueTemplateMcpNames(input.components, ctx);
+    }
   });
 export type UpdateAgentTemplate = z.infer<typeof updateAgentTemplateSchema>;
 
