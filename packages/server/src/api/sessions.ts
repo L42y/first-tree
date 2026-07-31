@@ -180,9 +180,11 @@ async function terminateWithApplyAck(
   }
 
   // DB-authoritative route: any replica must reach the same verdict,
-  // independent of which process owns the daemon socket.
+  // independent of which process owns the daemon socket. Both the presence
+  // route (client + instance) and the client row (connected, owning the
+  // same instance, apply-ack capability) must agree.
   const [presence] = await app.db
-    .select({ clientId: agentPresence.clientId })
+    .select({ clientId: agentPresence.clientId, instanceId: agentPresence.instanceId })
     .from(agentPresence)
     .where(eq(agentPresence.agentId, agentId))
     .limit(1);
@@ -194,7 +196,13 @@ async function terminateWithApplyAck(
     .from(clients)
     .where(eq(clients.id, presence.clientId))
     .limit(1);
-  if (!client || client.status !== "connected" || client.instanceId == null) {
+  if (
+    !client ||
+    client.status !== "connected" ||
+    client.instanceId == null ||
+    presence.instanceId == null ||
+    presence.instanceId !== client.instanceId
+  ) {
     throw new ServiceUnavailableError("The agent's client is disconnected");
   }
   const wireCapabilities = (client.metadata as Record<string, unknown> | null)?.wireCapabilities as

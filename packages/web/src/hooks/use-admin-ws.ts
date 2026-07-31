@@ -218,6 +218,14 @@ function broadcast(msg: WsMessage) {
       if (agentId && chatId) {
         invalidateSessionPair(latestQc, agentId, chatId);
       }
+      // Terminal cleanup: an `evicted` projection means the session's live
+      // trace was deleted server-side (Reset finalize / terminate). The
+      // `chat-session-events` query has no polling floor and the plain
+      // `session:state` branch does not touch it, so without this every
+      // other open viewer of the chat keeps the stale trace indefinitely.
+      if (chatId && msg.state === "evicted") {
+        latestQc.invalidateQueries({ queryKey: ["chat-session-events", chatId] });
+      }
     } else if (msg.type === "session:runtime") {
       // The per-(agent,chat) D-axis authority flipped. Same delivery
       // contract as `session:state` — when audience-included, the frame

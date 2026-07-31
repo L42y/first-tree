@@ -847,6 +847,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       kind: "error",
       payload: { source: "sdk", message: "leftover trace" },
     });
+    const notifySpy = vi.spyOn(app.notifier, "notifySessionStateChange");
     try {
       const pending = terminateReq(app, admin, agent.uuid, chat.id);
       await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
@@ -858,7 +859,13 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.json()).toMatchObject({ state: "evicted", transitioned: false, applied: true });
       // The idempotent finalize re-cleared the leftover trace.
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
+      // …and still broadcast the eviction so every other open viewer drops
+      // the stale trace from its event cache (no polling floor on it).
+      await vi.waitFor(() =>
+        expect(notifySpy).toHaveBeenCalledWith(agent.uuid, chat.id, "evicted", admin.organizationId),
+      );
     } finally {
+      notifySpy.mockRestore();
       cleanup(admin, ws);
     }
   });
@@ -946,6 +953,25 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.json()).toMatchObject({ state: "evicted", applied: true });
     } finally {
       setClientReplyTimeoutMsForTests(null);
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fails 503 when the presence route instance does not match the connected client's instance", async () => {
+    // Presence and the client row must agree on the owning instance — a
+    // stale presence route must not reach a capable verdict.
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    const { eq } = await import("drizzle-orm");
+    await app.db
+      .update(agentPresence)
+      .set({ instanceId: "some-other-instance" })
+      .where(eq(agentPresence.agentId, agent.uuid));
+    try {
+      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      expect(res.statusCode).toBe(503);
+      expect(ws.send).not.toHaveBeenCalled();
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    } finally {
       cleanup(admin, ws);
     }
   });

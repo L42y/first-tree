@@ -469,6 +469,7 @@ export async function resolveAgentChatStatuses(
     .select({
       agentId: agentPresence.agentId,
       clientId: agentPresence.clientId,
+      instanceId: agentPresence.instanceId,
       runtimeState: agentPresence.runtimeState,
     })
     .from(agentPresence)
@@ -493,7 +494,7 @@ export async function resolveAgentChatStatuses(
           .from(clients)
           .where(inArray(clients.id, presenceClientIds))
       : [];
-  const wireCapableClientIds = new Set(
+  const wireCapableInstanceByClientId = new Map(
     clientRows
       .filter((c) => {
         if (c.status !== "connected" || c.instanceId == null) return false;
@@ -501,7 +502,7 @@ export async function resolveAgentChatStatuses(
         const caps = metadata?.wireCapabilities as Record<string, unknown> | undefined;
         return caps?.wsSessionTerminateApplyAck === true;
       })
-      .map((c) => c.id),
+      .map((c) => [c.id, c.instanceId] as const),
   );
 
   // -- Activity (D): per-(agent,chat) live activity (+ turnText when asked).
@@ -575,7 +576,12 @@ export async function resolveAgentChatStatuses(
           // Live-connection capability gate for the Web chat-session
           // Reset: only a client that answers session:terminate with an
           // apply-ack can prove the old provider mapping is gone.
-          sessionResetSupported: p?.clientId != null && wireCapableClientIds.has(p.clientId),
+          // Presence route (client + instance) and the connected client row
+          // must agree before the capability counts.
+          sessionResetSupported:
+            p?.clientId != null &&
+            p.instanceId != null &&
+            wireCapableInstanceByClientId.get(p.clientId) === p.instanceId,
         }),
       );
     }

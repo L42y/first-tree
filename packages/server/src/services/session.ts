@@ -493,7 +493,11 @@ export async function finalizeTerminatedSession(
     throw new NotFoundError(`Session (${agentId}, ${chatId}) not found`);
   }
 
-  if (transitioned && notifier) {
+  // Notify on every evicted outcome — including the idempotent
+  // already-evicted path. The eviction is the terminal-cleanup signal other
+  // viewers rely on to drop the session's live trace from their event
+  // cache; the state itself changing is not the point.
+  if (finalState === "evicted" && notifier) {
     notifier.notifySessionStateChange(agentId, chatId, "evicted", organizationId).catch(() => {});
   }
 
