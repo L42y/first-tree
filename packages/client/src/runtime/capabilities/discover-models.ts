@@ -3,11 +3,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderModelCatalog, ProviderModelOption, RuntimeProvider } from "@first-tree/shared";
 import { parse as parseToml } from "smol-toml";
+import { fetchGrokAcpInitializeMeta } from "../../handlers/grok/acp-session.js";
+import { parseGrokModelState } from "../../handlers/grok/events.js";
 import { findCursorExecutableOnPath } from "../cursor-binary.js";
+import { findGrokExecutableOnPath } from "../grok-binary.js";
 import { runCommand } from "./launch-probe.js";
 
 /** Ceiling for `agent models` — account catalog fetch can be network-bound. */
 const CURSOR_MODELS_TIMEOUT_MS = 20_000;
+/** Ceiling for the initialize-only ACP handshake behind grok model discovery. */
+const GROK_MODELS_TIMEOUT_MS = 20_000;
 
 export type DiscoverModelsDeps = {
   env?: NodeJS.ProcessEnv;
@@ -17,6 +22,11 @@ export type DiscoverModelsDeps = {
     binary: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+  findGrokBinary?: (env?: Record<string, string | undefined>) => string | null;
+  fetchGrokModelMeta?: (
+    binary: string,
+    env: NodeJS.ProcessEnv,
+  ) => Promise<{ ok: true; meta: Record<string, unknown> | null } | { ok: false; error: string }>;
   readKimiConfig?: () => Promise<string | null>;
   kimiConfigPath?: string;
 };
@@ -191,6 +201,46 @@ async function discoverKimiModels(deps: DiscoverModelsDeps): Promise<ProviderMod
 }
 
 /**
+ * Grok model discovery: spawn the CLI in ACP stdio mode and run ONLY the
+ * `initialize` handshake (empty clientCapabilities, unauthenticated metadata
+ * — never touches credentials), then parse `_meta.modelState` from the
+ * response. The catalog marks the provider's current model as the default.
+ */
+async function discoverGrokModels(deps: DiscoverModelsDeps): Promise<ProviderModelCatalog> {
+  const env = deps.env ?? process.env;
+  const findBinary = deps.findGrokBinary ?? findGrokExecutableOnPath;
+  const binary = findBinary(env);
+  if (!binary) {
+    return unavailable("grok", "grok binary not found on this host", deps);
+  }
+  const fetchMeta =
+    deps.fetchGrokModelMeta ??
+    ((bin, processEnv) =>
+      fetchGrokAcpInitializeMeta({
+        binary: bin,
+        env: processEnv,
+        timeoutMs: GROK_MODELS_TIMEOUT_MS,
+        clientVersion: "0",
+      }));
+  const result = await fetchMeta(binary, env);
+  if (!result.ok) {
+    return unavailable("grok", result.error.slice(0, 500), deps);
+  }
+  const parsed = parseGrokModelState({ _meta: result.meta });
+  if (parsed.models.length === 0) {
+    return unavailable("grok", "grok initialize response carried no model state", deps);
+  }
+  return {
+    provider: "grok",
+    models: parsed.models,
+    defaultModelId: parsed.defaultModelId,
+    fetchedAt: fetchedAt(deps),
+    source: "provider-cli",
+    error: null,
+  };
+}
+
+/**
  * Discover the model catalog for a runtime provider from the host-local
  * provider. Phase 1 implements Cursor + Kimi; other providers return
  * `source: "unavailable"` so the web can keep its curated/fallback UI.
@@ -202,6 +252,8 @@ export async function discoverProviderModels(
   switch (provider) {
     case "cursor":
       return discoverCursorModels(deps);
+    case "grok":
+      return discoverGrokModels(deps);
     case "kimi-code":
       return discoverKimiModels(deps);
     case "opencode":

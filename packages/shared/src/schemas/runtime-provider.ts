@@ -10,6 +10,7 @@ export const RUNTIME_PROVIDERS = {
   CLAUDE_CODE_TUI: "claude-code-tui",
   CODEX: "codex",
   CURSOR: "cursor",
+  GROK: "grok",
   KIMI_CODE: "kimi-code",
   OPENCODE: "opencode",
 } as const;
@@ -19,6 +20,7 @@ export const runtimeProviderSchema = z.enum([
   "claude-code-tui",
   "codex",
   "cursor",
+  "grok",
   "kimi-code",
   "opencode",
 ]);

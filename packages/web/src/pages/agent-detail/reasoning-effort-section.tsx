@@ -11,6 +11,8 @@ import { ConfigRow } from "./flat-section.js";
  *   - codex maps to its provider-native effort (low/medium/high/xhigh/max/ultra).
  *     The higher values are model-dependent; "minimal" is excluded because it
  *     breaks the default tool set.
+ *   - grok maps to the Grok Build CLI `--effort` flag (low/medium/high), plus
+ *     an "" inherit option that omits the flag so Grok uses its local default.
  */
 
 const CLAUDE_EFFORT_OPTIONS: SelectOption[] = [
@@ -30,6 +32,16 @@ export const CODEX_EFFORT_OPTIONS: SelectOption[] = [
   { value: "ultra", label: "ultra", hint: "deepest; model-dependent" },
 ];
 
+// Grok's effort channel mirrors claude's minus "max": an "" inherit option
+// (the `--effort` flag is omitted and Grok uses its local default) plus
+// low/medium/high.
+const GROK_EFFORT_OPTIONS: SelectOption[] = [
+  { value: "", label: "(unset — inherits local)" },
+  { value: "low", label: "low", hint: "fastest" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high", hint: "default" },
+];
+
 const EFFORT_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, SelectOption[]> = {
   "claude-code": CLAUDE_EFFORT_OPTIONS,
   // claude-code-tui drives the same `claude` CLI as claude-code, so it shares
@@ -40,6 +52,7 @@ const EFFORT_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, SelectOption[]> = {
   // in the model id itself, so RuntimeTab hides this section entirely for
   // cursor agents. The empty entry keeps the Record exhaustive.
   cursor: [],
+  grok: GROK_EFFORT_OPTIONS,
   "kimi-code": [],
   opencode: [],
 };
@@ -49,6 +62,7 @@ const EFFORT_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
   "claude-code-tui": "Applies to new sessions. Unset inherits the local ~/.claude effortLevel; setting it overrides.",
   codex: "Applies to new sessions. Higher means more reasoning per turn; max and ultra require a compatible model.",
   cursor: "Cursor encodes effort in the model id; there is no separate control.",
+  grok: "Applies to new sessions. Unset omits the effort flag so Grok uses its local default; setting it overrides.",
   "kimi-code": "Kimi thinking configuration is inherited from the local Kimi configuration.",
   opencode: "OpenCode model variants are provider-native; there is no separate First Tree effort control.",
 };

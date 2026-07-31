@@ -859,7 +859,7 @@ export function parseSwitchProcessEnvValue(envText: string, key: string): string
 
 function isKnownProviderCommand(command: string): boolean {
   if (
-    /(^|[/\s])(claude|codex|cursor-agent|opencode)(\s|$)/i.test(command) ||
+    /(^|[/\s])(claude|codex|cursor-agent|grok|opencode)(\s|$)/i.test(command) ||
     /@openai\/codex|claude-code|opencode-ai/i.test(command)
   ) {
     return true;

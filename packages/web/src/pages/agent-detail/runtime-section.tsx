@@ -31,6 +31,7 @@ const RUNTIME_NAME: Record<RuntimeProvider, string> = {
   "claude-code-tui": "Claude Code CLI",
   codex: "Codex",
   cursor: "Cursor",
+  grok: "Grok Build",
   "kimi-code": "Kimi Code",
   opencode: "OpenCode",
 };

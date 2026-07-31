@@ -81,6 +81,7 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, ModelOption[]> = {
   "claude-code-tui": CLAUDE_MODEL_OPTIONS,
   codex: CODEX_MODEL_OPTIONS,
   cursor: [],
+  grok: [],
   "kimi-code": [],
   opencode: [],
 };
@@ -91,6 +92,7 @@ const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
   codex: "Applies to new sessions immediately. Unset lets the CLI pick by auth mode.",
   cursor:
     "Options come from this computer's Cursor CLI when reachable. The id is passed through verbatim on the next turn — one your account can't use fails visibly, no silent fallback. Unset uses the Cursor default (auto).",
+  grok: "Options come from this computer's Grok Build CLI when reachable. The id is passed through verbatim on the next turn — one your account can't use fails visibly, no silent fallback. Unset uses the Grok default (auto).",
   "kimi-code":
     "Options come from this computer's ~/.kimi-code config when reachable. Passed to new sessions. Unset uses the model configured in ~/.kimi-code.",
   opencode:
@@ -457,11 +459,13 @@ function FreeFormModelInput({
       placeholder={
         provider === "kimi-code"
           ? "local Kimi default"
-          : provider === "opencode"
-            ? "local OpenCode default"
-            : provider === "cursor"
-              ? "auto (Cursor default)"
-              : "provider default"
+          : provider === "grok"
+            ? "auto (Grok default)"
+            : provider === "opencode"
+              ? "local OpenCode default"
+              : provider === "cursor"
+                ? "auto (Cursor default)"
+                : "provider default"
       }
       className="font-mono"
       aria-label="Model"

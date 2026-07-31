@@ -348,3 +348,73 @@ describe("runRuntimeAuthLogin — cursor (external-only binary)", () => {
     expect(h.calls.at(-1)?.entry.lastAuthError).toMatchObject({ reason: "exit-nonzero", message: "login failed" });
   });
 });
+
+describe("runRuntimeAuthLogin — grok (external-only binary)", () => {
+  function grokHarness(opts: {
+    resolveOk?: boolean;
+    outcome?: LoginOutcome;
+    fireAuthUrl?: string;
+    probeResult?: CapabilityEntry;
+  }) {
+    const calls: Recorded2[] = [];
+    const logs: string[] = [];
+    const loginCalls: string[] = [];
+    const deps = {
+      currentEntry: (): CapabilityEntry | undefined => undefined,
+      setProviderEntry: async (provider: string, entry: CapabilityEntry): Promise<void> => {
+        calls.push({ provider, entry });
+      },
+      log: (_symbol: string, msg: string): void => {
+        logs.push(msg);
+      },
+      now: (): number => NOW,
+      resolveGrokBinary: () =>
+        opts.resolveOk === false
+          ? ({ ok: false, error: "Grok Build CLI is missing on this machine.", transient: false } as const)
+          : ({ ok: true, binary: "/home/op/.local/bin/grok", version: "2026.07.09" } as const),
+      runGrokBrowser: async (o: { binary: string; onAuthUrl?: (url: string) => void }): Promise<LoginOutcome> => {
+        loginCalls.push(o.binary);
+        if (opts.fireAuthUrl) o.onAuthUrl?.(opts.fireAuthUrl);
+        await new Promise((r) => setTimeout(r, 0));
+        return opts.outcome ?? ({ ok: true } as const);
+      },
+      probeGrok: async (): Promise<CapabilityEntry> => opts.probeResult ?? installedEntry(),
+    };
+    return { calls, logs, loginCalls, deps };
+  }
+  type Recorded2 = { provider: string; entry: CapabilityEntry };
+
+  it("drives <resolved-binary> login and publishes pending → re-probed ok", async () => {
+    const h = grokHarness({ outcome: { ok: true }, probeResult: okEntry() });
+    await runRuntimeAuthLogin({ provider: "grok", ref: "rg1" }, h.deps);
+
+    expect(h.loginCalls).toEqual(["/home/op/.local/bin/grok"]);
+    expect(h.calls[0]?.provider).toBe("grok");
+    expect(h.calls[0]?.entry.pendingAuth).toMatchObject({ method: "browser" });
+    expect(h.calls.at(-1)?.entry.state).toBe("ok");
+    expect(h.calls.at(-1)?.entry.lastAuthError).toBeUndefined();
+  });
+
+  it("on unresolved/unverified binary, reflects a spawn-error lastAuthError and never logs in", async () => {
+    const h = grokHarness({
+      resolveOk: false,
+      probeResult: { ...installedEntry(), state: "missing", available: false },
+    });
+    await runRuntimeAuthLogin({ provider: "grok", ref: "rg2" }, h.deps);
+
+    expect(h.loginCalls).toEqual([]);
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.entry.state).toBe("missing");
+    expect(h.calls[0]?.entry.lastAuthError).toMatchObject({ reason: "spawn-error" });
+    expect(h.logs.some((l) => l.includes("grok binary unavailable"))).toBe(true);
+  });
+
+  it("stamps lastAuthError when the grok login fails", async () => {
+    const h = grokHarness({
+      outcome: { ok: false, reason: "exit-nonzero", error: "login failed" },
+      probeResult: installedEntry(),
+    });
+    await runRuntimeAuthLogin({ provider: "grok", ref: "rg3" }, h.deps);
+    expect(h.calls.at(-1)?.entry.lastAuthError).toMatchObject({ reason: "exit-nonzero", message: "login failed" });
+  });
+});

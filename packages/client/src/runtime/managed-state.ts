@@ -374,6 +374,7 @@ function isSafePersistedTarget(target: string): boolean {
     root === ".agents/skills" ||
     root === ".claude/skills" ||
     root === ".cursor/skills" ||
+    root === ".grok/skills" ||
     root === ".kimi-code/skills" ||
     root === ".opencode/skills" ||
     root === ".first-tree/resources/skills";

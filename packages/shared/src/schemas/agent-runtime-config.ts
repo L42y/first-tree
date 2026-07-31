@@ -317,11 +317,22 @@ const opencodeRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend(
   // configuration; non-empty values are forwarded as one argv entry.
 });
 
+const grokRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
+  kind: z.literal("grok"),
+  // Maps to the Grok Build CLI `--effort <low|medium|high>` flag. The empty
+  // string is an "inherit" sentinel: when set, the handler omits `--effort`
+  // so Grok falls back to its own local default. A non-empty value is passed
+  // through verbatim as one argv entry. An empty `model` likewise omits
+  // `--model` and lets Grok pick its local/default model.
+  reasoningEffort: z.enum(["", "low", "medium", "high"]).default(""),
+});
+
 const taggedPayloadUnion = z.discriminatedUnion("kind", [
   claudeRuntimeConfigPayloadShape,
   claudeCodeTuiRuntimeConfigPayloadShape,
   codexRuntimeConfigPayloadShape,
   cursorRuntimeConfigPayloadShape,
+  grokRuntimeConfigPayloadShape,
   kimiCodeRuntimeConfigPayloadShape,
   opencodeRuntimeConfigPayloadShape,
 ]);
@@ -483,6 +494,23 @@ export const DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload 
 };
 
 /**
+ * Default payload for a fresh grok agent. `model` is empty by default so the
+ * spawn omits `--model` and the Grok Build CLI picks its local default;
+ * `reasoningEffort` defaults to the inherit sentinel so `--effort` is omitted
+ * as well. A non-empty operator value for either is passed through verbatim.
+ */
+export const DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload = {
+  kind: "grok",
+  prompt: { append: "" },
+  model: "",
+  mcpServers: [],
+  env: [],
+  gitRepos: [],
+  resourceSkills: [],
+  reasoningEffort: "",
+};
+
+/**
  * Default payload selector by runtime provider.
  */
 export function defaultRuntimeConfigPayload(
@@ -493,6 +521,8 @@ export function defaultRuntimeConfigPayload(
       return { ...DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD };
     case "cursor":
       return { ...DEFAULT_CURSOR_RUNTIME_CONFIG_PAYLOAD };
+    case "grok":
+      return { ...DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD };
     case "kimi-code":
       return { ...DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD };
     case "opencode":

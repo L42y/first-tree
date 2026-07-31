@@ -26,6 +26,7 @@ Each runtime discovers Skills from one workspace-relative root:
 | Claude Code / Claude Code TUI | `.claude/skills/` |
 | Codex | `.agents/skills/` |
 | Cursor | `.cursor/skills/` |
+| Grok Build | `.grok/skills/` |
 | Kimi Code | `.kimi-code/skills/` |
 | OpenCode | `.opencode/skills/` |
 

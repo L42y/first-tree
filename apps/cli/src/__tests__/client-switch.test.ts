@@ -276,6 +276,14 @@ describe("client switch drain markers", () => {
     expect(isSwitchDrainEnvRequired("/home/op/.local/bin/agent -p --output-format stream-json")).toBe(true);
     expect(isSwitchDrainEnvRequired("cursor-agent login")).toBe(true);
   });
+
+  it("recognizes Grok Build CLI processes (grok binary)", () => {
+    // The drain must fail closed: a live grok turn spawned by the runtime must
+    // require the env envelope check. Grok's binary is `grok` — there is no
+    // generic-name special case like Cursor's `agent` basename.
+    expect(isSwitchDrainEnvRequired("/home/op/.local/bin/grok -p --output-format stream-json")).toBe(true);
+    expect(isSwitchDrainEnvRequired("grok login")).toBe(true);
+  });
 });
 
 describe("client runtime markers", () => {

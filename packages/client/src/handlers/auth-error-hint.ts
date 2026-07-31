@@ -13,7 +13,7 @@
  * CLI. The hint reframes the message so the next step is obvious.
  */
 
-type Runtime = "codex" | "claude-code" | "cursor" | "kimi-code" | "opencode";
+type Runtime = "codex" | "claude-code" | "cursor" | "grok" | "kimi-code" | "opencode";
 
 /**
  * Substring keywords used to detect codex's auth-refresh failures. Codex's
@@ -69,6 +69,29 @@ export function isCursorAuthError(message: string): boolean {
   return CURSOR_AUTH_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
+/**
+ * Grok Build CLI auth-failure phrases. The CLI exposes no typed error code —
+ * a logged-out turn fails with prose along the lines of "Error: not logged
+ * in. Run `grok login` to authenticate." or an unauthorized response, and a
+ * corrupt credential store is reported by naming `auth.json`. First Tree
+ * never opens `~/.grok/auth.json`; detection is purely output substring
+ * matching, mirroring the cursor approach.
+ */
+const GROK_AUTH_KEYWORDS: readonly string[] = [
+  "not logged in",
+  "not authenticated",
+  "authentication required",
+  "unauthorized",
+  "grok login",
+  "auth.json",
+];
+
+export function isGrokAuthError(message: string): boolean {
+  if (message.length === 0) return false;
+  const lower = message.toLowerCase();
+  return GROK_AUTH_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 export function isKimiCodeAuthError(codeOrMessage: string): boolean {
   const lower = codeOrMessage.toLowerCase();
   return (
@@ -122,21 +145,25 @@ export function formatAuthHint(runtime: Runtime, originalMessage: string): strin
       ? "`codex login`"
       : runtime === "cursor"
         ? "`cursor-agent login`"
-        : runtime === "opencode"
-          ? "`opencode auth login`"
-          : runtime === "kimi-code"
-            ? "`kimi` and then `/login`"
-            : "`claude auth login`";
+        : runtime === "grok"
+          ? "`grok login`"
+          : runtime === "opencode"
+            ? "`opencode auth login`"
+            : runtime === "kimi-code"
+              ? "`kimi` and then `/login`"
+              : "`claude auth login`";
   const provider =
     runtime === "codex"
       ? "OpenAI"
       : runtime === "cursor"
         ? "Cursor"
-        : runtime === "opencode"
-          ? "OpenCode's selected provider"
-          : runtime === "kimi-code"
-            ? "Kimi"
-            : "Anthropic";
+        : runtime === "grok"
+          ? "Grok Build"
+          : runtime === "opencode"
+            ? "OpenCode's selected provider"
+            : runtime === "kimi-code"
+              ? "Kimi"
+              : "Anthropic";
   // Cap the appended raw message so an upstream stack-trace envelope (codex
   // wraps its `event.error.message` in surprising ways) doesn't bloat the
   // hint into a wall of text on the chat timeline.

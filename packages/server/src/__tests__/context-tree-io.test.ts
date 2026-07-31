@@ -551,6 +551,133 @@ describe("context-tree IO service", () => {
     ).toEqual({ recordable: false, reason: "unsupported_tool" });
   });
 
+  it("derives grok read/write IO from tool names, gated on runtimeProvider=grok", async () => {
+    const app = getApp();
+    const seed = await seedContextTreeChat();
+
+    const mkEvent = (toolUseId: string, name: string, path: string, origin: "tool_arg" | "file_change") => ({
+      kind: "tool_call" as const,
+      payload: {
+        toolUseId,
+        name,
+        args: { path: `/tmp/context-tree/${path}` },
+        status: "ok" as const,
+        toolFileRefs: [
+          { origin, repoUrl: TREE_REPO, repoBranch: "main", repoRelativePath: path, pathKind: "file" as const },
+        ],
+      },
+    });
+
+    const readEvent = await appendEvent(
+      app.db,
+      seed.agent.uuid,
+      seed.chatId,
+      mkEvent("tu-g-read", "read_file", "NODE.md", "tool_arg"),
+    );
+    const writeEvent = await appendEvent(
+      app.db,
+      seed.agent.uuid,
+      seed.chatId,
+      mkEvent("tu-g-write", "write", "practices/new.md", "file_change"),
+    );
+    const editEvent = await appendEvent(
+      app.db,
+      seed.agent.uuid,
+      seed.chatId,
+      mkEvent("tu-g-edit", "search_replace", "system/NODE.md", "file_change"),
+    );
+
+    for (const sessionEvent of [readEvent, writeEvent, editEvent]) {
+      await recordFromSessionEvent(app.db, {
+        organizationId: seed.organizationId,
+        agentId: seed.agent.uuid,
+        chatId: seed.chatId,
+        runtimeProvider: "grok",
+        sessionEvent,
+      });
+    }
+
+    const rows = await app.db.select().from(contextTreeIoEvents).where(eq(contextTreeIoEvents.chatId, seed.chatId));
+    expect(
+      rows
+        .map((row) => ({ action: row.action, source: row.source, targetPath: row.targetPath }))
+        .sort((a, b) => a.targetPath.localeCompare(b.targetPath)),
+    ).toEqual([
+      { action: "read", source: "grok_read_tool", targetPath: "NODE.md" },
+      { action: "write", source: "grok_write_tool", targetPath: "practices/new.md" },
+      { action: "write", source: "grok_write_tool", targetPath: "system/NODE.md" },
+    ]);
+
+    // Provider gating both ways: grok's names mean nothing to other providers,
+    // and codex's `command` means nothing to grok.
+    expect(
+      explainContextTreeIoDecision({ runtimeProvider: "codex", sessionEvent: readEvent, bindingRepo: TREE_REPO }),
+    ).toEqual({ recordable: false, reason: "unsupported_tool" });
+    expect(
+      explainContextTreeIoDecision({
+        runtimeProvider: "grok",
+        sessionEvent: {
+          kind: "tool_call",
+          payload: {
+            toolUseId: "tu-x",
+            name: "command",
+            args: { command: "cat /tmp/context-tree/NODE.md" },
+            status: "ok",
+          },
+        },
+        bindingRepo: TREE_REPO,
+      }),
+    ).toEqual({ recordable: false, reason: "unsupported_tool" });
+  });
+
+  it("derives grok shell (run_terminal_cmd) reads via shell_command classification", async () => {
+    const app = getApp();
+    const seed = await seedContextTreeChat();
+
+    const shellEvent = await appendEvent(app.db, seed.agent.uuid, seed.chatId, {
+      kind: "tool_call",
+      payload: {
+        toolUseId: "tu-g-shell",
+        name: "run_terminal_cmd",
+        args: { command: "cat context-tree/NODE.md" },
+        status: "ok",
+        toolFileRefs: [
+          {
+            origin: "tool_arg",
+            localPath: "context-tree/NODE.md",
+            repoUrl: TREE_REPO,
+            repoBranch: "main",
+            repoRelativePath: "NODE.md",
+            pathKind: "file",
+          },
+        ],
+      },
+    });
+
+    await recordFromSessionEvent(app.db, {
+      organizationId: seed.organizationId,
+      agentId: seed.agent.uuid,
+      chatId: seed.chatId,
+      runtimeProvider: "grok",
+      sessionEvent: shellEvent,
+    });
+
+    const rows = await app.db.select().from(contextTreeIoEvents).where(eq(contextTreeIoEvents.chatId, seed.chatId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      runtimeProvider: "grok",
+      action: "read",
+      source: "shell_command",
+      treeRepoUrl: TREE_REPO,
+      targetPath: "NODE.md",
+    });
+
+    // run_terminal_cmd is grok-only: the same event under cursor is unsupported.
+    expect(
+      explainContextTreeIoDecision({ runtimeProvider: "cursor", sessionEvent: shellEvent, bindingRepo: TREE_REPO }),
+    ).toEqual({ recordable: false, reason: "unsupported_tool" });
+  });
+
   it("derives Kimi Read/Write IO and gates the shared capitalized names by provider", async () => {
     const read = {
       kind: "tool_call",

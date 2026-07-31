@@ -230,7 +230,7 @@ first-tree agent list --remote --org <id>  # cross-org view (multi-org operators
 ### agent create
 
 ```
-first-tree agent create <name> --type <human|agent> --client-id <thisClient> [--runtime claude-code|claude-code-tui|codex|cursor|kimi-code|opencode]
+first-tree agent create <name> --type <human|agent> --client-id <thisClient> [--runtime claude-code|claude-code-tui|codex|cursor|grok|kimi-code|opencode]
 ```
 
 Creates the agent row on the server and binds it to the given client
@@ -250,6 +250,15 @@ performs the compatible-version and database-readiness gates. Windows reports
 a resolved OpenCode binary for diagnostics but does not advertise it as
 available until the Client has the required pre-admission Job Object
 supervisor.
+
+The `grok` runtime drives an operator-installed Grok Build CLI
+(`>=0.2.117 <0.3.0`) over ACP on macOS or Linux. Install it with the official
+script (`curl -fsSL https://x.ai/cli/install.sh | bash`), complete
+provider-owned authentication with `grok login`, and run
+`first-tree daemon probe` after installation to force immediate
+artifact/platform re-detection. First Tree never reads or relays Grok
+credentials; the probe is install/platform-only and Windows is not advertised
+in V1.
 
 ### agent add
 

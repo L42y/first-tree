@@ -93,6 +93,43 @@ describe("GET /clients/:clientId/providers/:provider/models", () => {
     }
   });
 
+  it("forwards provider-models:list for grok and returns the daemon catalog", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `pm-${crypto.randomUUID().slice(0, 6)}` });
+    await markClientOnInstance(app, admin.clientId, app.config.instanceId);
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    try {
+      const pending = app.inject({
+        method: "GET",
+        url: `/api/v1/clients/${admin.clientId}/providers/grok/models`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+      });
+
+      await vi.waitFor(() => {
+        expect(ws.send).toHaveBeenCalled();
+      });
+      const frame = JSON.parse(String(ws.send.mock.calls[0]?.[0]));
+      expect(frame).toMatchObject({ type: "provider-models:list", provider: "grok" });
+
+      const catalog = {
+        provider: "grok" as const,
+        models: [{ id: "grok-code-fast-1", label: "grok-code-fast-1", isDefault: true }],
+        defaultModelId: "grok-code-fast-1",
+        fetchedAt: new Date().toISOString(),
+        source: "provider-cli" as const,
+        error: null,
+      };
+      expect(resolveClientReply(admin.clientId, frame.ref, catalog)).toBe(true);
+
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject(catalog);
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
   it("returns 502 when the daemon is not connected", async () => {
     const app = getApp();
     const admin = await createAdminContext(app, { username: `pm-${crypto.randomUUID().slice(0, 6)}` });

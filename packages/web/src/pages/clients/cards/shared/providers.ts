@@ -20,6 +20,7 @@ export const PROVIDER_ORDER: RuntimeProvider[] = [
   RUNTIME_PROVIDERS.CLAUDE_CODE_TUI,
   RUNTIME_PROVIDERS.CODEX,
   RUNTIME_PROVIDERS.CURSOR,
+  RUNTIME_PROVIDERS.GROK,
   RUNTIME_PROVIDERS.KIMI_CODE,
   RUNTIME_PROVIDERS.OPENCODE,
 ].filter((p) => isRuntimeProviderEnabled(p));
@@ -29,6 +30,7 @@ export const PROVIDER_LABEL: Record<RuntimeProvider, string> = {
   "claude-code-tui": "Claude Code CLI",
   codex: "Codex",
   cursor: "Cursor",
+  grok: "Grok Build",
   "kimi-code": "Kimi Code",
   opencode: "OpenCode",
 };
@@ -70,6 +72,9 @@ export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = {
   // Cursor is not distributed via npm — its official installer script is the
   // only supported install path (see CURSOR_INSTALL_COMMAND).
   cursor: null,
+  // Grok Build is not distributed via npm either — same installer-script
+  // pattern as Cursor (see GROK_INSTALL_COMMAND).
+  grok: null,
   // Runtime execution is bundled, but the official CLI remains the supported
   // operator login/recovery surface for the shared ~/.kimi-code credential.
   "kimi-code": "@moonshot-ai/kimi-code",
@@ -86,6 +91,26 @@ export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = {
 export const CURSOR_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
 
 /**
+ * Grok Build's official installer. Same posture as Cursor: external-only, the
+ * card renders it for the operator to run. Mirrors `GROK_INSTALL_COMMAND` in
+ * `@first-tree/client`'s grok-binary module (web cannot import the client
+ * package, so the string is duplicated deliberately; update both together).
+ */
+export const GROK_INSTALL_COMMAND = "curl -fsSL https://x.ai/cli/install.sh | bash";
+
+/**
+ * The single install command line for a provider: the `npm install -g` spec
+ * when one exists, otherwise the provider's official installer script. Shared
+ * by `buildInstallCommand` and the install-box probe-error path so non-npm
+ * providers never fall back to another provider's installer.
+ */
+export function providerInstallCommand(provider: RuntimeProvider): string {
+  const npmPackage = PROVIDER_NPM_PACKAGE[provider];
+  if (npmPackage) return `npm install -g ${npmPackage}`;
+  return provider === "grok" ? GROK_INSTALL_COMMAND : CURSOR_INSTALL_COMMAND;
+}
+
+/**
  * Per-runtime login command shown after install. Codex prints
  * `codex login`; Claude Code prints `claude auth login`. Both accept
  * `--api-key` flavored alternatives the user discovers on the install
@@ -97,6 +122,7 @@ export const PROVIDER_LOGIN_COMMAND: Record<RuntimeProvider, string> = {
   "claude-code-tui": "claude auth login",
   codex: "codex login",
   cursor: "cursor-agent login",
+  grok: "grok login",
   "kimi-code": "kimi # then run /login",
   opencode: "opencode auth login",
 };
@@ -108,9 +134,7 @@ export const PROVIDER_LOGIN_COMMAND: Record<RuntimeProvider, string> = {
  * box with a copy button per box.
  */
 export function buildInstallCommand(provider: RuntimeProvider, os?: string | null): string {
-  const npmPackage = PROVIDER_NPM_PACKAGE[provider];
-  const installLine = npmPackage ? `npm install -g ${npmPackage}` : CURSOR_INSTALL_COMMAND;
-  const base = `${installLine}\n${PROVIDER_LOGIN_COMMAND[provider]}`;
+  const base = `${providerInstallCommand(provider)}\n${PROVIDER_LOGIN_COMMAND[provider]}`;
   if (provider === "claude-code-tui") {
     // The tmux-driven runtime additionally needs tmux (>= 3.0). tmux is not an
     // npm package, so emit the command for the host's actual package manager
@@ -217,6 +241,9 @@ export function providerInstallHint(
   }
   if (provider === "cursor") {
     return `Run \`${CURSOR_INSTALL_COMMAND}\` on this ${device} (official Cursor installer).`;
+  }
+  if (provider === "grok") {
+    return `Run \`${GROK_INSTALL_COMMAND}\` on this ${device} (official Grok Build installer).`;
   }
   if (provider === "kimi-code") {
     return `Install the official Kimi CLI with \`npm install -g @moonshot-ai/kimi-code\` on this ${device}, run \`kimi\`, then \`/login\`. First Tree still executes through its bundled Kimi SDK.`;

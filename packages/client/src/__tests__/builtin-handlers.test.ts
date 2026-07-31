@@ -84,6 +84,19 @@ describe("Built-in Handlers", () => {
     expect(typeof handler.shutdown).toBe("function");
   });
 
+  it("registers grok handler with a valid session-oriented shape", () => {
+    registerBuiltinHandlers();
+
+    const factory = getHandlerFactory("grok");
+    expect(typeof factory).toBe("function");
+    const handler = factory({ workspaceRoot: "/tmp/test", runtimeProvider: "grok" });
+    expect(typeof handler.start).toBe("function");
+    expect(typeof handler.resume).toBe("function");
+    expect(typeof handler.inject).toBe("function");
+    expect(typeof handler.suspend).toBe("function");
+    expect(typeof handler.shutdown).toBe("function");
+  });
+
   it("registers kimi-code handler with a valid session-oriented shape", () => {
     registerBuiltinHandlers();
 

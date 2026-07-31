@@ -193,6 +193,78 @@ describe("classifyProviderFailure", () => {
     ).toMatchObject({ action: "retry" });
   });
 
+  it("classifies Grok Build logged-out phrasings as credential, grok-gated", () => {
+    for (const message of [
+      "Error: not logged in. Run `grok login` to authenticate.",
+      "Failed to read credentials from ~/.grok/auth.json",
+    ]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "grok",
+        scope: "provider_turn",
+        source: "sdk",
+      });
+      expect(c, message).toMatchObject({ category: "credential" });
+      expect(
+        decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    }
+    // The same wording under ANOTHER provider must not trip the grok-only
+    // branch (the in-chat re-login CTA keys off category=credential).
+    const other = classifyProviderFailure(new Error("not logged in"), {
+      provider: "codex",
+      scope: "provider_turn",
+      source: "sdk",
+    });
+    expect(other.category).not.toBe("credential");
+  });
+
+  it("classifies Grok Build 429 / exhaustion phrasings as provider capacity, grok-gated", () => {
+    for (const message of [
+      "HTTP 429 Too Many Requests",
+      "Error: resource has been exhausted (rate limit budget spent)",
+    ]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "grok",
+        scope: "provider_turn",
+        source: "sdk",
+      });
+      expect(c, message).toMatchObject({ category: "provider_capacity", reasonCode: "provider_rate_limited" });
+    }
+    // "resource has been exhausted" is not reserved capacity-speak for other
+    // providers — the branch stays grok-only.
+    const other = classifyProviderFailure(new Error("resource has been exhausted"), {
+      provider: "codex",
+      scope: "provider_turn",
+      source: "sdk",
+    });
+    expect(other.category).not.toBe("provider_capacity");
+  });
+
+  it("a transient grok --version verify flake is retried at session start, NOT a terminal capability failure", () => {
+    const err = new Error(
+      "grok --version smoke check did not complete (transient host condition); will retry. Detail: `grok --version` timed out",
+    );
+    err.name = "GrokBinaryVerifyTransientError";
+    const c = classifyProviderFailure(err, { provider: "grok", scope: "session_start", source: "session" });
+    expect(c.category).toBe("transient_transport");
+    expect(c.reasonCode).toBe("grok_verify_transient");
+    expect(
+      decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "retry" });
+  });
+
+  it("a genuinely missing grok binary stays terminal needs_operator (no false retry)", () => {
+    const err = new Error(
+      "Grok Build CLI is missing on this machine. First Tree does not bundle or install the Grok engine.",
+    );
+    const c = classifyProviderFailure(err, { provider: "grok", scope: "session_start", source: "session" });
+    expect(c.category).toBe("capability");
+    expect(c.reasonCode).toBe("grok_binary_missing");
+    expect(
+      decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+  });
+
   it("a codex backend AbortSignal.timeout is transient_transport and retried", () => {
     const err = new DOMException("The operation was aborted due to timeout", "TimeoutError");
     const c = classifyProviderFailure(err, { provider: "codex", scope: "provider_turn", source: "sdk" });

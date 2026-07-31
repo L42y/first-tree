@@ -120,7 +120,7 @@ export function classifyProviderFailure(
       sourceKind: base.kind,
     };
   }
-  if (isCapacity(text, base, retryAfterMs)) {
+  if (isCapacity(text, base, retryAfterMs, context.provider)) {
     return {
       category: "provider_capacity",
       reasonCode: capacityReason(text, base),
@@ -442,7 +442,12 @@ function isCredential(
   // Cursor" CTA renders only for category=credential, so a wording variant
   // that drops the word "authentication" must still classify credential —
   // without leaking these generic phrases into other providers' traffic.
-  return provider === "cursor" && /not logged in|agent login|cursor_api_key/.test(text);
+  if (provider === "cursor" && /not logged in|agent login|cursor_api_key/.test(text)) return true;
+  // Grok Build CLI logged-out phrasings (kept in sync with isGrokAuthError in
+  // handlers/auth-error-hint.ts). Same provider-gating rationale as cursor:
+  // "not logged in" / "grok login" / "auth.json" carry no generic auth token
+  // the shared classifier already covers, so they need a grok-only branch.
+  return provider === "grok" && /not logged in|grok login|auth\.json/.test(text);
 }
 
 function credentialReason(base: Classification): string {
@@ -498,11 +503,20 @@ function deterministicReason(base: Classification): string {
   return base.reasonCode === "unknown" ? "provider_deterministic_input" : base.reasonCode;
 }
 
-function isCapacity(text: string, base: Classification, retryAfterMs: number | undefined): boolean {
+function isCapacity(
+  text: string,
+  base: Classification,
+  retryAfterMs: number | undefined,
+  provider: RuntimeProvider,
+): boolean {
   return (
     retryAfterMs !== undefined ||
     base.reasonCode.includes("rate_limit") ||
-    /rate.?limit|usage limit|session limit|quota|insufficient_quota|overloaded|capacity/.test(text)
+    /rate.?limit|usage limit|session limit|quota|insufficient_quota|overloaded|capacity/.test(text) ||
+    // Grok Build surfaces HTTP 429 with these phrasings after its internal
+    // retry budget is exhausted. Provider-gated like the cursor configuration
+    // branch: the words alone are not reserved capacity-speak elsewhere.
+    (provider === "grok" && /too many requests|resource has been exhausted/.test(text))
   );
 }
 
@@ -518,7 +532,12 @@ function isTransportText(text: string): boolean {
 function capacityReason(text: string, base: Classification): string {
   if (/usage limit|session limit|quota|insufficient_quota/.test(text)) return "provider_usage_limit";
   if (/overloaded|capacity/.test(text)) return "provider_overloaded";
-  if (/rate.?limit/.test(text) || base.reasonCode.includes("rate_limit")) return "provider_rate_limited";
+  if (
+    /rate.?limit|too many requests|resource has been exhausted/.test(text) ||
+    base.reasonCode.includes("rate_limit")
+  ) {
+    return "provider_rate_limited";
+  }
   return base.reasonCode === "unknown" ? "provider_capacity" : base.reasonCode;
 }
 

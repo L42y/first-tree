@@ -5,6 +5,7 @@ import { createClaudeCodeTuiHandler } from "./claude-code-tui/index.js";
 import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "./claude-executable.js";
 import { createCodexHandler } from "./codex/index.js";
 import { createCursorHandler } from "./cursor/index.js";
+import { createGrokHandler } from "./grok/index.js";
 import { createKimiCodeHandler } from "./kimi-code.js";
 import { createOpenCodeHandler } from "./opencode/index.js";
 
@@ -51,6 +52,10 @@ export function registerBuiltinHandlers(deps: RegisterBuiltinHandlersDeps = {}):
   // handler resolves `cursor-agent` / `agent` lazily at session start (with
   // the login-shell probe) and spawns one CLI process per provider turn.
   registerHandler("cursor", (config) => createCursorHandler(config));
+  // Grok Build is external-only: the handler resolves the operator-installed
+  // `grok` binary lazily at session start and drives one ACP (stdio) process
+  // per provider turn. Windows stays fail-closed (POSIX-only supervision).
+  registerHandler("grok", (config) => createGrokHandler(config));
   // Kimi Code is driven through the bundled Node SDK. It reuses the host's
   // ~/.kimi-code credential/config and does not add a First Tree login flow.
   registerHandler("kimi-code", (config) => createKimiCodeHandler(config));

@@ -30,9 +30,10 @@ export type RuntimeAuthView =
 /** Providers whose login the daemon can drive in-product today. */
 export function providerSupportsInProductAuth(provider: RuntimeProvider): boolean {
   // Consistent browser-OAuth Connect: codex (`codex login`), claude-code
-  // (`claude auth login`), and cursor (`cursor-agent login`). `claude-code-tui`
-  // shares Claude Code's credentials but isn't a distinct Connect target.
-  return provider === "codex" || provider === "claude-code" || provider === "cursor";
+  // (`claude auth login`), cursor (`cursor-agent login`), and grok
+  // (`grok login`). `claude-code-tui` shares Claude Code's credentials but
+  // isn't a distinct Connect target.
+  return provider === "codex" || provider === "claude-code" || provider === "cursor" || provider === "grok";
 }
 
 /**

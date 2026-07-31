@@ -1,13 +1,7 @@
 import type { CapabilityEntry, RuntimeProvider } from "@first-tree/shared";
 import type { ReactNode } from "react";
 import { InlineCommand } from "./inline-command.js";
-import {
-  buildInstallCommand,
-  CURSOR_INSTALL_COMMAND,
-  PROVIDER_LABEL,
-  PROVIDER_LOGIN_COMMAND,
-  PROVIDER_NPM_PACKAGE,
-} from "./providers.js";
+import { buildInstallCommand, PROVIDER_LABEL, PROVIDER_LOGIN_COMMAND, providerInstallCommand } from "./providers.js";
 
 type RuntimeInstallBoxProps = {
   provider: RuntimeProvider;
@@ -108,10 +102,9 @@ export function installBoxView(
     return { headline, command: buildInstallCommand(provider, os) };
   }
   if (entry.state === "error") {
-    const npmPackage = PROVIDER_NPM_PACKAGE[provider];
     return {
       headline: `${PROVIDER_LABEL[provider]} probe failed: ${entry.error ?? "unknown error"}. Reinstall on ${hostname}:`,
-      command: npmPackage ? `npm install -g ${npmPackage}` : CURSOR_INSTALL_COMMAND,
+      command: providerInstallCommand(provider),
     };
   }
   // `ok` should not reach here — the Setup-incomplete card filters such

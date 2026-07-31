@@ -3,18 +3,22 @@ import {
   type ClaudeLoginInvocation,
   type CodexBinaryResolution,
   type CursorRuntimeBinaryResolution,
+  type GrokRuntimeBinaryResolution,
   type LoginOutcome,
   probeClaudeCodeCapability,
   probeClaudeCodeTuiCapability,
   probeCodexCapability,
   probeCursorCapability,
+  probeGrokCapability,
   type RuntimeAuthCommand,
   resolveClaudeLoginInvocation,
   resolveCodexRuntimeBinary,
   resolveCursorRuntimeBinary,
+  resolveGrokRuntimeBinary,
   runClaudeBrowserLogin,
   runCodexBrowserLogin,
   runCursorBrowserLogin,
+  runGrokBrowserLogin,
 } from "@first-tree/client";
 import {
   type CapabilityEntry,
@@ -56,6 +60,9 @@ export type RuntimeAuthLoginDeps = {
   resolveCursorBinary?: () => CursorRuntimeBinaryResolution;
   runCursorBrowser?: typeof runCursorBrowserLogin;
   probeCursor?: () => Promise<CapabilityEntry>;
+  resolveGrokBinary?: () => GrokRuntimeBinaryResolution;
+  runGrokBrowser?: typeof runGrokBrowserLogin;
+  probeGrok?: () => Promise<CapabilityEntry>;
   now?: () => number;
 };
 
@@ -145,6 +152,10 @@ export async function runRuntimeAuthLogin(command: RuntimeAuthCommand, deps: Run
     await runCursorRuntimeAuth(command, deps);
     return;
   }
+  if (command.provider === "grok") {
+    await runGrokRuntimeAuth(command, deps);
+    return;
+  }
   deps.log("⚠️", `runtime-auth: provider "${command.provider}" is not supported yet (ref ${command.ref})`);
 }
 
@@ -190,6 +201,53 @@ async function runCursorRuntimeAuth(command: RuntimeAuthCommand, deps: RuntimeAu
 
   await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
   logOutcome("cursor", command.ref, outcome, deps);
+}
+
+/** grok: `<grok-binary> login` (official browser OAuth on the host). */
+async function runGrokRuntimeAuth(command: RuntimeAuthCommand, deps: RuntimeAuthLoginDeps): Promise<void> {
+  const now = deps.now ?? Date.now;
+  const resolveBinary = deps.resolveGrokBinary ?? resolveGrokRuntimeBinary;
+  const probeGrok = deps.probeGrok ?? probeGrokCapability;
+  const runGrokBrowser = deps.runGrokBrowser ?? runGrokBrowserLogin;
+
+  const reflect = async (label: string, failure: AuthFailure | null): Promise<void> => {
+    try {
+      await deps.setProviderEntry("grok", attachAuthError(await probeGrok(), failure, now()));
+    } catch (err) {
+      deps.log("⚠️", `runtime-auth: grok re-probe ${label} failed: ${message(err)}`);
+    }
+  };
+
+  deps.log("•", `runtime-auth: starting grok login (method=browser, ref ${command.ref})`);
+
+  // Login drives the SAME resolved binary the handler spawns (external-only),
+  // including its bounded `--version` smoke check — the first real use.
+  const resolved = resolveBinary();
+  if (!resolved.ok) {
+    deps.log("⚠️", `runtime-auth: grok binary unavailable: ${resolved.error}`);
+    await reflect("after unresolved binary", { reason: "spawn-error", message: resolved.error });
+    return;
+  }
+
+  const setPending = (authUrl?: string): Promise<void> =>
+    deps.setProviderEntry("grok", pendingEntry(deps.currentEntry("grok"), browserPending(now(), authUrl), now()));
+  await setPending();
+  deps.log("•", "runtime-auth: grok browser sign-in opened on this host");
+
+  let outcome: LoginOutcome;
+  try {
+    // `url` is annotated explicitly (unlike the cursor twin) because the
+    // `runGrokBrowserLogin` export has not landed in @first-tree/client yet,
+    // so there is no options type to infer from until it does.
+    outcome = await runGrokBrowser({ binary: resolved.binary, onAuthUrl: (url: string) => void setPending(url) });
+  } catch (err) {
+    deps.log("⚠️", `runtime-auth: grok login threw: ${message(err)}`);
+    await reflect("after login threw", { reason: "spawn-error", message: message(err) });
+    return;
+  }
+
+  await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
+  logOutcome("grok", command.ref, outcome, deps);
 }
 
 async function runCodexRuntimeAuth(command: RuntimeAuthCommand, deps: RuntimeAuthLoginDeps): Promise<void> {

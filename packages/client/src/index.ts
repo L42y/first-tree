@@ -56,6 +56,7 @@ export {
   parseCursorModelsOutput,
   parseKimiConfigModels,
 } from "./runtime/capabilities/discover-models.js";
+export { probeGrokCapability } from "./runtime/capabilities/grok.js";
 export {
   CAPABILITY_REFRESH_BASE_MS,
   CAPABILITY_REFRESH_MAX_MS,
@@ -103,6 +104,14 @@ export type { AttachmentUploader, SelfFence, WorkspaceFence } from "./runtime/do
 export { buildMessageDocumentSnapshots } from "./runtime/doc-snapshots.js";
 export type { Classification, ErrorKind, ErrorSource, RetryStrategy } from "./runtime/error-taxonomy.js";
 export { clampRetryAttempt, classify, ERROR_KINDS, nextRetryDelayMs } from "./runtime/error-taxonomy.js";
+export {
+  findGrokExecutableOnPath,
+  formatGrokBinaryMissingMessage,
+  GROK_INSTALL_COMMAND,
+  type GrokRuntimeBinaryResolution,
+  resolveGrokRuntimeBinary,
+} from "./runtime/grok-binary.js";
+export { type GrokBrowserLoginOptions, runGrokBrowserLogin } from "./runtime/grok-login.js";
 export type {
   AgentHandler,
   HandlerConfig,
