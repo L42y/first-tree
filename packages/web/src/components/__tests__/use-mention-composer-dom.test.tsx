@@ -297,3 +297,38 @@ describe("useMentionComposer", () => {
     expect(harness.canonical).toBe("@builder-2 ");
   });
 });
+
+describe("useMentionComposer — candidate-arrival upgrade", () => {
+  it("upgrades an unedited restored draft when candidates arrive (canonical unchanged)", () => {
+    mount();
+    // Restored canonical draft, roster not yet loaded → raw `@<name>`.
+    act(() => harness.setCandidates([]));
+    act(() => harness.setCanonical("hi @alice-w"));
+    expect(ta().value).toBe("hi @alice-w");
+    expect(harness.composer?.tokens).toEqual([]);
+    // Roster arrives (canonical + scope untouched): the SAME draft
+    // re-resolves into the display label with the correct agentId.
+    act(() => harness.setCandidates([alice, bob]));
+    expect(ta().value).toBe("hi @Alice Wang");
+    expect(harness.composer?.tokens).toEqual([{ agentId: "a1", name: "alice-w", start: 3, end: 14 }]);
+    expect(harness.canonical).toBe("hi @alice-w");
+  });
+
+  it("never upgrades after a local edit — the user's text and tokens stand", () => {
+    mount();
+    act(() => harness.setCandidates([]));
+    act(() => harness.setCanonical("hi @alice-w"));
+    // Local edit before the roster arrives (typing + a real pick).
+    type("hi @alice-w!");
+    expect(harness.canonical).toBe("hi @alice-w!");
+    type("hi @alice-w! @bo");
+    act(() => harness.pick(bob));
+    expect(ta().value).toBe("hi @alice-w! @Bob ");
+    // The late roster must not rewrite the edited text or forge tokens
+    // for the raw `@alice-w` the user typed themselves.
+    act(() => harness.setCandidates([alice, bob]));
+    expect(ta().value).toBe("hi @alice-w! @Bob ");
+    expect(harness.composer?.tokens).toEqual([{ agentId: "a2", name: "bob", start: 13, end: 17 }]);
+    expect(harness.canonical).toBe("hi @alice-w! @bob ");
+  });
+});

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTrigger, MentionCandidate } from "./mention-autocomplete.js";
 import {
   adjustTokensForEdit,
@@ -36,6 +36,13 @@ import {
  * `scope` identifies the draft's owner (chat id, request id, compose
  * context) and forces the same reset even when two drafts share the same
  * canonical text (ChatView is NOT remounted on chat switch).
+ *
+ * Restored/direct-loaded drafts can hydrate before the roster arrives
+ * (raw `@<name>` on screen). While the model is still purely a hydrate —
+ * no local commit since — a later candidate roster re-resolves the SAME
+ * canonical text into display labels + tokens (agentIds unchanged). The
+ * first local edit/pick/delete revokes that eligibility so a late roster
+ * never rewrites the user's text under them.
  *
  * Deliberately minimal: no browser undo/redo state machine (a native
  * undo/redo that crosses a mention simply degrades it to plain text), no
@@ -92,6 +99,13 @@ export function useMentionComposer({
   /** Canonical text corresponding to `model` — distinguishes this hook's own
    *  commits from external replacements (chat switch, restore, clear). */
   const lastCanonicalRef = useRef(canonical);
+  /** Eligibility for the candidate-arrival label upgrade: true only while
+   *  the model is purely a hydrate of the current canonical (initial mount,
+   *  external canonical replace, scope reset). Any local commit
+   *  (typing, pick, atomic delete, programmatic edit) revokes it, so a
+   *  late roster never rewrites text the user is editing or tokens they
+   *  already picked. */
+  const upgradeEligibleRef = useRef(true);
   const scopeRef = useRef(scope);
 
   // Scope change (chat/request switch without remount), or external
@@ -102,16 +116,52 @@ export function useMentionComposer({
   if (scope !== scopeRef.current || canonical !== lastCanonicalRef.current) {
     scopeRef.current = scope;
     lastCanonicalRef.current = canonical;
+    upgradeEligibleRef.current = true;
     const hydrated = hydrateComposerDisplay(canonical, candidatesRef.current);
     modelRef.current = hydrated;
     setModel(hydrated);
   }
+
+  // Candidate-arrival label upgrade: a restored/direct-loaded draft is
+  // hydrated with whatever roster is available (often empty on first
+  // paint), leaving raw `@<name>` literals on screen. While the model is
+  // still purely that hydrate (upgradeEligibleRef), a roster arriving —
+  // in one batch or several — re-resolves the SAME canonical text into
+  // display labels + tokens. Canonical content and agentIds never change
+  // (rehydrate is a pure projection; serialize round-trips). The stable
+  // signature dep avoids re-running on array-identity-only changes.
+  const candidatesSignature = useMemo(
+    () => candidates.map((c) => `${c.agentId}:${c.name ?? ""}:${c.displayName ?? ""}`).join("|"),
+    [candidates],
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: candidatesSignature IS the dep — its value controls when we re-resolve; the body reads the roster via candidatesRef.
+  useEffect(() => {
+    if (!upgradeEligibleRef.current) return;
+    const hydrated = hydrateComposerDisplay(lastCanonicalRef.current, candidatesRef.current);
+    setModel((prev) => {
+      if (
+        hydrated.text === prev.text &&
+        hydrated.tokens.length === prev.tokens.length &&
+        hydrated.tokens.every((t, i) => {
+          const p = prev.tokens[i];
+          return p && t.agentId === p.agentId && t.name === p.name && t.start === p.start && t.end === p.end;
+        })
+      ) {
+        return prev;
+      }
+      modelRef.current = hydrated;
+      return hydrated;
+    });
+  }, [candidatesSignature]);
 
   const commit = useCallback(
     (nextDisplay: string, nextTokens: ComposerMentionToken[]) => {
       const tokens = normalizeTokens(nextTokens);
       const nextCanonical = serializeComposer(nextDisplay, tokens);
       lastCanonicalRef.current = nextCanonical;
+      // Any local commit revokes the label-upgrade eligibility: from here
+      // on, the text belongs to the user's editing, not to a hydrate.
+      upgradeEligibleRef.current = false;
       const nextModel = { text: nextDisplay, tokens };
       modelRef.current = nextModel;
       setModel(nextModel);
