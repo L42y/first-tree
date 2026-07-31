@@ -32,6 +32,16 @@ function fakeSpawn(child: FakeChild): {
 }
 
 describe("runGrokBrowserLogin", () => {
+  it("win32 → refuses without spawning", async () => {
+    const child = new FakeChild();
+    const { spawnFn, calls } = fakeSpawn(child);
+    const outcome = await runGrokBrowserLogin({ binary: "/x/grok", spawnFn, platform: "win32" });
+    expect(outcome).toMatchObject({ ok: false, reason: "spawn-error" });
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.error).toContain("not supported on Windows in V1");
+    expect(calls).toEqual([]);
+  });
+
   it("spawns `<binary> login` and resolves ok on exit 0 (Grok writes its own credential store)", async () => {
     const child = new FakeChild();
     const { spawnFn, calls } = fakeSpawn(child);

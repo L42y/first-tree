@@ -12,7 +12,7 @@ import {
   providerInstallHint,
   runtimeProviderLabel,
 } from "../cards/shared/providers.js";
-import { installBoxView } from "../cards/shared/runtime-install-box.js";
+import { installBoxView, RuntimeInstallBox } from "../cards/shared/runtime-install-box.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,6 +67,33 @@ describe("grok provider — setup card surfaces", () => {
     const view = installBoxView(entry, "grok", "devbox");
     expect(view.command).toBe(GROK_INSTALL_COMMAND);
     expect(view.headline).toContain("Grok Build probe failed");
+  });
+
+  it("grok on Windows renders the unsupported status with NO install command", async () => {
+    const entry: CapabilityEntry = {
+      // The exact shape the win32 probe now produces (state error, not missing).
+      state: "error",
+      available: false,
+      error:
+        "Grok Build provider is not supported on Windows in V1 (macOS/Linux only). First Tree fails closed on this platform and will not spawn `grok` here.",
+      detectedAt: "2026-07-14T00:00:00.000Z",
+    };
+    const view = installBoxView(entry, "grok", "devbox", "win32");
+    expect(view.command).toBeNull();
+    expect(view.headline).toContain("not supported on Windows in V1");
+    expect(view.headline).not.toContain(GROK_INSTALL_COMMAND);
+
+    // The rendered box shows the status and no setup command box at all.
+    const el = await render(<RuntimeInstallBox provider="grok" entry={entry} hostname="devbox" os="win32" />);
+    expect(el.textContent).toContain("not supported on Windows in V1");
+    expect(el.textContent).not.toContain(GROK_INSTALL_COMMAND);
+    expect(el.querySelector("pre")).toBeNull();
+  });
+
+  it("grok on Windows still renders the install box for other providers / platforms unchanged", async () => {
+    const el = await render(<RuntimeInstallBox provider="grok" entry={null} hostname="devbox" os="darwin" />);
+    expect(el.textContent).toContain(GROK_INSTALL_COMMAND);
+    expect(el.querySelector("pre")).not.toBeNull();
   });
 });
 

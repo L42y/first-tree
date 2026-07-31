@@ -154,13 +154,14 @@ export function grokShellCommandIsReadOnly(command: string | null): boolean {
 /**
  * True when a tool invocation is PROVEN read-only. The provider's
  * `_meta["x.ai/tool"].read_only === true` is required; a shell tool
- * (`run_terminal_cmd`, detected by its `command` input) must additionally
- * classify as a supported read. Anything else — read_only false, absent, or
- * unknown — is an unproven side effect and ends automatic replay.
+ * (`run_terminal_cmd` / kind "execute", keyed on name/kind) must
+ * additionally carry a command that classifies as a supported read — a
+ * missing command fails CLOSED (unsafe). Anything else — read_only false,
+ * absent, or unknown — is an unproven side effect and ends automatic replay.
  */
 export function grokToolIsReadOnly(tool: GrokToolInfo): boolean {
   if (tool.readOnly !== true) return false;
-  if (tool.command !== null) return grokShellCommandIsReadOnly(tool.command);
+  if (tool.isShell) return grokShellCommandIsReadOnly(tool.command);
   return true;
 }
 
@@ -364,8 +365,8 @@ export const createGrokHandler: HandlerFactory = (config) => {
   }
 
   function providerRefsForTool(tool: GrokToolInfo): ToolFileRef[] {
-    if (tool.command) {
-      return cwd
+    if (tool.isShell) {
+      return tool.command && cwd
         ? toolFileRefsFromShellCommand({
             command: tool.command,
             cwd,
@@ -649,6 +650,8 @@ export const createGrokHandler: HandlerFactory = (config) => {
           // turn (and any turn after a synthetic placeholder) runs session/new.
           resumeSessionId: providerSessionId,
           mcpServers: turnPayload.mcpServers,
+          model,
+          reasoningEffort,
           promptText: providerInput,
           ...(eofCloseWaitMs ? { eofCloseWaitMs } : {}),
           onInitialized: () => {
@@ -731,20 +734,14 @@ export const createGrokHandler: HandlerFactory = (config) => {
           providerCompleted = true;
           return;
         }
-        if (prompt && prompt.stopReason === "cancelled") {
-          // Provider-side cancel without a local abort settles as an aborted
-          // turn: redeliver, never consume.
-          retryReason = "grok_turn_cancelled";
-          retryStatus = "success";
-          return;
-        }
-
         // Failure path. Auth / capacity / protocol failures commonly produce
         // NO prompt response — classify from the failure phase error, the
-        // stopReason, or the stderr tail + exit status (mirror cursor's
-        // failureText assembly). A COMPLETED prompt whose process did not
-        // exit 0 is a failure input too: the "full drain exits 0" boundary
-        // never silently ACKs a dirty exit as success.
+        // stopReason (including a provider-side `cancelled`, which is an
+        // abnormal end, NOT an unconditional redelivery), or the stderr
+        // tail + exit status (mirror cursor's failureText assembly). A
+        // COMPLETED prompt whose process did not exit 0 is a failure input
+        // too: the "full drain exits 0" boundary never silently ACKs a dirty
+        // exit as success.
         updateReplaySafety(state);
         const stderrText = outcome.stderrTail.trim();
         const phaseErrorText = outcome.failure ? outcome.failure.error.message.trim() : "";
@@ -1005,7 +1002,8 @@ export const createGrokHandler: HandlerFactory = (config) => {
     // spawn deterministically if a stale config ever routes here).
     if (platform === "win32") {
       throw new Error(
-        "the grok provider does not support Windows: the Grok Build ACP runtime is supervised macOS/Linux-only",
+        "the grok provider is not supported on Windows in V1 (macOS/Linux only); " +
+          "the Grok Build ACP runtime is supervised macOS/Linux-only",
       );
     }
     // Landing campaign trials require the codex app-server workspace-only

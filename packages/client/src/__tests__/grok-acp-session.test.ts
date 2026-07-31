@@ -1,8 +1,10 @@
+import { spawn } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fetchGrokAcpInitializeMeta } from "../handlers/grok/acp-session.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fetchGrokAcpInitializeMeta, runGrokAcpAttempt } from "../handlers/grok/acp-session.js";
+import type { ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
 
 /**
  * Transport-level coverage for the model-discovery ACP handshake, against a
@@ -33,18 +35,25 @@ process.stdin.on("data", (chunk) => {
         if (behavior === "init_error") {
           send({ jsonrpc: "2.0", id: req.id, error: { code: -32000, message: "initialize rejected" } });
         } else {
-          send({ jsonrpc: "2.0", id: req.id, result: { protocolVersion: 1, agentCapabilities: {}, _meta: { agentVersion: "0.2.117", modelState: { currentModelId: "grok-4", availableModels: [{ modelId: "grok-4", name: "Grok 4" }] } } } });
+          send({ jsonrpc: "2.0", id: req.id, result: { protocolVersion: behavior === "wrong_protocol" ? 2 : 1, agentCapabilities: {}, _meta: { agentVersion: "0.2.117", modelState: { currentModelId: "grok-4", availableModels: [{ modelId: "grok-4", name: "Grok 4" }] } } } });
         }
+      } else if (req && req.method === "session/new" && req.id !== undefined) {
+        send({ jsonrpc: "2.0", id: req.id, result: { sessionId: "s-probe", models: { currentModelId: "grok-4", availableModels: [] } } });
+      } else if (req && req.method === "session/set_model" && req.id !== undefined) {
+        send({ jsonrpc: "2.0", id: req.id, result: { _meta: { model: { Ok: req.params && req.params.modelId } } } });
+      } else if (req && req.method === "session/prompt" && req.id !== undefined) {
+        const clientPid = req.params && req.params._meta && typeof req.params._meta.promptId === "string" ? req.params._meta.promptId : "p1";
+        send({ jsonrpc: "2.0", id: req.id, result: { stopReason: "end_turn", _meta: { promptId: clientPid, modelId: "grok-4" } } });
       }
     }
     idx = buffer.indexOf("\\n");
   }
 });
 process.stdin.on("end", () => {
-  if (behavior === "ignore_eof") return; // deliberately never exits
+  if (behavior === "ignore_eof" || behavior === "hold_after_prompt") return; // deliberately never exits
   process.exit(behavior === "exit_nonzero" ? 3 : 0);
 });
-if (behavior === "ignore_eof") setInterval(() => {}, 1000);
+if (behavior === "ignore_eof" || behavior === "hold_after_prompt") setInterval(() => {}, 1000);
 `;
 
 let dir: string;
@@ -131,6 +140,15 @@ describe("fetchGrokAcpInitializeMeta — bounded EOF→close barrier", () => {
     assertProcessGone(pidFile);
   });
 
+  it("rejects an initialize response with an incompatible protocolVersion", async () => {
+    const pidFile = pidFileFor("wrong-protocol");
+    const result = await fetchMeta("wrong_protocol", pidFile);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toContain("protocolVersion 2");
+    assertProcessGone(pidFile);
+  });
+
   it("times out and kills a child that never answers initialize", async () => {
     const pidFile = pidFileFor("silent");
     // A binary that reads stdin forever without answering anything.
@@ -151,5 +169,144 @@ describe("fetchGrokAcpInitializeMeta — bounded EOF→close barrier", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.error).toContain("timed out");
     assertProcessGone(pidFile);
+  });
+});
+
+describe("runGrokAcpAttempt — teardown timer hygiene", () => {
+  it("reclaims a child with non-piped stdio and bounded-waits for its close", async () => {
+    if (process.platform === "win32") return; // POSIX process-group kill semantics
+    let childPid: number | undefined;
+    const supervisor: ProviderProcessSupervisor = {
+      spawn(spec) {
+        // stdio "ignore" yields null stdio streams — the defensive branch.
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          ...spec.options,
+          stdio: "ignore",
+        });
+        childPid = child.pid;
+        return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+      },
+    };
+    const outcome = await runGrokAcpAttempt({
+      supervisor,
+      binary,
+      args: [],
+      env: { PATH: process.env.PATH ?? "" },
+      cwd: dir,
+      abortSignal: new AbortController().signal,
+      label: "grok unpiped reclaim test",
+      clientVersion: "0",
+      resumeSessionId: null,
+      mcpServers: [],
+      model: "",
+      reasoningEffort: "",
+      promptText: "hi",
+      onSessionUpdate: () => {},
+      onXaiNotification: () => {},
+      log: () => {},
+    });
+
+    expect(outcome.spawnError?.message).toContain("not piped");
+    // The child was SIGKILLed and the branch waited for it to die.
+    if (!childPid) throw new Error("unreachable");
+    let alive = true;
+    try {
+      process.kill(childPid, 0);
+    } catch {
+      alive = false;
+    }
+    expect(alive).toBe(false);
+  });
+
+  it("a fast-closing non-piped child resolves well before the reclaim deadline", async () => {
+    if (process.platform === "win32") return; // POSIX process-group kill semantics
+    const supervisor: ProviderProcessSupervisor = {
+      spawn(spec) {
+        // Exits ~50ms after spawn with null stdio — the reclaim must catch the
+        // close via the pre-registered waiter, not wait the full 5s deadline.
+        const child = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 50)"], {
+          ...spec.options,
+          stdio: "ignore",
+        });
+        return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+      },
+    };
+    const startedAt = Date.now();
+    const outcome = await runGrokAcpAttempt({
+      supervisor,
+      binary,
+      args: [],
+      env: { PATH: process.env.PATH ?? "" },
+      cwd: dir,
+      abortSignal: new AbortController().signal,
+      label: "grok unpiped fast-close test",
+      clientVersion: "0",
+      resumeSessionId: null,
+      mcpServers: [],
+      model: "",
+      reasoningEffort: "",
+      promptText: "hi",
+      onSessionUpdate: () => {},
+      onXaiNotification: () => {},
+      log: () => {},
+    });
+
+    expect(outcome.spawnError?.message).toContain("not piped");
+    // The 5s reclaim deadline must NOT be hit: a fast close resolves almost immediately.
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it("clears pending SIGKILL timers once the terminated child closes (no post-close group kill)", async () => {
+    if (process.platform === "win32") return; // POSIX process-group kill semantics
+    const spy = vi.spyOn(process, "kill");
+    const supervisor: ProviderProcessSupervisor = {
+      spawn(spec) {
+        const child = spawn(binary, [], {
+          ...spec.options,
+          env: { ...spec.options.env, GROK_FAKE_DISCOVERY_BEHAVIOR: "hold_after_prompt" },
+        });
+        return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+      },
+    };
+    try {
+      const outcome = await runGrokAcpAttempt({
+        supervisor,
+        binary,
+        args: [],
+        env: Object.fromEntries(
+          Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+        ),
+        cwd: dir,
+        abortSignal: new AbortController().signal,
+        label: "grok timer-hygiene test",
+        clientVersion: "0",
+        resumeSessionId: null,
+        mcpServers: [],
+        model: "",
+        reasoningEffort: "",
+        promptText: "hi",
+        eofCloseWaitMs: 50,
+        killGraceMs: 50,
+        onSessionUpdate: () => {},
+        onXaiNotification: () => {},
+        log: () => {},
+      });
+
+      // The child answered the prompt, ignored EOF, and was reclaimed via
+      // SIGTERM — a non-clean exit, never a silent success.
+      expect(outcome.prompt).not.toBeNull();
+      expect(outcome.cleanExit).toBe(false);
+
+      // Wait well past the (shortened) hard-kill grace: if the close handler
+      // failed to clear the timers, a group SIGKILL would fire here against
+      // whatever now owns the PGID.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const groupKills = spy.mock.calls.filter(([pid]) => typeof pid === "number" && pid < 0);
+      expect(groupKills.filter(([, signal]) => signal === "SIGTERM")).toHaveLength(1);
+      expect(groupKills.filter(([, signal]) => signal === "SIGKILL")).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

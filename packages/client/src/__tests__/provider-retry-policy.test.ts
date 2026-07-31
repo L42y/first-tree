@@ -406,6 +406,42 @@ describe("classifyProviderFailure", () => {
       }),
     ).toMatchObject({ category: "deterministic_input", reasonCode: "provider_deterministic_input" });
   });
+
+  it("grok win32 fail-closed classifies capability/grok_platform_unsupported with a deterministic stop", () => {
+    const c = classifyProviderFailure(
+      new Error("the grok provider is not supported on Windows in V1 (macOS/Linux only)"),
+      { provider: "grok", scope: "provider_turn" },
+    );
+    expect(c.category).not.toBe("unknown");
+    expect(c.reasonCode).not.toBe("grok_binary_missing");
+    expect(c).toMatchObject({ category: "capability", reasonCode: "grok_platform_unsupported" });
+    expect(
+      decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "stop" });
+  });
+
+  it("grok out-of-range binary classifies capability/grok_binary_unsupported (never unknown, never binary_missing)", () => {
+    const c = classifyProviderFailure(
+      new Error(
+        "Grok Build CLI at /home/op/.local/bin/grok is not a supported Grok Build version: `grok --version` " +
+          "reported 0.2.89 (supported range >=0.2.117 <0.3.0).",
+      ),
+      { provider: "grok", scope: "provider_turn" },
+    );
+    expect(c.category).not.toBe("unknown");
+    expect(c.reasonCode).not.toBe("grok_binary_missing");
+    expect(c).toMatchObject({ category: "capability", reasonCode: "grok_binary_unsupported" });
+    expect(
+      decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "stop" });
+    // The grok gates stay provider-scoped: the same text under another
+    // provider must not take the grok reason codes.
+    const other = classifyProviderFailure(new Error("not supported on Windows in V1"), {
+      provider: "cursor",
+      scope: "provider_turn",
+    });
+    expect(other.reasonCode).not.toBe("grok_platform_unsupported");
+  });
 });
 
 describe("decideProviderRetry", () => {

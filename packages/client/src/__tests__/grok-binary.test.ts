@@ -158,6 +158,15 @@ describe("verifyGrokExecutable — version parse + supported-range gate", () => 
 });
 
 describe("resolveGrokRuntimeBinary — spawn-time smoke split", () => {
+  it("win32 → refuses BEFORE any filesystem consult (central no-spawn gate)", () => {
+    const findOnPath = vi.fn(() => "/fake/grok");
+    const resolution = resolveGrokRuntimeBinary({ HOME: dir }, { platform: "win32", findOnPath });
+    expect(resolution).toMatchObject({ ok: false, transient: false });
+    if (resolution.ok) throw new Error("unreachable");
+    expect(resolution.error).toContain("not supported on Windows in V1");
+    expect(findOnPath).not.toHaveBeenCalled();
+  });
+
   it("missing binary → non-transient error carrying the official installer command", () => {
     const resolution = resolveGrokRuntimeBinary({ PATH: join(dir, "nope"), HOME: dir }, { findOnPath: () => null });
     expect(resolution.ok).toBe(false);
@@ -183,7 +192,7 @@ describe("resolveGrokRuntimeBinary — spawn-time smoke split", () => {
     expect(resolution.error).not.toMatch(/is missing/i);
   });
 
-  it("clean broken-binary verdict is permanent (capability failure copy)", () => {
+  it("clean broken-binary verdict is permanent and does NOT read as missing", () => {
     const resolution = resolveGrokRuntimeBinary(
       { HOME: dir },
       {
@@ -194,7 +203,11 @@ describe("resolveGrokRuntimeBinary — spawn-time smoke split", () => {
     expect(resolution.ok).toBe(false);
     if (resolution.ok) throw new Error("unreachable");
     expect(resolution.transient).toBe(false);
-    expect(resolution.error).toContain("Grok Build CLI is missing");
+    // "missing" is only for "no binary resolved" — a present-but-broken
+    // binary is an unsupported verdict with a deterministic classification.
+    expect(resolution.error).toContain("is not a supported Grok Build version");
+    expect(resolution.error).not.toMatch(/is missing/i);
+    expect(isGrokBinaryMissingError(new Error(resolution.error))).toBe(false);
   });
 
   it("an out-of-range version is permanent and names the supported range", () => {
@@ -213,6 +226,8 @@ describe("resolveGrokRuntimeBinary — spawn-time smoke split", () => {
     if (resolution.ok) throw new Error("unreachable");
     expect(resolution.transient).toBe(false);
     expect(resolution.error).toContain("outside the supported range");
+    expect(resolution.error).not.toMatch(/is missing/i);
+    expect(isGrokBinaryMissingError(new Error(resolution.error))).toBe(false);
   });
 
   it("verified binary reports the parsed version and memoizes the blocking smoke check", () => {

@@ -22,8 +22,11 @@ export type GrokProbeDeps = {
  * `"path"` for grok.
  *
  * Platform gate: Grok Build V1 supports macOS and Linux only. On Windows the
- * probe fails closed — it reports the provider unusable WITHOUT spawning
- * anything or consulting the filesystem.
+ * probe fails closed with state `error` (NOT `missing`): a `missing` entry
+ * makes the Web setup cards render the official install command in a loop
+ * for a runtime First Tree explicitly does not support on that platform.
+ * The gate short-circuits BEFORE the resolver — no filesystem consult, no
+ * spawn.
  */
 export async function probeGrokCapability(deps: GrokProbeDeps = {}): Promise<CapabilityEntry> {
   const env = deps.env ?? process.env;
@@ -32,12 +35,10 @@ export async function probeGrokCapability(deps: GrokProbeDeps = {}): Promise<Cap
 
   return runDetect(async (): Promise<DetectOutcome> => {
     if (platform === "win32") {
-      return {
-        installed: false,
-        error:
-          "Grok Build is not supported on Windows — the Grok Build CLI supports macOS and Linux only. " +
+      throw new Error(
+        "Grok Build provider is not supported on Windows in V1 (macOS/Linux only). " +
           "First Tree fails closed on this platform and will not spawn `grok` here.",
-      };
+      );
     }
     const pathBinary = findOnPath(env);
     if (pathBinary) {

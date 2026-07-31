@@ -19,13 +19,15 @@ describe("probeGrokCapability — install-only detection", () => {
     expect(entry.error).toContain(GROK_INSTALL_COMMAND);
   });
 
-  it("win32 → non-ok fail-closed WITHOUT consulting the filesystem or spawning", async () => {
+  it("win32 → state error (NOT missing) fail-closed WITHOUT consulting the filesystem or spawning", async () => {
     // The platform gate must short-circuit BEFORE the resolver runs: no
     // findOnPath call, no `grok` spawn, no credential / network inspection.
+    // state `error` (not `missing`) keeps the Web setup cards from rendering
+    // the install command for a runtime V1 does not support on Windows.
     const findOnPath = vi.fn(() => "/fake/grok");
     const entry = await probeGrokCapability({ platform: "win32", findOnPath });
-    expect(entry).toMatchObject({ state: "missing", available: false });
-    expect(entry.error).toContain("not supported on Windows");
+    expect(entry).toMatchObject({ state: "error", available: false });
+    expect(entry.error).toContain("not supported on Windows in V1");
     expect(findOnPath).not.toHaveBeenCalled();
   });
 

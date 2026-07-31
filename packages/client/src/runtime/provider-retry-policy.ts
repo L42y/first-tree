@@ -93,6 +93,30 @@ export function classifyProviderFailure(
       sourceKind: base.kind,
     };
   }
+  // Grok deterministic capability gates, produced by the win32 fail-closed
+  // path (handler bring-up / resolveGrokRuntimeBinary refusal) and the
+  // resolved-but-unsupported binary verdict (out-of-range / failed
+  // verification). Both must stop deterministically — never the unknown
+  // retry path, never the binary_missing reason code (that one is reserved
+  // for "no binary resolved").
+  if (context.provider === "grok" && /not supported on windows in v1/.test(text)) {
+    return {
+      category: "capability",
+      reasonCode: "grok_platform_unsupported",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
+  if (context.provider === "grok" && /is not a supported grok build version/.test(text)) {
+    return {
+      category: "capability",
+      reasonCode: "grok_binary_unsupported",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
   if (isCapability(text, base)) {
     return {
       category: "capability",

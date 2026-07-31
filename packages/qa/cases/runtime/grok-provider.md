@@ -35,8 +35,8 @@ that case and the run-local plan, not this one.
 - Capability: with the CLI absent, the computer card shows setup-incomplete for Grok Build with the official installer
   command (`curl -fsSL https://x.ai/cli/install.sh | bash`) and no npm install copy; after installing and re-probing,
   the entry turns `ok` with a `path` runtime source. Detection must never launch the binary or judge login state.
-- Provider selection: a new agent can be created on `grok` only when the bound client advertises it; the binding is
-  immutable afterwards, matching the other providers.
+- Provider selection: a new agent can be created on `grok` only when the bound client advertises it; afterwards the
+  provider changes only via the explicit runtime-switch flow, matching the other providers.
 - Auth recovery: with the CLI logged out, a real turn fails as a credential failure; the chat surfaces a durable
   runtime notice plus a "Log in to Grok Build" action before the delivery is acked. Driving the login runs the
   provider's official login on the host (`grok login`); progress rides `pendingAuth` / `lastAuthError` on the
@@ -59,8 +59,29 @@ that case and the run-local plan, not this one.
 - Free-form model: set an exact model id through Web (free-form input with the `auto (Grok default)` hint), confirm it
   round-trips and reaches the next turn's spawn as `--model`; an id the provider rejects must fail visibly as a
   configuration failure with no silent fallback, and recover after an explicit config change.
+- Model/effort on an EXISTING session: with a chat that already has a persisted Grok session, change the model and/or
+  effort in Web and send the next message — the resumed turn must apply the new selection via ACP `session/set_model`
+  after `session/load` and before the prompt (session/load restores the session's persisted model/effort, so argv-only
+  selection would silently keep the old values). An invalid model must be visibly rejected by `session/set_model` as a
+  configuration failure — never a silent fallback to the persisted selection.
 - Reasoning effort: the effort control is shown for Grok Build with inherit/low/medium/high. Round-trip each value:
-  inherit sends no `--effort` flag; low/medium/high reach the next turn's spawn as `--effort <value>`.
+  low/medium/high reach the next turn's spawn as `--effort <value>` and are re-applied after every session open via
+  `session/set_model` (`_meta.reasoningEffort`). An explicit model is always re-applied with it; clearing only the
+  effort removes just the effort override (no effort meta is sent) while the explicit model is still re-applied —
+  only when the model is ALSO empty does the next turn's `session/set_model` carry the initialize-advertised default
+  model, resetting the session to the provider default. An existing session's persisted selection is never silently
+  kept.
+- Replay contract on resume: a resumed turn sends `session/load` with `_meta.noReplay: true`, and any historical
+  notification stamped `_meta.isReplay` is dropped even when it arrives inside the active prompt window — the resumed
+  turn's visible output and `token_usage` must reflect only the current prompt.
+- Terminal stop reasons: a turn ending with an ACP completion stop reason other than `end_turn` (`max_tokens` or
+  `refusal`) still completes the turn with the accumulated assistant text and usage preserved — it must not surface
+  as a provider failure. A provider-side `cancelled` is an abnormal end routed through ProviderAttempt/replay-safety
+  like any other failure: redelivery only when the turn is replay-safe, consumed-terminal when user-visible output
+  or tool side effects already happened — never an unconditional abort/redelivery.
+- Discovery version gate: host-local model discovery resolves the binary through the launch-verified supported range
+  (`>=0.2.117 <0.3.0`), never the existence-only probe path; an out-of-range `grok` degrades the catalog to
+  `unavailable` instead of spawning the ACP handshake.
 - Context Tree I/O: in a chat whose agent has a bound Context Tree, have the agent read a tree node and edit a tree
   file; the Context tab must record repo-qualified read/write evidence for the native Grok file tools
   (`read_file`, `write`, `search_replace`) and for the shell-read path (`git_status_delta` may carry the write).
@@ -74,16 +95,20 @@ that case and the run-local plan, not this one.
 
 `PASS` means the live branches above were exercised with real product evidence: an authenticated Grok turn completed
 end to end under the canonical posture, credential failure surfaced the durable notice + login action and recovered
-in-product, ACP session new/load continuity held across turns and a daemon restart, same-cwd parallel chats stayed
-isolated, a First Tree-managed MCP tool was delivered via `mcpServers` and called, model and effort config
-round-tripped (including the visible model-rejection branch), 429 capacity produced a visible retry, and Context Tree
-I/O evidence appeared for both native-tool and shell-read paths.
+in-product, ACP session new/load continuity held across turns and a daemon restart, model/effort changes on an
+existing session were applied via `session/set_model` after `session/load` (invalid model visibly rejected, no silent
+fallback), replay-marked traffic on resume was filtered, terminal stop reasons completed with preserved text,
+discovery stayed behind the version gate, same-cwd parallel chats stayed isolated, a First Tree-managed MCP tool was
+delivered via `mcpServers` and called, model and effort config round-tripped, 429 capacity produced a visible retry,
+and Context Tree I/O evidence appeared for both native-tool and shell-read paths.
 
-`FAIL` means a reproducible product issue: e.g. prompt in argv, a session id resumed in the wrong chat, a lingering
-process after turn completion, a terminal failure acked without a durable chat notice, silent model or effort
-fallback, managed MCP leaking into provider-side config files or surviving removal, cross-chat session-dir
-interleaving, a 429 surfaced as terminal without retry, missing Context Tree I/O evidence, or a drain that misses a
-live `grok` process.
+`FAIL` means a reproducible product issue: e.g. prompt in argv, a session id resumed in the wrong chat, a resumed turn
+silently keeping the session's persisted model/effort instead of the configured one, replayed history leaking into a
+resumed turn's output or usage, a terminal stop reason surfaced as a provider failure, model discovery spawning an
+out-of-range binary, a lingering process after turn completion, a terminal failure acked without a durable chat
+notice, silent model or effort fallback, managed MCP leaking into provider-side config files or surviving removal,
+cross-chat session-dir interleaving, a 429 surfaced as terminal without retry, missing Context Tree I/O evidence, or a
+drain that misses a live `grok` process.
 
 `BLOCKED` means the CLI, account, entitlement, network, platform (Windows), or run-cell topology prevented a live
 branch — never a product `FAIL`. `INCONCLUSIVE` means turns ran but the evidence cannot distinguish the claimed

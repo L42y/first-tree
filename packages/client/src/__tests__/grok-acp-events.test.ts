@@ -236,6 +236,7 @@ describe("read-only replay-safety ladder", () => {
     toolCallId: "t",
     name: "tool",
     kind: null,
+    isShell: false,
     readOnly: null,
     command: null,
     paths: [],
@@ -253,11 +254,81 @@ describe("read-only replay-safety ladder", () => {
   });
 
   it("a shell tool needs read_only AND a supported read classification", () => {
-    expect(grokToolIsReadOnly(tool({ name: "run_terminal_cmd", readOnly: true, command: "cat NODE.md" }))).toBe(true);
-    expect(grokToolIsReadOnly(tool({ name: "run_terminal_cmd", readOnly: true, command: "rm -rf x" }))).toBe(false);
-    expect(grokToolIsReadOnly(tool({ name: "run_terminal_cmd", readOnly: false, command: "cat NODE.md" }))).toBe(false);
+    expect(
+      grokToolIsReadOnly(tool({ name: "run_terminal_cmd", isShell: true, readOnly: true, command: "cat NODE.md" })),
+    ).toBe(true);
+    expect(
+      grokToolIsReadOnly(tool({ name: "run_terminal_cmd", isShell: true, readOnly: true, command: "rm -rf x" })),
+    ).toBe(false);
+    expect(
+      grokToolIsReadOnly(tool({ name: "run_terminal_cmd", isShell: true, readOnly: false, command: "cat NODE.md" })),
+    ).toBe(false);
     expect(grokShellCommandIsReadOnly("git status")).toBe(false);
     expect(grokShellCommandIsReadOnly(null)).toBe(false);
+  });
+
+  it("a shell tool with a MISSING command fails closed (unsafe) even with read_only true", () => {
+    expect(grokToolIsReadOnly(tool({ name: "run_terminal_cmd", isShell: true, readOnly: true, command: null }))).toBe(
+      false,
+    );
+  });
+
+  it("shell detection keys on kind execute even under a different name", () => {
+    expect(
+      grokToolIsReadOnly(
+        tool({ name: "shell_custom", kind: "execute", isShell: true, readOnly: true, command: "cat x" }),
+      ),
+    ).toBe(true);
+    expect(grokToolIsReadOnly(tool({ name: "shell_custom", kind: "execute", isShell: true, readOnly: true }))).toBe(
+      false,
+    );
+  });
+
+  it("reads the command from _meta x.ai/tool input when rawInput lacks it", () => {
+    const normalized = normalizeGrokSessionUpdate({
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-meta",
+        title: "run_terminal_cmd",
+        rawInput: {},
+        _meta: {
+          "x.ai/tool": {
+            version: 1,
+            name: "run_terminal_cmd",
+            kind: "execute",
+            read_only: true,
+            input: { command: "cat NODE.md" },
+          },
+        },
+      },
+    });
+    const event = normalized?.event;
+    if (event?.kind !== "tool_started") throw new Error("expected tool_started");
+    expect(event.tool.command).toBe("cat NODE.md");
+    expect(event.tool.isShell).toBe(true);
+    expect(grokToolIsReadOnly(event.tool)).toBe(true);
+  });
+
+  it("marks run_terminal_cmd and kind execute as shell in normalized events", () => {
+    const byName = normalizeGrokSessionUpdate({
+      sessionId: "s",
+      update: { sessionUpdate: "tool_call", toolCallId: "t1", title: "run_terminal_cmd", rawInput: {} },
+    });
+    if (byName?.event.kind !== "tool_started") throw new Error("expected tool_started");
+    expect(byName.event.tool.isShell).toBe(true);
+    const byKind = normalizeGrokSessionUpdate({
+      sessionId: "s",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "t2",
+        title: "something_else",
+        _meta: { "x.ai/tool": { kind: "execute", read_only: true } },
+      },
+    });
+    if (byKind?.event.kind !== "tool_started") throw new Error("expected tool_started");
+    expect(byKind.event.tool.isShell).toBe(true);
+    expect(grokToolIsReadOnly(byKind.event.tool)).toBe(false);
   });
 });
 

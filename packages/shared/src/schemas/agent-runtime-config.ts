@@ -321,9 +321,14 @@ const grokRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
   kind: z.literal("grok"),
   // Maps to the Grok Build CLI `--effort <low|medium|high>` flag. The empty
   // string is an "inherit" sentinel: when set, the handler omits `--effort`
-  // so Grok falls back to its own local default. A non-empty value is passed
-  // through verbatim as one argv entry. An empty `model` likewise omits
-  // `--model` and lets Grok pick its local/default model.
+  // AND sends no effort meta — but it still calls `session/set_model` after
+  // every session open (new or load), so an EMPTY effort only removes the
+  // override; it never silently keeps a resumed session's persisted effort.
+  // A non-empty value is passed through verbatim as one argv entry. An empty
+  // `model` likewise omits `--model`; after every session open the handler
+  // then applies the INITIALIZE-advertised current/default model via
+  // `session/set_model` — the resumed session's persisted model is never
+  // silently inherited.
   reasoningEffort: z.enum(["", "low", "medium", "high"]).default(""),
 });
 
@@ -495,9 +500,11 @@ export const DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload 
 
 /**
  * Default payload for a fresh grok agent. `model` is empty by default so the
- * spawn omits `--model` and the Grok Build CLI picks its local default;
- * `reasoningEffort` defaults to the inherit sentinel so `--effort` is omitted
- * as well. A non-empty operator value for either is passed through verbatim.
+ * spawn omits `--model`; `reasoningEffort` defaults to the inherit sentinel
+ * so `--effort` is omitted as well. Empty values do NOT inherit a resumed
+ * session's persisted selection: after every session open the handler still
+ * calls `session/set_model` (initialize default model, no effort meta when
+ * unset). A non-empty operator value for either is passed through verbatim.
  */
 export const DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload = {
   kind: "grok",

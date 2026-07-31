@@ -23,10 +23,21 @@ export type GrokBrowserLoginOptions = {
   signal?: AbortSignal;
   timeoutMs?: number;
   spawnFn?: typeof spawn;
+  /** Test-only platform override; production reads `process.platform`. */
+  platform?: NodeJS.Platform;
 };
 
 /** Spawn `<grok-binary> login` (official browser OAuth on the host). */
 export function runGrokBrowserLogin(options: GrokBrowserLoginOptions): Promise<LoginOutcome> {
+  // Fail closed on Windows before any spawn (belt-and-braces next to the
+  // resolver gate — this function is also reachable from the CLI auth flow).
+  if ((options.platform ?? process.platform) === "win32") {
+    return Promise.resolve({
+      ok: false,
+      reason: "spawn-error",
+      error: "Grok Build login is not supported on Windows in V1 (macOS/Linux only); First Tree fails closed.",
+    });
+  }
   return runBrowserLogin({
     command: options.binary,
     args: ["login"],

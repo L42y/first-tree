@@ -7,22 +7,31 @@
  *   spawn → ndJsonStream over stdio → initialize (EMPTY clientCapabilities,
  *   so Grok keeps file/terminal ops on its own local backends) →
  *   session/new (first turn) or session/load (resume; NEVER silently falls
- *   back to session/new on failure — replay safety) → session/prompt →
- *   drain queued notification handlers → end stdin → require exit 0.
+ *   back to session/new on failure — replay safety) → session/set_model
+ *   (after EVERY session open, every turn: session/load restores the
+ *   session's PERSISTED selection, so even an empty config re-asserts the
+ *   initialize default model; empty effort OMITS `_meta` entirely) →
+ *   session/prompt (client-generated `_meta.promptId`) → settle barrier:
+ *   stdin EOF → bounded wait for real close + connection.closed → stable
+ *   drain of the routed-handler queue → only then read settlement state →
+ *   require exit 0.
  *
  * Auth is deliberately NOT negotiated: Grok auto-selects its
  * `defaultAuthMethodId`, and an explicit `authenticate(cached_token)` can
  * fall through to the interactive grok.com flow. Auth failures surface as
  * prompt/JSON-RPC errors and classify through the retry policy.
  *
- * Replay fence: after `session/load`, Grok replays historical updates from
- * prior turns. The wrapper drains the replay before sending the current
- * prompt (bounded quiet-window — the SDK dispatches notification handlers
- * asynchronously, so a naive "prompt sent" boolean races the replay), drops
- * every notification that arrives before the current `session/prompt`
- * request has been sent, and drops routed updates whose sessionId
- * contradicts the active session. Prompt-id correlation of
- * `turn_completed` usage stays in the handler (events.ts + index.ts).
+ * Replay fence: `session/load` is sent with `_meta.noReplay: true` (Grok's
+ * own headless resume contract), any notification stamped
+ * `_meta.isReplay === true` is ALWAYS dropped regardless of arrival time,
+ * and as a legacy fallback for builds without the marker the wrapper drains
+ * the post-load replay before sending the current prompt (bounded
+ * quiet-window — the SDK dispatches notification handlers asynchronously, so
+ * a naive "prompt sent" boolean races the replay) and drops every
+ * notification that arrives before the current `session/prompt` request has
+ * been sent. Routed updates whose sessionId contradicts the active session
+ * are dropped. Prompt-id correlation of `turn_completed` usage stays in the
+ * handler (events.ts + index.ts).
  *
  * The defensive `session/request_permission` handler always denies: under
  * `--always-approve` + yoloMode it must never fire, and auto-approving would
@@ -30,12 +39,13 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 import type { InitializeResponse, McpServer, NewSessionResponse } from "@agentclientprotocol/sdk";
 import { client, ndJsonStream } from "@agentclientprotocol/sdk";
 import type { AgentRuntimeConfigPayload } from "@first-tree/shared";
 import type { ProviderProcessSupervisor } from "../../runtime/provider-process-supervisor.js";
-import { grokNotificationSessionId } from "./events.js";
+import { grokNotificationIsReplay, grokNotificationSessionId, parseGrokModelState } from "./events.js";
 
 export const GROK_ACP_PROTOCOL_VERSION = 1;
 
@@ -112,7 +122,7 @@ export function mapGrokAcpMcpServers(
   return mapped;
 }
 
-export type GrokAcpFailurePhase = "initialize" | "session_new" | "session_load" | "prompt";
+export type GrokAcpFailurePhase = "initialize" | "session_new" | "session_load" | "set_model" | "prompt";
 
 export type GrokAcpAttemptInput = {
   supervisor: ProviderProcessSupervisor;
@@ -127,9 +137,23 @@ export type GrokAcpAttemptInput = {
   /** Confirmed provider session id to `session/load`; null runs `session/new`. */
   resumeSessionId: string | null;
   mcpServers: AgentRuntimeConfigPayload["mcpServers"];
+  /**
+   * Operator-configured model / reasoning effort for this turn ("" = provider
+   * default / no override). Applied via ACP `session/set_model` after EVERY
+   * session open (new AND load) because `session/load` restores the session's
+   * PERSISTED selection — mirroring Grok's own headless
+   * `apply_headless_model_and_effort`. An explicit model is always re-applied;
+   * an empty effort omits the effort meta; an empty model resolves to the
+   * initialize-advertised default model, so "" resets to the provider default
+   * rather than inheriting the load-restored value.
+   */
+  model: string;
+  reasoningEffort: string;
   promptText: string;
   /** Bounded wait for process close after stdin EOF on the success path. */
   eofCloseWaitMs?: number;
+  /** Grace between SIGTERM and SIGKILL on the terminate path (tests shorten this). */
+  killGraceMs?: number;
   /** Fired once initialize completed and capabilities validated (replay-ladder "saw provider" rung). */
   onInitialized?: () => void;
   /** Fired as soon as session/new or session/load confirms the active session id. */
@@ -157,8 +181,79 @@ function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
+/** Cap on the JSON-RPC error `data` payload preserved in classification text. */
+const ACP_ERROR_DATA_CAP = 256;
+
+/**
+ * Error message for classification/log surfaces, preserving the ACP
+ * RequestError's `data` payload (length-capped, never the whole object
+ * graph). The real unknown-model failure is `Invalid params` (-32602) with
+ * the actual reason only in `data` ("unknown model id").
+ */
+function acpErrorDetail(err: unknown): string {
+  const base = toError(err).message;
+  if (!err || typeof err !== "object" || !("data" in err)) return base;
+  const data = err.data;
+  if (data === undefined || data === null) return base;
+  const text = typeof data === "string" ? data : JSON.stringify(data) || "";
+  const capped = text.trim().slice(0, ACP_ERROR_DATA_CAP);
+  return capped.length > 0 ? `${base} (data: ${capped})` : base;
+}
+
+/** Bounded wait for a reclaimed non-piped child to die after SIGKILL. */
+const UNPIPED_RECLAIM_WAIT_MS = 5_000;
+
+/**
+ * Reclaim a spawned child whose stdio turned out not to be piped (defensive
+ * branch — a non-piped child cannot be negotiated with). Fail closed with an
+ * immediate process-tree SIGKILL, then bounded-wait for the close so the
+ * caller never returns while the process is still running. The close waiter
+ * is registered BEFORE the kill (and an already-exited child short-circuits)
+ * so a fast close is never missed behind the full deadline.
+ */
+async function reclaimUnpipedChild(child: {
+  pid?: number | undefined;
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals): boolean;
+  once(event: "close", listener: () => void): unknown;
+}): Promise<void> {
+  const waiter = new Promise<void>((resolve) => {
+    const deadline = setTimeout(resolve, UNPIPED_RECLAIM_WAIT_MS);
+    deadline.unref?.();
+    child.once("close", () => {
+      clearTimeout(deadline);
+      resolve();
+    });
+  });
+  if (child.exitCode !== null && child.exitCode !== undefined) return;
+  if (child.signalCode !== null && child.signalCode !== undefined) return;
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch {
+    // The process may already be gone.
+  }
+  await waiter;
+}
+
 function asMeta(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+/**
+ * Prompt correlation id carried on a routed notification, when present:
+ * `_meta.promptId` (extension envelopes) or the snake/camel `prompt_id` on
+ * the update payload (e.g. `turn_completed`).
+ */
+function notificationPromptId(params: unknown): string | null {
+  const record = asMeta(params);
+  const meta = asMeta(record?._meta);
+  if (typeof meta?.promptId === "string") return meta.promptId;
+  const update = asMeta(record?.update);
+  if (typeof update?.prompt_id === "string") return update.prompt_id;
+  if (typeof update?.promptId === "string") return update.promptId;
+  return null;
 }
 
 /**
@@ -197,6 +292,7 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
   }
   const child = supervised.child;
   if (!child.stdin || !child.stdout || !child.stderr) {
+    await reclaimUnpipedChild(child);
     return {
       sessionId: null,
       prompt: null,
@@ -215,6 +311,8 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
   let spawnError: Error | undefined;
   let closed: { exitCode: number | null; signal: NodeJS.Signals | null } | null = null;
   let terminated = false;
+  let hardKill: NodeJS.Timeout | null = null;
+  let finalDeadline: NodeJS.Timeout | null = null;
   let resolveClose: () => void = () => {};
   const closeWait = new Promise<void>((resolve) => {
     resolveClose = resolve;
@@ -229,16 +327,35 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
     }
   };
 
+  /**
+   * The SIGKILL/final-deadline timers MUST be cancelled once the child really
+   * closes: on POSIX the kill targets a PGID, and a stale timer can fire
+   * against a REUSED PGID under short-process high concurrency, killing an
+   * unrelated later turn.
+   */
+  const clearTerminateTimers = (): void => {
+    if (hardKill) {
+      clearTimeout(hardKill);
+      hardKill = null;
+    }
+    if (finalDeadline) {
+      clearTimeout(finalDeadline);
+      finalDeadline = null;
+    }
+  };
+
+  const killGraceMs = input.killGraceMs ?? KILL_GRACE_MS;
+
   const terminate = (): void => {
     if (terminated) return;
     terminated = true;
     killTree("SIGTERM");
-    const hardKill = setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS);
+    hardKill = setTimeout(() => killTree("SIGKILL"), killGraceMs);
     hardKill.unref?.();
-    const finalDeadline = setTimeout(() => {
+    finalDeadline = setTimeout(() => {
       closed ??= { exitCode: null, signal: "SIGKILL" };
       resolveClose();
-    }, KILL_GRACE_MS + FINAL_CLOSE_WAIT_MS);
+    }, killGraceMs + FINAL_CLOSE_WAIT_MS);
     finalDeadline.unref?.();
   };
 
@@ -252,10 +369,12 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
   child.on("error", (err) => {
     spawnError = toError(err);
     closed ??= { exitCode: null, signal: null };
+    clearTerminateTimers();
     resolveClose();
   });
   child.on("close", (exitCode, signal) => {
     closed = { exitCode, signal };
+    clearTerminateTimers();
     resolveClose();
   });
 
@@ -269,9 +388,21 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
   let promptSent = false;
   let replayDrops = 0;
   let lastInboundAt = 0;
+  /** Client-generated correlation id for the in-flight prompt (null until sent). */
+  let attemptPromptId: string | null = null;
   const pendingNotifications = new Set<Promise<void>>();
 
   const routeNotification = (params: unknown, deliver: (value: unknown) => void, channel: string): void => {
+    // Exact replay contract (Grok's own headless uses it): a notification
+    // marked `_meta.isReplay === true` is ALWAYS historical, regardless of
+    // when it arrives — drop it even inside the prompt window.
+    if (grokNotificationIsReplay(params)) {
+      if (replayDrops < REPLAY_DROP_LOG_LIMIT) {
+        input.log(`grok ACP: dropped replay-marked ${channel} notification (_meta.isReplay)`);
+      }
+      replayDrops++;
+      return;
+    }
     if (!promptSent) {
       if (replayDrops < REPLAY_DROP_LOG_LIMIT) {
         input.log(`grok ACP: dropped pre-prompt ${channel} notification (session/load replay fence)`);
@@ -282,6 +413,13 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
     const routedSessionId = grokNotificationSessionId(params);
     if (currentSessionId && routedSessionId && routedSessionId !== currentSessionId) {
       input.log(`grok ACP: dropped ${channel} notification for foreign session ${routedSessionId}`);
+      return;
+    }
+    // Prompt correlation: anything stamped with a DIFFERENT prompt id than
+    // the in-flight prompt belongs to another prompt (e.g. history) — drop.
+    const correlatedPromptId = notificationPromptId(params);
+    if (attemptPromptId && correlatedPromptId && correlatedPromptId !== attemptPromptId) {
+      input.log(`grok ACP: dropped ${channel} notification for foreign prompt ${correlatedPromptId}`);
       return;
     }
     const tracked = Promise.resolve()
@@ -347,15 +485,62 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
     ...(failure ? { failure } : {}),
   });
 
-  const failAndDrain = async (phase: GrokAcpFailurePhase, err: unknown): Promise<GrokAcpAttemptOutcome> => {
-    failure = { phase, error: toError(err) };
+  /**
+   * Drain the routed-handler queue to a STABLE empty. The SDK dispatches
+   * notification handlers asynchronously, so after the connection closes a
+   * dispatch chain may still be queued behind a macrotask; settlement state
+   * must not be read until every routed notification has landed.
+   */
+  const drainPendingNotifications = async (): Promise<void> => {
+    for (let idlePasses = 0, guard = 0; guard < 50; guard++) {
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+      if (pendingNotifications.size === 0) {
+        idlePasses++;
+        if (idlePasses >= 2) return;
+        continue;
+      }
+      idlePasses = 0;
+      await Promise.all([...pendingNotifications]);
+    }
+  };
+
+  /**
+   * Unified transport-settle barrier (success AND failure paths):
+   * EOF/terminate FIRST, then a bounded wait for the real child close and
+   * the connection teardown, then drain the routed-handler queue — only
+   * then may the caller read settlement state.
+   */
+  const settleBarrier = async (): Promise<void> => {
     try {
       childStdin.end();
     } catch {
       /* already gone */
     }
-    terminate();
+    if (input.abortSignal.aborted) terminate();
+    const eofDeadline = setTimeout(() => {
+      input.log("grok ACP: process did not exit after stdin EOF; terminating the process tree");
+      terminate();
+    }, input.eofCloseWaitMs ?? FINAL_CLOSE_WAIT_MS);
+    eofDeadline.unref?.();
     await closeWait;
+    clearTimeout(eofDeadline);
+    try {
+      await connection.closed;
+    } catch {
+      // Connection teardown errors carry no extra settlement signal.
+    }
+    await drainPendingNotifications();
+  };
+
+  const failAndDrain = async (phase: GrokAcpFailurePhase, err: unknown): Promise<GrokAcpAttemptOutcome> => {
+    failure = { phase, error: new Error(acpErrorDetail(err)) };
+    // Same settle barrier as the success path: EOF first, bounded close
+    // wait, connection teardown, stable handler drain. terminate only fires
+    // on abort or when the EOF grace expires — so write/usage notifications
+    // dispatched on the tick AFTER a JSON-RPC error are not cut off.
+    await settleBarrier();
     return outcome();
   };
 
@@ -395,10 +580,14 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
       sse: agentCapabilities?.mcpCapabilities?.sse === true,
     };
     input.onInitialized?.();
+    const initializeModelState = parseGrokModelState(initResponse);
 
     // 2. session/new (first turn) or session/load (resume). A session/load
     // failure is terminal for the attempt — never silently re-run as
     // session/new (a fresh session could re-execute side effects).
+    // `_meta.noReplay: true` is the exact replay contract Grok's own headless
+    // resume sends; historical traffic is additionally dropped via the
+    // `_meta.isReplay` marker and (legacy fallback) the pre-prompt fence.
     const mappedServers = mapGrokAcpMcpServers(input.mcpServers, mcpCapabilities, input.log);
     if (input.resumeSessionId) {
       try {
@@ -406,7 +595,7 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
           sessionId: input.resumeSessionId,
           cwd: input.cwd,
           mcpServers: mappedServers,
-          _meta: { yoloMode: true },
+          _meta: { yoloMode: true, noReplay: true },
         });
       } catch (err) {
         return await failAndDrain("session_load", err);
@@ -426,6 +615,55 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
       currentSessionId = newSessionResponse.sessionId;
     }
     input.onSessionId?.(currentSessionId);
+
+    // 2b. Apply model/effort after EVERY session open, every turn (Grok's
+    // headless apply_headless_model_and_effort does the same after
+    // open_session): session/load restores the session's PERSISTED
+    // selection, so even an EMPTY config must re-assert the default — empty
+    // model = the INITIALIZE-advertised current model (NOT the load-restored
+    // one), empty effort = no effort meta (provider default). A set_model
+    // rejection is a configuration failure — never silently fall back to the
+    // persisted selection. Fail closed when the provider advertised no
+    // current model to apply.
+    const effectiveModelId = input.model || initializeModelState.defaultModelId;
+    if (!effectiveModelId) {
+      return await failAndDrain(
+        "set_model",
+        new Error("grok provider mismatch: the provider advertised no current model to apply for this turn"),
+      );
+    }
+    try {
+      const setModelResponse: unknown = await agent.request("session/set_model", {
+        sessionId: currentSessionId,
+        modelId: effectiveModelId,
+        // Empty effort must OMIT `_meta` entirely — serializing null is not
+        // the same as omitting the effort meta (it would not restore the
+        // provider default).
+        ...(input.reasoningEffort ? { _meta: { reasoningEffort: input.reasoningEffort } } : {}),
+      });
+      // The success shape (verified live on 0.2.117) is
+      // `_meta.model.Ok === <applied modelId>`; anything else is provider
+      // misbehavior — fail closed, never prompt under an unverified model.
+      const setModelResult = asMeta(asMeta(asMeta(setModelResponse)?._meta)?.model);
+      const appliedModelId = typeof setModelResult?.Ok === "string" ? setModelResult.Ok : null;
+      if (appliedModelId !== effectiveModelId) {
+        return await failAndDrain(
+          "set_model",
+          new Error(
+            `grok provider mismatch: session/set_model response did not confirm model "${effectiveModelId}" ` +
+              `(got ${appliedModelId ?? "no _meta.model.Ok"})`,
+          ),
+        );
+      }
+    } catch (err) {
+      return await failAndDrain(
+        "set_model",
+        new Error(
+          `grok provider mismatch: session/set_model rejected model "${effectiveModelId}"` +
+            `${input.reasoningEffort ? ` with effort "${input.reasoningEffort}"` : ""}: ${acpErrorDetail(err)}`,
+        ),
+      );
+    }
 
     if (input.resumeSessionId) {
       // Replay drain: historical updates arrive right after the load
@@ -451,38 +689,45 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
       }
     }
 
-    // 3. session/prompt — the replay fence opens only now.
+    // 3. session/prompt — the replay fence opens only now. A client-generated
+    // promptId rides `_meta.promptId` (Grok honors it); notifications and the
+    // prompt RESPONSE are correlated against it.
+    attemptPromptId = randomUUID();
     promptSent = true;
     promptInFlight = true;
     try {
       const promptResponse = await agent.request("session/prompt", {
         sessionId: currentSessionId,
         prompt: [{ type: "text", text: input.promptText }],
+        _meta: { promptId: attemptPromptId },
       });
-      promptResult = { stopReason: promptResponse.stopReason, meta: asMeta(promptResponse._meta) };
+      const responseMeta = asMeta(promptResponse._meta);
+      const responsePromptId = typeof responseMeta?.promptId === "string" ? responseMeta.promptId : null;
+      if (responsePromptId !== attemptPromptId) {
+        // Exact-correlation contract: the response MUST echo the client
+        // promptId — a missing or different one fails closed.
+        return await failAndDrain(
+          "prompt",
+          new Error(
+            `grok provider mismatch: prompt response carried promptId ${responsePromptId ?? "(none)"} ` +
+              `(expected ${attemptPromptId})`,
+          ),
+        );
+      }
+      promptResult = { stopReason: promptResponse.stopReason, meta: responseMeta };
     } catch (err) {
       return await failAndDrain("prompt", err);
     } finally {
       promptInFlight = false;
     }
 
-    // 4. Settlement barrier: drain queued notification handlers, then end
-    // stdin and require the process to close with exit 0 (Grok exits 0 on
-    // clean EOF). The close wait is BOUNDED: a process that answered the
-    // prompt but never exits is reclaimed through the terminate path and
-    // lands as a non-clean exit (a failure input, never a silent success).
-    while (pendingNotifications.size > 0) {
-      await Promise.all([...pendingNotifications]);
-    }
-    childStdin.end();
-    if (input.abortSignal.aborted) terminate();
-    const eofDeadline = setTimeout(() => {
-      input.log("grok ACP: process did not exit after stdin EOF; terminating the process tree");
-      terminate();
-    }, input.eofCloseWaitMs ?? FINAL_CLOSE_WAIT_MS);
-    eofDeadline.unref?.();
-    await closeWait;
-    clearTimeout(eofDeadline);
+    // 4. Settlement barrier: EOF first, then a bounded wait for the real
+    // close + connection teardown, then drain the routed-handler queue to a
+    // stable empty — settlement state is read only after late-dispatched
+    // notifications have landed. A process that answered the prompt but
+    // never exits is reclaimed through the terminate path and lands as a
+    // non-clean exit (a failure input, never a silent success).
+    await settleBarrier();
     return outcome();
   } finally {
     input.abortSignal.removeEventListener("abort", onAbort);
@@ -523,6 +768,7 @@ export async function fetchGrokAcpInitializeMeta(input: {
     return { ok: false, error: toError(err).message };
   }
   if (!child.stdin || !child.stdout) {
+    await reclaimUnpipedChild(child);
     return { ok: false, error: "grok ACP child stdio is not piped" };
   }
   const childStdin = child.stdin;
@@ -544,13 +790,27 @@ export async function fetchGrokAcpInitializeMeta(input: {
     }
   };
   let terminated = false;
+  let hardKill: NodeJS.Timeout | null = null;
+  let finalDeadline: NodeJS.Timeout | null = null;
+  /** Cancel pending kill timers once the child really closes (see the turn
+   * transport: a stale timer can SIGKILL a REUSED PGID under concurrency). */
+  const clearTerminateTimers = (): void => {
+    if (hardKill) {
+      clearTimeout(hardKill);
+      hardKill = null;
+    }
+    if (finalDeadline) {
+      clearTimeout(finalDeadline);
+      finalDeadline = null;
+    }
+  };
   const terminate = (): void => {
     if (terminated) return;
     terminated = true;
     killTree("SIGTERM");
-    const hardKill = setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS);
+    hardKill = setTimeout(() => killTree("SIGKILL"), KILL_GRACE_MS);
     hardKill.unref?.();
-    const finalDeadline = setTimeout(() => {
+    finalDeadline = setTimeout(() => {
       closed ??= { exitCode: null, signal: "SIGKILL" };
       resolveClose();
     }, KILL_GRACE_MS + FINAL_CLOSE_WAIT_MS);
@@ -571,10 +831,12 @@ export async function fetchGrokAcpInitializeMeta(input: {
   child.on("error", (err) => {
     spawnError = toError(err);
     closed ??= { exitCode: null, signal: null };
+    clearTerminateTimers();
     resolveClose();
   });
   child.on("close", (exitCode, signal) => {
     closed = { exitCode, signal };
+    clearTerminateTimers();
     resolveClose();
   });
 
@@ -589,7 +851,16 @@ export async function fetchGrokAcpInitializeMeta(input: {
       clientCapabilities: {},
       clientInfo: { name: "first-tree", version: input.clientVersion },
     });
-    meta = asMeta(initResponse._meta);
+    if (initResponse.protocolVersion !== GROK_ACP_PROTOCOL_VERSION) {
+      // The turn handler would reject the same build; the UI must not publish
+      // a model catalog from an incompatible protocol.
+      initError = new Error(
+        `grok provider mismatch: ACP protocolVersion ${String(initResponse.protocolVersion)} ` +
+          `(expected ${GROK_ACP_PROTOCOL_VERSION})`,
+      );
+    } else {
+      meta = asMeta(initResponse._meta);
+    }
   } catch (err) {
     initError = toError(err);
   }

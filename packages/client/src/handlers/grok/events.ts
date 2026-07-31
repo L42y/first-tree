@@ -47,8 +47,14 @@ export type GrokToolInfo = {
   /** `_meta["x.ai/tool"].name` when present, else the raw `title`, else a tagged unknown. */
   name: string;
   kind: string | null;
+  /**
+   * True for the shell/execute tool (`run_terminal_cmd` or kind "execute"),
+   * keyed on name/kind — NOT on the presence of a command. A shell tool whose
+   * command is missing must fail CLOSED (unsafe), never inherit read-only.
+   */
+  isShell: boolean;
   readOnly: boolean | null;
-  /** Shell command for `run_terminal_cmd` (from `rawInput.command`). */
+  /** Shell command: `rawInput.command`, else `_meta["x.ai/tool"].input.command`. */
   command: string | null;
   /** Candidate file paths: `_meta["x.ai/tool"].input.path`, locations, diff content. */
   paths: string[];
@@ -127,16 +133,20 @@ function extractTool(update: Record<string, unknown>): GrokToolInfo | null {
   const toolCallId = asString(update.toolCallId);
   if (!toolCallId) return null;
   const meta = xaiToolMeta(update);
+  const metaInput = meta ? asRecord(meta.input) : null;
   const rawInput = asRecord(update.rawInput);
-  const command = asString(rawInput?.command);
+  const command = asString(rawInput?.command) ?? asString(metaInput?.command);
   const title = asString(update.title);
   const metaName = meta ? asString(meta.name) : null;
+  const kind = meta ? asString(meta.kind) : null;
+  const name = metaName ?? title ?? "grok:unknown";
   const readOnly = meta && typeof meta.read_only === "boolean" ? meta.read_only : null;
   const paths = extractToolPaths(update, meta);
   return {
     toolCallId,
-    name: metaName ?? title ?? "grok:unknown",
-    kind: meta ? asString(meta.kind) : null,
+    name,
+    kind,
+    isShell: name === "run_terminal_cmd" || kind === "execute",
     readOnly,
     command,
     paths,
@@ -161,6 +171,15 @@ function extractUsage(usage: unknown): GrokUsage | null {
 /** Session id carried on a routed ACP notification, when present. */
 export function grokNotificationSessionId(params: unknown): string | null {
   return asString(asRecord(params)?.sessionId);
+}
+
+/**
+ * The exact replay marker (`params._meta.isReplay === true`) Grok stamps on
+ * historical traffic. A marked notification is ALWAYS replay, no matter when
+ * it arrives — the marker, not arrival timing, is the correctness boundary.
+ */
+export function grokNotificationIsReplay(params: unknown): boolean {
+  return asRecord(asRecord(params)?._meta)?.isReplay === true;
 }
 
 /**

@@ -240,6 +240,8 @@ export type GrokRuntimeBinaryResolution =
 export type GrokRuntimeResolveDeps = {
   findOnPath?: (env?: Record<string, string | undefined>) => string | null;
   verifyPath?: (path: string, env?: Record<string, string | undefined>) => GrokExecutableVerification;
+  /** Test-only platform override; production reads `process.platform`. */
+  platform?: NodeJS.Platform;
 };
 
 /**
@@ -262,6 +264,19 @@ export function resolveGrokRuntimeBinary(
   env: NodeJS.ProcessEnv = process.env,
   deps: GrokRuntimeResolveDeps = {},
 ): GrokRuntimeBinaryResolution {
+  // Central fail-closed platform gate: EVERY spawn entry point (turn
+  // transport, model discovery, runtime auth) resolves through here, so one
+  // refusal covers them all. Short-circuits before any filesystem consult.
+  const platform = deps.platform ?? process.platform;
+  if (platform === "win32") {
+    return {
+      ok: false,
+      error:
+        "Grok Build provider is not supported on Windows in V1 (macOS/Linux only); " +
+        "First Tree fails closed and will not resolve or spawn `grok` on this platform.",
+      transient: false,
+    };
+  }
   const findOnPath = deps.findOnPath ?? findGrokExecutableOnPath;
   const verifyPath = deps.verifyPath ?? verifyGrokExecutable;
 
@@ -288,7 +303,14 @@ export function resolveGrokRuntimeBinary(
     }
     return {
       ok: false,
-      error: formatGrokBinaryMissingMessage(`resolved grok failed validation: ${verification.reason}`),
+      // A resolved-but-UNSUPPORTED binary (out of range / failed verification)
+      // is NOT "missing": the message must not match the missing-binary
+      // patterns, and the retry policy maps it to the deterministic
+      // `grok_binary_unsupported` capability stop.
+      error:
+        `Grok Build CLI at ${binary} is not a supported Grok Build version: ${verification.reason} ` +
+        `(supported range >=${GROK_MIN_SUPPORTED_VERSION} <${GROK_MAX_EXCLUSIVE_VERSION}). ` +
+        `Upgrade with the official installer (\`${GROK_INSTALL_COMMAND}\`).`,
       transient: false,
     };
   }
