@@ -444,6 +444,16 @@ export async function adoptAgentTemplates(
       type: lockedAgent.type,
     };
 
+    // Global lock order: team_skill_name → agent_configs. Ordinary Team
+    // Skill writes take the advisory lock first and bump agent config
+    // versions inside the same transaction, so an adoption that writes any
+    // Template set must take it before the config row lock. An empty target
+    // set never reaches the Skill import path and needs no lock. Phase 2.5
+    // re-acquires it harmlessly (same-transaction advisory locks nest).
+    if (input.templateIds.length > 0) {
+      await lockTeamSkillNames(targetDb, effectiveAgent.organizationId);
+    }
+
     const [config] = await targetDb
       .select({ version: agentConfigs.version, templateIds: agentConfigs.templateIds })
       .from(agentConfigs)

@@ -1,7 +1,9 @@
 import { ATTACHMENT_FILENAME_HEADER, ATTACHMENT_MIME_HEADER } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import { strToU8, zipSync } from "fflate";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
+import { sslOptions } from "../db/connection.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
 import { agentTemplates } from "../db/schema/agent-templates.js";
@@ -853,6 +855,138 @@ describe("Agent Template adoption", () => {
       const reply = await adopt(app, admin, agent.uuid, config?.version ?? 1, [first.id, second.id]);
       expect(reply.statusCode).toBe(409);
       expect(await copiesOf(app, admin)).toBe(copiesBefore);
+    });
+  });
+
+  describe("lock ordering with ordinary Team Skill writes", () => {
+    it("never deadlocks adoption against a recommended Team Skill create", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const template = await publishTemplate(app, publisher, `lo-${crypto.randomUUID().slice(0, 6)}`, [
+        {
+          key: "lock-skill",
+          type: "skill",
+          bundleAttachmentId: await uploadZip(app, publisher, skillZip("lock-skill")),
+        },
+      ]);
+      const createAgentRow = await seedAgentFactory(app);
+      const agent = await createAgentRow({ name: `lo-${crypto.randomUUID().slice(0, 6)}` });
+      const admin = await createTestAdmin(app, { username: `lo-${crypto.randomUUID().slice(0, 8)}` });
+
+      // The Team's own ready bundle for the ordinary recommended create.
+      const teamUpload = await app.inject({
+        method: "POST",
+        url: `/api/v1/orgs/${admin.organizationId}/attachments`,
+        headers: {
+          authorization: `Bearer ${admin.accessToken}`,
+          "content-type": "application/octet-stream",
+          [ATTACHMENT_MIME_HEADER]: "application/zip",
+          [ATTACHMENT_FILENAME_HEADER]: "skill.zip",
+        },
+        payload: skillZip("team-skill"),
+      });
+      expect(teamUpload.statusCode).toBe(201);
+      const teamBundleId = teamUpload.json<{ id: string }>().id;
+      const adoptionCopiesBefore = (
+        await app.db
+          .select({ id: attachments.id })
+          .from(attachments)
+          .where(eq(attachments.uploadedBy, admin.humanAgentUuid))
+      ).length;
+
+      const [configBefore] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      const url = process.env.DATABASE_URL ?? "";
+      const blocker = postgres(url, { max: 1, ...sslOptions(url) });
+      const probe = postgres(url, { max: 1, ...sslOptions(url) });
+      let ordinaryReply: Awaited<ReturnType<typeof call>> | undefined;
+      let adoptionReply: Awaited<ReturnType<typeof call>> | undefined;
+      let ordinaryPromise: ReturnType<typeof call> | undefined;
+      let adoptionPromise: ReturnType<typeof call> | undefined;
+      const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<T>((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`${label} timed out — possible deadlock`)), 15_000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      let blockerInTransaction = false;
+      try {
+        await blocker`BEGIN`;
+        blockerInTransaction = true;
+        await blocker`SELECT id FROM attachments WHERE id = ${teamBundleId} FOR UPDATE`;
+
+        ordinaryPromise = call(app, admin, "POST", `/api/v1/orgs/${admin.organizationId}/resources`, {
+          type: "skill",
+          bundleAttachmentId: teamBundleId,
+          defaultEnabled: "recommended",
+        });
+
+        // Wait until the ordinary write provably holds team_skill_name
+        // (autocommit probe statements release immediately when the try succeeds).
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const [row] =
+            await probe`SELECT pg_try_advisory_xact_lock(hashtext('team_skill_name'), hashtext(${admin.organizationId})) AS acquired`;
+          if (!row?.acquired) break;
+          if (Date.now() > deadline) throw new Error("ordinary write did not take the advisory lock in time");
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        adoptionPromise = call(app, admin, "PATCH", `/api/v1/agents/${agent.uuid}/templates`, {
+          expectedVersion: configBefore?.version ?? 1,
+          templateIds: [template.id],
+        });
+        // Wait until the adoption provably waits on the same two-key
+        // advisory lock, then unblock the ordinary write.
+        const adoptionDeadline = Date.now() + 10_000;
+        for (;;) {
+          const [row] = await probe`SELECT count(*)::int AS waiters FROM pg_locks
+            WHERE locktype = 'advisory' AND objsubid = 2 AND NOT granted
+              AND classid::bigint = (hashtext('team_skill_name')::bigint & 4294967295)
+              AND objid::bigint = (hashtext(${admin.organizationId})::bigint & 4294967295)`;
+          if (row && row.waiters > 0) break;
+          if (Date.now() > adoptionDeadline) throw new Error("adoption did not reach the advisory lock wait in time");
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        await blocker`ROLLBACK`;
+        blockerInTransaction = false;
+
+        ordinaryReply = await withTimeout(ordinaryPromise, "ordinary Team Skill create");
+        adoptionReply = await withTimeout(adoptionPromise, "Template adoption");
+      } finally {
+        if (blockerInTransaction) await blocker`ROLLBACK`.catch(() => undefined);
+        // Both HTTP promises must converge even on error paths — no
+        // unhandled rejections or dangling work past the test.
+        await Promise.allSettled([ordinaryPromise, adoptionPromise].filter((promise) => promise !== undefined));
+        await blocker.end({ timeout: 1 }).catch(() => undefined);
+        await probe.end({ timeout: 1 }).catch(() => undefined);
+      }
+
+      expect(ordinaryReply?.statusCode).toBe(201);
+      expect(adoptionReply?.statusCode).toBe(409);
+
+      // Only the ordinary bump landed; the adoption left nothing behind.
+      const [configAfter] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      expect(configAfter?.version).toBe((configBefore?.version ?? 1) + 1);
+      expect(configAfter?.templateIds).toEqual([]);
+      expect(await provenanceResources(app, template.id)).toHaveLength(0);
+      expect(
+        (
+          await app.db
+            .select({ id: attachments.id })
+            .from(attachments)
+            .where(eq(attachments.uploadedBy, admin.humanAgentUuid))
+        ).length,
+      ).toBe(adoptionCopiesBefore);
+      expect(
+        await app.db.select().from(agentResourceBindings).where(eq(agentResourceBindings.agentId, agent.uuid)),
+      ).toHaveLength(0);
     });
   });
 
