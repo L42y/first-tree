@@ -1054,6 +1054,103 @@ describe("Agent Template catalog", () => {
       expect(nameReply.statusCode).toBe(400);
     });
   });
+
+  describe("PostgreSQL text compatibility over HTTP", () => {
+    const NUL = String.fromCharCode(0);
+
+    async function templateCount(app: TestApp): Promise<number> {
+      const rows = await app.db.select({ id: agentTemplates.id }).from(agentTemplates);
+      return rows.length;
+    }
+
+    it("rejects a create carrying actual U+0000 with 400 and no persisted row", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const before = await templateCount(app);
+      const body = createBody([
+        { key: "p", type: "prompt", name: "Prompt", payload: { body: `run${NUL}this`, description: "ok" } },
+      ]);
+      const reply = await call(app, publisher, "POST", INTERNAL_URL, body);
+      expect(reply.statusCode).toBe(400);
+      expect(await templateCount(app)).toBe(before);
+    });
+
+    it("rejects an update carrying actual U+0000 with 400 and leaves the row untouched", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const draft = await createDraft(app, publisher);
+      const reply = await call(app, publisher, "PATCH", `${INTERNAL_URL}/${draft.id}`, {
+        expectedUpdatedAt: draft.updatedAt,
+        components: [
+          { key: "p", type: "prompt", name: "Prompt", payload: { body: `bad${NUL}body`, description: "ok" } },
+        ],
+      });
+      expect(reply.statusCode).toBe(400);
+      const detail = await call(app, publisher, "GET", `${INTERNAL_URL}/${draft.id}`);
+      const stored = detail.json<{ name: string; updatedAt: string }>();
+      expect(stored.name).toBe("PR Engineer");
+      expect(stored.updatedAt).toBe(draft.updatedAt);
+    });
+
+    it("rejects a Skill whose ZIP-derived body carries actual U+0000", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const before = await templateCount(app);
+      const markdown = `---\nname: nul-skill\ndescription: nul-skill description\n---\n\n# nul-skill\n\nRun ${NUL}carefully.`;
+      const bundleId = await uploadZip(
+        app,
+        publisher,
+        Buffer.from(zipSync({ "SKILL.md": strToU8(markdown) })),
+        PUBLISHER_ORG_ID,
+      );
+      const reply = await call(
+        app,
+        publisher,
+        "POST",
+        INTERNAL_URL,
+        createBody([{ key: "nul-skill", type: "skill", bundleAttachmentId: bundleId }]),
+      );
+      expect(reply.statusCode).toBe(400);
+      expect(await templateCount(app)).toBe(before);
+    });
+
+    it("persists the fully-filled maximum contract with PostgreSQL-safe escaped controls", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const escaped = (length: number) => String.fromCharCode(1).repeat(length);
+      const components = Array.from({ length: 100 }, (_, index) => ({
+        key: `${"p".repeat(97)}${String(index).padStart(3, "0")}`,
+        type: "prompt",
+        name: escaped(200),
+        payload: { body: escaped(32 * 1024), description: escaped(1000) },
+      }));
+      const create = {
+        slug: `max-${crypto.randomUUID().slice(0, 8)}`,
+        name: escaped(200),
+        public: {
+          tagline: escaped(200),
+          purpose: escaped(2000),
+          targetUsers: escaped(1000),
+          userValue: escaped(2000),
+          instructionsSummary: escaped(2000),
+          toolsAndSkillsSummary: escaped(2000),
+        },
+        components,
+      };
+      expect(Buffer.byteLength(JSON.stringify(create), "utf8")).toBeLessThan(21_757_952);
+
+      const created = await call(app, publisher, "POST", INTERNAL_URL, create);
+      expect(created.statusCode).toBe(201);
+      const detail = created.json<{ id: string; updatedAt: string; payload: { components: unknown[] } }>();
+      expect(detail.payload.components).toHaveLength(100);
+
+      const updated = await call(app, publisher, "PATCH", `${INTERNAL_URL}/${detail.id}`, {
+        expectedUpdatedAt: detail.updatedAt,
+        components,
+      });
+      expect(updated.statusCode).toBe(200);
+    });
+  });
 });
 
 describe("Agent Template catalog without publisher config", () => {

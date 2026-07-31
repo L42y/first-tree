@@ -245,8 +245,9 @@ export const MAX_AGENT_TEMPLATE_COMPONENTS = 100;
  * the accepted contract. The dominant term is the Prompt worst case: up to
  * MAX_AGENT_TEMPLATE_COMPONENTS components, each with a
  * PROMPT_RESOURCE_BODY_MAX_CHARS body, at 6x — the worst JSON escape
- * inflation for schema-valid control characters; U+0000 requires a
- * six-byte JSON escape. The 4x factor used for documents
+ * inflation for PostgreSQL-persistable control characters such as
+ * U+0001, which requires a six-byte JSON escape (actual U+0000 is rejected
+ * by the Template text contract below). The 4x factor used for documents
  * only covers common UTF-8 and would undercut legal Template payloads
  * (~19.8 MiB). The 2 MiB headroom covers every other bounded write-source
  * string (slugs, names, descriptions, component keys, the public profile,
@@ -283,6 +284,72 @@ function assertUniqueTemplateMcpNames(components: ReadonlyArray<{ type: string }
   }
 }
 
+/**
+ * PostgreSQL text compatibility. PostgreSQL text/jsonb columns cannot
+ * represent the actual U+0000 character, so any Template text carrying it
+ * would fail at persistence time with a 500 after the schema accepted it.
+ * The Template contract rejects it at the narrowest boundary instead:
+ * every string value and every object key in the write source and the
+ * canonical persisted payload. The literal six-character text remains
+ * legal — only the real control character is rejected.
+ */
+const POSTGRES_TEXT_INCOMPATIBLE_MESSAGE = "Text contains U+0000, which cannot be persisted to PostgreSQL.";
+const MAX_POSTGRES_TEXT_SCAN_NODES = 100_000;
+const MAX_POSTGRES_TEXT_SCAN_DEPTH = 64;
+
+/**
+ * Locate the first actual U+0000 in any string value or object key and
+ * return its path, or null when clean. Iterative with a seen-set so cyclic
+ * structures cannot recurse forever and pathological nesting fails closed
+ * instead of overflowing the stack — safeParse must never throw here.
+ */
+function findPostgresIncompatibleTextPath(value: unknown): Array<string | number> | null {
+  const stack: Array<{ value: unknown; path: Array<string | number>; depth: number }> = [{ value, path: [], depth: 0 }];
+  const seen = new Set<unknown>();
+  let nodes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    nodes++;
+    if (nodes > MAX_POSTGRES_TEXT_SCAN_NODES || current.depth > MAX_POSTGRES_TEXT_SCAN_DEPTH) {
+      return current.path.length > 0 ? current.path : ["payload"];
+    }
+    const { value: node, path } = current;
+    if (typeof node === "string") {
+      if (node.includes("\u0000")) return path;
+      continue;
+    }
+    if (Array.isArray(node)) {
+      if (seen.has(node)) continue;
+      seen.add(node);
+      for (const [index, item] of node.entries()) {
+        stack.push({ value: item, path: [...path, index], depth: current.depth + 1 });
+      }
+      continue;
+    }
+    if (node !== null && typeof node === "object") {
+      if (seen.has(node)) continue;
+      seen.add(node);
+      for (const [key, item] of Object.entries(node as Record<string, unknown>)) {
+        if (key.includes("\u0000")) return [...path, key];
+        stack.push({ value: item, path: [...path, key], depth: current.depth + 1 });
+      }
+    }
+  }
+  return null;
+}
+
+function assertPostgresTextCompatible(value: unknown, ctx: z.RefinementCtx): void {
+  const badPath = findPostgresIncompatibleTextPath(value);
+  if (badPath) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: badPath,
+      message: POSTGRES_TEXT_INCOMPATIBLE_MESSAGE,
+    });
+  }
+}
+
 export const agentTemplatePayloadSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -303,6 +370,7 @@ export const agentTemplatePayloadSchema = z
       seen.add(component.key);
     }
     assertUniqueTemplateMcpNames(payload.components, ctx);
+    assertPostgresTextCompatible(payload, ctx);
   });
 export type AgentTemplatePayload = z.infer<typeof agentTemplatePayloadSchema>;
 
@@ -389,6 +457,7 @@ export const createAgentTemplateSchema = z
   .superRefine((input, ctx) => {
     assertUniqueComponentInputKeys(input.components, ctx);
     assertUniqueTemplateMcpNames(input.components, ctx);
+    assertPostgresTextCompatible(input, ctx);
   });
 export type CreateAgentTemplate = z.infer<typeof createAgentTemplateSchema>;
 
@@ -422,6 +491,7 @@ export const updateAgentTemplateSchema = z
       assertUniqueComponentInputKeys(input.components, ctx);
       assertUniqueTemplateMcpNames(input.components, ctx);
     }
+    assertPostgresTextCompatible(input, ctx);
   });
 export type UpdateAgentTemplate = z.infer<typeof updateAgentTemplateSchema>;
 

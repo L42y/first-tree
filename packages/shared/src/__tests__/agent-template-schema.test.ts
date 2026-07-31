@@ -506,10 +506,11 @@ describe("write-size contract", () => {
   });
 
   it("covers the fully-filled maximum contract within the body limit", () => {
-    // U+0000 requires a six-byte JSON escape, so filling every free-text
-    // field with it produces the largest schema-valid write. slug/keys use
-    // their longest legal ASCII forms instead.
-    const escaped = (length: number) => String.fromCharCode(0).repeat(length);
+    // U+0001 is PostgreSQL-persistable but still requires a six-byte JSON
+    // escape, so filling every free-text field with it produces the largest
+    // schema-valid write the route limit must accept. (Actual U+0000 is
+    // rejected by the Template text contract — see the next describe.)
+    const escaped = (length: number) => String.fromCharCode(1).repeat(length);
     const payload = {
       slug: "a".repeat(100),
       name: escaped(200),
@@ -562,5 +563,121 @@ describe("write-size contract", () => {
       payload: { name: "github", transport: "stdio", command: "x".repeat(AGENT_TEMPLATE_MCP_STRING_MAX) },
     };
     expect(agentTemplateComponentSchema.safeParse(commandAtCap).success).toBe(true);
+  });
+});
+
+describe("PostgreSQL text compatibility", () => {
+  const NUL = String.fromCharCode(0);
+
+  function createWith(components: unknown[], overrides: Record<string, unknown> = {}) {
+    return { slug: "nul-check", name: "NUL check", public: VALID_PUBLIC_PROFILE, components, ...overrides };
+  }
+
+  function expectPath(result: { success: boolean; error?: { issues: Array<{ path: PropertyKey[] }> } }, path: string) {
+    expect(result.success).toBe(false);
+    const issues = result.error?.issues ?? [];
+    expect(issues.some((issue) => issue.path.join(".") === path)).toBe(true);
+  }
+
+  it("rejects actual U+0000 in Template name and public profile", () => {
+    expectPath(
+      createAgentTemplateSchema.safeParse(createWith([VALID_PROMPT_COMPONENT], { name: `bad${NUL}name` })),
+      "name",
+    );
+    const badPublic = { ...VALID_PUBLIC_PROFILE, tagline: `bad${NUL}tagline` };
+    expectPath(
+      createAgentTemplateSchema.safeParse(createWith([VALID_PROMPT_COMPONENT], { public: badPublic })),
+      "public.tagline",
+    );
+  });
+
+  it("rejects actual U+0000 in prompt body and description", () => {
+    const badBody = {
+      ...VALID_PROMPT_COMPONENT,
+      payload: { body: `run${NUL}this`, description: "ok" },
+    };
+    expectPath(createAgentTemplateSchema.safeParse(createWith([badBody])), "components.0.payload.body");
+    const badDescription = {
+      ...VALID_PROMPT_COMPONENT,
+      payload: { body: "ok", description: `bad${NUL}desc` },
+    };
+    expectPath(
+      updateAgentTemplateSchema.safeParse({
+        expectedUpdatedAt: "2026-07-31T03:00:23.568911Z",
+        components: [badDescription],
+      }),
+      "components.0.payload.description",
+    );
+  });
+
+  it("rejects actual U+0000 in stdio commands", () => {
+    const badCommand = {
+      key: "mcp",
+      type: "mcp",
+      name: "MCP",
+      payload: { name: "local", transport: "stdio", command: `run${NUL}cmd` },
+    };
+    expectPath(createAgentTemplateSchema.safeParse(createWith([badCommand])), "components.0.payload.command");
+  });
+
+  it("rejects actual U+0000 in the canonical payload, including skill text and nested metadata", () => {
+    const base = { schemaVersion: 1, public: VALID_PUBLIC_PROFILE };
+    const badSkillBody = agentTemplatePayloadSchema.safeParse({
+      ...base,
+      components: [
+        {
+          ...VALID_SKILL_COMPONENT,
+          payload: { ...VALID_SKILL_COMPONENT.payload, body: `body${NUL}here` },
+        },
+      ],
+    });
+    expectPath(badSkillBody, "components.0.payload.body");
+
+    const badSkillDescription = agentTemplatePayloadSchema.safeParse({
+      ...base,
+      components: [
+        {
+          ...VALID_SKILL_COMPONENT,
+          payload: { ...VALID_SKILL_COMPONENT.payload, description: `desc${NUL}here` },
+        },
+      ],
+    });
+    expectPath(badSkillDescription, "components.0.payload.description");
+
+    const nestedMetadataValue = agentTemplatePayloadSchema.safeParse({
+      ...base,
+      components: [
+        {
+          ...VALID_SKILL_COMPONENT,
+          payload: { ...VALID_SKILL_COMPONENT.payload, metadata: { outer: { list: ["ok", `bad${NUL}`] } } },
+        },
+      ],
+    });
+    expectPath(nestedMetadataValue, "components.0.payload.metadata.outer.list.1");
+
+    const nulMetadataKey: Record<string, unknown> = {};
+    nulMetadataKey[`bad${NUL}key`] = "value";
+    const badMetadataKey = agentTemplatePayloadSchema.safeParse({
+      ...base,
+      components: [
+        {
+          ...VALID_SKILL_COMPONENT,
+          payload: { ...VALID_SKILL_COMPONENT.payload, metadata: { nested: nulMetadataKey } },
+        },
+      ],
+    });
+    expect(badMetadataKey.success).toBe(false);
+  });
+
+  it("keeps the literal six-character text legal", () => {
+    const literal = {
+      ...VALID_PROMPT_COMPONENT,
+      payload: { body: "literal \\u0000 text stays legal", description: "ok" },
+    };
+    expect(createAgentTemplateSchema.safeParse(createWith([literal])).success).toBe(true);
+    expect(
+      agentTemplatePayloadSchema.safeParse({ schemaVersion: 1, public: VALID_PUBLIC_PROFILE, components: [literal] })
+        .success,
+    ).toBe(true);
   });
 });
