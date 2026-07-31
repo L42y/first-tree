@@ -779,22 +779,18 @@ async function resolveStoredContextTreeProvider(
  * `tree init` callback alike — because the repository is the thing being
  * claimed regardless of which surface names it.
  *
- * The advisory lock is what makes the check a decision rather than a guess.
- * The caller already holds its own organization row, which does nothing to
- * stop a *different* organization from passing this same check concurrently
- * and committing a second binding to the same tree. Serializing on the
- * repository identity closes that window; it is transaction-scoped, so it is
- * released with the surrounding write either way.
+ * Two organizations binding the same repository at the same instant can still
+ * both pass this check: the caller holds its own organization row, which does
+ * not serialize a different organization's write. That window is left open
+ * rather than closed with a lock on the repository identity.
  */
 async function assertContextTreeRepoNotHeldByAnotherOrg(
   db: Database,
   orgId: string,
   repo: string | undefined,
 ): Promise<void> {
-  const canonical = canonicalGitRepoUrl(repo);
-  if (!canonical || !repo) return;
+  if (!repo || !canonicalGitRepoUrl(repo)) return;
 
-  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${canonical}))`);
   const holder = await findOrgBoundToContextTreeRepo(db, orgId, repo);
   if (holder) {
     throw new ConflictError("That repository is already another team's Context Tree");
