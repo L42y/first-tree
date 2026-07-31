@@ -1184,29 +1184,32 @@ describe("Members API", () => {
       expect(mirror?.name).toContain(created.agentId.slice(0, 8));
     });
 
-    it("selfCreateOrganization rejects duplicate and reserved slugs", async () => {
+    it("selfCreateOrganization derives a free slug instead of failing on a taken one", async () => {
       const app = getApp();
+      const userId = `user-${randomUUID()}`;
+      const username = `self-org-admin-${randomUUID().slice(0, 8)}`;
+      await app.db
+        .insert(usersTable)
+        .values({ id: userId, username, passwordHash: "x", displayName: "Self Org Admin" });
 
-      await expect(
-        selfCreateOrganization(app.db, {
-          userId: `user-${randomUUID()}`,
-          userDisplayName: "Self Org Admin",
-          username: "self-org-admin",
-          name: "default",
-          displayName: "Default Again",
-        }),
-      ).rejects.toThrow(/already exists/i);
+      // "Default" sanitizes to the `default` slug, which always exists. A slug
+      // collision is the server's problem, not a user-visible failure: the
+      // retry helper moves to a suffixed slug and the caller still gets a team.
+      const created = await selfCreateOrganization(app.db, {
+        userId,
+        userDisplayName: "Self Org Admin",
+        username,
+        displayName: "Default",
+      });
+      expect(created.name).toMatch(/^default-.+/);
 
-      await app.db.delete(organizationsTable).where(eq(organizationsTable.name, "default"));
-      await expect(
-        selfCreateOrganization(app.db, {
-          userId: `user-${randomUUID()}`,
-          userDisplayName: "Self Org Admin",
-          username: "self-org-admin",
-          name: "default",
-          displayName: "Reserved Default",
-        }),
-      ).rejects.toThrow(/reserved organization name/i);
+      const [defaultOrg] = await app.db
+        .select({ id: organizationsTable.id })
+        .from(organizationsTable)
+        .where(eq(organizationsTable.name, "default"))
+        .limit(1);
+      expect(defaultOrg?.id).toBeDefined();
+      expect(defaultOrg?.id).not.toBe(created.organizationId);
     });
   });
 });

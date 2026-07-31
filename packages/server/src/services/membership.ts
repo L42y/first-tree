@@ -7,7 +7,7 @@ import { agents } from "../db/schema/agents.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
+import { ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
 import { forceDisconnect } from "./connection-manager.js";
 import { suspendGitlabLinksForMembership } from "./gitlab-identities.js";
@@ -733,31 +733,26 @@ export async function leaveOrganization(db: Database, memberId: string) {
 
 /**
  * Self-service "create another team" (operator clicks "Create team" in the
- * org switcher). Caller is the new team's admin. Slug uniqueness is
- * enforced by the underlying organizations.name UNIQUE constraint.
+ * org switcher). Caller is the new team's admin.
+ *
+ * The user only ever names the team's `displayName`; the slug is derived
+ * server-side and disambiguated by `insertOrgWithSlugRetry`, exactly like the
+ * personal team minted at sign-in. That matters because the slug is globally
+ * unique and is not a per-tenant name: letting a client send it made every
+ * team whose display name carries no ASCII alphanumerics collapse onto the
+ * same `"team"` fallback slug, so the first such team anywhere blocked every
+ * later one with a 409 naming an identifier the user never typed. Display
+ * names are deliberately not unique — two teams may share one.
+ *
+ * `"default"` needs no special-casing: the default org always exists, so the
+ * retry helper sees the collision and moves to a suffixed slug.
  */
 export async function selfCreateOrganization(
   db: Database,
-  data: { userId: string; userDisplayName: string; username: string; name: string; displayName: string },
+  data: { userId: string; userDisplayName: string; username: string; displayName: string },
 ) {
-  // Cheap pre-check so the API returns 409 rather than letting the FK
-  // explode further down. Race window with concurrent creates is fine —
-  // the unique constraint is the authoritative gate.
-  const [collision] = await db
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.name, data.name))
-    .limit(1);
-  if (collision) {
-    throw new ConflictError(`Organization "${data.name}" already exists`);
-  }
-
-  if (data.name === "default") {
-    throw new BadRequestError('"default" is a reserved organization name');
-  }
-
   const orgId = uuidv7();
-  await db.insert(organizations).values({ id: orgId, name: data.name, displayName: data.displayName });
+  const name = await insertOrgWithSlugRetry(db, orgId, sanitizeOrgSlug(data.displayName), data.displayName);
   const member = await ensureMembership(db, {
     userId: data.userId,
     organizationId: orgId,
@@ -765,5 +760,5 @@ export async function selfCreateOrganization(
     displayName: data.userDisplayName,
     username: data.username,
   });
-  return { organizationId: orgId, memberId: member.id, name: data.name, displayName: data.displayName };
+  return { organizationId: orgId, memberId: member.id, name, displayName: data.displayName };
 }

@@ -20,13 +20,15 @@ export const orgBriefSchema = z.object({
 });
 export type OrgBrief = z.infer<typeof orgBriefSchema>;
 
-/** Body for `POST /me/organizations` — operator wants to create another team. */
+/**
+ * Body for `POST /me/organizations` — operator wants to create another team.
+ *
+ * Only the display name is a user input. The org slug (`organizations.name`)
+ * is a server-derived internal identifier, so the client must not supply it:
+ * a client-chosen slug turns the global slug UNIQUE constraint into a
+ * user-visible 409 on a field the user never typed.
+ */
 export const createOrgFromMeSchema = z.object({
-  name: z
-    .string()
-    .min(2)
-    .max(50)
-    .regex(/^[a-z0-9][a-z0-9-]*$/),
   displayName: z.string().min(1).max(200),
 });
 export type CreateOrgFromMe = z.infer<typeof createOrgFromMeSchema>;

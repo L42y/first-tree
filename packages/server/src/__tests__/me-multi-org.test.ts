@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { invitationRedemptions } from "../db/schema/invitations.js";
@@ -65,7 +65,7 @@ describe("Multi-org self-service", () => {
       method: "POST",
       url: "/api/v1/me/organizations",
       headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: { name: `t-${crypto.randomUUID().slice(0, 8)}`, displayName: "Side Project" },
+      payload: { displayName: "Side Project" },
     });
     expect(res.statusCode).toBe(201);
     const body = res.json<{ organization: { id: string; role: string } }>();
@@ -82,6 +82,37 @@ describe("Multi-org self-service", () => {
     expect(meBody.memberships.some((m) => m.organizationId === body.organization.id)).toBe(true);
   });
 
+  it("POST /me/organizations disambiguates display names that derive the same slug", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const create = (displayName: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/me/organizations",
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+        payload: { displayName },
+      });
+
+    // Display names carrying no ASCII alphanumerics all sanitize to the same
+    // base slug. The slug is globally unique, so while the client chose it the
+    // first such team anywhere rejected every later one with a 409 quoting an
+    // identifier the user never typed. Renaming did not help either: renames
+    // only touch displayName.
+    const first = await create("电商平台");
+    const renamedThenReused = await create("电商平台-商城");
+    const duplicate = await create("电商平台");
+    expect([first.statusCode, renamedThenReused.statusCode, duplicate.statusCode]).toEqual([201, 201, 201]);
+
+    const ids = [first, renamedThenReused, duplicate].map(
+      (res) => res.json<{ organization: { id: string } }>().organization.id,
+    );
+    const rows = await app.db.select().from(organizations).where(inArray(organizations.id, ids));
+    expect(rows.length).toBe(3);
+    expect(new Set(rows.map((row) => row.name)).size).toBe(3);
+    // Display names are deliberately not unique — two teams may share one.
+    expect(rows.filter((row) => row.displayName === "电商平台").length).toBe(2);
+  });
+
   it("POST /me/memberships/:memberId/leave soft-deletes membership", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
@@ -90,7 +121,7 @@ describe("Multi-org self-service", () => {
       method: "POST",
       url: "/api/v1/me/organizations",
       headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: { name: `t-${crypto.randomUUID().slice(0, 8)}`, displayName: "Second" },
+      payload: { displayName: "Second" },
     });
 
     const leaveRes = await app.inject({

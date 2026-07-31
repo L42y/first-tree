@@ -526,7 +526,7 @@ describe("small API route handlers", () => {
     await meRoutes(created.app as never);
     const createReply = makeReply();
     await route(created.routes, "POST", "/me/organizations").handler(
-      { body: { name: "new-org", displayName: "New Org" }, user: { userId: "user_1" } },
+      { body: { displayName: "New Org" }, user: { userId: "user_1" } },
       createReply,
     );
     expect(createReply).toMatchObject({
@@ -542,7 +542,7 @@ describe("small API route handlers", () => {
     await meRoutes(missingUser.app as never);
     await expect(
       route(missingUser.routes, "POST", "/me/organizations").handler(
-        { body: { name: "new-org", displayName: "New Org" }, user: { userId: "user_missing" } },
+        { body: { displayName: "New Org" }, user: { userId: "user_missing" } },
         makeReply(),
       ),
     ).rejects.toThrow("User not found");
