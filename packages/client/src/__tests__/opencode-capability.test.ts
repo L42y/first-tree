@@ -19,4 +19,22 @@ describe("OpenCode install-only capability", () => {
     expect(result.error).toContain("npm install -g opencode-ai@^1.18.7");
     expect(result.error).toContain("opencode auth login");
   });
+
+  it("does not advertise a resolved Windows binary that the default supervisor rejects", async () => {
+    const findOnPath = vi.fn(() => "C:\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe");
+    const result = await probeOpenCodeCapability({
+      findOnPath,
+      env: { PATH: "C:\\npm" },
+      platform: "win32",
+    });
+
+    expect(result).toMatchObject({
+      state: "error",
+      available: false,
+      runtimeSource: "path",
+      runtimePath: "C:\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+    });
+    expect(result.error).toContain("cannot run it on Windows");
+    expect(findOnPath).toHaveBeenCalledTimes(1);
+  });
 });

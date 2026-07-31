@@ -994,7 +994,7 @@ function capabilitiesReported(client: HubClient): boolean {
   return Object.keys(client.capabilities ?? {}).length > 0;
 }
 
-function runtimeSwitchAvailableProviders(client: HubClient): RuntimeProvider[] {
+export function runtimeSwitchAvailableProviders(client: HubClient): RuntimeProvider[] {
   if (!capabilitiesReported(client)) return [...PROVIDER_ORDER];
   return PROVIDER_ORDER.filter((provider) => client.capabilities[provider]?.available === true);
 }

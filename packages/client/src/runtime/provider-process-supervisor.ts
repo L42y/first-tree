@@ -23,6 +23,15 @@ export interface ProviderProcessSupervisor {
 }
 
 /**
+ * Whether the built-in supervisor can safely execute an external provider on
+ * this platform. Capability advertising uses the same gate as spawn so a
+ * Windows client cannot offer a runtime that this supervisor will reject.
+ */
+export function supportsDefaultProviderProcessSupervision(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "win32";
+}
+
+/**
  * The existing POSIX path: environment-attributed process-tree observation is
  * still the client-switch authority; the registry only improves local abort
  * and daemon shutdown cleanup.
@@ -37,7 +46,7 @@ export function createDefaultProviderProcessSupervisor(
 ): ProviderProcessSupervisor {
   return {
     spawn(spec) {
-      if (platform === "win32") {
+      if (!supportsDefaultProviderProcessSupervision(platform)) {
         throw new ProviderProcessSupervisionUnsupportedError(
           "OpenCode on Windows requires a pre-admission Job Object supervisor; " +
             "the current client-switch drain authority remains unsupported",
