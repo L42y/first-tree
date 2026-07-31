@@ -47,8 +47,8 @@ import type {
 // anyway.
 //
 // Pre-multi-env note: the fallback used to be `~/.first-tree/hub`. The
-// `hub` subdirectory is gone — see `packages/shared/src/channel/` and
-// `MIGRATION.md` Phase 2.
+// `hub` subdirectory is gone; current channel homes are defined in
+// `packages/shared/src/channel/`.
 
 export function defaultHome(): string {
   return process.env.FIRST_TREE_HOME ?? join(homedir(), ".first-tree");
