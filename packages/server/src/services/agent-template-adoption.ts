@@ -22,6 +22,7 @@ import { copyAttachmentForOrganization } from "./attachment.js";
 import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 import { assertMutableAgentIsNotLandingCampaignTrial } from "./landing-campaigns/guards.js";
 import type { Notifier } from "./notifier.js";
+import { assertTeamSkillNameAvailable, lockTeamSkillNames } from "./resources.js";
 
 /**
  * Agent Template adoption: turn an Agent's adopted Template set into
@@ -301,6 +302,28 @@ async function adoptTemplatesInTransaction(
       firstImport: provenanceRows.length === 0,
       reusable: provenanceRows.filter((row) => row.status === "active" || row.status === "stale"),
     });
+  }
+
+  // Phase 2.5 — Team Skill name invariant, taken before any attachment
+  // quota or source-row lock (lock order matches ordinary Team Skill
+  // creation). Rejects collisions with existing Team Skills and duplicates
+  // inside this adoption; reusable Skills are untouched either way.
+  const firstImportSkillNames = plan.flatMap((entry) =>
+    entry.firstImport
+      ? entry.template.payload.components.flatMap((component) => (component.type === "skill" ? [component.name] : []))
+      : [],
+  );
+  if (firstImportSkillNames.length > 0) {
+    await lockTeamSkillNames(db, agent.organizationId);
+    const seen = new Set<string>();
+    for (const name of firstImportSkillNames) {
+      const identity = name.toLowerCase();
+      if (seen.has(identity)) {
+        throw new ConflictError(`The adopted Templates provide duplicate Skill names ("${name}")`);
+      }
+      seen.add(identity);
+      await assertTeamSkillNameAvailable(db, agent.organizationId, name);
+    }
   }
 
   // Phase 3 — copy every distinct source bundle once, in stable source-id

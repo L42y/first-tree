@@ -602,29 +602,10 @@ describe("Agent Template adoption", () => {
   });
 
   describe("shared bundles, conflicts, and lifecycle edges", () => {
-    it("shares one target attachment when two adopted Templates use the same source ZIP", async () => {
-      const app = getApp();
-      const publisher = await createPublisherAdmin(app);
-      const bundleId = await uploadZip(app, publisher, skillZip("shared-zip"));
-      const first = await publishTemplate(app, publisher, `sh1-${crypto.randomUUID().slice(0, 6)}`, [
-        { key: "shared-zip", type: "skill", bundleAttachmentId: bundleId },
-      ]);
-      const second = await publishTemplate(app, publisher, `sh2-${crypto.randomUUID().slice(0, 6)}`, [
-        { key: "shared-zip", type: "skill", bundleAttachmentId: bundleId },
-      ]);
-      const createAgentRow = await seedAgentFactory(app);
-      const agent = await createAgentRow({ name: `sh-${crypto.randomUUID().slice(0, 6)}` });
-      const admin = await createTestAdmin(app, { username: `sh-${crypto.randomUUID().slice(0, 8)}` });
-      const [config] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
-
-      const reply = await adopt(app, admin, agent.uuid, config?.version ?? 1, [first.id, second.id]);
-      expect(reply.statusCode).toBe(200);
-      const rows = [...(await provenanceResources(app, first.id)), ...(await provenanceResources(app, second.id))];
-      expect(rows).toHaveLength(2);
-      expect(rows[0]?.bundleAttachmentId).toBeTruthy();
-      expect(rows[0]?.bundleAttachmentId).toBe(rows[1]?.bundleAttachmentId);
-      expect(rows[0]?.bundleAttachmentId).not.toBe(bundleId);
-    });
+    // Two Templates sharing one source ZIP always declare the same Skill
+    // name (the name is derived from that ZIP), so the Team Skill name
+    // invariant below rejects that combination instead of importing it — see
+    // "rejects duplicate Skill names across Templates inside one adoption".
 
     it("rejects adoption when a replace binding targets the Resource in either direction", async () => {
       const app = getApp();
@@ -797,6 +778,158 @@ describe("Agent Template adoption", () => {
       const [otherConfig] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, other.uuid));
       const reply = await adopt(app, admin, other.uuid, otherConfig?.version ?? 1, [template.id]);
       expect(reply.statusCode).toBe(409);
+    });
+  });
+
+  describe("Team Skill name invariant", () => {
+    async function copiesOf(app: TestApp, admin: Admin): Promise<number> {
+      return (
+        await app.db
+          .select({ id: attachments.id })
+          .from(attachments)
+          .where(eq(attachments.uploadedBy, admin.humanAgentUuid))
+      ).length;
+    }
+
+    it("rejects a first-import Skill whose name already exists in the Team, before any copy", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const admin = await createTestAdmin(app, { username: `sn-${crypto.randomUUID().slice(0, 8)}` });
+
+      // The Team already owns an active Skill with this exact name.
+      const teamZip = skillZip("adopt-skill");
+      const teamBundle = await app.inject({
+        method: "POST",
+        url: `/api/v1/orgs/${admin.organizationId}/attachments`,
+        headers: {
+          authorization: `Bearer ${admin.accessToken}`,
+          "content-type": "application/octet-stream",
+          [ATTACHMENT_MIME_HEADER]: "application/zip",
+          [ATTACHMENT_FILENAME_HEADER]: "skill.zip",
+        },
+        payload: teamZip,
+      });
+      expect(teamBundle.statusCode).toBe(201);
+      const created = await call(app, admin, "POST", `/api/v1/orgs/${admin.organizationId}/resources`, {
+        type: "skill",
+        bundleAttachmentId: teamBundle.json<{ id: string }>().id,
+        defaultEnabled: "available",
+      });
+      expect(created.statusCode).toBe(201);
+
+      const templateBundle = await uploadZip(app, publisher, skillZip("Adopt-Skill"));
+      const template = await publishTemplate(app, publisher, `snc-${crypto.randomUUID().slice(0, 6)}`, [
+        { key: "adopt-skill", type: "skill", bundleAttachmentId: templateBundle },
+      ]);
+      const createAgentRow = await seedAgentFactory(app);
+      const agent = await createAgentRow({ name: `sn-${crypto.randomUUID().slice(0, 6)}` });
+      const [config] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      const copiesBefore = await copiesOf(app, admin);
+
+      const reply = await adopt(app, admin, agent.uuid, config?.version ?? 1, [template.id]);
+      expect(reply.statusCode).toBe(409);
+      // The name check runs before Phase 3: nothing was copied.
+      expect(await copiesOf(app, admin)).toBe(copiesBefore);
+      expect(await provenanceResources(app, template.id)).toHaveLength(0);
+    });
+
+    it("rejects duplicate Skill names across Templates inside one adoption", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const bundleA = await uploadZip(app, publisher, skillZip("dup-skill"));
+      const bundleB = await uploadZip(app, publisher, skillZip("Dup-Skill"));
+      const first = await publishTemplate(app, publisher, `sd1-${crypto.randomUUID().slice(0, 6)}`, [
+        { key: "dup-skill", type: "skill", bundleAttachmentId: bundleA },
+      ]);
+      const second = await publishTemplate(app, publisher, `sd2-${crypto.randomUUID().slice(0, 6)}`, [
+        { key: "dup-skill", type: "skill", bundleAttachmentId: bundleB },
+      ]);
+      const createAgentRow = await seedAgentFactory(app);
+      const agent = await createAgentRow({ name: `sd-${crypto.randomUUID().slice(0, 6)}` });
+      const admin = await createTestAdmin(app, { username: `sd-${crypto.randomUUID().slice(0, 8)}` });
+      const [config] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      const copiesBefore = await copiesOf(app, admin);
+
+      const reply = await adopt(app, admin, agent.uuid, config?.version ?? 1, [first.id, second.id]);
+      expect(reply.statusCode).toBe(409);
+      expect(await copiesOf(app, admin)).toBe(copiesBefore);
+    });
+  });
+
+  describe("MCP durable name uniqueness", () => {
+    async function expectBothMcpUnavailable(app: TestApp, agentUuid: string) {
+      const effective = await app.resourcesService.resolveEffectiveResources(agentUuid);
+      const enabledNames = effective.mcp.filter((row) => row.mode === "enabled");
+      expect(enabledNames).toHaveLength(0);
+      const unavailableRows = effective.mcp.filter((row) => row.mode === "unavailable");
+      expect(unavailableRows.length).toBeGreaterThanOrEqual(2);
+      for (const row of unavailableRows) expect(row.unavailableReason).toBe("duplicate_mcp_name");
+      const reasons = effective.unavailable.filter((entry) => entry.type === "mcp").map((entry) => entry.reason);
+      expect(reasons.length).toBeGreaterThanOrEqual(2);
+      for (const reason of reasons) expect(reason).toBe("duplicate_mcp_name");
+
+      const [config] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agentUuid));
+      if (!config) throw new Error("agent config missing");
+      const resolved = await app.resourcesService.resolveRuntimeConfig({
+        agentId: agentUuid,
+        version: config.version,
+        payload: config.payload,
+        updatedAt: config.updatedAt.toISOString(),
+        updatedBy: config.updatedBy,
+      });
+      const projected = resolved.payload.mcpServers.map((server) =>
+        typeof server.name === "string" ? server.name.toLowerCase() : "",
+      );
+      expect(projected).not.toContain("github");
+    }
+
+    it("marks both rows unavailable when Team maintenance adds a same-name recommended MCP", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const template = await publishTemplate(app, publisher, `mdu-${crypto.randomUUID().slice(0, 6)}`, [
+        mcpComponent("mdu-mcp", "github"),
+      ]);
+      const createAgentRow = await seedAgentFactory(app);
+      const agent = await createAgentRow({ name: `mdu-${crypto.randomUUID().slice(0, 6)}` });
+      const admin = await createTestAdmin(app, { username: `md-${crypto.randomUUID().slice(0, 8)}` });
+      const [config] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      expect((await adopt(app, admin, agent.uuid, config?.version ?? 1, [template.id])).statusCode).toBe(200);
+
+      const created = await call(app, admin, "POST", `/api/v1/orgs/${admin.organizationId}/resources`, {
+        type: "mcp",
+        name: "GitHub Team MCP",
+        defaultEnabled: "recommended",
+        payload: { name: "GitHub", transport: "http", url: "https://mcp.example/github" },
+      });
+      expect(created.statusCode).toBe(201);
+      await expectBothMcpUnavailable(app, agent.uuid);
+    });
+
+    it("marks both rows unavailable when Team maintenance renames an MCP payload to a collision", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const template = await publishTemplate(app, publisher, `mup-${crypto.randomUUID().slice(0, 6)}`, [
+        mcpComponent("mup-mcp", "github"),
+      ]);
+      const createAgentRow = await seedAgentFactory(app);
+      const agent = await createAgentRow({ name: `mup-${crypto.randomUUID().slice(0, 6)}` });
+      const admin = await createTestAdmin(app, { username: `mu-${crypto.randomUUID().slice(0, 8)}` });
+      const [config] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      expect((await adopt(app, admin, agent.uuid, config?.version ?? 1, [template.id])).statusCode).toBe(200);
+
+      const other = await call(app, admin, "POST", `/api/v1/orgs/${admin.organizationId}/resources`, {
+        type: "mcp",
+        name: "Other MCP",
+        defaultEnabled: "available",
+        payload: { name: "other", transport: "http", url: "https://mcp.example/other" },
+      });
+      expect(other.statusCode).toBe(201);
+      const updated = await call(app, admin, "PATCH", `/api/v1/resources/${other.json<{ id: string }>().id}`, {
+        payload: { name: "GitHub", transport: "http", url: "https://mcp.example/other" },
+        defaultEnabled: "recommended",
+      });
+      expect(updated.statusCode).toBe(200);
+      await expectBothMcpUnavailable(app, agent.uuid);
     });
   });
 

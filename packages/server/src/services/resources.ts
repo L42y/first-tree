@@ -104,6 +104,42 @@ export type ResourcesServiceOptions = {
   attachmentBlobStore?: AttachmentBlobStore;
 };
 
+/**
+ * Serialize Team Skill name checks for one Team. Held for the whole
+ * transaction by Team Skill create/update and by Template adoption imports,
+ * always before any attachment quota or source-row lock.
+ */
+export async function lockTeamSkillNames(targetDb: Database, organizationId: string): Promise<void> {
+  await targetDb.execute(sql`SELECT pg_advisory_xact_lock(hashtext('team_skill_name'), hashtext(${organizationId}))`);
+}
+
+/**
+ * Reject an active/stale Team Skill with the same case-insensitive name.
+ * Must be called while holding `lockTeamSkillNames`.
+ */
+export async function assertTeamSkillNameAvailable(
+  targetDb: Database,
+  organizationId: string,
+  name: string,
+  excludeResourceId = "",
+): Promise<void> {
+  const [existing] = await targetDb
+    .select({ id: resources.id })
+    .from(resources)
+    .where(
+      and(
+        eq(resources.organizationId, organizationId),
+        eq(resources.scope, "team"),
+        eq(resources.type, "skill"),
+        inArray(resources.status, ["active", "stale"]),
+        ne(resources.id, excludeResourceId),
+        sql`lower(${resources.name}) = lower(${name})`,
+      ),
+    )
+    .limit(1);
+  if (existing) throw new ConflictError(`A Team Skill named "${name}" already exists`);
+}
+
 export function createResourcesService(opts: ResourcesServiceOptions): ResourcesService {
   const { db, notifier } = opts;
   const attachmentBlobStore = opts.attachmentBlobStore ?? createUnavailableAttachmentBlobStore();
@@ -228,33 +264,6 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     if (!row) {
       throw new BadRequestError("Skill bundle attachment must be a ready attachment owned by this organization");
     }
-  }
-
-  async function lockTeamSkillNames(targetDb: Database, organizationId: string): Promise<void> {
-    await targetDb.execute(sql`SELECT pg_advisory_xact_lock(hashtext('team_skill_name'), hashtext(${organizationId}))`);
-  }
-
-  async function assertTeamSkillNameAvailable(
-    targetDb: Database,
-    organizationId: string,
-    name: string,
-    excludeResourceId = "",
-  ): Promise<void> {
-    const [existing] = await targetDb
-      .select({ id: resources.id })
-      .from(resources)
-      .where(
-        and(
-          eq(resources.organizationId, organizationId),
-          eq(resources.scope, "team"),
-          eq(resources.type, "skill"),
-          inArray(resources.status, ["active", "stale"]),
-          ne(resources.id, excludeResourceId),
-          sql`lower(${resources.name}) = lower(${name})`,
-        ),
-      )
-      .limit(1);
-    if (existing) throw new ConflictError(`A Team Skill named "${name}" already exists`);
   }
 
   function makePreviewTeamResource(args: {
@@ -649,6 +658,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     applyRepoLocalPathDedup(repos, unavailable);
     await applySkillBundleAvailability(skills, resourceRows, agent.organizationId, unavailable);
     applyPayloadValidation(skills, mcp, unavailable);
+    applyMcpNameDedup(mcp, unavailable);
 
     return {
       version,
@@ -701,6 +711,35 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         });
       }
       seen.add(localPath);
+    }
+  }
+
+  function applyMcpNameDedup(rows: EffectiveResourceRow[], unavailable: EffectiveAgentResources["unavailable"]): void {
+    // Provider adapters key MCP servers by name, so a name collision can
+    // never reach the runtime: every row in a duplicate group becomes
+    // unavailable instead of silently picking a winner. This holds no matter
+    // which ordinary Resource/binding mutation produced the overlap.
+    const groups = new Map<string, EffectiveResourceRow[]>();
+    for (const row of rows) {
+      if (row.mode !== "enabled") continue;
+      const payload = row.payload as { name?: unknown } | null;
+      const name = typeof payload?.name === "string" ? payload.name.toLowerCase() : null;
+      if (!name) continue;
+      const group = groups.get(name) ?? [];
+      group.push(row);
+      groups.set(name, group);
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      for (const row of group) {
+        row.mode = "unavailable";
+        row.unavailableReason = "duplicate_mcp_name";
+        unavailable.push({
+          type: "mcp",
+          id: row.resourceId ?? row.bindingId ?? row.id,
+          reason: "duplicate_mcp_name",
+        });
+      }
     }
   }
 
