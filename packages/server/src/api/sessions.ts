@@ -58,12 +58,21 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       scope.organizationId,
       app.notifier,
     );
-    if (result.transitioned) sendToAgent(agent.uuid, { type: "session:suspend", chatId: request.params.chatId });
+    // Send on the already-suspended path too, not only on a fresh transition:
+    // a client that was disconnected when the first command fired must be
+    // able to converge through an idempotent retry of the same endpoint.
+    // `delivered` lets callers (e.g. the Web Reset flow) fail honestly when
+    // the DB moved but the command never reached the client.
+    const delivered =
+      result.state === "suspended"
+        ? sendToAgent(agent.uuid, { type: "session:suspend", chatId: request.params.chatId })
+        : true;
     return reply.status(200).send({
       agentId: agent.uuid,
       chatId: request.params.chatId,
       state: result.state,
       transitioned: result.transitioned,
+      delivered,
     });
   });
 
@@ -103,14 +112,20 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         // cleanup failure rejects the request instead of pretending success.
         await sessionEventService.clearEvents(app.db, agent.uuid, request.params.chatId);
       }
-      if (result.transitioned) {
-        sendToAgent(agent.uuid, { type: "session:terminate", chatId: request.params.chatId });
-      }
+      // Same idempotent-retry contract as suspend: an already-evicted row
+      // still re-sends `session:terminate` so a client that missed the first
+      // command converges. The active no-op sends nothing. `delivered`
+      // exposes whether the command actually reached the client.
+      const delivered =
+        result.state === "evicted"
+          ? sendToAgent(agent.uuid, { type: "session:terminate", chatId: request.params.chatId })
+          : true;
       return reply.status(200).send({
         agentId: agent.uuid,
         chatId: request.params.chatId,
         state: result.state,
         transitioned: result.transitioned,
+        delivered,
       });
     },
   );

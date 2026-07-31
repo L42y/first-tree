@@ -73,8 +73,8 @@ export function AgentSessionResetConfirmDialog({
             This stops the current run and clears the agent's session in this chat.
           </DialogDescription>
           <p className="text-body" style={{ color: "var(--fg-2)" }}>
-            Chat history is kept. Actions the agent already took outside this chat cannot be undone, and interrupted
-            work is not retried automatically. Send a new message to start a fresh session.
+            Chat history is kept. Actions the agent already took outside this chat cannot be undone. The current run
+            stops and does not resume by itself. Send a new message to start a fresh session.
           </p>
         </div>
         <DialogFooter>

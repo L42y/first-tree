@@ -173,12 +173,14 @@ describe("AgentStatusPanel — chat session Reset", () => {
       chatId: "chat-1",
       state: "suspended",
       transitioned: true,
+      delivered: true,
     });
     sessionApiMocks.terminateSession.mockResolvedValue({
       agentId: "agent-nova",
       chatId: "chat-1",
       state: "evicted",
       transitioned: true,
+      delivered: true,
     });
   });
 
@@ -313,7 +315,13 @@ describe("AgentStatusPanel — chat session Reset", () => {
     });
 
     await act(async () => {
-      resolveTerminate({ agentId: "agent-nova", chatId: "chat-1", state: "evicted", transitioned: true });
+      resolveTerminate({
+        agentId: "agent-nova",
+        chatId: "chat-1",
+        state: "evicted",
+        transitioned: true,
+        delivered: true,
+      });
     });
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Session reset"));
   });
@@ -341,6 +349,7 @@ describe("AgentStatusPanel — chat session Reset", () => {
       chatId: "chat-1",
       state: "active",
       transitioned: false,
+      delivered: true,
     });
     renderPanel({ engagement: "active" });
     const dialog = await openConfirmFromCard(h);
@@ -348,6 +357,46 @@ describe("AgentStatusPanel — chat session Reset", () => {
 
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
     expect(document.body.textContent).toContain("became active again");
+    expect(document.body.textContent).not.toContain("Session reset");
+    expect(confirmDialog()).not.toBeNull();
+  });
+
+  it("undelivered suspend (client disconnected mid-reset) fails honestly and never reaches terminate", async () => {
+    sessionApiMocks.suspendSession.mockResolvedValue({
+      agentId: "agent-nova",
+      chatId: "chat-1",
+      state: "suspended",
+      transitioned: true,
+      delivered: false,
+    });
+    renderPanel({ engagement: "active" });
+    const dialog = await openConfirmFromCard(h);
+    await click(h, dialogButton(dialog, "Reset"));
+
+    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
+    expect(document.body.textContent).toContain("client is disconnected");
+    expect(document.body.textContent).not.toContain("Session reset");
+    expect(sessionApiMocks.terminateSession).not.toHaveBeenCalled();
+    expect(confirmDialog()).not.toBeNull();
+  });
+
+  it("undelivered terminate (evicted server-side, client missed the command) is a retryable failure", async () => {
+    // The session IS evicted and traces ARE cleared, but the client may still
+    // hold the old provider session — so no success toast; retry re-sends the
+    // command through the idempotent endpoint.
+    sessionApiMocks.terminateSession.mockResolvedValue({
+      agentId: "agent-nova",
+      chatId: "chat-1",
+      state: "evicted",
+      transitioned: true,
+      delivered: false,
+    });
+    renderPanel({ engagement: "suspended" });
+    const dialog = await openConfirmFromCard(h);
+    await click(h, dialogButton(dialog, "Reset"));
+
+    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
+    expect(document.body.textContent).toContain("client is disconnected");
     expect(document.body.textContent).not.toContain("Session reset");
     expect(confirmDialog()).not.toBeNull();
   });

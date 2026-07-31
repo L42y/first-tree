@@ -183,6 +183,15 @@ export type SessionMutationResponse = {
   chatId: string;
   state: SessionState;
   transitioned: boolean;
+  /**
+   * Whether the WS command implied by the resulting state (`session:suspend`
+   * for suspended, `session:terminate` for evicted) actually reached the
+   * agent's client. `true` when no command was required. Callers promising a
+   * client-side effect (e.g. session Reset) must treat `false` as a
+   * retryable failure — the DB state moved but the client may still hold the
+   * old provider session.
+   */
+  delivered: boolean;
 };
 
 export function suspendSession(agentId: string, chatId: string): Promise<SessionMutationResponse> {

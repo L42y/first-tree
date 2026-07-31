@@ -34,8 +34,10 @@ delivery, live-activity trace clearing, and fresh-session creation.
 - Open the Participants roster and confirm no row-level Reset affordance
   exists. Open the agent's hovercard and confirm a single `Reset` action.
 - While the agent is mid-turn (working), choose Reset and confirm. Observe
-  that the run stops, the success toast appears, and the live activity/trace
-  surface for that chat session clears. Verify chat messages remain.
+  that the run stops and does not resume by itself, the success toast appears,
+  and the live activity/trace surface for that chat session clears. Verify
+  chat messages remain. A queued follow-up message may still be delivered to
+  the fresh session — only the interrupted run is guaranteed not to continue.
 - Send a new explicitly addressed message. Confirm a fresh session starts —
   a new provider session with no inherited private context — and the status
   returns to working/ready through the normal path.

@@ -113,6 +113,10 @@ export function canResetSessionStatus(status: AgentChatStatus | null): boolean {
   return status.engagement !== "none" || status.errored;
 }
 
+/** Reset failure when a state-changing command never reached the client. */
+const RESET_CLIENT_UNREACHABLE =
+  "The agent's client is disconnected, so the reset command could not be delivered. Try again once it reconnects.";
+
 function AgentStatusRow({
   chatId,
   agent,
@@ -154,7 +158,8 @@ function AgentStatusRow({
   const resetMut = useMutation({
     mutationFn: async () => {
       if (status?.engagement === "active") {
-        await suspendSession(agent.agentId, chatId);
+        const suspended = await suspendSession(agent.agentId, chatId);
+        if (!suspended.delivered) throw new Error(RESET_CLIENT_UNREACHABLE);
       }
       const result = await terminateSession(agent.agentId, chatId);
       if (result.state !== "evicted") {
@@ -163,6 +168,12 @@ function AgentStatusRow({
         // session. No terminate frame was sent and no traces were cleared, so
         // this must surface as a retryable failure, never as a success toast.
         throw new Error("The session became active again before it could be cleared. Try again.");
+      }
+      if (!result.delivered) {
+        // The server evicted the session and cleared its traces, but the
+        // terminate command never reached the client, which may still hold the
+        // old provider session. Retrying re-sends the command idempotently.
+        throw new Error(RESET_CLIENT_UNREACHABLE);
       }
     },
     onSuccess: () => {

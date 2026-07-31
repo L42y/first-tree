@@ -81,6 +81,96 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     expect(res.json()).toMatchObject({ state: "suspended", transitioned: false });
   });
 
+  it("Suspend reports delivered: true and sends session:suspend when the client is connected", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `suspend-d-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `susp-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Susp target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    await seedSession(app, agent.uuid, chat.id, "active");
+
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(admin.clientId, agent.uuid);
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/suspend`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "suspended", transitioned: true, delivered: true });
+      expect(ws.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: "session:suspend", chatId: chat.id, agentId: agent.uuid }),
+      );
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("Suspend on a disconnected client reports delivered: false while the state still moves", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `suspend-x-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `susp-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Susp target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    await seedSession(app, agent.uuid, chat.id, "active");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/suspend`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ state: "suspended", transitioned: true, delivered: false });
+    expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+  });
+
+  it("Suspend retry on an already-suspended row re-sends the command idempotently", async () => {
+    // A client that missed the first session:suspend (disconnected at the
+    // time) converges through the same endpoint: the no-op retry re-sends the
+    // command and reports fresh delivery.
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `suspend-r-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `susp-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Susp target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    await seedSession(app, agent.uuid, chat.id, "suspended");
+
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(admin.clientId, agent.uuid);
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/suspend`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "suspended", transitioned: false, delivered: true });
+      expect(ws.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: "session:suspend", chatId: chat.id, agentId: agent.uuid }),
+      );
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
   it("Terminate on a suspended row transitions to evicted, clears events, returns 200", async () => {
     const app = getApp();
     const admin = await createAdminContext(app, { username: `term-a-${crypto.randomUUID().slice(0, 6)}` });
@@ -126,13 +216,23 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
     await seedSession(app, agent.uuid, chat.id, "active");
 
-    const res = await app.inject({
-      method: "POST",
-      url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/terminate`,
-      headers: { authorization: `Bearer ${admin.accessToken}` },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ state: "active", transitioned: false });
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(admin.clientId, agent.uuid);
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/terminate`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      // No command is required for the active no-op, so nothing is sent and
+      // delivery is trivially satisfied.
+      expect(res.json()).toMatchObject({ state: "active", transitioned: false, delivered: true });
+      expect(ws.send).not.toHaveBeenCalled();
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
     expect(await readState(app, agent.uuid, chat.id)).toBe("active");
   });
 
@@ -167,7 +267,7 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
         headers: { authorization: `Bearer ${admin.accessToken}` },
       });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ state: "evicted", transitioned: true });
+      expect(res.json()).toMatchObject({ state: "evicted", transitioned: true, delivered: true });
       expect(ws.send).toHaveBeenCalledWith(
         JSON.stringify({ type: "session:terminate", chatId: chat.id, agentId: agent.uuid }),
       );
@@ -181,10 +281,10 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
   });
 
-  it("Terminate on an already-evicted row still clears leftover events (retry completes a failed cleanup)", async () => {
-    // If a previous terminate committed the evicted state but its cleanup
-    // failed, the idempotent retry path must finish the cleanup rather than
-    // skip it because transitioned=false.
+  it("Terminate on an already-evicted row still clears leftover events and re-sends the command (retry converges)", async () => {
+    // If a previous terminate committed the evicted state but its cleanup or
+    // command delivery failed, the idempotent retry path must finish both
+    // rather than skip them because transitioned=false.
     const app = getApp();
     const admin = await createAdminContext(app, { username: `term-ev-${crypto.randomUUID().slice(0, 6)}` });
     const agent = await createAgent(app.db, {
@@ -201,13 +301,51 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
       payload: { source: "sdk", message: "leftover event" },
     });
 
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(admin.clientId, agent.uuid);
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/terminate`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", transitioned: false, delivered: true });
+      expect(ws.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: "session:terminate", chatId: chat.id, agentId: agent.uuid }),
+      );
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+    expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
+  });
+
+  it("Terminate on a disconnected client reports delivered: false but still evicts and clears events", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `term-dc-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `term-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Term target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    await seedSession(app, agent.uuid, chat.id, "suspended");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "pre-terminate event" },
+    });
+
     const res = await app.inject({
       method: "POST",
       url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/terminate`,
       headers: { authorization: `Bearer ${admin.accessToken}` },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ state: "evicted", transitioned: false });
+    expect(res.json()).toMatchObject({ state: "evicted", transitioned: true, delivered: false });
+    expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
     expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
   });
 
