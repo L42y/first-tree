@@ -1,5 +1,6 @@
-import { type MentionParticipant, segmentMentions } from "@first-tree/shared";
+import type { MentionParticipant } from "@first-tree/shared";
 import { type CSSProperties, type RefObject, useEffect, useRef } from "react";
+import { type ComposerMentionToken, composerOverlaySegments } from "./mention-composer-model.js";
 
 /**
  * Renders a mirror layer that paints `@<participant>` chips behind a
@@ -8,6 +9,14 @@ import { type CSSProperties, type RefObject, useEffect, useRef } from "react";
  * the host sets `color: transparent; caret-color: var(--fg)` on the
  * textarea so the caret + selection stay visible while the text is
  * actually drawn by this overlay.
+ *
+ * Two chip sources, merged by {@link composerOverlaySegments}:
+ *   - `tokens` — committed picker mentions from the composer token model.
+ *     The textarea's display text already shows `@<displayName>` for these,
+ *     so the overlay only re-colors the span (identity lives in the token,
+ *     never re-parsed from the visible label).
+ *   - `participants` — literally-typed `@<name>` runs, resolved through the
+ *     shared segmenter (code fences / emails keep the no-chip contract).
  *
  * Layout contract — to keep the rendered glyphs character-for-character
  * aligned with the textarea, the overlay MUST inherit the textarea's
@@ -35,12 +44,17 @@ import { type CSSProperties, type RefObject, useEffect, useRef } from "react";
 export function MentionHighlightOverlay({
   value,
   participants,
+  tokens = [],
   textareaRef,
   mirrorStyle,
   chipClassName,
 }: {
   value: string;
   participants: MentionParticipant[];
+  /** Committed mention tokens over `value` (display text), painted as chips
+   *  without re-parsing. Omit for hosts without the token model — the
+   *  overlay then behaves exactly as before (typed `@<name>` only). */
+  tokens?: ComposerMentionToken[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   /** Style overrides that MUST match the textarea so glyph positions
    *  align (font, padding, line-height, white-space, box-sizing). */
@@ -50,7 +64,7 @@ export function MentionHighlightOverlay({
   chipClassName: string;
 }) {
   const innerRef = useRef<HTMLDivElement | null>(null);
-  const segments = segmentMentions(value, participants);
+  const segments = composerOverlaySegments(value, tokens, participants);
 
   // Mirror the textarea's scroll position into the inner mirror box.
   // Listen to `scroll` for manual scrolls, and re-sync after every render
@@ -106,7 +120,7 @@ export function MentionHighlightOverlay({
         }}
       >
         {segments.map((seg, i) =>
-          seg.kind === "mention" ? (
+          seg.kind === "mention" || seg.kind === "token" ? (
             // biome-ignore lint/suspicious/noArrayIndexKey: segments are recomputed every render; positional key is stable for THIS frame.
             <span key={`m-${i}`} className={chipClassName}>
               {seg.value}

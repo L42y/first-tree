@@ -238,7 +238,7 @@ export function AgentToken({ candidate, onRemove }: { candidate: MentionCandidat
   );
 }
 
-type ActiveTrigger = {
+export type ActiveTrigger = {
   /** Text index of the leading `@` (the char at `triggerIndex` is `@`). */
   triggerIndex: number;
   /** The substring between `@` and the cursor, already lowercased. */
@@ -482,12 +482,24 @@ export function useMentionAutocomplete({
   candidates,
   onSelect,
   disabled,
+  tokens,
 }: {
   value: string;
   cursor: number;
   candidates: MentionCandidate[];
-  onSelect: (update: MentionInsert) => void;
+  /** Commit callback. `update` is the legacy canonical-text insertion
+   *  (`@<name>`); hosts on the token composer model ignore it and rebuild
+   *  the insertion from `candidate` + `trigger` so the composer can show
+   *  the display name while keeping the canonical slug for routing. */
+  onSelect: (update: MentionInsert, candidate: MentionCandidate, trigger: ActiveTrigger) => void;
   disabled?: boolean;
+  /** Committed mention tokens over `value` (composer token model). A
+   *  trigger intersecting a token span is suppressed: a committed mention
+   *  is not a query — clicking into a display label (or landing at its end
+   *  after a pick that reused existing whitespace) must not reopen the
+   *  picker, or a re-pick would rewrite part of the label and stack a
+   *  duplicate overlapping token. */
+  tokens?: ReadonlyArray<{ start: number; end: number }>;
 }): {
   trigger: ActiveTrigger | null;
   results: MentionCandidate[];
@@ -501,8 +513,12 @@ export function useMentionAutocomplete({
 
   const trigger = useMemo(() => {
     if (disabled) return null;
-    return detectMentionTrigger(value, cursor);
-  }, [value, cursor, disabled]);
+    const detected = detectMentionTrigger(value, cursor);
+    // A committed mention token is not a query: suppress triggers whose
+    // `@<query>` run intersects a token span (see the `tokens` option).
+    if (detected && tokens?.some((t) => detected.triggerIndex < t.end && cursor > t.start)) return null;
+    return detected;
+  }, [value, cursor, disabled, tokens]);
 
   const results = useMemo(() => (trigger ? rankCandidates(candidates, trigger.query) : []), [trigger, candidates]);
 
@@ -538,7 +554,7 @@ export function useMentionAutocomplete({
     if (!trigger) return;
     const insert = buildMentionInsert(value, trigger, cursor, candidate);
     if (!insert) return;
-    onSelect(insert);
+    onSelect(insert, candidate, trigger);
   }
 
   const handleKey: MentionKeyHandler = (e) => {
