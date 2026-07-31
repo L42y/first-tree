@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Popover } from "../popover.js";
@@ -128,5 +128,69 @@ describe("Popover", () => {
 
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it("preserves focus when an action closes the popover and opens a modal", async () => {
+    function ModalHandoff(): React.JSX.Element {
+      const [modalOpen, setModalOpen] = useState(false);
+      const modalButtonRef = useRef<HTMLButtonElement>(null);
+
+      useEffect(() => {
+        if (modalOpen) modalButtonRef.current?.focus();
+      }, [modalOpen]);
+
+      return (
+        <>
+          <Popover
+            className="test-popover-trigger"
+            panelAriaLabel="Actions"
+            trigger={({ open, toggle }) => (
+              <button type="button" aria-expanded={open} onClick={toggle}>
+                Open actions
+              </button>
+            )}
+          >
+            {({ close }) => (
+              <button
+                type="button"
+                onClick={() => {
+                  setModalOpen(true);
+                  close();
+                }}
+              >
+                Open modal
+              </button>
+            )}
+          </Popover>
+          {modalOpen && (
+            <div role="dialog" aria-label="Repository settings">
+              <button ref={modalButtonRef} type="button">
+                Save
+              </button>
+            </div>
+          )}
+        </>
+      );
+    }
+
+    const container = document.getElementById("root");
+    if (!container) throw new Error("Missing test root");
+    root = createRoot(container);
+    await act(async () => root?.render(<ModalHandoff />));
+
+    const trigger = container.querySelector<HTMLButtonElement>("button");
+    if (!trigger) throw new Error("Missing trigger");
+    await act(async () => trigger.click());
+    const action = document.body.querySelector<HTMLButtonElement>('[role="dialog"][aria-label="Actions"] button');
+    if (!action) throw new Error("Missing popover action");
+    await act(async () => action.click());
+    await flush();
+
+    const modalButton = container.querySelector<HTMLButtonElement>(
+      '[role="dialog"][aria-label="Repository settings"] button',
+    );
+    expect(document.body.querySelector('[role="dialog"][aria-label="Actions"]')).toBeNull();
+    expect(document.activeElement).toBe(modalButton);
+    expect(document.activeElement).not.toBe(trigger);
   });
 });

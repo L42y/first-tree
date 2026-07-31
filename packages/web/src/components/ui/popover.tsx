@@ -35,8 +35,9 @@ type PopoverProps = {
  *
  * Trigger and content are render-props so callers can fully style the
  * trigger button (active state, count badges, focus rings) while still
- * sharing the open/close mechanics. Content receives `close` for any
- * "Done" / "Apply" buttons that should dismiss the popover.
+ * sharing the open/close mechanics. Content receives `close` for actions
+ * that dismiss the popover without taking focus away from their next target.
+ * Escape is the dismissal path that restores focus to the trigger.
  */
 export function Popover({
   trigger,
@@ -71,6 +72,9 @@ export function Popover({
     triggerRef.current?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
   }, []);
   const close = useCallback((): void => {
+    setOpen(false);
+  }, []);
+  const closeAndRestoreFocus = useCallback((): void => {
     setOpen(false);
     window.setTimeout(focusTrigger, 0);
   }, [focusTrigger]);
@@ -131,7 +135,7 @@ export function Popover({
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();
-      close();
+      closeAndRestoreFocus();
     };
     let frame = 0;
     const onReflow = (): void => {
@@ -156,7 +160,7 @@ export function Popover({
       window.visualViewport?.removeEventListener("scroll", onReflow);
       window.visualViewport?.removeEventListener("resize", onReflow);
     };
-  }, [open, close, computePosition]);
+  }, [open, closeAndRestoreFocus, computePosition]);
 
   useEffect(() => {
     if (!open || !focusOnOpen) return;
