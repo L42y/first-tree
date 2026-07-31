@@ -281,6 +281,15 @@ async function adoptTemplatesInTransaction(
     throw new ForbiddenError("Agent Template publishing is not configured on this deployment.");
   }
 
+  // Shared single lock boundary for both adoption entry points (existing
+  // PATCH and Template-backed create): the Team Skill lock always comes
+  // before any Team+Template or attachment lock —
+  // `team_skill_name → Team+Template → attachment`. The existing adoption
+  // pre-acquires it before the config row lock, so this is a same-tx
+  // idempotent re-acquire there; the Template-backed create relies on this
+  // call. Accepting it for prompt/MCP-only adoptions keeps one clear order.
+  await lockTeamSkillNames(db, agent.organizationId);
+
   // Phase 1 — lock (Team + Template, stable order) and verify every added Template.
   const templates: Array<{ id: string; payload: AgentTemplatePayload }> = [];
   for (const templateId of addedTemplateIds) {
@@ -304,17 +313,16 @@ async function adoptTemplatesInTransaction(
     });
   }
 
-  // Phase 2.5 — Team Skill name invariant, taken before any attachment
-  // quota or source-row lock (lock order matches ordinary Team Skill
-  // creation). Rejects collisions with existing Team Skills and duplicates
-  // inside this adoption; reusable Skills are untouched either way.
+  // Phase 2.5 — Team Skill name invariant. The shared entry already holds
+  // the Team Skill lock (see above), so this only re-checks collisions
+  // with existing Team Skills and duplicates inside this adoption;
+  // reusable Skills are untouched either way.
   const firstImportSkillNames = plan.flatMap((entry) =>
     entry.firstImport
       ? entry.template.payload.components.flatMap((component) => (component.type === "skill" ? [component.name] : []))
       : [],
   );
   if (firstImportSkillNames.length > 0) {
-    await lockTeamSkillNames(db, agent.organizationId);
     const seen = new Set<string>();
     for (const name of firstImportSkillNames) {
       const identity = name.toLowerCase();

@@ -988,6 +988,134 @@ describe("Agent Template adoption", () => {
         await app.db.select().from(agentResourceBindings).where(eq(agentResourceBindings.agentId, agent.uuid)),
       ).toHaveLength(0);
     });
+
+    it("never deadlocks an existing-agent adoption against Template-backed creation", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const bundleId = await uploadZip(app, publisher, skillZip("dual-entry-skill"));
+      const template = await publishTemplate(app, publisher, `de-${crypto.randomUUID().slice(0, 6)}`, [
+        { key: "dual-entry-skill", type: "skill", bundleAttachmentId: bundleId },
+      ]);
+      const createAgentRow = await seedAgentFactory(app);
+      const existingAgent = await createAgentRow({ name: `de-old-${crypto.randomUUID().slice(0, 6)}` });
+      const admin = await createTestAdmin(app, { username: `de-${crypto.randomUUID().slice(0, 8)}` });
+      const [configBefore] = await app.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, existingAgent.uuid));
+
+      const url = process.env.DATABASE_URL ?? "";
+      const blocker = postgres(url, { max: 1, ...sslOptions(url) });
+      const probe = postgres(url, { max: 1, ...sslOptions(url) });
+      let patchReply: Awaited<ReturnType<typeof call>> | undefined;
+      let postReply: Awaited<ReturnType<typeof call>> | undefined;
+      let patchPromise: ReturnType<typeof call> | undefined;
+      let postPromise: ReturnType<typeof call> | undefined;
+      let blockerInTransaction = false;
+      const withTimeout = async <T>(promise: Promise<T>, label: string): Promise<T> => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<T>((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`${label} timed out — possible deadlock`)), 15_000);
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      const waitForSkillWaiters = async (expected: number, deadline: number, label: string): Promise<void> => {
+        for (;;) {
+          const [row] = await probe`SELECT count(*)::int AS waiters FROM pg_locks
+            WHERE locktype = 'advisory' AND objsubid = 2 AND NOT granted
+              AND classid::bigint = (hashtext('team_skill_name')::bigint & 4294967295)
+              AND objid::bigint = (hashtext(${admin.organizationId})::bigint & 4294967295)`;
+          if (row && row.waiters >= expected) return;
+          if (Date.now() > deadline) throw new Error(`${label} did not reach ${expected} waiter(s) in time`);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      };
+      try {
+        await blocker`BEGIN`;
+        await blocker`SELECT pg_advisory_xact_lock(hashtext('team_skill_name'), hashtext(${admin.organizationId}))`;
+        blockerInTransaction = true;
+
+        patchPromise = call(app, admin, "PATCH", `/api/v1/agents/${existingAgent.uuid}/templates`, {
+          expectedVersion: configBefore?.version ?? 1,
+          templateIds: [template.id],
+        });
+        await waitForSkillWaiters(1, Date.now() + 10_000, "existing-agent adoption");
+
+        const newName = `de-new-${crypto.randomUUID().slice(0, 6)}`;
+        postPromise = call(app, admin, "POST", `/api/v1/orgs/${admin.organizationId}/agents`, {
+          name: newName,
+          displayName: "Dual Entry",
+          type: "agent",
+          templateIds: [template.id],
+        });
+        await waitForSkillWaiters(2, Date.now() + 10_000, "Template-backed create");
+
+        // Both entries are parked behind the Team Skill lock, so neither
+        // may hold the Team+Template advisory yet.
+        const [lockRow] = await probe`SELECT count(*)::int AS granted_count FROM pg_locks
+          WHERE locktype = 'advisory' AND objsubid = 2 AND granted
+            AND classid::bigint = (hashtext(${admin.organizationId})::bigint & 4294967295)
+            AND objid::bigint = (hashtext(${template.id})::bigint & 4294967295)`;
+        expect(lockRow?.granted_count).toBe(0);
+
+        await blocker`ROLLBACK`;
+        blockerInTransaction = false;
+
+        patchReply = await withTimeout(patchPromise, "existing-agent adoption");
+        postReply = await withTimeout(postPromise, "Template-backed create");
+      } finally {
+        if (blockerInTransaction) await blocker`ROLLBACK`.catch(() => undefined);
+        await Promise.allSettled([patchPromise, postPromise].filter((promise) => promise !== undefined));
+        await blocker.end({ timeout: 1 }).catch(() => undefined);
+        await probe.end({ timeout: 1 }).catch(() => undefined);
+      }
+
+      expect(patchReply?.statusCode).toBe(200);
+      expect(postReply?.statusCode).toBe(201);
+
+      // One Team copy; both Agents bound to it; config versions exact.
+      const rows = await provenanceResources(app, template.id);
+      expect(rows).toHaveLength(1);
+      // Exactly one byte copy behind the single Skill Resource.
+      const copies = await app.db
+        .select()
+        .from(attachments)
+        .where(
+          and(eq(attachments.organizationId, admin.organizationId), eq(attachments.uploadedBy, admin.humanAgentUuid)),
+        );
+      expect(copies).toHaveLength(1);
+      expect(rows[0]?.bundleAttachmentId).toBe(copies[0]?.id);
+      const created = postReply?.json<{ uuid: string }>();
+      const existingBindings = await app.db
+        .select()
+        .from(agentResourceBindings)
+        .where(eq(agentResourceBindings.agentId, existingAgent.uuid));
+      expect(existingBindings.map((binding) => binding.resourceId)).toEqual([rows[0]?.id]);
+      const newBindings = await app.db
+        .select()
+        .from(agentResourceBindings)
+        .where(eq(agentResourceBindings.agentId, created?.uuid ?? ""));
+      expect(newBindings.map((binding) => binding.resourceId)).toEqual([rows[0]?.id]);
+
+      const [configAfter] = await app.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, existingAgent.uuid));
+      expect(configAfter?.version).toBe((configBefore?.version ?? 1) + 1);
+      expect(configAfter?.templateIds).toEqual([template.id]);
+      const [newConfig] = await app.db
+        .select()
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, created?.uuid ?? ""));
+      expect(newConfig?.version).toBe(1);
+      expect(newConfig?.templateIds).toEqual([template.id]);
+    });
   });
 
   describe("MCP durable name uniqueness", () => {
