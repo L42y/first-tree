@@ -581,29 +581,28 @@ type AckPrefixRow = Pick<ClaimedEntry, "id" | "status" | "deliveredAt">;
 /**
  * Restricts the ACK prefix scan to rows that can still change state.
  *
- * Spelled as an inline literal instead of `ne(inboxEntries.status, "acked")`
- * on purpose. A partial index is usable only when the planner can prove the
- * query implies its predicate, and a generic plan keeps a bound parameter as a
- * `Param` node, which proves nothing — the scan then filters the whole
- * partition and the O(history) behavior comes back.
+ * Spelled as an inline literal instead of `ne(inboxEntries.status, "acked")`.
+ * A partial index applies only when the planner can prove the query implies its
+ * predicate, and a bound parameter in a *cached* (named) statement proves
+ * nothing.
  *
- * Whether PostgreSQL actually uses a generic plan is its own cost-based
- * decision, and it is dataset-dependent rather than guaranteed. Driving this
- * service through the real postgres-js path (`prepare: true`, default
- * `plan_cache_mode = auto`) against a 60k-row history, PostgreSQL 16 and 17
- * both kept re-planning as custom for 20+ executions, and the bound-parameter
- * spelling did *not* degrade there; a custom plan substitutes the constant, so
- * either spelling matches the index. The switch has been observed on other
- * data, and an operator can force it globally with `plan_cache_mode =
- * force_generic_plan`, in which case only the literal keeps the index.
+ * That does not happen on today's path. Drizzle issues every query through
+ * postgres-js `unsafe()`, which hardcodes `prepare: false` and is passed no
+ * options, so this statement is unnamed: a one-shot plan, always planned as
+ * custom, with the parameter substituted before planning. Measured through the
+ * real driver on PostgreSQL 16.14 and 17, the bound-parameter spelling keeps
+ * using `idx_inbox_unacked_cursor` — including under `plan_cache_mode =
+ * force_generic_plan`, because that setting only governs cached statements.
  *
- * So this is not working around an observed production regression: it removes
- * the dependency on a planner decision the code does not control, for the cost
- * of one inlined constant. Do not "normalize" it into a Drizzle comparison
- * helper. Exported so `inbox-ack-scaling.test.ts` can assert it still compiles
- * to zero bind parameters.
+ * The literal is therefore insurance, not a fix for an observed regression: it
+ * costs one inlined constant and stays correct if this query ever becomes a
+ * named statement (a Drizzle `.prepare()`, a driver change, a pooler that
+ * prepares). Do not "normalize" it into a Drizzle comparison helper. Exported
+ * so `inbox-ack-scaling.test.ts` can assert it still compiles to zero bind
+ * parameters.
  *
- * The *exclusion* spelling is load-bearing too, independently of the planner.
+ * Separately from the literal-vs-parameter question above — and unlike it,
+ * this one does bite today — the predicate has to stay an *exclusion*.
  * `status IN ('pending', 'delivered')` selects the same rows today and would
  * match the same partial index, but it is an allow-list: `ck_inbox_entries_status`
  * is NOT VALID, so a legacy row can carry a status outside today's enum, and an

@@ -113,6 +113,13 @@ describe("inbox ACK scales with the delta, not chat history", () => {
     // a partial index can stop matching — under a custom plan every spelling
     // looks fine and the guard would be decorative.
     //
+    // Note this deliberately models a path the application does not currently
+    // take: Drizzle goes through postgres-js `unsafe()`, so its statements are
+    // unnamed and always planned as custom, and `plan_cache_mode` does not
+    // reach them. This is the worst case the inline literal insures against
+    // (a named statement, from a `.prepare()` or a prepare-capable pooler),
+    // not a description of production behavior.
+    //
     // `notify` and the cursor stay bound parameters here on purpose: that is
     // how the service passes them, and keeping `notify` out of the index
     // predicate is what lets a parameter still act as an index condition.
