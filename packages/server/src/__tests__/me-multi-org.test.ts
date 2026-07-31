@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { invitationRedemptions } from "../db/schema/invitations.js";
@@ -65,7 +65,7 @@ describe("Multi-org self-service", () => {
       method: "POST",
       url: "/api/v1/me/organizations",
       headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: { name: `t-${crypto.randomUUID().slice(0, 8)}`, displayName: "Side Project" },
+      payload: { displayName: "Side Project" },
     });
     expect(res.statusCode).toBe(201);
     const body = res.json<{ organization: { id: string; role: string } }>();
@@ -82,6 +82,54 @@ describe("Multi-org self-service", () => {
     expect(meBody.memberships.some((m) => m.organizationId === body.organization.id)).toBe(true);
   });
 
+  it("POST /me/organizations disambiguates display names that derive the same slug", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const create = (displayName: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/me/organizations",
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+        payload: { displayName },
+      });
+
+    // Display names carrying no ASCII alphanumerics all sanitize to the same
+    // base slug. The slug is globally unique, so while the client chose it the
+    // first such team anywhere rejected every later one with a 409 quoting an
+    // identifier the user never typed.
+    const first = await create("电商平台");
+    expect(first.statusCode).toBe(201);
+    const firstId = first.json<{ organization: { id: string } }>().organization.id;
+    const [beforeRename] = await app.db.select().from(organizations).where(eq(organizations.id, firstId));
+
+    // Renaming does not release the slug — it moves only the display name.
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/orgs/${firstId}`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { displayName: "电商平台-商城" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    const [afterRename] = await app.db.select().from(organizations).where(eq(organizations.id, firstId));
+    expect(afterRename?.displayName).toBe("电商平台-商城");
+    expect(afterRename?.name).toBe(beforeRename?.name);
+
+    // Reusing the original display name still succeeds, on a fresh slug.
+    const reused = await create("电商平台");
+    expect(reused.statusCode).toBe(201);
+    const reusedId = reused.json<{ organization: { id: string } }>().organization.id;
+
+    const rows = await app.db
+      .select()
+      .from(organizations)
+      .where(inArray(organizations.id, [firstId, reusedId]));
+    expect(rows.length).toBe(2);
+    expect(new Set(rows.map((row) => row.name)).size).toBe(2);
+    // Display names are deliberately not unique — two teams may share one.
+    const alsoSameName = await create("电商平台-商城");
+    expect(alsoSameName.statusCode).toBe(201);
+  });
+
   it("POST /me/memberships/:memberId/leave soft-deletes membership", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
@@ -90,7 +138,7 @@ describe("Multi-org self-service", () => {
       method: "POST",
       url: "/api/v1/me/organizations",
       headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: { name: `t-${crypto.randomUUID().slice(0, 8)}`, displayName: "Second" },
+      payload: { displayName: "Second" },
     });
 
     const leaveRes = await app.inject({

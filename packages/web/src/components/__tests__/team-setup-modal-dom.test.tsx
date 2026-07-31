@@ -88,7 +88,7 @@ afterEach(() => {
 });
 
 describe("TeamSetupModal", () => {
-  it("creates a team with a slugified name, selects it, enters onboarding, and closes", async () => {
+  it("sends only the display name, selects the team, enters onboarding, and closes", async () => {
     const onClose = vi.fn();
     clientMocks.post.mockResolvedValue({
       organization: { id: "org-new", name: "acme-robotics", displayName: "ACME Robotics!!!", role: "admin" },
@@ -102,8 +102,9 @@ describe("TeamSetupModal", () => {
     await setInputValue(input, "  ACME Robotics!!!  ");
     await submit(document.body.querySelector("form"));
 
+    // The slug is server-derived; a client-chosen one would resurface the
+    // global slug UNIQUE constraint as a user-visible 409.
     expect(clientMocks.post).toHaveBeenCalledWith("/me/organizations", {
-      name: "acme-robotics",
       displayName: "ACME Robotics!!!",
     });
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");

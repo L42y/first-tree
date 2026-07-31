@@ -36,24 +36,6 @@ export function TeamSetupModal({ action, onClose }: { action: "create" | "join" 
   );
 }
 
-/**
- * Server-side slug rules (membership.ts:sanitizeOrgSlug): lowercase,
- * alphanumeric + hyphens, leading/trailing hyphens stripped, max 40 chars.
- * Mirror that here so we can derive a slug from the display name without
- * surfacing it to the user. Server has its own collision-disambiguation
- * (pickAvailableOrgSlug), so any reasonable slug is safe to send.
- */
-function slugify(input: string): string {
-  return (
-    input
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 40) || "team"
-  );
-}
-
 function CreateForm({ onDone }: { onDone: () => void }) {
   const { selectOrganization } = useAuth();
   const navigate = useNavigate();
@@ -77,7 +59,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
     try {
       const res = await api.post<{
         organization: { id: string; name: string; displayName: string; role: string };
-      }>("/me/organizations", { name: slugify(trimmed), displayName: trimmed });
+      }>("/me/organizations", { displayName: trimmed });
       // The caller is already authenticated and the user JWT is org-agnostic,
       // so no token adoption is needed (the endpoint returns none). Select the
       // freshly created org so the user lands in it.
