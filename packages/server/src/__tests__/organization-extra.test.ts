@@ -77,7 +77,7 @@ describe("organization service edge cases", () => {
     ).rejects.toThrow("Unexpected: INSERT RETURNING produced no row");
   });
 
-  it("reads and updates organizations with not-found and conflict handling", async () => {
+  it("reads and updates organizations with not-found handling", async () => {
     await expect(getOrganization(makeSelectDb([{ id: "org_1" }]) as never, "org_1")).resolves.toEqual({ id: "org_1" });
     await expect(getOrganization(makeSelectDb([]) as never, "missing")).rejects.toThrow(
       'Organization "missing" not found',
@@ -90,7 +90,6 @@ describe("organization service edge cases", () => {
         features: { beta: true },
         maxAgents: 10,
         maxMessagesPerMinute: 20,
-        name: "acme-inc",
       }),
     ).resolves.toMatchObject({ displayName: "Acme Inc" });
     expect(updates[0]).toMatchObject({
@@ -98,16 +97,14 @@ describe("organization service edge cases", () => {
       features: { beta: true },
       maxAgents: 10,
       maxMessagesPerMinute: 20,
-      name: "acme-inc",
     });
     expect((updates[0] as { updatedAt?: unknown }).updatedAt).toBeInstanceOf(Date);
+    // The slug has no update path, so an update can never touch it.
+    expect(updates[0]).not.toHaveProperty("name");
 
     await expect(updateOrganization(makeUpdateDb([]).db as never, "missing", {})).rejects.toThrow(
       'Organization "missing" not found',
     );
-    await expect(
-      updateOrganization(makeUpdateDb([], { cause: { code: "23505" } }).db as never, "org_1", { name: "taken" }),
-    ).rejects.toThrow('Organization name "taken" is already taken');
   });
 
   it("ensures the default organization idempotently", async () => {

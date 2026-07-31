@@ -103,11 +103,13 @@ describe("Multi-org self-service", () => {
     const [beforeRename] = await app.db.select().from(organizations).where(eq(organizations.id, firstId));
 
     // Renaming does not release the slug — it moves only the display name.
+    // A `name` in the body is not an escape hatch either: the slug has no
+    // update path, so it is stripped rather than applied.
     const renamed = await app.inject({
       method: "PATCH",
       url: `/api/v1/orgs/${firstId}`,
       headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: { displayName: "电商平台-商城" },
+      payload: { displayName: "电商平台-商城", name: "squatted-slug" },
     });
     expect(renamed.statusCode).toBe(200);
     const [afterRename] = await app.db.select().from(organizations).where(eq(organizations.id, firstId));
