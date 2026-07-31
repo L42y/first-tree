@@ -388,7 +388,8 @@ describe("OpenCode V1 handler", () => {
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const inputs: string[] = [];
-    const sessionCtx = context([], []);
+    const events: Array<{ kind?: string; payload?: { message?: string } }> = [];
+    const sessionCtx = context(events, []);
     const reconcile = resetManagedSkillsReconcileMock();
     const { sleep, waits } = controlledOpenCodeSleep();
     let queuedPhase = false;
@@ -429,6 +430,31 @@ describe("OpenCode V1 handler", () => {
 
     expect(sleep.mock.calls.map(([delayMs]) => delayMs)).toEqual([1_000, 2_000]);
     expect(queuedRefreshes).toBe(expectedUnsafeRefreshes);
+    const blockedEvents = events
+      .map((event) => (event.payload?.message ? parseProviderRetryEventMessage(event.payload.message) : null))
+      .filter((payload) => payload?.reasonCode === "managed_skills_unsafe_discovery");
+    expect(blockedEvents).toEqual([
+      expect.objectContaining({
+        event: "provider_retry_scheduled",
+        provider: "opencode",
+        scope: "provider_turn",
+        attempt: 1,
+        retryMode: "background",
+        delayMs: 1_000,
+        userSeverity: "warning",
+        messagePreview: expect.stringContaining("remains unacknowledged"),
+      }),
+      expect.objectContaining({
+        event: "provider_retry_scheduled",
+        provider: "opencode",
+        scope: "provider_turn",
+        attempt: 2,
+        retryMode: "background",
+        delayMs: 2_000,
+        userSeverity: "warning",
+        messagePreview: expect.stringContaining("remains unacknowledged"),
+      }),
+    ]);
     expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(1);
     expect(heldToken.processingStarted).not.toHaveBeenCalled();
     expect(heldToken.complete).not.toHaveBeenCalled();

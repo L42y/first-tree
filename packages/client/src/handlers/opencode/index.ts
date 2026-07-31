@@ -43,6 +43,7 @@ import {
   createDefaultProviderProcessSupervisor,
   type ProviderProcessSupervisor,
 } from "../../runtime/provider-process-supervisor.js";
+import { buildProviderRetryEvent, classifyProviderFailure } from "../../runtime/provider-retry-policy.js";
 import { redactErrorPreview } from "../../runtime/redact-error-preview.js";
 import {
   buildBriefingUpdateNotice,
@@ -797,6 +798,44 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     });
   }
 
+  function emitQueuedUnsafeDiscoveryBlocked(
+    sessionCtx: SessionContext,
+    error: Error,
+    attempt: number,
+    delayMs: number,
+  ): void {
+    const classification = classifyProviderFailure(error, {
+      provider: runtimeProvider,
+      scope: "provider_turn",
+      source: "bind",
+    });
+    const payload = buildProviderRetryEvent({
+      event: "provider_retry_scheduled",
+      provider: runtimeProvider,
+      scope: "provider_turn",
+      classification,
+      decision: {
+        action: "retry",
+        delayMs,
+        reasonCode: classification.reasonCode,
+        attempt,
+        retryMode: "background",
+        replaySafety: "pre_provider",
+        userSeverity: "warning",
+      },
+      messagePreview:
+        "Queued delivery remains unacknowledged because First Tree cannot safely reconcile managed OpenCode Skills. " +
+        `${error.message}`,
+    });
+    sessionCtx.emitEvent({
+      kind: "error",
+      payload: {
+        source: "runtime",
+        message: encodeProviderRetryEventMessage(payload),
+      },
+    });
+  }
+
   function consumedReasonForProviderSettlement(settlement: ProviderAttemptSettlement): TurnConsumedErrorReason {
     return settlement.decision.action === "stop" && settlement.decision.terminalKind === "capacity_wait_required"
       ? "capacity_wait_required"
@@ -1201,6 +1240,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         unsafeDiscoveryParkedBatch = drained;
         unsafeAttempt += 1;
         const delayMs = queuedUnsafeDiscoveryRetryDelayMs(unsafeAttempt);
+        emitQueuedUnsafeDiscoveryBlocked(sessionCtx, error, unsafeAttempt, delayMs);
         sessionCtx.log(
           `OpenCode queued turn blocked by unsafe managed-skill discovery; retrying in ${delayMs}ms: ${error.message}`,
         );
