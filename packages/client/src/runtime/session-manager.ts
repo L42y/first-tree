@@ -857,10 +857,17 @@ export class SessionManager {
         if (session) this.releaseActiveSlot(session);
         if (activeSlotHeld && session) {
           await this.shutdownHandler(session.handler, "session_terminated");
-        } else if (joinedSuspend && session) {
-          // The joined suspend left the handler live (slot already released);
-          // terminate must still tear it down, and teardown failure must fail
-          // the apply — it must not inherit shutdownHandler's swallow semantics.
+        } else if (session && (joinedSuspend || session.suspendError != null)) {
+          // The handler is still installed but the slot is gone, so the
+          // activeSlotHeld branch above never fires. Two such cases:
+          //   - a joined suspend left the handler live;
+          //   - a RETRY after a terminate rejected on a failed suspend —
+          //     `suspending` is null again but `suspendError` still records
+          //     that the old run was never confirmed stopped.
+          // Both must tear the handler down, and teardown failure must fail
+          // the apply — it must not inherit shutdownHandler's swallow
+          // semantics. On success the entry is deleted below, which also
+          // retires the recorded suspendError with it.
           await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
         }
 

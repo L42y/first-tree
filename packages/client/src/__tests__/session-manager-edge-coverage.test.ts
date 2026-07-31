@@ -2464,9 +2464,91 @@ describe("SessionManager edge coverage", () => {
     await expect(terminate).rejects.toBe(boom);
     expect(i.sessions.has(chatId)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(failingSuspendHandler.shutdown).not.toHaveBeenCalled();
 
-    // Retry after the suspend settled: the terminate re-executes and succeeds.
+    // Retry after the suspend settled: the recorded suspendError drives a
+    // strict teardown of the still-installed handler, and only after it
+    // succeeds does the terminate delete state and resolve.
+    vi.mocked(failingSuspendHandler.shutdown).mockImplementation(async () => {
+      expect(i.sessions.has(chatId)).toBe(true);
+    });
     await sm.handleCommand(chatId, "session:terminate");
+    expect(failingSuspendHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("gates the retry ack on strict teardown after a failed suspend and stays retryable when teardown fails", async () => {
+    const suspendBoom = new Error("suspend failed");
+    const teardownBoom = new Error("teardown failed");
+    let signalSuspendStarted: (() => void) | undefined;
+    let rejectSuspend: ((err: unknown) => void) | undefined;
+    const suspendStarted = new Promise<void>((resolve) => {
+      signalSuspendStarted = resolve;
+    });
+    const suspendGate = new Promise<void>((_resolve, reject) => {
+      rejectSuspend = reject;
+    });
+    let signalTeardownStarted: (() => void) | undefined;
+    let rejectTeardown: ((err: unknown) => void) | undefined;
+    const teardownStarted = new Promise<void>((resolve) => {
+      signalTeardownStarted = resolve;
+    });
+    const teardownGate = new Promise<void>((_resolve, reject) => {
+      rejectTeardown = reject;
+    });
+    const targetHandler = handler({
+      suspend: vi.fn().mockImplementation(async () => {
+        signalSuspendStarted?.();
+        await suspendGate;
+      }),
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalTeardownStarted?.();
+        await teardownGate;
+      }),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-retry-teardown-failed";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await suspendStarted;
+    const first = sm.handleCommand(chatId, "session:terminate");
+    rejectSuspend?.(suspendBoom);
+    await expect(first).rejects.toBe(suspendBoom);
+    expect(targetHandler.shutdown).not.toHaveBeenCalled();
+
+    // Retry: the terminate must not resolve while the strict teardown of the
+    // failed-suspend handler is still in flight.
+    const retry = sm.handleCommand(chatId, "session:terminate");
+    let retrySettled = false;
+    void retry.then(
+      () => {
+        retrySettled = true;
+      },
+      () => {
+        retrySettled = true;
+      },
+    );
+    await teardownStarted;
+    expect(retrySettled).toBe(false);
+
+    // Teardown failure rejects the retry too — and leaves no deadlocked
+    // state: the entry and its suspendError survive for a genuine retry.
+    rejectTeardown?.(teardownBoom);
+    await expect(retry).rejects.toBe(teardownBoom);
+    await vi.waitFor(() => expect(retrySettled).toBe(true));
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Next retry tears down (now succeeding) and completes the apply.
+    vi.mocked(targetHandler.shutdown).mockResolvedValue(undefined);
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.sessions.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
