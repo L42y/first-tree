@@ -144,6 +144,7 @@ import { Markdown, type MarkdownProps } from "../../../components/ui/markdown.js
 import { StatusGlyph } from "../../../components/ui/status-glyph.js";
 import { useToast } from "../../../components/ui/toast.js";
 import { UnreadDivider } from "../../../components/unread-divider.js";
+import { useMentionComposer } from "../../../components/use-mention-composer.js";
 import { useChatScroll } from "../../../hooks/use-chat-scroll.js";
 import { useGitlabEntityPresentation } from "../../../hooks/use-gitlab-entity-presentation.js";
 import { useReadTracker } from "../../../hooks/use-read-tracker.js";
@@ -1867,8 +1868,9 @@ export function ChatView({
 
   // Auto-grow the composer up to the CSS `max-height` cap (10.5rem ≈ 8
   // visible lines). Same hook as the new-chat composer for a consistent
-  // typing experience across both entry points.
-  useAutoResizeTextarea(textareaRef, draft);
+  // typing experience across both entry points. NOTE: the call site lives
+  // further down, right after `mentionComposer` — the effect must be
+  // driven by the textarea's actual bound value (`displayText`).
   /** Once-per-chat guard for the focus auto-prime: after the user has
    * focused the input even once, we don't keep slapping `@` back into an
    * empty draft. Reset when switching chats. */
@@ -3562,6 +3564,22 @@ export function ChatView({
     () => mentionCandidates.map((c) => ({ agentId: c.agentId, name: c.name })),
     [mentionCandidates],
   );
+
+  // Display-side composer model (see mention-composer-model.ts): the
+  // textarea shows `@<displayName>` for committed mentions while `draft`
+  // stays the canonical `@<name>` text that send / gating / persistence /
+  // slash-context already consume. `cursor` (below) is display-space; the
+  // model maps it back to canonical where a consumer needs that.
+  const mentionComposer = useMentionComposer({
+    canonical: draft,
+    onCanonicalChange: setDraft,
+    candidates: mentionCandidates,
+    // ChatView is NOT remounted on chat switch — reset the display model on
+    // chatId change even when two chats' drafts coincide textually.
+    scope: chatId,
+  });
+  // Auto-grow is driven by the textarea's actual bound value.
+  useAutoResizeTextarea(textareaRef, mentionComposer.displayText);
   // Rendered-message projection: all chat speakers (including self) carry
   // `displayName` for the visible chip while the immutable `name` remains the
   // resolver key and copy target. Reading directly from chat detail preserves
@@ -3641,21 +3659,26 @@ export function ChatView({
   const sendDimmed = sendDisabled || sendBlockedByMentionGate;
 
   const mention = useMentionAutocomplete({
-    value: draft,
+    value: mentionComposer.displayText,
     cursor,
     candidates: mentionCandidates,
     disabled: landingCampaignChatLocked || sendMut.isPending || uploading,
-    onSelect: (update) => {
+    tokens: mentionComposer.tokens,
+    onSelect: (_update, candidate, trigger) => {
       autoPrimedDraftRef.current = false;
-      setDraft(update.text);
-      setCursor(update.cursor);
+      // Token-model commit: inserts `@<displayName>` into the visible text
+      // and records the canonical slug/agentId as a token (the legacy
+      // `@<name>` insertion in `_update` is intentionally unused).
+      const applied = mentionComposer.applyPick(trigger, cursor, candidate);
+      if (!applied) return;
+      setCursor(applied.cursor);
       // Defer so React has committed the new value before we move the
       // selection — otherwise the textarea snaps back to its old cursor.
       requestAnimationFrame(() => {
         const el = textareaRef.current;
         if (!el) return;
         el.focus();
-        el.setSelectionRange(update.cursor, update.cursor);
+        el.setSelectionRange(applied.cursor, applied.cursor);
       });
     },
   });
@@ -3669,7 +3692,9 @@ export function ChatView({
    *   - group chats with no resolved @ show only system commands
    */
   const slashMentionContext = useMemo<{ agentId: string; displayName: string } | null>(() => {
-    const explicit = resolveMentionContext(draft, cursor, mentionCandidates);
+    // `draft` is canonical text; map the display-space caret back so the
+    // `@<name>` scan sees the same position the user does.
+    const explicit = resolveMentionContext(draft, mentionComposer.toCanonicalCursor(cursor), mentionCandidates);
     if (explicit) return explicit;
     if (!requiresMention && mentionCandidates.length === 1) {
       const c = mentionCandidates[0];
@@ -3677,7 +3702,7 @@ export function ChatView({
       return { agentId: c.agentId, displayName: c.displayName ?? c.name ?? c.agentId };
     }
     return null;
-  }, [draft, cursor, mentionCandidates, requiresMention]);
+  }, [draft, cursor, mentionCandidates, requiresMention, mentionComposer.toCanonicalCursor]);
 
   // Phase 1C ships with a single in-product system command (`/clear`).
   // The four-command roadmap from the design doc (`/help`, `/me`,
@@ -3705,7 +3730,7 @@ export function ChatView({
   });
 
   const slash = useSlashCommand({
-    value: draft,
+    value: mentionComposer.displayText,
     cursor,
     systemCommands: slashSystemCommands,
     agentSkills: slashMentionContext
@@ -3719,7 +3744,9 @@ export function ChatView({
     disabled: sendMut.isPending || uploading,
     onSelect: (update, picked) => {
       autoPrimedDraftRef.current = false;
-      setDraft(update.text);
+      // Slash inserts plain text (`/<command> `) — a display-space edit the
+      // token model diff-adjusts existing mentions through.
+      mentionComposer.replaceDisplay(update.text);
       setCursor(update.cursor);
       requestAnimationFrame(() => {
         const el = textareaRef.current;
@@ -4572,8 +4599,9 @@ export function ChatView({
                           align character-for-character; padding / sizing
                           must match the textarea's inline style below. */}
                         <MentionHighlightOverlay
-                          value={draft}
+                          value={mentionComposer.displayText}
                           participants={mentionParticipants}
+                          tokens={mentionComposer.tokens}
                           textareaRef={textareaRef}
                           chipClassName="mention-text"
                           mirrorStyle={{
@@ -4600,10 +4628,13 @@ export function ChatView({
                         />
                         <textarea
                           ref={textareaRef}
-                          value={draft}
+                          value={mentionComposer.displayText}
                           onChange={(e) => {
                             autoPrimedDraftRef.current = false;
-                            setDraft(e.target.value);
+                            // Token-model edit: adjusts mention tokens through
+                            // the diff and persists the canonical `@<name>`
+                            // form into `draft` (see useMentionComposer).
+                            mentionComposer.handleInput(e.target.value);
                             setCursor(e.target.selectionStart ?? e.target.value.length);
                             // Dismiss a stale upload error (e.g. the "no @mention"
                             // hint) the moment the user starts fixing it. Mirrors
@@ -4616,7 +4647,7 @@ export function ChatView({
                             dismissMentionTip();
                           }}
                           onSelect={(e) => {
-                            setCursor(e.currentTarget.selectionStart ?? draft.length);
+                            setCursor(e.currentTarget.selectionStart ?? mentionComposer.displayText.length);
                           }}
                           onFocus={() => {
                             // Group / about-to-be-group chats: prime the input with `@`
@@ -4648,7 +4679,7 @@ export function ChatView({
                             }
                             focusPrimedRef.current = true;
                             autoPrimedDraftRef.current = true;
-                            setDraft("@");
+                            mentionComposer.replaceDisplay("@");
                             setCursor(1);
                             requestAnimationFrame(() => {
                               const el = textareaRef.current;
@@ -4700,6 +4731,34 @@ export function ChatView({
                             // Trial: no slash commands / mention autocomplete, so `/` and
                             // `@` type literally and Enter always sends.
                             if (!isTrial) {
+                              // Atomic mention deletion: a collapsed caret flush
+                              // against a committed mention removes the whole
+                              // token (Backspace at its end / Delete at its
+                              // start) instead of sawing one character off the
+                              // display label and silently breaking the route.
+                              if (e.key === "Backspace" || e.key === "Delete") {
+                                const el = textareaRef.current;
+                                if (el && el.selectionStart === el.selectionEnd) {
+                                  const removed = mentionComposer.deleteTokenAtCaret(
+                                    el.selectionStart ?? cursor,
+                                    e.key === "Backspace" ? "back" : "forward",
+                                  );
+                                  if (removed) {
+                                    e.preventDefault();
+                                    setCursor(removed.cursor);
+                                    // The native deletion was preventDefaulted,
+                                    // so the DOM selection still points at the
+                                    // pre-delete caret — re-pin it after React
+                                    // commits the shortened value.
+                                    requestAnimationFrame(() => {
+                                      const ta = textareaRef.current;
+                                      if (!ta) return;
+                                      ta.setSelectionRange(removed.cursor, removed.cursor);
+                                    });
+                                    return;
+                                  }
+                                }
+                              }
                               // Slash command popover handles navigation keys when active.
                               // Sits before mention so `/`-typed draft never falls through to
                               // mention-autocomplete (the trigger predicates are disjoint, but
@@ -4815,11 +4874,12 @@ export function ChatView({
                                 // keyboard trick.
                                 const el = textareaRef.current;
                                 if (!el) return;
-                                const start = el.selectionStart ?? draft.length;
+                                const text = mentionComposer.displayText;
+                                const start = el.selectionStart ?? text.length;
                                 const end = el.selectionEnd ?? start;
-                                const next = `${draft.slice(0, start)}@${draft.slice(end)}`;
+                                const next = `${text.slice(0, start)}@${text.slice(end)}`;
                                 autoPrimedDraftRef.current = false;
-                                setDraft(next);
+                                mentionComposer.replaceDisplay(next);
                                 setCursor(start + 1);
                                 requestAnimationFrame(() => {
                                   el.focus();
