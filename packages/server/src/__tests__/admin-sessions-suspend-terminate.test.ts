@@ -349,6 +349,51 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
   });
 
+  it("a successful terminate leaves the trace permanently empty — pre-terminate events cleared, post-evict events dropped", async () => {
+    // The full reset trace contract through the real HTTP route:
+    //  1. an event that arrived BEFORE terminate is removed by the awaited
+    //     cleanup (the success response only fires after the delete commits);
+    //  2. a late event arriving AFTER eviction (old turn racing the terminate
+    //     command) is dropped at persistence and never recreates the trace;
+    //  3. the trace is still empty after the success response, when the Web
+    //     refetch of chat-session-events runs.
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `trace-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `trace-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Trace target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    await seedSession(app, agent.uuid, chat.id, "suspended");
+    await sessionEventService.appendLiveEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "pre-terminate event" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/terminate`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ state: "evicted", transitioned: true });
+    // (1) holds at response time — no polling.
+    expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
+
+    // (2) a late frame from the terminated turn is rejected by the gate.
+    const late = await sessionEventService.appendLiveEvent(app.db, agent.uuid, chat.id, {
+      kind: "assistant_text",
+      payload: { text: "late output from the old turn" },
+    });
+    expect(late).toBeNull();
+
+    // (3) the post-success refetch still sees an empty trace.
+    expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
+  });
+
   it("appendLiveEvent drops events for an evicted session but accepts them on a live one", async () => {
     // The late-event guard behind terminate: once the row is evicted, a stale
     // producer can never recreate the cleared trace; a live session is

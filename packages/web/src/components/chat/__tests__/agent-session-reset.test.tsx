@@ -403,8 +403,9 @@ describe("AgentStatusPanel — chat session Reset", () => {
 
   it("a failed reset stays retryable after the row refetches as evicted, and the retry converges", async () => {
     // Server evicted + traces cleared, but the terminate command missed the
-    // client. The error path invalidates the status query, the row refetches
-    // as evicted (no longer reset-eligible), and the card action disappears —
+    // client (delivered: false on the first attempt only). The error path
+    // invalidates the status query; the production refetch then projects the
+    // row as engagement none / not errored, so the card action disappears —
     // the still-open dialog must remain the retry affordance.
     sessionApiMocks.terminateSession.mockResolvedValueOnce({
       agentId: "agent-nova",
@@ -415,17 +416,25 @@ describe("AgentStatusPanel — chat session Reset", () => {
     });
     renderPanel({ engagement: "suspended" });
     const dialog = await openConfirmFromCard(h);
+
+    // Swap the status projection BEFORE the failure invalidation fires its
+    // refetch, so the refetch really returns the post-reset evicted row.
+    agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([status("agent-nova", { engagement: "none" })]);
+    const statusCallsBefore = agentStatusApiMocks.fetchChatAgentStatuses.mock.calls.length;
     await click(h, dialogButton(dialog, "Reset"));
 
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
-
-    // The refetch now reports the session evicted (engagement none, not
-    // errored) — the row no longer qualifies for a fresh Reset action.
-    agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([status("agent-nova", { engagement: "none" })]);
-    await waitForSettled(h, () => expect(confirmDialog()).not.toBeNull());
+    // Prove the refetch landed: another fetch happened and the row re-rendered
+    // from Paused (suspended) to Idle (evicted → engagement none) — the row is
+    // no longer reset-eligible, yet the open dialog must survive.
+    await waitForSettled(h, () => {
+      expect(agentStatusApiMocks.fetchChatAgentStatuses.mock.calls.length).toBeGreaterThan(statusCallsBefore);
+      expect(h.container.textContent).toContain("Idle");
+    });
+    expect(confirmDialog()).not.toBeNull();
 
     // Retry from the still-open dialog: the idempotent terminate re-sends the
-    // command, delivery lands, success.
+    // command (as after a client reconnect), delivery lands, success.
     await click(h, dialogButton(confirmDialog() as HTMLElement, "Reset"));
     await waitForSettled(h, () => expect(document.body.textContent).toContain("Session reset"));
     expect(sessionApiMocks.terminateSession).toHaveBeenCalledTimes(2);
