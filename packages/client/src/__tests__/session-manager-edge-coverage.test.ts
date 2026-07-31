@@ -2735,6 +2735,45 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("logs a failed stale-session teardown without unhandled rejection and converges on the next reconcile pass", async () => {
+    const boom = new Error("stale teardown failed");
+    const { logger, records } = recordingLogger();
+    const targetHandler = handler({
+      shutdown: vi.fn().mockRejectedValueOnce(boom).mockResolvedValue(undefined),
+    });
+    const sm = makeManager({ log: logger });
+    const i = internals(sm);
+    const chatId = "chat-stale-teardown-failed";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    // First reconcile pass: the strict teardown rejects, but the
+    // fire-and-forget path observes the rejection — logged, not an unhandled
+    // rejection (vitest would fail the suite on one) — and the entry survives
+    // so the chat stays locally held for the next pass.
+    sm.applyStaleChatIds([chatId]);
+    await vi.waitFor(() =>
+      expect(
+        records.some(
+          (record) => typeof record.msg === "string" && record.msg.includes("stale session terminate failed"),
+        ),
+      ).toBe(true),
+    );
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(sm.getHeldChatIds()).toContain(chatId);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // The server still has no projection for the chat, so the next reconcile
+    // declares it stale again; teardown now succeeds and the entry is cleaned
+    // up — the retry converges instead of early-returning a false success.
+    sm.applyStaleChatIds([chatId]);
+    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
   it("propagates teardown failure when terminating a session whose suspend just settled", async () => {
     const boom = new Error("shutdown failed");
     let signalSuspendStarted: (() => void) | undefined;

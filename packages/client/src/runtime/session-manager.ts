@@ -955,7 +955,14 @@ export class SessionManager {
    */
   applyStaleChatIds(staleChatIds: string[]): void {
     for (const id of staleChatIds) {
-      void this.handleCommand(id, "session:terminate");
+      // Terminate is strict now (teardown/persist failures reject): observe
+      // the rejection so a failed stale cleanup is logged instead of crashing
+      // the client as an unhandled rejection. The strict boundary keeps the
+      // entry/mapping intact on failure, so the next reconcile still finds
+      // the chat locally held, declares it stale again, and retries.
+      void this.handleCommand(id, "session:terminate").catch((err) => {
+        this.config.log.warn({ chatId: id, err }, "stale session terminate failed; will retry on next reconcile");
+      });
     }
   }
 
