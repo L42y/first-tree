@@ -26,6 +26,7 @@ describe("runtimeProviderSchema", () => {
     expect(runtimeProviderSchema.parse("codex")).toBe("codex");
     expect(runtimeProviderSchema.parse("cursor")).toBe("cursor");
     expect(runtimeProviderSchema.parse("kimi-code")).toBe("kimi-code");
+    expect(runtimeProviderSchema.parse("opencode")).toBe("opencode");
   });
 
   it("rejects unknown providers", () => {
@@ -39,6 +40,7 @@ describe("runtimeProviderSchema", () => {
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CODEX)).toBe("codex");
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CURSOR)).toBe("cursor");
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.KIMI_CODE)).toBe("kimi-code");
+    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.OPENCODE)).toBe("opencode");
   });
 
   it("DEFAULT_RUNTIME_PROVIDER is claude-code (existing rows pre-0026 have no kind)", () => {
@@ -50,6 +52,7 @@ describe("runtimeProviderSchema", () => {
     expect(isRuntimeProviderEnabled("codex")).toBe(true);
     expect(isRuntimeProviderEnabled("cursor")).toBe(true);
     expect(isRuntimeProviderEnabled("kimi-code")).toBe(true);
+    expect(isRuntimeProviderEnabled("opencode")).toBe(true);
     expect(isRuntimeProviderEnabled("claude-code-tui")).toBe(false);
     expect(isRuntimeProviderEnabled("future-provider")).toBe(true);
   });

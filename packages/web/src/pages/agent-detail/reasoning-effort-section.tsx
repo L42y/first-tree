@@ -41,6 +41,7 @@ const EFFORT_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, SelectOption[]> = {
   // cursor agents. The empty entry keeps the Record exhaustive.
   cursor: [],
   "kimi-code": [],
+  opencode: [],
 };
 
 const EFFORT_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
@@ -49,6 +50,7 @@ const EFFORT_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
   codex: "Applies to new sessions. Higher means more reasoning per turn; max and ultra require a compatible model.",
   cursor: "Cursor encodes effort in the model id; there is no separate control.",
   "kimi-code": "Kimi thinking configuration is inherited from the local Kimi configuration.",
+  opencode: "OpenCode model variants are provider-native; there is no separate First Tree effort control.",
 };
 
 export type ReasoningEffortSectionProps = {

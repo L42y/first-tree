@@ -41,6 +41,7 @@ import { clampRetryAttempt } from "./error-taxonomy.js";
 import type {
   AgentHandler,
   AgentIdentity,
+  DeliveryCompletionDisposition,
   DeliveryToken,
   HandlerConfig,
   HandlerFactory,
@@ -58,6 +59,7 @@ import {
   buildProviderRetryEvent,
   classifyProviderFailure,
   decideProviderRetry,
+  MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
@@ -1297,29 +1299,30 @@ export class SessionManager {
     messages: SessionMessage | readonly SessionMessage[],
     outcome: TurnOutcome,
     deliveryLeaseValid: (() => boolean) | null = null,
-  ): Promise<void> {
-    if (deliveryLeaseValid && !deliveryLeaseValid()) return;
+  ): Promise<DeliveryCompletionDisposition> {
+    if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
     const retryReason = this.errorCompletionRetryReason(outcome);
     if (retryReason) {
       this.warnRejectedErrorCompletion(chatId, outcome, retryReason);
       this.retryDeliveryTurn(chatId, messages, retryReason);
       this.projectSessionRuntime(chatId);
-      return;
+      return "retry";
     }
     if (outcome.status === "success") {
       this.clearPendingRuntimeFailureNotice(chatId);
     } else if (outcome.completion === "consumed") {
       const noticePosted = await this.postPendingRuntimeFailureNotice(chatId, deliveryLeaseValid);
-      if (deliveryLeaseValid && !deliveryLeaseValid()) return;
+      if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
       if (!noticePosted) {
         this.retryDeliveryTurn(chatId, messages, "runtime_failure_notice_delivery_failed");
         this.projectSessionRuntime(chatId);
-        return;
+        return "retry";
       }
     }
-    if (deliveryLeaseValid && !deliveryLeaseValid()) return;
+    if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
     await this.inboxDelivery.finishTurn(chatId, messages, outcome);
     this.projectSessionRuntime(chatId);
+    return "settled";
   }
 
   private createDeliveryToken(chatId: string, routeLeaseValid: (() => boolean) | null = null): DeliveryToken {
@@ -1344,8 +1347,8 @@ export class SessionManager {
         this.projectSessionRuntime(chatId);
       },
       complete: async (messages, outcome) => {
-        if (!claimTerminal("complete")) return;
-        await this.completeDeliveryTurn(chatId, messages, outcome, isValid);
+        if (!claimTerminal("complete")) return "retry";
+        return await this.completeDeliveryTurn(chatId, messages, outcome, isValid);
       },
       retry: (messages, reason) => {
         if (!claimTerminal("retry")) return;
@@ -2204,6 +2207,11 @@ export class SessionManager {
   private triggerImmediateRetry(chatId: string): void {
     const entry = this.sessions.get(chatId);
     if (!entry || entry.retryAttempt === 0) return;
+    // Managed-Skill discovery safety is a local provider-preflight gate, not
+    // an availability hint that newer input can bypass. Keep the original
+    // head and FIFO tail behind the bounded timer so repeated deliveries or
+    // resume commands cannot turn the safety wait into a hot retry loop.
+    if (entry.lastRetryReason === MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE) return;
     if (entry.retryTimer) {
       clearTimeout(entry.retryTimer);
       entry.retryTimer = null;
@@ -2816,6 +2824,18 @@ export class SessionManager {
         if (routeLeaseValid && !routeLeaseValid()) return;
         this.retryDeliveryTurn(chatId, messages, reason);
         this.projectSessionRuntime(chatId);
+      },
+      hasPendingDelivery: (messages) => {
+        const batch = Array.isArray(messages) ? messages : [messages];
+        return batch.some(
+          (message) =>
+            message.inboxEntryId !== undefined &&
+            this.inboxDelivery.hasEntry({
+              chatId,
+              entryId: message.inboxEntryId,
+              messageId: message.id,
+            }),
+        );
       },
       failSessionForRecovery: (reason, sessionId) => {
         if (routeLeaseValid && !routeLeaseValid()) return;

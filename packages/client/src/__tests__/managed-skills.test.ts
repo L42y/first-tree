@@ -39,7 +39,14 @@ import {
 } from "../runtime/managed-state.js";
 import { spawnWorkspaceLockWorker } from "./workspace-file-lock-worker.js";
 
-const PROVIDERS: readonly RuntimeProvider[] = ["claude-code", "claude-code-tui", "codex", "cursor", "kimi-code"];
+const PROVIDERS: readonly RuntimeProvider[] = [
+  "claude-code",
+  "claude-code-tui",
+  "codex",
+  "cursor",
+  "kimi-code",
+  "opencode",
+];
 
 function teamSkill(overrides: Partial<RuntimeResourceSkill> = {}): RuntimeResourceSkill {
   return {
@@ -173,6 +180,7 @@ describe("managed Skill reconciler", () => {
       ["codex", ".agents/skills"],
       ["cursor", ".cursor/skills"],
       ["kimi-code", ".kimi-code/skills"],
+      ["opencode", ".opencode/skills"],
     ]);
   });
 
@@ -190,19 +198,23 @@ describe("managed Skill reconciler", () => {
       "src/handlers/codex/app-server/index.ts",
       "src/handlers/cursor/index.ts",
       "src/handlers/kimi-code.ts",
+      "src/handlers/opencode/index.ts",
     ].map((path) => readFileSync(join(process.cwd(), path), "utf-8"));
     expect(
       handlerSources.reduce(
         (count, source) => count + (source.match(/reconcileManagedSkillsForConfig\(/g)?.length ?? 0),
         0,
       ),
-    ).toBe(14);
+    ).toBe(15);
     expect(handlerSources.every((source) => !source.includes("reconcileManagedSkills({"))).toBe(true);
     for (const source of [handlerSources[2] ?? "", handlerSources[3] ?? "", handlerSources[4] ?? ""]) {
       expect(source).toContain("if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;");
     }
     expect(handlerSources[0]).toContain('failFatalSessionForRecovery(sessionCtx, "claude_config_restart_failed")');
     expect(handlerSources[3]).toContain('retryBatch(batch, "codex_managed_skills_unsafe")');
+    expect(handlerSources[6]).toContain("teamSkillBundleResolverFromSdk(sessionCtx.sdk)");
+    expect(handlerSources[6]).toContain('token.retry(messages, "opencode_managed_skills_unsafe")');
+    expect(handlerSources[6]).toContain("if (isManagedSkillsUnsafeDiscoveryError(error))");
   });
 
   it.each(PROVIDERS)("projects Core Skills only into the active %s discovery root", async (provider) => {

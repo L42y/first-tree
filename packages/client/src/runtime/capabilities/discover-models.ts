@@ -204,6 +204,12 @@ export async function discoverProviderModels(
       return discoverCursorModels(deps);
     case "kimi-code":
       return discoverKimiModels(deps);
+    case "opencode":
+      return unavailable(
+        provider,
+        "OpenCode model discovery is not enabled in V1; enter the provider-native provider/model id",
+        deps,
+      );
     case "claude-code":
     case "claude-code-tui":
     case "codex":

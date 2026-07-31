@@ -7,6 +7,7 @@ import type {
   RuntimeProvider,
 } from "@first-tree/shared";
 import { type Classification, classify, ERROR_KINDS } from "./error-taxonomy.js";
+import { isManagedSkillsUnsafeDiscoveryError } from "./managed-skills.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
 
 export type ProviderFailureClassification = {
@@ -49,6 +50,8 @@ const SESSION_CAPACITY_CAP_MS = 5 * 60_000;
 const AUTH_HTTP_CODE_RE = /\b(401|403)\b/;
 const TRANSIENT_HTTP_CODE_RE = /\b(500|502|503|504)\b/;
 
+export const MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE = "managed_skills_unsafe_discovery";
+
 export function classifyProviderFailure(
   err: unknown,
   context: {
@@ -64,6 +67,14 @@ export function classifyProviderFailure(
   const retryAfterMs = readRetryAfterMs(shape);
   const status = shape.status ?? shape.statusCode;
 
+  if (isManagedSkillsUnsafeDiscoveryError(err)) {
+    return {
+      category: "transient_transport",
+      reasonCode: MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
+      message: base.message,
+      sourceKind: base.kind,
+    };
+  }
   if (isBillingLimit(text)) {
     return {
       category: "provider_capacity",
@@ -153,7 +164,8 @@ export function decideProviderRetry(input: {
   if (
     input.scope === "provider_turn" &&
     isUnsafeReplay(input.replaySafety) &&
-    !isRetryableUserVisibleFailure(input.classification.category, input.replaySafety)
+    (input.classification.reasonCode === MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE ||
+      !isRetryableUserVisibleFailure(input.classification.category, input.replaySafety))
   ) {
     return stop("unsafe_replay", "unsafe_replay", input.replaySafety, "warning");
   }

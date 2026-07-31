@@ -858,7 +858,10 @@ export function parseSwitchProcessEnvValue(envText: string, key: string): string
 }
 
 function isKnownProviderCommand(command: string): boolean {
-  if (/(^|[/\s])(claude|codex|cursor-agent)(\s|$)/i.test(command) || /@openai\/codex|claude-code/i.test(command)) {
+  if (
+    /(^|[/\s])(claude|codex|cursor-agent|opencode)(\s|$)/i.test(command) ||
+    /@openai\/codex|claude-code|opencode-ai/i.test(command)
+  ) {
     return true;
   }
   // Cursor's official main command is the generic name `agent`. Match it ONLY

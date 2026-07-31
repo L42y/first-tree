@@ -87,7 +87,9 @@ export function RuntimeTab() {
             {/* Cursor has no separate reasoning-effort channel — effort/fast
                 variants live in the provider-native model id, so the control
                 is hidden rather than rendered empty. */}
-            {ctx.setupRuntimeProvider !== "cursor" && ctx.setupRuntimeProvider !== "kimi-code" ? (
+            {ctx.setupRuntimeProvider !== "cursor" &&
+            ctx.setupRuntimeProvider !== "kimi-code" &&
+            ctx.setupRuntimeProvider !== "opencode" ? (
               <ReasoningEffortSection
                 value={"reasoningEffort" in config.payload ? config.payload.reasoningEffort : ""}
                 onChange={(v) => configSave.save({ reasoningEffort: v }, { field: "effort" })}

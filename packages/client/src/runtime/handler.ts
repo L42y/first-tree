@@ -106,7 +106,10 @@ export type ResumeResult = ResumeReceipt | string;
 
 export type DeliveryToken = {
   processingStarted(messages: SessionMessage | readonly SessionMessage[]): void;
-  complete(messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome): Promise<void>;
+  complete(
+    messages: SessionMessage | readonly SessionMessage[],
+    outcome: TurnOutcome,
+  ): Promise<DeliveryCompletionResult>;
   retry(messages: SessionMessage | readonly SessionMessage[], reason: string): void;
   terminalRejected(
     messages: SessionMessage | readonly SessionMessage[],
@@ -114,6 +117,19 @@ export type DeliveryToken = {
     evidence: TerminalRejectionEvidence,
   ): Promise<void>;
 };
+
+/**
+ * Observable completion custody for handlers whose one-shot provider payload
+ * may only advance after the inbox delivery really settles. `retry` means the
+ * completion path deliberately retained server custody (for example because a
+ * required durable runtime-failure notice could not be posted).
+ *
+ * `void` remains accepted on DeliveryToken.complete for legacy/test tokens;
+ * production SessionManager tokens always return an explicit disposition.
+ */
+export type DeliveryCompletionDisposition = "settled" | "retry";
+// biome-ignore lint/suspicious/noConfusingVoidType: legacy/test tokens intentionally resolve void.
+export type DeliveryCompletionResult = DeliveryCompletionDisposition | void;
 
 export function noopDeliveryToken(): DeliveryToken {
   return {
@@ -167,7 +183,10 @@ export type SessionContext = HandlerContext & {
    * The coordinator sends one ACK-through for the last message's
    * `inboxEntryId` and settles local ledger only after server confirmation.
    */
-  finishTurn: (messages: SessionMessage | readonly SessionMessage[], outcome: TurnOutcome) => Promise<void>;
+  finishTurn: (
+    messages: SessionMessage | readonly SessionMessage[],
+    outcome: TurnOutcome,
+  ) => Promise<DeliveryCompletionResult>;
 
   /**
    * Mark a concrete message or batch as abandoned by a retryable path
@@ -175,6 +194,14 @@ export type SessionContext = HandlerContext & {
    * entries unacked; a later chat recovery or bind reset redelivers them.
    */
   retryTurn: (messages: SessionMessage | readonly SessionMessage[], reason: string) => void;
+
+  /**
+   * True while the delivery coordinator still owns at least one concrete
+   * inbox row in this message/fused batch. Retry windows use this as their
+   * durable cleanup authority; route-generation invalidation alone does not
+   * mean the unacked server delivery was abandoned.
+   */
+  hasPendingDelivery?: (messages: SessionMessage | readonly SessionMessage[]) => boolean;
 
   /**
    * Drop the current live handler after it has fenced an unknown-custody

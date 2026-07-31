@@ -64,6 +64,7 @@ const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = {
   codex: ".agents/skills",
   cursor: ".cursor/skills",
   "kimi-code": ".kimi-code/skills",
+  opencode: ".opencode/skills",
 };
 
 const ALLOWED_TARGET_ROOTS = new Set<string>([...Object.values(PROVIDER_SKILL_ROOTS), LEGACY_RESOURCE_SKILLS_ROOT]);

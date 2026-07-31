@@ -1962,13 +1962,14 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
       capturedCtx,
       "Your access token could not be refreshed because your refresh token was revoked.",
     );
-    await capturedToken.complete(capturedMessage, {
+    const completionDisposition = await capturedToken.complete(capturedMessage, {
       status: "error",
       terminal: true,
       completion: "consumed",
       reason: "provider_credential_required",
     });
 
+    expect(completionDisposition).toBe("settled");
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith(
       "chat-provider-terminal",
@@ -2076,13 +2077,14 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
       reasonCode: "provider_credential_required",
       messagePreview: "Failed to authenticate. API Error: 403 Request not allowed",
     });
-    await capturedToken.complete(capturedMessage, {
+    const completionDisposition = await capturedToken.complete(capturedMessage, {
       status: "error",
       terminal: true,
       completion: "consumed",
       reason: "provider_credential_required",
     });
 
+    expect(completionDisposition).toBe("settled");
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const notice = String(sendMessage.mock.calls[0]?.[1].content);
     expect(notice).toContain("Claude Code could not run this turn");
@@ -2244,13 +2246,14 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
     if (!capturedCtx || !capturedToken || !capturedMessage) throw new Error("delivery was not captured");
 
     emitCodexTerminalProviderFailure(capturedCtx, "revoked refresh token");
-    await capturedToken.complete(capturedMessage, {
+    const failedNoticeCompletionDisposition = await capturedToken.complete(capturedMessage, {
       status: "error",
       terminal: true,
       completion: "consumed",
       reason: "provider_credential_required",
     });
 
+    expect(failedNoticeCompletionDisposition).toBe("retry");
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(ackEntry).not.toHaveBeenCalled();
     expect(recoverChat).toHaveBeenCalledWith("chat-provider-notice-fail");

@@ -13,7 +13,7 @@
  * CLI. The hint reframes the message so the next step is obvious.
  */
 
-type Runtime = "codex" | "claude-code" | "cursor" | "kimi-code";
+type Runtime = "codex" | "claude-code" | "cursor" | "kimi-code" | "opencode";
 
 /**
  * Substring keywords used to detect codex's auth-refresh failures. Codex's
@@ -80,6 +80,21 @@ export function isKimiCodeAuthError(codeOrMessage: string): boolean {
   );
 }
 
+const OPENCODE_AUTH_KEYWORDS: readonly string[] = [
+  "authentication required",
+  "not authenticated",
+  "unauthorized",
+  "invalid api key",
+  "missing api key",
+  "auth login",
+  "provider.auth",
+];
+
+export function isOpenCodeAuthError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return OPENCODE_AUTH_KEYWORDS.some((keyword) => lower.includes(keyword));
+}
+
 /**
  * The single auth-failure code claude-code's SDK reports (out of the
  * `SDKAssistantMessageError` union). Centralised here so both the assistant-
@@ -107,11 +122,21 @@ export function formatAuthHint(runtime: Runtime, originalMessage: string): strin
       ? "`codex login`"
       : runtime === "cursor"
         ? "`cursor-agent login`"
-        : runtime === "kimi-code"
-          ? "`kimi` and then `/login`"
-          : "`claude auth login`";
+        : runtime === "opencode"
+          ? "`opencode auth login`"
+          : runtime === "kimi-code"
+            ? "`kimi` and then `/login`"
+            : "`claude auth login`";
   const provider =
-    runtime === "codex" ? "OpenAI" : runtime === "cursor" ? "Cursor" : runtime === "kimi-code" ? "Kimi" : "Anthropic";
+    runtime === "codex"
+      ? "OpenAI"
+      : runtime === "cursor"
+        ? "Cursor"
+        : runtime === "opencode"
+          ? "OpenCode's selected provider"
+          : runtime === "kimi-code"
+            ? "Kimi"
+            : "Anthropic";
   // Cap the appended raw message so an upstream stack-trace envelope (codex
   // wraps its `event.error.message` in surprising ways) doesn't bloat the
   // hint into a wall of text on the chat timeline.

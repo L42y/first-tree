@@ -32,6 +32,7 @@ const RUNTIME_NAME: Record<RuntimeProvider, string> = {
   codex: "Codex",
   cursor: "Cursor",
   "kimi-code": "Kimi Code",
+  opencode: "OpenCode",
 };
 
 export function RuntimeSection(props: RuntimeSectionProps) {
