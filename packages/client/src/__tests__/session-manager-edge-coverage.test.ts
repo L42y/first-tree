@@ -29,7 +29,7 @@ type SessionRecord = {
   lastActivity: number;
   suspending: Promise<void> | null;
   suspendError: { error: unknown } | null;
-  handlerStoppedBySuspend: boolean;
+  handlerStoppedBySuspend: AgentHandler | null;
   teardownError: { error: unknown } | null;
   retryAttempt: number;
   retryNextAt: number | null;
@@ -282,7 +282,7 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     lastActivity: Date.now(),
     suspending: null,
     suspendError: null,
-    handlerStoppedBySuspend: false,
+    handlerStoppedBySuspend: null,
     teardownError: null,
     retryAttempt: 0,
     retryNextAt: null,
@@ -2818,6 +2818,85 @@ describe("SessionManager edge coverage", () => {
     rejectSuspend?.(null);
     await expect(terminate).rejects.toThrow(/session suspend failed/);
     expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("tears down a replacement handler installed after the suspend-stopped handler was retired", async () => {
+    const boom = new Error("replacement shutdown failed");
+    const retiredHandler = handler();
+    const replacementHandler = handler({
+      resume: vi.fn().mockResolvedValue("replacement-session"),
+      shutdown: vi.fn().mockRejectedValueOnce(boom).mockResolvedValue(undefined),
+    });
+    const sm = makeManager({ handlers: [replacementHandler] });
+    const i = internals(sm);
+    const chatId = "chat-terminate-replacement-handler";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: retiredHandler,
+        status: "active",
+        routeTransition: { generation: 0, handler: retiredHandler, phase: "resume" },
+      }),
+    );
+    i._activeCount = 1;
+
+    // Suspend cancels the transition and the suspend boundary shuts the
+    // retired handler down — the stopped marker binds to THAT handler.
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(retiredHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.get(chatId)?.handlerStoppedBySuspend).toBe(retiredHandler);
+
+    // Resume installs a replacement handler (the old one is retired) and
+    // re-acquires the active slot.
+    await sm.handleCommand(chatId, "session:resume");
+    const entry = i.sessions.get(chatId);
+    expect(entry?.handler).toBe(replacementHandler);
+    expect(entry?.activeSlotHeld).toBe(true);
+
+    // The marker must NOT exempt the replacement: the terminate tears it
+    // down strictly, and a shutdown failure rejects the apply (applied:false).
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    expect(replacementHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Retry: teardown succeeds and the apply completes (applied:true).
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(replacementHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("does not double-tear-down when the suspend-stopped handler is still the current handler", async () => {
+    const stoppedHandler = handler();
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-no-double-teardown";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: stoppedHandler,
+        status: "active",
+        routeTransition: { generation: 0, handler: stoppedHandler, phase: "resume" },
+      }),
+    );
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(stoppedHandler.shutdown).toHaveBeenCalledTimes(1);
+
+    // The handler was never replaced, so the marker still matches: the
+    // terminate cleans up state without a second shutdown.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(stoppedHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();

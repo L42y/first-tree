@@ -93,12 +93,15 @@ type SessionEntry = {
    */
   suspendError: { error: unknown } | null;
   /**
-   * Whether the suspend boundary already shut down `handler` successfully
-   * (canceled-transition / retired-handler path). When true, terminate must
-   * not tear the handler down a second time — the shutdown outcome is
-   * already known (`suspendError` records the failure case).
+   * The handler the suspend boundary already shut down successfully
+   * (canceled-transition / retired-handler path), bound to the handler
+   * IDENTITY rather than a boolean: later flows (e.g.
+   * `handlerForRouteTransition`) may replace `entry.handler`, and a stale
+   * boolean would then suppress teardown of the live replacement. Only
+   * `handlerStoppedBySuspend === entry.handler` means the CURRENT handler is
+   * confirmed stopped (`suspendError` records the failure case).
    */
-  handlerStoppedBySuspend: boolean;
+  handlerStoppedBySuspend: AgentHandler | null;
   /**
    * Failure of the last terminate-driven strict teardown (boxed like
    * `suspendError`). Recorded because the slot is already released by then,
@@ -902,14 +905,18 @@ export class SessionManager {
         // stopped (retry path: `suspending` is null again and the slot is
         // already released, so without the recorded errors no teardown branch
         // would fire). `handlerStoppedBySuspend` marks the case where the
-        // suspend boundary already completed the shutdown — tearing down
-        // again would double-shutdown. A teardown failure is recorded on the
+        // suspend boundary already completed the shutdown of the CURRENT
+        // handler — tearing down again would double-shutdown. It is bound to
+        // the handler identity, so a replacement handler (installed e.g. by
+        // `handlerForRouteTransition` after the old one was retired) never
+        // inherits the exemption and is always torn down. A teardown failure
+        // is recorded on the
         // entry (boxed: rejections can be falsey) so a genuine retry
         // re-attempts it instead of turning into a false success; on success
         // the entry is deleted below, retiring the recorded errors with it.
         const needsTeardown =
           session != null &&
-          !session.handlerStoppedBySuspend &&
+          session.handlerStoppedBySuspend !== session.handler &&
           (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
         if (session && needsTeardown) {
           try {
@@ -1720,7 +1727,7 @@ export class SessionManager {
       lastActivity: Date.now(),
       suspending: null,
       suspendError: null,
-      handlerStoppedBySuspend: false,
+      handlerStoppedBySuspend: null,
       teardownError: null,
       retryAttempt: 0,
       retryNextAt: null,
@@ -2550,7 +2557,7 @@ export class SessionManager {
   ): void {
     // A new suspend supersedes any earlier suspend outcome.
     entry.suspendError = null;
-    entry.handlerStoppedBySuspend = false;
+    entry.handlerStoppedBySuspend = null;
     const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
     // A canceled fresh start has never established a provider-neutral resume
     // handle. Keeping that entry as "suspended" would make redelivery call
@@ -2577,10 +2584,12 @@ export class SessionManager {
           // in flight until the handler is confirmed stopped, and the
           // observeFailure face routes a shutdown rejection into the catch
           // below (recorded as suspendError) where a Reset terminate can see
-          // it. Only a CONFIRMED stop arms the no-double-teardown flag.
+          // it. Only a CONFIRMED stop arms the no-double-teardown marker,
+          // bound to the handler identity so a later handler replacement
+          // cannot inherit it.
           const target = canceledTransition?.handler ?? entry.handler;
           await this.shutdownHandler(target, opts.reason, { observeFailure: true });
-          if (target === entry.handler) entry.handlerStoppedBySuspend = true;
+          if (target === entry.handler) entry.handlerStoppedBySuspend = entry.handler;
           return;
         }
         return entry.handler.suspend(opts.reason);
