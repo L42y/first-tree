@@ -22,6 +22,7 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
+import { createTimingCollector } from "../observability/timing.js";
 import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require-resource.js";
 import { resolveAvatarImageUrl } from "../services/agent.js";
 import { getChatAgentStatuses } from "../services/agent-chat-status.js";
@@ -261,9 +262,12 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
    * the figure depends only on the chat. Resets when a session is terminated
    * (its events are cleared).
    */
-  app.get<{ Params: { chatId: string } }>("/:chatId/token-usage", async (request) => {
-    const { chat } = await requireChatAccess(request, app.db);
-    return summarizeChatTokenUsage(app.db, chat.id);
+  app.get<{ Params: { chatId: string } }>("/:chatId/token-usage", async (request, reply) => {
+    const timing = createTimingCollector();
+    const { chat } = await timing.time("access", () => requireChatAccess(request, app.db));
+    const usage = await timing.time("aggregate", () => summarizeChatTokenUsage(app.db, chat.id));
+    reply.header("Server-Timing", timing.serverTimingHeader());
+    return usage;
   });
 
   /**

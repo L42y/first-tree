@@ -49,6 +49,7 @@ const attachmentMocks = vi.hoisted(() => ({
 
 const chatMocks = vi.hoisted(() => ({
   getChat: vi.fn(),
+  getChatTokenUsage: vi.fn(),
   listChatMessages: vi.fn(),
   listChatOpenRequests: vi.fn(),
   listRequestThread: vi.fn(),
@@ -742,6 +743,12 @@ beforeEach(() => {
   attachmentMocks.uploadAttachment.mockResolvedValue({ id: "uploaded-image", mimeType: "image/png", size: 42 });
   attachmentMocks.uploadImageAttachment.mockImplementation((file: File) => attachmentMocks.uploadAttachment(file));
   chatMocks.getChat.mockResolvedValue(chatDetail());
+  chatMocks.getChatTokenUsage.mockResolvedValue({
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  });
   chatMocks.listChatMessages.mockResolvedValue(BASE_MESSAGES);
   chatMocks.listChatOpenRequests.mockResolvedValue({ items: [] });
   chatMocks.listRequestThread.mockResolvedValue({ items: [] });
@@ -1169,6 +1176,12 @@ describe("ChatView", () => {
 
   it("places token usage above the connected status and composer surfaces", async () => {
     const { ChatView } = await import("../chat-view.js");
+    chatMocks.getChatTokenUsage.mockResolvedValue({
+      inputTokens: 100,
+      cachedInputTokens: 250,
+      outputTokens: 50,
+      totalTokens: 400,
+    });
     const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (queryClient) => {
       queryClient.setQueryData(["chat-token-usage", "chat-1"], {
         inputTokens: 100,

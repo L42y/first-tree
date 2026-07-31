@@ -61,7 +61,6 @@ import { downloadAttachment, uploadAttachment, uploadMimeFor } from "../../../ap
 import {
   type FileMessageContent,
   getChat,
-  getChatTokenUsage,
   type ImageBatchRefContent,
   type ImageRefContent,
   listChatMessages,
@@ -172,6 +171,7 @@ import { GitHubSection } from "../right-sidebar/github-section.js";
 import { ChatRightSidebar } from "../right-sidebar/index.js";
 import { ParticipantsSection } from "../right-sidebar/participants-section.js";
 import { ChatSummary } from "./chat-summary.js";
+import { chatTokenUsageQueryOptions } from "./chat-token-usage-query.js";
 
 const SIDEBAR_OPEN_STORAGE_KEY = "first-tree:chat-right-sidebar:open:v1";
 const LANDING_TRIAL_CHAT_ENDED_PLACEHOLDER =
@@ -1982,14 +1982,9 @@ export function ChatView({
   // open/closed preference.
 
   // Cumulative token usage for the whole chat (server SUM over token_usage
-  // events). Polled on the same cadence as messages so the composer marker
-  // catches up within a few seconds of a turn ending. Cheap aggregate query.
-  const { data: chatTokenUsage } = useQuery({
-    queryKey: ["chat-token-usage", chatId],
-    queryFn: () => getChatTokenUsage(chatId),
-    enabled: !!chatId,
-    refetchInterval: 5_000,
-  });
+  // events). This is secondary information, so a foreground-only one-minute
+  // refresh is sufficient; React Query also fetches on mount and refocus.
+  const { data: chatTokenUsage } = useQuery(chatTokenUsageQueryOptions(chatId));
   const chatProcessedTokens = chatTokenUsage ? processedTokenCount(chatTokenUsage) : 0;
 
   /** Org-wide agent list, consumed by `managedByMeMap` for picker

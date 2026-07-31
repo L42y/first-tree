@@ -43,5 +43,9 @@ export const sessionEvents = pgTable(
     index("idx_session_events_token_usage_agent_recent")
       .on(table.agentId, table.createdAt.desc())
       .where(sql`${table.kind} = 'token_usage'`),
+    // Chat composer usage reads filter by chat_id + token_usage without an
+    // agent predicate. Keep a chat-leading companion index so the aggregate
+    // does not scan token events from unrelated chats.
+    index("idx_session_events_token_usage_chat").on(table.chatId).where(sql`${table.kind} = 'token_usage'`),
   ],
 );
