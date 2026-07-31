@@ -241,13 +241,15 @@ needed if the daemon is already up.
 `--runtime` defaults to `claude-code`. The `opencode` runtime uses an
 operator-installed OpenCode CLI (`>=1.18.7 <2.0.0`) on macOS or Linux. Install
 it with `npm install -g opencode-ai@^1.18.7`, complete provider-owned
-authentication with `opencode auth login`, then run `first-tree daemon probe`
-to refresh the machine's advertised capabilities. First Tree never reads or
-relays OpenCode provider credentials. The capability probe resolves the
-executable and checks platform support; the first provider turn performs the
-compatible-version and database-readiness gates. Windows reports a resolved
-OpenCode binary for diagnostics but does not advertise it as available until
-the Client has the required pre-admission Job Object supervisor.
+authentication with `opencode auth login`, and run `first-tree daemon probe`
+after installation to force immediate artifact/platform re-detection and
+upload the machine's advertised capabilities. First Tree never reads or relays
+OpenCode provider credentials. The probe does not inspect authentication or
+provider reachability; the first provider turn validates credentials and
+performs the compatible-version and database-readiness gates. Windows reports
+a resolved OpenCode binary for diagnostics but does not advertise it as
+available until the Client has the required pre-admission Job Object
+supervisor.
 
 ### agent add
 
@@ -1018,9 +1020,9 @@ first-tree daemon
 | `stop` | Stop the service (preserves auto-start; bring it back with `start`). |
 | `restart` | Restart the service. |
 | `status` | Local service state + authoritative daemon owner + server binding + auth health. Runs in well under a second. |
-| `doctor` | Walk Node version, config, server reachability, WS, agent registrations, the installed service file, the authoritative daemon owner lock, **and the runtime providers** — each step reported. The runtime-provider rows run the real launch-verified probe (a 1-turn model call for `claude-code`, a `codex doctor` handshake for `codex`), so `doctor` makes live provider calls; it is a deliberate diagnostic, not a hot path. |
+| `doctor` | Walk Node version, config, server reachability, WS, agent registrations, the installed service file, the authoritative daemon owner lock, **and the runtime providers** — each step reported. Runtime-provider rows use the same artifact/platform capability detection as `daemon probe`; they do not launch providers, inspect authentication, or test provider reachability. |
 | `repair-ownership` | Reconcile an interrupted fenced ownership mutation. The command elects one repair process through per-instance ticket slots, atomically acquires a canonical repair guard, requires strict PID/start-identity proof that the exact fence owner is gone or reused, drains published startup entrants, and refuses live, malformed, unverifiable, changed, or ambiguous evidence. It never blindly deletes a fence. |
-| `probe` | Launch-probe the local runtime providers on demand and upload the result to the server (`PATCH /clients/:id/capabilities`). This is the manual refresh for a client's advertised capabilities after a provider is installed / logged in. Each probe really launches its provider. `--no-upload` runs a **credentials-free local-only** diagnostic (probe + print, no server auth needed). `--json` (or the global `--json`) emits the capability snapshot as the machine-readable `{ ok, data }` envelope on stdout. |
+| `probe` | Re-detect local runtime artifacts and platform execution support on demand, then upload the result to the server (`PATCH /clients/:id/capabilities`). This is the manual immediate refresh for a client's advertised capabilities after a provider is installed; it does not launch providers, inspect authentication, or test provider reachability. `--no-upload` runs a **credentials-free local-only** diagnostic (detect + print, no server auth needed). `--json` (or the global `--json`) emits the capability snapshot as the machine-readable `{ ok, data }` envelope on stdout. |
 | `install-codex` | Install the native Codex runtime engine on this machine (`npm install -g @openai/codex`). First Tree does not bundle the ~225MB native `codex` binary by default — the runtime resolves an external `codex` from PATH, known install locations, or the macOS ChatGPT/Codex desktop app — so this is the on-demand remediation when the `codex` capability probes as `missing`. Runs the same tracked-subprocess install path as self-update, then re-probes so the freshly installed binary is reflected. Purely local (no credentials). `--spec <spec>` picks an npm dist-tag or exact version (default `latest`); `--json` emits the post-install capability snapshot as the `{ ok, data }` envelope. |
 | `install-claude` | Install the native Claude Code runtime engine on this machine (`npm install -g @anthropic-ai/claude-code`). First Tree does not bundle the ~210MB native `claude` binary by default — the runtime resolves a system `claude` (env override / PATH / well-known install dirs) — so this is the on-demand remediation when the `claude-code` capability probes as `missing`. Runs the same tracked-subprocess install path as self-update, then re-probes so the freshly installed binary is reflected. Purely local (no credentials). `--spec <spec>` picks an npm dist-tag or exact version (default `latest`); `--json` emits the post-install capability snapshot as the `{ ok, data }` envelope. |
 
@@ -1111,24 +1113,19 @@ Files under `<home>/state/client-runtimes/` remain runtime markers for
 diagnostics, account-switch drain checks, and Windows supervisor lifecycle
 reporting. They are not daemon ownership or mutual-exclusion authority.
 
-**Capability refresh timing.** The daemon launch-probes runtime providers at
-startup and re-probes automatically on every WebSocket reconnect. A full real
-re-probe of all providers runs only when there is no prior snapshot or one is
-older than 24h; otherwise each provider is re-validated individually — a
-still-launchable, still-logged-in provider keeps its prior `ok` for free
-(resolve + auth re-checked, no session smoke re-run), a provider that lost its
-binary or login downgrades, and a non-ok provider is fully re-probed so it can
-recover. So a machine missing an optional provider (e.g. no tmux for
-`claude-code-tui`) does not re-smoke its healthy providers on every reconnect.
+**Capability refresh timing.** The daemon detects runtime artifacts and
+platform execution support at startup and again on every WebSocket reconnect.
+Detection is resolve-only: it does not launch providers, inspect
+authentication, or test provider reachability.
 
 **While the daemon stays connected**, it also runs a bounded background
-re-probe whenever any provider is not yet `ok` — so installing or logging into
-a provider is noticed within a bounded time without a restart or reconnect. The
-poll starts ~15s after the degraded state is seen and backs off to a 5-minute
-ceiling, re-probes only the non-`ok` providers (already-`ok` ones stay on the
-free cached path), uploads only when the snapshot actually changes, and stops
-once every provider is `ok`. `daemon probe` remains the manual, on-demand path
-to force an immediate full re-probe + upload.
+refresh whenever any provider is not yet `ok`, so installing a provider is
+noticed without a restart or reconnect. The poll starts ~15s after the degraded
+state is seen, backs off to a 5-minute ceiling, uploads only when the snapshot
+changes, and stops once every provider is `ok`. Authentication cannot change a
+capability row; credential failures are discovered when a provider turn runs.
+`daemon probe` remains the manual path to force an immediate full re-detection
+and upload.
 
 The top-level `first-tree status` is the cross-subsystem overview that
 calls `daemon status` internally and adds server/auth/agent rows.

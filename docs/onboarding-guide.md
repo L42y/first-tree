@@ -77,8 +77,10 @@ because an agent is permanently bound to exactly one client machine.
 `kimi-code`, or `opencode`, and defaults to `claude-code`. OpenCode requires an
 operator-installed CLI (`npm install -g opencode-ai@^1.18.7`) plus
 provider-owned authentication (`opencode auth login`) on macOS or Linux.
-After installing or authenticating a provider, run `first-tree daemon probe`
-to refresh the machine's advertised capabilities.
+After installing a provider, run `first-tree daemon probe` to force immediate
+artifact/platform re-detection and upload the machine's advertised
+capabilities. The probe does not inspect authentication; credentials are
+validated when a provider turn runs.
 
 ## What `first-tree login` writes
 
