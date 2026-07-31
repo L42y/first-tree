@@ -17,11 +17,13 @@ import {
 } from "../../core/index.js";
 
 /**
- * Runtime-provider readiness: a launch-verified probe per built-in provider,
- * rendered one CheckResult per provider. This really launches each provider
- * (e.g. a 1-turn haiku query / a `codex doctor` handshake), so it is heavier
- * than the other checks — acceptable for a deliberate diagnostic. Probe
- * failures are captured per-provider (never thrown), so this never rejects.
+ * Runtime-provider readiness: a resolve-only capability detection per built-in
+ * provider, rendered one CheckResult per provider. Detection only locates each
+ * provider's executable and checks platform support — it never launches the
+ * provider, checks authentication, or makes model calls, so it stays cheap;
+ * provider credentials are validated on the first real provider turn.
+ * Detection failures are captured per-provider (never thrown), so this never
+ * rejects.
  */
 export async function checkRuntimeProviders(): Promise<CheckResult[]> {
   return runtimeProviderChecks(await probeCapabilities());

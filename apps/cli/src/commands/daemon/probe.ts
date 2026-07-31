@@ -13,18 +13,20 @@ import {
 import { isJsonMode, print } from "../../core/output.js";
 
 /**
- * `daemon probe` — run the launch-verified capability probes on demand.
+ * `daemon probe` — re-detect runtime-provider capabilities on demand.
  *
  * The daemon refreshes capabilities automatically (at startup, on every WS
  * reconnect, and via a bounded background poll while any provider is non-`ok`),
- * so installing / logging into a provider is normally noticed without operator
- * action. This command is the immediate, on-demand path — it forces a full
- * re-probe + upload right now (instead of waiting for the next backed-off poll)
- * and surfaces the real, verbatim probe result locally. Each probe really
- * launches its provider (a 1-turn haiku query / a `codex doctor` handshake), so
- * this is not free.
+ * so installing a provider is normally noticed without operator action. This
+ * command is the immediate, on-demand path — it forces a full re-detection +
+ * upload right now (instead of waiting for the next backed-off poll) and
+ * surfaces the real, verbatim detection result locally. Detection is
+ * resolve-only: it locates each provider's executable and checks platform
+ * support without launching the provider, checking authentication, or making
+ * model calls, so it is cheap and token-free. Provider credentials are
+ * validated later, on the first real provider turn.
  *
- * Probing is purely local and needs no First Tree credentials; only the
+ * Detection is purely local and needs no First Tree credentials; only the
  * (default) upload step requires a logged-in client. So `--no-upload` runs as
  * a credentials-free local diagnostic. `--json` (or the global `--json`) emits
  * the capability snapshot as the machine-readable `{ ok, data }` envelope on
@@ -33,17 +35,18 @@ import { isJsonMode, print } from "../../core/output.js";
 export function registerDaemonProbeCommand(daemon: Command): void {
   daemon
     .command("probe")
-    .description("Launch-probe local runtime providers and upload the result to the server")
-    .option("--no-upload", "Run the probes and print results without uploading to the server")
+    .description("Re-detect local runtime provider capabilities and upload the result to the server")
+    .option("--no-upload", "Run capability detection and print results without uploading to the server")
     .option("--json", "Emit the capability snapshot as a machine-readable JSON envelope on stdout")
     .action(async (options: { upload?: boolean; json?: boolean }) => {
       const binName = channelConfig.binName;
       const wantJson = options.json === true || isJsonMode();
 
-      // Probing is purely local — it needs no First Tree credentials or client
-      // config, so the local-only (`--no-upload`) path works on a machine that
-      // has never logged in.
-      if (!wantJson) print.line("\n  Probing runtime providers (each provider is launched for real)...\n\n");
+      // Detection is purely local — it needs no First Tree credentials or
+      // client config, so the local-only (`--no-upload`) path works on a
+      // machine that has never logged in.
+      if (!wantJson)
+        print.line("\n  Detecting runtime provider capabilities (resolve-only; no provider is launched)...\n\n");
       const capabilities = await probeCapabilities();
 
       // The human report renders immediately; the JSON success envelope is
