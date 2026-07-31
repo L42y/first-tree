@@ -128,8 +128,8 @@ async function orphanSweep(clientId: string): Promise<void> {
  * events stream from `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
  * (claude's per-session transcript).
  *
- * See `docs/experiments/FINDINGS.md` for the design rationale
- * and PoC verification matrix.
+ * Durable design constraints live in the Context Tree:
+ * https://github.com/agent-team-foundation/first-tree-context/blob/main/system/cloud/runtime/client-runtime.md#claude-code-tui-handler
  */
 export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;

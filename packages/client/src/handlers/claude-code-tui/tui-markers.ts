@@ -4,8 +4,8 @@
  * is followed by a U+00A0 NBSP rather than ASCII space, so regexes use
  * `[\s ]` to match either.
  *
- * Verified against the claude binary observed during the tmux-runtime PoC
- * (see `docs/experiments/FINDINGS.md`).
+ * Durable design constraints live in the Context Tree:
+ * https://github.com/agent-team-foundation/first-tree-context/blob/main/system/cloud/runtime/client-runtime.md#claude-code-tui-handler
  */
 
 /** Pane shows this while a turn is in flight. Disappearance signals turn-end candidacy. */
