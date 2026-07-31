@@ -1,20 +1,10 @@
-import type { ContextIntegrationProvider } from "@first-tree/shared";
 import { Terminal } from "lucide-react";
-import { useState } from "react";
 import { generateConnectToken } from "../../api/activity.js";
 import { getContextEnablementHandoff } from "../../api/context-enablement.js";
 import { ByoSetupPromptActions } from "../../components/byo-setup-prompt-actions.js";
-import { Button } from "../../components/ui/button.js";
 import { buildByoSetupPrompt } from "../../lib/byo-setup-prompt.js";
 
-const PROVIDERS: Array<{ id: ContextIntegrationProvider; label: string }> = [
-  { id: "claude-code", label: "Claude Code" },
-  { id: "codex", label: "Codex" },
-];
-
 export function OnboardingContextPersonalAccess({ organizationId, ready }: { organizationId: string; ready: boolean }) {
-  const [provider, setProvider] = useState<ContextIntegrationProvider>("claude-code");
-
   if (!ready) return null;
 
   return (
@@ -40,46 +30,26 @@ export function OnboardingContextPersonalAccess({ organizationId, ready }: { org
         </div>
       </div>
 
-      <div className="flex flex-wrap" style={{ gap: "var(--sp-2)", marginTop: "var(--sp-4)" }}>
-        {PROVIDERS.map((item) => (
-          <Button
-            key={item.id}
-            type="button"
-            variant={provider === item.id ? "default" : "outline"}
-            size="sm"
-            aria-pressed={provider === item.id}
-            onClick={() => setProvider(item.id)}
-          >
-            {item.label}
-          </Button>
-        ))}
-      </div>
-
       <div style={{ marginTop: "var(--sp-3)" }}>
         <ByoSetupPromptActions
-          preparePrompt={() => prepareOnboardingByoSetupPrompt(organizationId, provider)}
-          resetKey={`${organizationId}:${provider}:${ready}`}
+          preparePrompt={() => prepareOnboardingByoSetupPrompt(organizationId)}
+          resetKey={`${organizationId}:${ready}`}
         />
       </div>
     </section>
   );
 }
 
-export async function prepareOnboardingByoSetupPrompt(
-  organizationId: string,
-  provider: ContextIntegrationProvider,
-): Promise<string> {
-  const [bootstrap, handoff] = await Promise.all([
+export async function prepareOnboardingByoSetupPrompt(organizationId: string): Promise<string> {
+  const [bootstrap, claudeHandoff, codexHandoff] = await Promise.all([
     generateConnectToken(),
-    getContextEnablementHandoff(organizationId, provider),
+    getContextEnablementHandoff(organizationId, "claude-code", "onboarding"),
+    getContextEnablementHandoff(organizationId, "codex", "onboarding"),
   ]);
-  if (handoff.provider !== provider) {
-    throw new Error("BYO setup handoff does not match the selected provider");
-  }
   return buildByoSetupPrompt({
     organizationId,
     bootstrapCommand: bootstrap.bootstrapCommand,
-    handoffs: [handoff],
+    handoffs: [claudeHandoff, codexHandoff],
     intent: "onboarding",
   });
 }

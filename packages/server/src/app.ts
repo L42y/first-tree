@@ -15,6 +15,7 @@ import { agentChatRoutes } from "./api/agent/chats.js";
 import { agentConfigRoutes as agentRuntimeConfigRoutes } from "./api/agent/config.js";
 import { agentContextReviewRunRoutes } from "./api/agent/context-review-runs.js";
 import { agentContextTreeInfoRoutes } from "./api/agent/context-tree-info.js";
+import { agentContextTreeIoRoutes } from "./api/agent/context-tree-io.js";
 import { agentCronJobRoutes } from "./api/agent/cron-jobs.js";
 import { agentDocumentRoutes } from "./api/agent/documents.js";
 import { agentGithubTaskRunRoutes } from "./api/agent/github-task-runs.js";
@@ -23,6 +24,7 @@ import { agentMeRoutes } from "./api/agent/me.js";
 import { agentMessageRoutes } from "./api/agent/messages.js";
 import { clientWsRoutes } from "./api/agent/ws-client.js";
 import { agentActivityRoutes } from "./api/agent-activity.js";
+import { publicAgentTemplateRoutes } from "./api/agent-templates.js";
 import { agentUsageRoutes } from "./api/agent-usage.js";
 import { agentRoutes, publicAgentAvatarRoutes } from "./api/agents.js";
 import { agentConfigRoutes } from "./api/agents-config.js";
@@ -42,6 +44,7 @@ import { gitlabConnectionRoutes } from "./api/gitlab-connections.js";
 import { gitlabIdentityLinkRoutes } from "./api/gitlab-identity-links.js";
 import { healthRoutes } from "./api/health.js";
 import { healthzRoutes } from "./api/healthz.js";
+import { internalAgentTemplateRoutes } from "./api/internal/agent-templates.js";
 import { scanCampaignExportRoutes } from "./api/internal/scan-campaign-exports.js";
 import { publicInvitationRoutes } from "./api/invitations.js";
 import { landingCampaignRoutes } from "./api/landing-campaigns.js";
@@ -535,6 +538,9 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
       // attach the member-JWT, so the read path lives outside the auth scope.
       // Writes (PUT/DELETE) stay inside `agentRoutes` and are JWT-gated.
       await api.register(publicAgentAvatarRoutes, { prefix: "/agents" });
+      // Public, unauthenticated official Agent Template catalog (safe read
+      // model only). Writes live behind the publisher guard under /internal.
+      await api.register(publicAgentTemplateRoutes, { prefix: "/agent-templates" });
 
       // ── Class A — `/me`, `/auth` (user-scoped) ──────────────────────────
       await api.register(
@@ -569,6 +575,16 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
       await api.register(
         userScope("internalAnalyticsScope", async (scope) => {
           await scope.register(scanCampaignExportRoutes, { prefix: "/analytics/scan-campaign-exports" });
+        }),
+        { prefix: "/internal" },
+      );
+
+      // Official Agent Template catalog maintenance. `/internal` is a
+      // namespace only — every handler re-proves current publisher-Team
+      // admin membership per request.
+      await api.register(
+        userScope("internalAgentTemplatesScope", async (scope) => {
+          await scope.register(internalAgentTemplateRoutes, { prefix: "/agent-templates" });
         }),
         { prefix: "/internal" },
       );
@@ -645,6 +661,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
           await scope.register(agentInboxRoutes, { prefix: "/inbox" });
           await scope.register(agentRuntimeConfigRoutes);
           await scope.register(agentContextTreeInfoRoutes);
+          await scope.register(agentContextTreeIoRoutes);
           if (config.docs.enabled) {
             await scope.register(agentDocumentRoutes);
           }

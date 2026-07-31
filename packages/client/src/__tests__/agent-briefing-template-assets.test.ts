@@ -49,6 +49,9 @@ describe("agent briefing template assets", () => {
       expect(copiedSource).toContain("inbound-only and may return pending or active");
       expect(copiedSource).not.toContain("first-tree-gitlab");
       expect(copiedSource).not.toContain("glab mr subscribe <iid-or-branch>");
+      expect(copiedSource).not.toContain("ordinary GitLab review");
+      expect(copiedSource).toContain("GitHub publishes the App verdict");
+      expect(copiedSource).toContain("GitLab uses the Reviewer's local");
       expect(copiedSource).not.toContain("## Context Tree Policy");
       expect(readFileSync(copiedPolicy, "utf8")).toContain("## Context Tree Policy");
       expect(copiedSource).toContain("# Skills (First Tree Managed)");

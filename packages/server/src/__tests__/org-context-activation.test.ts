@@ -1,7 +1,6 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { members } from "../db/schema/members.js";
-import { resources } from "../db/schema/resources.js";
 import { putOrgSetting } from "../services/org-settings.js";
 import { createOrganization } from "../services/organization.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -9,13 +8,12 @@ import { createTestAdmin, useTestApp } from "./helpers.js";
 describe("org-scoped member Context activation", () => {
   const getApp = useTestApp();
 
-  it("validates only the explicit Team, active repo scope, and current Tree binding", async () => {
+  it.each([
+    [{ schemaVersion: 2 }, 2],
+    [{ schemaVersion: 1, repositoryKey: "github.com/acme/unregistered-source" }, 1],
+  ] as const)("validates Team membership and Tree readiness for contract %#", async (body, schemaVersion) => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const body = {
-      schemaVersion: 1,
-      repositoryKey: "github.com/acme/context-activation",
-    };
     const request = () =>
       app.inject({
         method: "POST",
@@ -24,30 +22,14 @@ describe("org-scoped member Context activation", () => {
         payload: body,
       });
 
-    const outsideScope = await request();
-    expect(outsideScope.statusCode).toBe(200);
-    expect(outsideScope.json()).toMatchObject({
-      outcome: "disabled",
-      reasonCode: "repository_not_in_selected_team_scope",
-    });
-
-    const repo = await app.resourcesService.createTeamResource(
-      admin.organizationId,
-      {
-        type: "repo",
-        name: "Context activation",
-        defaultEnabled: "available",
-        payload: { url: "https://github.com/acme/context-activation.git" },
-      },
-      admin.memberId,
-    );
-
     const unbound = await request();
     expect(unbound.statusCode).toBe(200);
     expect(unbound.json()).toMatchObject({
+      schemaVersion,
       outcome: "needs_admin",
       reasonCode: "context_tree_unbound",
       team: { organizationId: admin.organizationId, role: "admin" },
+      nextAction: { settingsUrl: "/settings/context#binding" },
     });
 
     await putOrgSetting(
@@ -65,20 +47,13 @@ describe("org-scoped member Context activation", () => {
     const connected = await request();
     expect(connected.statusCode).toBe(200);
     expect(connected.json()).toMatchObject({
+      schemaVersion,
       outcome: "connected",
       team: { organizationId: admin.organizationId, role: "admin" },
     });
 
-    await app.db.update(resources).set({ status: "retired" }).where(eq(resources.id, repo.id));
-    expect((await request()).json()).toMatchObject({
-      outcome: "disabled",
-      reasonCode: "repository_not_in_selected_team_scope",
-    });
-
     await app.db.update(members).set({ status: "left" }).where(eq(members.id, admin.memberId));
-    const revoked = await request();
-    expect(revoked.statusCode).toBe(403);
-    expect(revoked.body).not.toContain("Test Organization");
+    expect((await request()).statusCode).toBe(403);
   });
 
   it("takes Team only from the encoded org path and removes the old /me route", async () => {
@@ -88,10 +63,7 @@ describe("org-scoped member Context activation", () => {
       name: `foreign-${crypto.randomUUID()}`,
       displayName: "Foreign Team",
     });
-    const payload = {
-      schemaVersion: 1,
-      repositoryKey: "github.com/acme/context-activation",
-    };
+    const payload = { schemaVersion: 2 };
 
     const nonMember = await app.inject({
       method: "POST",
@@ -118,7 +90,7 @@ describe("org-scoped member Context activation", () => {
     expect(oldRoute.statusCode).toBe(404);
   });
 
-  it("rejects raw or credential-bearing repository URLs", async () => {
+  it("keeps v1 repositoryKey canonicalization at the compatibility boundary", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const response = await app.inject({

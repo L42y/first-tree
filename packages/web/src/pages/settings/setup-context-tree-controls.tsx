@@ -20,6 +20,7 @@ export function SetupContextTreeControls({
   saveSetting = putContextTreeSetting,
   refreshFacts,
   children,
+  embedded = false,
 }: {
   binding: SetupContextTreeBinding;
   availability: ContextTreeAvailability;
@@ -28,6 +29,7 @@ export function SetupContextTreeControls({
   saveSetting?: (organizationId: string, input: OrgContextTreeInput) => Promise<OrgContextTreeOutput>;
   refreshFacts?: (organizationId: string) => Promise<void>;
   children?: ReactNode;
+  embedded?: boolean;
 }) {
   const { organizationId, role } = useAuth();
   const isAdmin = role === "admin";
@@ -91,11 +93,11 @@ export function SetupContextTreeControls({
     binding.state === "unbound" ||
     (hasBoundTree && availability === "unavailable" && !teamNonActionableGitlabWebContext);
   const bindingSummary = savedBinding?.repo
-    ? `${repositoryLabel(savedBinding.repo)} · ${savedBinding.branch ?? "main"} branch · ${
-        savedBinding.provider ?? "provider pending"
-      }`
+    ? `${repositoryLabel(savedBinding.repo)} · ${savedBinding.branch ?? "main"} branch · ${providerLabel(
+        savedBinding.provider,
+      )}`
     : binding.state === "bound"
-      ? `${repositoryLabel(binding.repo)} · ${binding.branch} branch · ${binding.provider}`
+      ? `${repositoryLabel(binding.repo)} · ${binding.branch} branch · ${providerLabel(binding.provider)}`
       : null;
 
   const handleSubmit = (event: FormEvent) => {
@@ -107,13 +109,17 @@ export function SetupContextTreeControls({
     <div
       data-setup-owner-controls="context-tree"
       className="flex flex-col"
-      style={{
-        gap: "var(--sp-3)",
-        padding: "var(--sp-4)",
-        border: "var(--hairline) solid var(--border)",
-        borderRadius: "var(--radius-panel)",
-        background: "var(--bg-sunken)",
-      }}
+      style={
+        embedded
+          ? { gap: "var(--sp-3)" }
+          : {
+              gap: "var(--sp-3)",
+              padding: "var(--sp-4)",
+              border: "var(--hairline) solid var(--border)",
+              borderRadius: "var(--radius-panel)",
+              background: "var(--bg-sunken)",
+            }
+      }
     >
       {bindingSummary ? (
         <div className="flex min-w-0 flex-wrap items-center justify-between" style={{ gap: "var(--sp-3)" }}>
@@ -206,4 +212,10 @@ function repositoryLabel(repo: string): string {
   } catch {
     return repo.replace(/^git@[^:]+:/, "").replace(/\.git$/, "");
   }
+}
+
+function providerLabel(provider: "github" | "gitlab" | null | undefined): string {
+  if (provider === "github") return "GitHub";
+  if (provider === "gitlab") return "GitLab";
+  return "provider pending";
 }

@@ -2,24 +2,49 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { ContextIntegrationProvider } from "@first-tree/shared";
-import { resolveCliInvocation, shellQuote } from "../supervisor/shared.js";
+import { quotePosixShellArg } from "../posix-shell.js";
+import { resolveCliInvocation } from "../supervisor/shared.js";
+import type { ResolvedBinary } from "../supervisor/types.js";
 import type { ProviderPluginProbe } from "./provider-driver.js";
 import { type ContextIntegrationRelease, providerPluginRoot } from "./release.js";
 
 const LAUNCHER_PATH = "bin/context-session-start";
 const HOOK_PATH = "hooks/hooks.json";
 
-export function materializeContextPluginPayload(pluginRoot: string, adapterDigest: string): void {
+export function materializeContextPluginPayload(
+  pluginRoot: string,
+  adapterDigest: string,
+  invocation: ResolvedBinary = resolveCliInvocation(),
+): string {
+  const renderedInvocation = renderCliInvocation(invocation);
   const launcherPath = join(pluginRoot, LAUNCHER_PATH);
-  writeFileSync(launcherPath, materializedFile(LAUNCHER_PATH, readFileSync(launcherPath), adapterDigest), {
-    mode: 0o700,
-  });
+  writeFileSync(
+    launcherPath,
+    materializedFile(LAUNCHER_PATH, readFileSync(launcherPath), adapterDigest, renderedInvocation),
+    { mode: 0o700 },
+  );
   chmodSync(launcherPath, 0o700);
 
   const hookPath = join(pluginRoot, HOOK_PATH);
   const temporary = `${hookPath}.tmp`;
-  writeFileSync(temporary, materializedFile(HOOK_PATH, readFileSync(hookPath), adapterDigest), { mode: 0o600 });
+  writeFileSync(temporary, materializedFile(HOOK_PATH, readFileSync(hookPath), adapterDigest, renderedInvocation), {
+    mode: 0o600,
+  });
   renameSync(temporary, hookPath);
+
+  for (const skillPath of normalizedFiles(join(pluginRoot, "skills"))) {
+    if (!skillPath.endsWith(".md")) continue;
+    writeFileSync(
+      skillPath,
+      materializedFile(
+        relative(pluginRoot, skillPath).split("\\").join("/"),
+        readFileSync(skillPath),
+        adapterDigest,
+        renderedInvocation,
+      ),
+    );
+  }
+  return renderedInvocation;
 }
 
 /**
@@ -30,6 +55,7 @@ export function verifyMaterializedContextPlugin(
   pluginRoot: string,
   release: ContextIntegrationRelease,
   provider: ContextIntegrationProvider,
+  renderedInvocation: string,
 ): string {
   assertLauncherExecutable(pluginRoot);
   const releaseRoot = providerPluginRoot(release.root, provider);
@@ -44,7 +70,7 @@ export function verifyMaterializedContextPlugin(
   const adapterDigest = release.manifest.providers[provider].adapterDigest;
   for (let index = 0; index < releaseFiles.length; index += 1) {
     const name = releaseNames[index] ?? "";
-    const expected = materializedFile(name, readFileSync(releaseFiles[index] ?? ""), adapterDigest);
+    const expected = materializedFile(name, readFileSync(releaseFiles[index] ?? ""), adapterDigest, renderedInvocation);
     const actual = readFileSync(materializedFiles[index] ?? "");
     if (!actual.equals(expected)) {
       throw new Error(`The materialized Context Plugin payload differs from the current release at ${name}.`);
@@ -73,10 +99,14 @@ export function inspectContextPluginPayload(
   stablePluginRoot: string,
   release: ContextIntegrationRelease,
   provider: ContextIntegrationProvider,
+  renderedInvocation: string | undefined,
 ): string[] {
   if (!probe.installed || !probe.enabled) return [];
+  if (!renderedInvocation) {
+    return ["The Context Plugin install manifest does not record its materialized CLI invocation."];
+  }
   try {
-    const expectedDigest = verifyMaterializedContextPlugin(stablePluginRoot, release, provider);
+    const expectedDigest = verifyMaterializedContextPlugin(stablePluginRoot, release, provider, renderedInvocation);
     verifyProviderInstalledContextPlugin(probe, expectedDigest);
     return [];
   } catch (error) {
@@ -107,13 +137,8 @@ function assertLauncherExecutable(pluginRoot: string): void {
   }
 }
 
-function materializedFile(name: string, content: Buffer, adapterDigest: string): Buffer {
+function materializedFile(name: string, content: Buffer, adapterDigest: string, renderedInvocation: string): Buffer {
   if (name === LAUNCHER_PATH) {
-    const invocation = resolveCliInvocation();
-    const renderedInvocation =
-      invocation.kind === "bin"
-        ? shellQuote(invocation.program)
-        : [invocation.program, ...(invocation.args ?? [])].map(shellQuote).join(" ");
     const rendered = content.toString("utf8").replace("__FIRST_TREE_INVOCATION__", renderedInvocation);
     if (rendered.includes("__FIRST_TREE_INVOCATION__")) {
       throw new Error("Context integration launcher contains an unresolved CLI placeholder.");
@@ -127,7 +152,20 @@ function materializedFile(name: string, content: Buffer, adapterDigest: string):
     }
     return Buffer.from(rendered);
   }
+  if (name.startsWith("skills/") && name.endsWith(".md")) {
+    const rendered = content.toString("utf8").replaceAll("__FIRST_TREE_SKILL_INVOCATION__", renderedInvocation);
+    if (rendered.includes("__FIRST_TREE_SKILL_INVOCATION__")) {
+      throw new Error(`Context integration Skill contains an unresolved CLI placeholder at ${name}.`);
+    }
+    return Buffer.from(rendered);
+  }
   return content;
+}
+
+function renderCliInvocation(invocation: ResolvedBinary): string {
+  return invocation.kind === "bin"
+    ? quotePosixShellArg(invocation.program)
+    : [invocation.program, ...(invocation.args ?? [])].map(quotePosixShellArg).join(" ");
 }
 
 function normalizedFiles(root: string): string[] {

@@ -18,12 +18,18 @@ import type {
 } from "../core/context-integration/provider-driver.js";
 import { providerPluginRoot, resolveContextIntegrationRelease } from "../core/context-integration/release.js";
 import { inspectContextIntegrationRuntime } from "../core/context-integration/runtime-health.js";
+import { COMMAND_VERSION } from "../core/version.js";
 
 const originalFirstTreeHome = process.env.FIRST_TREE_HOME;
+const originalPath = process.env.PATH;
+const materializedProgram = "/opt/first-tree/bin/first-tree-dev";
+const materializedInvocation = `'${materializedProgram}'`;
 
 afterEach(() => {
   if (originalFirstTreeHome === undefined) delete process.env.FIRST_TREE_HOME;
   else process.env.FIRST_TREE_HOME = originalFirstTreeHome;
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
 });
 
 function buildRelease(): string {
@@ -36,7 +42,7 @@ function buildRelease(): string {
       "--out-dir",
       root,
       "--version",
-      "0.5.17",
+      COMMAND_VERSION,
       "--channel",
       "dev",
     ],
@@ -78,13 +84,14 @@ function writeMatchingInstall(releaseRoot: string): void {
     schemaVersion: 1,
     channel: "dev",
     provider: "codex",
-    firstTreeVersion: "0.5.17",
+    firstTreeVersion: COMMAND_VERSION,
     bundleVersion: release.manifest.version,
     bundleDigest: release.manifest.bundleDigest,
     policyDigest: release.manifest.policyDigest,
     adapterDigest: release.manifest.providers.codex.adapterDigest,
     marketplaceName: "first-tree-dev",
     pluginName: "first-tree-context",
+    materializedInvocation,
     installedAt: "2026-07-28T00:00:00.000Z",
   });
 }
@@ -95,7 +102,10 @@ function prepareHealthyPayload(releaseRoot: string): string {
   const installedPlugin = join(process.env.FIRST_TREE_HOME ?? "", "provider-cache", "first-tree-context");
   mkdirSync(dirname(stablePlugin), { recursive: true });
   cpSync(providerPluginRoot(releaseRoot, "codex"), stablePlugin, { recursive: true });
-  materializeContextPluginPayload(stablePlugin, release.manifest.providers.codex.adapterDigest);
+  materializeContextPluginPayload(stablePlugin, release.manifest.providers.codex.adapterDigest, {
+    kind: "bin",
+    program: materializedProgram,
+  });
   cpSync(stablePlugin, installedPlugin, { recursive: true });
   return installedPlugin;
 }
@@ -137,6 +147,40 @@ describe("Context integration runtime health", () => {
     const health = inspectContextIntegrationRuntime(driver(providerProbe()), { releaseRoot });
     expect(health.healthy).toBe(false);
     expect(health.issues.join(" ")).toContain("Installed Context manifest is invalid");
+  });
+
+  it("keeps a healthy materialized Plugin valid when the Hook PATH differs from install time", () => {
+    process.env.FIRST_TREE_HOME = mkdtempSync(join(tmpdir(), "first-tree-context-health-home-"));
+    const releaseRoot = buildRelease();
+    writeMatchingInstall(releaseRoot);
+    const installedPath = prepareHealthyPayload(releaseRoot);
+    const restrictedPath = mkdtempSync(join(tmpdir(), "first-tree-context-hook-path-"));
+    process.env.PATH = restrictedPath;
+    const value = driver(providerProbe({ installedPath }));
+
+    const health = inspectContextIntegrationRuntime(value, { releaseRoot });
+    expect(health.healthy).toBe(true);
+    expect(health.issues).toEqual([]);
+    expect(planContextIntegrationInstall(value, { releaseRoot }).operation).toBe("unchanged");
+  });
+
+  it("requires one repair to record the materialized invocation for an older install manifest", () => {
+    process.env.FIRST_TREE_HOME = mkdtempSync(join(tmpdir(), "first-tree-context-health-home-"));
+    const releaseRoot = buildRelease();
+    writeMatchingInstall(releaseRoot);
+    const installPath = contextIntegrationInstallManifestPath("codex");
+    const previous = JSON.parse(readFileSync(installPath, "utf8"));
+    delete previous.materializedInvocation;
+    writeFileSync(installPath, `${JSON.stringify(previous)}\n`);
+    const installedPath = prepareHealthyPayload(releaseRoot);
+    const value = driver(providerProbe({ installedPath }));
+
+    const health = inspectContextIntegrationRuntime(value, { releaseRoot });
+    expect(health.healthy).toBe(false);
+    expect(health.issues).toContain(
+      "The Context Plugin install manifest does not record its materialized CLI invocation.",
+    );
+    expect(planContextIntegrationInstall(value, { releaseRoot }).operation).toBe("repair");
   });
 
   it.each([

@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { channelConfig } from "../../core/channel.js";
 import { readContextIntegrationInstallJournal } from "../../core/context-integration/installer.js";
 import { inspectContextIntegrationOperation } from "../../core/context-integration/operation.js";
 import type { ProviderHookProbe } from "../../core/context-integration/provider-driver.js";
@@ -12,19 +13,30 @@ import type { CommandContext, SubcommandModule } from "../types.js";
 import { createContextIntegrationDriver, parseContextProvider } from "./shared.js";
 
 function configure(command: Command): void {
-  command.requiredOption("--provider <provider>", "claude-code or codex");
+  command
+    .requiredOption("--provider <provider>", "claude-code or codex")
+    .option("--project-root <directory>", "attached provider project root")
+    .option("--pathless", "inspect the provider's pathless project binding");
 }
 
 export async function runContextStatus(context: CommandContext): Promise<void> {
-  const provider = parseContextProvider(context.command.opts<{ provider?: string }>().provider ?? "");
+  const options = context.command.opts<{ provider?: string; projectRoot?: string; pathless?: boolean }>();
+  const provider = parseContextProvider(options.provider ?? "");
   const driver = createContextIntegrationDriver(provider);
-  const status = await inspectContextIntegrationStatus(driver, createMemberSdk());
+  const status = await inspectContextIntegrationStatus(driver, createMemberSdk(), {
+    projectRoot: options.projectRoot,
+    pathless: options.pathless,
+  });
   const incompleteInstall = readContextIntegrationInstallJournal();
   const incompleteOperation = inspectContextIntegrationOperation();
   const recovery = [
-    ...(incompleteInstall?.provider === provider ? [`Incomplete ${incompleteInstall.phase}; run context repair`] : []),
+    ...(incompleteInstall?.provider === provider
+      ? [`Incomplete ${incompleteInstall.phase}; run ${channelConfig.binName} context repair --provider ${provider}`]
+      : []),
     ...(incompleteOperation?.provider === provider
-      ? [`Incomplete ${incompleteOperation.operation}/${incompleteOperation.phase}; run context repair`]
+      ? [
+          `Incomplete ${incompleteOperation.operation}/${incompleteOperation.phase}; run ${channelConfig.binName} context repair --provider ${provider}`,
+        ]
       : []),
   ];
   const result = { ...status, recovery };
@@ -39,7 +51,7 @@ export async function runContextStatus(context: CommandContext): Promise<void> {
   print.status("Plugin payload", status.runtime.healthy ? "Healthy" : "Repair required");
   print.status("Hook trusted", renderHookTrust(status.hook));
   print.status("Hook enabled", renderHookEnabled(status.hook));
-  renderCheckout(status);
+  renderProject(status);
   renderBinding(status);
   renderActivation(status);
   for (const issue of status.hook.issues) print.status("Hook issue", issue);
@@ -78,35 +90,26 @@ export function renderHookEnabled(hook: ProviderHookProbe): string {
   return hook.source === "provider_managed" ? "Managed by provider" : "Unknown";
 }
 
-function renderCheckout(status: ContextIntegrationStatus): void {
-  if (status.checkout.state === "ready") {
-    print.status("Checkout", status.checkout.root);
-    print.status("Repository", status.checkout.repositoryKey);
+function renderProject(status: ContextIntegrationStatus): void {
+  if (status.project.state === "ready") {
+    print.status("Project", status.project.project.kind === "path" ? status.project.project.root : "Pathless");
     return;
   }
-  print.status("Checkout", `Unavailable — ${status.checkout.message}`);
-  print.status("Checkout action", status.checkout.nextAction);
+  print.status("Project", `Unavailable — ${status.project.message}`);
+  print.status("Project action", status.project.nextAction);
 }
 
 function renderBinding(status: ContextIntegrationStatus): void {
   if (status.binding.state === "exact") {
-    print.status("Exact binding", `Yes — Team ${status.binding.organizationId}`);
+    print.status("Project binding", `Connected — Team ${status.binding.organizationId}`);
     return;
   }
   if (status.binding.state === "missing") {
-    print.status("Exact binding", "No");
+    print.status("Project binding", "Missing");
     print.status("Binding action", status.binding.nextAction);
     return;
   }
-  if (status.binding.state === "repository_mismatch") {
-    print.status(
-      "Exact binding",
-      `No — Team ${status.binding.organizationId} is bound to ${status.binding.boundRepositoryKey}`,
-    );
-    print.status("Binding action", status.binding.nextAction);
-    return;
-  }
-  print.status("Exact binding", `Not checked — ${status.binding.reason}`);
+  print.status("Project binding", `Not checked — ${status.binding.reason}`);
 }
 
 function renderActivation(status: ContextIntegrationStatus): void {
@@ -117,7 +120,7 @@ function renderActivation(status: ContextIntegrationStatus): void {
     );
     return;
   }
-  if (status.activation.state === "disabled" || status.activation.state === "needs_admin") {
+  if (status.activation.state === "needs_admin") {
     print.status("Live activation", `${status.activation.state} — ${status.activation.message}`);
     if (status.activation.settingsUrl) print.status("Activation action", status.activation.settingsUrl);
     return;
@@ -127,7 +130,9 @@ function renderActivation(status: ContextIntegrationStatus): void {
     print.status("Activation action", status.activation.nextAction);
     return;
   }
-  print.status("Live activation", `Not checked — ${status.activation.reason}`);
+  if (status.activation.state === "not_checked") {
+    print.status("Live activation", `Not checked — ${status.activation.reason}`);
+  }
 }
 
 export const contextStatusCommand: SubcommandModule = {

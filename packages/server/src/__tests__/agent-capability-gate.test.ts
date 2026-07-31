@@ -127,6 +127,22 @@ describe("Agent capability gate (services/agent.ts)", () => {
     ).rejects.toThrow(/does not have runtime provider "claude-code" available/i);
   });
 
+  it("blocks OpenCode selection when the client reports installed-but-unsupported Windows execution", async () => {
+    const app = getApp();
+    const ctx = await createAdminContext(app);
+    await setCapabilities(app, ctx.clientId, { opencode: entry("error") });
+
+    await expect(
+      createAgent(app.db, {
+        name: `cap-gate-opencode-win-${crypto.randomUUID().slice(0, 6)}`,
+        type: "agent",
+        managerId: ctx.memberId,
+        clientId: ctx.clientId,
+        runtimeProvider: "opencode",
+      }),
+    ).rejects.toThrow(/does not have runtime provider "opencode" available/i);
+  });
+
   it("`force: true` bypasses the gate even when the SDK is reported missing", async () => {
     const app = getApp();
     const ctx = await createAdminContext(app);

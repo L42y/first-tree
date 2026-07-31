@@ -1,5 +1,14 @@
-import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
+import { type Dispatch, type SetStateAction, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { chatDraftScope, loadDraft, saveDraft } from "./draft-store.js";
+
+type ScopedDraft = {
+  scope: string;
+  text: string;
+};
+
+function loadScopedDraft(scope: string): ScopedDraft {
+  return { scope, text: loadDraft(scope)?.text ?? "" };
+}
 
 /**
  * In-chat composer draft text, persisted per user + chat in browser-local
@@ -19,21 +28,42 @@ import { chatDraftScope, loadDraft, saveDraft } from "./draft-store.js";
  */
 export function useChatDraftText(userId: string | null, chatId: string): [string, Dispatch<SetStateAction<string>>] {
   const scope = chatDraftScope(userId, chatId);
-  const [draft, setDraft] = useState<string>(() => loadDraft(scope)?.text ?? "");
-  // The scope the current `draft` value belongs to. Lets the persist effect
-  // write under the right scope and detect a switch (the scope changes a
-  // render before the state catches up).
-  const scopeRef = useRef(scope);
+  const [storedDraft, setStoredDraft] = useState<ScopedDraft>(() => loadScopedDraft(scope));
+  const draft = storedDraft.scope === scope ? storedDraft : loadScopedDraft(scope);
+  const committedDraftRef = useRef(draft);
 
-  useEffect(() => {
-    if (scopeRef.current === scope) return;
-    scopeRef.current = scope;
-    setDraft(loadDraft(scope)?.text ?? "");
-  }, [scope]);
+  // ChatView is reconciled in place when chatId changes. Adjust the tagged
+  // state during render so React restarts this component before committing its
+  // children; the previous chat's draft is never exposed under the new scope.
+  if (draft !== storedDraft) {
+    setStoredDraft(draft);
+  }
 
-  useEffect(() => {
-    saveDraft(scopeRef.current, { text: draft });
+  // A concurrent render may be abandoned. Only a committed render may change
+  // which scope a setter is allowed to expose in the live composer.
+  useLayoutEffect(() => {
+    committedDraftRef.current = draft;
   }, [draft]);
 
-  return [draft, setDraft];
+  const setDraft = useCallback<Dispatch<SetStateAction<string>>>(
+    (next) => {
+      const committedDraft = committedDraftRef.current;
+      const currentText = committedDraft.scope === scope ? committedDraft.text : (loadDraft(scope)?.text ?? "");
+      const nextText = typeof next === "function" ? next(currentText) : next;
+      if (nextText === currentText) return;
+
+      // A send started in one chat may settle after ChatView has switched to
+      // another. Persist through the setter's captured scope, then update live
+      // state only while that scope is still active.
+      saveDraft(scope, { text: nextText });
+      if (committedDraftRef.current.scope !== scope) return;
+
+      const nextDraft = { scope, text: nextText };
+      committedDraftRef.current = nextDraft;
+      setStoredDraft(nextDraft);
+    },
+    [scope],
+  );
+
+  return [draft.text, setDraft];
 }

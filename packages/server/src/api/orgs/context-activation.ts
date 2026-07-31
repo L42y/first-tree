@@ -1,4 +1,3 @@
-import { createHmac } from "node:crypto";
 import { contextActivationRequestSchema, contextActivationResponseSchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { stampContextActivation } from "../../observability/request-context.js";
@@ -10,15 +9,12 @@ export async function orgContextActivationRoutes(app: FastifyInstance): Promise<
     const scope = await requireOrgMembership(request, app.db);
     const input = contextActivationRequestSchema.parse(request.body);
     const startedAt = performance.now();
-    const repositoryKeyHash = createHmac("sha256", app.config.secrets.jwtSecret)
-      .update(input.repositoryKey)
-      .digest("hex");
     try {
       const response = await validateExternalContextActivation(app.db, scope, input);
       stampContextActivation(request, {
         outcome: response.outcome,
         reasonCode: "reasonCode" in response ? response.reasonCode : undefined,
-        repositoryKeyHash,
+        contractVersion: input.schemaVersion,
         latencyMs: performance.now() - startedAt,
       });
       return contextActivationResponseSchema.parse(response);
@@ -26,7 +22,7 @@ export async function orgContextActivationRoutes(app: FastifyInstance): Promise<
       stampContextActivation(request, {
         outcome: "denied",
         reasonCode: error instanceof Error ? error.name : "unknown_error",
-        repositoryKeyHash,
+        contractVersion: input.schemaVersion,
         latencyMs: performance.now() - startedAt,
       });
       throw error;

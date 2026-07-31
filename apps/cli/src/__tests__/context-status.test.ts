@@ -1,6 +1,11 @@
-import type { ContextActivationResponse } from "@first-tree/shared";
+import type { ContextActivationV2Response } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
-import { buildContextEnableNextActions } from "../commands/context/enable.js";
+import {
+  buildContextEnableNextActions,
+  buildSetupNextActions,
+  collectMissingSetupLayers,
+  renderSetupVerdictLine,
+} from "../commands/context/enable.js";
 import { renderHookEnabled, renderHookTrust } from "../commands/context/status.js";
 import type { ContextActivationValidator } from "../core/context-integration/activation.js";
 import {
@@ -11,7 +16,10 @@ import type {
   ContextIntegrationProviderDriver,
   ProviderPluginProbe,
 } from "../core/context-integration/provider-driver.js";
-import { ClaudeCodeContextIntegrationDriver } from "../core/context-integration/providers/claude-code.js";
+import {
+  contextRepairAdditionalContext,
+  contextRepairUnavailableMessage,
+} from "../core/context-integration/repair-guidance.js";
 import { inspectContextIntegrationStatus } from "../core/context-integration/status.js";
 
 function pluginProbe(overrides: Partial<ProviderPluginProbe> = {}): ProviderPluginProbe {
@@ -34,315 +42,187 @@ function driver(probe = pluginProbe()): ContextIntegrationProviderDriver {
     executable: "codex",
     minimumVersion: "0.144.0",
     probe: () => probe,
-    inspectHook: async () => ({
-      trust: "trusted",
-      enabled: true,
-      source: "provider_api",
-      issues: [],
-    }),
+    inspectHook: async () => ({ trust: "trusted", enabled: true, source: "provider_api", issues: [] }),
     validateMarketplace: () => undefined,
     install: () => probe,
     uninstall: () => undefined,
   };
 }
 
-function validator(response: ContextActivationResponse): ContextActivationValidator {
-  return {
-    validateMemberContextActivation: vi.fn(async () => response),
-  };
+function validator(response: ContextActivationV2Response): ContextActivationValidator {
+  return { validateMemberContextActivation: vi.fn(async () => response) };
 }
 
-describe("Context integration layered status", () => {
-  it("reports provider, Plugin, Hook, checkout, exact binding, and live activation independently", async () => {
+const connected = {
+  schemaVersion: 2 as const,
+  outcome: "connected" as const,
+  team: { organizationId: "org_acme", displayName: "Acme", role: "admin" as const },
+};
+
+const runtime = (runtimeDriver: ContextIntegrationProviderDriver) => ({
+  provider: runtimeDriver.provider,
+  healthy: true,
+  issues: [],
+  install: null,
+  release: null,
+  probe: runtimeDriver.probe("first-tree-dev", "first-tree-context"),
+});
+
+describe("Context integration project status", () => {
+  it("reports provider, Plugin, Hook, project binding, and live activation independently", async () => {
     const value = await inspectContextIntegrationStatus(
       driver(),
-      validator({
-        schemaVersion: 1,
-        outcome: "connected",
-        team: {
-          organizationId: "org_acme",
-          displayName: "Acme",
-          role: "admin",
-        },
-      }),
-      "/work/repo",
+      validator(connected),
+      { projectRoot: "/work/repo" },
       {
-        inspectRuntime: (runtimeDriver) => ({
-          provider: "codex",
-          healthy: true,
-          issues: [],
-          install: null,
-          release: null,
-          probe: runtimeDriver.probe("first-tree-dev", "first-tree-context"),
-        }),
+        inspectRuntime: runtime,
         inspectPreflight: () => ({
-          checkoutRoot: "/work/repo",
-          repositoryKey: "github.com/acme/repo",
-          originUrl: "git@github.com:acme/repo.git",
+          kind: "path",
+          project: { kind: "path", root: "/work/repo" },
+          source: "explicit_path",
         }),
         findBinding: () => ({
           provider: "codex",
-          checkoutRoot: "/work/repo",
-          repositoryKey: "github.com/acme/repo",
+          project: { kind: "path", root: "/work/repo" },
           organizationId: "org_acme",
         }),
       },
     );
 
     expect(value).toMatchObject({
-      provider: { available: true, compatible: true, version: "0.146.0" },
+      provider: { available: true, compatible: true },
       plugin: { installed: true, enabled: true },
       hook: { trust: "trusted", enabled: true },
-      checkout: { state: "ready", root: "/work/repo" },
+      project: { state: "ready", project: { kind: "path", root: "/work/repo" } },
       binding: { state: "exact", organizationId: "org_acme" },
       activation: { state: "connected", team: { displayName: "Acme" } },
     });
   });
 
-  it("uses the release manifest minimum when computing provider compatibility", async () => {
+  it("preserves project resolution failures and does not inspect a binding", async () => {
+    const findBinding = vi.fn();
     const value = await inspectContextIntegrationStatus(
       driver(),
-      validator({
-        schemaVersion: 1,
-        outcome: "connected",
-        team: {
-          organizationId: "org_acme",
-          displayName: "Acme",
-          role: "admin",
-        },
-      }),
-      "/work/repo",
+      validator(connected),
+      {},
       {
-        inspectRuntime: (runtimeDriver) => ({
-          provider: "codex",
-          healthy: false,
-          issues: ["codex 0.146.0 must be upgraded to 0.147.0 or newer."],
-          install: null,
-          release: {
-            root: "/release",
-            manifest: {
-              schemaVersion: 1,
-              version: "0.5.18",
-              channel: "dev",
-              bundleDigest: `sha256:${"1".repeat(64)}`,
-              policyDigest: `sha256:${"2".repeat(64)}`,
-              providers: {
-                "claude-code": {
-                  adapterDigest: `sha256:${"3".repeat(64)}`,
-                  minimumVersion: "2.1.121",
-                },
-                codex: {
-                  adapterDigest: `sha256:${"4".repeat(64)}`,
-                  minimumVersion: "0.147.0",
-                },
-              },
-            },
-          },
-          probe: runtimeDriver.probe("first-tree-dev", "first-tree-context"),
-        }),
+        inspectRuntime: runtime,
         inspectPreflight: () => {
           throw new ContextClientPreflightError(
-            contextClientPreflightErrorCode.notGitCheckout,
-            "The current directory is not a Git checkout.",
-            "Run this command inside the target Git checkout.",
+            contextClientPreflightErrorCode.projectUnknown,
+            "No provider project is attached.",
+            "Pass --pathless or --project-root.",
           );
         },
+        findBinding,
       },
     );
-
-    expect(value.provider).toMatchObject({
-      version: "0.146.0",
-      minimumVersion: "0.147.0",
-      compatible: false,
-    });
-  });
-
-  it.each([
-    [contextClientPreflightErrorCode.notSignedIn, "First Tree is not signed in.", "Run `first-tree login <code>`."],
-    [
-      contextClientPreflightErrorCode.notGitCheckout,
-      "The current directory is not a Git checkout.",
-      "Run this command inside the target Git checkout.",
-    ],
-    [
-      contextClientPreflightErrorCode.originUnreadable,
-      "The current Git checkout has no readable `origin` remote.",
-      "Add or repair `origin`.",
-    ],
-  ])("preserves the %s checkout failure and repair action", async (code, message, nextAction) => {
-    const value = await inspectContextIntegrationStatus(
-      driver(),
-      validator({
-        schemaVersion: 1,
-        outcome: "connected",
-        team: {
-          organizationId: "org_acme",
-          displayName: "Acme",
-          role: "member",
-        },
-      }),
-      "/work/repo",
-      {
-        inspectRuntime: (runtimeDriver) => ({
-          provider: "codex",
-          healthy: true,
-          issues: [],
-          install: null,
-          release: null,
-          probe: runtimeDriver.probe("first-tree-dev", "first-tree-context"),
-        }),
-        inspectPreflight: () => {
-          throw new ContextClientPreflightError(code, message, nextAction);
-        },
-      },
-    );
-
-    expect(value.checkout).toEqual({
-      state: "unavailable",
-      reason: code,
-      message,
-      nextAction,
-    });
+    expect(value.project).toMatchObject({ state: "unavailable", reason: "project_unknown" });
     expect(value.binding.state).toBe("not_checked");
-    expect(value.activation.state).toBe("not_checked");
+    expect(findBinding).not.toHaveBeenCalled();
   });
 
-  it("keeps exact binding visible when live activation is unavailable", async () => {
-    const validate = vi.fn(async () => {
-      throw new Error("network timeout");
-    });
-    const unavailable: ContextActivationValidator = {
-      validateMemberContextActivation: validate,
-    };
-    const value = await inspectContextIntegrationStatus(driver(), unavailable, "/work/repo", {
-      inspectRuntime: (runtimeDriver) => ({
-        provider: "codex",
-        healthy: true,
-        issues: [],
-        install: null,
-        release: null,
-        probe: runtimeDriver.probe("first-tree-dev", "first-tree-context"),
-      }),
-      inspectPreflight: () => ({
-        checkoutRoot: "/work/repo",
-        repositoryKey: "github.com/acme/repo",
-        originUrl: "https://github.com/acme/repo.git",
-      }),
-      findBinding: () => ({
-        provider: "codex",
-        checkoutRoot: "/work/repo",
-        repositoryKey: "github.com/acme/repo",
-        organizationId: "org_acme",
-      }),
-    });
-
-    expect(value.binding).toMatchObject({ state: "exact", organizationId: "org_acme" });
-    expect(value.activation).toMatchObject({
-      state: "unavailable",
-      reasonCode: "authority_timeout",
-      message: expect.stringContaining("timed out"),
-    });
-    expect(validate).toHaveBeenCalledTimes(2);
-    expect(validate).toHaveBeenNthCalledWith(
-      1,
-      "org_acme",
+  it("sends the v2 repo-independent authority contract", async () => {
+    const validate = vi.fn(async () => connected);
+    await inspectContextIntegrationStatus(
+      driver(),
+      { validateMemberContextActivation: validate },
+      { pathless: true },
       {
-        schemaVersion: 1,
-        repositoryKey: "github.com/acme/repo",
+        inspectRuntime: runtime,
+        inspectPreflight: () => ({
+          kind: "pathless",
+          project: { kind: "pathless" },
+          source: "explicit_pathless",
+        }),
+        findBinding: () => ({
+          provider: "codex",
+          project: { kind: "pathless" },
+          organizationId: "org_acme",
+        }),
       },
-      { retry: false, timeoutMs: 5_000 },
     );
-    expect(validate).toHaveBeenNthCalledWith(
-      2,
-      "org_acme",
-      {
-        schemaVersion: 1,
-        repositoryKey: "github.com/acme/repo",
-      },
-      { retry: false, timeoutMs: 5_000 },
-    );
+    expect(validate).toHaveBeenCalledWith("org_acme", { schemaVersion: 2 }, { retry: false, timeoutMs: 5_000 });
   });
 });
 
-describe("Context enable Hook guidance", () => {
-  it("guides pending Codex consent through every verifiable step", () => {
-    const actions = buildContextEnableNextActions(
-      "codex",
-      {
-        trust: "review_required",
-        enabled: false,
-      },
-      "first-tree-staging",
-    );
+describe("Context enable setup verdict", () => {
+  const greenVerification = {
+    provider: {
+      name: "codex" as const,
+      available: true,
+      version: "1.0.0",
+      minimumVersion: "0.5.0",
+      compatible: true,
+    },
+    plugin: { installed: true, enabled: true, installedPath: "/tmp/plugin" },
+    hook: { trust: "trusted" as const, enabled: true, source: "provider_api" as const, issues: [] },
+    runtime: { healthy: true, issues: [] },
+    project: { state: "ready" as const, project: { kind: "path" as const, root: "/work/project" } },
+    binding: { state: "exact" as const, organizationId: "org-1" },
+    activation: {
+      state: "connected" as const,
+      team: { organizationId: "org-1", displayName: "Acme", role: "member" as const },
+    },
+  };
 
-    expect(actions).toEqual([
-      "Open Codex in this checkout.",
-      "Run `/hooks`.",
-      "Find First Tree Context → SessionStart, enable its checkbox, and choose Trust.",
-      "Exit and start a new Codex session in this checkout.",
-      "Run `first-tree-staging context status --provider codex`; confirm Hook trusted/enabled are Yes and Live activation is Connected.",
-    ]);
+  it("preserves the literal complete/incomplete verdict contract", () => {
+    expect(collectMissingSetupLayers("codex", greenVerification)).toEqual([]);
+    expect(renderSetupVerdictLine({ complete: true, missingLayers: [] })).toBe(
+      "Setup: Complete — every layer verified",
+    );
+    expect(renderSetupVerdictLine({ complete: false, missingLayers: ["Plugin enabled: No"] })).toContain(
+      "Setup: Incomplete",
+    );
   });
 
-  it("does not ask for another review after Codex reports trusted and enabled", () => {
-    const actions = buildContextEnableNextActions(
+  it("requires Codex Hook readiness for path projects but not pathless projects", () => {
+    const hookPending = {
+      ...greenVerification,
+      hook: { trust: "review_required" as const, enabled: false, source: "provider_api" as const, issues: [] },
+    };
+    expect(collectMissingSetupLayers("codex", hookPending)).toEqual(["Hook trusted: No", "Hook enabled: No"]);
+    expect(
+      collectMissingSetupLayers("codex", {
+        ...hookPending,
+        project: { state: "ready", project: { kind: "pathless" } },
+      }),
+    ).toEqual([]);
+    expect(
+      buildContextEnableNextActions("codex", hookPending.hook, "first-tree-staging", { kind: "pathless" }),
+    ).toEqual([]);
+  });
+
+  it("keeps every incomplete setup actionable and channel-specific", () => {
+    const verification = {
+      ...greenVerification,
+      runtime: { healthy: false, issues: ["Plugin payload differs."] },
+    };
+    const missingLayers = collectMissingSetupLayers("codex", verification);
+    const actions = buildSetupNextActions(
       "codex",
-      {
-        trust: "trusted",
-        enabled: true,
-      },
+      verification,
+      { complete: false, missingLayers },
       "first-tree-staging",
     );
+    expect(actions.join(" ")).toContain("first-tree-staging context repair --provider codex");
+    expect(actions.length).toBeGreaterThan(0);
+  });
 
-    expect(actions.join(" ")).not.toContain("/hooks");
+  it("renders provider Hook states", () => {
     expect(renderHookTrust({ trust: "trusted", enabled: true, source: "provider_api", issues: [] })).toBe("Yes");
     expect(renderHookEnabled({ trust: "trusted", enabled: true, source: "provider_api", issues: [] })).toBe("Yes");
   });
 
-  it("asks only for enablement when the Codex Hook is already trusted", () => {
-    const actions = buildContextEnableNextActions(
-      "codex",
-      {
-        trust: "trusted",
-        enabled: false,
-      },
-      "first-tree-staging",
-    );
-
-    expect(actions.join(" ")).toContain("enable its checkbox");
-    expect(actions.join(" ")).not.toContain("choose Trust");
-  });
-});
-
-describe("provider-aware Hook rendering", () => {
-  it("renders a disabled Claude Hook as Plugin-managed", () => {
-    const hook = {
-      trust: "provider_managed" as const,
-      enabled: false,
-      source: "provider_managed" as const,
-      issues: [],
-    };
-
-    expect(renderHookTrust(hook)).toBe("Managed by provider");
-    expect(renderHookEnabled(hook)).toBe("No — enable the First Tree Context Plugin in Claude Code");
-  });
-
-  it("does not claim a provider-managed Hook when the Claude Plugin is absent", async () => {
-    const claudeDriver = new ClaudeCodeContextIntegrationDriver(() => ({ stdout: "", stderr: "" }));
-    const hook = await claudeDriver.inspectHook({
-      marketplaceName: "first-tree-dev",
-      pluginName: "first-tree-context",
-      cwd: "/work/repo",
-      plugin: { installed: false, enabled: false },
-    });
-
-    expect(hook).toEqual({
-      trust: "unknown",
-      enabled: null,
-      source: "unavailable",
-      issues: [],
-    });
-    expect(renderHookTrust(hook)).toBe("Not available");
-    expect(renderHookEnabled(hook)).toBe("Not available");
+  it("keeps stale-Plugin repair explicit-user-only and channel-specific", () => {
+    const guidance = contextRepairAdditionalContext("codex");
+    expect(guidance).toContain("Do not repair, upgrade, or synchronize the Plugin automatically.");
+    expect(guidance).toContain("Only if the user explicitly asks");
+    expect(guidance).toContain("first-tree-dev context repair --provider codex");
+    expect(guidance).toContain("first-tree-dev context status --provider codex");
+    const manualRouteFailure = contextRepairUnavailableMessage("codex", ["Plugin payload is stale."]);
+    expect(manualRouteFailure).toContain("Ordinary provider work can continue");
+    expect(manualRouteFailure).toContain("Do not repair, upgrade, or synchronize the Plugin automatically.");
+    expect(manualRouteFailure).toContain("Only if the user explicitly asks");
   });
 });

@@ -20,13 +20,17 @@ describe("context-tree-audit static contract", () => {
     expect(skill).toContain("**Report-only (default):**");
     expect(skill).toContain("draft and remains draft");
     expect(skill).toContain("tree tree --no-pull");
+    expect(skill).toContain("actual binding branch");
+    expect(skill).toContain("never assume `main`");
     expect(skill).toContain("focused tree PR/MR");
     expect(skill).toMatch(/A GitHub tree PR\s+continues through `context-tree-review`/u);
     expect(skill).toContain("A GitLab tree MR also continues");
     expect(skill).toContain("first-tree gitlab follow");
-    expect(skill).toContain("Audit never creates a Reviewer Chat");
+    expect(skill).toMatch(/Audit\s+never creates a Reviewer Chat/u);
     const openai = readFileSync(join(repoRoot, "skills", "context-tree-audit", "agents", "openai.yaml"), "utf8");
     expect(openai).toContain("provider-appropriate independent review path");
+    expect(openai).toContain("actual binding branch");
+    expect(readFileSync(join(repoRoot, "skills", "context-tree-audit", "VERSION"), "utf8").trim()).toBe("0.1.2");
     const writeSkill = readFileSync(join(repoRoot, "skills", "first-tree-write", "SKILL.md"), "utf8");
     expect(writeSkill).toContain("Before any target");
     expect(writeSkill).toContain("audited HEAD");
@@ -35,7 +39,7 @@ describe("context-tree-audit static contract", () => {
   });
 
   it("keeps the floor linked to every deterministic gate scenario", () => {
-    expect(CONTEXT_TREE_AUDIT_GATE_CASES).toHaveLength(9);
+    expect(CONTEXT_TREE_AUDIT_GATE_CASES).toHaveLength(11);
     expect(
       CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.fixture.scenario === "mechanical")?.expected,
     ).toMatchObject({
@@ -44,6 +48,27 @@ describe("context-tree-audit static contract", () => {
     expect(CONTEXT_TREE_AUDIT_GATE_CASES.some((item) => item.fixture.scenario === "stale-before-write")).toBe(true);
     expect(CONTEXT_TREE_AUDIT_GATE_CASES.some((item) => item.fixture.scenario === "stale-before-publish")).toBe(true);
     expect(CONTEXT_TREE_AUDIT_GATE_CASES.some((item) => item.id === "audit-decision-lock-report-only")).toBe(true);
+    expect(
+      CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.id === "audit-gitlab-strong-local-focused-mr")?.fixture,
+    ).toMatchObject({
+      bindingBranch: "main",
+      forge: "gitlab",
+      mode: "maintenance",
+      scenario: "strong-local",
+    });
+    expect(
+      CONTEXT_TREE_AUDIT_GATE_CASES.find((item) => item.id === "audit-custom-binding-branch-report-only")?.fixture,
+    ).toMatchObject({
+      bindingBranch: "context-production",
+      forge: "github",
+      mode: "report-only",
+    });
+    const customBranchPrompt = CONTEXT_TREE_AUDIT_GATE_CASES.find(
+      (item) => item.id === "audit-custom-binding-branch-report-only",
+    )?.prompt;
+    expect(customBranchPrompt).toContain("origin/context-production");
+    expect(customBranchPrompt).toContain("refs/remotes/origin/context-production");
+    expect(customBranchPrompt).not.toContain("origin/main");
     expect(CONTEXT_TREE_AUDIT_SUITE.coverage.tiers.flatMap((tier) => tier.caseIds)).toEqual([
       "context-tree-audit-static-coverage",
       ...CONTEXT_TREE_AUDIT_GATE_CASES.map((item) => item.id),

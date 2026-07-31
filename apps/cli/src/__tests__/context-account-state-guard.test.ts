@@ -6,6 +6,7 @@ import { switchLocalClientForLogin } from "../core/client-switch.js";
 import { withContextIntegrationLock } from "../core/context-integration/context-binding-store.js";
 import { recoverContextIntegrationOperation } from "../core/context-integration/operation.js";
 import type { ContextIntegrationProviderDriver } from "../core/context-integration/provider-driver.js";
+import { contextRepairCommand } from "../core/context-integration/repair-guidance.js";
 
 const originalFirstTreeHome = process.env.FIRST_TREE_HOME;
 const roots: string[] = [];
@@ -27,7 +28,24 @@ function setupHome(): string {
 describe("Context/client-switch account-state interlock", () => {
   it("blocks a client switch while a durable Context operation exists", async () => {
     const home = setupHome();
-    writeFileSync(join(home, "state", "context", "operation-journal.json"), "{}");
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        operationId: "12345678-1234-4123-8123-123456789abc",
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "disable",
+        phase: "binding_changed",
+        previousBindings: [],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-07-30T00:00:00.000Z",
+      }),
+    );
 
     await expect(
       switchLocalClientForLogin({
@@ -44,8 +62,54 @@ describe("Context/client-switch account-state interlock", () => {
         },
         targetOwnerSub: "new-user",
       }),
-    ).rejects.toThrow("Context Plugin/binding operation is active or incomplete");
+    ).rejects.toThrow(contextRepairCommand("codex"));
     expect(existsSync(join(home, "state", "client-switch-journal.json"))).toBe(false);
+  });
+
+  it("preserves and reports a corrupt Context journal instead of suggesting a provider placeholder", async () => {
+    const home = setupHome();
+    const journal = join(home, "state", "context", "operation-journal.json");
+    writeFileSync(journal, '{"provider":"codex"}');
+
+    await expect(
+      switchLocalClientForLogin({
+        existingCredentials: {
+          accessToken: "old",
+          refreshToken: "old",
+          serverUrl: "https://first-tree.example",
+        },
+        previousOwnerSub: "old-user",
+        targetTokens: {
+          accessToken: "new",
+          refreshToken: "new",
+          serverUrl: "https://first-tree.example",
+        },
+        targetOwnerSub: "new-user",
+      }),
+    ).rejects.toThrow(`journal at ${journal} is unreadable or invalid`);
+    expect(existsSync(journal)).toBe(true);
+  });
+
+  it("tells account switching to wait for a live Context lock without suggesting repair", async () => {
+    const home = setupHome();
+    writeFileSync(join(home, "state", "context", "install.lock"), `${process.pid}\n`);
+
+    await expect(
+      switchLocalClientForLogin({
+        existingCredentials: {
+          accessToken: "old",
+          refreshToken: "old",
+          serverUrl: "https://first-tree.example",
+        },
+        previousOwnerSub: "old-user",
+        targetTokens: {
+          accessToken: "new",
+          refreshToken: "new",
+          serverUrl: "https://first-tree.example",
+        },
+        targetOwnerSub: "new-user",
+      }),
+    ).rejects.toThrow("Wait for it to finish");
   });
 
   it("blocks every Context mutation/recovery while a client-switch journal exists", () => {

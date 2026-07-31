@@ -623,7 +623,6 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       userId,
       userDisplayName: u.displayName,
       username: u.username,
-      name: body.name,
       displayName: body.displayName,
     });
     // Token reuse: signing-then-returning would just produce the same

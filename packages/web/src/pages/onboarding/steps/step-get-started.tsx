@@ -1,4 +1,4 @@
-import type { Agent, ContextIntegrationProvider } from "@first-tree/shared";
+import type { Agent } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, ChevronDown, CircleCheck, Copy as CopyIcon, FileText } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -6,7 +6,6 @@ import { listAgents } from "../../../api/agents.js";
 import { getContextEnablementHandoff } from "../../../api/context-enablement.js";
 import { listMembers } from "../../../api/members.js";
 import { getContextTreeSetting } from "../../../api/org-settings.js";
-import { listTeamResourcesForOrg } from "../../../api/resources.js";
 import { Avatar } from "../../../components/avatar.js";
 import { Button } from "../../../components/ui/button.js";
 import { buildByoSetupPrompt } from "../../../lib/byo-setup-prompt.js";
@@ -59,20 +58,12 @@ export function StepGetStarted({ defaultMode = "recommend" }: { defaultMode?: Ge
   const contextQuery = useQuery({
     queryKey: ["onboarding", "member-byo-readiness", organizationId],
     queryFn: async () => {
-      const [tree, resources] = await Promise.all([
-        getContextTreeSetting(organizationId ?? ""),
-        listTeamResourcesForOrg(organizationId ?? ""),
-      ]);
-      return (
-        Boolean(tree.repo) &&
-        resources.some(
-          (resource) => resource.type === "repo" && resource.scope === "team" && resource.status === "active",
-        )
-      );
+      const tree = await getContextTreeSetting(organizationId ?? "");
+      return Boolean(tree.repo);
     },
     enabled: !!organizationId && mode !== "recommend",
     // The enable screen is a live authority boundary. Keep checking while it
-    // is open so a Team switch or an Admin-side repository/Tree change
+    // is open so a Team switch or an Admin-side Context Tree change
     // disables the setup artifact instead of leaving stale handoff data live.
     refetchInterval: (query) => (mode === "byo-setup" || !query.state.data ? 5000 : false),
   });
@@ -179,15 +170,6 @@ function RecommendedStart({
 
 // ── BYO: one paste in the member's existing coding agent ───────────────
 
-const BYO_PROVIDERS: Array<{ id: ContextIntegrationProvider; label: string }> = [
-  { id: "claude-code", label: "Claude Code" },
-  { id: "codex", label: "Codex" },
-];
-
-function providerLabel(provider: ContextIntegrationProvider): string {
-  return BYO_PROVIDERS.find((item) => item.id === provider)?.label ?? provider;
-}
-
 function ByoSetup({
   onBack,
   contextState,
@@ -200,24 +182,34 @@ function ByoSetup({
   const g = COPY.getStarted;
   const { organizationId, teamDisplayName, computer, prepareByoBootstrap } = useOnboardingFlow();
   const { cliCommand, tokenError, retry } = computer;
-  const [provider, setProvider] = useState<ContextIntegrationProvider>("claude-code");
 
   useEffect(() => {
     prepareByoBootstrap();
   }, [prepareByoBootstrap]);
 
-  const handoff = useQuery({
-    queryKey: ["onboarding", "member-byo-handoff", organizationId, provider, "onboarding"],
-    queryFn: () => getContextEnablementHandoff(organizationId ?? "", provider, "onboarding"),
+  const claudeHandoff = useQuery({
+    queryKey: ["onboarding", "member-byo-handoff", organizationId, "claude-code", "onboarding"],
+    queryFn: () => getContextEnablementHandoff(organizationId ?? "", "claude-code", "onboarding"),
     enabled: Boolean(organizationId) && contextState === "ready",
   });
-  const handoffReady = !handoff.isFetching && !handoff.isError && Boolean(handoff.data);
+  const codexHandoff = useQuery({
+    queryKey: ["onboarding", "member-byo-handoff", organizationId, "codex", "onboarding"],
+    queryFn: () => getContextEnablementHandoff(organizationId ?? "", "codex", "onboarding"),
+    enabled: Boolean(organizationId) && contextState === "ready",
+  });
+  const handoffReady =
+    !claudeHandoff.isFetching &&
+    !codexHandoff.isFetching &&
+    !claudeHandoff.isError &&
+    !codexHandoff.isError &&
+    Boolean(claudeHandoff.data) &&
+    Boolean(codexHandoff.data);
   const setupPrompt =
-    contextState === "ready" && handoff.data && cliCommand && organizationId
+    contextState === "ready" && claudeHandoff.data && codexHandoff.data && cliCommand && organizationId
       ? buildByoSetupPrompt({
           organizationId,
           bootstrapCommand: cliCommand,
-          handoffs: [handoff.data],
+          handoffs: [claudeHandoff.data, codexHandoff.data],
           intent: "onboarding",
         })
       : null;
@@ -250,45 +242,32 @@ function ByoSetup({
         </div>
       ) : organizationId ? (
         <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
-          <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
-            <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
-              {g.byoProviderLabel}
-            </p>
-            <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
-              {BYO_PROVIDERS.map((item) => (
-                <Button
-                  key={item.id}
-                  type="button"
-                  size="sm"
-                  variant={provider === item.id ? "default" : "outline"}
-                  aria-pressed={provider === item.id}
-                  onClick={() => setProvider(item.id)}
-                >
-                  {item.label}
-                </Button>
-              ))}
-            </div>
-          </div>
-          {handoff.isError ? (
+          {claudeHandoff.isError || codexHandoff.isError ? (
             <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
               <FlowHint tone="error" role="alert">
                 {g.byoHandoffError}
               </FlowHint>
               <div className="flex">
-                <Button type="button" variant="outline" onClick={() => void handoff.refetch()}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    void claudeHandoff.refetch();
+                    void codexHandoff.refetch();
+                  }}
+                >
                   {g.byoRetryPrompt}
                 </Button>
               </div>
             </div>
           ) : (
             <ByoSetupPromptCard
-              key={`${provider}:${setupPrompt ?? "preparing"}`}
-              provider={providerLabel(provider)}
-              team={handoff.data?.teamDisplayName ?? teamDisplayName ?? "Your team"}
+              key={setupPrompt ?? "preparing"}
+              provider="Claude Code or Codex"
+              team={claudeHandoff.data?.teamDisplayName ?? teamDisplayName ?? "Your team"}
               prompt={setupPrompt}
             />
           )}
-          {provider === "codex" ? <FlowHint role="status">{g.byoCodexTrust}</FlowHint> : null}
           {preparingPrompt ? <StatusRow state="waiting" label={g.byoPreparingPrompt} /> : null}
           {setupPrompt ? (
             <div className="flex">

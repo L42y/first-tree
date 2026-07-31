@@ -32,11 +32,30 @@ export type ContextEnablementHandoff = z.infer<typeof contextEnablementHandoffSc
 
 const sha256DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
 
+export const contextIntegrationPathProjectSchema = z
+  .object({
+    kind: z.literal("path"),
+    root: z
+      .string()
+      .min(1)
+      .refine((value) => value.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("\\\\"), {
+        message: "Project root must be an absolute POSIX, drive-letter, or UNC path.",
+      }),
+  })
+  .strict();
+
+export const contextIntegrationPathlessProjectSchema = z.object({ kind: z.literal("pathless") }).strict();
+
+export const contextIntegrationProjectSchema = z.discriminatedUnion("kind", [
+  contextIntegrationPathProjectSchema,
+  contextIntegrationPathlessProjectSchema,
+]);
+export type ContextIntegrationProject = z.infer<typeof contextIntegrationProjectSchema>;
+
 export const contextIntegrationBindingSchema = z
   .object({
     provider: contextIntegrationProviderSchema,
-    checkoutRoot: z.string().min(1),
-    repositoryKey: canonicalResourceRepoKeySchema,
+    project: contextIntegrationProjectSchema,
     organizationId: z.string().min(1),
   })
   .strict();
@@ -44,11 +63,60 @@ export type ContextIntegrationBinding = z.infer<typeof contextIntegrationBinding
 
 export const contextIntegrationConfigSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     bindings: z.array(contextIntegrationBindingSchema).default([]),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    const seen = new Set<string>();
+    config.bindings.forEach((binding, index) => {
+      const projectIdentity = binding.project.kind === "path" ? `path:${binding.project.root}` : "pathless";
+      const identity = `${binding.provider}\0${projectIdentity}`;
+      if (seen.has(identity)) {
+        context.addIssue({
+          code: "custom",
+          path: ["bindings", index],
+          message: "Each provider + project identity may have only one Team binding.",
+        });
+      }
+      seen.add(identity);
+    });
+  });
 export type ContextIntegrationConfig = z.infer<typeof contextIntegrationConfigSchema>;
+
+/** Read only at the atomic local migration boundary. */
+export const legacyContextIntegrationBindingSchema = z
+  .object({
+    provider: contextIntegrationProviderSchema,
+    checkoutRoot: z.string().min(1),
+    repositoryKey: canonicalResourceRepoKeySchema,
+    organizationId: z.string().min(1),
+  })
+  .strict();
+export type LegacyContextIntegrationBinding = z.infer<typeof legacyContextIntegrationBindingSchema>;
+
+/** Read only at the atomic local migration boundary. */
+export const legacyContextIntegrationConfigSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    bindings: z.array(legacyContextIntegrationBindingSchema).default([]),
+  })
+  .strict()
+  .superRefine((config, context) => {
+    const seen = new Set<string>();
+    config.bindings.forEach((binding, index) => {
+      const identity = `${binding.provider}\0${binding.checkoutRoot}`;
+      if (seen.has(identity)) {
+        context.addIssue({
+          code: "custom",
+          path: ["bindings", index],
+          message: "Each provider + checkout identity may migrate to only one Team binding.",
+        });
+      }
+      seen.add(identity);
+    });
+  });
+export type LegacyContextIntegrationConfig = z.infer<typeof legacyContextIntegrationConfigSchema>;
 
 export const contextIntegrationInstallManifestSchema = z
   .object({
@@ -62,6 +130,7 @@ export const contextIntegrationInstallManifestSchema = z
     adapterDigest: sha256DigestSchema,
     marketplaceName: z.string().min(1),
     pluginName: z.string().min(1),
+    materializedInvocation: z.string().min(1).optional(),
     installedAt: z.string().datetime(),
   })
   .strict();

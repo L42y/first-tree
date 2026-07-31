@@ -10,7 +10,7 @@ type ByoSetupPromptBase = {
 export type BuildByoSetupPromptOptions =
   | (ByoSetupPromptBase & {
       intent: "onboarding";
-      handoffs: readonly [ContextEnablementHandoff];
+      handoffs: readonly [ContextEnablementHandoff] | readonly [ContextEnablementHandoff, ContextEnablementHandoff];
     })
   | (ByoSetupPromptBase & {
       intent: "settings";
@@ -56,48 +56,50 @@ export function buildByoSetupPrompt({
     providerNames.length === 1
       ? providerNames[0]
       : `${providerNames.slice(0, -1).join(", ")} or ${providerNames.at(-1)}`;
-  const commandInstructions =
-    handoffs.length === 1
-      ? [
-          `Then enable Team Context for this exact repository checkout with the server-provided ${providerNames[0]} command:`,
-          "",
-          handoffs[0]?.command ?? "",
-        ]
-      : [
-          "Then use exactly one of these server-provided commands, matching the coding agent you are currently running in. Do not run both and do not add, remove, or change command flags.",
-          "",
-          ...handoffs.flatMap((handoff, index) => [
-            `If you are ${PROVIDER_LABELS[handoff.provider]}:`,
-            handoff.command,
-            ...(index === handoffs.length - 1 ? [] : [""]),
+  const commandInstructions = [
+    "Detect the coding-agent host you are currently running in. Use the Codex command for Codex App or CLI, or the Claude Code command for Claude Code. Do not infer the host from installed binaries, and do not run both commands.",
+    "",
+    ...handoffs.flatMap((handoff, index) => [
+      `If you are ${PROVIDER_LABELS[handoff.provider]}:`,
+      handoff.command,
+      ...(handoff.provider === "claude-code"
+        ? [
+            "Append exactly one selector from the current Claude Code host identity: `--project-root '<host-confirmed-project-root>'` for an attached project, or `--pathless` for a truly pathless session. Do not derive the root from shell `pwd`/cwd; if the host project identity is unavailable, stop and report that gap.",
+          ]
+        : [
+            "Run this Codex handoff unchanged. Do not append a selector: the CLI owns the centralized canonical-path and scratch-path classifier.",
           ]),
-        ];
+      ...(index === handoffs.length - 1 ? [] : [""]),
+    ]),
+  ];
   const completion =
     intent === "onboarding"
-      ? "Only tell me setup is ready after First Tree verifies the provider integration, the exact-checkout Team binding, and live Team Context activation. First Tree Web owns onboarding completion separately."
-      : "After First Tree verifies the provider integration, the exact-checkout Team binding, and live Team Context activation, tell me the exact next step for starting a fresh coding-agent session. Do not mark onboarding complete.";
+      ? "Only tell me setup is ready after that. First Tree Web owns onboarding completion separately."
+      : "Do not mark onboarding complete. First Tree verifies completion separately.";
 
   return [
-    `Set up First Tree Team Context for this repository in ${target}.`,
+    `Set up First Tree Team Context for this coding-agent project in ${target}.`,
     "",
-    "Complete the whole setup inside this coding-agent session. Do not ask me to open Terminal.",
+    "Complete the whole setup inside this coding-agent session. Do not ask me to open Terminal. Setup is user-scoped: do not modify project files — Team Context does not live in the source repositories.",
     "",
-    "First inspect this machine locally. If First Tree is missing or this computer is not signed in to my First Tree account, use this server-provided bootstrap:",
+    "First run this server-provided bootstrap. It installs or updates First Tree and signs this computer in, and every step is safe to re-run:",
     "",
     bootstrapCommand,
+    "",
+    "If the login step fails because its code is expired or already used, stop and ask me for a fresh setup prompt from First Tree Settings — never reuse an old code. If login reports this computer is signed in as a different First Tree user, stop and ask me before any switch; that check consumes the code, so if I approve the switch, ask me for a fresh setup prompt and run its login line with `--force-switch` appended.",
     "",
     ...commandInstructions,
     "",
     `Target Team ID: ${organizationId}`,
     "",
-    "Run the enable command from this repository's root. If this session is not at the repository root, stop and tell me where to reopen it. If First Tree detects a different local account, ask me before switching. Do not create a First Tree agent or open First Tree Chat, and do not modify repository files.",
+    "The local project is only a routing boundary. Do not inspect Git remotes, require a repository root, or register source repositories with First Tree.",
     ...(providers.has("codex")
       ? [
           "",
-          "If Codex requires First Tree hook approval, guide me through /hooks in Codex and then continue verification. Do not report success before the hook is trusted.",
+          "For an attached Codex project, if Codex requires First Tree hook approval, guide me through /hooks and continue verification. A pathless project uses manual activation and does not require hook trust for setup to be complete.",
         ]
       : []),
     "",
-    completion,
+    `The enable command verifies the whole setup and its output tells you what to do — follow it exactly. Setup is successful only when the enable command reports "Setup: Complete"; if it reports Incomplete, finish its Next steps and re-run the same enable command until it does. ${completion}`,
   ].join("\n");
 }

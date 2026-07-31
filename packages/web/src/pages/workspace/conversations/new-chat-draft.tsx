@@ -26,7 +26,9 @@ import {
   mentionOptionTitle,
   useMentionAutocomplete,
 } from "../../../components/mention-autocomplete.js";
+import { triggerOverlapsToken } from "../../../components/mention-composer-model.js";
 import { FileChip } from "../../../components/ui/file-chip.js";
+import { useMentionComposer } from "../../../components/use-mention-composer.js";
 import { clearDraft, type DraftSnapshot, loadDraft, newChatDraftScope, saveDraft } from "../../../lib/draft-store.js";
 import { useAgentIdentityMap } from "../../../lib/use-agent-name-map.js";
 import { useAutoResizeTextarea } from "../../../lib/use-autoresize-textarea.js";
@@ -144,8 +146,9 @@ export function NewChatDraft({
 
   // Auto-grow the textarea up to the CSS `max-height` cap (10.5rem ≈ 8
   // visible lines). Re-measure on every keystroke so paste and delete
-  // both adjust instantly; past the cap content scrolls inside.
-  useAutoResizeTextarea(textareaRef, draft);
+  // both adjust instantly; past the cap content scrolls inside. NOTE:
+  // the call site lives below `mentionComposer` — the effect must be
+  // driven by the textarea's actual bound value (`displayText`).
 
   /** First-page baseline of org-wide addressable agents (humans + AI),
    *  backed by `GET /orgs/:orgId/agents` via `useOrgAgents`. Used to feed
@@ -239,6 +242,25 @@ export function NewChatDraft({
     mergeKnown([defaultCandidates.agent]);
   }, [defaultCandidates?.agent, mergeKnown]);
 
+  // Display-side composer model (see mention-composer-model.ts): the
+  // textarea shows `@<displayName>` for committed mentions while `draft`
+  // stays the canonical `@<name>` text that persistence, `extractMentions`
+  // (bodyMentions → chips), and the create-chat send all consume. Hydrate
+  // labels come from `knownAgents` — the session roster — so this hook can
+  // live above the trigger-search union (`candidates`) that itself depends
+  // on the display-side trigger detection below.
+  const hydrateCandidates = useMemo<MentionCandidate[]>(() => Array.from(knownAgents.values()), [knownAgents]);
+  const mentionComposer = useMentionComposer({
+    canonical: draft,
+    onCanonicalChange: setDraft,
+    candidates: hydrateCandidates,
+    // The compose context can change in place (different seed participants
+    // share this component) — reset the display model per draft scope.
+    scope: draftScope,
+  });
+  // Auto-grow is driven by the textarea's actual bound value.
+  useAutoResizeTextarea(textareaRef, mentionComposer.displayText);
+
   /** Active `@<query>` trigger derived from the textarea's text +
    *  cursor. Drives a server-side search so the autocomplete popover
    *  can show matches past the first-page cap. We compute it inline
@@ -253,7 +275,14 @@ export function NewChatDraft({
    *  three GETs (`b` / `bo` / `bob`), each a fresh React Query key with
    *  no dedup. `useOrgAgentsSearch`'s docstring puts debouncing on the
    *  caller; matches what the chip picker already does. */
-  const trigger = useMemo(() => detectMentionTrigger(draft, cursor), [draft, cursor]);
+  const trigger = useMemo(() => {
+    const detected = detectMentionTrigger(mentionComposer.displayText, cursor);
+    // A committed mention token is not a query — without this guard the
+    // server-side search would fire (and the popover would reopen) when the
+    // caret sits inside/at the end of a committed display label.
+    if (detected && triggerOverlapsToken(detected, cursor, mentionComposer.tokens)) return null;
+    return detected;
+  }, [mentionComposer.displayText, mentionComposer.tokens, cursor]);
   const triggerQuery = trigger?.query ?? "";
   const debouncedTriggerQuery = useDebouncedValue(triggerQuery, 100);
   const { data: triggerSearchPage } = useOrgAgentsSearch(debouncedTriggerQuery, { addressableOnly: true });
@@ -384,18 +413,23 @@ export function NewChatDraft({
   // inside the textarea would duplicate that signal — the chip row
   // visualisation is enough on this surface.
   const mention = useMentionAutocomplete({
-    value: draft,
+    value: mentionComposer.displayText,
     cursor,
     candidates,
     disabled: sending,
-    onSelect: (update) => {
-      setDraft(update.text);
-      setCursor(update.cursor);
+    tokens: mentionComposer.tokens,
+    onSelect: (_update, candidate, trigger) => {
+      // Token-model commit: the visible text gets `@<displayName>` while
+      // the canonical slug/agentId rides along as a token (the legacy
+      // `@<name>` insertion in `_update` is intentionally unused).
+      const applied = mentionComposer.applyPick(trigger, cursor, candidate);
+      if (!applied) return;
+      setCursor(applied.cursor);
       requestAnimationFrame(() => {
         const el = textareaRef.current;
         if (!el) return;
         el.focus();
-        el.setSelectionRange(update.cursor, update.cursor);
+        el.setSelectionRange(applied.cursor, applied.cursor);
       });
     },
   });
@@ -747,13 +781,15 @@ export function NewChatDraft({
               />
               <textarea
                 ref={textareaRef}
-                value={draft}
+                value={mentionComposer.displayText}
                 onChange={(e) => {
-                  setDraft(e.target.value);
+                  // Token-model edit: adjusts mention tokens through the diff
+                  // and persists the canonical `@<name>` form into `draft`.
+                  mentionComposer.handleInput(e.target.value);
                   setCursor(e.target.selectionStart ?? e.target.value.length);
                 }}
                 onSelect={(e) => {
-                  setCursor(e.currentTarget.selectionStart ?? draft.length);
+                  setCursor(e.currentTarget.selectionStart ?? mentionComposer.displayText.length);
                 }}
                 onPaste={(e) => {
                   const files = Array.from(e.clipboardData.files);
@@ -768,6 +804,30 @@ export function NewChatDraft({
                 rows={1}
                 onKeyDown={(e) => {
                   if (e.nativeEvent.isComposing) return;
+                  // Atomic mention deletion: a collapsed caret flush against a
+                  // committed mention removes the whole token, not one
+                  // character of its display label.
+                  if (e.key === "Backspace" || e.key === "Delete") {
+                    const el = textareaRef.current;
+                    if (el && el.selectionStart === el.selectionEnd) {
+                      const removed = mentionComposer.deleteTokenAtCaret(
+                        el.selectionStart ?? cursor,
+                        e.key === "Backspace" ? "back" : "forward",
+                      );
+                      if (removed) {
+                        e.preventDefault();
+                        setCursor(removed.cursor);
+                        // Re-pin the DOM selection after commit — the native
+                        // deletion that would have moved it was preventDefaulted.
+                        requestAnimationFrame(() => {
+                          const ta = textareaRef.current;
+                          if (!ta) return;
+                          ta.setSelectionRange(removed.cursor, removed.cursor);
+                        });
+                        return;
+                      }
+                    }
+                  }
                   if (mention.handleKey(e)) return;
                   // Mobile soft keyboards have no Shift+Enter, so Enter inserts a
                   // newline; sending is the button only. Desktop keeps Enter-to-send.
@@ -819,7 +879,7 @@ export function NewChatDraft({
                     overflow: "hidden",
                   }}
                 >
-                  {draft}
+                  {mentionComposer.displayText}
                   <span style={{ color: "var(--fg-4)" }}>{"  ← @ a group member to send"}</span>
                 </div>
               )}

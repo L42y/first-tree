@@ -40,7 +40,7 @@ type ItemGroup = {
 const ACCOUNT_ITEM: Item = {
   to: "/settings/account",
   label: "Account",
-  description: "Manage your profile and sign-in methods. These settings follow you across all your teams.",
+  description: "Manage your profile and ways to sign in. These settings follow you across all your teams.",
 };
 const SETUP_ITEM: Item = { to: "/settings/setup", label: "Setup" };
 const COMPUTERS_ITEM: Item = { to: "/settings/computers", label: "Computers" };
@@ -49,6 +49,11 @@ const REPOSITORIES_ITEM: Item = {
   label: "Repositories",
   description: "Manage the Team code repositories available to agents.",
 };
+const CONTEXT_TREE_ITEM: Item = {
+  to: "/settings/context",
+  label: "Context Tree",
+  description: "Manage shared context, automatic review, and coding-agent access for this Team.",
+};
 const RESOURCES_ITEM: Item = {
   to: "/settings/resources",
   label: "Resources",
@@ -56,13 +61,22 @@ const RESOURCES_ITEM: Item = {
 };
 const INTEGRATIONS_ITEM: Item = {
   to: "/settings/integrations",
-  label: "Integrations",
-  description: "Connect providers for webhooks, identity, and event routing.",
+  label: "GitHub & GitLab",
+  description: "Connect GitHub and GitLab for repository events and identity. GitHub also supports task routing.",
 };
-const ITEMS: Item[] = [ACCOUNT_ITEM, SETUP_ITEM, COMPUTERS_ITEM, REPOSITORIES_ITEM, RESOURCES_ITEM, INTEGRATIONS_ITEM];
+const ITEMS: Item[] = [
+  ACCOUNT_ITEM,
+  SETUP_ITEM,
+  COMPUTERS_ITEM,
+  REPOSITORIES_ITEM,
+  CONTEXT_TREE_ITEM,
+  RESOURCES_ITEM,
+  INTEGRATIONS_ITEM,
+];
 
-// Preserve the existing narrow Settings IA; only desktop removes visible
-// scope groups. Every link still uses the canonical Setup route.
+// Preserve the existing narrow Settings scope groups while placing Context
+// Tree with the other Team-owned settings. Each item keeps the same canonical
+// route as the desktop sidebar.
 const NARROW_GROUPS: ItemGroup[] = [
   {
     label: "Personal",
@@ -70,7 +84,7 @@ const NARROW_GROUPS: ItemGroup[] = [
   },
   {
     label: "Team",
-    items: [REPOSITORIES_ITEM, RESOURCES_ITEM, INTEGRATIONS_ITEM, SETUP_ITEM],
+    items: [REPOSITORIES_ITEM, CONTEXT_TREE_ITEM, RESOURCES_ITEM, INTEGRATIONS_ITEM, SETUP_ITEM],
   },
 ];
 

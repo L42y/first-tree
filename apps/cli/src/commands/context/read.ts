@@ -1,8 +1,12 @@
+import type { ContextIntegrationProject, ContextIntegrationProvider } from "@first-tree/shared";
 import type { Command } from "commander";
 import {
+  buildConnectedContextAdditionalContext,
   ExternalContextActivationRequiredError,
   requireConnectedExternalContext,
 } from "../../core/context-integration/activation.js";
+import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
+import { contextRepairUnavailableMessage } from "../../core/context-integration/repair-guidance.js";
 import { inspectContextIntegrationRuntime } from "../../core/context-integration/runtime-health.js";
 import { activateContextTreeRead, ContextTreeReadActivationError } from "../../core/context-tree-read.js";
 import { isJsonMode, print } from "../../core/output.js";
@@ -13,12 +17,16 @@ import { createContextIntegrationDriver, parseContextProvider } from "./shared.j
 type ContextReadOptions = {
   provider?: string;
   snapshot?: string;
+  projectRoot?: string;
+  pathless?: boolean;
 };
 
 function configure(command: Command): void {
   command
     .requiredOption("--provider <provider>", "provider Plugin owner")
-    .requiredOption("--snapshot <directory>", "new task-owned exact Context Tree snapshot directory");
+    .requiredOption("--snapshot <directory>", "new task-owned exact Context Tree snapshot directory")
+    .option("--project-root <directory>", "attached provider project root")
+    .option("--pathless", "use the provider's explicit pathless project binding");
 }
 
 export async function runContextRead(context: CommandContext): Promise<void> {
@@ -26,17 +34,17 @@ export async function runContextRead(context: CommandContext): Promise<void> {
   const provider = parseContextProvider(options.provider ?? "");
   const health = inspectContextIntegrationRuntime(createContextIntegrationDriver(provider));
   if (!health.healthy) {
-    print.fail(
-      "context_plugin_repair_required",
-      `${health.issues.join(" ")} Run \`first-tree context repair --provider ${provider}\`.`,
-      1,
-    );
+    print.fail("context_plugin_repair_required", contextRepairUnavailableMessage(provider, health.issues), 1);
   }
   const sdk = createMemberSdk();
   try {
+    const resolved = inspectContextClientPreflight(provider, {
+      projectRoot: options.projectRoot,
+      pathless: options.pathless,
+    });
     const activation = await requireConnectedExternalContext(sdk, {
       provider,
-      cwd: process.cwd(),
+      project: resolved.project,
     });
     const snapshot = await activateContextTreeRead(
       {
@@ -49,8 +57,14 @@ export async function runContextRead(context: CommandContext): Promise<void> {
         snapshotPath: options.snapshot ?? "",
       },
     );
+    const result = buildExternalContextReadResult(
+      snapshot,
+      provider,
+      resolved.project,
+      buildConnectedContextAdditionalContext(activation.team),
+    );
     if (context.options.json || isJsonMode()) {
-      print.result(snapshot);
+      print.result(result);
       return;
     }
     print.status("Team", `${activation.team.displayName} (${snapshot.teamId})`);
@@ -69,12 +83,41 @@ export async function runContextRead(context: CommandContext): Promise<void> {
   }
 }
 
+export function buildExternalContextReadResult<
+  T extends {
+    teamId: string;
+    snapshotPath: string;
+  },
+>(
+  snapshot: T,
+  provider: ContextIntegrationProvider,
+  project: ContextIntegrationProject,
+  activationContext: string,
+): T & {
+  activationProject: {
+    provider: ContextIntegrationProvider;
+    project: ContextIntegrationProject;
+    selectorArgs: ["--project-root", string] | ["--pathless"];
+  };
+  activationContext: string;
+} {
+  return {
+    ...snapshot,
+    activationProject: {
+      provider,
+      project,
+      selectorArgs: project.kind === "path" ? ["--project-root", project.root] : ["--pathless"],
+    },
+    activationContext,
+  };
+}
+
 export const contextReadCommand: SubcommandModule = {
   name: "read",
   hidden: true,
   alias: "",
   summary: "",
-  description: "Internal external-Plugin Read route with exact checkout activation.",
+  description: "Internal external-Plugin Read route with project activation.",
   configure,
   action: runContextRead,
 };

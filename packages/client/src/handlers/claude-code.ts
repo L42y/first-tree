@@ -33,7 +33,11 @@ import { renderDocumentAttachmentsForLLM } from "../runtime/agent-io.js";
 import { type PredeclaredSourceRepo, writeAgentBriefing } from "../runtime/bootstrap.js";
 import { type ChatContext, fetchChatContext } from "../runtime/chat-context.js";
 import { renderChatContextPrompt, renderRuntimeOutputContract } from "../runtime/chat-context-section.js";
-import { resolveContextTreeRelativePath, toolFileRefsFromShellCommand } from "../runtime/context-tree-file-refs.js";
+import {
+  resolveContextTreeRelativePath,
+  toolFileRefsFromShellCommand,
+  withContextTreeRepoHeadCommit,
+} from "../runtime/context-tree-file-refs.js";
 import {
   type ContextTreeGitWriteTracker,
   createContextTreeGitWriteTracker,
@@ -487,7 +491,7 @@ function toolFileRef(toolName: string, input: unknown, contextTree?: ContextTree
           contextTreeRepoUrl: contextTree.repoUrl,
         })
       : null;
-  return {
+  const ref: ToolFileRef = {
     origin: "tool_arg",
     localPath: filePath,
     pathKind: "file",
@@ -499,6 +503,9 @@ function toolFileRef(toolName: string, input: unknown, contextTree?: ContextTree
         }
       : {}),
   };
+  return TREE_READ_TOOL_NAMES.has(toolName) && isAbsolute(filePath)
+    ? withContextTreeRepoHeadCommit(ref, filePath)
+    : ref;
 }
 
 function statIsFile(absolutePath: string): boolean {
@@ -539,19 +546,22 @@ function searchToolFileRef(
         contextTreeRepoUrl: contextTree.repoUrl,
       })
     : null;
-  return {
-    origin: "tool_arg",
-    localPath: absolutePath,
-    // Grep accepts a file as its search root; everything else is a directory.
-    pathKind: repoRelativePath === "/" ? "repo" : statIsFile(absolutePath) ? "file" : "directory",
-    ...(contextTree?.repoUrl && repoRelativePath !== null
-      ? {
-          repoUrl: contextTree.repoUrl,
-          ...(contextTree.branch ? { repoBranch: contextTree.branch } : {}),
-          repoRelativePath,
-        }
-      : {}),
-  };
+  return withContextTreeRepoHeadCommit(
+    {
+      origin: "tool_arg",
+      localPath: absolutePath,
+      // Grep accepts a file as its search root; everything else is a directory.
+      pathKind: repoRelativePath === "/" ? "repo" : statIsFile(absolutePath) ? "file" : "directory",
+      ...(contextTree?.repoUrl && repoRelativePath !== null
+        ? {
+            repoUrl: contextTree.repoUrl,
+            ...(contextTree.branch ? { repoBranch: contextTree.branch } : {}),
+            repoRelativePath,
+          }
+        : {}),
+    },
+    absolutePath,
+  );
 }
 
 function readCommandArg(input: unknown): string | null {

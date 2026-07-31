@@ -4,14 +4,18 @@ import { join } from "node:path";
 import { writeText } from "../commands.js";
 import type { RunPaths } from "../types.js";
 
-export function createGlabShim(paths: RunPaths, options: { reviewFixturePath: string }): void {
+export function createGlabShim(
+  paths: RunPaths,
+  options: { auditFixturePath?: string; reviewFixturePath?: string },
+): void {
   const shimPath = join(paths.binDir, "glab");
   const script = `#!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const EVENTS_PATH = process.env.FIRST_TREE_EVAL_EVENTS || ${JSON.stringify(paths.eventsPath)};
-const REVIEW_FIXTURE_PATH = ${JSON.stringify(options.reviewFixturePath)};
+const AUDIT_FIXTURE_PATH = ${JSON.stringify(options.auditFixturePath ?? null)};
+const REVIEW_FIXTURE_PATH = ${JSON.stringify(options.reviewFixturePath ?? null)};
 
 function append(event) {
   appendFileSync(EVENTS_PATH, JSON.stringify({ timestamp: new Date().toISOString(), ...event }) + "\\n", "utf8");
@@ -53,9 +57,16 @@ function changedPaths(fixture, head) {
 }
 
 function bodyFrom(argv) {
-  const inline = argAfter(argv, "--message") || argAfter(argv, "-m");
+  const inline =
+    argAfter(argv, "--message") ||
+    argAfter(argv, "-m") ||
+    argAfter(argv, "--description") ||
+    argAfter(argv, "-d");
   if (inline) return inline;
-  const bodyFile = argAfter(argv, "--message-file") || argAfter(argv, "-F");
+  const bodyFile =
+    argAfter(argv, "--message-file") ||
+    argAfter(argv, "--description-file") ||
+    argAfter(argv, "-F");
   if (!bodyFile) return "";
   try {
     return readFileSync(bodyFile === "-" ? 0 : bodyFile, "utf8");
@@ -64,13 +75,98 @@ function bodyFrom(argv) {
   }
 }
 
+function auditPublishedRefs(fixture) {
+  try {
+    return readFileSync(EVENTS_PATH, "utf8")
+      .split("\\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter(
+        (event) =>
+          event.type === "audit_tree_publication_succeeded" &&
+          event.phase === "model" &&
+          event.repo === fixture.repo &&
+          event.remote === "origin" &&
+          typeof event.publishedRef === "string",
+      )
+      .map((event) => event.publishedRef);
+  } catch {
+    return [];
+  }
+}
+
 const argv = process.argv.slice(2);
-const fixture = JSON.parse(readFileSync(REVIEW_FIXTURE_PATH, "utf8"));
 const phase = process.env.FIRST_TREE_EVAL_PHASE || "model";
-const repo = argAfter(argv, "--repo");
+const repo = argAfter(argv, "--repo") || argAfter(argv, "-R");
+append({ type: "glab_call", phase, argv, cwd: process.cwd() });
+
+if (AUDIT_FIXTURE_PATH) {
+  const fixture = JSON.parse(readFileSync(AUDIT_FIXTURE_PATH, "utf8"));
+  if (fixture.forge !== "gitlab") {
+    finish(argv, 2, "", "Audit fixture rejected the wrong forge CLI.\\n", {
+      auditFixture: true,
+      auditFixtureViolation: true,
+      blockedByEval: true,
+      wrongForge: true,
+    });
+  }
+  if (argv[0] === "repo" && argv[1] === "view") {
+    finish(
+      argv,
+      0,
+      JSON.stringify({ path_with_namespace: fixture.repo, default_branch: fixture.forgeDefaultBranch }) + "\\n",
+      "",
+      { auditFixture: true },
+    );
+  }
+  if (argv[0] === "mr" && argv[1] === "create") {
+    const draft = argv.includes("--draft");
+    const head = argAfter(argv, "--source-branch");
+    const publishedRefs = auditPublishedRefs(fixture);
+    const valid =
+      repo === fixture.repo &&
+      draft &&
+      head &&
+      publishedRefs.length === 1 &&
+      publishedRefs[0] === "refs/heads/" + head &&
+      fixture.mode !== "report-only" &&
+      fixture.scenario !== "no-binding";
+    if (!valid) {
+      finish(argv, 2, "", "Audit fixture rejected merge request creation.\\n", {
+        auditFixture: true,
+        auditFixtureViolation: true,
+      });
+    }
+    append({
+      type: "audit_artifact_created",
+      phase,
+      artifact: "merge-request",
+      argv,
+      body: bodyFrom(argv),
+      cwd: process.cwd(),
+      draft,
+      headRef: "refs/heads/" + head,
+      repo: fixture.repo,
+    });
+    finish(argv, 0, "https://gitlab.example/owner/context-tree/-/merge_requests/77\\n", "", {
+      auditFixture: true,
+      recordedOnly: true,
+    });
+  }
+  finish(argv, 2, "", "Blocked glab command in Context Tree Audit eval.\\n", {
+    auditFixture: true,
+    auditFixtureViolation: true,
+    blockedByEval: true,
+  });
+}
+
+if (!REVIEW_FIXTURE_PATH) {
+  finish(argv, 2, "", "Blocked glab command in skill eval.\\n", { blockedByEval: true });
+}
+
+const fixture = JSON.parse(readFileSync(REVIEW_FIXTURE_PATH, "utf8"));
 const exactHost = new URL(fixture.instanceOrigin).host;
 const statePath = REVIEW_FIXTURE_PATH + ".state";
-append({ type: "glab_call", phase, argv, cwd: process.cwd() });
 
 if (argv[0] === "auth" && argv[1] === "status") {
   const host = argAfter(argv, "--hostname");

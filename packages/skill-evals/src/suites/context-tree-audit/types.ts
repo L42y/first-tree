@@ -11,7 +11,9 @@ export type AuditScenario =
   | "strong-local"
   | "weak-cross-domain";
 
-export type AuditExpectedAction = "fail-closed" | "focused-pr" | "human-ask" | "issue-or-ask" | "report";
+export type AuditForge = "github" | "gitlab";
+
+export type AuditExpectedAction = "fail-closed" | "focused-review-request" | "human-ask" | "issue-or-ask" | "report";
 
 export type ContextTreeAuditEvalCase = {
   briefingMode: "minimal";
@@ -21,7 +23,12 @@ export type ContextTreeAuditEvalCase = {
     verifyExitCode: number | null;
     writeSkillRequired: boolean;
   };
-  fixture: { mode: "maintenance" | "report-only"; scenario: AuditScenario };
+  fixture: {
+    bindingBranch: string;
+    forge: AuditForge;
+    mode: "maintenance" | "report-only";
+    scenario: AuditScenario;
+  };
   id: string;
   prompt: string;
   provider: "codex";
@@ -34,7 +41,7 @@ export type ContextTreeAuditEvalCase = {
 export type AuditFixtureExpectation = {
   advancedHeadOid: string | null;
   auditWorktreePath: string | null;
-  defaultBranch: "main";
+  bindingBranch: string;
   expectedAction: AuditExpectedAction;
   expectedDiffPaths: readonly string[];
   expectedFinding: {
@@ -42,7 +49,9 @@ export type AuditFixtureExpectation = {
     evidenceTokens: readonly string[];
     policyTokens: readonly string[];
   } | null;
+  forgeDefaultBranch: string;
   headOid: string | null;
+  forge: AuditForge;
   mode: "maintenance" | "report-only";
   originPath: string | null;
   repo: string;
@@ -53,10 +62,10 @@ export type AuditFixtureExpectation = {
 
 export type AuditFixtureIntegrity = {
   auditWorktreeCleaned: boolean;
-  mainHeadUnchanged: boolean;
-  mainWorktreeClean: boolean;
+  boundHeadUnchanged: boolean;
+  boundWorktreeClean: boolean;
   noGuessedTreeState: boolean;
-  originMainExpected: boolean;
+  originBranchExpected: boolean;
   unpublishedAuthoringStateClean: boolean;
 };
 
@@ -66,7 +75,8 @@ export type AuditFixtureState = AuditFixtureIntegrity & {
   expectedContentObserved: boolean;
 };
 
-export type AuditArtifact = "human-ask" | "issue" | "pull-request";
+export type AuditReviewArtifact = "pull-request" | "merge-request";
+export type AuditArtifact = "human-ask" | "issue" | AuditReviewArtifact;
 
 export type AuditEvalMetrics = {
   artifactCount: number;
@@ -81,6 +91,10 @@ export type AuditEvalMetrics = {
   runnerExitCode: number | null;
   selectorObserved: boolean;
   selectorBoundToSnapshot: boolean;
+  snapshotBranchProvenanceValid: boolean;
+  snapshotFetchObserved: boolean;
+  snapshotRefResolved: boolean;
+  snapshotWorktreeAdded: boolean;
   semanticReadAfterVerify: boolean;
   semanticReadBeforeVerify: boolean;
   selfReviewOrMergeAttempted: boolean;
@@ -92,7 +106,9 @@ export type AuditEvalMetrics = {
   writeSkillReadObserved: boolean;
   writeFreshnessChecked: boolean;
   publicationFreshnessChecked: boolean;
-  draftPullRequestObserved: boolean;
+  draftReviewRequestObserved: boolean;
+  reviewRequestFollowObserved: boolean;
+  providerIsolationValid: boolean;
 };
 
 export type CliOptions = {
@@ -106,9 +122,11 @@ export type CliOptions = {
 };
 
 export type AuditCaseRunSummary = {
+  bindingBranch: string;
   caseId: string;
   driftNote: string | null;
   expectedAction: AuditExpectedAction;
+  forge: AuditForge;
   firstResponseLatencyMs: number | null;
   grading: SkillCaseGrading;
   gradingJsonPath: string;

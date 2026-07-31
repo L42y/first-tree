@@ -62,6 +62,7 @@ export function planContextIntegrationInstall(
     join(contextIntegrationMarketplaceSourcePath(driver.provider), "plugins", PLUGIN_NAME),
     release,
     driver.provider,
+    previous?.materializedInvocation,
   );
   const incomplete = readContextIntegrationInstallJournal();
   const operation =
@@ -134,7 +135,7 @@ function installContextIntegrationLocked(
     rollbackMarketplaceRoot =
       plan.previous && plan.probe.installed ? prepareRollbackMarketplace(stagingRoot, driver.provider, plan) : null;
     cpSync(providerReleaseRoot, stagedMarketplaceRoot, { recursive: true });
-    materializeContextPluginPayload(
+    const materializedInvocation = materializeContextPluginPayload(
       join(stagedMarketplaceRoot, "plugins", PLUGIN_NAME),
       plan.release.manifest.providers[driver.provider].adapterDigest,
     );
@@ -152,6 +153,7 @@ function installContextIntegrationLocked(
       join(stableMarketplaceRoot, "plugins", PLUGIN_NAME),
       plan.release,
       driver.provider,
+      materializedInvocation,
     );
     verifyProviderInstalledContextPlugin(probe, installedPayloadDigest);
     writeInstallJournal({ ...journal, phase: "provider_installed" });
@@ -166,6 +168,7 @@ function installContextIntegrationLocked(
       adapterDigest: plan.release.manifest.providers[driver.provider].adapterDigest,
       marketplaceName: plan.marketplaceName,
       pluginName: PLUGIN_NAME,
+      materializedInvocation,
       installedAt: new Date().toISOString(),
     };
     writeContextIntegrationInstallManifest(manifest);
@@ -194,7 +197,7 @@ function installContextIntegrationLocked(
         writeInstallJournal({ ...journal, phase: "rollback_failed" });
         throw new AggregateError(
           [error, rollbackError],
-          "Context Plugin update failed and the previous provider cache could not be restored. Run `first-tree context repair`.",
+          `Context Plugin update failed and the previous provider cache could not be restored. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\`.`,
         );
       }
     } else if (plan.previous === null) {
@@ -210,7 +213,7 @@ function installContextIntegrationLocked(
         writeInstallJournal({ ...journal, phase: "rollback_failed" });
         throw new AggregateError(
           [error, cleanupError],
-          "Context Plugin install failed and its partial provider state could not be removed. Run `first-tree context repair`.",
+          `Context Plugin install failed and its partial provider state could not be removed. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\`.`,
         );
       }
     }
@@ -329,7 +332,7 @@ function assertCompatibleIncompleteInstall(provider: ContextIntegrationProvider)
   const incomplete = readContextIntegrationInstallJournal();
   if (incomplete && incomplete.provider !== provider) {
     throw new Error(
-      `A ${incomplete.provider} Context Plugin operation is incomplete. Run \`first-tree context repair --provider ${incomplete.provider}\` before changing ${provider}.`,
+      `A ${incomplete.provider} Context Plugin operation is incomplete. Run \`${channelConfig.binName} context repair --provider ${incomplete.provider}\` before changing ${provider}.`,
     );
   }
 }

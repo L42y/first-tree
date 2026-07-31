@@ -6,6 +6,7 @@ import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "./
 import { createCodexHandler } from "./codex/index.js";
 import { createCursorHandler } from "./cursor/index.js";
 import { createKimiCodeHandler } from "./kimi-code.js";
+import { createOpenCodeHandler } from "./opencode/index.js";
 
 /** Injectable seam so tests can force a Claude-executable resolution (no real PATH / shell spawn). */
 export type RegisterBuiltinHandlersDeps = {
@@ -53,4 +54,9 @@ export function registerBuiltinHandlers(deps: RegisterBuiltinHandlersDeps = {}):
   // Kimi Code is driven through the bundled Node SDK. It reuses the host's
   // ~/.kimi-code credential/config and does not add a First Tree login flow.
   registerHandler("kimi-code", (config) => createKimiCodeHandler(config));
+  // OpenCode is an external, host-authenticated, per-turn CLI runtime. The
+  // handler owns JSONL/session semantics; Windows stays fail-closed until a
+  // pre-admission Job Object supervisor is supplied and accepted as drain
+  // authority.
+  registerHandler("opencode", (config) => createOpenCodeHandler(config));
 }

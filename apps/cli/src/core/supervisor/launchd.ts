@@ -221,9 +221,8 @@ function installLaunchd(): ServiceInfo {
   // label, and an `install` from any channel would have ripped down
   // whatever the user had running under that name — including a
   // PARALLEL install (e.g. installing dev while staging was still
-  // mid-migration to multi-env). MIGRATION.md Phase 2 documents the
-  // operator-driven `launchctl bootout` step instead; safer to make
-  // the user type it once than to wipe a peer install silently.
+  // mid-migration to multi-env). The operator-driven `launchctl bootout`
+  // step is safer than wiping a peer install silently.
   const { plistPath } = writeLaunchdServiceFiles();
   const target = launchctlDomainTarget();
 

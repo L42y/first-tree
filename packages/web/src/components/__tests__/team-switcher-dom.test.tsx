@@ -240,21 +240,67 @@ describe("TeamSwitcher", () => {
     expect(anchorOf(container).textContent).toContain("Acme Robotics");
 
     await click(anchorOf(container));
-    expect(container.textContent).toContain("current team");
-    expect(buttonByLabel(container, "Edit team name")).not.toBeNull();
+    expect(container.textContent).toContain("Current team");
+    expect(buttonByLabel(container, "Rename team")).not.toBeNull();
+    expect(container.textContent).not.toContain("· current team");
+    expect(container.textContent).toContain("Admin");
+    const inviteAction = buttonByText(container, "Invite teammates");
+    const leaveAction = buttonByText(container, "Leave team");
+    expect(inviteAction).not.toBeNull();
+    expect(leaveAction).not.toBeNull();
+    if (!inviteAction || !leaveAction) throw new Error("Current-team actions missing");
+    expect(inviteAction.compareDocumentPosition(leaveAction) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.textContent).toContain("Switch team");
     expect(buttonByText(container, "Globex")).not.toBeNull();
     expect(buttonByText(container, "Initech")).not.toBeNull();
     // The current team is in the header, not the switch list.
     expect(buttonByText(container, "Globex")?.getAttribute("role")).toBe("menuitem");
-    expect(buttonByText(container, "Create new team")).not.toBeNull();
+    expect(container.textContent).toContain("Add or join");
+    expect(buttonByText(container, "Create team")).not.toBeNull();
     expect(buttonByText(container, "Join with invite link")).not.toBeNull();
-    expect(buttonByText(container, "Invite teammates")).not.toBeNull();
+    const roleBadges = [...container.querySelectorAll<HTMLElement>(".mono")];
+    expect(roleBadges).toHaveLength(2);
+    expect(roleBadges.every((badge) => badge.style.background === "var(--bg-sunken)")).toBe(true);
+    expect(roleBadges.every((badge) => !badge.getAttribute("style")?.includes("--brand"))).toBe(true);
 
     await act(async () => root.unmount());
   });
 
-  it("lets admins rename the current team inline and refreshes auth state", async () => {
+  it("aligns every menu action row and eyebrow on one shared grid across groups", async () => {
+    const { container, root } = await renderHarness(vi.fn(async () => {}));
+
+    await click(anchorOf(container));
+
+    const rows = [
+      buttonByText(container, "Invite teammates"),
+      buttonByText(container, "Leave team"),
+      buttonByText(container, "Globex"),
+      buttonByText(container, "Create team"),
+      buttonByText(container, "Join with invite link"),
+    ];
+    if (rows.some((row) => !row)) throw new Error("menu action rows missing");
+
+    // One shared row grid across Current team / Switch team / Add or join:
+    // same gutter, icon column, and full-bleed hover hit area — no
+    // Current-team-only inset, rounding, or extra row spacing.
+    const rowClasses = new Set(rows.flatMap((row) => (row ? [row.className] : [])));
+    expect(rowClasses.size).toBe(1);
+    const [rowClass] = rowClasses;
+    expect(rowClass).toContain("px-3.5");
+    expect(rowClass).toContain("py-1.5");
+    expect(rowClass).not.toContain("mt-2");
+    expect(rowClass).not.toContain("px-2");
+    expect(rowClass).not.toContain("rounded");
+
+    // All three section eyebrows share the same section padding.
+    const eyebrows = [...container.querySelectorAll<HTMLElement>(".text-eyebrow")];
+    expect(eyebrows.map((eyebrow) => eyebrow.textContent)).toEqual(["Current team", "Switch team", "Add or join"]);
+    expect(new Set(eyebrows.map((eyebrow) => eyebrow.style.padding)).size).toBe(1);
+
+    await act(async () => root.unmount());
+  });
+
+  it("lets admins rename the current team in a dialog and refreshes auth state", async () => {
     const refreshMe = vi.fn(async () => {});
     const { container, root } = await renderHarness(
       vi.fn(async () => {}),
@@ -262,17 +308,20 @@ describe("TeamSwitcher", () => {
     );
 
     await click(anchorOf(container));
-    await click(buttonByLabel(container, "Edit team name"));
+    await click(buttonByLabel(container, "Rename team"));
 
-    const input = container.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
+    expect(anchorOf(container).getAttribute("aria-expanded")).toBe("false");
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("Rename team");
+    const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
     if (!input) throw new Error("Team name input missing");
     expect(input.value).toBe("Acme Robotics");
 
     await setInputValue(input, "  Acme Labs  ");
-    await submit(container.querySelector("form"));
+    await submit(input.closest("form"));
 
     expect(orgMocks.updateOrganization).toHaveBeenCalledWith("org-1", { displayName: "Acme Labs" });
-    await waitForText(container, "Saved");
+    await waitForText(container, "Acme Labs");
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(anchorOf(container).textContent).toContain("Acme Labs");
     expect(refreshMe).toHaveBeenCalledTimes(1);
 
@@ -283,52 +332,58 @@ describe("TeamSwitcher", () => {
     const { container, root } = await renderHarness(vi.fn(async () => {}));
 
     await click(anchorOf(container));
-    await click(buttonByLabel(container, "Edit team name"));
-    let input = container.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
+    await click(buttonByLabel(container, "Rename team"));
+    let input = document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
     if (!input) throw new Error("Team name input missing");
     await setInputValue(input, "Draft Team");
     await keyDown(input, "Escape");
 
-    expect(container.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
+    expect(document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
     expect(orgMocks.updateOrganization).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(anchorOf(container));
 
-    await click(buttonByLabel(container, "Edit team name"));
-    input = container.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
+    await click(anchorOf(container));
+    await click(buttonByLabel(container, "Rename team"));
+    input = document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
     if (!input) throw new Error("Team name input missing");
     await setInputValue(input, "Another Draft");
-    await click(buttonByLabel(container, "Cancel team name edit"));
+    await click(buttonByText(document.body, "Cancel"));
 
-    expect(container.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
+    expect(document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
     expect(orgMocks.updateOrganization).not.toHaveBeenCalled();
 
-    await click(buttonByLabel(container, "Edit team name"));
-    await submit(container.querySelector("form"));
+    await click(anchorOf(container));
+    await click(buttonByLabel(container, "Rename team"));
+    input = document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
+    if (!input) throw new Error("Team name input missing");
+    await submit(input.closest("form"));
 
-    expect(container.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
+    expect(document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
     expect(orgMocks.updateOrganization).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
 
-  it("keeps the rename form open and shows the server error when rename fails", async () => {
+  it("keeps the rename dialog open and shows the server error when rename fails", async () => {
     orgMocks.updateOrganization.mockRejectedValueOnce(new Error("rename failed"));
     const { container, root } = await renderHarness(vi.fn(async () => {}));
 
     await click(anchorOf(container));
-    await click(buttonByLabel(container, "Edit team name"));
-    const input = container.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
+    await click(buttonByLabel(container, "Rename team"));
+    const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]');
     if (!input) throw new Error("Team name input missing");
 
     await setInputValue(input, "Broken");
-    await submit(container.querySelector("form"));
+    await submit(input.closest("form"));
 
-    await waitForText(container, "rename failed");
-    expect(container.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).not.toBeNull();
+    await waitForText(document.body, "rename failed");
+    expect(document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).not.toBeNull();
 
     await act(async () => root.unmount());
   });
 
   it("does not expose the team rename affordance to non-admin members", async () => {
+    clientMocks.get.mockResolvedValue([{ ...ORGS[0], role: "member" }, ...ORGS.slice(1)]);
     const { container, root } = await renderHarness(
       vi.fn(async () => {}),
       { role: "member" },
@@ -336,8 +391,43 @@ describe("TeamSwitcher", () => {
 
     await click(anchorOf(container));
 
-    expect(buttonByLabel(container, "Edit team name")).toBeNull();
-    expect(container.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
+    expect(buttonByLabel(container, "Rename team")).toBeNull();
+    expect(document.body.querySelector<HTMLInputElement>('input[aria-label="Team name"]')).toBeNull();
+    expect(container.textContent).toContain("Member");
+
+    await act(async () => root.unmount());
+  });
+
+  it("supports menu arrow navigation and returns focus to the trigger on Escape", async () => {
+    const { container, root } = await renderHarness(vi.fn(async () => {}));
+    const anchor = anchorOf(container);
+
+    await keyDown(anchor, "ArrowDown");
+    expect(document.activeElement).toBe(buttonByLabel(container, "Rename team"));
+
+    const menu = container.querySelector('[role="menu"]');
+    if (!menu) throw new Error("Team menu missing");
+    await keyDown(menu, "ArrowDown");
+    expect(document.activeElement).toBe(buttonByText(container, "Invite teammates"));
+
+    await keyDown(menu, "End");
+    expect(document.activeElement).toBe(buttonByText(container, "Join with invite link"));
+
+    await keyDown(menu, "Home");
+    expect(document.activeElement).toBe(buttonByLabel(container, "Rename team"));
+    expect([...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')].every((item) => item.tabIndex === -1)).toBe(
+      true,
+    );
+
+    await keyDown(menu, "Escape");
+    expect(anchor.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(anchor);
+
+    await keyDown(anchor, "ArrowDown");
+    const reopenedMenu = container.querySelector('[role="menu"]');
+    if (!reopenedMenu) throw new Error("Reopened team menu missing");
+    await keyDown(reopenedMenu, "Tab");
+    expect(anchor.getAttribute("aria-expanded")).toBe("false");
 
     await act(async () => root.unmount());
   });
@@ -424,7 +514,7 @@ describe("TeamSwitcher", () => {
     const { container, root } = await renderHarness(vi.fn(async () => {}));
 
     await click(anchorOf(container));
-    await click(buttonByText(container, "Create new team"));
+    await click(buttonByText(container, "Create team"));
     expect(anchorOf(container).getAttribute("aria-expanded")).toBe("false");
 
     await click(anchorOf(container));
@@ -448,7 +538,7 @@ describe("TeamSwitcher", () => {
     expect(container.textContent).not.toContain("Switch team");
     expect(buttonByText(container, "Globex")).toBeNull();
     // Management actions are still present for single-team users.
-    expect(buttonByText(container, "Create new team")).not.toBeNull();
+    expect(buttonByText(container, "Create team")).not.toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -459,7 +549,7 @@ describe("TeamSwitcher", () => {
     const { container, root } = await renderHarness(select, { refreshMe });
 
     await click(anchorOf(container));
-    await click(buttonByText(container, "Leave this team"));
+    await click(buttonByText(container, "Leave team"));
 
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("Leave Acme Robotics?");
     expect(document.body.textContent).toContain("This removes only your membership");
@@ -484,7 +574,7 @@ describe("TeamSwitcher", () => {
     const { container, root } = await renderHarness(select, { refreshMe, redirectHomeOnSwitch: true });
 
     await click(anchorOf(container));
-    await click(buttonByText(container, "Leave this team"));
+    await click(buttonByText(container, "Leave team"));
     await click(buttonByText(document.body, "Leave team"));
 
     expect(memberMocks.leaveMembership).toHaveBeenCalledWith("member-1");
@@ -500,7 +590,7 @@ describe("TeamSwitcher", () => {
     const { container, root } = await renderHarness(vi.fn(async () => {}));
 
     await click(anchorOf(container));
-    await click(buttonByText(container, "Leave this team"));
+    await click(buttonByText(container, "Leave team"));
     await click(buttonByText(document.body, "Leave team"));
 
     await waitForText(document.body, "cannot leave last admin");

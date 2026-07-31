@@ -46,6 +46,9 @@ export const TEAM_SKILL_BUNDLE_LIMITS = {
 
 export const TEAM_SKILL_OWNERSHIP_MARKER = ".first-tree-managed.json";
 
+// Core identity comes from this exact allowlist, not a `first-tree-*` prefix.
+// The `context-tree-*` names are valid Core Skills; Team Skills conflict only
+// with exact reserved names.
 export const FIRST_TREE_CORE_SKILL_NAMES = [
   "first-tree-welcome",
   "first-tree-seed",

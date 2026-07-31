@@ -9,6 +9,7 @@ import {
   DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_CURSOR_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD,
+  DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD,
   defaultRuntimeConfigPayload,
   deriveRepoLocalPath,
   deriveRepoShortLabel,
@@ -271,6 +272,24 @@ describe("agent runtime config — kimi-code variant", () => {
       reasoningEffort: "high",
     });
     expect(parsed.model).toBe("kimi-for-coding");
+    expect("reasoningEffort" in parsed).toBe(false);
+  });
+});
+
+describe("agent runtime config — opencode variant", () => {
+  it("defaults to host-local model selection with no reasoning-effort field", () => {
+    expect(DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD).toMatchObject({ kind: "opencode", model: "" });
+    expect("reasoningEffort" in DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD).toBe(false);
+    expect(defaultRuntimeConfigPayload("opencode")).toMatchObject({ kind: "opencode", model: "" });
+  });
+
+  it("passes a provider-native provider/model id through unchanged", () => {
+    const parsed = agentRuntimeConfigPayloadSchema.parse({
+      kind: "opencode",
+      model: "openai/gpt-5.5",
+      reasoningEffort: "high",
+    });
+    expect(parsed.model).toBe("openai/gpt-5.5");
     expect("reasoningEffort" in parsed).toBe(false);
   });
 });

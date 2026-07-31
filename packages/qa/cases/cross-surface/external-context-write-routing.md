@@ -30,9 +30,11 @@ envelope size, and forbidden generic Team paths; they cannot satisfy this case.
   throwaway provider homes. Record exact provider, First Tree CLI, Plugin, and
   candidate artifact versions.
 - Prepare disposable, provider-accessible source and Context Tree repositories
-  for a staging Team. Bind the source checkout through the supported
-  Team-scoped handoff, enable the external Plugin, and verify live connected
-  SessionStart independently for both providers.
+  for a staging Team. Use the provider-neutral setup prompt to bind an ordinary
+  project directory that contains the disposable source checkout but is not
+  itself required to be a repository or Team resource. Enable the external
+  Plugin and verify live connected SessionStart independently for both
+  providers. Also prepare a Codex pathless session for manual activation.
 - Configure a current active Context Reviewer and usable forge identity so the
   official external Write preflight can succeed. Use disposable branches and
   repositories only; do not reuse production source or Tree artifacts.
@@ -56,8 +58,10 @@ Run the following matrix from fresh connected sessions:
 
 For each provider:
 
-1. Start in the exact bound disposable source checkout and capture the
-   connected SessionStart envelope before prompting the agent.
+1. Start inside the bound disposable project and capture the connected
+   SessionStart envelope before prompting the agent. For the Codex pathless
+   cell, verify SessionStart is a no-op, invoke the manual `first-tree` Skill,
+   and capture its connected activation block instead.
 2. Ask the session to read relevant Team Context, then implement and publish
    the assigned source change as a concrete PR/MR. Do not explicitly request a
    Tree update; the durable branch must rely on the connected standing route.
@@ -74,7 +78,9 @@ For each provider:
    authorized test operator, resume the provider session, and verify that it
    reconciles the Tree change against merged source truth before marking the
    Tree PR/MR ready. Do not merge the Tree PR/MR as part of this case.
-7. Reset all disposable provider, checkout, Team, branch, and forge state
+7. Change source-repository Team-resource registration and verify that it does
+   not affect Context authority. Then reset all disposable provider, project,
+   source repository, Team, branch, and forge state
    before the next matrix cell.
 
 ## Observe
@@ -99,9 +105,10 @@ For each provider:
 - The implementation-only path explains why the artifact fails the durable
   write filter and creates no Tree branch, push, PR/MR, or hidden remote
   mutation. The preceding task-scoped Tree read still occurs.
-- Reviewer readiness, forge identity, exact checkout binding, immutable
+- Reviewer readiness, forge identity, exact project binding, immutable
   snapshot, and live authority failures remain fail-closed; no alternate Team
-  or cached authority is used.
+  or cached authority is used. Source-repository registration is not an
+  authority input.
 
 ## Expected Result
 

@@ -1,9 +1,10 @@
-import { ATTACHMENT_FILENAME_HEADER, ATTACHMENT_MIME_HEADER } from "@first-tree/shared";
-import { eq } from "drizzle-orm";
+import { type AgentTemplatePayload, ATTACHMENT_FILENAME_HEADER, ATTACHMENT_MIME_HEADER } from "@first-tree/shared";
+import { eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { strToU8, type ZipOptions, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
+import { agentTemplates } from "../db/schema/agent-templates.js";
 import { attachments } from "../db/schema/attachments.js";
 import { organizations } from "../db/schema/organizations.js";
 import { resources } from "../db/schema/resources.js";
@@ -374,6 +375,93 @@ describe("Team Skill bundles", () => {
       .where(eq(attachments.id, bundleId));
     expect(result.deleted).toBe(0);
     expect(stored?.updatedAt.getTime()).toBeGreaterThan(stale.getTime());
+  });
+
+  it("keeps a bundle referenced only by an Agent Template and sweeps it once released", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const bundleBytes = skillZip("template-only");
+    const bundleId = await upload(app, admin, bundleBytes);
+    const templateId = uuidv7();
+    const payload: AgentTemplatePayload = {
+      schemaVersion: 1,
+      public: {
+        tagline: "Template-only bundle reference",
+        purpose: "Prove Template bundle references survive orphan GC.",
+        targetUsers: "QA",
+        userValue: "Regression coverage",
+        instructionsSummary: "None",
+        toolsAndSkillsSummary: "One skill",
+      },
+      components: [
+        {
+          key: "template-only",
+          type: "skill",
+          name: "Template Only Skill",
+          payload: {
+            name: "template-only",
+            description: "template-only description",
+            body: "# template-only\n",
+            metadata: {},
+          },
+          bundle: { attachmentId: bundleId, format: "zip", sizeBytes: bundleBytes.length },
+        },
+      ],
+    };
+    await app.db.insert(agentTemplates).values({
+      id: templateId,
+      slug: `template-only-${templateId.slice(0, 8)}`,
+      name: "Template Only",
+      status: "active",
+      payload,
+      createdBy: "qa",
+      updatedBy: "qa",
+    });
+
+    // A ready bundle referenced only by a Template survives the sweep.
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1_000);
+    await app.db.update(attachments).set({ updatedAt: stale }).where(eq(attachments.id, bundleId));
+    const kept = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
+    expect(kept.deleted).toBe(0);
+    const [stored] = await app.db
+      .select({ updatedAt: attachments.updatedAt })
+      .from(attachments)
+      .where(eq(attachments.id, bundleId));
+    expect(stored?.updatedAt.getTime()).toBeGreaterThan(stale.getTime());
+
+    // Once the Template releases the bundle, the normal orphan rule applies.
+    await app.db.delete(agentTemplates).where(eq(agentTemplates.id, templateId));
+    await app.db.update(attachments).set({ updatedAt: stale }).where(eq(attachments.id, bundleId));
+    const swept = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
+    expect(swept.deleted).toBe(1);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, bundleId))).toHaveLength(0);
+  });
+
+  it("keeps the sweep working when a Template row carries a malformed payload", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const malformedId = uuidv7();
+    // Bypass the Zod contract on purpose: one bad row must not raise inside
+    // jsonb_array_elements and break attachment GC for everyone.
+    await app.db.execute(sql`
+      INSERT INTO agent_templates (id, slug, name, status, payload, created_by, updated_by)
+      VALUES (
+        ${malformedId},
+        ${`malformed-${malformedId.slice(0, 8)}`},
+        'Malformed Template',
+        'active',
+        ${JSON.stringify({ schemaVersion: 1, components: { not: "an-array" } })}::jsonb,
+        'qa',
+        'qa'
+      )
+    `);
+
+    const bundleId = await upload(app, admin, skillZip("unaffected"));
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1_000);
+    await app.db.update(attachments).set({ updatedAt: stale }).where(eq(attachments.id, bundleId));
+    const result = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
+    expect(result.deleted).toBe(1);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, bundleId))).toHaveLength(0);
   });
 
   it("rejects duplicate active Team Skill names and independent payload edits", async () => {

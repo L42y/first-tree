@@ -17,6 +17,12 @@ export { detectStreamApiError, StreamApiTransientError } from "./handlers/claude
 export { registerBuiltinHandlers } from "./handlers/index.js";
 export { createKimiCodeHandler, formatKimiCodeError, kimiToolIsReadOnly } from "./handlers/kimi-code.js";
 export {
+  buildOpenCodeConfigContent,
+  buildOpenCodeTurnArgs,
+  createOpenCodeHandler,
+  mapOpenCodeMcpServers,
+} from "./handlers/opencode/index.js";
+export {
   applyClientLoggerConfig,
   captureClientException,
   configureClientLoggerForService,
@@ -62,6 +68,8 @@ export {
   revalidateCapabilities,
   shouldFullReprobe,
 } from "./runtime/capabilities/index.js";
+export { probeOpenCodeCapability } from "./runtime/capabilities/opencode.js";
+
 export type {
   AdoptOptions,
   ChildCategory,
@@ -107,6 +115,24 @@ export { getHandlerFactory, hasHandler, registerHandler } from "./runtime/handle
 export type { BuildImageAttachmentsOptions, BuildMessageImageSnapshotsResult } from "./runtime/image-snapshots.js";
 export { buildMessageImageSnapshots } from "./runtime/image-snapshots.js";
 export { InputController } from "./runtime/input-controller.js";
+export {
+  findOpenCodeExecutableOnPath,
+  formatOpenCodeBinaryMissingMessage,
+  isSupportedOpenCodeVersion,
+  OPENCODE_INSTALL_COMMAND,
+  OPENCODE_LOGIN_COMMAND,
+  OPENCODE_MINIMUM_VERSION,
+  OPENCODE_SUPPORTED_VERSION_RANGE,
+  parseOpenCodeVersionOutput,
+  resolveOpenCodeRuntimeBinary,
+} from "./runtime/opencode-binary.js";
+export {
+  createDefaultProviderProcessSupervisor,
+  type ProviderProcessSpec,
+  ProviderProcessSupervisionUnsupportedError,
+  type ProviderProcessSupervisor,
+  type SupervisedProviderProcess,
+} from "./runtime/provider-process-supervisor.js";
 export type { AgentRuntimeOptions } from "./runtime/runtime.js";
 export { AgentRuntime } from "./runtime/runtime.js";
 // Runtime-auth (browser OAuth)

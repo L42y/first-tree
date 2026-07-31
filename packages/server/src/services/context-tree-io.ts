@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import {
+  type AgentContextTreeIoEvent,
   type ContextTreeIoAction,
   type ContextTreeIoBucket,
   type ContextTreeIoEvent,
@@ -18,13 +19,14 @@ import {
   type ToolFileRef,
   toolFileRefSchema,
 } from "@first-tree/shared";
-import { and, eq, gte, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { contextTreeIoEvents } from "../db/schema/context-tree-io-events.js";
 import { sessionEvents } from "../db/schema/session-events.js";
+import { BadRequestError } from "../errors.js";
 import { createLogger } from "../observability/index.js";
 import { type TimingSink, timeSyncWithSink, timeWithSink } from "../observability/timing.js";
 import { getOrgContextTreeBinding } from "./org-settings.js";
@@ -42,6 +44,8 @@ const CURSOR_READ_TOOLS = new Set(["read"]);
 const CURSOR_WRITE_TOOLS = new Set(["edit", "write"]);
 const KIMI_READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 const KIMI_WRITE_TOOLS = new Set(["Write", "Edit"]);
+const OPENCODE_READ_TOOLS = new Set(["read", "grep", "glob"]);
+const OPENCODE_WRITE_TOOLS = new Set(["edit", "write", "patch"]);
 const CONTEXT_TREE_IO_TOOL_NAMES = [
   "Bash",
   "Edit",
@@ -58,6 +62,8 @@ const CONTEXT_TREE_IO_TOOL_NAMES = [
   "read",
   "shell",
   "write",
+  "bash",
+  "patch",
 ];
 const log = createLogger("ContextTreeIo");
 const GIT_STATUS_DELTA_REF_ORIGIN = "git_status_delta";
@@ -198,6 +204,7 @@ function isShellTool(runtimeProvider: string, toolName: string): boolean {
     (runtimeProvider === "codex" && toolName === "command") ||
     (runtimeProvider === "cursor" && toolName === "shell") ||
     (runtimeProvider === "kimi-code" && toolName === "Bash") ||
+    (runtimeProvider === "opencode" && toolName === "bash") ||
     (isClaudeRuntime(runtimeProvider) && toolName === "Bash")
   );
 }
@@ -236,6 +243,9 @@ function skippedDecisionFastPathForNoRefs(
   if (runtimeProvider === "kimi-code" && (KIMI_READ_TOOLS.has(toolName) || KIMI_WRITE_TOOLS.has(toolName))) {
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
+  if (runtimeProvider === "opencode" && (OPENCODE_READ_TOOLS.has(toolName) || OPENCODE_WRITE_TOOLS.has(toolName))) {
+    return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
+  }
   if (isClaudeRuntime(runtimeProvider) && (CLAUDE_READ_TOOLS.has(toolName) || CLAUDE_WRITE_TOOLS.has(toolName))) {
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
@@ -271,6 +281,12 @@ function deriveEventIo(event: SessionEvent, runtimeProvider: string): EventIoDer
   }
   if (runtimeProvider === "kimi-code" && KIMI_WRITE_TOOLS.has(toolName)) {
     return { action: "write", source: "kimi_write_tool" };
+  }
+  if (runtimeProvider === "opencode" && OPENCODE_READ_TOOLS.has(toolName)) {
+    return { action: "read", source: "opencode_read_tool" };
+  }
+  if (runtimeProvider === "opencode" && OPENCODE_WRITE_TOOLS.has(toolName)) {
+    return { action: "write", source: "opencode_write_tool" };
   }
   if (isClaudeRuntime(runtimeProvider) && CLAUDE_READ_TOOLS.has(toolName)) {
     return { action: "read", source: "claude_read_tool" };
@@ -315,6 +331,7 @@ function normalizeFileRef(
   ref: ToolFileRef,
   bindingRepo: string,
   bindingBranch: string,
+  includeRepoHeadCommit: boolean,
 ): { ok: true; normalized: NormalizedFileRef } | { ok: false; reason: ContextTreeIoSkipReason } {
   const parsed = toolFileRefSchema.safeParse(ref);
   if (!parsed.success) return { ok: false, reason: "ref_schema_invalid" };
@@ -329,6 +346,10 @@ function normalizeFileRef(
   if (!parsed.data.repoRelativePath) return { ok: false, reason: "ref_path_invalid" };
   const targetPath = normalizeTargetPath(parsed.data.repoRelativePath, targetKind);
   if (!targetPath) return { ok: false, reason: "ref_path_invalid" };
+  const refMetadata = { ...(parsed.data.metadata ?? {}) };
+  // Reserved provenance must come only from the validated top-level field.
+  // Never let caller-controlled generic metadata smuggle it onto writes.
+  delete refMetadata.repoHeadCommit;
 
   return {
     ok: true,
@@ -338,9 +359,12 @@ function normalizeFileRef(
       targetKind,
       targetPath,
       metadata: {
-        ...(parsed.data.metadata ?? {}),
+        ...refMetadata,
         origin: parsed.data.origin,
         ...(parsed.data.localPath ? { localPath: parsed.data.localPath } : {}),
+        ...(includeRepoHeadCommit && parsed.data.repoHeadCommit
+          ? { repoHeadCommit: parsed.data.repoHeadCommit.toLowerCase() }
+          : {}),
       },
     },
   };
@@ -370,7 +394,7 @@ function buildContextTreeIoDecision(input: {
   for (const { ref, sourceIndex } of refs) {
     const refDerivation = ref.origin === GIT_STATUS_DELTA_REF_ORIGIN ? GIT_STATUS_DELTA_DERIVATION : baseDerivation;
     if (!refDerivation) continue;
-    const normalized = normalizeFileRef(ref, input.bindingRepo, input.bindingBranch);
+    const normalized = normalizeFileRef(ref, input.bindingRepo, input.bindingBranch, refDerivation.action === "read");
     if (!normalized.ok) {
       firstRejectedReason ??= normalized.reason;
       continue;
@@ -773,6 +797,7 @@ function allEventsSql(organizationId: string, sinceIso: string) {
         e.source,
         e.target_kind,
         e.target_path,
+        e.metadata,
         e.chat_id,
         e.created_at
       FROM context_tree_io_events e
@@ -1085,6 +1110,7 @@ export async function summarizeContextTreeIo(
       source: string;
       target_kind: string;
       target_path: string;
+      tree_head_commit: string | null;
       raw_chat_id: string;
       joined_chat_id: string | null;
       chat_topic: string | null;
@@ -1101,6 +1127,7 @@ export async function summarizeContextTreeIo(
         all_events.source,
         all_events.target_kind,
         all_events.target_path,
+        all_events.metadata->>'repoHeadCommit' AS tree_head_commit,
         all_events.chat_id AS raw_chat_id,
         c.id AS joined_chat_id,
         c.topic AS chat_topic,
@@ -1134,6 +1161,7 @@ export async function summarizeContextTreeIo(
       source: contextTreeIoSourceSchema.parse(row.source),
       targetKind: row.target_kind === "directory" || row.target_kind === "repo" ? row.target_kind : "file",
       targetPath: row.target_path,
+      treeHeadCommit: row.tree_head_commit && /^[0-9a-f]{40}$/.test(row.tree_head_commit) ? row.tree_head_commit : null,
       chatId: sameOrgChat ? row.raw_chat_id : null,
       chatTitle: sameOrgChat ? row.chat_topic : null,
       viewerCanAccess: sameOrgChat && accessibleChatIds.has(row.raw_chat_id),
@@ -1192,4 +1220,112 @@ export async function buildContextTreeIoSummary(
     reconcileContextTreeWrites(db, organizationId, windowDays, gitWrites, downstreamOptions),
   );
   return { ...io, writes, writesTotal: writes.length };
+}
+
+/**
+ * Agent-scoped Context Tree IO feed.
+ *
+ * Returns only the calling agent's own durable IO facts, newest first. This is
+ * the read path a value audit uses instead of scanning local runtime
+ * transcripts: `context_tree_io_events` outlives `session_events` (which are
+ * dropped on session terminate / runtime switch), so historical exposure stays
+ * answerable even when the surrounding decision stream is gone.
+ *
+ * Org-wide aggregation deliberately stays on the member-authenticated snapshot
+ * endpoint — a runtime agent may read its own IO, never another agent's.
+ */
+export type AgentContextTreeIoListOptions = {
+  organizationId: string;
+  agentId: string;
+  chatId?: string;
+  action?: ContextTreeIoAction;
+  since?: Date;
+  until?: Date;
+  limit: number;
+  cursor?: string;
+};
+
+type AgentContextTreeIoCursor = { createdAt: Date; id: string };
+
+function encodeIoCursor(row: { createdAt: Date; id: string }): string {
+  return Buffer.from(`${row.createdAt.toISOString()}|${row.id}`, "utf8").toString("base64url");
+}
+
+function decodeIoCursor(cursor: string): AgentContextTreeIoCursor {
+  const raw = Buffer.from(cursor, "base64url").toString("utf8");
+  const separator = raw.indexOf("|");
+  if (separator <= 0) throw new BadRequestError("Invalid Context Tree IO cursor");
+  const createdAt = new Date(raw.slice(0, separator));
+  const id = raw.slice(separator + 1);
+  if (Number.isNaN(createdAt.getTime()) || id.length === 0) {
+    throw new BadRequestError("Invalid Context Tree IO cursor");
+  }
+  return { createdAt, id };
+}
+
+export async function listAgentContextTreeIoEvents(
+  db: Database,
+  options: AgentContextTreeIoListOptions,
+): Promise<{ items: AgentContextTreeIoEvent[]; nextCursor: string | null }> {
+  const filters = [
+    eq(contextTreeIoEvents.organizationId, options.organizationId),
+    eq(contextTreeIoEvents.agentId, options.agentId),
+  ];
+  if (options.chatId) filters.push(eq(contextTreeIoEvents.chatId, options.chatId));
+  if (options.action) filters.push(eq(contextTreeIoEvents.action, options.action));
+  if (options.since) filters.push(gte(contextTreeIoEvents.createdAt, options.since));
+  if (options.until) filters.push(lte(contextTreeIoEvents.createdAt, options.until));
+  if (options.cursor) {
+    // Keyset pagination over the same (created_at DESC, id DESC) order the
+    // query sorts by, so a row inserted mid-scan can never shift a page.
+    const cursor = decodeIoCursor(options.cursor);
+    filters.push(
+      or(
+        lt(contextTreeIoEvents.createdAt, cursor.createdAt),
+        and(eq(contextTreeIoEvents.createdAt, cursor.createdAt), lt(contextTreeIoEvents.id, cursor.id)),
+      ) as SQL,
+    );
+  }
+
+  const rows = await db
+    .select({
+      id: contextTreeIoEvents.id,
+      chatId: contextTreeIoEvents.chatId,
+      action: contextTreeIoEvents.action,
+      source: contextTreeIoEvents.source,
+      runtimeProvider: contextTreeIoEvents.runtimeProvider,
+      targetKind: contextTreeIoEvents.targetKind,
+      targetPath: contextTreeIoEvents.targetPath,
+      treeRepoUrl: contextTreeIoEvents.treeRepoUrl,
+      treeBranch: contextTreeIoEvents.treeBranch,
+      metadata: contextTreeIoEvents.metadata,
+      createdAt: contextTreeIoEvents.createdAt,
+    })
+    .from(contextTreeIoEvents)
+    .where(and(...filters))
+    .orderBy(desc(contextTreeIoEvents.createdAt), desc(contextTreeIoEvents.id))
+    .limit(options.limit + 1);
+
+  const hasMore = rows.length > options.limit;
+  const page = hasMore ? rows.slice(0, options.limit) : rows;
+  const last = page[page.length - 1];
+  return {
+    items: page.map((row) => {
+      const headCommit = row.metadata?.repoHeadCommit;
+      return {
+        id: row.id,
+        chatId: row.chatId,
+        action: row.action as ContextTreeIoAction,
+        source: row.source as ContextTreeIoSource,
+        runtimeProvider: row.runtimeProvider,
+        targetKind: row.targetKind as ContextTreeIoTargetKind,
+        targetPath: row.targetPath,
+        treeRepoUrl: row.treeRepoUrl,
+        treeBranch: row.treeBranch,
+        treeHeadCommit: typeof headCommit === "string" && /^[0-9a-f]{40}$/.test(headCommit) ? headCommit : null,
+        createdAt: row.createdAt.toISOString(),
+      };
+    }),
+    nextCursor: hasMore && last ? encodeIoCursor(last) : null,
+  };
 }

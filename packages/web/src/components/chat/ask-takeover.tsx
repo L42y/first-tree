@@ -44,6 +44,7 @@ import {
 import { MentionHighlightOverlay } from "../mention-highlight-overlay.js";
 import { FileChip } from "../ui/file-chip.js";
 import { Markdown, type MarkdownProps } from "../ui/markdown.js";
+import { useMentionComposer } from "../use-mention-composer.js";
 import type { AskAgentExchange } from "./ask-agent-state.js";
 import { ImageRefGallery, type ReferencedImage } from "./image-ref-gallery.js";
 import { allRequiredAnswered, buildResolveAnswer } from "./request-state.js";
@@ -284,21 +285,39 @@ export function AskTakeover({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Display-side composer model (see mention-composer-model.ts): the answer
+  // box shows `@<displayName>` for committed mentions while `freeText` stays
+  // the canonical `@<name>` text that `reply()` (buildResolveAnswer +
+  // extractMentions) and the request-scoped draft cache already consume.
+  const mentionComposer = useMentionComposer({
+    canonical: freeText,
+    onCanonicalChange: setFreeText,
+    candidates: mentionCandidates,
+    // The card is keyed by request id in chat, but Need You reuses one
+    // component across requests — reset the display model per request.
+    scope: requestId,
+  });
+
   const mention = useMentionAutocomplete({
-    value: freeText,
+    value: mentionComposer.displayText,
     cursor,
     candidates: mentionCandidates,
     disabled: interactionLocked,
-    onSelect: (update) => {
-      setFreeText(update.text);
-      setCursor(update.cursor);
+    tokens: mentionComposer.tokens,
+    onSelect: (_update, candidate, trigger) => {
+      // Token-model commit: the visible text gets `@<displayName>` while the
+      // canonical slug/agentId rides along as a token (the legacy `@<name>`
+      // insertion in `_update` is intentionally unused).
+      const applied = mentionComposer.applyPick(trigger, cursor, candidate);
+      if (!applied) return;
+      setCursor(applied.cursor);
       // Defer so React commits the new value before we move the selection —
       // otherwise the textarea snaps back to its old caret position.
       requestAnimationFrame(() => {
         const el = taRef.current;
         if (!el) return;
         el.focus();
-        el.setSelectionRange(update.cursor, update.cursor);
+        el.setSelectionRange(applied.cursor, applied.cursor);
       });
     },
   });
@@ -333,10 +352,11 @@ export function AskTakeover({
   const insertMentionTrigger = () => {
     if (interactionLocked) return;
     const el = taRef.current;
-    const start = el?.selectionStart ?? freeText.length;
+    const text = mentionComposer.displayText;
+    const start = el?.selectionStart ?? text.length;
     const end = el?.selectionEnd ?? start;
-    const next = `${freeText.slice(0, start)}@${freeText.slice(end)}`;
-    setFreeText(next);
+    const next = `${text.slice(0, start)}@${text.slice(end)}`;
+    mentionComposer.replaceDisplay(next);
     setCursor(start + 1);
     requestAnimationFrame(() => {
       el?.focus();
@@ -463,8 +483,9 @@ export function AskTakeover({
         />
       )}
       <MentionHighlightOverlay
-        value={freeText}
+        value={mentionComposer.displayText}
         participants={mentionParticipants}
+        tokens={mentionComposer.tokens}
         textareaRef={taRef}
         chipClassName="mention-text"
         mirrorStyle={mirrorStyle}
@@ -476,13 +497,15 @@ export function AskTakeover({
         // utility colors the placeholder — without these the transparent text
         // color cascades to the placeholder and it renders invisible.
         className="mention-composer-textarea placeholder:text-muted-foreground"
-        value={freeText}
+        value={mentionComposer.displayText}
         disabled={interactionLocked}
         onChange={(e) => {
-          setFreeText(e.target.value);
+          // Token-model edit: adjusts mention tokens through the diff and
+          // persists the canonical `@<name>` form into `freeText`.
+          mentionComposer.handleInput(e.target.value);
           setCursor(e.target.selectionStart ?? e.target.value.length);
         }}
-        onSelect={(e) => setCursor(e.currentTarget.selectionStart ?? freeText.length)}
+        onSelect={(e) => setCursor(e.currentTarget.selectionStart ?? mentionComposer.displayText.length)}
         onPaste={(e) => {
           // No attachments on the trial answer input — let text paste
           // fall through to the default handler.
@@ -496,6 +519,30 @@ export function AskTakeover({
         onKeyDown={(e) => {
           // Skip while an IME is composing so Enter confirms the candidate.
           if (e.nativeEvent.isComposing) return;
+          // Atomic mention deletion: a collapsed caret flush against a
+          // committed mention removes the whole token, not one character of
+          // its display label.
+          if (!isTrial && (e.key === "Backspace" || e.key === "Delete")) {
+            const el = taRef.current;
+            if (el && el.selectionStart === el.selectionEnd) {
+              const removed = mentionComposer.deleteTokenAtCaret(
+                el.selectionStart ?? cursor,
+                e.key === "Backspace" ? "back" : "forward",
+              );
+              if (removed) {
+                e.preventDefault();
+                setCursor(removed.cursor);
+                // Re-pin the DOM selection after commit — the native
+                // deletion that would have moved it was preventDefaulted.
+                requestAnimationFrame(() => {
+                  const ta = taRef.current;
+                  if (!ta) return;
+                  ta.setSelectionRange(removed.cursor, removed.cursor);
+                });
+                return;
+              }
+            }
+          }
           // Mention autocomplete gets first crack: when the caret is inside an
           // active `@trigger`, Enter/Tab/Arrows/Escape drive the popover (and
           // are preventDefaulted, so the window-level Enter→Reply / non-resolving

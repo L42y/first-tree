@@ -154,14 +154,15 @@ runs the real source-tree validator for review and repair worktrees without
 contacting GitHub.
 
 `eval:gate -- --suite context-tree-audit` runs the manual, focused audit gate
-against deterministic local default-branch fixtures. It requires the Audit
-skill to own routing exclusively, fixes discovery to a clean detached remote
-HEAD snapshot, replays a real source validator result before semantic reads,
-and records every forge or human artifact through mocks. Cases cover a
-mechanical focused PR, a strong evidence-backed write handoff, weak
-cross-domain escalation, locked-decision authority, report-only zero mutation,
-and missing-binding fail-closed behavior. This gate never performs a real
-GitHub or First Tree external write.
+against deterministic local binding-branch fixtures. It requires the Audit
+skill to own routing exclusively, fixes discovery to a clean detached snapshot
+of the exact remote binding-branch head, replays a real source validator result
+before semantic reads, and records every provider-scoped forge or human
+artifact through mocks. Cases cover focused GitHub draft PR and GitLab draft MR
+handoffs, GitLab follow and provider isolation, a non-`main` binding branch,
+freshness failure, weak cross-domain escalation, locked-decision authority,
+report-only zero mutation, and missing-binding fail-closed behavior. This gate
+never performs a real provider or First Tree external write.
 
 `eval:gate -- --suite first-tree-write` runs the live tested-agent gate for
 `first-tree-write`. It covers the minimum source-boundary cases:

@@ -114,9 +114,103 @@ describe("context-tree IO service", () => {
     expect(summary.recentEvents[0]).toMatchObject({
       action: "read",
       targetPath: "domains/runtime/NODE.md",
+      treeHeadCommit: null,
       chatId: seed.chatId,
       chatTitle: "io",
       viewerCanAccess: false,
+    });
+  });
+
+  it("persists and exposes the checkout HEAD observed for a successful read", async () => {
+    const app = getApp();
+    const seed = await seedContextTreeChat();
+    const repoHeadCommit = "a".repeat(40);
+    const persisted = await appendEvent(app.db, seed.agent.uuid, seed.chatId, {
+      kind: "tool_call",
+      payload: {
+        toolUseId: "tu-read-head",
+        name: "Read",
+        args: { file_path: "/tmp/context-tree/NODE.md" },
+        status: "ok",
+        toolFileRefs: [
+          {
+            origin: "tool_arg",
+            repoUrl: TREE_REPO,
+            repoBranch: "main",
+            repoHeadCommit,
+            repoRelativePath: "NODE.md",
+            pathKind: "file",
+          },
+        ],
+      },
+    });
+
+    await recordFromSessionEvent(app.db, {
+      organizationId: seed.organizationId,
+      agentId: seed.agent.uuid,
+      chatId: seed.chatId,
+      runtimeProvider: "claude-code",
+      sessionEvent: persisted,
+    });
+
+    const rows = await app.db
+      .select()
+      .from(contextTreeIoEvents)
+      .where(eq(contextTreeIoEvents.sourceSessionEventId, persisted.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.metadata).toMatchObject({ origin: "tool_arg", repoHeadCommit });
+
+    const summary = await summarizeContextTreeIo(app.db, seed.organizationId, 7);
+    expect(summary.recentEvents[0]).toMatchObject({
+      action: "read",
+      targetPath: "NODE.md",
+      treeHeadCommit: repoHeadCommit,
+    });
+  });
+
+  it("ignores checkout provenance smuggled through generic read metadata", async () => {
+    const app = getApp();
+    const seed = await seedContextTreeChat();
+    const persisted = await appendEvent(app.db, seed.agent.uuid, seed.chatId, {
+      kind: "tool_call",
+      payload: {
+        toolUseId: "tu-read-nested-head",
+        name: "Read",
+        args: { file_path: "/tmp/context-tree/NODE.md" },
+        status: "ok",
+        toolFileRefs: [
+          {
+            origin: "tool_arg",
+            repoUrl: TREE_REPO,
+            repoBranch: "main",
+            repoRelativePath: "NODE.md",
+            pathKind: "file",
+            metadata: { repoHeadCommit: "c".repeat(40) },
+          },
+        ],
+      },
+    });
+
+    await recordFromSessionEvent(app.db, {
+      organizationId: seed.organizationId,
+      agentId: seed.agent.uuid,
+      chatId: seed.chatId,
+      runtimeProvider: "claude-code",
+      sessionEvent: persisted,
+    });
+
+    const rows = await app.db
+      .select()
+      .from(contextTreeIoEvents)
+      .where(eq(contextTreeIoEvents.sourceSessionEventId, persisted.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.metadata).not.toHaveProperty("repoHeadCommit");
+
+    const summary = await summarizeContextTreeIo(app.db, seed.organizationId, 7);
+    expect(summary.recentEvents[0]).toMatchObject({
+      action: "read",
+      targetPath: "NODE.md",
+      treeHeadCommit: null,
     });
   });
 
@@ -137,8 +231,10 @@ describe("context-tree IO service", () => {
             localPath: "/tmp/tree/members/alice/NODE.md",
             repoUrl: TREE_REPO,
             repoBranch: "main",
+            repoHeadCommit: "b".repeat(40),
             repoRelativePath: "members/alice/NODE.md",
             pathKind: "file",
+            metadata: { repoHeadCommit: "c".repeat(40) },
           },
           {
             origin: "file_change",
@@ -178,6 +274,7 @@ describe("context-tree IO service", () => {
       targetPath: "members/alice/NODE.md",
       runtimeProvider: "codex",
     });
+    expect(rows[0]?.metadata).not.toHaveProperty("repoHeadCommit");
 
     const summary = await summarizeContextTreeIo(app.db, seed.organizationId, 7);
     expect(summary.summary.write).toMatchObject({ agentCount: 1, eventCount: 1, targetCount: 1 });
@@ -500,6 +597,54 @@ describe("context-tree IO service", () => {
     ).toEqual({ recordable: true });
     expect(
       explainContextTreeIoDecision({ runtimeProvider: "codex", sessionEvent: read, bindingRepo: TREE_REPO }),
+    ).toEqual({ recordable: false, reason: "unsupported_tool" });
+  });
+
+  it("derives OpenCode lower-case read/write and bash IO only for opencode", () => {
+    const read = {
+      kind: "tool_call",
+      payload: {
+        toolUseId: "oc-read",
+        name: "read",
+        args: { path: "NODE.md" },
+        status: "ok",
+        toolFileRefs: [
+          {
+            origin: "tool_arg",
+            repoUrl: TREE_REPO,
+            repoBranch: "main",
+            repoRelativePath: "NODE.md",
+            pathKind: "file",
+          },
+        ],
+      },
+    };
+    const write = {
+      kind: "tool_call",
+      payload: {
+        toolUseId: "oc-write",
+        name: "patch",
+        args: { path: "system/NODE.md" },
+        status: "ok",
+        toolFileRefs: [
+          {
+            origin: "file_change",
+            repoUrl: TREE_REPO,
+            repoBranch: "main",
+            repoRelativePath: "system/NODE.md",
+            pathKind: "file",
+          },
+        ],
+      },
+    };
+    expect(
+      explainContextTreeIoDecision({ runtimeProvider: "opencode", sessionEvent: read, bindingRepo: TREE_REPO }),
+    ).toEqual({ recordable: true });
+    expect(
+      explainContextTreeIoDecision({ runtimeProvider: "opencode", sessionEvent: write, bindingRepo: TREE_REPO }),
+    ).toEqual({ recordable: true });
+    expect(
+      explainContextTreeIoDecision({ runtimeProvider: "cursor", sessionEvent: write, bindingRepo: TREE_REPO }),
     ).toEqual({ recordable: false, reason: "unsupported_tool" });
   });
 

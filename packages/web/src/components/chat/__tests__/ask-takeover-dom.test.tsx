@@ -608,12 +608,13 @@ describe("AskTakeover", () => {
   it("commits a mention from the popover and through the explicit mention button", async () => {
     const restoreRaf = installImmediateAnimationFrame();
     try {
+      const onReply = vi.fn();
       const c = await renderDom(
         <AskTakeover
           body="# Who?"
           payload={{ multiSelect: false }}
           mentionCandidates={CANDIDATES}
-          onReply={() => {}}
+          onReply={onReply}
           onSkip={() => {}}
         />,
       );
@@ -624,14 +625,24 @@ describe("AskTakeover", () => {
       if (!alice) throw new Error("mention option missing");
       const picked = await mouseDown(alice);
       expect(picked.defaultPrevented).toBe(true);
-      expect(ta.value).toBe("@alice ");
+      // The composer shows the DISPLAY name; routing still serializes to the slug.
+      expect(ta.value).toBe("@Alice ");
 
       await act(async () => {
         ta.setSelectionRange(ta.value.length, ta.value.length);
         ta.dispatchEvent(new Event("select", { bubbles: true }));
       });
       await click(c.querySelector('[aria-label="Mention an agent"]'));
-      expect(ta.value).toBe("@alice @");
+      expect(ta.value).toBe("@Alice @");
+
+      // The resolving answer keeps the canonical `@<name>` literal on the
+      // wire plus the structured recipient id.
+      await click(btn(c, "Submit"));
+      expect(onReply).toHaveBeenCalledWith({
+        content: "@alice @",
+        mentions: ["agent-alice"],
+        images: [],
+      });
     } finally {
       restoreRaf();
     }

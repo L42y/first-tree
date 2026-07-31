@@ -310,12 +310,20 @@ const kimiCodeRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend(
   // configuration while a non-empty exact id is passed to the SDK.
 });
 
+const opencodeRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
+  kind: z.literal("opencode"),
+  // OpenCode model identifiers are provider-native `provider/model` values.
+  // An empty value delegates selection to the operator's local OpenCode
+  // configuration; non-empty values are forwarded as one argv entry.
+});
+
 const taggedPayloadUnion = z.discriminatedUnion("kind", [
   claudeRuntimeConfigPayloadShape,
   claudeCodeTuiRuntimeConfigPayloadShape,
   codexRuntimeConfigPayloadShape,
   cursorRuntimeConfigPayloadShape,
   kimiCodeRuntimeConfigPayloadShape,
+  opencodeRuntimeConfigPayloadShape,
 ]);
 type TaggedPayload = z.infer<typeof taggedPayloadUnion>;
 
@@ -463,6 +471,17 @@ export const DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload
   resourceSkills: [],
 };
 
+/** Default payload for OpenCode. Empty model inherits the host-local config. */
+export const DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload = {
+  kind: "opencode",
+  prompt: { append: "" },
+  model: "",
+  mcpServers: [],
+  env: [],
+  gitRepos: [],
+  resourceSkills: [],
+};
+
 /**
  * Default payload selector by runtime provider.
  */
@@ -476,6 +495,8 @@ export function defaultRuntimeConfigPayload(
       return { ...DEFAULT_CURSOR_RUNTIME_CONFIG_PAYLOAD };
     case "kimi-code":
       return { ...DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD };
+    case "opencode":
+      return { ...DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD };
     case "claude-code-tui":
       return { ...DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD };
     case "claude-code":

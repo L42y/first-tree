@@ -407,12 +407,20 @@ describe("settings panels", () => {
     const desktopLinks = [...desktop.container.querySelectorAll<HTMLAnchorElement>("aside a")].map(
       (link) => link.textContent,
     );
-    expect(desktopLinks).toEqual(["Account", "Setup", "Computers", "Repositories", "Resources", "Integrations"]);
+    expect(desktopLinks).toEqual([
+      "Account",
+      "Setup",
+      "Computers",
+      "Repositories",
+      "Context Tree",
+      "Resources",
+      "GitHub & GitLab",
+    ]);
     expect(desktop.container.textContent).toContain("Integrations child");
     await act(async () => desktop.root.unmount());
 
     const account = await renderDom(<SettingsLayout />, "/settings/account");
-    expect(account.container.textContent).toContain("Manage your profile and sign-in methods.");
+    expect(account.container.textContent).toContain("Manage your profile and ways to sign in.");
     expect(account.container.textContent).toContain("Account child");
     await act(async () => account.root.unmount());
 
@@ -423,8 +431,9 @@ describe("settings panels", () => {
     expect(narrow.container.textContent).toContain("PERSONAL");
     expect(narrow.container.textContent).toContain("Computers");
     expect(narrow.container.textContent).toContain("Repositories");
+    expect(narrow.container.textContent).toContain("Context Tree");
     expect(narrow.container.textContent).toContain("TEAM");
-    expect(narrow.container.textContent).toContain("Integrations");
+    expect(narrow.container.textContent).toContain("GitHub & GitLab");
     expect(narrow.container.textContent).not.toContain("Setup");
     expect(narrow.container.querySelector('a[href="/settings/setup"]')).toBeNull();
     await act(async () => narrow.root.unmount());

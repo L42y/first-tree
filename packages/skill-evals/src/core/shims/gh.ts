@@ -230,18 +230,26 @@ trace("gh call: " + commandLine(argv));
 
 if (AUDIT_FIXTURE_PATH) {
   const fixture = JSON.parse(readFileSync(AUDIT_FIXTURE_PATH, "utf8"));
+  if (fixture.forge !== "github") {
+    finish(argv, phase, 2, "", "Audit fixture rejected the wrong forge CLI.\\n", {
+      auditFixture: true,
+      auditFixtureViolation: true,
+      blockedByEval: true,
+      wrongForge: true,
+    });
+  }
   const repoMatches = argAfter(argv, "--repo") === fixture.repo;
   if (argv[0] === "repo" && argv[1] === "view") {
     const jq = argAfter(argv, "--jq");
     if (jq === ".nameWithOwner") finish(argv, phase, 0, fixture.repo + "\\n", "", { auditFixture: true });
     if (jq === ".defaultBranchRef.name") {
-      finish(argv, phase, 0, fixture.defaultBranch + "\\n", "", { auditFixture: true });
+      finish(argv, phase, 0, fixture.forgeDefaultBranch + "\\n", "", { auditFixture: true });
     }
     finish(
       argv,
       phase,
       0,
-      JSON.stringify({ nameWithOwner: fixture.repo, defaultBranchRef: { name: fixture.defaultBranch } }) + "\\n",
+      JSON.stringify({ nameWithOwner: fixture.repo, defaultBranchRef: { name: fixture.forgeDefaultBranch } }) + "\\n",
       "",
       { auditFixture: true },
     );

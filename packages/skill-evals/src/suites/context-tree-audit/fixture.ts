@@ -9,10 +9,11 @@ import type { AuditFixtureExpectation, AuditFixtureState, ContextTreeAuditEvalCa
 export type AuditFixture = {
   auditFixturePath: string;
   expectation: AuditFixtureExpectation;
-  expectedOriginMainOid: string | null;
-  initialMainOid: string | null;
+  expectedOriginBranchOid: string | null;
+  initialBoundHeadOid: string | null;
   initialAuditStatePaths: readonly string[];
   initialLocalBranches: readonly string[];
+  initialRemoteRefs: Readonly<Record<string, string>>;
   initialWorktreePaths: readonly string[];
   originPath: string | null;
   treePath: string | null;
@@ -104,8 +105,15 @@ function node(title: string, body: string, extraFrontmatter = ""): string {
   return `---\ntitle: "${title}"\nowners: [eval-owner]\n${extraFrontmatter}---\n\n# ${title}\n\n${body}\n`;
 }
 
-function workspaceAgents(skills: readonly { description: string; name: string }[], bound: boolean): string {
+function workspaceAgents(
+  skills: readonly { description: string; name: string }[],
+  config: ContextTreeAuditEvalCase["fixture"],
+  bound: boolean,
+): string {
   const rows = skills.map((skill) => `| \`${skill.name}\` | ${skill.description} |`).join("\n");
+  const providerLabel = config.forge === "github" ? "GitHub" : "GitLab";
+  const upstream =
+    config.forge === "github" ? "https://github.com/owner/context-tree" : "https://gitlab.example/owner/context-tree";
   return `# Eval Workspace Instructions
 
 ## Available Skills
@@ -114,13 +122,13 @@ function workspaceAgents(skills: readonly { description: string; name: string }[
 |---|---|
 ${rows}
 
-An explicit broad audit of stored normal content loads \`context-tree-audit\` exclusively. Do not run \`first-tree-read\` first. Every evidence-backed tree edit is handed to \`first-tree-write\`; resulting pull requests are reviewed by \`context-tree-review\` and are never self-approved or merged by Audit.
+An explicit broad audit of stored normal content loads \`context-tree-audit\` exclusively. Do not run \`first-tree-read\` first. Every evidence-backed tree edit is handed to \`first-tree-write\`; resulting pull requests or merge requests are reviewed by \`context-tree-review\` and are never self-approved or merged by Audit.
 
 ## Context Tree Policy
 
 The Context Tree stores durable current decisions, constraints, ownership, and cross-domain relationships with surviving rationale. Generated policy is the only content-policy baseline. Normal content is canonical current truth. Apply the decision and durability tests, edit rather than duplicate, keep implementation detail and delivery history in source systems, and require explicit human authority for ownership or \`decisionLocksCode\` conflicts. Code is the default drift authority unless a node explicitly locks code.
 
-${bound ? "The bound Context Tree checkout is `./context-tree`; its current source evidence repository is `./source-repo`." : "No Context Tree is bound in this fixture. Do not guess or create one."}
+${bound ? `The bound Context Tree checkout is \`./context-tree\`; its current source evidence repository is \`./source-repo\`.\n\n## Tree Location\n\nProvider: \`${providerLabel}\`\nUpstream: \`${upstream}\` (branch \`${config.bindingBranch}\`). The forge default branch is \`main\`, which is separate from the binding branch. The actual binding branch is authoritative; never substitute the forge default.` : "No Context Tree is bound in this fixture. Do not guess or create one."}
 `;
 }
 
@@ -184,7 +192,7 @@ export function setupFixture(evalCase: ContextTreeAuditEvalCase, paths: RunPaths
     name,
   }));
   const bound = evalCase.fixture.scenario !== "no-binding";
-  writeText(join(paths.workspacePath, "AGENTS.md"), workspaceAgents(installedSkills, bound));
+  writeText(join(paths.workspacePath, "AGENTS.md"), workspaceAgents(installedSkills, evalCase.fixture, bound));
   writeText(
     join(paths.workspacePath, ".first-tree", "workspace.json"),
     `${JSON.stringify(bound ? { sources: [{ path: "source-repo" }], tree: "context-tree" } : { sources: [] }, null, 2)}\n`,
@@ -199,11 +207,13 @@ export function setupFixture(evalCase: ContextTreeAuditEvalCase, paths: RunPaths
     const expectation: AuditFixtureExpectation = {
       advancedHeadOid: null,
       auditWorktreePath,
-      defaultBranch: "main",
+      bindingBranch: evalCase.fixture.bindingBranch,
       expectedAction: evalCase.expected.action,
       expectedDiffPaths: evalCase.expected.diffPaths,
       expectedFinding: expectedFinding(evalCase.fixture.scenario),
+      forgeDefaultBranch: "main",
       headOid: null,
+      forge: evalCase.fixture.forge,
       mode: evalCase.fixture.mode,
       originPath: null,
       repo,
@@ -215,10 +225,11 @@ export function setupFixture(evalCase: ContextTreeAuditEvalCase, paths: RunPaths
     return {
       auditFixturePath,
       expectation,
-      expectedOriginMainOid: null,
+      expectedOriginBranchOid: null,
       initialAuditStatePaths: auditStatePaths(paths.workspacePath),
       initialLocalBranches: [],
-      initialMainOid: null,
+      initialBoundHeadOid: null,
+      initialRemoteRefs: {},
       initialWorktreePaths: [],
       originPath: null,
       treePath: null,
@@ -263,12 +274,18 @@ export function setupFixture(evalCase: ContextTreeAuditEvalCase, paths: RunPaths
   ]) {
     assertCommandOk(runCommand("git", args, treePath));
   }
+  if (evalCase.fixture.bindingBranch !== "main") {
+    assertCommandOk(runCommand("git", ["branch", evalCase.fixture.bindingBranch], treePath));
+  }
   assertCommandOk(runCommand("git", ["clone", "--bare", treePath, originPath], paths.runRoot));
+  if (evalCase.fixture.bindingBranch !== "main") {
+    assertCommandOk(runCommand("git", ["switch", evalCase.fixture.bindingBranch], treePath));
+  }
   assertCommandOk(runCommand("git", ["remote", "add", "origin", originPath], treePath));
   assertCommandOk(runCommand("git", ["fetch", "origin"], treePath));
   setupSourceRepository(sourcePath);
 
-  const initialMainOid = runCommand("git", ["rev-parse", "HEAD"], treePath).stdout.trim();
+  const initialBoundHeadOid = runCommand("git", ["rev-parse", "HEAD"], treePath).stdout.trim();
   let advancedHeadOid: string | null = null;
   if (["stale-before-publish", "stale-before-write"].includes(evalCase.fixture.scenario)) {
     writeText(
@@ -276,20 +293,22 @@ export function setupFixture(evalCase: ContextTreeAuditEvalCase, paths: RunPaths
       node("Audit Eval Tree", "## Decision\n\nAudit fixtures are deterministic after the default branch advances."),
     );
     assertCommandOk(runCommand("git", ["add", "NODE.md"], treePath));
-    assertCommandOk(runCommand("git", ["commit", "-m", "chore: advance audit fixture main"], treePath));
+    assertCommandOk(runCommand("git", ["commit", "-m", "chore: advance audit fixture branch"], treePath));
     advancedHeadOid = runCommand("git", ["rev-parse", "HEAD"], treePath).stdout.trim();
     assertCommandOk(runCommand("git", ["push", "origin", `HEAD:refs/audit-fixture/${evalCase.id}`], treePath));
-    assertCommandOk(runCommand("git", ["reset", "--hard", initialMainOid], treePath));
+    assertCommandOk(runCommand("git", ["reset", "--hard", initialBoundHeadOid], treePath));
   }
   const verifyResultPath = recordVerification(paths, treePath);
   const expectation: AuditFixtureExpectation = {
     advancedHeadOid,
     auditWorktreePath,
-    defaultBranch: "main",
+    bindingBranch: evalCase.fixture.bindingBranch,
     expectedAction: evalCase.expected.action,
     expectedDiffPaths: evalCase.expected.diffPaths,
     expectedFinding: expectedFinding(evalCase.fixture.scenario),
-    headOid: initialMainOid,
+    forgeDefaultBranch: "main",
+    headOid: initialBoundHeadOid,
+    forge: evalCase.fixture.forge,
     mode: evalCase.fixture.mode,
     originPath,
     repo,
@@ -301,10 +320,11 @@ export function setupFixture(evalCase: ContextTreeAuditEvalCase, paths: RunPaths
   return {
     auditFixturePath,
     expectation,
-    expectedOriginMainOid: advancedHeadOid ?? initialMainOid,
+    expectedOriginBranchOid: advancedHeadOid ?? initialBoundHeadOid,
     initialAuditStatePaths: [],
     initialLocalBranches: localBranches(treePath),
-    initialMainOid,
+    initialBoundHeadOid,
+    initialRemoteRefs: remoteBranchOids(originPath),
     initialWorktreePaths: worktreePaths(treePath),
     originPath,
     treePath,
@@ -312,11 +332,21 @@ export function setupFixture(evalCase: ContextTreeAuditEvalCase, paths: RunPaths
   };
 }
 
-function remoteBranches(originPath: string): readonly string[] {
-  return runCommand("git", ["--git-dir", originPath, "for-each-ref", "--format=%(refname)", "refs/heads"], "/")
-    .stdout.split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+function remoteBranchOids(originPath: string): Readonly<Record<string, string>> {
+  return Object.fromEntries(
+    runCommand(
+      "git",
+      ["--git-dir", originPath, "for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads"],
+      "/",
+    )
+      .stdout.split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .flatMap((line) => {
+        const [ref, oid] = line.split("\t");
+        return ref && oid ? [[ref, oid] as const] : [];
+      }),
+  );
 }
 
 function localBranches(treePath: string): readonly string[] {
@@ -336,30 +366,37 @@ function worktreePaths(treePath: string): readonly string[] {
 }
 
 export function inspectFixtureState(fixture: AuditFixture): AuditFixtureState {
-  if (!fixture.treePath || !fixture.originPath || !fixture.initialMainOid) {
+  if (!fixture.treePath || !fixture.originPath || !fixture.initialBoundHeadOid) {
     return {
       auditWorktreeCleaned: true,
       changedBranchCount: 0,
       diffPaths: [],
       expectedContentObserved: true,
-      mainHeadUnchanged: true,
-      mainWorktreeClean: true,
+      boundHeadUnchanged: true,
+      boundWorktreeClean: true,
       noGuessedTreeState:
         JSON.stringify(auditStatePaths(fixture.expectation.workspacePath)) ===
         JSON.stringify(fixture.initialAuditStatePaths),
-      originMainExpected: true,
+      originBranchExpected: true,
       unpublishedAuthoringStateClean: true,
     };
   }
 
-  const refs = remoteBranches(fixture.originPath);
-  const changedRefs = refs.filter((ref) => ref !== "refs/heads/main");
+  const refs = remoteBranchOids(fixture.originPath);
+  const boundRef = `refs/heads/${fixture.expectation.bindingBranch}`;
+  const changedRefs = [...new Set([...Object.keys(fixture.initialRemoteRefs), ...Object.keys(refs)])]
+    .filter((ref) => ref !== boundRef && fixture.initialRemoteRefs[ref] !== refs[ref])
+    .sort();
   const diffPaths = new Set<string>();
   let expectedContentObserved = true;
   for (const ref of changedRefs) {
+    if (!refs[ref]) {
+      expectedContentObserved = false;
+      continue;
+    }
     const result = runCommand(
       "git",
-      ["--git-dir", fixture.originPath, "diff", "--name-only", `refs/heads/main..${ref}`],
+      ["--git-dir", fixture.originPath, "diff", "--name-only", `${boundRef}..${ref}`],
       "/",
     );
     for (const path of result.stdout
@@ -367,7 +404,7 @@ export function inspectFixtureState(fixture: AuditFixture): AuditFixtureState {
       .map((line) => line.trim())
       .filter(Boolean))
       diffPaths.add(path);
-    if (changedRefs.length === 1 && fixture.expectation.expectedAction === "focused-pr") {
+    if (changedRefs.length === 1 && fixture.expectation.expectedAction === "focused-review-request") {
       const content = runCommand(
         "git",
         ["--git-dir", fixture.originPath, "show", `${ref}:${fixture.expectation.scope}`],
@@ -387,11 +424,7 @@ export function inspectFixtureState(fixture: AuditFixture): AuditFixtureState {
   const noLeakedDetachedWorktree = addedWorktreePaths.every(
     (path) => runCommand("git", ["symbolic-ref", "-q", "HEAD"], path).exitCode === 0,
   );
-  const originMain = runCommand(
-    "git",
-    ["--git-dir", fixture.originPath, "rev-parse", "refs/heads/main"],
-    "/",
-  ).stdout.trim();
+  const originBranch = runCommand("git", ["--git-dir", fixture.originPath, "rev-parse", boundRef], "/").stdout.trim();
   return {
     auditWorktreeCleaned:
       fixture.expectation.auditWorktreePath === null ||
@@ -400,11 +433,11 @@ export function inspectFixtureState(fixture: AuditFixture): AuditFixtureState {
     changedBranchCount: changedRefs.length,
     diffPaths: [...diffPaths].sort(),
     expectedContentObserved,
-    mainHeadUnchanged:
-      runCommand("git", ["rev-parse", "HEAD"], fixture.treePath).stdout.trim() === fixture.initialMainOid,
-    mainWorktreeClean: runCommand("git", ["status", "--porcelain"], fixture.treePath).stdout.trim() === "",
+    boundHeadUnchanged:
+      runCommand("git", ["rev-parse", "HEAD"], fixture.treePath).stdout.trim() === fixture.initialBoundHeadOid,
+    boundWorktreeClean: runCommand("git", ["status", "--porcelain"], fixture.treePath).stdout.trim() === "",
     noGuessedTreeState: true,
-    originMainExpected: originMain === fixture.expectedOriginMainOid,
+    originBranchExpected: originBranch === fixture.expectedOriginBranchOid,
     unpublishedAuthoringStateClean:
       noLeakedDetachedWorktree &&
       (fixture.expectation.scenario !== "stale-before-publish" ||

@@ -68,7 +68,7 @@ vi.mock("../../auth/auth-context.js", () => ({
 
 function LocationProbe() {
   const location = useLocation();
-  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
+  return <div data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</div>;
 }
 
 async function flush(): Promise<void> {
@@ -100,6 +100,7 @@ async function renderDom(
           <LocationProbe />
           <Routes>
             <Route path="/" element={element} />
+            <Route path="/settings/context" element={<div>Context Tree settings route</div>} />
             <Route path="/settings/resources" element={<div>Resources route</div>} />
             <Route path="/onboarding" element={<div>Onboarding route</div>} />
           </Routes>
@@ -119,6 +120,7 @@ async function rerender(root: Root, queryClient: QueryClient, element: ReactElem
           <LocationProbe />
           <Routes>
             <Route path="/" element={element} />
+            <Route path="/settings/context" element={<div>Context Tree settings route</div>} />
             <Route path="/settings/resources" element={<div>Resources route</div>} />
             <Route path="/onboarding" element={<div>Onboarding route</div>} />
           </Routes>
@@ -144,15 +146,6 @@ async function waitForText(container: ParentNode, text: string, timeoutMs = 3000
     await flush();
   }
   throw new Error(`Missing text: ${text}\n${container.textContent ?? ""}`);
-}
-
-async function waitForCondition(check: () => boolean, message: string, timeoutMs = 3000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await flush();
-  }
-  throw new Error(message);
 }
 
 function snapshot(overrides: Partial<ContextTreeSnapshot> = {}): ContextTreeSnapshot {
@@ -530,9 +523,8 @@ describe("ContextPage DOM behavior", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps recoverable GitLab unavailable states chat-first for admins", async () => {
+  it("routes recoverable GitLab unavailable states to Context Tree settings", async () => {
     authMock.value = { organizationId: "org-1", role: "admin" };
-    agentApiMocks.listManagedAgents.mockResolvedValue([treeAgent]);
     contextApiMocks.getContextTreeSnapshot.mockResolvedValue(
       snapshot({
         provider: "gitlab",
@@ -555,10 +547,12 @@ describe("ContextPage DOM behavior", () => {
     const { ContextPage } = await import("../context.js");
     const { container, root } = await renderDom(<ContextPage />);
 
-    await waitForText(container, "Work on this in chat");
+    await waitForText(container, "Manage Context Tree");
     expect(container.textContent).toContain("GitLab repository or branch is unavailable");
     expect(container.textContent).toContain("Provider-specific diagnostic");
-    expect(agentApiMocks.listManagedAgents).toHaveBeenCalled();
+    expect(agentApiMocks.listManagedAgents).not.toHaveBeenCalled();
+    await click(container.querySelector('a[href="/settings/context#binding"]'));
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/settings/context#binding");
     await act(async () => root.unmount());
   });
 
@@ -575,14 +569,6 @@ describe("ContextPage DOM behavior", () => {
     status: "active",
     avatarImageUrl: null,
   };
-  const secondTreeAgent = {
-    ...treeAgent,
-    uuid: "agent-2",
-    name: "backup-agent",
-    displayName: "",
-    inboxId: "inbox-agent-2",
-    clientId: "client-agent-2",
-  };
   const unavailableSnapshot = () =>
     snapshot({
       repo: null,
@@ -591,10 +577,8 @@ describe("ContextPage DOM behavior", () => {
       contextStatus: { label: "Not configured", detail: null, severity: "warning" },
     });
 
-  it("routes a bound-tree sync failure to the setup chat without an App-install gate", async () => {
+  it("routes a bound-tree sync failure to settings without an App-install gate", async () => {
     authMock.value = { organizationId: "org-1", role: "admin" };
-    agentApiMocks.listManagedAgents.mockResolvedValue([treeAgent]);
-    onboardingEventMocks.postTreeSetupStartChat.mockResolvedValue({ chatId: "chat-tree-recovery" });
     const { ContextPage } = await import("../context.js");
     contextApiMocks.getContextTreeSnapshot.mockResolvedValue(
       snapshot({
@@ -607,56 +591,32 @@ describe("ContextPage DOM behavior", () => {
     );
 
     const { container, root } = await renderDom(<ContextPage />);
-    await waitForText(container, "Work on this in chat");
-    expect(container.textContent).toContain("Open a chat with your agent to inspect the tree and this sync issue.");
+    await waitForText(container, "Manage Context Tree");
+    expect(container.textContent).toContain("Review the binding and recovery options in Settings.");
     expect(container.textContent).not.toContain("GitHub App");
     expect(githubAppMocks.getGithubAppInstallation).not.toHaveBeenCalled();
-
-    await click(buttonByText(container, "Work on this in chat"));
-    await waitForCondition(
-      () => onboardingEventMocks.postTreeSetupStartChat.mock.calls.length === 1,
-      "Expected the recovery setup chat to open",
-    );
-    expect(onboardingEventMocks.postTreeSetupStartChat).toHaveBeenCalledWith({
-      organizationId: "org-1",
-      agentUuid: "agent-1",
-    });
-    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/?c=chat-tree-recovery");
+    expect(onboardingEventMocks.postTreeSetupStartChat).not.toHaveBeenCalled();
+    await click(container.querySelector('a[href="/settings/context#binding"]'));
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/settings/context#binding");
 
     await act(async () => root.unmount());
   });
 
-  it("opens tree setup directly for a no-tree admin and lets them choose the agent", async () => {
+  it("routes a no-tree admin to the dedicated settings page", async () => {
     authMock.value = { organizationId: "org-1", role: "admin" };
-    agentApiMocks.listManagedAgents.mockResolvedValue([treeAgent, secondTreeAgent]);
-    onboardingEventMocks.postTreeSetupStartChat.mockResolvedValue({ chatId: "chat-tree-success" });
     const { ContextPage } = await import("../context.js");
     contextApiMocks.getContextTreeSnapshot.mockResolvedValue(unavailableSnapshot());
 
     const { container, root } = await renderDom(<ContextPage />);
-    await waitForText(container, "Build your Context Tree");
-    expect(container.textContent).toContain("Share a local project folder or GitHub repository URL there.");
-    expect(container.textContent).toContain("backup-agent");
+    await waitForText(container, "Set up Context Tree");
+    expect(container.textContent).toContain("Set it up in Settings when your team is ready.");
+    expect(agentApiMocks.listManagedAgents).not.toHaveBeenCalled();
     expect(resourceApiMocks.listTeamResourcesForOrg).not.toHaveBeenCalled();
     expect(githubAppMocks.getGithubAppInstallation).not.toHaveBeenCalled();
     expect(githubMocks.listOrgGithubRepos).not.toHaveBeenCalled();
-
-    await click(container.querySelector('button[aria-label="Agent for the Context Tree chat"]'));
-    await click(
-      [...document.body.querySelectorAll("button")].find((button) => button.textContent === "Tree Agent") ?? null,
-    );
-    await click(buttonByText(container, "Build your Context Tree"));
-
-    await waitForCondition(
-      () => onboardingEventMocks.postTreeSetupStartChat.mock.calls.length === 1,
-      "Expected tree setup chat kickoff",
-    );
-    expect(onboardingEventMocks.postTreeSetupStartChat).toHaveBeenCalledWith({
-      organizationId: "org-1",
-      agentUuid: "agent-1",
-    });
+    await click(container.querySelector('a[href="/settings/context#binding"]'));
     expect(resourceApiMocks.createTeamResourceForOrg).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/?c=chat-tree-success");
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/settings/context#binding");
 
     await act(async () => root.unmount());
   });
@@ -698,16 +658,17 @@ describe("ContextPage DOM behavior", () => {
     await act(async () => root.unmount());
   });
 
-  it("routes a no-tree admin without an active agent into onboarding", async () => {
+  it("does not require an active agent before opening Context Tree settings", async () => {
     authMock.value = { organizationId: "org-1", role: "admin" };
     agentApiMocks.listManagedAgents.mockResolvedValue([]);
     const { ContextPage } = await import("../context.js");
     contextApiMocks.getContextTreeSnapshot.mockResolvedValue(unavailableSnapshot());
 
     const { container, root } = await renderDom(<ContextPage />);
-    await waitForText(container, "Create an agent for your team first");
-    await click(buttonByText(container, "Create an agent"));
-    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/onboarding");
+    await waitForText(container, "Set up Context Tree");
+    expect(agentApiMocks.listManagedAgents).not.toHaveBeenCalled();
+    await click(container.querySelector('a[href="/settings/context#binding"]'));
+    expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/settings/context#binding");
 
     await act(async () => root.unmount());
   });

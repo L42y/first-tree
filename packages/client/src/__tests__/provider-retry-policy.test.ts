@@ -1,9 +1,11 @@
 import type { ProviderRetryScope, ReplaySafety, RuntimeProvider } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
+import { ManagedSkillsUnsafeDiscoveryError } from "../runtime/managed-skills.js";
 import {
   buildProviderRetryEvent,
   classifyProviderFailure,
   decideProviderRetry,
+  MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "../runtime/provider-retry-policy.js";
 import { SdkError } from "../sdk.js";
@@ -237,6 +239,56 @@ describe("classifyProviderFailure", () => {
     expect(
       decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
     ).toMatchObject({ action: "retry" });
+  });
+
+  it.each([
+    "session_start",
+    "session_resume",
+  ] as const)("classifies managed-Skill unsafe discovery by stable identity and retries %s indefinitely with bounded backoff", (scope) => {
+    const classified = classifyProviderFailure(new ManagedSkillsUnsafeDiscoveryError("opaque safety detail"), {
+      provider: "opencode",
+      scope,
+      source: "session",
+    });
+    expect(classified).toMatchObject({
+      category: "transient_transport",
+      reasonCode: MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
+    });
+
+    for (const [attempt, delayMs, retryMode] of [
+      [1, 1_000, "foreground"],
+      [2, 2_000, "foreground"],
+      [3, 4_000, "foreground"],
+      [20, 60_000, "background"],
+    ] as const) {
+      expect(
+        decideProviderRetry({
+          classification: classified,
+          scope,
+          attempt,
+          replaySafety: "pre_provider",
+        }),
+      ).toMatchObject({
+        action: "retry",
+        attempt,
+        delayMs,
+        retryMode,
+        reasonCode: MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
+      });
+    }
+
+    expect(
+      decideProviderRetry({
+        classification: classified,
+        scope: "provider_turn",
+        attempt: 1,
+        replaySafety: "user_visible",
+      }),
+    ).toMatchObject({
+      action: "stop",
+      reasonCode: "unsafe_replay",
+      terminalKind: "unsafe_replay",
+    });
   });
 
   it("a genuinely missing codex binary stays terminal needs_operator (no false retry)", () => {
