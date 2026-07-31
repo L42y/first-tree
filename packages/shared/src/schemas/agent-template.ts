@@ -233,3 +233,188 @@ export const agentTemplatePayloadSchema = z
     }
   });
 export type AgentTemplatePayload = z.infer<typeof agentTemplatePayloadSchema>;
+
+// ---------------------------------------------------------------------------
+// Catalog governance contract (Task 2): publisher write sources, lifecycle
+// requests, and the public-safe read model. The persistence contract above
+// stays canonical; these schemas describe what callers may send and what the
+// public surface may ever see.
+// ---------------------------------------------------------------------------
+
+/** Public URL identity. Lowercase kebab-case, unique, immutable once published. */
+export const AGENT_TEMPLATE_SLUG_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const agentTemplateSlugSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(AGENT_TEMPLATE_SLUG_REGEX, "Template slugs must be lowercase kebab-case.");
+export type AgentTemplateSlug = z.infer<typeof agentTemplateSlugSchema>;
+
+/** User-visible Template name, shared by the write and read contracts. */
+export const agentTemplateNameSchema = z.string().min(1).max(200);
+export type AgentTemplateName = z.infer<typeof agentTemplateNameSchema>;
+
+/**
+ * Skill write source: the publisher submits only the component key and the
+ * bundle attachment. Every other field (display name, derived payload,
+ * bundle descriptor) is compiled server-side from the real ZIP so the
+ * persisted skill summary can never drift from its bytes.
+ */
+export const agentTemplateSkillComponentInputSchema = z
+  .object({
+    key: agentTemplateComponentKeySchema,
+    type: z.literal("skill"),
+    bundleAttachmentId: z.string().uuid(),
+  })
+  .strict();
+export type AgentTemplateSkillComponentInput = z.infer<typeof agentTemplateSkillComponentInputSchema>;
+
+/**
+ * Write source for one component. Prompt and MCP inputs are already the
+ * canonical persisted shapes; only Skill differs (server-compiled).
+ */
+export const agentTemplateComponentInputSchema = z.discriminatedUnion("type", [
+  agentTemplatePromptComponentSchema,
+  agentTemplateSkillComponentInputSchema,
+  agentTemplateMcpComponentSchema,
+]);
+export type AgentTemplateComponentInput = z.infer<typeof agentTemplateComponentInputSchema>;
+
+function assertUniqueComponentInputKeys(components: readonly AgentTemplateComponentInput[], ctx: z.RefinementCtx) {
+  const seen = new Set<string>();
+  for (const [index, component] of components.entries()) {
+    if (seen.has(component.key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["components", index, "key"],
+        message: "Component keys must be unique within a Template.",
+      });
+    }
+    seen.add(component.key);
+  }
+}
+
+/**
+ * Canonical server timestamp token. The server serializes `createdAt` /
+ * `updatedAt` with full PostgreSQL precision in exactly this shape, and
+ * mutation requests carry the previous value back verbatim as the
+ * optimistic-concurrency token (`expectedUpdatedAt`). Keeping one schema for
+ * both directions prevents response/response contract drift.
+ */
+export const agentTemplateTimestampSchema = z.string().datetime({ offset: true });
+
+/** The `expectedUpdatedAt` compare-and-set token on mutation requests. */
+export const agentTemplateExpectedUpdatedAtSchema = agentTemplateTimestampSchema;
+
+export const createAgentTemplateSchema = z
+  .object({
+    slug: agentTemplateSlugSchema,
+    name: agentTemplateNameSchema,
+    public: agentTemplatePublicProfileSchema,
+    components: z.array(agentTemplateComponentInputSchema).max(100),
+  })
+  .strict()
+  .superRefine((input, ctx) => assertUniqueComponentInputKeys(input.components, ctx));
+export type CreateAgentTemplate = z.infer<typeof createAgentTemplateSchema>;
+
+/**
+ * In-place update of a draft or active Template. `slug` is accepted only
+ * while the Template is still a draft — the service rejects slug changes
+ * after first publish. Components, when present, replace the full set.
+ */
+export const updateAgentTemplateSchema = z
+  .object({
+    expectedUpdatedAt: agentTemplateExpectedUpdatedAtSchema,
+    slug: agentTemplateSlugSchema.optional(),
+    name: agentTemplateNameSchema.optional(),
+    public: agentTemplatePublicProfileSchema.optional(),
+    components: z.array(agentTemplateComponentInputSchema).max(100).optional(),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (
+      input.slug === undefined &&
+      input.name === undefined &&
+      input.public === undefined &&
+      input.components === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "At least one of slug, name, public, or components must be provided.",
+      });
+    }
+    if (input.components) assertUniqueComponentInputKeys(input.components, ctx);
+  });
+export type UpdateAgentTemplate = z.infer<typeof updateAgentTemplateSchema>;
+
+export const publishAgentTemplateSchema = z
+  .object({
+    expectedUpdatedAt: agentTemplateExpectedUpdatedAtSchema,
+  })
+  .strict();
+export type PublishAgentTemplate = z.infer<typeof publishAgentTemplateSchema>;
+
+export const retireAgentTemplateSchema = z
+  .object({
+    expectedUpdatedAt: agentTemplateExpectedUpdatedAtSchema,
+    replacementTemplateId: z.string().uuid().optional(),
+  })
+  .strict();
+export type RetireAgentTemplate = z.infer<typeof retireAgentTemplateSchema>;
+
+/** Safe replacement pointer on a retired Template's public detail. */
+export const agentTemplateReplacementSummarySchema = z
+  .object({
+    slug: agentTemplateSlugSchema,
+    name: agentTemplateNameSchema,
+  })
+  .strict();
+export type AgentTemplateReplacementSummary = z.infer<typeof agentTemplateReplacementSummarySchema>;
+
+/**
+ * Public-safe read model. Explicit projection only: never components, raw
+ * instructions, attachment ids, Skill bodies, or MCP connection details.
+ */
+export const agentTemplatePublicTemplateSchema = z
+  .object({
+    id: z.string().uuid(),
+    slug: agentTemplateSlugSchema,
+    name: agentTemplateNameSchema,
+    status: z.enum(["active", "retired"]),
+    public: agentTemplatePublicProfileSchema,
+    updatedAt: agentTemplateTimestampSchema,
+    replacement: agentTemplateReplacementSummarySchema.nullable(),
+  })
+  .strict();
+export type AgentTemplatePublicTemplate = z.infer<typeof agentTemplatePublicTemplateSchema>;
+
+export const agentTemplatePublicListSchema = z
+  .object({
+    templates: z.array(agentTemplatePublicTemplateSchema),
+  })
+  .strict();
+export type AgentTemplatePublicList = z.infer<typeof agentTemplatePublicListSchema>;
+
+/** Full row for the publisher-internal surface (includes the payload). */
+export const agentTemplateDetailSchema = z
+  .object({
+    id: z.string().uuid(),
+    slug: agentTemplateSlugSchema,
+    name: agentTemplateNameSchema,
+    status: agentTemplateStatusSchema,
+    payload: agentTemplatePayloadSchema,
+    replacementTemplateId: z.string().uuid().nullable(),
+    createdBy: z.string(),
+    updatedBy: z.string(),
+    createdAt: agentTemplateTimestampSchema,
+    updatedAt: agentTemplateTimestampSchema,
+  })
+  .strict();
+export type AgentTemplateDetail = z.infer<typeof agentTemplateDetailSchema>;
+
+export const agentTemplateDetailListSchema = z
+  .object({
+    templates: z.array(agentTemplateDetailSchema),
+  })
+  .strict();
+export type AgentTemplateDetailList = z.infer<typeof agentTemplateDetailListSchema>;

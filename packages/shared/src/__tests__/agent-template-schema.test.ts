@@ -2,10 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_TEMPLATE_STATUSES,
   agentTemplateComponentSchema,
+  agentTemplateDetailSchema,
   agentTemplateIdsSchema,
   agentTemplatePayloadSchema,
+  agentTemplatePublicTemplateSchema,
+  agentTemplateSlugSchema,
   agentTemplateStatusSchema,
+  createAgentTemplateSchema,
   MAX_AGENT_TEMPLATE_IDS,
+  publishAgentTemplateSchema,
+  retireAgentTemplateSchema,
+  updateAgentTemplateSchema,
 } from "../schemas/agent-template.js";
 
 const TEMPLATE_ID_A = "0190f000-0000-7000-8000-00000000000a";
@@ -278,3 +285,113 @@ describe("agentTemplatePayloadSchema", () => {
 function validPayloadWithPublic(publicProfile: unknown) {
   return { schemaVersion: 1, public: publicProfile, components: [VALID_PROMPT_COMPONENT] };
 }
+
+describe("catalog governance contracts", () => {
+  const TOKEN = "2026-07-31T03:00:23.568911Z";
+
+  function validCreate() {
+    return {
+      slug: "pr-engineer",
+      name: "PR Engineer",
+      public: VALID_PUBLIC_PROFILE,
+      components: [VALID_PROMPT_COMPONENT],
+    };
+  }
+
+  it("accepts strict kebab-case slugs and rejects malformed ones", () => {
+    expect(agentTemplateSlugSchema.parse("pr-engineer-2")).toBe("pr-engineer-2");
+    for (const slug of ["PR-Engineer", "trailing-", "double--dash", "with space", "under_score", ""]) {
+      expect(agentTemplateSlugSchema.safeParse(slug).success).toBe(false);
+    }
+  });
+
+  it("create rejects unknown top-level fields", () => {
+    const bad = { ...validCreate(), components2: [] };
+    expect(createAgentTemplateSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("skill write source carries only key and bundleAttachmentId", () => {
+    const source = { key: "review", type: "skill", bundleAttachmentId: TEMPLATE_ID_A };
+    const accepted = createAgentTemplateSchema.safeParse({ ...validCreate(), components: [source] });
+    expect(accepted.success).toBe(true);
+
+    for (const smuggled of [
+      { ...source, name: "caller-chosen" },
+      { ...source, payload: { name: "x", description: "y", body: "z", metadata: {} } },
+      { ...source, bundle: { attachmentId: TEMPLATE_ID_A, format: "zip", sizeBytes: 1 } },
+    ]) {
+      const rejected = createAgentTemplateSchema.safeParse({ ...validCreate(), components: [smuggled] });
+      expect(rejected.success).toBe(false);
+    }
+  });
+
+  it("rejects duplicate component keys across types", () => {
+    const create = createAgentTemplateSchema.safeParse({
+      ...validCreate(),
+      components: [
+        { ...VALID_PROMPT_COMPONENT, key: "shared-key" },
+        { key: "shared-key", type: "skill", bundleAttachmentId: TEMPLATE_ID_A },
+      ],
+    });
+    expect(create.success).toBe(false);
+
+    const update = updateAgentTemplateSchema.safeParse({
+      expectedUpdatedAt: TOKEN,
+      components: [
+        { ...VALID_PROMPT_COMPONENT, key: "shared-key" },
+        { key: "shared-key", type: "skill", bundleAttachmentId: TEMPLATE_ID_A },
+      ],
+    });
+    expect(update.success).toBe(false);
+  });
+
+  it("rejects an update carrying no fields", () => {
+    expect(updateAgentTemplateSchema.safeParse({ expectedUpdatedAt: TOKEN }).success).toBe(false);
+    expect(updateAgentTemplateSchema.safeParse({ expectedUpdatedAt: TOKEN, name: "New name" }).success).toBe(true);
+  });
+
+  it("lifecycle requests are strict and require a valid timestamp token", () => {
+    expect(publishAgentTemplateSchema.safeParse({ expectedUpdatedAt: TOKEN }).success).toBe(true);
+    expect(publishAgentTemplateSchema.safeParse({ expectedUpdatedAt: TOKEN, extra: 1 }).success).toBe(false);
+    expect(publishAgentTemplateSchema.safeParse({ expectedUpdatedAt: "not-a-time" }).success).toBe(false);
+    expect(
+      retireAgentTemplateSchema.safeParse({ expectedUpdatedAt: TOKEN, replacementTemplateId: TEMPLATE_ID_B }).success,
+    ).toBe(true);
+    expect(
+      retireAgentTemplateSchema.safeParse({ expectedUpdatedAt: TOKEN, replacementTemplateId: "not-a-uuid" }).success,
+    ).toBe(false);
+  });
+
+  it("public and internal DTOs reject out-of-contract fields", () => {
+    const publicTemplate = {
+      id: TEMPLATE_ID_A,
+      slug: "pr-engineer",
+      name: "PR Engineer",
+      status: "active",
+      public: VALID_PUBLIC_PROFILE,
+      updatedAt: TOKEN,
+      replacement: null,
+    };
+    expect(agentTemplatePublicTemplateSchema.safeParse(publicTemplate).success).toBe(true);
+    expect(agentTemplatePublicTemplateSchema.safeParse({ ...publicTemplate, components: [] }).success).toBe(false);
+    expect(agentTemplatePublicTemplateSchema.safeParse({ ...publicTemplate, updatedAt: "whenever" }).success).toBe(
+      false,
+    );
+
+    const detail = {
+      id: TEMPLATE_ID_A,
+      slug: "pr-engineer",
+      name: "PR Engineer",
+      status: "draft",
+      payload: { schemaVersion: 1, public: VALID_PUBLIC_PROFILE, components: [VALID_PROMPT_COMPONENT] },
+      replacementTemplateId: null,
+      createdBy: "member-1",
+      updatedBy: "member-1",
+      createdAt: TOKEN,
+      updatedAt: TOKEN,
+    };
+    expect(agentTemplateDetailSchema.safeParse(detail).success).toBe(true);
+    expect(agentTemplateDetailSchema.safeParse({ ...detail, secret: true }).success).toBe(false);
+    expect(agentTemplateDetailSchema.safeParse({ ...detail, createdAt: "whenever" }).success).toBe(false);
+  });
+});
