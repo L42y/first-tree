@@ -4,12 +4,14 @@ import type { FastifyInstance } from "fastify";
 import { SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { users } from "../db/schema/users.js";
 import * as activityService from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
 import * as agentRuntimeSessionService from "../services/agent-runtime-session.js";
+import { createChat } from "../services/chat.js";
 import * as clientService from "../services/client.js";
 import * as connectionManager from "../services/connection-manager.js";
 import * as inboxService from "../services/inbox.js";
@@ -1225,7 +1227,7 @@ describe("Agent client WS edge protocol coverage", () => {
       ).resolves.toMatchObject({ type: "error", message: "Agent not bound" });
 
       const eventSpy = vi
-        .spyOn(sessionEventService, "appendEvent")
+        .spyOn(sessionEventService, "appendLiveEvent")
         .mockRejectedValueOnce(new Error("event persist failed"));
       ws.send(
         JSON.stringify({
@@ -1251,7 +1253,7 @@ describe("Agent client WS edge protocol coverage", () => {
       expect(eventSpy).toHaveBeenCalled();
 
       const eventNoRefSpy = vi
-        .spyOn(sessionEventService, "appendEvent")
+        .spyOn(sessionEventService, "appendLiveEvent")
         .mockRejectedValueOnce(new Error("event persist failed without ref"));
       ws.send(
         JSON.stringify({
@@ -1392,4 +1394,67 @@ describe("Agent client WS edge protocol coverage", () => {
       await closeSocket(ws);
     }
   }, 30000);
+
+  it("rejects a late session:event for an evicted session and never persists it", async () => {
+    // Reset/terminate window: the old turn can emit a frame after the awaited
+    // clearEvents but before the client processes session:terminate. The
+    // evicted gate must drop it — otherwise the cleared live trace reappears.
+    const seed = await createAdminContext(app, { username: `ws-evicted-event-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "evicted-event" });
+    const ws = await openRegisteredSocket(seed);
+
+    try {
+      await expect(bindAgent(ws, agent.uuid, "bind-evicted-event")).resolves.toMatchObject({ type: "agent:bound" });
+
+      const chat = await createChat(app.db, seed.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+      const chatId = chat.id;
+      await app.db.insert(agentChatSessions).values({ agentId: agent.uuid, chatId, state: "evicted" });
+
+      ws.send(
+        JSON.stringify({
+          type: "session:event",
+          ref: "event-after-evict",
+          agentId: agent.uuid,
+          chatId,
+          event: { kind: "error", payload: { source: "runtime", message: "late frame" } },
+        }),
+      );
+      await expect(
+        waitForFrame(
+          ws,
+          (message) =>
+            (message as { type?: string; ref?: string }).type === "session:event:rejected" &&
+            (message as { ref?: string }).ref === "event-after-evict",
+        ),
+      ).resolves.toMatchObject({
+        type: "session:event:rejected",
+        ref: "event-after-evict",
+        agentId: agent.uuid,
+        chatId,
+        reason: "session_evicted",
+      });
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chatId, { limit: 10 })).items).toEqual([]);
+
+      // The same producer on a live session still persists.
+      ws.send(
+        JSON.stringify({
+          type: "session:event",
+          ref: "event-live",
+          agentId: agent.uuid,
+          chatId: "chat-live-event",
+          event: { kind: "error", payload: { source: "runtime", message: "live frame" } },
+        }),
+      );
+      await expect(
+        waitForFrame(
+          ws,
+          (message) =>
+            (message as { type?: string; ref?: string }).type === "session:event:accepted" &&
+            (message as { ref?: string }).ref === "event-live",
+        ),
+      ).resolves.toMatchObject({ type: "session:event:accepted", ref: "event-live" });
+    } finally {
+      await closeSocket(ws);
+    }
+  });
 });

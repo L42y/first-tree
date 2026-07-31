@@ -1527,12 +1527,33 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               const boundInfo = boundAgents.get(agentId);
               chainSessionOp(agentId, payload.chatId, async () => {
                 try {
-                  const persistedEvent = await sessionEventService.appendEvent(
+                  const persistedEvent = await sessionEventService.appendLiveEvent(
                     app.db,
                     agentId,
                     payload.chatId,
                     payload.event,
                   );
+                  if (!persistedEvent) {
+                    // The session is evicted: a late frame from the old turn
+                    // (emitted before the client processed session:terminate)
+                    // or a producer racing the operator's reset. Dropped at
+                    // persistence so it can never recreate cleared traces;
+                    // reject the ref honestly so the client's pending event
+                    // resolves instead of hanging while it tears the session
+                    // down.
+                    if (payload.ref) {
+                      socket.send(
+                        JSON.stringify({
+                          type: "session:event:rejected",
+                          ref: payload.ref,
+                          agentId,
+                          chatId: payload.chatId,
+                          reason: sessionEventRejectedReasonSchema.enum.session_evicted,
+                        }),
+                      );
+                    }
+                    return;
+                  }
                   if (
                     payload.ref &&
                     payload.event.kind === "turn_end" &&

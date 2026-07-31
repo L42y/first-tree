@@ -200,7 +200,12 @@ export const sessionEventMessageSchema = z.object({
 });
 export type SessionEventMessage = z.infer<typeof sessionEventMessageSchema>;
 
-export const sessionEventRejectedReasonSchema = z.enum(["agent_not_bound", "malformed", "persist_failed"]);
+export const sessionEventRejectedReasonSchema = z.enum([
+  "agent_not_bound",
+  "malformed",
+  "persist_failed",
+  "session_evicted",
+]);
 export type SessionEventRejectedReason = z.infer<typeof sessionEventRejectedReasonSchema>;
 
 export const sessionEventAcceptedFrameSchema = z.object({

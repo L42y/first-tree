@@ -400,4 +400,35 @@ describe("AgentStatusPanel — chat session Reset", () => {
     expect(document.body.textContent).not.toContain("Session reset");
     expect(confirmDialog()).not.toBeNull();
   });
+
+  it("a failed reset stays retryable after the row refetches as evicted, and the retry converges", async () => {
+    // Server evicted + traces cleared, but the terminate command missed the
+    // client. The error path invalidates the status query, the row refetches
+    // as evicted (no longer reset-eligible), and the card action disappears —
+    // the still-open dialog must remain the retry affordance.
+    sessionApiMocks.terminateSession.mockResolvedValueOnce({
+      agentId: "agent-nova",
+      chatId: "chat-1",
+      state: "evicted",
+      transitioned: true,
+      delivered: false,
+    });
+    renderPanel({ engagement: "suspended" });
+    const dialog = await openConfirmFromCard(h);
+    await click(h, dialogButton(dialog, "Reset"));
+
+    await waitForSettled(h, () => expect(document.body.textContent).toContain("Reset failed"));
+
+    // The refetch now reports the session evicted (engagement none, not
+    // errored) — the row no longer qualifies for a fresh Reset action.
+    agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([status("agent-nova", { engagement: "none" })]);
+    await waitForSettled(h, () => expect(confirmDialog()).not.toBeNull());
+
+    // Retry from the still-open dialog: the idempotent terminate re-sends the
+    // command, delivery lands, success.
+    await click(h, dialogButton(confirmDialog() as HTMLElement, "Reset"));
+    await waitForSettled(h, () => expect(document.body.textContent).toContain("Session reset"));
+    expect(sessionApiMocks.terminateSession).toHaveBeenCalledTimes(2);
+    expect(confirmDialog()).toBeNull();
+  });
 });

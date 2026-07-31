@@ -8,6 +8,7 @@ import type {
 import { sessionEventSchema } from "@first-tree/shared";
 import { and, asc, desc, eq, gt, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
+import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
@@ -135,6 +136,80 @@ export async function appendEvent(
       });
 
       return persisted;
+    }
+  }
+
+  throw new Error(`session_events seq contention on ${agentId}/${chatId}`);
+}
+
+/**
+ * Append one event only while the session is still live. Returns null when
+ * the session row is `evicted` — a stale producer (an old turn racing the
+ * operator's terminate, or a late frame after eviction) must never recreate
+ * the traces terminate just cleared.
+ *
+ * The check takes the session row FOR UPDATE inside the insert transaction,
+ * serializing against `transitionSessionState` (which takes the same lock
+ * before evicting). Terminate runs its awaited `clearEvents` only after that
+ * transition commits, so one of two orderings always holds: the event insert
+ * commits first and the cleanup delete covers it, or the insert observes the
+ * committed evicted state and is dropped here.
+ *
+ * A missing session row does not gate — legitimate producers can emit before
+ * the server-side projection materializes. `appendEvent` stays the ungated
+ * variant for seeds and tests.
+ */
+export async function appendLiveEvent(
+  db: Database,
+  agentId: string,
+  chatId: string,
+  event: SessionEvent,
+): Promise<SessionEventRow | null> {
+  const validated = sessionEventSchema.parse(event);
+
+  for (let attempt = 0; attempt < MAX_SEQ_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, Math.random() * RETRY_JITTER_MS));
+    }
+    const outcome = await db.transaction(async (tx) => {
+      const [session] = await tx
+        .select({ state: agentChatSessions.state })
+        .from(agentChatSessions)
+        .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
+        .for("update");
+      if (session?.state === "evicted") return null;
+      const id = uuidv7();
+      const payloadJson = stringifyJsonbPayload(validated.payload);
+      const result = await tx.execute<{
+        id: string;
+        agent_id: string;
+        chat_id: string;
+        seq: number;
+        kind: string;
+        payload: unknown;
+        created_at: Date;
+      }>(sql`
+        INSERT INTO session_events (id, agent_id, chat_id, seq, kind, payload)
+        SELECT ${id}, ${agentId}, ${chatId},
+               COALESCE(MAX(seq), 0) + 1, ${validated.kind}, ${payloadJson}::jsonb
+          FROM session_events
+         WHERE agent_id = ${agentId} AND chat_id = ${chatId}
+        ON CONFLICT (agent_id, chat_id, seq) DO NOTHING
+        RETURNING id, agent_id, chat_id, seq, kind, payload, created_at
+      `);
+      return result[0] ?? undefined;
+    });
+    if (outcome === null) return null;
+    if (outcome) {
+      return rowToEvent({
+        id: outcome.id,
+        agentId: outcome.agent_id,
+        chatId: outcome.chat_id,
+        seq: outcome.seq,
+        kind: outcome.kind,
+        payload: outcome.payload,
+        createdAt: outcome.created_at instanceof Date ? outcome.created_at : new Date(outcome.created_at),
+      });
     }
   }
 

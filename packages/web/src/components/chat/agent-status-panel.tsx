@@ -269,7 +269,11 @@ function AgentStatusRow({
         {showPause ? <PauseButton onClick={() => suspendMut.mutate()} isPending={suspendMut.isPending} /> : null}
         {showResume ? <ResumeButton onClick={() => resumeMut.mutate()} isPending={resumeMut.isPending} /> : null}
       </div>
-      {sessionReset ? (
+      {sessionReset || resetOpen ? (
+        // Mounted on `resetOpen` too: after a failed reset the server may
+        // already report the session evicted (command undelivered / cleanup
+        // raced), which hides the card action — the open dialog must remain
+        // the user's retry affordance instead of unmounting mid-recovery.
         <AgentSessionResetConfirmDialog
           open={resetOpen}
           onOpenChange={setResetOpen}

@@ -349,6 +349,36 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
   });
 
+  it("appendLiveEvent drops events for an evicted session but accepts them on a live one", async () => {
+    // The late-event guard behind terminate: once the row is evicted, a stale
+    // producer can never recreate the cleared trace; a live session is
+    // unaffected. The check is serialized against the transition via the
+    // session row lock (see appendLiveEvent).
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `gate-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `gate-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Gate target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    const event = { kind: "error", payload: { source: "sdk", message: "frame" } } as const;
+
+    await seedSession(app, agent.uuid, chat.id, "active");
+    const live = await sessionEventService.appendLiveEvent(app.db, agent.uuid, chat.id, event);
+    expect(live).not.toBeNull();
+    expect(live?.payload).toMatchObject({ message: "frame" });
+
+    await seedSession(app, agent.uuid, chat.id, "evicted");
+    const dropped = await sessionEventService.appendLiveEvent(app.db, agent.uuid, chat.id, event);
+    expect(dropped).toBeNull();
+    expect(
+      (await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items.map((i) => i.seq),
+    ).toEqual([live?.seq]);
+  });
+
   it("Terminate on an already-evicted row is idempotent 200 { transitioned: false }", async () => {
     const app = getApp();
     const admin = await createAdminContext(app, { username: `term-c-${crypto.randomUUID().slice(0, 6)}` });
