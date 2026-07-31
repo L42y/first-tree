@@ -96,21 +96,38 @@ describe("Multi-org self-service", () => {
     // Display names carrying no ASCII alphanumerics all sanitize to the same
     // base slug. The slug is globally unique, so while the client chose it the
     // first such team anywhere rejected every later one with a 409 quoting an
-    // identifier the user never typed. Renaming did not help either: renames
-    // only touch displayName.
+    // identifier the user never typed.
     const first = await create("电商平台");
-    const renamedThenReused = await create("电商平台-商城");
-    const duplicate = await create("电商平台");
-    expect([first.statusCode, renamedThenReused.statusCode, duplicate.statusCode]).toEqual([201, 201, 201]);
+    expect(first.statusCode).toBe(201);
+    const firstId = first.json<{ organization: { id: string } }>().organization.id;
+    const [beforeRename] = await app.db.select().from(organizations).where(eq(organizations.id, firstId));
 
-    const ids = [first, renamedThenReused, duplicate].map(
-      (res) => res.json<{ organization: { id: string } }>().organization.id,
-    );
-    const rows = await app.db.select().from(organizations).where(inArray(organizations.id, ids));
-    expect(rows.length).toBe(3);
-    expect(new Set(rows.map((row) => row.name)).size).toBe(3);
+    // Renaming does not release the slug — it moves only the display name.
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/orgs/${firstId}`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { displayName: "电商平台-商城" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    const [afterRename] = await app.db.select().from(organizations).where(eq(organizations.id, firstId));
+    expect(afterRename?.displayName).toBe("电商平台-商城");
+    expect(afterRename?.name).toBe(beforeRename?.name);
+
+    // Reusing the original display name still succeeds, on a fresh slug.
+    const reused = await create("电商平台");
+    expect(reused.statusCode).toBe(201);
+    const reusedId = reused.json<{ organization: { id: string } }>().organization.id;
+
+    const rows = await app.db
+      .select()
+      .from(organizations)
+      .where(inArray(organizations.id, [firstId, reusedId]));
+    expect(rows.length).toBe(2);
+    expect(new Set(rows.map((row) => row.name)).size).toBe(2);
     // Display names are deliberately not unique — two teams may share one.
-    expect(rows.filter((row) => row.displayName === "电商平台").length).toBe(2);
+    const alsoSameName = await create("电商平台-商城");
+    expect(alsoSameName.statusCode).toBe(201);
   });
 
   it("POST /me/memberships/:memberId/leave soft-deletes membership", async () => {
