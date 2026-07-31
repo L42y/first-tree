@@ -286,10 +286,10 @@ export function createExecuteUpdate({
  * shape, defeating the entire point of the refresh.
  *
  * Why best-effort: the worst outcome on failure is "supervisor restart
- * crashes on stale unit", which is exactly what the operator-facing
- * `MIGRATION.md` walkthrough (`logout && login`) recovers from. We never
- * want a transient spawn failure to *block* the binary install — the new
- * binary on disk is the load-bearing fix.
+ * crashes on stale unit", which the operator-facing `logout && login`
+ * recovery sequence handles. We never want a transient spawn failure to
+ * *block* the binary install — the new binary on disk is the load-bearing
+ * fix.
  *
  * Timeout is generous (45s) because `installClientService()` on systemd
  * runs `daemon-reload` + `enable --now` and on launchd runs `bootout` +

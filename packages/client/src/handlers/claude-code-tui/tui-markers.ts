@@ -5,7 +5,7 @@
  * `[\s ]` to match either.
  *
  * Verified against the claude binary observed during the tmux-runtime PoC
- * (see `experiments/tmux-claude-runtime/FINDINGS.md`).
+ * (see `docs/experiments/FINDINGS.md`).
  */
 
 /** Pane shows this while a turn is in flight. Disappearance signals turn-end candidacy. */

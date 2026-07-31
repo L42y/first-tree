@@ -6,12 +6,11 @@ machine. Most of us run prod (`first-tree`) or staging
 installer and kept alive by systemd / launchd. The in-tree dev build must
 coexist with both without touching their state.
 
-The multi-env split (see [`MIGRATION.md`](../../MIGRATION.md) Phase 2)
-makes this trivial: every channel has its own bin name, default home,
-and supervisor identifier. Running `scripts/dev-install.sh` installs the dev
-channel (`first-tree-dev` / `~/.first-tree-dev/` /
-`first-tree-dev.service`, or the Windows Task Scheduler task
-`\FirstTree\first-tree-dev`) alongside whatever prod / staging install you
+The channel-specific layout makes this trivial: every channel has its own bin
+name, default home, and supervisor identifier. Running
+`scripts/dev-install.sh` installs the dev channel (`first-tree-dev` /
+`~/.first-tree-dev/` / `first-tree-dev.service`, or the Windows Task Scheduler
+task `\FirstTree\first-tree-dev`) alongside whatever prod / staging install you
 already have.
 
 | Channel | Install via | Bin | Default home | Supervisor identifier |
@@ -164,12 +163,3 @@ rm -rf ~/.first-tree-dev
 ```
 
 Prod / staging installs are unaffected throughout.
-
-## Migrating from the pre-multi-env layout
-
-If you ran `scripts/dev-cli.sh` before this PR, your dev data lives at
-`~/.first-tree/hub-dev/`. `scripts/dev-install.sh` auto-`mv`s it to
-`~/.first-tree-dev/` on first run — no manual step required.
-
-Prod / staging migration (replacing the old single-package install) is
-documented in [`MIGRATION.md`](../../MIGRATION.md) Phase 2.

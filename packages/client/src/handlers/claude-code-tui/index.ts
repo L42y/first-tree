@@ -128,7 +128,7 @@ async function orphanSweep(clientId: string): Promise<void> {
  * events stream from `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
  * (claude's per-session transcript).
  *
- * See `experiments/tmux-claude-runtime/FINDINGS.md` for the design rationale
+ * See `docs/experiments/FINDINGS.md` for the design rationale
  * and PoC verification matrix.
  */
 export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
