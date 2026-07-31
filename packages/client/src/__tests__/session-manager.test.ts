@@ -2,8 +2,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AGENT_RUNTIME_SESSION_ERROR_CODES,
   type AgentRuntimeConfig,
   encodeProviderRetryEventMessage,
+  parseProviderRetryEventMessage,
   RUNTIME_NOTICE_METADATA_KEY,
   type SessionEvent,
 } from "@first-tree/shared";
@@ -22,7 +24,7 @@ import type {
 } from "../runtime/handler.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
 import { SessionManager } from "../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import { type FirstTreeHubSDK, SdkError } from "../sdk.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -118,6 +120,25 @@ function emitCodexTerminalProviderFailure(ctx: SessionContext, messagePreview: s
   });
 }
 
+function emitRuntimeSessionProofFailure(ctx: SessionContext, reasonCode = "runtime_session_invalid"): void {
+  ctx.emitEvent({
+    kind: "error",
+    payload: {
+      source: "runtime",
+      message: encodeProviderRetryEventMessage({
+        event: "provider_failure_terminal",
+        provider: "codex",
+        scope: "provider_turn",
+        category: "runtime_transport",
+        reasonCode,
+        replaySafety: "unknown",
+        userSeverity: "warning",
+        messagePreview: "Invalid agent runtime session",
+      }),
+    },
+  });
+}
+
 function emitCodexRetryExhausted(ctx: SessionContext, messagePreview: string): void {
   ctx.emitEvent({
     kind: "error",
@@ -182,7 +203,9 @@ function createSessionManager(opts: {
   log?: pino.Logger;
   agentConfigCache?: AgentConfigCache;
   recoverChat?: (chatId: string) => Promise<void>;
+  recoverRuntimeSessionProof?: (reasonCode: string) => Promise<void>;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
+  confirmSessionEvent?: (chatId: string, event: SessionEvent) => Promise<void>;
   subprocessProbe?: SubprocessProbe;
   registryPath?: string;
 }) {
@@ -218,8 +241,10 @@ function createSessionManager(opts: {
     registryPath: opts.registryPath,
     ackEntry: opts.ackEntry ?? mockAckEntry(),
     recoverChat: opts.recoverChat,
+    recoverRuntimeSessionProof: opts.recoverRuntimeSessionProof,
     agentConfigCache: opts.agentConfigCache,
     onSessionEvent: opts.onSessionEvent,
+    confirmSessionEvent: opts.confirmSessionEvent,
   });
 }
 
@@ -431,6 +456,50 @@ describe("SessionManager", () => {
     expect(startSpy).toHaveBeenCalledTimes(1);
     expect(injectSpy).toHaveBeenCalledTimes(1);
     expect(recoverChat).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
+  it("holds an admission-time SDK proof failure until a fresh bind", async () => {
+    const proofError = new SdkError(403, "Missing x-agent-runtime-session header", {
+      code: AGENT_RUNTIME_SESSION_ERROR_CODES.MISSING,
+    });
+    const agentConfigCache: AgentConfigCache = {
+      get: vi.fn(),
+      refreshIfNewer: vi.fn().mockRejectedValueOnce(proofError).mockResolvedValue(undefined),
+      refresh: vi.fn(() => Promise.resolve(mockRuntimeConfig())),
+      updateSdk: vi.fn(),
+      updateUrls: vi.fn(),
+      allReferencedUrls: vi.fn(() => new Set<string>()),
+      forget: vi.fn(),
+    };
+    const handler = createMockHandler();
+    const ackEntry = vi.fn().mockResolvedValue(undefined);
+    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    const recoverRuntimeSessionProof = vi.fn().mockRejectedValue(new Error("bind temporarily rejected"));
+    const sm = createSessionManager({
+      handler,
+      agentConfigCache,
+      ackEntry,
+      recoverChat,
+      recoverRuntimeSessionProof,
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+    });
+    const entry = mockEntry({ id: 62, chatId: "chat-proof-admission", messageId: "msg-proof-admission" });
+
+    await sm.dispatch(entry);
+    expect(handler.start).not.toHaveBeenCalled();
+    expect(recoverRuntimeSessionProof).toHaveBeenCalledWith("runtime_session_missing");
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.dispatch(entry);
+    expect(agentConfigCache.refreshIfNewer).toHaveBeenCalledTimes(1);
+
+    sm.noteBindRecoveryComplete();
+    await sm.dispatch(entry);
+    expect(agentConfigCache.refreshIfNewer).toHaveBeenCalledTimes(2);
+    expect(handler.start).toHaveBeenCalledTimes(1);
 
     await sm.shutdown();
   });
@@ -2206,6 +2275,169 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
     const [ackOrder] = ackEntry.mock.invocationCallOrder;
     if (noticeOrder === undefined || ackOrder === undefined) throw new Error("expected notice and ack order");
     expect(noticeOrder).toBeLessThan(ackOrder);
+
+    await sm.shutdown();
+  });
+
+  it("holds runtime-proof failures for one bind-gated redelivery without notice, ACK, or same-socket recovery", async () => {
+    const ackEntry = vi.fn().mockResolvedValue(undefined);
+    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    const recoverRuntimeSessionProof = vi.fn().mockRejectedValue(new Error("bind temporarily rejected"));
+    const sendMessage = vi.fn().mockResolvedValue({ id: "must-not-post" });
+    const sdk = {
+      register: vi.fn(),
+      sendMessage,
+      sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+    } as unknown as FirstTreeHubSDK;
+    let capturedCtx: SessionContext | undefined;
+    let capturedToken: DeliveryToken | undefined;
+    let capturedMessage: SessionMessage | undefined;
+    const handlers: AgentHandler[] = [];
+    const sm = createSessionManager({
+      ackEntry,
+      recoverChat,
+      recoverRuntimeSessionProof,
+      sdk,
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      handlerFactory: () => {
+        const handler = createMockHandler({
+          start: vi.fn(async (message, ctx, token) => {
+            capturedMessage = message;
+            capturedCtx = ctx;
+            capturedToken = token;
+            return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
+          }),
+        });
+        handlers.push(handler);
+        return handler;
+      },
+    });
+    const entry = mockEntry({ id: 28, chatId: "chat-runtime-proof", messageId: "msg-runtime-proof" });
+
+    await sm.dispatch(entry);
+    if (!capturedCtx || !capturedToken || !capturedMessage) throw new Error("delivery was not captured");
+
+    emitRuntimeSessionProofFailure(capturedCtx);
+    const heldDisposition = await capturedToken.complete(capturedMessage, {
+      status: "error",
+      terminal: true,
+    });
+
+    // A proof-held turn deliberately retains server custody (unacked, held
+    // for bind recovery), so the completion disposition must be "retry",
+    // never "settled".
+    expect(heldDisposition).toBe("retry");
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(recoverRuntimeSessionProof).toHaveBeenCalledTimes(1);
+    expect(recoverRuntimeSessionProof).toHaveBeenCalledWith("runtime_session_invalid");
+    await vi.waitFor(() => expect(handlers[0]?.shutdown).toHaveBeenCalled());
+
+    await sm.dispatch(entry);
+    expect(handlers).toHaveLength(1);
+
+    sm.noteBindRecoveryComplete();
+    await sm.dispatch(entry);
+    expect(handlers).toHaveLength(2);
+    expect(handlers[1]?.resume).toHaveBeenCalledTimes(1);
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
+  it("routes a runtime-proof failure during session start directly to bind recovery", async () => {
+    const ackEntry = vi.fn().mockResolvedValue(undefined);
+    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    const recoverRuntimeSessionProof = vi.fn().mockResolvedValue(undefined);
+    const confirmSessionEvent = vi.fn().mockResolvedValue(undefined);
+    const sdk = mockSdk();
+    const handler = createMockHandler({
+      start: vi.fn().mockRejectedValue(
+        new SdkError(403, "Invalid agent runtime session", {
+          code: AGENT_RUNTIME_SESSION_ERROR_CODES.INVALID,
+        }),
+      ),
+    });
+    const sm = createSessionManager({
+      ackEntry,
+      recoverChat,
+      recoverRuntimeSessionProof,
+      confirmSessionEvent,
+      sdk,
+      handler,
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+    });
+
+    await sm.dispatch(mockEntry({ id: 29, chatId: "chat-runtime-proof-start", messageId: "msg-proof-start" }));
+
+    expect(confirmSessionEvent).toHaveBeenCalledTimes(1);
+    const confirmedEvent = confirmSessionEvent.mock.calls[0]?.[1];
+    if (!confirmedEvent || confirmedEvent.kind !== "error") throw new Error("terminal proof event missing");
+    expect(parseProviderRetryEventMessage(confirmedEvent.payload.message)).toMatchObject({
+      category: "runtime_transport",
+      reasonCode: "runtime_session_invalid",
+      userSeverity: "warning",
+    });
+    expect(recoverRuntimeSessionProof).toHaveBeenCalledWith("runtime_session_invalid");
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(vi.mocked(sdk.sendMessage)).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
+  it("switches to bind recovery when a real provider notice hits stale runtime proof", async () => {
+    const ackEntry = vi.fn().mockResolvedValue(undefined);
+    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    const recoverRuntimeSessionProof = vi.fn().mockResolvedValue(undefined);
+    const sendMessage = vi.fn().mockRejectedValue(
+      new SdkError(403, "Missing x-agent-runtime-session header", {
+        code: AGENT_RUNTIME_SESSION_ERROR_CODES.MISSING,
+      }),
+    );
+    const sdk = {
+      register: vi.fn(),
+      sendMessage,
+      sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+    } as unknown as FirstTreeHubSDK;
+    let capturedCtx: SessionContext | undefined;
+    let capturedToken: DeliveryToken | undefined;
+    let capturedMessage: SessionMessage | undefined;
+    const handler = createMockHandler({
+      start: vi.fn(async (message, ctx, token) => {
+        capturedMessage = message;
+        capturedCtx = ctx;
+        capturedToken = token;
+        return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
+      }),
+    });
+    const sm = createSessionManager({
+      handler,
+      ackEntry,
+      recoverChat,
+      recoverRuntimeSessionProof,
+      sdk,
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+    });
+
+    await sm.dispatch(
+      mockEntry({ id: 30, chatId: "chat-provider-proof-notice", messageId: "msg-provider-proof-notice" }),
+    );
+    if (!capturedCtx || !capturedToken || !capturedMessage) throw new Error("delivery was not captured");
+
+    emitCodexTerminalProviderFailure(capturedCtx, "revoked provider refresh token");
+    await capturedToken.complete(capturedMessage, {
+      status: "error",
+      terminal: true,
+      completion: "consumed",
+      reason: "provider_credential_required",
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(recoverRuntimeSessionProof).toHaveBeenCalledWith("runtime_session_missing");
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
 
     await sm.shutdown();
   });

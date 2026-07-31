@@ -583,10 +583,12 @@ describe("AgentSlot", () => {
     );
     expect(session.dispatch).toHaveBeenCalledTimes(1);
 
+    session.noteBindRecoveryComplete.mockClear();
     connection.emit("agent:bound", { agentId: "other-agent" });
     connection.emit("agent:bound", { agentId: "agent-1" });
     await vi.advanceTimersByTimeAsync(5000);
 
+    expect(session.noteBindRecoveryComplete).not.toHaveBeenCalled();
     expect(connection.reportSessionState).toHaveBeenCalledWith("agent-1", "chat-1", "active");
     expect(connection.reportSessionState).toHaveBeenCalledWith("agent-1", "chat-evicted", "suspended");
     expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-1", "working");
@@ -764,6 +766,42 @@ describe("AgentSlot", () => {
     expect(vi.mocked(sdk.listActiveRuntimeChatIds)).not.toHaveBeenCalled();
     expect(session.updateTransport).toHaveBeenCalledWith(nextSdk, expect.anything());
     expect(session.noteBindRecoveryComplete).toHaveBeenCalled();
+
+    await slot.stop();
+  });
+
+  it("coalesces concurrent runtime-proof failures into one agent rebind", async () => {
+    const { slot, connection, sdk, state } = await makeSlot({ activeRuntimeChatIds: ["chat-1"] });
+    await slot.start();
+    const config = state.sessionConfigs[0] as {
+      recoverRuntimeSessionProof?: (reasonCode: string) => Promise<void>;
+    };
+    if (!config.recoverRuntimeSessionProof) throw new Error("runtime proof recovery callback missing");
+
+    const rebind = deferred<{
+      agentId: string;
+      displayName: string;
+      agentType: string;
+      sdk: FirstTreeHubSDK;
+      runtimeSessionToken: string;
+    }>();
+    connection.bindAgent.mockImplementationOnce(() => rebind.promise);
+
+    const first = config.recoverRuntimeSessionProof("runtime_session_missing");
+    const second = config.recoverRuntimeSessionProof("runtime_session_invalid");
+    expect(connection.bindAgent).toHaveBeenCalledTimes(2);
+
+    rebind.resolve({
+      agentId: "agent-1",
+      displayName: "Agent One",
+      agentType: "agent",
+      sdk,
+      runtimeSessionToken: "runtime-token-2",
+    });
+    await Promise.all([first, second]);
+
+    await config.recoverRuntimeSessionProof("runtime_session_invalid");
+    expect(connection.bindAgent).toHaveBeenCalledTimes(3);
 
     await slot.stop();
   });

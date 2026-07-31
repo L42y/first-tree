@@ -1159,11 +1159,13 @@ export {
 export {
   type ActivityOverview,
   AGENT_BIND_REJECT_REASONS,
+  AGENT_RUNTIME_SESSION_ERROR_CODES,
   AGENT_RUNTIME_SESSION_HEADER,
   AGENT_SELECTOR_HEADER,
   type AgentBindRejectReason,
   type AgentBindRequest,
   type AgentPresence,
+  type AgentRuntimeSessionErrorCode,
   activityOverviewSchema,
   agentBindRejectReasonSchema,
   agentBindRequestSchema,

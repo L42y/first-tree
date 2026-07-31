@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   formatProviderFailureRuntimeNotice,
   isEgressForbiddenText,
+  isRuntimeSessionProofFailure,
   postProviderFailureRuntimeNotice,
   shouldPostProviderFailureRuntimeNotice,
 } from "../runtime/runtime-notice.js";
@@ -26,6 +27,12 @@ describe("runtime notice formatting", () => {
     expect(shouldPostProviderFailureRuntimeNotice(payload({ event: "provider_retry_exhausted" }))).toBe(true);
     expect(shouldPostProviderFailureRuntimeNotice(payload({ event: "provider_retry_scheduled" }))).toBe(false);
     expect(shouldPostProviderFailureRuntimeNotice(payload({ event: "provider_retry_succeeded" }))).toBe(false);
+    const runtimeFault = payload({
+      category: "runtime_transport",
+      reasonCode: "runtime_session_invalid",
+    });
+    expect(isRuntimeSessionProofFailure(runtimeFault)).toBe(true);
+    expect(shouldPostProviderFailureRuntimeNotice(runtimeFault)).toBe(false);
   });
 
   it("formats generic provider failure categories and action scopes", () => {

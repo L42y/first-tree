@@ -9,7 +9,14 @@ import type { FirstTreeHubSDK } from "../sdk.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
 
 export function shouldPostProviderFailureRuntimeNotice(payload: ProviderRetryEventPayload): boolean {
-  return payload.event === "provider_failure_terminal" || payload.event === "provider_retry_exhausted";
+  return (
+    payload.category !== "runtime_transport" &&
+    (payload.event === "provider_failure_terminal" || payload.event === "provider_retry_exhausted")
+  );
+}
+
+export function isRuntimeSessionProofFailure(payload: ProviderRetryEventPayload): boolean {
+  return payload.category === "runtime_transport";
 }
 
 export function formatProviderFailureRuntimeNotice(payload: ProviderRetryEventPayload): string {
@@ -68,6 +75,8 @@ function noticeLead(payload: ProviderRetryEventPayload): string {
   const provider = providerLabel(payload.provider);
   const action = actionLabel(payload.scope);
   switch (payload.category) {
+    case "runtime_transport":
+      return `First Tree could not ${action}: the runtime session proof is stale. Rebinding the agent runtime.`;
     case "credential":
       return `${provider} could not ${action}: credentials need attention. Please sign in again and retry.`;
     case "capability":

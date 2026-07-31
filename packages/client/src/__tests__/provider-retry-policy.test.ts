@@ -8,6 +8,7 @@ import {
   MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "../runtime/provider-retry-policy.js";
+import { SdkError } from "../sdk.js";
 
 class FakeRateLimit extends Error {
   override name = "RateLimitError";
@@ -41,6 +42,43 @@ function decide(input: {
 }
 
 describe("classifyProviderFailure", () => {
+  it("routes runtime-session proof failures to bind recovery before generic 403 credentials", () => {
+    for (const [code, reasonCode] of [
+      ["AGENT_RUNTIME_SESSION_MISSING", "runtime_session_missing"],
+      ["AGENT_RUNTIME_SESSION_INVALID", "runtime_session_invalid"],
+    ] as const) {
+      const c = classifyProviderFailure(new SdkError(403, "Forbidden", { code }), {
+        provider: "codex",
+        scope: "provider_turn",
+        source: "sdk",
+      });
+      expect(c).toMatchObject({ category: "runtime_transport", reasonCode });
+      expect(
+        decideProviderRetry({
+          classification: c,
+          scope: "provider_turn",
+          attempt: 1,
+          replaySafety: "unknown",
+        }),
+      ).toMatchObject({
+        action: "stop",
+        reasonCode,
+        terminalKind: "runtime_rebind_required",
+        userSeverity: "warning",
+      });
+    }
+  });
+
+  it("recognizes legacy runtime-proof messages during a rolling server upgrade", () => {
+    expect(
+      classifyProviderFailure(Object.assign(new Error("Invalid agent runtime session"), { statusCode: 403 }), {
+        provider: "claude-code",
+        scope: "session_start",
+        source: "sdk",
+      }),
+    ).toMatchObject({ category: "runtime_transport", reasonCode: "runtime_session_invalid" });
+  });
+
   it("maps provider rate limits to provider_capacity", () => {
     expect(
       classifyProviderFailure(new FakeRateLimit("rate limited"), {

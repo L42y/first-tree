@@ -122,6 +122,8 @@ export class AgentSlot {
   private postBindReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners: ConnectionListener[] = [];
   private stopping: Promise<void> | null = null;
+  /** One agent-wide rebind serves every chat that observes the same stale proof. */
+  private runtimeSessionProofRecoveryInFlight: Promise<void> | null = null;
   private readonly runtimeSessionTokenProvider = (): string | undefined => this.runtimeSessionTokenStore.read();
   /**
    * Aborts an in-flight bring-up config-fetch retry (see
@@ -204,6 +206,7 @@ export class AgentSlot {
     };
     const onBound = (boundAgent: BoundAgent) => {
       if (boundAgent.agentId === this.config.agentId) {
+        let runtimeSessionProofRefreshed = false;
         if (boundAgent.runtimeSessionToken) {
           if (!this.persistBoundRuntimeSessionToken(boundAgent)) {
             if (this.started) {
@@ -214,8 +217,9 @@ export class AgentSlot {
             return;
           }
           if (boundAgent.sdk) this.adoptRuntimeTransport(boundAgent.sdk);
+          runtimeSessionProofRefreshed = true;
         }
-        if (typeof this.sessionManager?.noteBindRecoveryComplete === "function") {
+        if (runtimeSessionProofRefreshed && typeof this.sessionManager?.noteBindRecoveryComplete === "function") {
           this.sessionManager.noteBindRecoveryComplete();
         }
         // The first `agent:bound` can arrive while startup is still inside
@@ -350,6 +354,7 @@ export class AgentSlot {
         runtimeSessionTokenFile: this.runtimeSessionTokenFile,
         ackEntry,
         recoverChat,
+        recoverRuntimeSessionProof: (reasonCode) => this.recoverRuntimeSessionProof(reasonCode),
         onStateChange: (chatId, state) => this.reportSessionState(chatId, state),
         onRuntimeStateChange: (state) => this.reportRuntimeState(state),
         onSessionEvent: (chatId, event) => this.reportSessionEvent(chatId, event),
@@ -487,6 +492,30 @@ export class AgentSlot {
     }
     this.agentConfigCache?.updateSdk(sdk);
     this.sessionManager?.updateTransport(sdk, this.agentConfigCache ?? undefined);
+  }
+
+  private recoverRuntimeSessionProof(reasonCode: string): Promise<void> {
+    const existing = this.runtimeSessionProofRecoveryInFlight;
+    if (existing) return existing;
+    if (this.stopping || this.bringupAbort?.signal.aborted) {
+      return Promise.reject(new Error("runtime-session proof recovery skipped because the agent slot is stopping"));
+    }
+
+    const runtimeType = this.config.runtimeType ?? this.config.type;
+    this.logger.warn({ reasonCode }, "runtime-session proof rejected; requesting a fresh agent bind");
+    let recovery: Promise<void>;
+    recovery = this.clientConnection
+      .bindAgent(this.config.agentId, runtimeType, this.config.runtimeVersion)
+      .then(() => {
+        this.logger.info({ reasonCode }, "runtime-session proof recovered through agent rebind");
+      })
+      .finally(() => {
+        if (this.runtimeSessionProofRecoveryInFlight === recovery) {
+          this.runtimeSessionProofRecoveryInFlight = null;
+        }
+      });
+    this.runtimeSessionProofRecoveryInFlight = recovery;
+    return recovery;
   }
 
   private persistBoundRuntimeSessionToken(boundAgent: BoundAgent): boolean {

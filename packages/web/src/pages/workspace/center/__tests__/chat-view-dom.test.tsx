@@ -1447,6 +1447,34 @@ describe("ChatView", () => {
       };
     }
 
+    function runtimeProofErrorEvents(agentId: string): { items: SessionEventRow[]; nextCursor: number | null } {
+      return {
+        items: [
+          {
+            id: "runtime-proof-fail",
+            agentId,
+            chatId: "chat-1",
+            seq: 1,
+            kind: "error",
+            payload: {
+              source: "runtime",
+              message: encodeProviderRetryEventMessage({
+                event: "provider_failure_terminal",
+                provider: "claude-code",
+                scope: "provider_turn",
+                category: "runtime_transport",
+                reasonCode: "runtime_session_invalid",
+                userSeverity: "warning",
+                messagePreview: "Invalid agent runtime session",
+              }),
+            },
+            createdAt: "2026-05-28T11:56:30.000Z",
+          },
+        ] satisfies SessionEventRow[],
+        nextCursor: null,
+      };
+    }
+
     it("renders a Connect button on a credential failure when the agent's client resolves", async () => {
       const { ChatView } = await import("../chat-view.js");
       const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (queryClient) => {
@@ -1485,6 +1513,22 @@ describe("ChatView", () => {
 
       await waitForText(container, "at capacity");
       await flush();
+      expect(buttonByText(container, "Connect Claude Code")).toBeNull();
+
+      await act(async () => root.unmount());
+    });
+
+    it("labels runtime-proof recovery separately and does NOT offer provider login", async () => {
+      const { ChatView } = await import("../chat-view.js");
+      const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (queryClient) => {
+        queryClient.setQueryData(
+          ["chat-session-events", "chat-1"],
+          chatSessionEvents({ agentId: "agent-1", events: runtimeProofErrorEvents("agent-1") }),
+        );
+      });
+
+      await waitForText(container, "Runtime connection interrupted");
+      expect(container.textContent).toContain("Invalid agent runtime session");
       expect(buttonByText(container, "Connect Claude Code")).toBeNull();
 
       await act(async () => root.unmount());

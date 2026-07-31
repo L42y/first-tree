@@ -1,4 +1,8 @@
-import { AGENT_RUNTIME_SESSION_HEADER, AGENT_SELECTOR_HEADER } from "@first-tree/shared";
+import {
+  AGENT_RUNTIME_SESSION_ERROR_CODES,
+  AGENT_RUNTIME_SESSION_HEADER,
+  AGENT_SELECTOR_HEADER,
+} from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
@@ -234,7 +238,10 @@ describe("runtime-bound agent HTTP enforcement", () => {
     });
 
     expect(res.statusCode).toBe(403);
-    expect(res.json<{ error: string }>().error).toContain(`Missing ${AGENT_RUNTIME_SESSION_HEADER} header`);
+    expect(res.json<{ error: string; code: string }>()).toMatchObject({
+      error: expect.stringContaining(`Missing ${AGENT_RUNTIME_SESSION_HEADER} header`),
+      code: AGENT_RUNTIME_SESSION_ERROR_CODES.MISSING,
+    });
   });
 
   it("accepts non-human agent HTTP with the current runtime session token", async () => {
@@ -394,7 +401,10 @@ describe("runtime-bound agent HTTP enforcement", () => {
     });
 
     expect(res.statusCode).toBe(403);
-    expect(res.json<{ error: string }>().error).toContain("Invalid agent runtime session");
+    expect(res.json<{ error: string; code: string }>()).toMatchObject({
+      error: expect.stringContaining("Invalid agent runtime session"),
+      code: AGENT_RUNTIME_SESSION_ERROR_CODES.INVALID,
+    });
   });
 
   it("does not require runtime session tokens for human agents", async () => {

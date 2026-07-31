@@ -64,7 +64,11 @@ import {
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
 import { createResultSink, type Trigger } from "./result-sink.js";
-import { postProviderFailureRuntimeNotice, shouldPostProviderFailureRuntimeNotice } from "./runtime-notice.js";
+import {
+  isRuntimeSessionProofFailure,
+  postProviderFailureRuntimeNotice,
+  shouldPostProviderFailureRuntimeNotice,
+} from "./runtime-notice.js";
 import { SessionRegistry } from "./session-registry.js";
 
 type SessionEntry = {
@@ -151,6 +155,11 @@ type RouteTransitionToken = RouteLeaseToken & {
 type SessionFailureHandling =
   | { kind: "retry" }
   | { kind: "terminal"; reasonCode: string; terminalEventPersisted: boolean };
+
+type RuntimeFailureNoticePostResult =
+  | { kind: "posted" }
+  | { kind: "failed" }
+  | { kind: "runtime_session_proof"; reasonCode: string };
 
 export type SessionManagerShutdownOptions = {
   /**
@@ -349,6 +358,11 @@ type SessionManagerConfig = {
    */
   recoverChat?: (chatId: string) => Promise<void>;
   /**
+   * Re-bind the owning agent after a bind-scoped HTTP proof failure. The
+   * callback is agent-wide and must coalesce concurrent chat failures.
+   */
+  recoverRuntimeSessionProof?: (reasonCode: string) => Promise<void>;
+  /**
    * Resolver for the agent's Context Tree binding, used to lazily upgrade a
    * tree-LESS slot to tree-bound at session start (new-tree onboarding sets the
    * org `context_tree` only after the slot starts). Defaults to a live
@@ -488,6 +502,8 @@ export class SessionManager {
   private shuttingDown = false;
   private readonly lastReportedStates = new Map<string, SessionState>();
   private readonly sessionRuntimeStates = new Map<string, RuntimeState>();
+  /** Chats held specifically for a fresh bind, never same-socket recovery. */
+  private readonly runtimeProofRecoveryChats = new Set<string>();
   /** Handlers invalidated while start/resume was unresolved must never be reused. */
   private readonly retiredHandlers = new WeakSet<AgentHandler>();
   /** Coalesces concurrent cleanup; a stale settlement may enqueue a later cleanup pass. */
@@ -600,6 +616,10 @@ export class SessionManager {
               entry.message.configVersion,
             );
           } catch (err) {
+            const proofReason = this.runtimeSessionProofReasonForError(err);
+            if (proofReason && (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, message, proofReason))) {
+              return;
+            }
             this.config.log.warn(
               {
                 chatId,
@@ -653,8 +673,12 @@ export class SessionManager {
         // turn, but same-chat later messages must still be able to append once
         // this entry has reached handler membership.
         const deliveryKind: SlotDeliveryKind = isRecoveryRedelivery ? "recovery" : "fresh";
-        routePromise = this.routeMessage(chatId, message, deliveryKind).catch((err) => {
+        routePromise = this.routeMessage(chatId, message, deliveryKind).catch(async (err) => {
           if (this.inboxDelivery.hasEntry(work)) {
+            const proofReason = this.runtimeSessionProofReasonForError(err);
+            if (proofReason && (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, message, proofReason))) {
+              return;
+            }
             this.retryDeliveryTurn(chatId, message, "route_message_failed");
           }
           throw err;
@@ -662,6 +686,10 @@ export class SessionManager {
       });
     } catch (err) {
       if (this.inboxDelivery.hasEntry(work)) {
+        const proofReason = this.runtimeSessionProofReasonForError(err);
+        if (proofReason && (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, message, proofReason))) {
+          return;
+        }
         this.retryDeliveryTurn(chatId, message, "admission_failed");
       }
       throw err;
@@ -920,6 +948,7 @@ export class SessionManager {
 
     this.sessions.clear();
     this.evictedMappings.clear();
+    this.runtimeProofRecoveryChats.clear();
     this.lastReportedStates.clear();
     this.sessionRuntimeStates.clear();
     this.lastReportedRuntimeState = null;
@@ -976,12 +1005,17 @@ export class SessionManager {
   }
 
   /**
-   * Compatibility hook for AgentSlot's bind listener. Bind-time recovery is
-   * now server-driven; chat-scoped same-socket recovery is requested lazily
-   * by `dispatch` when a locally held chat has no healthy live handler.
+   * Release only chats fenced by a runtime-proof fault. The server completes
+   * its delivered→pending reset before sending `agent:bound`, so clearing the
+   * local ledgers here cannot lose custody and lets the post-bound drain
+   * establish fresh ownership.
    */
   noteBindRecoveryComplete(): void {
-    // Intentionally no-op.
+    for (const chatId of this.runtimeProofRecoveryChats) {
+      this.inboxDelivery.completeBindRecovery(chatId);
+      this.projectSessionRuntime(chatId);
+    }
+    this.runtimeProofRecoveryChats.clear();
   }
 
   // ---- Internal -----------------------------------------------------------
@@ -1141,7 +1175,9 @@ export class SessionManager {
     if (mutationLeaseValid && !mutationLeaseValid()) return false;
     if (event.kind !== "error") return false;
     const payload = parseProviderRetryEventMessage(event.payload.message);
-    if (!payload || !shouldPostProviderFailureRuntimeNotice(payload)) return false;
+    if (!payload || (!shouldPostProviderFailureRuntimeNotice(payload) && !isRuntimeSessionProofFailure(payload))) {
+      return false;
+    }
 
     const entry = this.sessions.get(chatId);
     if (!entry) return false;
@@ -1171,6 +1207,91 @@ export class SessionManager {
     this.inboxDelivery.retryTurn(chatId, messages, reason);
   }
 
+  private pendingRuntimeSessionProofFailure(chatId: string): ProviderRetryEventPayload | null {
+    const payload = this.sessions.get(chatId)?.pendingRuntimeFailureNotice;
+    return payload && isRuntimeSessionProofFailure(payload) ? payload : null;
+  }
+
+  private runtimeSessionProofReasonForError(err: unknown): string | null {
+    const classification = classifyProviderFailure(err, {
+      provider: this.runtimeProvider(),
+      scope: "provider_turn",
+      source: "sdk",
+    });
+    return classification.category === "runtime_transport" ? classification.reasonCode : null;
+  }
+
+  private async holdDeliveryForRuntimeSessionProofRecovery(
+    chatId: string,
+    messages: SessionMessage | readonly SessionMessage[],
+    reasonCode?: string,
+    mutationLeaseValid: (() => boolean) | null = null,
+  ): Promise<boolean> {
+    const entry = this.sessions.get(chatId);
+    const payload = entry?.pendingRuntimeFailureNotice;
+    const proofReason = reasonCode ?? (payload && isRuntimeSessionProofFailure(payload) ? payload.reasonCode : null);
+    if (!proofReason) return false;
+    if (mutationLeaseValid && !mutationLeaseValid()) return false;
+
+    const held = await this.inboxDelivery.holdTurnForBindRecovery(
+      chatId,
+      messages,
+      `runtime_session_proof:${proofReason}`,
+    );
+    if (!held) return false;
+
+    if (entry && payload && this.sessions.get(chatId) === entry && entry.pendingRuntimeFailureNotice === payload) {
+      entry.pendingRuntimeFailureNotice = null;
+    }
+    this.runtimeProofRecoveryChats.add(chatId);
+    if (entry) this.fenceSessionForRuntimeSessionProofRecovery(chatId, proofReason);
+    this.projectSessionRuntime(chatId);
+
+    const recover = this.config.recoverRuntimeSessionProof;
+    if (!recover) {
+      this.config.log.error(
+        { chatId, reasonCode: proofReason },
+        "runtime-session proof recovery is required but no rebind callback is configured",
+      );
+      return true;
+    }
+    void recover(proofReason).catch((err) => {
+      this.config.log.warn(
+        { chatId, reasonCode: proofReason, err },
+        "runtime-session proof rebind failed; inbox debt remains held",
+      );
+    });
+    return true;
+  }
+
+  private fenceSessionForRuntimeSessionProofRecovery(chatId: string, reasonCode: string): void {
+    const entry = this.sessions.get(chatId);
+    if (!entry) return;
+    const reason = `runtime_session_proof:${reasonCode}`;
+    this.invalidateRouteTransition(entry, reason);
+    this.clearRetryState(entry);
+    const resumeSessionId = resumableProviderSessionId(entry.claudeSessionId, entry.retryFromEvicted?.claudeSessionId);
+    if (resumeSessionId) {
+      this.addEvictedMapping(chatId, {
+        claudeSessionId: resumeSessionId,
+        lastActivity: entry.lastActivity,
+      });
+    }
+    this.releaseActiveSlot(entry);
+    void this.shutdownHandler(entry.handler, reason);
+    this.sessions.delete(chatId);
+    this.sessionRuntimeStates.delete(chatId);
+    this.currentTrigger.delete(chatId);
+    this.notifySessionState(chatId, "errored");
+    this.config.log.warn(
+      { chatId, reasonCode },
+      "session fenced until a fresh runtime-session bind restores HTTP proof",
+    );
+    this.recomputeRuntimeState();
+    this.persistRegistry();
+    this.drainPendingQueue();
+  }
+
   private emitRuntimeFailureNoticeDeliveryFailure(chatId: string, err: unknown): void {
     try {
       this.config.onSessionEvent?.(chatId, {
@@ -1188,24 +1309,38 @@ export class SessionManager {
   private async postPendingRuntimeFailureNotice(
     chatId: string,
     mutationLeaseValid: (() => boolean) | null = null,
-  ): Promise<boolean> {
+  ): Promise<RuntimeFailureNoticePostResult> {
     const entry = this.sessions.get(chatId);
     const payload = entry?.pendingRuntimeFailureNotice;
-    if (!entry || !payload) return true;
+    if (!entry || !payload) return { kind: "posted" };
 
     try {
       await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
-      if (mutationLeaseValid && !mutationLeaseValid()) return true;
+      if (mutationLeaseValid && !mutationLeaseValid()) return { kind: "posted" };
       if (this.sessions.get(chatId) === entry && entry.pendingRuntimeFailureNotice === payload) {
         entry.pendingRuntimeFailureNotice = null;
       }
-      return true;
+      return { kind: "posted" };
     } catch (err) {
-      if (mutationLeaseValid && !mutationLeaseValid()) return false;
-      if (this.sessions.get(chatId) !== entry || entry.pendingRuntimeFailureNotice !== payload) return false;
+      if (mutationLeaseValid && !mutationLeaseValid()) return { kind: "failed" };
+      if (this.sessions.get(chatId) !== entry || entry.pendingRuntimeFailureNotice !== payload) {
+        return { kind: "failed" };
+      }
+      const noticeFailure = classifyProviderFailure(err, {
+        provider: payload.provider,
+        scope: payload.scope,
+        source: "sdk",
+      });
+      if (noticeFailure.category === "runtime_transport") {
+        this.config.log.warn(
+          { chatId, err, reasonCode: noticeFailure.reasonCode },
+          "runtime failure notice hit stale runtime-session proof; deferring to rebind",
+        );
+        return { kind: "runtime_session_proof", reasonCode: noticeFailure.reasonCode };
+      }
       this.config.log.warn({ chatId, err, reasonCode: payload.reasonCode }, "runtime failure notice delivery failed");
       this.emitRuntimeFailureNoticeDeliveryFailure(chatId, err);
-      return false;
+      return { kind: "failed" };
     }
   }
 
@@ -1301,6 +1436,16 @@ export class SessionManager {
     deliveryLeaseValid: (() => boolean) | null = null,
   ): Promise<DeliveryCompletionDisposition> {
     if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
+    if (
+      outcome.status === "error" &&
+      this.pendingRuntimeSessionProofFailure(chatId) &&
+      (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, messages, undefined, deliveryLeaseValid))
+    ) {
+      // Held for bind recovery: server custody is deliberately retained
+      // (unacked, no same-socket recovery), so report "retry" rather than
+      // "settled" to the handler's completion bookkeeping.
+      return "retry";
+    }
     const retryReason = this.errorCompletionRetryReason(outcome);
     if (retryReason) {
       this.warnRejectedErrorCompletion(chatId, outcome, retryReason);
@@ -1311,9 +1456,21 @@ export class SessionManager {
     if (outcome.status === "success") {
       this.clearPendingRuntimeFailureNotice(chatId);
     } else if (outcome.completion === "consumed") {
-      const noticePosted = await this.postPendingRuntimeFailureNotice(chatId, deliveryLeaseValid);
+      const noticeResult = await this.postPendingRuntimeFailureNotice(chatId, deliveryLeaseValid);
       if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
-      if (!noticePosted) {
+      if (noticeResult.kind === "runtime_session_proof") {
+        const held = await this.holdDeliveryForRuntimeSessionProofRecovery(
+          chatId,
+          messages,
+          noticeResult.reasonCode,
+          deliveryLeaseValid,
+        );
+        if (held) return "retry";
+        this.retryDeliveryTurn(chatId, messages, "runtime_session_proof_hold_failed");
+        this.projectSessionRuntime(chatId);
+        return "retry";
+      }
+      if (noticeResult.kind === "failed") {
         this.retryDeliveryTurn(chatId, messages, "runtime_failure_notice_delivery_failed");
         this.projectSessionRuntime(chatId);
         return "retry";
@@ -1357,9 +1514,27 @@ export class SessionManager {
       },
       terminalRejected: async (messages, reason, evidence) => {
         if (!claimTerminal("terminalRejected")) return;
-        const noticePosted = await this.postPendingRuntimeFailureNotice(chatId, isValid);
+        if (
+          this.pendingRuntimeSessionProofFailure(chatId) &&
+          (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, messages, undefined, isValid))
+        ) {
+          return;
+        }
+        const noticeResult = await this.postPendingRuntimeFailureNotice(chatId, isValid);
         if (!isValid()) return;
-        if (!noticePosted) {
+        if (noticeResult.kind === "runtime_session_proof") {
+          const held = await this.holdDeliveryForRuntimeSessionProofRecovery(
+            chatId,
+            messages,
+            noticeResult.reasonCode,
+            isValid,
+          );
+          if (held) return;
+          this.retryDeliveryTurn(chatId, messages, "runtime_session_proof_hold_failed");
+          this.projectSessionRuntime(chatId);
+          return;
+        }
+        if (noticeResult.kind === "failed") {
           this.retryDeliveryTurn(chatId, messages, "runtime_failure_notice_delivery_failed");
           this.projectSessionRuntime(chatId);
           return;
@@ -1971,6 +2146,7 @@ export class SessionManager {
         completion: "consumed",
         reason: `session_failure_terminal:${handling.reasonCode}`,
       });
+      if (this.sessions.get(chatId) !== entry) return;
       if (hasDeferredTail || this.inboxDelivery.hasRecoveryDebt(chatId)) {
         await this.inboxDelivery.drainForTerminate(chatId);
       }

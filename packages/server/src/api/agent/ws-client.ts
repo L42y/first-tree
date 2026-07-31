@@ -90,6 +90,13 @@ const INBOX_BACKLOG_BATCH_LIMIT = 50;
  * bounded extra trigger for sockets this server instance already owns.
  */
 const INBOX_BACKLOG_REPAIR_INTERVAL_MS = 30_000;
+/**
+ * Same-socket recovery is allowed to replay the same debt twice. A third
+ * identical reset without an ACK or fresh bind opens a per-chat circuit and
+ * leaves the rows pending. This is a compatibility fuse for older clients;
+ * current clients route stale runtime proof through rebind instead.
+ */
+const INBOX_RECOVER_NO_PROGRESS_LIMIT = 2;
 
 const wsMessageSchema = z.object({
   type: z.string(),
@@ -377,6 +384,27 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
        */
       let inboxOperationQueue: Promise<void> = Promise.resolve();
       const lastInboxRepairDrainAtByAgent = new Map<string, number>();
+      type InboxRecoverProgress = {
+        resetSignature: string;
+        consecutiveResets: number;
+        open: boolean;
+      };
+      const inboxRecoverProgress = new Map<string, InboxRecoverProgress>();
+
+      function inboxRecoverProgressKey(agentId: string, chatId: string): string {
+        return `${agentId}\u0000${chatId}`;
+      }
+
+      function clearInboxRecoverProgress(agentId: string, chatId?: string): void {
+        if (chatId !== undefined) {
+          inboxRecoverProgress.delete(inboxRecoverProgressKey(agentId, chatId));
+          return;
+        }
+        const prefix = `${agentId}\u0000`;
+        for (const key of inboxRecoverProgress.keys()) {
+          if (key.startsWith(prefix)) inboxRecoverProgress.delete(key);
+        }
+      }
 
       function sendPinnedAgentFrame(agent: {
         uuid: string;
@@ -431,6 +459,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         }
         boundAgents.delete(agentId);
         lastInboxRepairDrainAtByAgent.delete(agentId);
+        clearInboxRecoverProgress(agentId);
         clearInboxInFlightForAgent(agentId);
         if (clientId) {
           connectionManager.unbindAgentFromClient(agentId, clientId);
@@ -485,12 +514,29 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
       }
 
       function inboxInFlightChatBudgets(agentId: string): Array<{ chatId: string | null; remaining: number }> {
+        const budgets = new Map<string, { chatId: string | null; remaining: number }>();
         const byChat = inboxInFlightByAgent.get(agentId);
-        if (!byChat) return [];
-        return [...byChat.values()].map((bucket) => ({
-          chatId: bucket.chatId,
-          remaining: Math.max(0, inboxMaxInFlightPerAgentChat - bucket.entryIds.size),
-        }));
+        if (byChat) {
+          for (const bucket of byChat.values()) {
+            budgets.set(inboxChatKey(bucket.chatId), {
+              chatId: bucket.chatId,
+              remaining: Math.max(0, inboxMaxInFlightPerAgentChat - bucket.entryIds.size),
+            });
+          }
+        }
+        // A chat whose same-socket no-progress circuit is open must stay
+        // ineligible for every normal notify/repair/ACK fair drain on this
+        // socket, not just for scoped recover; only that chat's ACK or a
+        // fresh bind (both clear the circuit) may release its held debt.
+        // The zero budget overrides any ordinary in-flight remainder while
+        // other chats keep draining normally.
+        const circuitPrefix = `${agentId}\u0000`;
+        for (const [key, progress] of inboxRecoverProgress) {
+          if (!progress.open || !key.startsWith(circuitPrefix)) continue;
+          const chatId = key.slice(circuitPrefix.length);
+          budgets.set(inboxChatKey(chatId), { chatId, remaining: 0 });
+        }
+        return [...budgets.values()];
       }
 
       function logPerChatCaps(agentId: string, inboxId: string, inFlightCount: number): void {
@@ -1249,6 +1295,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               notificationService.markAgentFaultsResolved(app.db, agent.id).catch(() => {});
 
               connectionManager.bindAgentToClient(clientId, agent.id, runtimeSessionToken);
+              clearInboxRecoverProgress(agent.id);
               boundAgents.set(agent.id, {
                 agentId: agent.id,
                 inboxId: agent.inboxId,
@@ -1694,6 +1741,9 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                     "inbox:ack accepted",
                   );
                   if (owner && ackResult.ackedEntryIds.length > 0) {
+                    if (typeof ackResult.throughEntry.chatId === "string") {
+                      clearInboxRecoverProgress(owner.agentId, ackResult.throughEntry.chatId);
+                    }
                     removeInboxInFlight(ackResult.ackedEntryIds);
                     // Slot freed → top up. Cheap when no backlog (single SQL
                     // statement returning 0 rows). Critical when the cap was
@@ -1738,11 +1788,75 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                 }
 
                 try {
+                  const progressKey = inboxRecoverProgressKey(agentId, chatId);
+                  const priorProgress = inboxRecoverProgress.get(progressKey);
+                  if (priorProgress?.open) {
+                    socket.send(
+                      JSON.stringify({
+                        type: "inbox:recover:rejected",
+                        ref,
+                        agentId,
+                        chatId,
+                        reason: "recover_failed",
+                      }),
+                    );
+                    app.log.warn(
+                      {
+                        agentId,
+                        chatId,
+                        resetSignature: priorProgress.resetSignature,
+                        consecutiveResets: priorProgress.consecutiveResets,
+                        recoverEvent: "inbox_recover_no_progress_blocked",
+                      },
+                      "inbox:recover blocked after repeated no-progress resets",
+                    );
+                    return;
+                  }
+
                   const recovered = await inboxService.recoverUnackedForScope(app.db, {
                     inboxId: info.inboxId,
                     chatId,
                   });
                   removeInboxInFlight(recovered.resetEntryIds);
+                  if (recovered.resetEntryIds.length > 0) {
+                    const resetSignature = [...recovered.resetEntryIds].sort((a, b) => a - b).join(",");
+                    const consecutiveResets =
+                      priorProgress?.resetSignature === resetSignature ? priorProgress.consecutiveResets + 1 : 1;
+                    if (consecutiveResets > INBOX_RECOVER_NO_PROGRESS_LIMIT) {
+                      inboxRecoverProgress.set(progressKey, {
+                        resetSignature,
+                        consecutiveResets,
+                        open: true,
+                      });
+                      socket.send(
+                        JSON.stringify({
+                          type: "inbox:recover:rejected",
+                          ref,
+                          agentId,
+                          chatId,
+                          reason: "recover_failed",
+                        }),
+                      );
+                      app.log.warn(
+                        {
+                          agentId,
+                          chatId,
+                          resetEntryIds: recovered.resetEntryIds,
+                          consecutiveResets,
+                          recoverEvent: "inbox_recover_no_progress_opened",
+                        },
+                        "inbox:recover opened no-progress circuit; backlog remains pending until ACK or bind",
+                      );
+                      return;
+                    }
+                    inboxRecoverProgress.set(progressKey, {
+                      resetSignature,
+                      consecutiveResets,
+                      open: false,
+                    });
+                  } else {
+                    inboxRecoverProgress.delete(progressKey);
+                  }
                   socket.send(
                     JSON.stringify({
                       type: "inbox:recover:accepted",

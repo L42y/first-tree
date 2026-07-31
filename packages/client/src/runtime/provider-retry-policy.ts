@@ -6,6 +6,7 @@ import type {
   ReplaySafety,
   RuntimeProvider,
 } from "@first-tree/shared";
+import { AGENT_RUNTIME_SESSION_ERROR_CODES } from "@first-tree/shared";
 import { type Classification, classify, ERROR_KINDS } from "./error-taxonomy.js";
 import { isManagedSkillsUnsafeDiscoveryError } from "./managed-skills.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
@@ -32,7 +33,13 @@ export type ProviderRetryDecision =
   | {
       action: "stop";
       reasonCode: string;
-      terminalKind: "deterministic" | "exhausted" | "unsafe_replay" | "needs_operator" | "capacity_wait_required";
+      terminalKind:
+        | "deterministic"
+        | "exhausted"
+        | "unsafe_replay"
+        | "needs_operator"
+        | "capacity_wait_required"
+        | "runtime_rebind_required";
       replaySafety: ReplaySafety;
       userSeverity: "warning" | "error";
     };
@@ -67,6 +74,15 @@ export function classifyProviderFailure(
   const retryAfterMs = readRetryAfterMs(shape);
   const status = shape.status ?? shape.statusCode;
 
+  const runtimeSessionReason = runtimeSessionProofReason(shape, text);
+  if (runtimeSessionReason) {
+    return {
+      category: "runtime_transport",
+      reasonCode: runtimeSessionReason,
+      message: base.message,
+      sourceKind: base.kind,
+    };
+  }
   if (isManagedSkillsUnsafeDiscoveryError(err)) {
     return {
       category: "transient_transport",
@@ -160,6 +176,10 @@ export function decideProviderRetry(input: {
 }): ProviderRetryDecision {
   const attempt = Math.max(1, Math.floor(input.attempt));
   const retryAfterMs = input.retryAfterMs ?? input.classification.retryAfterMs;
+
+  if (input.classification.category === "runtime_transport") {
+    return stop(input.classification.reasonCode, "runtime_rebind_required", input.replaySafety, "warning");
+  }
 
   if (
     input.scope === "provider_turn" &&
@@ -417,6 +437,24 @@ function readRetryAfterMs(shape: ErrorShape): number | undefined {
     if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
   }
   return undefined;
+}
+
+function runtimeSessionProofReason(shape: ErrorShape, text: string): string | null {
+  if (
+    shape.code === AGENT_RUNTIME_SESSION_ERROR_CODES.MISSING ||
+    text.includes(AGENT_RUNTIME_SESSION_ERROR_CODES.MISSING.toLowerCase()) ||
+    /missing x-agent-runtime-session header/.test(text)
+  ) {
+    return "runtime_session_missing";
+  }
+  if (
+    shape.code === AGENT_RUNTIME_SESSION_ERROR_CODES.INVALID ||
+    text.includes(AGENT_RUNTIME_SESSION_ERROR_CODES.INVALID.toLowerCase()) ||
+    /invalid agent runtime session/.test(text)
+  ) {
+    return "runtime_session_invalid";
+  }
+  return null;
 }
 
 function isCredential(
