@@ -10,10 +10,12 @@
  * collisions; it does not unpick bindings already written, which is what this
  * reports.
  *
- * Grouping is on canonical repository identity, not on URL text: the binding
- * contract accepts HTTPS, `ssh://`, and scp-like SSH spellings with an optional
- * `.git`, so two teams can share one repository through two spellings and a
- * text grouping would report them as unrelated.
+ * Grouping uses the same repository identity the binding guard decides on, not
+ * URL text: the binding contract accepts HTTPS, `ssh://`, and scp-like SSH
+ * spellings with an optional `.git`, so two teams can share one repository
+ * through two spellings and a text grouping would report them as unrelated.
+ * That identity keeps a non-default port, so two self-managed forges on one
+ * host are not reported as a shared tree.
  *
  * Read-only: it issues one SELECT and writes nothing. Repo URLs are printed so
  * an operator can act on them, so treat the output as customer data.
@@ -21,9 +23,9 @@
  * Run: DATABASE_URL=... pnpm --filter @first-tree/server tsx scripts/audit-shared-context-tree-repos.ts
  */
 
-import { canonicalGitRepoUrl } from "@first-tree/shared";
 import { sql } from "drizzle-orm";
 import { connectDatabase } from "../src/db/connection.js";
+import { contextTreeRepoOwnershipKey } from "../src/services/org-settings.js";
 
 type BindingRow = {
   organization_id: string;
@@ -39,7 +41,7 @@ type SharedRepo = {
 function groupByCanonicalRepo(rows: BindingRow[]): SharedRepo[] {
   const byCanonical = new Map<string, SharedRepo>();
   for (const row of rows) {
-    const canonical = canonicalGitRepoUrl(row.repo);
+    const canonical = contextTreeRepoOwnershipKey(row.repo);
     if (!canonical || !row.repo) continue;
     const entry = byCanonical.get(canonical) ?? { canonical, teams: [] };
     entry.teams.push({

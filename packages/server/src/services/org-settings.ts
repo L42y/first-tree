@@ -423,11 +423,11 @@ export async function getOrgContextTreeSettingState(db: Database, orgId: string)
  * one tree, and the second team silently reads and writes the first team's
  * decisions.
  *
- * Comparison is on canonical repository identity, never on URL text. The
- * binding contract accepts HTTPS, `ssh://`, and scp-like SSH spellings with an
- * optional `.git`, so a team bound through one transport must still be found
- * when the lookup arrives through another — a text comparison would report no
- * conflict and hand over a repository that is already someone's tree.
+ * Comparison is on repository identity, never on URL text. The binding contract
+ * accepts HTTPS, `ssh://`, and scp-like SSH spellings with an optional `.git`,
+ * so a team bound through one transport must still be found when the lookup
+ * arrives through another — a text comparison would report no conflict and hand
+ * over a repository that is already someone's tree.
  *
  * Candidates are canonicalized in application code rather than SQL because the
  * canonical form is the shared cross-package rule; the scan is bounded by teams
@@ -438,7 +438,7 @@ export async function findOrgBoundToContextTreeRepo(
   excludeOrgId: string,
   repoUrl: string,
 ): Promise<string | null> {
-  const target = canonicalGitRepoUrl(repoUrl);
+  const target = contextTreeRepoOwnershipKey(repoUrl);
   if (!target) return null;
 
   const rows = await db
@@ -455,7 +455,7 @@ export async function findOrgBoundToContextTreeRepo(
       ),
     );
 
-  return rows.find((row) => canonicalGitRepoUrl(row.repo) === target)?.organizationId ?? null;
+  return rows.find((row) => contextTreeRepoOwnershipKey(row.repo) === target)?.organizationId ?? null;
 }
 
 /**
@@ -771,6 +771,37 @@ async function resolveStoredContextTreeProvider(
 }
 
 /**
+ * Identity two Context Tree bindings are compared on to decide whether they
+ * name the same repository.
+ *
+ * `canonicalGitRepoUrl` deliberately drops transport detail, including the
+ * HTTPS port — but a self-managed forge's port is part of which forge it is.
+ * Two teams on `git.internal:8443` and `git.internal:9443` are on different
+ * instances, and collapsing them would refuse a team its own tree and make the
+ * audit report a shared tree that does not exist. So the port is kept whenever
+ * the reference carries one.
+ *
+ * scp-like SSH references have no web port to keep and fall back to the shared
+ * canonical form, so an SSH binding and an HTTPS binding on a non-default port
+ * do not compare equal. That direction fails open — a conflict goes unnoticed
+ * rather than a legitimate binding being refused.
+ */
+export function contextTreeRepoOwnershipKey(repo: string | null | undefined): string | null {
+  const canonical = canonicalGitRepoUrl(repo);
+  if (!canonical || !repo) return null;
+  try {
+    const { port } = new URL(repo.trim());
+    if (port) {
+      const hostEnd = canonical.indexOf("/");
+      return `${canonical.slice(0, hostEnd)}:${port}${canonical.slice(hostEnd)}`;
+    }
+  } catch {
+    // scp-like or unparsable: the canonical form is the best available key.
+  }
+  return canonical;
+}
+
+/**
  * Refuse a binding that would point this team at another team's Context Tree.
  *
  * A Context Tree repository backs one team: sharing one merges two teams'
@@ -789,7 +820,7 @@ async function assertContextTreeRepoNotHeldByAnotherOrg(
   orgId: string,
   repo: string | undefined,
 ): Promise<void> {
-  if (!repo || !canonicalGitRepoUrl(repo)) return;
+  if (!repo || !contextTreeRepoOwnershipKey(repo)) return;
 
   const holder = await findOrgBoundToContextTreeRepo(db, orgId, repo);
   if (holder) {

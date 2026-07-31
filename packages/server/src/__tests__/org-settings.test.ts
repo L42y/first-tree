@@ -255,6 +255,37 @@ describe("org-settings service", () => {
     });
   }
 
+  it("putOrgSetting treats self-managed forges on different ports as different repos", async () => {
+    const app = getApp();
+    const first = await createTestAdmin(app);
+    const second = await createTestAdmin(app);
+    const secondOrgId = uuidv7();
+    await app.db
+      .insert(organizations)
+      .values({ id: secondOrgId, name: `port-${randomUUID().slice(0, 8)}`, displayName: "Other Instance" });
+
+    await orgSettingsService.putOrgSetting(
+      app.db,
+      first.organizationId,
+      "context_tree",
+      { repo: "https://git.internal:8443/group/tree.git", branch: "main" },
+      { updatedBy: first.userId },
+    );
+
+    // Same host, different port — two separate self-managed instances. The
+    // provider-neutral canonical key drops the port, so comparing on it would
+    // refuse this team its own tree and make the audit report a shared tree
+    // that does not exist.
+    const out = await orgSettingsService.putOrgSetting(
+      app.db,
+      secondOrgId,
+      "context_tree",
+      { repo: "https://git.internal:9443/group/tree.git", branch: "main" },
+      { updatedBy: second.userId },
+    );
+    expect(out).toMatchObject({ repo: "https://git.internal:9443/group/tree.git" });
+  });
+
   it("putOrgSetting still lets a team rewrite its own binding", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
