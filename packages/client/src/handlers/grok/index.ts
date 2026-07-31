@@ -196,6 +196,14 @@ export const createGrokHandler: HandlerFactory = (config) => {
     typeof config.grokEofCloseWaitMs === "number" && config.grokEofCloseWaitMs > 0
       ? config.grokEofCloseWaitMs
       : undefined;
+  const setModelEchoWaitMs =
+    typeof config.grokSetModelEchoWaitMs === "number" && config.grokSetModelEchoWaitMs > 0
+      ? config.grokSetModelEchoWaitMs
+      : undefined;
+  const replayDrainCapMs =
+    typeof config.grokReplayDrainCapMs === "number" && config.grokReplayDrainCapMs > 0
+      ? config.grokReplayDrainCapMs
+      : undefined;
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -654,6 +662,8 @@ export const createGrokHandler: HandlerFactory = (config) => {
           reasoningEffort,
           promptText: providerInput,
           ...(eofCloseWaitMs ? { eofCloseWaitMs } : {}),
+          ...(setModelEchoWaitMs ? { setModelEchoWaitMs } : {}),
+          ...(replayDrainCapMs ? { replayDrainCapMs } : {}),
           onInitialized: () => {
             if (turnGeneration === generation && !abort.signal.aborted) state.sawInit = true;
           },

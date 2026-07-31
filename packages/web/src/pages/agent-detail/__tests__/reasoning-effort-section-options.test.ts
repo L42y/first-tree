@@ -16,6 +16,12 @@ describe("grok reasoning effort help copy", () => {
     expect(copy).toContain("explicit model is still re-applied");
     expect(copy).toContain("with model also unset");
   });
+
+  it("states the re-applied AND confirmed semantics for an explicit effort", () => {
+    const copy = EFFORT_HELP_BY_PROVIDER.grok;
+    expect(copy).toContain("re-applied AND confirmed");
+    expect(copy).toContain("does not run if the provider does not confirm");
+  });
 });
 
 describe("Codex reasoning effort options", () => {

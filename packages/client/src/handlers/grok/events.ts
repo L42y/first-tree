@@ -174,6 +174,25 @@ export function grokNotificationSessionId(params: unknown): string | null {
 }
 
 /**
+ * Parse the `_x.ai/session_notification` `model_changed` echo Grok emits in
+ * response to `session/set_model` (real 0.2.117 wire shape, snake_case):
+ * `{sessionId, update: {sessionUpdate: "model_changed", model_id, reasoning_effort?}}`.
+ * Returns null for any other payload. `reasoningEffort` is null when the
+ * echo omits the field (e.g. the provider ignored the override).
+ */
+export function parseGrokModelChangedEcho(params: unknown): {
+  modelId: string | null;
+  reasoningEffort: string | null;
+} | null {
+  const update = asRecord(asRecord(params)?.update);
+  if (asString(update?.sessionUpdate) !== "model_changed") return null;
+  return {
+    modelId: asString(update?.model_id),
+    reasoningEffort: asString(update?.reasoning_effort),
+  };
+}
+
+/**
  * The exact replay marker (`params._meta.isReplay === true`) Grok stamps on
  * historical traffic. A marked notification is ALWAYS replay, no matter when
  * it arrives — the marker, not arrival timing, is the correctness boundary.

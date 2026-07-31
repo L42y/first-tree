@@ -36,6 +36,7 @@ const toolPath = process.env.GROK_FAKE_TOOL_PATH || "notes.md";
 const stopReason = process.env.GROK_FAKE_STOP_REASON || "end_turn";
 const rejectSetModel = process.env.GROK_FAKE_REJECT_SET_MODEL === "1";
 const setModelResponse = process.env.GROK_FAKE_SET_MODEL_RESPONSE || "ok";
+const echoMode = process.env.GROK_FAKE_ECHO_MODE || "after";
 const replayMarked = process.env.GROK_FAKE_REPLAY_MARKED === "1";
 const mcpHttp = process.env.GROK_FAKE_MCP_HTTP !== "0";
 const mcpSse = process.env.GROK_FAKE_MCP_SSE !== "0";
@@ -119,12 +120,65 @@ function handle(req) {
     if (rejectSetModel) { respondError(req.id, "Invalid params", "unknown model id", -32602); return; }
     if (setModelResponse === "missing_key") { respond(req.id, { _meta: {} }); return; }
     if (setModelResponse === "wrong_value") { respond(req.id, { _meta: { model: { Ok: "some-other-model" } } }); return; }
+    const requestedEffort = req.params._meta && typeof req.params._meta.reasoningEffort === "string" ? req.params._meta.reasoningEffort : null;
+    const echo = (modelId, effort, extra) => {
+      notify("_x.ai/session_notification", { sessionId: req.params.sessionId, ...(extra || {}), update: { sessionUpdate: "model_changed", model_id: modelId, ...(effort === null ? {} : { reasoning_effort: effort }) } });
+    };
+    const correctEcho = () => {
+      if (echoMode === "none") return;
+      if (echoMode === "omit_effort") { echo(req.params.modelId, null); return; }
+      if (echoMode === "wrong_effort") { echo(req.params.modelId, "ultra"); return; }
+      echo(req.params.modelId, requestedEffort === null ? "high" : requestedEffort);
+    };
+    if (echoMode === "missing_session") {
+      // Valid shape + effort, but NO sessionId — must never confirm.
+      notify("_x.ai/session_notification", { update: { sessionUpdate: "model_changed", model_id: req.params.modelId, reasoning_effort: requestedEffort || "high" } });
+      respond(req.id, { _meta: { model: { Ok: req.params.modelId } } });
+      return;
+    }
+    if (echoMode === "foreign_session") {
+      notify("_x.ai/session_notification", { sessionId: "other-session", update: { sessionUpdate: "model_changed", model_id: req.params.modelId, reasoning_effort: requestedEffort || "high" } });
+      respond(req.id, { _meta: { model: { Ok: req.params.modelId } } });
+      return;
+    }
+    if (echoMode === "wrong_channel") {
+      // Identically-shaped payload on the _x.ai/session/update extension
+      // channel (accepted by the passthrough, enters routing) — must never
+      // confirm. The standard session/update schema would reject it at the
+      // SDK parser, which does not count as this implementation's test.
+      notify("_x.ai/session/update", { sessionId: req.params.sessionId, update: { sessionUpdate: "model_changed", model_id: req.params.modelId, reasoning_effort: requestedEffort || "high" } });
+      respond(req.id, { _meta: { model: { Ok: req.params.modelId } } });
+      return;
+    }
+    if (echoMode === "before") correctEcho();
     respond(req.id, { _meta: { model: { Ok: req.params.modelId } } });
+    if (echoMode === "stale_first") {
+      echo(req.params.modelId, requestedEffort || "high", { _meta: { isReplay: true } });
+      notify("_x.ai/session_notification", { sessionId: "other-session", update: { sessionUpdate: "model_changed", model_id: req.params.modelId, reasoning_effort: requestedEffort || "high" } });
+      echo("stale-old-model", requestedEffort || "high");
+      correctEcho();
+      return;
+    }
+    if (echoMode !== "before") correctEcho();
     return;
   }
   if (req.method === "session/load") {
     if (scenario === "load_fail") { respondError(req.id, "session not found"); return; }
     respond(req.id, { models: { currentModelId: "grok-4", availableModels: [{ modelId: "grok-4", name: "Grok 4" }] } });
+    if (process.env.GROK_FAKE_LEGACY_ECHO === "1") {
+      // UNMARKED same-session legacy model_changed from the persisted history —
+      // receipt-time fencing must stop it satisfying THIS turn's confirmation.
+      notify("_x.ai/session_notification", { sessionId: sessionId, update: { sessionUpdate: "model_changed", model_id: "grok-4", reasoning_effort: process.env.GROK_FAKE_LEGACY_ECHO_EFFORT || "low" } });
+    }
+    if (process.env.GROK_FAKE_LEGACY_STREAM === "1") {
+      // Continuous unmarked same-value legacy traffic: keeps the replay drain
+      // from ever going quiet (cap counter-example) and keeps arriving after it.
+      const effort = process.env.GROK_FAKE_LEGACY_ECHO_EFFORT || "low";
+      const timer = setInterval(() => {
+        notify("_x.ai/session_notification", { sessionId: sessionId, update: { sessionUpdate: "model_changed", model_id: "grok-4", reasoning_effort: effort } });
+      }, 10);
+      setTimeout(() => clearInterval(timer), 600);
+    }
     // Historical replay from prior turns — arrives BEFORE the current prompt
     // and must be dropped by the replay fence.
     notify("_x.ai/session_notification", { sessionId: sessionId, update: { sessionUpdate: "turn_completed", prompt_id: "old-prompt", stop_reason: "end_turn", usage: { inputTokens: 999, outputTokens: 999, totalTokens: 1998, cachedReadTokens: 0 } } });
@@ -824,6 +878,281 @@ describe("grok handler — per-turn ACP transport", () => {
     ]);
     expect(requests[2]?.params).toEqual({ sessionId: "grok-sess-1", modelId: "grok-4" });
     expect(requests[2]?.params).not.toHaveProperty("_meta");
+  });
+
+  it("a legacy unmarked model_changed from session/load never satisfies this turn's confirmation (timeout → terminal configuration)", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("legacy-echo-only", {
+      GROK_FAKE_LEGACY_ECHO: "1",
+      GROK_FAKE_LEGACY_ECHO_EFFORT: "low",
+      GROK_FAKE_ECHO_MODE: "none",
+    });
+    const payload = grokPayload({ reasoningEffort: "low" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      grokSetModelEchoWaitMs: 100,
+    });
+    const token = makeToken();
+
+    await handler.resume(makeMessage("m2", "continue"), "grok-sess-1", makeContext({ events }), token);
+
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).not.toContain("session/prompt");
+    expect(specs).toHaveLength(1);
+    expect(token.completed).toMatchObject([
+      { status: "error", completion: "consumed", reason: "provider_configuration_error" },
+    ]);
+    // Timeout diagnostics must NOT claim the pre-arm legacy echo was
+    // observed: only post-arm candidates are reported.
+    const sdkError = events.find((e) => e.kind === "error" && e.payload.source === "sdk");
+    if (sdkError?.kind !== "error") throw new Error("expected an sdk error event");
+    expect(sdkError.payload.message).toContain("no current model_changed echo received");
+  });
+
+  it("a legacy echo followed by this turn's correct echo confirms and runs the prompt", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("legacy-echo-then-correct", {
+      GROK_FAKE_LEGACY_ECHO: "1",
+      GROK_FAKE_LEGACY_ECHO_EFFORT: "low",
+    });
+    const payload = grokPayload({ reasoningEffort: "low" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+    });
+    const token = makeToken();
+
+    await handler.resume(makeMessage("m2", "continue"), "grok-sess-1", makeContext({ events }), token);
+
+    expect(token.completed).toMatchObject([{ status: "success" }]);
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).toEqual([
+      "initialize",
+      "session/load",
+      "session/set_model",
+      "session/prompt",
+    ]);
+  });
+
+  it.each([
+    { label: "missing sessionId", echoMode: "missing_session" },
+    { label: "foreign sessionId", echoMode: "foreign_session" },
+    { label: "wrong channel (_x.ai/session/update)", echoMode: "wrong_channel" },
+  ])("a $label echo alone never confirms — terminal configuration, no prompt", async ({ echoMode }) => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor(`echo-invalid-${echoMode}`, { GROK_FAKE_ECHO_MODE: echoMode });
+    const payload = grokPayload({ reasoningEffort: "low" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      grokSetModelEchoWaitMs: 100,
+    });
+    const token = makeToken();
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events }), token);
+
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).not.toContain("session/prompt");
+    expect(specs).toHaveLength(1);
+    expect(token.completed).toMatchObject([
+      { status: "error", completion: "consumed", reason: "provider_configuration_error" },
+    ]);
+  });
+
+  it("a replay drain that hits its cap fails closed for an explicit effort — no set_model, no prompt", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("drain-cap", {
+      GROK_FAKE_LEGACY_STREAM: "1",
+      GROK_FAKE_LEGACY_ECHO_EFFORT: "low",
+    });
+    const payload = grokPayload({ reasoningEffort: "low" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      grokReplayDrainCapMs: 150,
+    });
+    const token = makeToken();
+
+    await handler.resume(makeMessage("m2", "continue"), "grok-sess-1", makeContext({ events }), token);
+
+    // The unquiet drain is a provider/configuration mismatch terminal —
+    // never armed, never sent.
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).not.toContain("session/set_model");
+    expect(requests.map((r) => r.method)).not.toContain("session/prompt");
+    expect(specs).toHaveLength(1);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toMatchObject([
+      { status: "error", completion: "consumed", reason: "provider_configuration_error" },
+    ]);
+  });
+
+  it("abort during the effort-echo wait returns well before the wait bound with no config settlement", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("abort-echo-wait", { GROK_FAKE_ECHO_MODE: "none" });
+    const payload = grokPayload({ reasoningEffort: "low" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      grokSetModelEchoWaitMs: 5_000,
+    });
+    const token = makeToken();
+    const ctx = makeContext({ events });
+
+    const startedAt = Date.now();
+    const startPromise = handler.start(makeMessage("m1", "hi"), ctx, token);
+    // Wait for the set_model response to have succeeded (the echo wait is
+    // now blocking), then abort mid-wait.
+    await new Promise<void>((resolve, reject) => {
+      const timer = setInterval(() => {
+        if (readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "").some((r) => r.method === "session/set_model")) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 10);
+      setTimeout(() => reject(new Error("set_model never sent")), 5_000);
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+    await handler.suspend();
+    await startPromise;
+
+    // Settled long before the 5s echo-wait bound.
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    // No configuration terminal, no completion, no retry — an aborted turn.
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toEqual([]);
+    expect(
+      events.some(
+        (e) =>
+          e.kind === "error" &&
+          (parseProviderRetryEventMessage(e.payload.message)?.category === "configuration" ||
+            e.payload.message.includes("was not confirmed")),
+      ),
+    ).toBe(false);
+  });
+
+  it("effort echo arriving BEFORE the set_model JSON-RPC response still satisfies the confirmation", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("echo-before", { GROK_FAKE_ECHO_MODE: "before" });
+    const payload = grokPayload({ reasoningEffort: "high" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+    });
+    const token = makeToken();
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events }), token);
+
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).toEqual(["initialize", "session/new", "session/set_model", "session/prompt"]);
+    expect(token.completed).toMatchObject([{ status: "success" }]);
+  });
+
+  it("empty effort accepts the provider default (echo carries the default effort) without failure", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("echo-default-effort");
+    const payload = grokPayload({ model: "", reasoningEffort: "" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+    });
+    const token = makeToken();
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events }), token);
+
+    expect(token.completed).toMatchObject([{ status: "success" }]);
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).toContain("session/prompt");
+  });
+
+  it("stale/foreign/replay-marked echos do not satisfy the confirmation — only the correct echo does", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("echo-stale-first", { GROK_FAKE_ECHO_MODE: "stale_first" });
+    const payload = grokPayload({ reasoningEffort: "low" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+    });
+    const token = makeToken();
+
+    await handler.resume(makeMessage("m2", "continue"), "grok-sess-1", makeContext({ events }), token);
+
+    expect(token.completed).toMatchObject([{ status: "success" }]);
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).toEqual([
+      "initialize",
+      "session/load",
+      "session/set_model",
+      "session/prompt",
+    ]);
+  });
+
+  it.each([
+    {
+      label: "omits reasoning_effort",
+      echoMode: "omit_effort",
+      expectedDetail: "effort (none)",
+    },
+    {
+      label: "carries the wrong effort value",
+      echoMode: "wrong_effort",
+      expectedDetail: "ultra",
+    },
+    {
+      label: "never arrives (bounded timeout)",
+      echoMode: "none",
+      expectedDetail: "no current model_changed echo received",
+    },
+  ])("a set_model echo that $label — terminal notice trigger before turn_end/token.complete; no prompt, no retry, no success", async ({
+    echoMode,
+    expectedDetail,
+  }) => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor(`echo-fail-${echoMode}`, { GROK_FAKE_ECHO_MODE: echoMode });
+    const payload = grokPayload({ reasoningEffort: "low" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      grokSetModelEchoWaitMs: 100,
+    });
+    const token = makeToken();
+
+    await handler.start(makeMessage("m1", "hi"), makeContext({ events }), token);
+
+    const requests = readRequestLog(fakeEnv.GROK_FAKE_REQUEST_LOG ?? "");
+    expect(requests.map((r) => r.method)).not.toContain("session/prompt");
+    expect(specs).toHaveLength(1);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toMatchObject([
+      { status: "error", completion: "consumed", reason: "provider_configuration_error" },
+    ]);
+    const providerEvents = events
+      .filter((e) => e.kind === "error")
+      .map((e) => parseProviderRetryEventMessage(e.payload.message))
+      .filter((e) => e !== null);
+    expect(providerEvents[0]).toMatchObject({ event: "provider_failure_terminal", category: "configuration" });
+    // Notice-TRIGGER ordering at the handler boundary: the provider.retry
+    // notice-trigger SessionEvent (a live trace / notice trigger, NOT the
+    // durable chat notice) is emitted strictly BEFORE the turn_end that
+    // gates token.complete. The durable chat notice write itself lives in
+    // SessionManager/token.complete and is covered by the generic
+    // SessionManager failure-post tests — this test makes no claim about it.
+    const noticeIndex = events.findIndex(
+      (e) => e.kind === "error" && parseProviderRetryEventMessage(e.payload.message) !== null,
+    );
+    const turnEndIndex = events.findIndex((e) => e.kind === "turn_end");
+    expect(noticeIndex).toBeGreaterThanOrEqual(0);
+    expect(turnEndIndex).toBeGreaterThan(noticeIndex);
+    const sdkError = events.find((e) => e.kind === "error" && e.payload.source === "sdk");
+    if (sdkError?.kind !== "error") throw new Error("expected an sdk error event");
+    expect(sdkError.payload.message).toContain('"low"');
+    expect(sdkError.payload.message).toContain(expectedDetail);
+    expect(sdkError.payload.message).not.toContain("ignored the effort override");
+    // The config confirmation must never surface as a user-facing session event.
+    expect(events.some((e) => e.kind === "tool_call")).toBe(false);
   });
 
   it("a prompt response with a mismatched promptId fails closed", async () => {

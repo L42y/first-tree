@@ -7,10 +7,13 @@
  *   spawn → ndJsonStream over stdio → initialize (EMPTY clientCapabilities,
  *   so Grok keeps file/terminal ops on its own local backends) →
  *   session/new (first turn) or session/load (resume; NEVER silently falls
- *   back to session/new on failure — replay safety) → session/set_model
- *   (after EVERY session open, every turn: session/load restores the
- *   session's PERSISTED selection, so even an empty config re-asserts the
- *   initialize default model; empty effort OMITS `_meta` entirely) →
+ *   back to session/new on failure — replay safety) → legacy replay drain →
+ *   session/set_model (after EVERY session open, every turn: session/load
+ *   restores the session's PERSISTED selection, so even an empty config
+ *   re-asserts the initialize default model; empty effort OMITS `_meta`
+ *   entirely; a non-empty effort is confirmed by requiring THIS set_model's
+ *   non-replay, same-session `model_changed` echo with the effective
+ *   model_id + reasoning_effort — the waiter arms BEFORE the request) →
  *   session/prompt (client-generated `_meta.promptId`) → settle barrier:
  *   stdin EOF → bounded wait for real close + connection.closed → stable
  *   drain of the routed-handler queue → only then read settlement state →
@@ -45,7 +48,12 @@ import type { InitializeResponse, McpServer, NewSessionResponse } from "@agentcl
 import { client, ndJsonStream } from "@agentclientprotocol/sdk";
 import type { AgentRuntimeConfigPayload } from "@first-tree/shared";
 import type { ProviderProcessSupervisor } from "../../runtime/provider-process-supervisor.js";
-import { grokNotificationIsReplay, grokNotificationSessionId, parseGrokModelState } from "./events.js";
+import {
+  grokNotificationIsReplay,
+  grokNotificationSessionId,
+  parseGrokModelChangedEcho,
+  parseGrokModelState,
+} from "./events.js";
 
 export const GROK_ACP_PROTOCOL_VERSION = 1;
 
@@ -82,6 +90,12 @@ const REPLAY_DROP_LOG_LIMIT = 3;
  */
 export const GROK_ACP_REPLAY_QUIET_MS = 25;
 export const GROK_ACP_REPLAY_DRAIN_CAP_MS = 2_000;
+/**
+ * Bounded wait for THIS set_model's `model_changed` effort echo. The echo is
+ * local state (no model call), so it should land within milliseconds; the
+ * bound only guards a misbehaving build.
+ */
+export const GROK_SET_MODEL_ECHO_WAIT_MS = 2_000;
 
 export type GrokAcpMcpCapabilities = { http: boolean; sse: boolean };
 
@@ -154,6 +168,10 @@ export type GrokAcpAttemptInput = {
   eofCloseWaitMs?: number;
   /** Grace between SIGTERM and SIGKILL on the terminate path (tests shorten this). */
   killGraceMs?: number;
+  /** Bounded wait for the model_changed effort echo after set_model (tests shorten this). */
+  setModelEchoWaitMs?: number;
+  /** Bounded cap for the legacy replay drain after session/load (tests shorten this). */
+  replayDrainCapMs?: number;
   /** Fired once initialize completed and capabilities validated (replay-ladder "saw provider" rung). */
   onInitialized?: () => void;
   /** Fired as soon as session/new or session/load confirms the active session id. */
@@ -239,6 +257,11 @@ async function reclaimUnpipedChild(child: {
 
 function asMeta(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+/** Strict same-session gate for config-confirmation echos: a MISSING session id rejects. */
+function routedSessionIdEqualsCurrent(routedSessionId: string | null, currentSessionId: string | null): boolean {
+  return routedSessionId !== null && currentSessionId !== null && routedSessionId === currentSessionId;
 }
 
 /**
@@ -390,9 +413,31 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
   let lastInboundAt = 0;
   /** Client-generated correlation id for the in-flight prompt (null until sent). */
   let attemptPromptId: string | null = null;
+  /**
+   * Latest `model_changed` echo, tagged with its RECEIPT-TIME ingress
+   * sequence. Internal config confirmation ONLY — intercepted here and never
+   * delivered to the handler, so it cannot become a user-facing event or
+   * advance replay-safety state.
+   */
+  let modelChangedEcho: { modelId: string | null; reasoningEffort: string | null; seq: number } | null = null;
+  const echoWaiters = new Set<() => void>();
+  let cancelEchoWait: (() => void) | null = null;
+  /**
+   * Monotonic receipt clock, stamped by the notification PARSERS — the SDK
+   * runs them synchronously at ingress, while handlers dispatch
+   * asynchronously. The echo confirmation baseline is taken from THIS clock,
+   * so a legacy echo received before the waiter armed can never satisfy it,
+   * even when its dispatch lands after arming.
+   */
+  let ingressSeq = 0;
   const pendingNotifications = new Set<Promise<void>>();
 
-  const routeNotification = (params: unknown, deliver: (value: unknown) => void, channel: string): void => {
+  const routeNotification = (
+    envelope: { params: unknown; seq: number },
+    deliver: (value: unknown) => void,
+    channel: string,
+  ): void => {
+    const { params, seq } = envelope;
     // Exact replay contract (Grok's own headless uses it): a notification
     // marked `_meta.isReplay === true` is ALWAYS historical, regardless of
     // when it arrives — drop it even inside the prompt window.
@@ -403,16 +448,29 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
       replayDrops++;
       return;
     }
+    // Config-confirmation echo: capture ONLY the exact
+    // `_x.ai/session_notification` channel with a STRICT same-session id
+    // (missing sessionId = reject), wake any armed waiter, and never deliver
+    // onward. Identically-shaped payloads on other channels continue through
+    // the normal fence/normalization — they never confirm configuration.
+    if (channel === "_x.ai/session_notification") {
+      const echo = parseGrokModelChangedEcho(params);
+      if (echo && routedSessionIdEqualsCurrent(grokNotificationSessionId(params), currentSessionId)) {
+        modelChangedEcho = { ...echo, seq };
+        for (const waiter of [...echoWaiters]) waiter();
+        return;
+      }
+    }
+    const routedSessionId = grokNotificationSessionId(params);
+    if (currentSessionId && routedSessionId && routedSessionId !== currentSessionId) {
+      input.log(`grok ACP: dropped ${channel} notification for foreign session ${routedSessionId}`);
+      return;
+    }
     if (!promptSent) {
       if (replayDrops < REPLAY_DROP_LOG_LIMIT) {
         input.log(`grok ACP: dropped pre-prompt ${channel} notification (session/load replay fence)`);
       }
       replayDrops++;
-      return;
-    }
-    const routedSessionId = grokNotificationSessionId(params);
-    if (currentSessionId && routedSessionId && routedSessionId !== currentSessionId) {
-      input.log(`grok ACP: dropped ${channel} notification for foreign session ${routedSessionId}`);
       return;
     }
     // Prompt correlation: anything stamped with a DIFFERENT prompt id than
@@ -434,12 +492,72 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
     void tracked.then(() => pendingNotifications.delete(tracked));
   };
 
+  /**
+   * Bounded wait for THIS set_model's effective-value `model_changed` echo.
+   * The arm-time baseline is the ingress receipt clock: only an echo RECEIVED
+   * after arming can satisfy, and it must match BOTH the effective model and
+   * the requested effort. Diagnostics report only POST-arm candidates — a
+   * pre-arm stale echo is never claimed as "observed". `cancel` cleans up
+   * AND settles with an explicit cancelled outcome (used by the abort path
+   * and every config-phase failure exit; no lingering timer/closure).
+   */
+  const waitForModelChangedEcho = (
+    expectedModelId: string,
+    expectedEffort: string,
+  ): { promise: Promise<{ ok: true } | { ok: false; observed: string }>; cancel: () => void } => {
+    const armSeq = ingressSeq;
+    let lastPostArmCandidate: { modelId: string | null; reasoningEffort: string | null } | null = null;
+    let settled = false;
+    let settle: (result: { ok: true } | { ok: false; observed: string }) => void = () => {};
+    const promise = new Promise<{ ok: true } | { ok: false; observed: string }>((resolve) => {
+      settle = resolve;
+    });
+    const finish = (result: { ok: true } | { ok: false; observed: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      echoWaiters.delete(check);
+      settle(result);
+    };
+    const matches = (): boolean =>
+      modelChangedEcho !== null &&
+      modelChangedEcho.seq > armSeq &&
+      modelChangedEcho.modelId === expectedModelId &&
+      modelChangedEcho.reasoningEffort === expectedEffort;
+    const deadline = setTimeout(() => {
+      finish({
+        ok: false,
+        observed: lastPostArmCandidate
+          ? `echo reported model ${lastPostArmCandidate.modelId ?? "(none)"} effort ${lastPostArmCandidate.reasoningEffort ?? "(none)"}`
+          : "no current model_changed echo received",
+      });
+    }, input.setModelEchoWaitMs ?? GROK_SET_MODEL_ECHO_WAIT_MS);
+    deadline.unref?.();
+    const check = (): void => {
+      if (modelChangedEcho && modelChangedEcho.seq > armSeq) {
+        lastPostArmCandidate = modelChangedEcho;
+      }
+      if (!matches()) return;
+      finish({ ok: true });
+    };
+    echoWaiters.add(check);
+    check();
+    return {
+      promise,
+      cancel: () => finish({ ok: false, observed: "echo wait cancelled" }),
+    };
+  };
+
   // The passthrough parser keeps raw params so events.ts owns ALL tolerant
   // normalization in one tested layer; the SDK's generated schemas must not
-  // silently strip `_meta` (x.ai tool metadata) or reject unknown update kinds.
-  const passthrough = (params: unknown): unknown => {
+  // silently strip `_meta` (x.ai tool metadata) or reject unknown update
+  // kinds. The parser ALSO stamps the ingress receipt clock — it runs
+  // synchronously at receipt, so this is the trustworthy time boundary (the
+  // handler dispatch that follows is asynchronous).
+  const passthrough = (params: unknown): { params: unknown; seq: number } => {
     lastInboundAt = Date.now();
-    return params;
+    ingressSeq++;
+    return { params, seq: ingressSeq };
   };
   const app = client({ name: "first-tree" })
     .onNotification("session/update", passthrough, (context) =>
@@ -466,6 +584,10 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
 
   let promptInFlight = false;
   const onAbort = (): void => {
+    // Cancel any armed echo wait FIRST — an abort must never linger behind a
+    // config-confirmation timeout, and the settled-cancel path upstream
+    // ensures NO configuration terminal/ACK is produced.
+    cancelEchoWait?.();
     if (promptInFlight && currentSessionId) {
       // Best-effort cooperative cancel BEFORE the SIGTERM path.
       void agent.notify("session/cancel", { sessionId: currentSessionId }).catch(() => {});
@@ -616,6 +738,45 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
     }
     input.onSessionId?.(currentSessionId);
 
+    if (input.resumeSessionId) {
+      // Replay drain: historical updates arrive right after the load
+      // response; wait until the inbound channel goes quiet before arming
+      // the model_changed confirmation and sending the current prompt.
+      // Everything received during the drain is dropped by the pre-prompt
+      // fence above, so no stale echo can satisfy the confirmation.
+      lastInboundAt = Date.now();
+      const drainStart = lastInboundAt;
+      const drainCapMs = input.replayDrainCapMs ?? GROK_ACP_REPLAY_DRAIN_CAP_MS;
+      for (;;) {
+        const quietFor = Date.now() - lastInboundAt;
+        if (quietFor >= GROK_ACP_REPLAY_QUIET_MS) break;
+        if (Date.now() - drainStart >= drainCapMs) {
+          if (input.reasoningEffort) {
+            // Fail closed: the wire has no request/event id, so a drain that
+            // never went quiet cannot prove a late same-value echo belongs to
+            // THIS turn's set_model — an unproven drain is a configuration
+            // mismatch, never a completed quiet drain.
+            return await failAndDrain(
+              "session_load",
+              new Error(
+                `grok provider mismatch: session/load replay drain did not go quiet within ${drainCapMs}ms; ` +
+                  "cannot trust effort confirmation for an explicit effort",
+              ),
+            );
+          }
+          input.log("grok ACP: replay drain hit its cap; proceeding with the prompt");
+          break;
+        }
+        if (input.abortSignal.aborted) break;
+        await new Promise((resolve) => {
+          setTimeout(resolve, Math.min(GROK_ACP_REPLAY_QUIET_MS - quietFor, 25));
+        });
+      }
+      if (replayDrops > 0) {
+        input.log(`grok ACP: replay fence dropped ${replayDrops} historical notification(s) after session/load`);
+      }
+    }
+
     // 2b. Apply model/effort after EVERY session open, every turn (Grok's
     // headless apply_headless_model_and_effort does the same after
     // open_session): session/load restores the session's PERSISTED
@@ -632,6 +793,14 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
         new Error("grok provider mismatch: the provider advertised no current model to apply for this turn"),
       );
     }
+    // Arm the effort-echo waiter BEFORE the request — the model_changed echo
+    // can precede the JSON-RPC response (observed same-millisecond on the
+    // live wire). Empty effort keeps "remove override" semantics: the
+    // provider default may itself carry an effort, so no echo is required.
+    const effortEchoWait = input.reasoningEffort
+      ? waitForModelChangedEcho(effectiveModelId, input.reasoningEffort)
+      : null;
+    cancelEchoWait = effortEchoWait?.cancel ?? null;
     try {
       const setModelResponse: unknown = await agent.request("session/set_model", {
         sessionId: currentSessionId,
@@ -647,6 +816,8 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
       const setModelResult = asMeta(asMeta(asMeta(setModelResponse)?._meta)?.model);
       const appliedModelId = typeof setModelResult?.Ok === "string" ? setModelResult.Ok : null;
       if (appliedModelId !== effectiveModelId) {
+        cancelEchoWait?.();
+        cancelEchoWait = null;
         return await failAndDrain(
           "set_model",
           new Error(
@@ -656,6 +827,8 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
         );
       }
     } catch (err) {
+      cancelEchoWait?.();
+      cancelEchoWait = null;
       return await failAndDrain(
         "set_model",
         new Error(
@@ -664,28 +837,27 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
         ),
       );
     }
-
-    if (input.resumeSessionId) {
-      // Replay drain: historical updates arrive right after the load
-      // response; wait until the inbound channel goes quiet before sending
-      // the current prompt. Everything received during the drain is dropped
-      // by the pre-prompt fence above.
-      lastInboundAt = Date.now();
-      const drainStart = lastInboundAt;
-      for (;;) {
-        const quietFor = Date.now() - lastInboundAt;
-        if (quietFor >= GROK_ACP_REPLAY_QUIET_MS) break;
-        if (Date.now() - drainStart >= GROK_ACP_REPLAY_DRAIN_CAP_MS) {
-          input.log("grok ACP: replay drain hit its cap; proceeding with the prompt");
-          break;
-        }
-        if (input.abortSignal.aborted) break;
-        await new Promise((resolve) => {
-          setTimeout(resolve, Math.min(GROK_ACP_REPLAY_QUIET_MS - quietFor, 25));
-        });
+    if (effortEchoWait) {
+      // model_switch.rs (upstream dd04f397): when the selected model does not
+      // support reasoning effort, set_model IGNORES the override but still
+      // returns a successful _meta.model.Ok — only the effective-value
+      // model_changed echo proves the effort was applied.
+      const echoConfirmation = await effortEchoWait.promise;
+      cancelEchoWait = null; // settled either way; the waiter's own cleanup ran
+      if (input.abortSignal.aborted) {
+        // Abort raced the confirmation (onAbort settled the wait): tear the
+        // transport down, but the upstream abort gate ensures NO
+        // configuration terminal/ACK lands from this path.
+        return await failAndDrain("prompt", new Error("grok ACP attempt aborted during effort confirmation"));
       }
-      if (replayDrops > 0) {
-        input.log(`grok ACP: replay fence dropped ${replayDrops} historical notification(s) after session/load`);
+      if (!echoConfirmation.ok) {
+        return await failAndDrain(
+          "set_model",
+          new Error(
+            `grok provider mismatch: reasoning effort "${input.reasoningEffort}" was not confirmed on model ` +
+              `"${effectiveModelId}" (observed: ${echoConfirmation.observed})`,
+          ),
+        );
       }
     }
 
@@ -731,6 +903,7 @@ export async function runGrokAcpAttempt(input: GrokAcpAttemptInput): Promise<Gro
     return outcome();
   } finally {
     input.abortSignal.removeEventListener("abort", onAbort);
+    cancelEchoWait?.();
     if (!closed) terminate();
   }
 }

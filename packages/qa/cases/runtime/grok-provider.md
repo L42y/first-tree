@@ -65,12 +65,16 @@ that case and the run-local plan, not this one.
   selection would silently keep the old values). An invalid model must be visibly rejected by `session/set_model` as a
   configuration failure — never a silent fallback to the persisted selection.
 - Reasoning effort: the effort control is shown for Grok Build with inherit/low/medium/high. Round-trip each value:
-  low/medium/high reach the next turn's spawn as `--effort <value>` and are re-applied after every session open via
-  `session/set_model` (`_meta.reasoningEffort`). An explicit model is always re-applied with it; clearing only the
-  effort removes just the effort override (no effort meta is sent) while the explicit model is still re-applied —
-  only when the model is ALSO empty does the next turn's `session/set_model` carry the initialize-advertised default
-  model, resetting the session to the provider default. An existing session's persisted selection is never silently
-  kept.
+  low/medium/high reach the next turn's spawn as `--effort <value>` and are re-applied AND confirmed after every
+  session open via `session/set_model` (`_meta.reasoningEffort`). An explicit model is always re-applied with it;
+  clearing only the effort removes just the effort override (no effort meta is sent) while the explicit model is
+  still re-applied — only when the model is ALSO empty does the next turn's `session/set_model` carry the
+  initialize-advertised default model, resetting the session to the provider default. An existing session's
+  persisted selection is never silently kept. Confirmation: a configured effort runs the prompt ONLY when the
+  provider's `model_changed` echo carries the effective model+effort — a missing echo, an omitted effort field, or
+  a different effort value fails as a configuration failure and the turn does not run (a model without
+  reasoning-effort support silently ignores the override upstream while still returning a successful model
+  response, so the response alone cannot prove the effort was applied).
 - Replay contract on resume: a resumed turn sends `session/load` with `_meta.noReplay: true`, and any historical
   notification stamped `_meta.isReplay` is dropped even when it arrives inside the active prompt window — the resumed
   turn's visible output and `token_usage` must reflect only the current prompt.

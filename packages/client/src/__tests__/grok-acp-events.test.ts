@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeGrokSessionUpdate,
   normalizeGrokXaiNotification,
+  parseGrokModelChangedEcho,
   parseGrokModelState,
 } from "../handlers/grok/events.js";
 import { grokShellCommandIsReadOnly, grokToolIsReadOnly } from "../handlers/grok/index.js";
@@ -329,6 +330,34 @@ describe("read-only replay-safety ladder", () => {
     if (byKind?.event.kind !== "tool_started") throw new Error("expected tool_started");
     expect(byKind.event.tool.isShell).toBe(true);
     expect(grokToolIsReadOnly(byKind.event.tool)).toBe(false);
+  });
+});
+
+describe("parseGrokModelChangedEcho", () => {
+  it("locks the real snake_case wire shape from _x.ai/session_notification", () => {
+    // Captured live on Grok 0.2.117 after session/set_model.
+    const echo = parseGrokModelChangedEcho({
+      sessionId: "019fb8a6-80ad-75b1-a1eb-7f56e5767868",
+      update: { sessionUpdate: "model_changed", model_id: "grok-4.5", reasoning_effort: "low" },
+    });
+    expect(echo).toEqual({ modelId: "grok-4.5", reasoningEffort: "low" });
+  });
+
+  it("returns a null effort when the echo omits reasoning_effort (ignored override)", () => {
+    const echo = parseGrokModelChangedEcho({
+      sessionId: "s",
+      update: { sessionUpdate: "model_changed", model_id: "grok-4.5" },
+    });
+    expect(echo).toEqual({ modelId: "grok-4.5", reasoningEffort: null });
+  });
+
+  it("returns null for non-model_changed payloads", () => {
+    expect(parseGrokModelChangedEcho({ sessionId: "s", update: { sessionUpdate: "turn_completed" } })).toBeNull();
+    expect(parseGrokModelChangedEcho(null)).toBeNull();
+    expect(parseGrokModelChangedEcho({ sessionId: "s", update: { sessionUpdate: "model_changed" } })).toEqual({
+      modelId: null,
+      reasoningEffort: null,
+    });
   });
 });
 
