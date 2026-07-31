@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
+import { agentPresence } from "../db/schema/agent-presence.js";
+import { clients } from "../db/schema/clients.js";
 import * as activityService from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
@@ -14,6 +16,7 @@ import {
 } from "../services/connection-manager.js";
 import { sendMessage } from "../services/message.js";
 import * as sessionService from "../services/session.js";
+import { storeSessionCommandRpcResult } from "../services/session-command-rpc.js";
 import * as sessionEventService from "../services/session-event.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
@@ -693,9 +696,21 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     return row?.state ?? null;
   }
 
-  async function setup(state: string, opts: { capable?: boolean; connected?: boolean } = {}) {
+  const LOCAL_INSTANCE = "test-instance";
+  const REMOTE_INSTANCE = "remote-instance";
+
+  /**
+   * Seed the DB-authoritative client route the waitForApply preflight reads:
+   * `clients` row (status + owning instance + registered wireCapabilities)
+   * and the agent's presence route. `remote: true` points the owning
+   * instance at another replica so the route must fan the command out.
+   */
+  async function setup(
+    state: string,
+    opts: { capable?: boolean; connected?: boolean; remote?: boolean; localSocket?: boolean } = {},
+  ) {
     const app = getApp();
-    const { capable = true, connected = true } = opts;
+    const { capable = true, connected = true, remote = false, localSocket = true } = opts;
     const admin = await createAdminContext(app, { username: `apply-${crypto.randomUUID().slice(0, 6)}` });
     const agent = await createAgent(app.db, {
       name: `apply-agent-${crypto.randomUUID().slice(0, 6)}`,
@@ -707,13 +722,33 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
     await seedSession(app, agent.uuid, chat.id, state);
 
+    const instanceId = remote ? REMOTE_INSTANCE : LOCAL_INSTANCE;
+    const { eq } = await import("drizzle-orm");
+    await app.db
+      .update(clients)
+      .set({
+        status: connected ? "connected" : "disconnected",
+        instanceId: connected ? instanceId : null,
+        metadata: { wireCapabilities: capable ? { wsSessionTerminateApplyAck: true } : {} },
+      })
+      .where(eq(clients.id, admin.clientId));
+    await app.db
+      .insert(agentPresence)
+      .values({
+        agentId: agent.uuid,
+        status: "online",
+        clientId: admin.clientId,
+        instanceId,
+        runtimeState: "idle",
+      })
+      .onConflictDoUpdate({
+        target: agentPresence.agentId,
+        set: { status: "online", clientId: admin.clientId, instanceId, runtimeState: "idle" },
+      });
+
     const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
-    if (connected) {
-      setClientConnection(
-        admin.clientId,
-        ws as unknown as WebSocket,
-        capable ? { wsSessionTerminateApplyAck: true } : undefined,
-      );
+    if (localSocket) {
+      setClientConnection(admin.clientId, ws as unknown as WebSocket, { wsSessionTerminateApplyAck: true });
       bindAgentToClient(admin.clientId, agent.uuid);
     }
     return { app, admin, agent, chat, ws };
@@ -745,6 +780,10 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     expect(resolved).toBe(true);
   }
 
+  function cleanup(admin: { clientId: string }, ws: unknown) {
+    removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+  }
+
   it("holds the request until the ack, then atomically evicts and clears events", async () => {
     const { app, admin, agent, chat, ws } = await setup("suspended");
     await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
@@ -769,7 +808,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       // Cleanup committed with the transition — no polling.
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
@@ -782,11 +821,11 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ state: "evicted", applied: true });
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
-  it("rejects an active session with 409 before sending any command", async () => {
+  it("rejects an active session with 409 before any route check or command", async () => {
     const { app, admin, agent, chat, ws } = await setup("active");
     try {
       const res = await terminateReq(app, admin, agent.uuid, chat.id);
@@ -794,19 +833,120 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(ws.send).not.toHaveBeenCalled();
       expect(await readState(app, agent.uuid, chat.id)).toBe("active");
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
-  it("is an idempotent 200 for an already-evicted session without sending a command", async () => {
+  it("an evicted row still re-runs the acknowledged terminate — a legacy eviction is not proof", async () => {
+    // The row was evicted by the legacy fire-and-forget path and that command
+    // was lost, so the client may still hold the provider mapping. The
+    // waitForApply path must NOT fast-path success: it re-sends a ref'd
+    // terminate, waits for a real ack, and only then reports evicted.
     const { app, admin, agent, chat, ws } = await setup("evicted");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "leftover trace" },
+    });
     try {
-      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      // No success before the ack even though the row was already evicted.
+      expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ state: "evicted", transitioned: false, applied: true });
-      expect(ws.send).not.toHaveBeenCalled();
+      // The idempotent finalize re-cleared the leftover trace.
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
+    }
+  });
+
+  it("an evicted row produced by archiveAllSessionsForAgent also requires a fresh ack", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    // Runtime-switch style eviction: no apply-ack was ever involved.
+    await sessionService.archiveAllSessionsForAgent(app.db, agent.uuid, admin.organizationId, app.notifier);
+    expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", applied: true });
+    } finally {
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fans the command out to the owning replica and resolves via the durable ack wake", async () => {
+    // HTTP lands on a replica that does NOT own the daemon socket: the route
+    // publishes daemon_client_commands, the owner persists the ack, and the
+    // result wake resolves the local HTTP waiter.
+    const { app, admin, agent, chat } = await setup("suspended", { remote: true, localSocket: false });
+    const notifySpy = vi.spyOn(app.notifier, "notifyDaemonClientCommand");
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(notifySpy).toHaveBeenCalled());
+      const payload = notifySpy.mock.calls[0]?.[0] as {
+        type: string;
+        clientId: string;
+        agentId?: string;
+        chatId?: string;
+        ref: string;
+        targetInstanceId: string;
+      };
+      expect(payload).toMatchObject({
+        type: "session:terminate",
+        clientId: admin.clientId,
+        agentId: agent.uuid,
+        chatId: chat.id,
+        targetInstanceId: REMOTE_INSTANCE,
+      });
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+
+      // The owning replica applies the command and makes the ack durable.
+      await storeSessionCommandRpcResult(
+        app.db,
+        admin.clientId,
+        payload.ref,
+        { command: "session:terminate", agentId: agent.uuid, chatId: chat.id, applied: true },
+        REMOTE_INSTANCE,
+      );
+      await app.notifier.notifyDaemonClientCommandResult({ clientId: admin.clientId, ref: payload.ref });
+
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", transitioned: true, applied: true });
+    } finally {
+      notifySpy.mockRestore();
+    }
+  });
+
+  it("falls back to the durable ack when the result wake is lost", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    setClientReplyTimeoutMsForTests(50);
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      const frame = JSON.parse(ws.send.mock.calls[0]?.[0] as string) as { ref: string };
+      // The ack lands durable but the NOTIFY wake is lost (not sent); the
+      // waiter will time out and the route must read the durable copy once
+      // before failing.
+      await storeSessionCommandRpcResult(
+        app.db,
+        admin.clientId,
+        frame.ref,
+        { command: "session:terminate", agentId: agent.uuid, chatId: chat.id, applied: true },
+        LOCAL_INSTANCE,
+      );
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", applied: true });
+    } finally {
+      setClientReplyTimeoutMsForTests(null);
+      cleanup(admin, ws);
     }
   });
 
@@ -818,15 +958,19 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(ws.send).not.toHaveBeenCalled();
       expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
-  it("fails 503 when the client is disconnected", async () => {
-    const { app, admin, agent, chat } = await setup("suspended", { connected: false });
-    const res = await terminateReq(app, admin, agent.uuid, chat.id);
-    expect(res.statusCode).toBe(503);
-    expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+  it("fails 503 when the client route is disconnected", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended", { connected: false });
+    try {
+      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      expect(res.statusCode).toBe(503);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    } finally {
+      cleanup(admin, ws);
+    }
   });
 
   it("applied:false fails the request and leaves the stopped session untouched", async () => {
@@ -843,7 +987,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
@@ -856,7 +1000,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.statusCode).toBe(503);
       expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
@@ -887,7 +1031,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(resolveClientReply(admin.clientId, frame.ref, { applied: true })).toBe(false);
     } finally {
       setClientReplyTimeoutMsForTests(null);
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
@@ -908,7 +1052,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(await readState(app, agent.uuid, chat.id)).toBe("active");
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
     } finally {
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 
@@ -929,7 +1073,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
     } finally {
       clearSpy.mockRestore();
-      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+      cleanup(admin, ws);
     }
   });
 });

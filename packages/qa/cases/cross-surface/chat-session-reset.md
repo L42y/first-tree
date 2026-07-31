@@ -34,9 +34,10 @@ disconnect-during-reset recovery journey.
 
 ## Operate and observe
 
-- While the agent is active (working or idle), open its hovercard and confirm
-  there is NO `Reset` action. Pause the agent, then reopen the card: a single
-  `Reset` action appears for the suspended session.
+- While the agent is active — working or idle — open its hovercard and
+  confirm there is NO `Reset` action. An idle active row must still offer
+  `Pause`; use it, then reopen the card: a single `Reset` action appears for
+  the suspended session.
 - Choose Reset and confirm. Observe the pending state, then the success toast;
   the live activity/trace surface for that chat session clears and chat
   messages remain. The interrupted run does not resume by itself; a queued

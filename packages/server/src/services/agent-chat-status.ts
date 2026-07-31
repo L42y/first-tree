@@ -21,7 +21,7 @@ import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
-import * as connectionManager from "./connection-manager.js";
+import { clients } from "../db/schema/clients.js";
 
 /**
  * Single source of truth for per-(agent,chat) composite status.
@@ -475,6 +475,35 @@ export async function resolveAgentChatStatuses(
     .where(inArray(agentPresence.agentId, allAgentIds));
   const presenceById = new Map(presenceRows.map((p) => [p.agentId, p]));
 
+  // -- Reset capability: derived from the DB, never this process's socket
+  //    ownership, so every replica projects the same answer. A client is
+  //    apply-ack capable iff its row is connected with an owning instance
+  //    AND its registered wireCapabilities advertise
+  //    `wsSessionTerminateApplyAck` (persisted at client:register).
+  const presenceClientIds = [...new Set(presenceRows.map((p) => p.clientId).filter((id): id is string => id != null))];
+  const clientRows =
+    presenceClientIds.length > 0
+      ? await db
+          .select({
+            id: clients.id,
+            status: clients.status,
+            instanceId: clients.instanceId,
+            metadata: clients.metadata,
+          })
+          .from(clients)
+          .where(inArray(clients.id, presenceClientIds))
+      : [];
+  const wireCapableClientIds = new Set(
+    clientRows
+      .filter((c) => {
+        if (c.status !== "connected" || c.instanceId == null) return false;
+        const metadata = c.metadata as Record<string, unknown> | null;
+        const caps = metadata?.wireCapabilities as Record<string, unknown> | undefined;
+        return caps?.wsSessionTerminateApplyAck === true;
+      })
+      .map((c) => c.id),
+  );
+
   // -- Activity (D): per-(agent,chat) live activity (+ turnText when asked).
   //    Pure description: 60s drop here means "5-min-old tool_call is not the
   //    current activity description", not "agent is not working" (which is
@@ -546,7 +575,7 @@ export async function resolveAgentChatStatuses(
           // Live-connection capability gate for the Web chat-session
           // Reset: only a client that answers session:terminate with an
           // apply-ack can prove the old provider mapping is gone.
-          sessionResetSupported: connectionManager.agentSupportsTerminateApplyAck(agentId),
+          sessionResetSupported: p?.clientId != null && wireCapableClientIds.has(p.clientId),
         }),
       );
     }

@@ -11,14 +11,15 @@ const base: AgentChatStatusInput = {
 };
 const mk = (over: Partial<AgentChatStatusInput>) => buildAgentChatStatus({ ...base, ...over });
 
-describe("canPauseStatus — Pause only for an actively-working live session", () => {
+describe("canPauseStatus — Pause for any live session on a reachable agent", () => {
   it("working + active session → true", () => {
     expect(canPauseStatus(mk({ working: true, engagement: "active" }))).toBe(true);
   });
 
-  it("active session but NOT working (main=ready) → false", () => {
-    // The codex blocker: an active-but-idle session must not surface Pause.
-    expect(canPauseStatus(mk({ engagement: "active" }))).toBe(false);
+  it("active but idle (main=ready) → true — the only path to Reset", () => {
+    // Reset is stopped-only, so an idle active session must be pausable,
+    // otherwise it would be a dead end with neither Pause nor Reset.
+    expect(canPauseStatus(mk({ engagement: "active" }))).toBe(true);
   });
 
   it("working but already suspended → false (server would 409)", () => {

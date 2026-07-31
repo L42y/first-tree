@@ -1177,7 +1177,7 @@ describe("AgentStatusPanel extra DOM coverage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps a server-ready row Idle and does not offer Pause for residual timeline evidence", async () => {
+  it("keeps a server-ready row Idle for residual timeline evidence and offers Pause (the path to Reset)", async () => {
     agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([status("agent-nova", { engagement: "active" })]);
 
     h.render(
@@ -1193,7 +1193,9 @@ describe("AgentStatusPanel extra DOM coverage", () => {
       expect(h.container.textContent).toContain("Nova");
       expect(h.container.textContent).toContain("Idle");
     });
-    expect(h.container.querySelector('button[aria-label="Pause agent"]')).toBeNull();
+    // Reset is stopped-only, so an idle active session must expose Pause —
+    // otherwise the row would be a dead end with neither action.
+    expect(h.container.querySelector('button[aria-label="Pause agent"]')).not.toBeNull();
     expect(sessionApiMocks.suspendSession).not.toHaveBeenCalled();
   });
 

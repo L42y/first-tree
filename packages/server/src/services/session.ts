@@ -424,12 +424,14 @@ export async function archiveSession(
 /**
  * Atomically finalize an apply-acked terminate (the Web chat-session Reset
  * path): under the session row lock, re-confirm the row is still stopped
- * (`suspended` | `errored`), transition it to `evicted`, delete its session
- * events, and refresh presence counts — all in ONE transaction. A cleanup
- * failure rolls the eviction back, so the row stays stopped and the Reset
- * remains retryable after a reload; a row re-activated by a new message
- * while the ack was in flight fails the transition (`transitioned: false`)
- * instead of evicting the fresh session.
+ * (`suspended` | `errored` | already `evicted`), transition it to `evicted`,
+ * delete its session events, and refresh presence counts — all in ONE
+ * transaction. A cleanup failure rolls the eviction back, so the row stays
+ * stopped and the Reset remains retryable after a reload; a row re-activated
+ * by a new message while the ack was in flight fails the transition
+ * (`state` stays `active`) instead of evicting the fresh session. An
+ * already-`evicted` row skips the state write (`transitioned: false`) but
+ * still re-clears events — a legacy-path eviction may have lost its cleanup.
  */
 export async function finalizeTerminatedSession(
   db: Database,
@@ -452,6 +454,11 @@ export async function finalizeTerminatedSession(
     if (!existing) return;
     const current = existing.state as SessionState;
     finalState = current;
+
+    if (current === "evicted") {
+      await sessionEventService.clearEvents(tx as unknown as Database, agentId, chatId);
+      return;
+    }
     if (current !== "suspended" && current !== "errored") return;
 
     await tx

@@ -480,8 +480,11 @@ export class SessionManager {
   private readonly currentTrigger = new Map<string, Trigger>();
   private readonly registry: SessionRegistry | null;
   private readonly pendingQueue: PendingMessage[] = [];
-  /** Chats whose terminate command has closed admission but is still draining cleanup. */
-  private readonly terminatingChats = new Set<string>();
+  /** Chats whose terminate command has closed admission but is still draining cleanup.
+   *  The value is the in-flight termination promise: a duplicate terminate for
+   *  the same chat joins it instead of returning early, so every ref'd caller
+   *  acks only after the shared cleanup settles (applied:false on rejection). */
+  private readonly terminatingChats = new Map<string, Promise<void>>();
   /** Monotonic fence for delivery work that is still inside the async admission pipeline. */
   private readonly admissionGenerations = new Map<string, number>();
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
@@ -757,7 +760,15 @@ export class SessionManager {
 
   /** Handle a server-issued session command. Terminate drops all local state without reporting back. */
   async handleCommand(chatId: string, command: SessionCommandType): Promise<void> {
-    if (this.terminatingChats.has(chatId)) return;
+    const inFlightTermination = this.terminatingChats.get(chatId);
+    if (inFlightTermination) {
+      // A duplicate terminate joins the in-flight cleanup instead of
+      // returning early: a ref'd caller (Reset apply-ack) must only resolve
+      // after the shared work settles, and must reject if it rejects.
+      // Suspend/resume keep the early-return admission fence.
+      if (command === "session:terminate") return inFlightTermination;
+      return;
+    }
 
     if (command === "session:suspend") {
       const session = this.sessions.get(chatId);
@@ -807,10 +818,9 @@ export class SessionManager {
       const hasInboxCustody = this.inboxDelivery.hasUnsettledWork(chatId);
       if (!session && !hadMapping && !hasPendingQueue && !hasInboxCustody) return;
 
-      this.terminatingChats.add(chatId);
       this.invalidateDeliveryAdmission(chatId);
       this.config.log.info({ chatId }, "terminate command received");
-      try {
+      const termination = (async () => {
         if (session?.retryTimer) {
           clearTimeout(session.retryTimer);
           session.retryTimer = null;
@@ -839,8 +849,17 @@ export class SessionManager {
         this.recomputeRuntimeState();
         this.persistRegistry();
         this.drainPendingQueue();
+      })();
+      this.terminatingChats.set(chatId, termination);
+      try {
+        await termination;
       } finally {
-        this.terminatingChats.delete(chatId);
+        // Release the admission fence only if this run is still the current
+        // one — a failure leaves room for a genuine later retry without
+        // clobbering a newer in-flight termination.
+        if (this.terminatingChats.get(chatId) === termination) {
+          this.terminatingChats.delete(chatId);
+        }
       }
     }
   }

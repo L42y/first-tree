@@ -45,6 +45,7 @@ type SessionRecord = {
 type SessionManagerInternals = {
   sessions: Map<string, SessionRecord>;
   evictedMappings: Map<string, { claudeSessionId: string; lastActivity: number }>;
+  terminatingChats: Map<string, Promise<void>>;
   pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
   sessionRuntimeStates: Map<string, RuntimeState>;
   currentTrigger: Map<string, { messageId: string; senderId: string }>;
@@ -54,6 +55,7 @@ type SessionManagerInternals = {
     hasEntry(work: DeliveryWork): boolean;
     markProcessingStarted(chatId: string, messages: SessionMessage | readonly SessionMessage[]): void;
     prepareOperatorSuspend(chatId: string): Promise<void>;
+    drainForTerminate(chatId: string): Promise<void>;
     hasRecoveryDebt(chatId: string): boolean;
     hasUnsettledWork(chatId: string): boolean;
     snapshot(chatId: string): {
@@ -2240,6 +2242,139 @@ describe("SessionManager edge coverage", () => {
     expect(i.sessions.has(chatId)).toBe(false);
     expect(i.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
+
+    await sm.shutdown();
+  });
+
+  it("shares one in-flight termination across concurrent same-chat terminates", async () => {
+    let signalDrainStarted: (() => void) | undefined;
+    let resolveDrain: (() => void) | undefined;
+    const drainStarted = new Promise<void>((resolve) => {
+      signalDrainStarted = resolve;
+    });
+    const drainGate = new Promise<void>((resolve) => {
+      resolveDrain = resolve;
+    });
+    const activeHandler = handler();
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-shared";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    i._activeCount = 1;
+    const drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
+      signalDrainStarted?.();
+      await drainGate;
+    });
+    i.inboxDelivery.drainForTerminate = drainForTerminate;
+
+    const first = sm.handleCommand(chatId, "session:terminate");
+    await drainStarted;
+
+    // A duplicate terminate joins the in-flight cleanup — it must not return
+    // early while the shared work is still running.
+    let secondSettled = false;
+    const second = sm.handleCommand(chatId, "session:terminate").then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(drainForTerminate).toHaveBeenCalledTimes(1);
+    expect(activeHandler.shutdown).toHaveBeenCalledTimes(1);
+
+    resolveDrain?.();
+    await first;
+    await second;
+
+    expect(secondSettled).toBe(true);
+    expect(drainForTerminate).toHaveBeenCalledTimes(1);
+    expect(activeHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("keeps suspend and resume fenced out while a same-chat terminate is in flight", async () => {
+    let signalDrainStarted: (() => void) | undefined;
+    let resolveDrain: (() => void) | undefined;
+    const drainStarted = new Promise<void>((resolve) => {
+      signalDrainStarted = resolve;
+    });
+    const drainGate = new Promise<void>((resolve) => {
+      resolveDrain = resolve;
+    });
+    const activeHandler = handler();
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-fence";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    i._activeCount = 1;
+    i.inboxDelivery.drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
+      signalDrainStarted?.();
+      await drainGate;
+    });
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    await drainStarted;
+
+    // Suspend/resume keep the old early-return admission fence: they neither
+    // join the termination promise nor touch the terminating session.
+    await sm.handleCommand(chatId, "session:suspend");
+    await sm.handleCommand(chatId, "session:resume");
+    expect(activeHandler.suspend).not.toHaveBeenCalled();
+    expect(activeHandler.resume).not.toHaveBeenCalled();
+
+    resolveDrain?.();
+    await terminate;
+
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("rejects every concurrent terminate awaiter and releases the fence for a genuine retry", async () => {
+    const boom = new Error("drain failed");
+    let signalDrainStarted: (() => void) | undefined;
+    const drainStarted = new Promise<void>((resolve) => {
+      signalDrainStarted = resolve;
+    });
+    const activeHandler = handler();
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-retry";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    i._activeCount = 1;
+    const drainForTerminate = vi
+      .fn<(chatId: string) => Promise<void>>()
+      .mockImplementationOnce(async () => {
+        signalDrainStarted?.();
+        throw boom;
+      })
+      .mockResolvedValue(undefined);
+    i.inboxDelivery.drainForTerminate = drainForTerminate;
+
+    const first = sm.handleCommand(chatId, "session:terminate");
+    await drainStarted;
+    // The duplicate joins the same in-flight run — it must never resolve
+    // early as if the apply had succeeded.
+    const second = sm.handleCommand(chatId, "session:terminate");
+
+    await expect(first).rejects.toBe(boom);
+    await expect(second).rejects.toBe(boom);
+    expect(drainForTerminate).toHaveBeenCalledTimes(1);
+    // The fence is released, so a later terminate is a genuine retry instead
+    // of a join of the dead run.
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Simulate the chat becoming known again (e.g. runtime sync re-adds the
+    // evicted mapping): a fresh terminate re-executes the full cleanup.
+    i.evictedMappings.set(chatId, { claudeSessionId: `session-${chatId}`, lastActivity: Date.now() });
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(drainForTerminate).toHaveBeenCalledTimes(2);
+    expect(i.evictedMappings.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });

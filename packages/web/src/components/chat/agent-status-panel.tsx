@@ -85,14 +85,14 @@ export function AgentStatusPanel({
 }
 
 /**
- * Pause is offered only when the agent is BOTH actively producing output
- * (`main === "working"`) and on a live session (`engagement === "active"`).
- * That's the only state with a meaningful Pause — and the only transition the
- * server accepts (anything else 409s). ready / failed / offline,
- * or a working-but-already-suspended row, get no Pause. Exported for tests.
+ * Pause is offered for any live session on a reachable agent
+ * (`engagement === "active"`) — working or idle. That is the only session
+ * state Pause can suspend (anything else 409s), and the active-idle case
+ * matters: it is the only path to Reset, since Reset is offered only for
+ * stopped sessions. Offline rows get no Pause. Exported for tests.
  */
 export function canPauseStatus(status: AgentChatStatus | null): boolean {
-  return status?.main === "working" && status.engagement === "active";
+  return status?.reachable === true && status.engagement === "active";
 }
 
 export function canResumeStatus(status: AgentChatStatus | null): boolean {

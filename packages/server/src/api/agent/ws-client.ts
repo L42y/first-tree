@@ -60,6 +60,7 @@ import type { InboxPushHandler, Notifier } from "../../services/notifier.js";
 import * as presenceService from "../../services/presence.js";
 import { readModelCatalogRpcResult, storeModelCatalogRpcResult } from "../../services/provider-models-rpc.js";
 import * as runtimeLivenessService from "../../services/runtime-liveness.js";
+import { readSessionCommandRpcResult, storeSessionCommandRpcResult } from "../../services/session-command-rpc.js";
 import * as sessionEventService from "../../services/session-event.js";
 
 /**
@@ -302,24 +303,46 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
     // deliver. A stale open socket on a previous replica must not receive the
     // same ref after reconnect/takeover.
     notifier.onDaemonClientCommand((payload) => {
-      if (payload.type !== PROVIDER_MODELS_LIST_TYPE) return;
       if (payload.targetInstanceId !== instanceId) return;
-      connectionManager.sendToClient(payload.clientId, {
-        type: PROVIDER_MODELS_LIST_TYPE,
-        provider: payload.provider,
-        ref: payload.ref,
-      });
+      if (payload.type === PROVIDER_MODELS_LIST_TYPE && "provider" in payload) {
+        connectionManager.sendToClient(payload.clientId, {
+          type: PROVIDER_MODELS_LIST_TYPE,
+          provider: payload.provider,
+          ref: payload.ref,
+        });
+        return;
+      }
+      if (payload.type === "session:terminate" && "agentId" in payload) {
+        // Chat-session Reset: verify the agent is still routed to THIS
+        // client's live socket before forwarding the ref'd command — a
+        // rebinding between the HTTP preflight and delivery must not send.
+        if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
+        connectionManager.sendToClient(payload.clientId, {
+          type: "session:terminate",
+          agentId: payload.agentId,
+          chatId: payload.chatId,
+          ref: payload.ref,
+        });
+        return;
+      }
     });
 
-    // Cross-replica result wake: catalog is in clients.metadata; resolve any
-    // local HTTP waiter that registered waitForClientReply for this ref.
+    // Cross-replica result wake: the ack/result is durable in
+    // clients.metadata; resolve any local HTTP waiter that registered
+    // waitForClientReply for this ref. Session-command acks are checked
+    // first, then the provider-model catalog.
     notifier.onDaemonClientCommandResult((payload) => {
       void (async () => {
+        const ack = await readSessionCommandRpcResult(app.db, payload.clientId, payload.ref);
+        if (ack) {
+          connectionManager.resolveClientReply(payload.clientId, payload.ref, ack);
+          return;
+        }
         const catalog = await readModelCatalogRpcResult(app.db, payload.clientId, payload.ref);
         if (!catalog) return;
         connectionManager.resolveClientReply(payload.clientId, payload.ref, catalog);
       })().catch((err) => {
-        app.log.debug({ err, clientId: payload.clientId, ref: payload.ref }, "provider-models result wake failed");
+        app.log.debug({ err, clientId: payload.clientId, ref: payload.ref }, "daemon command result wake failed");
       });
     });
 
@@ -1033,6 +1056,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   os: data.os,
                   sdkVersion: data.sdkVersion,
                   lastUpdateAttempt: data.lastUpdateAttempt,
+                  wireCapabilities: data.wireCapabilities,
                 });
               } catch (err) {
                 const message = err instanceof Error ? err.message : "client register failed";
@@ -1634,10 +1658,10 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                 }
               });
             } else if (type === "session:command:applied") {
-              // Apply-ack for a ref'd session command (today only
-              // session:terminate from the Web Reset flow). Resolve the HTTP
-              // waiter registered by the terminate route; the waiter itself
-              // validates ref + agent + chat + command before evicting.
+              // Apply-ack for a ref'd session command (the Web Reset flow).
+              // The HTTP waiter may live on ANOTHER replica, so the ack is
+              // made durable (clients.metadata, instance-guarded) and a
+              // result wake is fanned out; the local waiter resolves too.
               const parsedAck = sessionCommandAppliedFrameSchema.safeParse(msg);
               if (!parsedAck.success) {
                 app.log.warn(
@@ -1647,7 +1671,47 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                 return;
               }
               if (!clientId) return;
+              // Reject a locally replaced socket before touching durable state.
+              if (!connectionManager.isActiveClientConnection(clientId, socket)) {
+                app.log.debug(
+                  { clientId, ref: parsedAck.data.ref },
+                  "ignoring session:command:applied from replaced local socket",
+                );
+                return;
+              }
+              // The ack must come from the agent's CURRENT route: this client
+              // owns the agent binding on this socket right now.
+              if (
+                !boundAgents.has(parsedAck.data.agentId) ||
+                connectionManager.getAgentClientId(parsedAck.data.agentId) !== clientId
+              ) {
+                app.log.debug(
+                  { clientId, agentId: parsedAck.data.agentId, ref: parsedAck.data.ref },
+                  "ignoring session:command:applied from an agent not routed to this client",
+                );
+                return;
+              }
+              const stored = await storeSessionCommandRpcResult(
+                app.db,
+                clientId,
+                parsedAck.data.ref,
+                {
+                  command: "session:terminate",
+                  agentId: parsedAck.data.agentId,
+                  chatId: parsedAck.data.chatId,
+                  applied: parsedAck.data.applied,
+                },
+                instanceId,
+              );
+              if (!stored) {
+                app.log.debug(
+                  { clientId, ref: parsedAck.data.ref, instanceId },
+                  "ignoring session:command:applied; client ownership moved before durable write",
+                );
+                return;
+              }
               connectionManager.resolveClientReply(clientId, parsedAck.data.ref, parsedAck.data);
+              await notifier.notifyDaemonClientCommandResult({ clientId, ref: parsedAck.data.ref });
             } else if (type === "inbox:ack") {
               const payloadResult = inboxAckFrameSchema.safeParse(msg);
               if (!payloadResult.success) {

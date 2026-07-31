@@ -716,6 +716,95 @@ describe("AgentSlot", () => {
     await slot.stop();
   });
 
+  it("acks concurrent ref'd terminates for the same chat only after the shared apply settles", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    // SessionManager coalesces a duplicate terminate onto the in-flight
+    // apply; both refs must ack only after that shared work settles, and a
+    // legacy unref'd terminate overlapping them never acks at all.
+    const shared = deferred<void>();
+    session.handleCommand.mockReturnValue(shared.promise);
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-1", type: "session:terminate" });
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-1",
+    });
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-2",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(session.handleCommand).toHaveBeenCalledTimes(3);
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    shared.resolve();
+    await vi.waitFor(() => expect(connection.reportSessionCommandApplied).toHaveBeenCalledTimes(2));
+    expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+      ref: "ref-1",
+      agentId: "agent-1",
+      chatId: "chat-1",
+      command: "session:terminate",
+      applied: true,
+    });
+    expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+      ref: "ref-2",
+      agentId: "agent-1",
+      chatId: "chat-1",
+      command: "session:terminate",
+      applied: true,
+    });
+
+    await slot.stop();
+  });
+
+  it("acks applied:false for every ref sharing a failed terminate apply", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const shared = deferred<void>();
+    session.handleCommand.mockReturnValue(shared.promise);
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-1",
+    });
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-2",
+    });
+    await Promise.resolve();
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    shared.reject(new Error("boom"));
+    await vi.waitFor(() => expect(connection.reportSessionCommandApplied).toHaveBeenCalledTimes(2));
+    // Neither ref may report success: the shared apply failed for both.
+    for (const ref of ["ref-1", "ref-2"]) {
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref,
+        agentId: "agent-1",
+        chatId: "chat-1",
+        command: "session:terminate",
+        applied: false,
+      });
+    }
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalledWith(expect.objectContaining({ applied: true }));
+
+    await slot.stop();
+  });
+
   it("buffers bind-time inbox pushes until the SessionManager exists", async () => {
     const { slot, connection, sdk, state } = await makeSlot({
       dispatchRejectEntryId: 78,

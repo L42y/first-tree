@@ -1,6 +1,7 @@
 import {
   AGENT_STATUSES,
   type ClientCapabilities,
+  type ClientWireCapabilities,
   clientCapabilitiesSchema,
   type RuntimeProvider,
   type UpdateAttempt,
@@ -90,6 +91,15 @@ export async function registerClient(
      * Optional — clients without the update-state wiring don't send it.
      */
     lastUpdateAttempt?: UpdateAttempt;
+    /**
+     * Negotiable wire-protocol capabilities advertised on `client:register`
+     * (e.g. `wsSessionTerminateApplyAck`). Persisted under
+     * `clients.metadata.wireCapabilities` and REPLACED WHOLESALE on every
+     * register — a client that stops advertising a capability (older build,
+     * downgrade) must not keep a previous `true`. The chat-session Reset
+     * gate derives from this DB copy so any replica can evaluate it.
+     */
+    wireCapabilities?: ClientWireCapabilities;
   },
 ) {
   const now = new Date();
@@ -121,9 +131,14 @@ export async function registerClient(
   // still NULL. We only emit the merge clause when the client actually
   // reported an attempt — old clients without the wire field continue to
   // not touch metadata at all.
-  const metadataMerge = data.lastUpdateAttempt
-    ? sql`COALESCE(${clients.metadata}, '{}'::jsonb) || ${JSON.stringify({ lastUpdateAttempt: data.lastUpdateAttempt })}::jsonb`
-    : undefined;
+  // `wireCapabilities` is always written and replaced wholesale: an older
+  // client that sends no block must overwrite any capabilities a previous
+  // (newer) registration advertised for the same clientId.
+  const metadataPatch = {
+    ...(data.lastUpdateAttempt ? { lastUpdateAttempt: data.lastUpdateAttempt } : {}),
+    wireCapabilities: data.wireCapabilities ?? {},
+  };
+  const metadataMerge = sql`COALESCE(${clients.metadata}, '{}'::jsonb) || ${JSON.stringify(metadataPatch)}::jsonb`;
 
   const registered = await db
     .insert(clients)
@@ -138,7 +153,7 @@ export async function registerClient(
       sdkVersion: data.sdkVersion ?? null,
       connectedAt: now,
       lastSeenAt: now,
-      ...(data.lastUpdateAttempt ? { metadata: { lastUpdateAttempt: data.lastUpdateAttempt } } : {}),
+      metadata: metadataPatch,
     })
     .onConflictDoUpdate({
       target: clients.id,
@@ -151,7 +166,7 @@ export async function registerClient(
         sdkVersion: data.sdkVersion ?? null,
         connectedAt: now,
         lastSeenAt: now,
-        ...(metadataMerge ? { metadata: metadataMerge } : {}),
+        metadata: metadataMerge,
       },
       setWhere: and(isNull(clients.retiredAt), or(isNull(clients.userId), eq(clients.userId, data.userId))),
     })

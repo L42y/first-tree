@@ -387,6 +387,35 @@ describe("AgentStatusPanel — chat session Reset", () => {
     });
   });
 
+  it("active-idle full journey: Pause first, then Reset once suspended", async () => {
+    // The complete operator path for the most common troubleshooting state —
+    // an idle but still-active session. Reset is never offered while active;
+    // Pause is the bridge.
+    renderPanel({ engagement: "active" });
+    await waitForSettled(h, () => {
+      expect(h.container.textContent).toContain("Idle");
+      expect(h.container.querySelector('button[aria-label="Pause agent"]')).not.toBeNull();
+    });
+    const activeCard = await openCard(h);
+    expect(activeCard.querySelector('button[aria-label="Reset session"]')).toBeNull();
+
+    // Pause: the refetch then projects the session suspended.
+    agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([status("agent-nova", { engagement: "suspended" })]);
+    await click(h, h.container.querySelector('button[aria-label="Pause agent"]'));
+    await waitForSettled(h, () => {
+      expect(sessionApiMocks.suspendSession).toHaveBeenCalledWith("agent-nova", "chat-1");
+      expect(h.container.textContent).toContain("Paused");
+    });
+
+    // Now the card offers Reset, and the apply-ack flow succeeds.
+    const dialog = await openConfirmFromCard(h);
+    await click(h, dialogButton(dialog, "Reset"));
+    await waitForSettled(h, () => {
+      expect(sessionApiMocks.terminateSession).toHaveBeenCalledWith("agent-nova", "chat-1", { waitForApply: true });
+      expect(document.body.textContent).toContain("Session reset");
+    });
+  });
+
   it("a 200 with a non-evicted state is treated as a failure, never a success", async () => {
     // Defensive: the apply-ack route only 200s for evicted rows, but the UI
     // must not toast success on any other state.
