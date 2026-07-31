@@ -1,6 +1,6 @@
 import type { AuthProvider, AuthProviderConnection } from "@first-tree/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import { Github, Link2, Unlink } from "lucide-react";
+import { Check, Github, Plus, Unlink } from "lucide-react";
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "react-router";
@@ -9,6 +9,7 @@ import { getAuthProviders, startProviderLink, startProviderUnlink } from "../../
 import { useAuth } from "../../auth/auth-context.js";
 import { Avatar } from "../../components/avatar.js";
 import { Button } from "../../components/ui/button.js";
+import { Popover } from "../../components/ui/popover.js";
 import { Section } from "../../components/ui/section.js";
 import { SettingsField, SettingsSaveButton } from "../../components/ui/settings-field.js";
 import { invalidateDisplayNameQueries } from "../../lib/identity-cache.js";
@@ -33,20 +34,19 @@ export function SettingsAccountPage() {
   const [displayName, setDisplayName] = useState(user?.displayName ?? "");
   const [providers, setProviders] = useState<AuthProviderConnection[]>([]);
   const [loading, setLoading] = useState(true);
+  const [providerLoadError, setProviderLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [profileSaved, setProfileSaved] = useState(false);
 
   const loadProviders = useCallback(async () => {
     setLoading(true);
+    setProviderLoadError(null);
     try {
       const result = await getAuthProviders();
       setProviders(result.providers);
     } catch (error) {
-      setFeedback({
-        kind: "error",
-        message: error instanceof Error ? error.message : "Could not load sign-in methods.",
-      });
+      setProviderLoadError(error instanceof Error ? error.message : "Could not load ways to sign in.");
     } finally {
       setLoading(false);
     }
@@ -122,6 +122,9 @@ export function SettingsAccountPage() {
   };
 
   const displayNameForIdentity = user?.displayName || user?.username || "User";
+  const connectedProviders = providers.filter((provider) => provider.connected);
+  const usableConnectedProviders = connectedProviders.filter((provider) => provider.available);
+  const availableProviders = providers.filter((provider) => provider.available && !provider.connected);
 
   return (
     <div
@@ -174,16 +177,55 @@ export function SettingsAccountPage() {
         </form>
       </Section>
 
-      <Section title="Sign-in methods">
+      <Section title="Ways to sign in">
         {loading ? (
           <p className="text-body m-0" role="status" style={{ color: "var(--fg-3)", padding: "var(--sp-4) 0" }}>
-            Loading sign-in methods…
+            Loading ways to sign in…
+          </p>
+        ) : providerLoadError ? (
+          <p className="text-body m-0" role="alert" style={{ color: "var(--color-error)", padding: "var(--sp-4) 0" }}>
+            {providerLoadError}
           </p>
         ) : (
-          <div className="flex flex-col" style={{ gap: "var(--sp-3)", padding: "var(--sp-3) 0 var(--sp-1)" }}>
-            {providers.map((provider) => (
-              <ProviderRow key={provider.provider} provider={provider} busy={busy} onAction={providerAction} />
-            ))}
+          <div style={{ padding: "var(--sp-3) 0 var(--sp-1)" }}>
+            <p className="text-body m-0" style={{ color: "var(--fg-3)" }}>
+              {connectedProviders.length > 0
+                ? usableConnectedProviders.length > 0
+                  ? "Use any available connected account to sign in to First Tree."
+                  : "Your connected sign-in methods are currently unavailable."
+                : availableProviders.length > 0
+                  ? "Connect an account to sign in with Google or GitHub."
+                  : "No additional sign-in methods are available."}
+            </p>
+            {connectedProviders.length > 0 ? (
+              <div
+                style={{
+                  marginTop: "var(--sp-3)",
+                  borderTop: "var(--hairline) solid var(--border)",
+                  borderBottom: "var(--hairline) solid var(--border)",
+                }}
+              >
+                {connectedProviders.map((provider, index) => (
+                  <ProviderRow
+                    key={provider.provider}
+                    provider={provider}
+                    busy={busy}
+                    onAction={providerAction}
+                    separated={index < connectedProviders.length - 1}
+                  />
+                ))}
+              </div>
+            ) : null}
+            {availableProviders.length > 0 ? (
+              <div style={{ marginTop: "var(--sp-3)" }}>
+                <ProviderPicker
+                  providers={availableProviders}
+                  hasConnectedProvider={connectedProviders.length > 0}
+                  busy={busy}
+                  onAction={providerAction}
+                />
+              </div>
+            ) : null}
           </div>
         )}
       </Section>
@@ -217,70 +259,127 @@ function ProviderRow({
   provider,
   busy,
   onAction,
+  separated,
 }: {
   provider: AuthProviderConnection;
   busy: string | null;
   onAction: (provider: AuthProvider, action: "link" | "unlink") => Promise<void>;
+  separated: boolean;
 }) {
   const label = provider.provider === "google" ? "Google" : "GitHub";
-  const action = provider.connected ? "unlink" : "link";
-  const disabled = !provider.available || (action === "unlink" && !provider.canUnlink) || busy !== null;
   return (
-    <fieldset
-      aria-label={`${label} sign-in method`}
+    <div
       className="flex items-center justify-between"
       style={{
         gap: "var(--sp-4)",
-        padding: "var(--sp-3) var(--sp-4)",
-        margin: 0,
+        padding: "var(--sp-3) var(--sp-2)",
         minWidth: 0,
-        border: "var(--hairline) solid var(--border)",
-        borderRadius: "var(--radius-panel)",
-        background: "var(--bg-raised)",
+        borderBottom: separated ? "var(--hairline) solid var(--border-faint)" : undefined,
       }}
     >
       <div className="flex min-w-0 items-center" style={{ gap: "var(--sp-3)" }}>
-        {provider.provider === "github" ? (
-          <Github className="h-5 w-5 shrink-0" aria-hidden />
-        ) : (
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center font-semibold" aria-hidden>
-            G
-          </span>
-        )}
+        <ProviderIcon provider={provider.provider} />
         <div className="min-w-0">
           <p className="text-body font-medium m-0" style={{ color: "var(--fg)" }}>
             {label}
           </p>
           <p className="text-label m-0 truncate" style={{ color: "var(--fg-3)", marginTop: "var(--sp-0_5)" }}>
-            {!provider.available
-              ? "Not configured"
-              : provider.connected
-                ? provider.accountName || provider.email || "Connected"
-                : "Not connected"}
+            {provider.accountName || provider.email || "Connected"}
           </p>
-          {provider.connectedAt ? (
-            <p className="text-caption m-0" style={{ color: "var(--fg-3)", marginTop: "var(--sp-0_5)" }}>
-              Connected {new Date(provider.connectedAt).toLocaleDateString()}
-            </p>
-          ) : null}
-          {provider.unlinkBlockedReason === "last-provider" ? (
-            <p className="text-caption m-0" style={{ color: "var(--fg-3)", marginTop: "var(--sp-1)" }}>
-              Connect another sign-in method before disconnecting.
-            </p>
-          ) : null}
         </div>
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="shrink-0"
-        disabled={disabled}
-        onClick={() => void onAction(provider.provider, action)}
-      >
-        {action === "link" ? <Link2 className="h-4 w-4" aria-hidden /> : <Unlink className="h-4 w-4" aria-hidden />}
-        {busy === `${provider.provider}-${action}` ? "Starting…" : action === "link" ? "Connect" : "Disconnect"}
-      </Button>
-    </fieldset>
+      {provider.available && provider.canUnlink ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          aria-label={`Disconnect ${label}`}
+          disabled={busy !== null}
+          onClick={() => void onAction(provider.provider, "unlink")}
+        >
+          <Unlink className="h-4 w-4" aria-hidden />
+          {busy === `${provider.provider}-unlink` ? "Starting…" : "Disconnect"}
+        </Button>
+      ) : (
+        <span
+          className="text-label inline-flex shrink-0 items-center"
+          style={{ gap: "var(--sp-1)", color: "var(--fg-3)" }}
+        >
+          {provider.available ? <Check className="h-4 w-4" aria-hidden /> : null}
+          {provider.available ? "Connected" : "Unavailable"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ProviderPicker({
+  providers,
+  hasConnectedProvider,
+  busy,
+  onAction,
+}: {
+  providers: AuthProviderConnection[];
+  hasConnectedProvider: boolean;
+  busy: string | null;
+  onAction: (provider: AuthProvider, action: "link" | "unlink") => Promise<void>;
+}) {
+  const triggerLabel = hasConnectedProvider ? "Add another sign-in method" : "Add a sign-in method";
+  return (
+    <Popover
+      align="start"
+      panelStyle={{ minWidth: "var(--sp-60)", padding: "var(--sp-1)" }}
+      panelAriaLabel="Available sign-in methods"
+      focusOnOpen
+      trigger={({ open, toggle }) => (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          disabled={busy !== null}
+          onClick={toggle}
+        >
+          <Plus className="h-4 w-4" aria-hidden />
+          {busy?.endsWith("-link") ? "Starting…" : triggerLabel}
+        </Button>
+      )}
+    >
+      {({ close }) => (
+        <div>
+          {providers.map((provider) => {
+            const label = provider.provider === "google" ? "Google" : "GitHub";
+            return (
+              <Button
+                key={provider.provider}
+                type="button"
+                variant="ghost"
+                disabled={busy !== null}
+                className="h-auto w-full justify-start px-2 py-1.5 font-normal"
+                onClick={() => {
+                  close();
+                  void onAction(provider.provider, "link");
+                }}
+              >
+                <ProviderIcon provider={provider.provider} />
+                {label}
+              </Button>
+            );
+          })}
+        </div>
+      )}
+    </Popover>
+  );
+}
+
+function ProviderIcon({ provider }: { provider: AuthProvider }) {
+  return provider === "github" ? (
+    <Github className="h-5 w-5 shrink-0" aria-hidden />
+  ) : (
+    <span className="flex h-5 w-5 shrink-0 items-center justify-center font-semibold" aria-hidden>
+      G
+    </span>
   );
 }

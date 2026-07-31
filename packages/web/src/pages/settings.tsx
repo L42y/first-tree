@@ -40,7 +40,7 @@ type ItemGroup = {
 const ACCOUNT_ITEM: Item = {
   to: "/settings/account",
   label: "Account",
-  description: "Manage your profile and sign-in methods. These settings follow you across all your teams.",
+  description: "Manage your profile and ways to sign in. These settings follow you across all your teams.",
 };
 const SETUP_ITEM: Item = { to: "/settings/setup", label: "Setup" };
 const COMPUTERS_ITEM: Item = { to: "/settings/computers", label: "Computers" };
