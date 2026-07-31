@@ -73,6 +73,12 @@ FT_BIN="$HOME/.local/bin/first-tree" # Use first-tree-staging for staging.
 
 `--type` accepts `human` or `agent`. The `client-id` argument is required
 because an agent is permanently bound to exactly one client machine.
+`--runtime` accepts `claude-code`, `claude-code-tui`, `codex`, `cursor`,
+`kimi-code`, or `opencode`, and defaults to `claude-code`. OpenCode requires an
+operator-installed CLI (`npm install -g opencode-ai@^1.18.7`) plus
+provider-owned authentication (`opencode auth login`) on macOS or Linux.
+After installing or authenticating a provider, run `first-tree daemon probe`
+to refresh the machine's advertised capabilities.
 
 ## What `first-tree login` writes
 

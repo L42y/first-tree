@@ -230,13 +230,24 @@ first-tree agent list --remote --org <id>  # cross-org view (multi-org operators
 ### agent create
 
 ```
-first-tree agent create <name> --type <human|agent> --client-id <thisClient> [--runtime claude-code|claude-code-tui|codex|cursor|kimi-code]
+first-tree agent create <name> --type <human|agent> --client-id <thisClient> [--runtime claude-code|claude-code-tui|codex|cursor|kimi-code|opencode]
 ```
 
 Creates the agent row on the server and binds it to the given client
 machine. The local `agents/<name>/agent.yaml` is written by the running
 daemon via the server-pushed `agent:pinned` frame; no second command
 needed if the daemon is already up.
+
+`--runtime` defaults to `claude-code`. The `opencode` runtime uses an
+operator-installed OpenCode CLI (`>=1.18.7 <2.0.0`) on macOS or Linux. Install
+it with `npm install -g opencode-ai@^1.18.7`, complete provider-owned
+authentication with `opencode auth login`, then run `first-tree daemon probe`
+to refresh the machine's advertised capabilities. First Tree never reads or
+relays OpenCode provider credentials. The capability probe resolves the
+executable and checks platform support; the first provider turn performs the
+compatible-version and database-readiness gates. Windows reports a resolved
+OpenCode binary for diagnostics but does not advertise it as available until
+the Client has the required pre-admission Job Object supervisor.
 
 ### agent add
 
