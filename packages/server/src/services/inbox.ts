@@ -642,6 +642,14 @@ export async function ackThroughEntryIdForBoundAgents(
       // for a duplicate ACK that commits nothing. It has to be a positive IN:
       // `status <> 'acked'` is not sargable, stays a filter, and saves only
       // the row locks.
+      //
+      // Operational caveat: on PostgreSQL 16 the index condition is only
+      // reached under a custom plan. Measured stable under the default
+      // `plan_cache_mode = auto` on 16.14 and 17.10 — the generic estimate is
+      // far more expensive, so the planner keeps rejecting it — but a
+      // deployment that forces `force_generic_plan` globally would silently
+      // return this scan to O(history) on 16. PostgreSQL 17 uses the bound
+      // parameters as an index condition either way.
       const prefixRows = await tx
         .select()
         .from(inboxEntries)

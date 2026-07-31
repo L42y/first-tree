@@ -105,7 +105,13 @@ describe("inbox ACK prefix scan", () => {
      *  Capturing the service's own SQL — rather than a copy of the query
      *  written into this test — is what makes the guard survive refactors:
      *  inlining the query back into the service, or dropping the status
-     *  restriction, both show up here. */
+     *  restriction, both show up here.
+     *
+     *  The replay runs after the ACK has committed, so a correct
+     *  implementation matches close to zero rows rather than the handful it
+     *  saw live. What is being asserted is the presence of the restriction,
+     *  not the live row count: a query missing it still reads the whole
+     *  partition on replay, which is what makes the two cases separable. */
     async function widestScan(cursor: number, inboxId: string): Promise<number> {
       const captured: Array<{ query: string; params: unknown[] }> = [];
       const client = postgres(process.env.DATABASE_URL ?? "", { max: 1 });
