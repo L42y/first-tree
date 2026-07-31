@@ -1061,6 +1061,49 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     }
   });
 
+  it("a route change after the ack prevents finalize — no evict, no clear, no success", async () => {
+    // The ack was legitimately issued for the preflight route, but the agent
+    // was rebound before it arrived. The in-transaction revalidation must
+    // stop the eviction rather than clear a session on the new route.
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "must survive" },
+    });
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      // Rebind the agent elsewhere before the ack lands.
+      const { eq } = await import("drizzle-orm");
+      await app.db.update(agentPresence).set({ instanceId: "elsewhere" }).where(eq(agentPresence.agentId, agent.uuid));
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(409);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+    } finally {
+      cleanup(admin, ws);
+    }
+  });
+
+  it("the durable ack store refuses to persist when the agent route moved", async () => {
+    const { app, admin, agent, chat } = await setup("suspended");
+    const { eq } = await import("drizzle-orm");
+    // Route moved to another instance after the preflight.
+    await app.db.update(agentPresence).set({ instanceId: "elsewhere" }).where(eq(agentPresence.agentId, agent.uuid));
+    const ref = crypto.randomUUID();
+    const stored = await storeSessionCommandRpcResult(
+      app.db,
+      admin.clientId,
+      ref,
+      { command: "session:terminate", agentId: agent.uuid, chatId: chat.id, applied: true },
+      LOCAL_INSTANCE,
+    );
+    expect(stored).toBe(false);
+    const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+    expect(await readSessionCommandRpcResult(app.db, admin.clientId, ref)).toBeNull();
+  });
+
   it("a session re-activated while waiting for the ack conflicts without evicting or clearing", async () => {
     const { app, admin, agent, chat, ws } = await setup("suspended");
     await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {

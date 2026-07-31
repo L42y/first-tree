@@ -196,6 +196,7 @@ describe("useAdminWs", () => {
       socket.emit({ type: "session:state", agentId: "agent-1", chatId: "chat-1", state: "evicted" });
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-session-events", "chat-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["session-events", "agent-1", "chat-1"] });
   });
 
   it("invalidates the chat's cron-jobs query on chat:updated and on reconnect catch-up", async () => {

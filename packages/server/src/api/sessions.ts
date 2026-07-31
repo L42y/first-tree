@@ -1,15 +1,12 @@
-import { eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { clients } from "../db/schema/clients.js";
 import { ConflictError, ServiceUnavailableError } from "../errors.js";
 import { requireAgentAccess, requireChatAccess } from "../scope/require-resource.js";
 import * as agentService from "../services/agent.js";
 import * as connectionManager from "../services/connection-manager.js";
 import { sendToAgent } from "../services/connection-manager.js";
 import * as sessionService from "../services/session.js";
-import { readSessionCommandRpcResult } from "../services/session-command-rpc.js";
+import { readSessionCommandRpcResult, resolveAgentApplyAckRoute } from "../services/session-command-rpc.js";
 import * as sessionEventService from "../services/session-event.js";
 
 const sessionFilterSchema = z.object({
@@ -179,40 +176,19 @@ async function terminateWithApplyAck(
     throw new ConflictError("Session must be suspended or errored before it can be reset");
   }
 
-  // DB-authoritative route: any replica must reach the same verdict,
-  // independent of which process owns the daemon socket. Both the presence
-  // route (client + instance) and the client row (connected, owning the
-  // same instance, apply-ack capability) must agree.
-  const [presence] = await app.db
-    .select({ clientId: agentPresence.clientId, instanceId: agentPresence.instanceId })
-    .from(agentPresence)
-    .where(eq(agentPresence.agentId, agentId))
-    .limit(1);
-  if (!presence?.clientId) {
+  // DB-authoritative route (shared predicate): durable agent binding +
+  // online presence + connected client must all agree on client/instance,
+  // and the client must have registered the apply-ack capability. Any
+  // replica reaches the same verdict, independent of socket ownership.
+  const route = await resolveAgentApplyAckRoute(app.db, agentId);
+  if (!route) {
     throw new ServiceUnavailableError("The agent's client is disconnected");
   }
-  const [client] = await app.db
-    .select({ id: clients.id, status: clients.status, instanceId: clients.instanceId, metadata: clients.metadata })
-    .from(clients)
-    .where(eq(clients.id, presence.clientId))
-    .limit(1);
-  if (
-    !client ||
-    client.status !== "connected" ||
-    client.instanceId == null ||
-    presence.instanceId == null ||
-    presence.instanceId !== client.instanceId
-  ) {
-    throw new ServiceUnavailableError("The agent's client is disconnected");
-  }
-  const wireCapabilities = (client.metadata as Record<string, unknown> | null)?.wireCapabilities as
-    | Record<string, unknown>
-    | undefined;
-  if (wireCapabilities?.wsSessionTerminateApplyAck !== true) {
+  if (!route.capable) {
     throw new ServiceUnavailableError("The agent's client does not support terminate apply-ack; Reset is unavailable");
   }
-  const clientId = client.id;
-  const targetInstanceId = client.instanceId;
+  const clientId = route.clientId;
+  const targetInstanceId = route.instanceId;
 
   // Register the waiter BEFORE the command can be delivered so a fast ack
   // can never be missed.
@@ -263,7 +239,10 @@ async function terminateWithApplyAck(
     throw new ServiceUnavailableError("The agent's client failed to apply the terminate");
   }
 
-  const result = await sessionService.finalizeTerminatedSession(app.db, agentId, chatId, organizationId, app.notifier);
+  const result = await sessionService.finalizeTerminatedSession(app.db, agentId, chatId, organizationId, app.notifier, {
+    clientId,
+    instanceId: targetInstanceId,
+  });
   if (result.state !== "evicted") {
     // A new message re-activated the session while the ack was in flight —
     // do not evict or clear the fresh session.

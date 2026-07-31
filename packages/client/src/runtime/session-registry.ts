@@ -74,6 +74,27 @@ export class SessionRegistry {
 
   /** Force an immediate write (used during shutdown). */
   flush(entries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }>): void {
+    this.clearPendingWrite();
+    try {
+      this.writeToDisk(entries);
+    } catch (err) {
+      // Log but don't throw — registry persistence is best-effort
+      this.logger.warn(`Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Force an immediate write and propagate failure to the caller. Used by
+   * chat-session Reset: the client apply-acks `session:terminate` only after
+   * the mapping deletion is durable, so a failed write must fail the
+   * terminate instead of being swallowed.
+   */
+  flushOrThrow(entries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }>): void {
+    this.clearPendingWrite();
+    this.writeToDisk(entries);
+  }
+
+  private clearPendingWrite(): void {
     if (this.writeTimer) {
       clearTimeout(this.writeTimer);
       this.writeTimer = null;
@@ -83,7 +104,9 @@ export class SessionRegistry {
     // so drop it; otherwise dispose()'s pending fallback would later
     // rewrite the stale snapshot on top of what we just persisted.
     this.pendingEntries = null;
+  }
 
+  private writeToDisk(entries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }>): void {
     const data: RegistryData = {
       version: REGISTRY_VERSION,
       entries: {},
@@ -99,14 +122,9 @@ export class SessionRegistry {
 
     const tmpPath = `${this.filePath}.tmp`;
 
-    try {
-      mkdirSync(dirname(this.filePath), { recursive: true });
-      writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
-      renameSync(tmpPath, this.filePath);
-    } catch (err) {
-      // Log but don't throw — registry persistence is best-effort
-      this.logger.warn(`Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+    renameSync(tmpPath, this.filePath);
   }
 
   /** Flush any pending debounced write, then clean up timers. */

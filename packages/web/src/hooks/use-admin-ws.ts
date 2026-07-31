@@ -225,6 +225,9 @@ function broadcast(msg: WsMessage) {
       // other open viewer of the chat keeps the stale trace indefinitely.
       if (chatId && msg.state === "evicted") {
         latestQc.invalidateQueries({ queryKey: ["chat-session-events", chatId] });
+        if (agentId) {
+          latestQc.invalidateQueries({ queryKey: ["session-events", agentId, chatId] });
+        }
       }
     } else if (msg.type === "session:runtime") {
       // The per-(agent,chat) D-axis authority flipped. Same delivery

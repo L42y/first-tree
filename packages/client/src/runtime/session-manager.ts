@@ -78,6 +78,13 @@ type SessionEntry = {
   /** In-flight suspend promise; awaited before resume to avoid race conditions. */
   suspending: Promise<void> | null;
   /**
+   * Failure of the last in-flight suspend, recorded because `suspending`
+   * swallows rejections by contract. A terminate joining that suspend reads
+   * this to fail the Reset apply instead of acking over a handler that was
+   * never confirmed suspended. Cleared when a new suspend begins.
+   */
+  suspendError: unknown | null;
+  /**
    * Transient-retry bookkeeping (Bug 1 fix). When handler.start / handler.resume
    * throws a classified-transient error we schedule a retry instead of
    * deleting the entry. A pending timer is tracked here so an arriving user
@@ -485,6 +492,14 @@ export class SessionManager {
    *  the same chat joins it instead of returning early, so every ref'd caller
    *  acks only after the shared cleanup settles (applied:false on rejection). */
   private readonly terminatingChats = new Map<string, Promise<void>>();
+  /**
+   * Chats whose terminate cleanup finished in memory but whose final
+   * synchronous registry flush failed. Counted as "work to do" by the
+   * terminate admission guard so a retry re-executes the full termination
+   * (and re-attempts the flush) instead of early-returning a false
+   * applied:true while the stale mapping is still on disk.
+   */
+  private readonly terminatePersistFailures = new Set<string>();
   /** Monotonic fence for delivery work that is still inside the async admission pipeline. */
   private readonly admissionGenerations = new Map<string, number>();
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
@@ -816,7 +831,10 @@ export class SessionManager {
       const hadMapping = this.evictedMappings.has(chatId);
       const hasPendingQueue = this.pendingQueue.some((queued) => queued.chatId === chatId);
       const hasInboxCustody = this.inboxDelivery.hasUnsettledWork(chatId);
-      if (!session && !hadMapping && !hasPendingQueue && !hasInboxCustody) return;
+      // A chat whose previous terminate failed the final durable-flush step
+      // still has work: the deletion must reach disk before any applied:true.
+      const hasFailedTerminatePersist = this.terminatePersistFailures.has(chatId);
+      if (!session && !hadMapping && !hasPendingQueue && !hasInboxCustody && !hasFailedTerminatePersist) return;
 
       this.invalidateDeliveryAdmission(chatId);
       this.config.log.info({ chatId }, "terminate command received");
@@ -826,10 +844,24 @@ export class SessionManager {
           session.retryTimer = null;
         }
         if (session) this.invalidateRouteTransition(session, "session_terminated");
+        // Join an in-flight suspend before any state deletion: handler.suspend()
+        // may still be running, and the slot was already released so the
+        // activeSlotHeld teardown below would never fire. `suspending` never
+        // rejects (legacy resolve-always contract for dispatch/resume), so the
+        // outcome recorded on the entry is what lets a failed suspend fail the
+        // apply instead of acking over a possibly-live handler.
+        const joinedSuspend = session?.suspending != null;
+        if (session?.suspending) await session.suspending;
+        if (joinedSuspend && session?.suspendError) throw session.suspendError;
         const activeSlotHeld = session?.activeSlotHeld === true;
         if (session) this.releaseActiveSlot(session);
         if (activeSlotHeld && session) {
           await this.shutdownHandler(session.handler, "session_terminated");
+        } else if (joinedSuspend && session) {
+          // The joined suspend left the handler live (slot already released);
+          // terminate must still tear it down, and teardown failure must fail
+          // the apply — it must not inherit shutdownHandler's swallow semantics.
+          await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
         }
 
         this.sessions.delete(chatId);
@@ -847,7 +879,20 @@ export class SessionManager {
         await this.inboxDelivery.drainForTerminate(chatId);
 
         this.recomputeRuntimeState();
-        this.persistRegistry();
+        try {
+          // The Reset apply-ack is only truthful once the mapping deletion is
+          // durable: a crash between ack and a debounced write would reload
+          // the stale mapping on restart and revive the old provider session.
+          this.persistRegistry({ throwOnFailure: true });
+          this.terminatePersistFailures.delete(chatId);
+        } catch (err) {
+          // In-memory state is already gone but the deletion never reached
+          // disk. Remember the failed delete so a retry terminate re-runs the
+          // full body (and re-attempts the flush) instead of early-returning
+          // a false success from the admission guard above.
+          this.terminatePersistFailures.add(chatId);
+          throw err;
+        }
         this.drainPendingQueue();
       })();
       this.terminatingChats.set(chatId, termination);
@@ -1099,19 +1144,26 @@ export class SessionManager {
     return true;
   }
 
-  private shutdownHandler(handler: AgentHandler, reason: string, opts: { afterPrior?: boolean } = {}): Promise<void> {
+  private shutdownHandler(
+    handler: AgentHandler,
+    reason: string,
+    opts: { afterPrior?: boolean; observeFailure?: boolean } = {},
+  ): Promise<void> {
     const prior = this.handlerShutdowns.get(handler);
     if (prior && opts.afterPrior !== true) return prior;
-    const shutdown = (prior ?? Promise.resolve())
-      .then(() => handler.shutdown(reason))
-      .catch((err) => {
-        this.config.log.warn({ reason, err }, "handler shutdown failed");
-      });
-    this.handlerShutdowns.set(handler, shutdown);
-    void shutdown.finally(() => {
-      if (this.handlerShutdowns.get(handler) === shutdown) this.handlerShutdowns.delete(handler);
+    const shutdown = (prior ?? Promise.resolve()).then(() => handler.shutdown(reason));
+    // The coalesced promise keeps the legacy swallow-and-warn semantics for
+    // fire-and-forget callers; an `observeFailure` caller gets the raw
+    // promise so a teardown failure can fail its operation (Reset terminate
+    // apply-ack). `shutdown`'s rejection is always handled by `observed`.
+    const observed = shutdown.catch((err) => {
+      this.config.log.warn({ reason, err }, "handler shutdown failed");
     });
-    return shutdown;
+    this.handlerShutdowns.set(handler, observed);
+    void observed.finally(() => {
+      if (this.handlerShutdowns.get(handler) === observed) this.handlerShutdowns.delete(handler);
+    });
+    return opts.observeFailure ? shutdown : observed;
   }
 
   private retireTransitionHandler(transition: RouteTransitionToken, reason: string): void {
@@ -1601,6 +1653,7 @@ export class SessionManager {
       activeSlotHeld: false,
       lastActivity: Date.now(),
       suspending: null,
+      suspendError: null,
       retryAttempt: 0,
       retryNextAt: null,
       retryTimer: null,
@@ -2427,6 +2480,8 @@ export class SessionManager {
       drainQueue: true,
     },
   ): void {
+    // A new suspend supersedes any earlier suspend outcome.
+    entry.suspendError = null;
     const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
     // A canceled fresh start has never established a provider-neutral resume
     // handle. Keeping that entry as "suspended" would make redelivery call
@@ -2454,6 +2509,12 @@ export class SessionManager {
         return entry.handler.suspend(opts.reason);
       })
       .catch((err) => {
+        // `suspending` keeps its legacy resolve-always contract for
+        // dispatch/resume awaiters, but a terminate joining this suspend
+        // must still observe the failure — record it on the entry so the
+        // Reset apply can reject instead of acking over a handler that was
+        // never confirmed suspended.
+        entry.suspendError = err;
         this.config.log.warn({ chatId: entry.chatId, err }, "suspend preparation error");
       })
       .then(() => undefined)
@@ -3068,7 +3129,7 @@ export class SessionManager {
     }
   }
 
-  private persistRegistry(opts: { immediate?: boolean } = {}): void {
+  private persistRegistry(opts: { immediate?: boolean; throwOnFailure?: boolean } = {}): void {
     if (!this.registry) return;
 
     const entries = new Map<string, { claudeSessionId: string; lastActivity: number; status: string }>();
@@ -3097,7 +3158,10 @@ export class SessionManager {
     // On shutdown we MUST write synchronously: the alternative is
     // `save()` (debounced 1s) followed by `dispose()`, which races the
     // process exit and silently drops the last mapping batch.
-    if (opts.immediate) this.registry.flush(entries);
+    // `throwOnFailure` (Reset terminate) additionally surfaces write failure
+    // to the caller instead of swallowing it.
+    if (opts.throwOnFailure) this.registry.flushOrThrow(entries);
+    else if (opts.immediate) this.registry.flush(entries);
     else this.registry.save(entries);
   }
 }

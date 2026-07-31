@@ -15,6 +15,7 @@ import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } fro
 import type { DeliveryDecision, DeliveryRouteOwnership, DeliveryWork } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
 import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRegistry } from "../runtime/session-registry.js";
 import type { FirstTreeHubSDK } from "../sdk.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
@@ -27,6 +28,7 @@ type SessionRecord = {
   activeSlotHeld: boolean;
   lastActivity: number;
   suspending: Promise<void> | null;
+  suspendError: unknown | null;
   retryAttempt: number;
   retryNextAt: number | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -46,6 +48,7 @@ type SessionManagerInternals = {
   sessions: Map<string, SessionRecord>;
   evictedMappings: Map<string, { claudeSessionId: string; lastActivity: number }>;
   terminatingChats: Map<string, Promise<void>>;
+  terminatePersistFailures: Set<string>;
   pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
   sessionRuntimeStates: Map<string, RuntimeState>;
   currentTrigger: Map<string, { messageId: string; senderId: string }>;
@@ -276,6 +279,7 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     activeSlotHeld: status === "active",
     lastActivity: Date.now(),
     suspending: null,
+    suspendError: null,
     retryAttempt: 0,
     retryNextAt: null,
     retryTimer: null,
@@ -2377,6 +2381,216 @@ describe("SessionManager edge coverage", () => {
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
+  });
+
+  it("joins an in-flight suspend before terminating and tears down the suspended handler", async () => {
+    let signalSuspendStarted: (() => void) | undefined;
+    let resolveSuspend: (() => void) | undefined;
+    const suspendStarted = new Promise<void>((resolve) => {
+      signalSuspendStarted = resolve;
+    });
+    const suspendGate = new Promise<void>((resolve) => {
+      resolveSuspend = resolve;
+    });
+    const suspendingHandler = handler({
+      suspend: vi.fn().mockImplementation(async () => {
+        signalSuspendStarted?.();
+        await suspendGate;
+      }),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-joins-suspend";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: suspendingHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await suspendStarted;
+
+    // The terminate must join the in-flight suspend instead of acking over
+    // it — handler.suspend() is still running.
+    let terminateSettled = false;
+    const terminate = sm.handleCommand(chatId, "session:terminate").then(() => {
+      terminateSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(terminateSettled).toBe(false);
+    expect(suspendingHandler.shutdown).not.toHaveBeenCalled();
+
+    resolveSuspend?.();
+    await terminate;
+
+    // The suspend already released the slot, but terminate still tore the
+    // handler down — a suspended handler is still a live old run.
+    expect(suspendingHandler.suspend).toHaveBeenCalledTimes(1);
+    expect(suspendingHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("rejects the terminate when the joined suspend failed, then lets a retry succeed", async () => {
+    const boom = new Error("suspend failed");
+    let signalSuspendStarted: (() => void) | undefined;
+    let rejectSuspend: ((err: unknown) => void) | undefined;
+    const suspendStarted = new Promise<void>((resolve) => {
+      signalSuspendStarted = resolve;
+    });
+    const suspendGate = new Promise<void>((_resolve, reject) => {
+      rejectSuspend = reject;
+    });
+    const failingSuspendHandler = handler({
+      suspend: vi.fn().mockImplementation(async () => {
+        signalSuspendStarted?.();
+        await suspendGate;
+      }),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-suspend-failed";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: failingSuspendHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await suspendStarted;
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    rejectSuspend?.(boom);
+
+    // A failed suspend means the old run was never confirmed stopped — the
+    // apply must reject (agent-slot maps this to applied:false), not ack.
+    await expect(terminate).rejects.toBe(boom);
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Retry after the suspend settled: the terminate re-executes and succeeds.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("propagates teardown failure when terminating a session whose suspend just settled", async () => {
+    const boom = new Error("shutdown failed");
+    let signalSuspendStarted: (() => void) | undefined;
+    let resolveSuspend: (() => void) | undefined;
+    const suspendStarted = new Promise<void>((resolve) => {
+      signalSuspendStarted = resolve;
+    });
+    const suspendGate = new Promise<void>((resolve) => {
+      resolveSuspend = resolve;
+    });
+    const targetHandler = handler({
+      suspend: vi.fn().mockImplementation(async () => {
+        signalSuspendStarted?.();
+        await suspendGate;
+      }),
+      shutdown: vi.fn().mockRejectedValue(boom),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-teardown-failed";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await suspendStarted;
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    resolveSuspend?.();
+
+    // The handler stayed live after the slot-releasing suspend; teardown
+    // failure must fail the apply rather than inherit the swallow semantics.
+    await expect(terminate).rejects.toBe(boom);
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("persists the mapping deletion to disk before a terminate resolves", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-terminate-persist-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-terminate-persist";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const sm = makeManager({ registryPath });
+    expect(sm.getEvictedChatIds()).toContain(chatId);
+
+    await sm.handleCommand(chatId, "session:terminate");
+
+    // The ack boundary: by the time handleCommand resolves, the deletion must
+    // already be durable — a crash right after must not reload the mapping.
+    const data = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
+    expect(data.entries).toEqual({});
+    const reloaded = makeManager({ registryPath });
+    expect(reloaded.getEvictedChatIds()).toEqual([]);
+
+    await sm.shutdown();
+    await reloaded.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects terminate when the durable flush fails and re-executes on retry instead of a false success", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-terminate-persist-fail-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-terminate-persist-fail";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const sm = makeManager({ registryPath });
+    const i = internals(sm);
+    expect(i.evictedMappings.has(chatId)).toBe(true);
+
+    const boom = new Error("disk full");
+    const flushSpy = vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    // In-memory state is gone but the stale mapping is still on disk, and the
+    // failed delete is remembered as pending work.
+    expect(i.evictedMappings.has(chatId)).toBe(false);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
+    let data = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
+    expect(Object.keys(data.entries)).toContain(chatId);
+
+    // The retry must not early-return a false applied:true: it re-executes
+    // the full termination and re-attempts the flush, which now succeeds.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(flushSpy).toHaveBeenCalledTimes(2);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    data = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
+    expect(data.entries).toEqual({});
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("cancels admitted delivery when terminate arrives before SessionEntry creation", async () => {

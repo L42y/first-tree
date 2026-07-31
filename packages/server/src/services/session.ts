@@ -11,6 +11,7 @@ import { messages } from "../db/schema/messages.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import type { Notifier } from "./notifier.js";
+import { agentRouteGuardSql } from "./session-command-rpc.js";
 import * as sessionEventService from "./session-event.js";
 
 export const SUMMARY_MAX_LENGTH = 50;
@@ -439,6 +440,7 @@ export async function finalizeTerminatedSession(
   chatId: string,
   organizationId: string,
   notifier?: Notifier,
+  expectedRoute?: { clientId: string; instanceId: string },
 ): Promise<StateTransitionResult> {
   const now = new Date();
   let finalState: SessionState | null = null;
@@ -454,6 +456,23 @@ export async function finalizeTerminatedSession(
     if (!existing) return;
     const current = existing.state as SessionState;
     finalState = current;
+
+    // Last-in-transaction route revalidation: the ack was guarded at store
+    // time, but the agent may have been rebound while it travelled. Never
+    // evict or clear against a route that no longer matches the one the
+    // apply-ack was issued for.
+    if (expectedRoute) {
+      const [routeOk] = await tx
+        .select({ agentId: agents.uuid })
+        .from(agents)
+        .where(
+          and(eq(agents.uuid, agentId), agentRouteGuardSql(agentId, expectedRoute.clientId, expectedRoute.instanceId)),
+        )
+        .limit(1);
+      if (!routeOk) {
+        throw new ConflictError("The agent's client route changed while the reset was in flight; nothing was reset");
+      }
+    }
 
     if (current === "evicted") {
       await sessionEventService.clearEvents(tx as unknown as Database, agentId, chatId);

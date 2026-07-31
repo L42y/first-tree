@@ -1,6 +1,120 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
+import { agentPresence } from "../db/schema/agent-presence.js";
+import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
+
+/**
+ * The ONE authoritative route + capability condition for the chat-session
+ * Reset apply-ack path, shared by the chat status projection, the
+ * waitForApply preflight, the cross-replica command forward, and the durable
+ * ack store. Every column must agree — an agent whose durable binding,
+ * presence route, and connected client row do not line up (stale presence,
+ * takeover in flight) must fail closed:
+ *
+ *   - `agents.status = 'active'` and `agents.client_id` set;
+ *   - `agent_presence.status = 'online'` with `client_id = agents.client_id`;
+ *   - `clients.status = 'connected'` with `instance_id = agent_presence.instance_id` (both non-null).
+ */
+export type ApplyAckRouteRow = {
+  agentClientId: string | null;
+  agentStatus: string;
+  presenceStatus: string;
+  presenceClientId: string | null;
+  presenceInstanceId: string | null;
+  clientStatus: string;
+  clientInstanceId: string | null;
+};
+
+export function isConsistentAgentRoute(row: ApplyAckRouteRow): row is ApplyAckRouteRow & {
+  agentClientId: string;
+  presenceClientId: string;
+  presenceInstanceId: string;
+  clientInstanceId: string;
+} {
+  return (
+    row.agentStatus === "active" &&
+    row.agentClientId != null &&
+    row.agentClientId === row.presenceClientId &&
+    row.presenceStatus === "online" &&
+    row.presenceInstanceId != null &&
+    row.clientStatus === "connected" &&
+    row.clientInstanceId != null &&
+    row.clientInstanceId === row.presenceInstanceId
+  );
+}
+
+/** The `wsSessionTerminateApplyAck` flag out of a `clients.metadata` blob. */
+export function metadataHasApplyAckCapability(metadata: unknown): boolean {
+  const caps = (metadata as Record<string, unknown> | null)?.wireCapabilities as Record<string, unknown> | undefined;
+  return caps?.wsSessionTerminateApplyAck === true;
+}
+
+/**
+ * DB-authoritative route for one agent: consistent route (see
+ * `isConsistentAgentRoute`) plus the registered apply-ack capability.
+ * `null` when the route is inconsistent or the agent row is missing.
+ */
+export async function resolveAgentApplyAckRoute(
+  db: Database,
+  agentId: string,
+): Promise<{ clientId: string; instanceId: string; capable: boolean } | null> {
+  const [row] = await db
+    .select({
+      agentClientId: agents.clientId,
+      agentStatus: agents.status,
+      presenceStatus: agentPresence.status,
+      presenceClientId: agentPresence.clientId,
+      presenceInstanceId: agentPresence.instanceId,
+      clientStatus: clients.status,
+      clientInstanceId: clients.instanceId,
+      clientMetadata: clients.metadata,
+    })
+    .from(agents)
+    .innerJoin(agentPresence, eq(agentPresence.agentId, agents.uuid))
+    .innerJoin(clients, eq(clients.id, agentPresence.clientId))
+    .where(eq(agents.uuid, agentId))
+    .limit(1);
+  if (!row || !isConsistentAgentRoute(row)) return null;
+  return {
+    clientId: row.presenceClientId,
+    instanceId: row.clientInstanceId,
+    capable: metadataHasApplyAckCapability(row.clientMetadata),
+  };
+}
+
+/**
+ * SQL predicate guarding that the agent is STILL routed to `clientId` on
+ * `instanceId` (durable binding + online presence) — embedded in atomic
+ * UPDATEs so a takeover between check and write cannot land state.
+ */
+export function agentRouteGuardSql(agentId: string, clientId: string, instanceId: string) {
+  return sql`EXISTS (
+    SELECT 1 FROM ${agents}
+    INNER JOIN ${agentPresence} ON ${agentPresence.agentId} = ${agents.uuid}
+    WHERE ${agents.uuid} = ${agentId}
+      AND ${agents.status} = 'active'
+      AND ${agents.clientId} = ${clientId}
+      AND ${agentPresence.status} = 'online'
+      AND ${agentPresence.clientId} = ${clientId}
+      AND ${agentPresence.instanceId} = ${instanceId}
+  )`;
+}
+
+/** True when the agent is still routed to this client/instance right now. */
+export async function agentRoutedTo(
+  db: Database,
+  agentId: string,
+  clientId: string,
+  instanceId: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ agentId: agents.uuid })
+    .from(agents)
+    .where(and(eq(agents.uuid, agentId), agentRouteGuardSql(agentId, clientId, instanceId)))
+    .limit(1);
+  return row !== undefined;
+}
 
 /**
  * Durable rendezvous for the chat-session Reset apply-ack across replicas.
@@ -59,9 +173,11 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
 }
 
 /**
- * Persist one apply-ack ref iff this replica still owns the client row.
- * Returns false when `instance_id` no longer matches (takeover) or the row is
- * gone. Physically prunes aged/excess refs in the same statement.
+ * Persist one apply-ack ref iff this replica still owns the client row AND
+ * the agent is still routed to this client/instance (durable binding +
+ * online presence). Returns false when `instance_id` no longer matches
+ * (takeover), the agent's route moved, or the row is gone. Physically prunes
+ * aged/excess refs in the same statement.
  */
 export async function storeSessionCommandRpcResult(
   db: Database,
@@ -75,8 +191,9 @@ export async function storeSessionCommandRpcResult(
   }
   const entry = { ...result, storedAt: new Date().toISOString() };
   const maxAgeSeconds = Math.floor(SESSION_COMMAND_RPC_MAX_AGE_MS / 1000);
-  // One UPDATE: ownership guard + merge ref + physical prune (age then newest N).
-  // Column refs in SET are the pre-update row; concurrent UPDATEs serialize on the row.
+  // One UPDATE: ownership + agent-route guards + merge ref + physical prune
+  // (age then newest N). Column refs in SET are the pre-update row;
+  // concurrent UPDATEs serialize on the row.
   const returned = await db
     .update(clients)
     .set({
@@ -100,7 +217,13 @@ export async function storeSessionCommandRpcResult(
         true
       )`,
     })
-    .where(and(eq(clients.id, clientId), eq(clients.instanceId, expectedInstanceId)))
+    .where(
+      and(
+        eq(clients.id, clientId),
+        eq(clients.instanceId, expectedInstanceId),
+        agentRouteGuardSql(result.agentId, clientId, expectedInstanceId),
+      ),
+    )
     .returning({ id: clients.id });
   return returned.length > 0;
 }

@@ -249,8 +249,37 @@ describe("createNotifier", () => {
         targetInstanceId: "instance_1",
       }),
     );
+    listeners.get("daemon_client_commands")?.(
+      JSON.stringify({
+        type: "session:terminate",
+        clientId: "client_1",
+        agentId: "agent_1",
+        chatId: "chat_1",
+        ref: "ref_2",
+        targetInstanceId: "instance_1",
+      }),
+    );
     listeners.get("daemon_client_commands")?.("{not json");
     listeners.get("daemon_client_commands")?.(JSON.stringify({ type: "provider-models:list" }));
+    // Discriminated-union rejects: wrong/missing discriminator fields and unknown types.
+    listeners.get("daemon_client_commands")?.(
+      JSON.stringify({ type: "provider-models:list", clientId: "c", ref: "r", targetInstanceId: "i" }),
+    );
+    listeners.get("daemon_client_commands")?.(
+      JSON.stringify({ type: "session:terminate", clientId: "c", ref: "r", targetInstanceId: "i" }),
+    );
+    listeners.get("daemon_client_commands")?.(
+      JSON.stringify({
+        type: "session:terminate",
+        clientId: "c",
+        agentId: "a",
+        ref: "r",
+        targetInstanceId: "i",
+      }),
+    );
+    listeners.get("daemon_client_commands")?.(
+      JSON.stringify({ type: "unknown:command", clientId: "c", ref: "r", targetInstanceId: "i" }),
+    );
     listeners.get("daemon_client_command_results")?.(JSON.stringify({ clientId: "client_1", ref: "ref_1" }));
     listeners.get("daemon_client_command_results")?.("{not json");
     listeners.get("daemon_client_command_results")?.(JSON.stringify({ clientId: "client_1" }));
@@ -298,6 +327,18 @@ describe("createNotifier", () => {
       ref: "ref_1",
       targetInstanceId: "instance_1",
     });
+    expect(daemonCommandSecond).toHaveBeenCalledWith({
+      type: "session:terminate",
+      clientId: "client_1",
+      agentId: "agent_1",
+      chatId: "chat_1",
+      ref: "ref_2",
+      targetInstanceId: "instance_1",
+    });
+    // Both handlers saw exactly the two well-formed commands — every
+    // malformed/discriminator-mismatched payload was rejected above.
+    expect(daemonCommand).toHaveBeenCalledTimes(2);
+    expect(daemonCommandSecond).toHaveBeenCalledTimes(2);
     expect(daemonResultSecond).toHaveBeenCalledWith({ clientId: "client_1", ref: "ref_1" });
 
     await notifier.stop();

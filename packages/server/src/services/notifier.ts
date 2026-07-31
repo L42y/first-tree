@@ -1,3 +1,4 @@
+import { PROVIDER_MODELS_LIST_TYPE } from "@first-tree/shared";
 import type postgres from "postgres";
 import type { WebSocket } from "ws";
 
@@ -113,7 +114,7 @@ export type AgentRouteChangeHandler = (payload: AgentRouteChangePayload) => void
 /** Small reverse-command frame fan-out for host-local daemon RPCs. */
 export type DaemonClientCommandPayload =
   | {
-      type: string;
+      type: typeof PROVIDER_MODELS_LIST_TYPE;
       clientId: string;
       provider: string;
       ref: string;
@@ -703,12 +704,15 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
           ) {
             return;
           }
-          // Discriminated payload: provider-model commands carry `provider`;
-          // session-terminate commands carry `agentId` + `chatId` instead.
+          // Discriminated union: each command type carries its own required
+          // fields; anything else (unknown type, missing discriminator
+          // fields) is malformed and must not reach handlers.
           if (parsed.type === "session:terminate") {
             const sessionPayload = parsed as { agentId?: unknown; chatId?: unknown };
             if (typeof sessionPayload.agentId !== "string" || typeof sessionPayload.chatId !== "string") return;
-          } else if (typeof (parsed as { provider?: unknown }).provider !== "string") {
+          } else if (parsed.type === PROVIDER_MODELS_LIST_TYPE) {
+            if (typeof (parsed as { provider?: unknown }).provider !== "string") return;
+          } else {
             return;
           }
           for (const handler of daemonClientCommandHandlers) {

@@ -60,7 +60,11 @@ import type { InboxPushHandler, Notifier } from "../../services/notifier.js";
 import * as presenceService from "../../services/presence.js";
 import { readModelCatalogRpcResult, storeModelCatalogRpcResult } from "../../services/provider-models-rpc.js";
 import * as runtimeLivenessService from "../../services/runtime-liveness.js";
-import { readSessionCommandRpcResult, storeSessionCommandRpcResult } from "../../services/session-command-rpc.js";
+import {
+  agentRoutedTo,
+  readSessionCommandRpcResult,
+  storeSessionCommandRpcResult,
+} from "../../services/session-command-rpc.js";
 import * as sessionEventService from "../../services/session-event.js";
 
 /**
@@ -304,7 +308,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
     // same ref after reconnect/takeover.
     notifier.onDaemonClientCommand((payload) => {
       if (payload.targetInstanceId !== instanceId) return;
-      if (payload.type === PROVIDER_MODELS_LIST_TYPE && "provider" in payload) {
+      if (payload.type === PROVIDER_MODELS_LIST_TYPE) {
         connectionManager.sendToClient(payload.clientId, {
           type: PROVIDER_MODELS_LIST_TYPE,
           provider: payload.provider,
@@ -312,10 +316,14 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         });
         return;
       }
-      if (payload.type === "session:terminate" && "agentId" in payload) {
-        // Chat-session Reset: verify the agent is still routed to THIS
-        // client's live socket before forwarding the ref'd command — a
-        // rebinding between the HTTP preflight and delivery must not send.
+      // Chat-session Reset (payload.type === "session:terminate"). The
+      // process-local binding check is not enough: a takeover between the
+      // HTTP preflight and delivery could otherwise deliver a destructive
+      // terminate to a stale socket. Re-verify the full DB route (durable
+      // binding + online presence + this instance) before forwarding.
+      void (async () => {
+        const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId);
+        if (!routed) return;
         if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
         connectionManager.sendToClient(payload.clientId, {
           type: "session:terminate",
@@ -323,8 +331,9 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
           chatId: payload.chatId,
           ref: payload.ref,
         });
-        return;
-      }
+      })().catch((err) => {
+        app.log.warn({ err, clientId: payload.clientId, ref: payload.ref }, "session terminate fan-out failed");
+      });
     });
 
     // Cross-replica result wake: the ack/result is durable in
