@@ -52,6 +52,36 @@ class FakeSession {
   }
 }
 
+// Test-controlled session: `prompt()` records the input and returns without
+// emitting anything; tests push events through `emit()` to model subagent
+// streams that outlive the prompt call, which a synchronous script cannot.
+class GatedFakeSession extends FakeSession {
+  private promptSeenResolve: () => void = () => {};
+  readonly promptSeen: Promise<void>;
+
+  constructor(id: string) {
+    super(id, []);
+    this.promptSeen = new Promise((resolvePromise) => {
+      this.promptSeenResolve = resolvePromise;
+    });
+  }
+
+  emit(value: KimiEvent): void {
+    for (const listener of this.listeners) listener(value);
+  }
+
+  override async prompt(input: string): Promise<void> {
+    this.prompts.push(input);
+    this.promptSeenResolve();
+  }
+}
+
+async function flushAsyncWork(): Promise<void> {
+  for (let index = 0; index < 5; index += 1) {
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  }
+}
+
 function event(sessionId: string, value: Record<string, unknown>): KimiEvent {
   return { agentId: "main", sessionId, ...value } as KimiEvent;
 }
@@ -545,6 +575,47 @@ describe("Kimi background subagent lifecycle", () => {
         payload: expect.objectContaining({ toolUseId: "sub-1:child-tool-1", status: "ok" }),
       }),
     );
+    expect(events.filter((item) => item.kind === "turn_end")).toEqual([
+      { kind: "turn_end", payload: { status: "success" } },
+    ]);
+    expect(token.completed).toEqual([{ status: "success" }]);
+  });
+
+  it("keeps the delivery pending when a child turn.ended arrives before any main terminal event", async () => {
+    const id = "kimi-session-subagent-gate";
+    const fakeSession = new GatedFakeSession(id);
+    const handler = makeHandler(fakeSession, {});
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+    let settled = false;
+    const startPromise = handler
+      .start(message("m1", "run a background subagent"), makeContext(events), token)
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+
+    await fakeSession.promptSeen;
+    fakeSession.emit(childEvent(id, "sub-1", { type: "turn.started", turnId: 2 }));
+    fakeSession.emit(childEvent(id, "sub-1", { type: "assistant.delta", turnId: 2, delta: "child text" }));
+    fakeSession.emit(childEvent(id, "sub-1", { type: "turn.ended", turnId: 2, reason: "completed" }));
+    // The prompt call has returned and every emitted event has been processed;
+    // a handler that lets child completion settle the attempt would resolve here.
+    await flushAsyncWork();
+
+    expect(settled).toBe(false);
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toEqual([]);
+    expect(events.filter((item) => item.kind === "turn_end")).toEqual([]);
+    expect(events.some((item) => item.kind === "assistant_text")).toBe(false);
+
+    fakeSession.emit(event(id, { type: "assistant.delta", turnId: 1, delta: "parent answer" }));
+    fakeSession.emit(event(id, { type: "turn.ended", turnId: 1, reason: "completed" }));
+    const result = await startPromise;
+
+    expect(result).toMatchObject({ sessionId: id, route: { kind: "owned", mode: "processing" } });
+    const assistantTexts = events.filter((item) => item.kind === "assistant_text").map((item) => item.payload.text);
+    expect(assistantTexts).toEqual(["parent answer"]);
     expect(events.filter((item) => item.kind === "turn_end")).toEqual([
       { kind: "turn_end", payload: { status: "success" } },
     ]);
