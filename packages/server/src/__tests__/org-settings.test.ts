@@ -255,6 +255,22 @@ describe("org-settings service", () => {
     });
   }
 
+  it("contextTreeRepoOwnershipKey treats only an HTTP(S) port as forge authority", () => {
+    const key = orgSettingsService.contextTreeRepoOwnershipKey;
+
+    // A self-managed forge's Web port identifies which forge it is.
+    expect(key("https://git.internal:8443/group/tree.git")).toBe("git.internal:8443/group/tree");
+    expect(key("https://git.internal:9443/group/tree.git")).not.toBe(key("https://git.internal:8443/group/tree.git"));
+
+    // An ssh:// port is a transport detail of one checkout, not a forge, so it
+    // must not become authority — and both SSH spellings must agree.
+    expect(key("ssh://git@git.internal:2222/group/tree.git")).toBe("git.internal/group/tree");
+    expect(key("git@git.internal:group/tree.git")).toBe("git.internal/group/tree");
+
+    // GitHub carries no port in either spelling, so SSH and HTTPS match there.
+    expect(key("git@github.com:acme/tree.git")).toBe(key("https://github.com/acme/tree"));
+  });
+
   it("putOrgSetting treats self-managed forges on different ports as different repos", async () => {
     const app = getApp();
     const first = await createTestAdmin(app);

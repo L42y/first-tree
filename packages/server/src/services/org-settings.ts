@@ -781,17 +781,20 @@ async function resolveStoredContextTreeProvider(
  * audit report a shared tree that does not exist. So the port is kept whenever
  * the reference carries one.
  *
- * scp-like SSH references have no web port to keep and fall back to the shared
- * canonical form, so an SSH binding and an HTTPS binding on a non-default port
- * do not compare equal. That direction fails open — a conflict goes unnoticed
- * rather than a legitimate binding being refused.
+ * Only an HTTP(S) port is authority. An `ssh://…:2222` port is a transport
+ * detail of one checkout, not a forge, so SSH references — both `ssh://` and
+ * scp-like — key on the host alone and therefore do not match a team bound
+ * through a non-default web port. Resolving that would mean mapping each
+ * team's SSH reference through its own GitLab connection origin. Until then
+ * this direction fails open: a conflict goes unnoticed rather than a
+ * legitimate binding being refused.
  */
 export function contextTreeRepoOwnershipKey(repo: string | null | undefined): string | null {
   const canonical = canonicalGitRepoUrl(repo);
   if (!canonical || !repo) return null;
   try {
-    const { port } = new URL(repo.trim());
-    if (port) {
+    const { protocol, port } = new URL(repo.trim());
+    if (port && (protocol === "https:" || protocol === "http:")) {
       const hostEnd = canonical.indexOf("/");
       return `${canonical.slice(0, hostEnd)}:${port}${canonical.slice(hostEnd)}`;
     }
