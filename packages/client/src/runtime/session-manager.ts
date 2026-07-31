@@ -85,6 +85,12 @@ type SessionEntry = {
    */
   suspendError: unknown | null;
   /**
+   * Failure of the last terminate-driven strict teardown. Recorded because
+   * the slot is already released by then, so without it a retry terminate
+   * would skip every teardown branch and ack over a possibly-live handler.
+   */
+  teardownError: unknown | null;
+  /**
    * Transient-retry bookkeeping (Bug 1 fix). When handler.start / handler.resume
    * throws a classified-transient error we schedule a retry instead of
    * deleting the entry. A pending timer is tracked here so an arriving user
@@ -508,8 +514,15 @@ export class SessionManager {
   private readonly sessionRuntimeStates = new Map<string, RuntimeState>();
   /** Handlers invalidated while start/resume was unresolved must never be reused. */
   private readonly retiredHandlers = new WeakSet<AgentHandler>();
-  /** Coalesces concurrent cleanup; a stale settlement may enqueue a later cleanup pass. */
-  private readonly handlerShutdowns = new WeakMap<AgentHandler, Promise<void>>();
+  /**
+   * Coalesces concurrent cleanup; a stale settlement may enqueue a later
+   * cleanup pass. Each entry keeps both faces of the shutdown: `raw`
+   * (rejects on failure) for `observeFailure` callers such as the Reset
+   * terminate, and `observed` (swallow-and-warn, always resolves) for
+   * fire-and-forget callers — so a strict caller joining an in-flight
+   * shutdown that a lenient caller started still sees the failure.
+   */
+  private readonly handlerShutdowns = new WeakMap<AgentHandler, { raw: Promise<void>; observed: Promise<void> }>();
   /** Cache of chatId → organizationId, resolved via `getChatDetail`. A chat's
    *  org is immutable, so this is a cheap permanent memo that keeps doc-capture
    *  uploads off the hot path after the first lookup. */
@@ -855,20 +868,28 @@ export class SessionManager {
         if (joinedSuspend && session?.suspendError) throw session.suspendError;
         const activeSlotHeld = session?.activeSlotHeld === true;
         if (session) this.releaseActiveSlot(session);
-        if (activeSlotHeld && session) {
-          await this.shutdownHandler(session.handler, "session_terminated");
-        } else if (session && (joinedSuspend || session.suspendError != null)) {
-          // The handler is still installed but the slot is gone, so the
-          // activeSlotHeld branch above never fires. Two such cases:
-          //   - a joined suspend left the handler live;
-          //   - a RETRY after a terminate rejected on a failed suspend —
-          //     `suspending` is null again but `suspendError` still records
-          //     that the old run was never confirmed stopped.
-          // Both must tear the handler down, and teardown failure must fail
-          // the apply — it must not inherit shutdownHandler's swallow
-          // semantics. On success the entry is deleted below, which also
-          // retires the recorded suspendError with it.
-          await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
+        // The teardown boundary — strict in every case, because a
+        // handler.shutdown rejection must fail the apply (applied:false),
+        // never resolve into an ack over a possibly-live handler. Beyond the
+        // slot-held ordinary case, teardown is also required when a joined
+        // suspend left the handler live, or when a recorded
+        // suspendError/teardownError says the old run was never confirmed
+        // stopped (retry path: `suspending` is null again and the slot is
+        // already released, so without the recorded errors no teardown branch
+        // would fire). A teardown failure is recorded on the entry so a
+        // genuine retry re-attempts it instead of turning into a false
+        // success; on success the entry is deleted below, retiring the
+        // recorded errors with it.
+        const needsTeardown =
+          session != null &&
+          (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
+        if (session && needsTeardown) {
+          try {
+            await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
+          } catch (err) {
+            session.teardownError = err;
+            throw err;
+          }
         }
 
         this.sessions.delete(chatId);
@@ -1157,20 +1178,23 @@ export class SessionManager {
     opts: { afterPrior?: boolean; observeFailure?: boolean } = {},
   ): Promise<void> {
     const prior = this.handlerShutdowns.get(handler);
-    if (prior && opts.afterPrior !== true) return prior;
-    const shutdown = (prior ?? Promise.resolve()).then(() => handler.shutdown(reason));
-    // The coalesced promise keeps the legacy swallow-and-warn semantics for
-    // fire-and-forget callers; an `observeFailure` caller gets the raw
-    // promise so a teardown failure can fail its operation (Reset terminate
-    // apply-ack). `shutdown`'s rejection is always handled by `observed`.
-    const observed = shutdown.catch((err) => {
+    // Joining a prior shutdown must not hide its failure from a strict
+    // caller: `observeFailure` joins `raw`, lenient callers join `observed`.
+    if (prior && opts.afterPrior !== true) return opts.observeFailure ? prior.raw : prior.observed;
+    const raw = (prior?.observed ?? Promise.resolve()).then(() => handler.shutdown(reason));
+    // `observed` keeps the legacy swallow-and-warn semantics for
+    // fire-and-forget callers; an `observeFailure` caller gets `raw` so a
+    // teardown failure can fail its operation (Reset terminate apply-ack).
+    // `raw`'s rejection is always handled by `observed`.
+    const observed = raw.catch((err) => {
       this.config.log.warn({ reason, err }, "handler shutdown failed");
     });
-    this.handlerShutdowns.set(handler, observed);
+    const record = { raw, observed };
+    this.handlerShutdowns.set(handler, record);
     void observed.finally(() => {
-      if (this.handlerShutdowns.get(handler) === observed) this.handlerShutdowns.delete(handler);
+      if (this.handlerShutdowns.get(handler) === record) this.handlerShutdowns.delete(handler);
     });
-    return opts.observeFailure ? shutdown : observed;
+    return opts.observeFailure ? raw : observed;
   }
 
   private retireTransitionHandler(transition: RouteTransitionToken, reason: string): void {
@@ -1661,6 +1685,7 @@ export class SessionManager {
       lastActivity: Date.now(),
       suspending: null,
       suspendError: null,
+      teardownError: null,
       retryAttempt: 0,
       retryNextAt: null,
       retryTimer: null,

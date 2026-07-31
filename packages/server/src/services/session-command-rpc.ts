@@ -85,19 +85,25 @@ export async function resolveAgentApplyAckRoute(
 
 /**
  * SQL predicate guarding that the agent is STILL routed to `clientId` on
- * `instanceId` (durable binding + online presence) — embedded in atomic
- * UPDATEs so a takeover between check and write cannot land state.
+ * `instanceId` — durable binding + online presence AND the connected client
+ * row must all agree. Embedded in atomic UPDATEs and the cross-replica
+ * fan-out so a takeover (e.g. `clients.instance_id` moved to another
+ * replica while the old presence route and process-local binding linger)
+ * cannot land state or deliver a destructive command.
  */
 export function agentRouteGuardSql(agentId: string, clientId: string, instanceId: string) {
   return sql`EXISTS (
     SELECT 1 FROM ${agents}
     INNER JOIN ${agentPresence} ON ${agentPresence.agentId} = ${agents.uuid}
+    INNER JOIN ${clients} ON ${clients.id} = ${agents.clientId}
     WHERE ${agents.uuid} = ${agentId}
       AND ${agents.status} = 'active'
       AND ${agents.clientId} = ${clientId}
       AND ${agentPresence.status} = 'online'
       AND ${agentPresence.clientId} = ${clientId}
       AND ${agentPresence.instanceId} = ${instanceId}
+      AND ${clients.status} = 'connected'
+      AND ${clients.instanceId} = ${instanceId}
   )`;
 }
 

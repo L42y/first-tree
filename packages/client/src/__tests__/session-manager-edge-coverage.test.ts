@@ -29,6 +29,7 @@ type SessionRecord = {
   lastActivity: number;
   suspending: Promise<void> | null;
   suspendError: unknown | null;
+  teardownError: unknown | null;
   retryAttempt: number;
   retryNextAt: number | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -280,6 +281,7 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     lastActivity: Date.now(),
     suspending: null,
     suspendError: null,
+    teardownError: null,
     retryAttempt: 0,
     retryNextAt: null,
     retryTimer: null,
@@ -2547,6 +2549,184 @@ describe("SessionManager edge coverage", () => {
 
     // Next retry tears down (now succeeding) and completes the apply.
     vi.mocked(targetHandler.shutdown).mockResolvedValue(undefined);
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("propagates a joined prior shutdown failure to a strict terminate", async () => {
+    const boom = new Error("prior shutdown failed");
+    let signalShutdownStarted: (() => void) | undefined;
+    let rejectShutdown: ((err: unknown) => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((_resolve, reject) => {
+      rejectShutdown = reject;
+    });
+    let signalPrepareStarted: (() => void) | undefined;
+    let resolvePrepare: (() => void) | undefined;
+    const prepareStarted = new Promise<void>((resolve) => {
+      signalPrepareStarted = resolve;
+    });
+    const prepareGate = new Promise<void>((resolve) => {
+      resolvePrepare = resolve;
+    });
+    const targetHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalShutdownStarted?.();
+          await shutdownGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-joins-prior-shutdown";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: targetHandler,
+        status: "active",
+        routeTransition: { generation: 0, handler: targetHandler, phase: "resume" },
+      }),
+    );
+    i._activeCount = 1;
+    // Keep the suspend's promise in flight so the terminate below actually
+    // joins it while the canceled transition's shutdown is still gated.
+    i.inboxDelivery.prepareOperatorSuspend = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
+      signalPrepareStarted?.();
+      await prepareGate;
+    });
+
+    await sm.handleCommand(chatId, "session:suspend");
+    // suspendSession invalidated the route transition, which retired the
+    // handler into a lenient fire-and-forget shutdown — still gated.
+    await shutdownStarted;
+    await prepareStarted;
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    let terminateSettled = false;
+    void terminate.then(
+      () => {
+        terminateSettled = true;
+      },
+      () => {
+        terminateSettled = true;
+      },
+    );
+    resolvePrepare?.();
+    // The strict terminate coalesces onto the prior in-flight shutdown (no
+    // second shutdown call) and must stay pending while it is gated.
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(terminateSettled).toBe(false);
+
+    // The prior was started by a lenient caller, but its rejection must still
+    // reach the strict terminate — an applied:true here would ack over a
+    // handler that was never confirmed stopped.
+    rejectShutdown?.(boom);
+    await expect(terminate).rejects.toBe(boom);
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Retry re-attempts the teardown (the one-shot gated implementation is
+    // consumed, the default now resolves) and completes the apply.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("coalesces a strict terminate onto a resolving prior shutdown without double-teardown", async () => {
+    let signalShutdownStarted: (() => void) | undefined;
+    let resolveShutdown: (() => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    });
+    let resolvePrepare: (() => void) | undefined;
+    const prepareGate = new Promise<void>((resolve) => {
+      resolvePrepare = resolve;
+    });
+    const targetHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalShutdownStarted?.();
+        await shutdownGate;
+      }),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-prior-shutdown-success";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: targetHandler,
+        status: "active",
+        routeTransition: { generation: 0, handler: targetHandler, phase: "resume" },
+      }),
+    );
+    i._activeCount = 1;
+    i.inboxDelivery.prepareOperatorSuspend = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
+      await prepareGate;
+    });
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await shutdownStarted;
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    let terminateSettled = false;
+    void terminate.then(() => {
+      terminateSettled = true;
+    });
+    resolvePrepare?.();
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(terminateSettled).toBe(false);
+
+    resolveShutdown?.();
+    await terminate;
+
+    // One teardown total: the strict terminate joined the prior shutdown
+    // instead of starting a second one, then completed the apply.
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(terminateSettled).toBe(true);
+    expect(i.sessions.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("rejects an active-slot terminate when handler shutdown fails, then lets a retry succeed", async () => {
+    const boom = new Error("shutdown failed");
+    const targetHandler = handler({
+      shutdown: vi.fn().mockRejectedValueOnce(boom).mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminate-active-shutdown-failed";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    // The active-slot teardown is strict too: a shutdown rejection must fail
+    // the apply instead of being acked over a possibly-live handler.
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // The recorded teardownError drives a strict re-attempt on retry even
+    // though the slot was already released.
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.sessions.has(chatId)).toBe(false);

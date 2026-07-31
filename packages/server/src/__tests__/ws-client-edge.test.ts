@@ -1552,14 +1552,12 @@ describe("Agent client WS edge protocol coverage", () => {
         targetInstanceId: "test-instance",
       });
 
-      // A fan-out after a takeover (DB route no longer matches) is dropped
-      // even though the process-local binding still exists.
-      const { agentPresence } = await import("../db/schema/agent-presence.js");
+      // A fan-out after a REAL takeover is dropped even though the old
+      // presence route and the process-local binding still linger: only
+      // `clients.instance_id` moved to another replica.
+      const { clients } = await import("../db/schema/clients.js");
       const { eq } = await import("drizzle-orm");
-      await app.db
-        .update(agentPresence)
-        .set({ instanceId: "taken-over-elsewhere" })
-        .where(eq(agentPresence.agentId, agent.uuid));
+      await app.db.update(clients).set({ instanceId: "taken-over-elsewhere" }).where(eq(clients.id, seed.clientId));
       await app.notifier.notifyDaemonClientCommand({
         type: "session:terminate",
         clientId: seed.clientId,
