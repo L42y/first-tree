@@ -403,7 +403,13 @@ export async function suspendSession(
   return transitionSessionState(db, agentId, chatId, "suspended", ["active"], organizationId, notifier);
 }
 
-/** Commit `suspended → evicted` (terminal — listings hide it, revival defense blocks resurrection). */
+/**
+ * Commit `suspended | errored → evicted` (terminal — listings hide it, revival
+ * defense blocks resurrection). `errored` is accepted so a failed chat session
+ * can be reset directly; `active` stays excluded on purpose — the terminate
+ * route is a no-op there and callers (e.g. the Web Reset flow) must suspend
+ * first, keeping a running turn's stop deliberate and sequenced.
+ */
 export async function archiveSession(
   db: Database,
   agentId: string,
@@ -411,7 +417,7 @@ export async function archiveSession(
   organizationId: string,
   notifier?: Notifier,
 ): Promise<StateTransitionResult> {
-  return transitionSessionState(db, agentId, chatId, "evicted", ["suspended"], organizationId, notifier);
+  return transitionSessionState(db, agentId, chatId, "evicted", ["suspended", "errored"], organizationId, notifier);
 }
 
 export type ArchiveAgentSessionsResult = {

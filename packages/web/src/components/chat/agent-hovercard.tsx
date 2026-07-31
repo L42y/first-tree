@@ -1,6 +1,6 @@
 import type { AgentChatStatus } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
-import { MessageSquarePlus, UserRound } from "lucide-react";
+import { MessageSquarePlus, RotateCcw, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { chatAgentStatusQueryKey, fetchChatAgentStatuses } from "../../api/agent-status.js";
@@ -17,7 +17,8 @@ import { StatusGlyph } from "../ui/status-glyph.js";
  * cluster) and, on hover or activation, previews identity + one chat-scoped
  * status with compact `New chat` / `View profile` routes. Durable profile and
  * runtime metadata stay on Agent Detail rather than turning this card into a
- * miniature inspector.
+ * miniature inspector. A managing surface may additionally inject a
+ * chat-session `Reset` action via `sessionReset`; by default none shows.
  *
  * Two-pass data (never blocks on a fetch):
  *  - Pass A (instant): identity + type/role from the chat participant list and
@@ -26,12 +27,24 @@ import { StatusGlyph } from "../ui/status-glyph.js";
  *    accessible and provides a fallback identity for non-chat entry points.
  *    The body only mounts when the card opens, so this query is naturally lazy.
  */
+/**
+ * Opt-in chat-session Reset action, injected by a managing surface (today:
+ * the Participants roster row, which owns the confirm dialog + mutation).
+ * The shared hovercard never decides eligibility itself — when the prop is
+ * absent (chat-timeline triggers, unmanaged viewers, humans) no Reset shows.
+ */
+export type SessionResetAction = {
+  /** Open the owner-rendered confirm dialog; the card closes itself first. */
+  onRequest: () => void;
+};
+
 export function AgentHovercard({
   agentId,
   chatId,
   name,
   placement = "bottom",
   triggerClassName,
+  sessionReset,
   children,
 }: {
   agentId: string;
@@ -44,6 +57,7 @@ export function AgentHovercard({
   name: string;
   placement?: HoverCardPlacement;
   triggerClassName?: string;
+  sessionReset?: SessionResetAction;
   children: ReactNode;
 }) {
   return (
@@ -57,14 +71,26 @@ export function AgentHovercard({
         width: "var(--sp-60)",
         maxWidth: "calc(100vw - var(--sp-4))",
       }}
-      content={({ close }) => <AgentHovercardBody agentId={agentId} chatId={chatId} onAction={close} />}
+      content={({ close }) => (
+        <AgentHovercardBody agentId={agentId} chatId={chatId} sessionReset={sessionReset} onAction={close} />
+      )}
     >
       {children}
     </HoverCard>
   );
 }
 
-function AgentHovercardBody({ agentId, chatId, onAction }: { agentId: string; chatId: string; onAction: () => void }) {
+function AgentHovercardBody({
+  agentId,
+  chatId,
+  sessionReset,
+  onAction,
+}: {
+  agentId: string;
+  chatId: string;
+  sessionReset?: SessionResetAction;
+  onAction: () => void;
+}) {
   const { agentId: myAgentId } = useAuth();
 
   // Pass A — cached by ChatView, so these are hits (instant). staleTime keeps a
@@ -154,6 +180,7 @@ function AgentHovercardBody({ agentId, chatId, onAction }: { agentId: string; ch
         <ParticipantActions
           chatPath={chatPath}
           profilePath={!isHuman && detailsAccessible ? `/agents/${agentId}/profile` : null}
+          sessionReset={!isHuman ? sessionReset : undefined}
           onAction={onAction}
         />
       )}
@@ -198,10 +225,12 @@ function ParticipantKind({
 function ParticipantActions({
   chatPath,
   profilePath,
+  sessionReset,
   onAction,
 }: {
   chatPath: string;
   profilePath: string | null;
+  sessionReset?: SessionResetAction;
   onAction: () => void;
 }) {
   const actionClass =
@@ -222,6 +251,24 @@ function ParticipantActions({
           <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span className="truncate">View profile</span>
         </Link>
+      ) : null}
+      {sessionReset ? (
+        <button
+          type="button"
+          aria-label="Reset session"
+          title="Reset this agent's session in this chat"
+          onClick={() => {
+            // The row-owned confirm dialog replaces the card — close first so
+            // no floating card lingers above the modal.
+            onAction();
+            sessionReset.onRequest();
+          }}
+          className={actionClass}
+          style={{ color: "var(--fg-2)" }}
+        >
+          <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="truncate">Reset</span>
+        </button>
       ) : null}
     </nav>
   );

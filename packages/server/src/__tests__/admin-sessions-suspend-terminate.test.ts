@@ -142,6 +142,58 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     expect(await readState(app, agent.uuid, chat.id)).toBe("active");
   });
 
+  it("Terminate on an errored row transitions to evicted, clears events, and notifies the client", async () => {
+    // Chat-session Reset recovery path: a failed session must be terminable
+    // directly (no suspend first — there is no live turn to stop). The
+    // errored → evicted gate reuses the same cleanup as suspended → evicted:
+    // session events cleared, `session:terminate` pushed to the client.
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `term-err-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `term-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: "Term target",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+    await seedSession(app, agent.uuid, chat.id, "errored");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "pre-terminate event" },
+    });
+
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(admin.clientId, agent.uuid);
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/agents/${agent.uuid}/sessions/${chat.id}/terminate`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", transitioned: true });
+      expect(ws.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: "session:terminate", chatId: chat.id, agentId: agent.uuid }),
+      );
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+
+    expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+
+    // clearEvents fires best-effort — poll briefly for eventual consistency.
+    const deadline = Date.now() + 2000;
+    let items: Awaited<ReturnType<typeof sessionEventService.listEvents>>["items"] = [];
+    while (Date.now() < deadline) {
+      items = (await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items;
+      if (items.length === 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(items).toEqual([]);
+  });
+
   it("Terminate on an already-evicted row is idempotent 200 { transitioned: false }", async () => {
     const app = getApp();
     const admin = await createAdminContext(app, { username: `term-c-${crypto.randomUUID().slice(0, 6)}` });

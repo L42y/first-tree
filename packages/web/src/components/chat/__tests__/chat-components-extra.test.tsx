@@ -12,6 +12,7 @@ import { act, createRef, type ReactElement, useState } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDomHarness, type DomHarness } from "../../../test-utils/dom-harness.js";
+import { ToastProvider } from "../../ui/toast.js";
 
 const agentStatusApiMocks = vi.hoisted(() => ({
   fetchChatAgentStatuses: vi.fn(),
@@ -20,6 +21,7 @@ const agentStatusApiMocks = vi.hoisted(() => ({
 const sessionApiMocks = vi.hoisted(() => ({
   suspendSession: vi.fn(),
   resumeSession: vi.fn(),
+  terminateSession: vi.fn(),
 }));
 
 const timelineMocks = vi.hoisted(() => ({
@@ -32,8 +34,11 @@ vi.mock("../../../api/agent-status.js", () => ({
 }));
 
 vi.mock("../../../api/sessions.js", () => ({
+  chatSessionEventsQueryKey: (chatId: string) => ["chat-session-events", chatId] as const,
+  sessionQueryKey: (agentId: string, chatId: string) => ["session", agentId, chatId] as const,
   suspendSession: sessionApiMocks.suspendSession,
   resumeSession: sessionApiMocks.resumeSession,
+  terminateSession: sessionApiMocks.terminateSession,
 }));
 
 vi.mock("../../../lib/scroll-to-agent-timeline.js", () => timelineMocks);
@@ -90,7 +95,9 @@ function createQueryClient(): QueryClient {
 function withProviders(ui: ReactElement, queryClient = createQueryClient()): ReactElement {
   return (
     <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>{ui}</ToastProvider>
+      </QueryClientProvider>
     </MemoryRouter>
   );
 }

@@ -1,6 +1,6 @@
 import { type AgentChatStatusInput, buildAgentChatStatus } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
-import { canPauseStatus, canResumeStatus } from "../agent-status-panel.js";
+import { canPauseStatus, canResetSessionStatus, canResumeStatus } from "../agent-status-panel.js";
 
 const base: AgentChatStatusInput = {
   agentId: "a",
@@ -45,5 +45,33 @@ describe("canResumeStatus — Resume only for suspended sessions", () => {
 
   it("null status → false", () => {
     expect(canResumeStatus(null)).toBe(false);
+  });
+});
+
+describe("canResetSessionStatus — Reset only for a reachable agent with a session", () => {
+  it("active session → true (Reset suspends, then terminates)", () => {
+    expect(canResetSessionStatus(mk({ engagement: "active" }))).toBe(true);
+  });
+
+  it("suspended session → true (Reset terminates directly)", () => {
+    expect(canResetSessionStatus(mk({ engagement: "suspended" }))).toBe(true);
+  });
+
+  it("errored session (engagement none + errored axis) → true", () => {
+    expect(canResetSessionStatus(mk({ engagement: "none", errored: true }))).toBe(true);
+  });
+
+  it("no session (engagement none, not errored) → false", () => {
+    expect(canResetSessionStatus(mk({ engagement: "none" }))).toBe(false);
+  });
+
+  it("offline (unreachable) → false even with a live session", () => {
+    expect(canResetSessionStatus(mk({ reachable: false, engagement: "active" }))).toBe(false);
+    expect(canResetSessionStatus(mk({ reachable: false, engagement: "suspended" }))).toBe(false);
+    expect(canResetSessionStatus(mk({ reachable: false, engagement: "none", errored: true }))).toBe(false);
+  });
+
+  it("null status → false", () => {
+    expect(canResetSessionStatus(null)).toBe(false);
   });
 });

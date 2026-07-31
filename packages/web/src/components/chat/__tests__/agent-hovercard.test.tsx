@@ -341,4 +341,58 @@ describe("AgentHovercard", () => {
     const card = await openCard();
     expect(card.textContent).not.toContain("@h1");
   });
+
+  it("shows no Reset by default — the action is opt-in via sessionReset", async () => {
+    seedPassA("chat-1", [AGENT_PARTICIPANT], []);
+    mocks.getAgent.mockResolvedValue(AGENT_DTO);
+    render(
+      <AgentHovercard agentId="a1" chatId="chat-1" name="Aria">
+        <span>Aria</span>
+      </AgentHovercard>,
+    );
+    await flush();
+    const card = await openCard();
+    await waitFor(() => expect(card.textContent).toContain("New chat"));
+    expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
+  });
+
+  it("an injected sessionReset renders one Reset action that closes the card and requests the dialog", async () => {
+    seedPassA("chat-1", [AGENT_PARTICIPANT], []);
+    mocks.getAgent.mockResolvedValue(AGENT_DTO);
+    const onRequest = vi.fn();
+    render(
+      <AgentHovercard agentId="a1" chatId="chat-1" name="Aria" sessionReset={{ onRequest }}>
+        <span>Aria</span>
+      </AgentHovercard>,
+    );
+    await flush();
+    const card = await openCard();
+    let reset: HTMLButtonElement | undefined;
+    await waitFor(() => {
+      reset = card.querySelector<HTMLButtonElement>('button[aria-label="Reset session"]') ?? undefined;
+      if (!reset) throw new Error("Reset not rendered yet");
+    });
+    expect(reset?.textContent).toContain("Reset");
+    await act(async () => {
+      reset?.click();
+      await Promise.resolve();
+    });
+    await flush();
+    expect(onRequest).toHaveBeenCalledOnce();
+    // The card closed so the owner-rendered confirm dialog can take over.
+    await waitFor(() => expect(document.body.querySelector('[role="dialog"]')).toBeNull());
+  });
+
+  it("never shows Reset on a human card, even when sessionReset is passed", async () => {
+    seedPassA("chat-1", [HUMAN_PARTICIPANT], []);
+    render(
+      <AgentHovercard agentId="h1" chatId="chat-1" name="Gandy" sessionReset={{ onRequest: vi.fn() }}>
+        <span>Gandy</span>
+      </AgentHovercard>,
+    );
+    await flush();
+    const card = await openCard();
+    await waitFor(() => expect(card.textContent).toContain("New chat"));
+    expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
+  });
 });
