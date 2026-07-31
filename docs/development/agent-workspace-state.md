@@ -27,6 +27,7 @@ Each runtime discovers Skills from one workspace-relative root:
 | Codex | `.agents/skills/` |
 | Cursor | `.cursor/skills/` |
 | Kimi Code | `.kimi-code/skills/` |
+| OpenCode | `.opencode/skills/` |
 
 The reconciler projects both bundled Core Skills and Cloud-configured Team
 Skills into that one active root. It does not maintain cross-provider
