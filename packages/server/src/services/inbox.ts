@@ -601,11 +601,19 @@ type AckPrefixRow = Pick<ClaimedEntry, "id" | "status" | "deliveredAt">;
  * `inbox-ack-scaling.test.ts` can assert it still compiles to zero bind
  * parameters.
  *
- * The literal also has to stay a plain inequality against a NOT NULL column:
- * SQL's `<>` is three-valued and would drop a NULL status, whereas the JS gap
- * check below treats an unexpected status as a gap. `inbox_entries.status` is
- * NOT NULL, so the two agree; relaxing that column would silently reintroduce
- * a divergence here.
+ * The *exclusion* spelling is load-bearing too, independently of the planner.
+ * `status IN ('pending', 'delivered')` selects the same rows today and would
+ * match the same partial index, but it is an allow-list: `ck_inbox_entries_status`
+ * is NOT VALID, so a legacy row can carry a status outside today's enum, and an
+ * allow-list would drop that row from the prefix entirely — the gap check would
+ * never see it and the commit would silently step over it. Excluding only
+ * `acked` keeps every unexpected status visible to the gap check, which is
+ * where it must be handled.
+ *
+ * Finally, this has to stay a plain inequality against a NOT NULL column: SQL's
+ * `<>` is three-valued and would drop a NULL status, whereas the JS gap check
+ * below treats an unexpected status as a gap. `inbox_entries.status` is NOT
+ * NULL, so the two agree; relaxing that column would reintroduce a divergence.
  */
 export const NOT_ACKED_PREFIX_ROW = sql`${inboxEntries.status} <> 'acked'`;
 
@@ -665,11 +673,10 @@ export async function ackThroughEntryIdForBoundAgents(
         .for("update");
 
       const isResetDeliveredRow = (row: AckPrefixRow): boolean => row.status === "pending" && row.deliveredAt !== null;
-      // `status !== "acked"` is redundant against the SQL predicate above and
-      // deliberately kept: `ck_inbox_entries_status` is NOT VALID, so a legacy
-      // row could still carry a status outside the current enum. Keeping the
-      // test verbatim means such a row keeps rejecting the commit exactly as
-      // it does today instead of being silently skipped.
+      // `status !== "acked"` is unreachable now that the SQL excludes acked
+      // rows, and is kept only as defensive redundancy — it is not what
+      // protects legacy out-of-enum rows. That protection lives in the SQL
+      // being an exclusion rather than an allow-list; see NOT_ACKED_PREFIX_ROW.
       if (prefixRows.some((row) => row.status !== "acked" && row.status !== "delivered" && !isResetDeliveredRow(row))) {
         return { ok: false, reason: "prefix_gap" };
       }

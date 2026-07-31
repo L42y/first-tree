@@ -116,6 +116,14 @@ describe("inbox ACK scales with the delta, not chat history", () => {
     // `notify` and the cursor stay bound parameters here on purpose: that is
     // how the service passes them, and keeping `notify` out of the index
     // predicate is what lets a parameter still act as an index condition.
+    //
+    // Known boundary: this exercises an equivalent statement, not the query
+    // object the service builds. Together with the literal guard above it
+    // covers the clause and the index contract, but a future restructuring of
+    // the service's own WHERE (an added OR branch, say) could stop matching the
+    // index without either guard noticing. Closing that would mean exporting
+    // the query builder purely for the test; the coupling was judged not worth
+    // it, so the gap is recorded here instead of left implicit.
     const statement = `ack_prefix_guard_${crypto.randomUUID().replace(/-/g, "")}`;
     const plan = await app.db.transaction(async (tx) => {
       await tx.execute(sql.raw(`SET LOCAL plan_cache_mode = force_generic_plan`));

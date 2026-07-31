@@ -759,9 +759,12 @@ describe("inbox WS data-plane claim helpers", () => {
 
   it("ackEntryByIdForBoundAgents still rejects a prefix row whose status is outside the delivery enum", async () => {
     // `ck_inbox_entries_status` is NOT VALID, so a legacy row can carry a
-    // status the current enum does not describe. Restricting the prefix scan
-    // to non-acked rows must not turn such a row into a silently skipped one:
-    // it is neither committable nor acked, so it still blocks the commit.
+    // status the current enum does not describe. This pins the prefix scan as
+    // an *exclusion* (`status <> 'acked'`) rather than an allow-list
+    // (`status IN ('pending','delivered')`): an allow-list drops such a row
+    // from the prefix entirely, so the gap check never sees it and the commit
+    // silently steps over it. Verified — swapping the clause to the allow-list
+    // form makes this case return ok:true instead of prefix_gap.
     const app = getApp();
     const { a2, messageIds, rows } = await seedDeliverables(app, 2);
     const first = rows[0];
