@@ -534,6 +534,16 @@ export class SessionManager {
    * applied:true while the stale mapping is still on disk.
    */
   private readonly terminatePersistFailures = new Set<string>();
+  /**
+   * Per-chat teardown debt: handlers detached from their SessionEntry (LRU
+   * eviction, failSessionForRecovery, abortUnownedRoute, terminal cleanup,
+   * canceled fresh-start, resume/retry handler replacement) without a
+   * CONFIRMED stop. A ref'd terminate joins/strictly tears down every
+   * pending handler of the chat before it may ack; confirmed stops drop out
+   * of the set. Entries are registered at the detach point (see
+   * `detachHandlerWithPendingTeardown` / `registerPendingTeardown`).
+   */
+  private readonly pendingTeardowns = new Map<string, Set<AgentHandler>>();
   /** Monotonic fence for delivery work that is still inside the async admission pipeline. */
   private readonly admissionGenerations = new Map<string, number>();
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
@@ -875,7 +885,19 @@ export class SessionManager {
       // A chat whose previous terminate failed the final durable-flush step
       // still has work: the deletion must reach disk before any applied:true.
       const hasFailedTerminatePersist = this.terminatePersistFailures.has(chatId);
-      if (!session && !hadMapping && !hasPendingQueue && !hasInboxCustody && !hasFailedTerminatePersist) return;
+      // Teardown debt (detached-but-unconfirmed-stop handlers) is work too:
+      // without it a chat whose entry is already gone would early-return a
+      // false applied:true over a possibly-live old run.
+      const hasPendingTeardown = (this.pendingTeardowns.get(chatId)?.size ?? 0) > 0;
+      if (
+        !session &&
+        !hadMapping &&
+        !hasPendingQueue &&
+        !hasInboxCustody &&
+        !hasFailedTerminatePersist &&
+        !hasPendingTeardown
+      )
+        return;
 
       this.invalidateDeliveryAdmission(chatId);
       this.config.log.info({ chatId }, "terminate command received");
@@ -924,6 +946,25 @@ export class SessionManager {
           } catch (err) {
             session.teardownError = { error: err };
             throw asTerminateError("teardown", err);
+          }
+        }
+
+        // Settle every pending teardown debt for this chat: handlers detached
+        // from their entry (eviction / recovery / abort / terminal cleanup /
+        // canceled fresh-start / replacement) without a confirmed stop must
+        // be confirmed stopped before the apply may ack. A failure keeps the
+        // debt registered and rejects — the retry re-attempts it (coalescing
+        // joins any still in-flight shutdown's raw face), so the loop
+        // converges instead of acking over a live old run.
+        const pendingTeardown = this.pendingTeardowns.get(chatId);
+        if (pendingTeardown) {
+          for (const pendingHandler of [...pendingTeardown]) {
+            try {
+              await this.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
+              this.dropPendingTeardown(chatId, pendingHandler);
+            } catch (err) {
+              throw asTerminateError("teardown", err);
+            }
           }
         }
 
@@ -1176,8 +1217,14 @@ export class SessionManager {
 
   private handlerForRouteTransition(entry: SessionEntry): AgentHandler {
     if (!this.retiredHandlers.has(entry.handler)) return entry.handler;
+    const previous = entry.handler;
     const handler = this.createHandler();
     entry.handler = handler;
+    // The retired handler's shutdown was fire-and-forget — never confirmed.
+    // Record the debt so a ref'd terminate strictly confirms the stop before
+    // it may ack (the join resolves immediately when the stop already
+    // confirmed, dropping the debt right away).
+    this.detachHandlerWithPendingTeardown(entry.chatId, previous, "handler_replaced_after_retire");
     return handler;
   }
 
@@ -1237,6 +1284,41 @@ export class SessionManager {
       if (this.handlerShutdowns.get(handler) === record) this.handlerShutdowns.delete(handler);
     });
     return opts.observeFailure ? raw : observed;
+  }
+
+  /** Record a detached, unconfirmed-stop handler as teardown debt for the chat. */
+  private registerPendingTeardown(chatId: string, handler: AgentHandler): void {
+    let set = this.pendingTeardowns.get(chatId);
+    if (!set) {
+      set = new Set();
+      this.pendingTeardowns.set(chatId, set);
+    }
+    set.add(handler);
+  }
+
+  private dropPendingTeardown(chatId: string, handler: AgentHandler): void {
+    const set = this.pendingTeardowns.get(chatId);
+    if (!set) return;
+    set.delete(handler);
+    if (set.size === 0) this.pendingTeardowns.delete(chatId);
+  }
+
+  /**
+   * Detach a handler whose stop is not yet confirmed. Keeps the calling
+   * path's existing fire-and-forget shutdown semantics (lenient observed
+   * face still logs failures), but records the debt so a later ref'd
+   * terminate strictly confirms the stop. The raw face drives
+   * deregistration — a failed shutdown keeps the debt, so the terminate
+   * retry loop converges instead of acking over a live old run.
+   */
+  private detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void {
+    this.registerPendingTeardown(chatId, handler);
+    void this.shutdownHandler(handler, reason, { observeFailure: true }).then(
+      () => this.dropPendingTeardown(chatId, handler),
+      () => {
+        // Failure keeps the debt — a later ref'd terminate strictly retries.
+      },
+    );
   }
 
   private retireTransitionHandler(transition: RouteTransitionToken, reason: string): void {
@@ -1388,7 +1470,7 @@ export class SessionManager {
       });
     }
     this.releaseActiveSlot(entry);
-    void this.shutdownHandler(entry.handler, reason);
+    this.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
 
     this.inboxDelivery.prepareEvict(chatId, reason);
     this.sessions.delete(chatId);
@@ -1407,7 +1489,7 @@ export class SessionManager {
     this.config.log.warn({ chatId, reason }, "handler route completed after inbox custody was cleared");
     this.invalidateRouteTransition(entry, reason);
     this.releaseActiveSlot(entry);
-    void this.shutdownHandler(entry.handler, reason);
+    this.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
@@ -1838,6 +1920,22 @@ export class SessionManager {
       return;
     }
 
+    // A failed suspend left the current handler never confirmed stopped.
+    // Stop it strictly (joining any in-flight shutdown's raw face) BEFORE
+    // the route below reuses or replaces the reference — reusing or
+    // overwriting an unconfirmed-stop handler loses the teardown authority
+    // while the old run may still be alive. A teardown failure propagates
+    // into resume's existing error semantics (routeMessage retries the
+    // delivery / operator resume logs the command error); it must not
+    // silently continue. On success the handler is retired so the route
+    // installs a fresh one, and the recorded suspend failure is cleared.
+    if (entry.suspendError && entry.handlerStoppedBySuspend !== entry.handler) {
+      await this.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
+      entry.handlerStoppedBySuspend = entry.handler;
+      entry.suspendError = null;
+      this.retiredHandlers.add(entry.handler);
+    }
+
     // Admin-triggered resume has no provider input. It may use idle capacity,
     // but it must not preempt unrelated working turns.
     const slotKind: SlotDeliveryKind = message ? deliveryKind : "control";
@@ -2126,6 +2224,9 @@ export class SessionManager {
     }
 
     if (this.sessions.get(chatId) !== entry) return;
+    // Terminal cleanup does not shut the entry handler down itself, so its
+    // stop is unconfirmed — record the debt for a later ref'd terminate.
+    this.registerPendingTeardown(chatId, entry.handler);
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
@@ -2243,8 +2344,10 @@ export class SessionManager {
       return;
     }
 
-    // Fresh handler — the old one may have closed its SDK transport.
+    // Fresh handler — the old one may have closed its SDK transport. Its
+    // stop was never confirmed, so it becomes teardown debt for the chat.
     const newHandler = this.createHandler();
+    this.registerPendingTeardown(chatId, entry.handler);
     entry.handler = newHandler;
     entry.status = "active";
     this.claimActiveSlot(entry);
@@ -2613,6 +2716,13 @@ export class SessionManager {
         // dispatch() uses its suspending promise as the same-chat admission
         // fence while operator ACK/recovery decisions are still in flight.
         if (canceledUnestablishedStart && this.sessions.get(entry.chatId) === entry) {
+          // The entry goes away, but its teardown debt must not: a handler
+          // whose stop was never confirmed (the suspend-boundary shutdown
+          // failed, or it stopped a different transition handler) stays
+          // joinable so a later ref'd terminate can strictly finish it.
+          if (entry.handlerStoppedBySuspend !== entry.handler) {
+            this.registerPendingTeardown(entry.chatId, entry.handler);
+          }
           this.sessions.delete(entry.chatId);
           this.currentTrigger.delete(entry.chatId);
         }
@@ -2758,7 +2868,11 @@ export class SessionManager {
       const activeSlotHeld = candidate.session.activeSlotHeld;
       this.releaseActiveSlot(candidate.session);
       if (activeSlotHeld) {
-        void this.shutdownHandler(candidate.session.handler, "session_evicted");
+        this.detachHandlerWithPendingTeardown(candidate.key, candidate.session.handler, "session_evicted");
+      } else {
+        // A non-active handler is not shut down on eviction (existing
+        // semantics), but its stop is unconfirmed — record the debt.
+        this.registerPendingTeardown(candidate.key, candidate.session.handler);
       }
       // LRU eviction is local memory-management, not operator intent — do
       // NOT emit a wire state here. The chat now lives in `evictedMappings`
