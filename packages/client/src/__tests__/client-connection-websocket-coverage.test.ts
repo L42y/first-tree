@@ -611,7 +611,7 @@ describe("ClientConnection — WebSocket edge coverage", () => {
       chatId: "chat-1",
       resetCount: 1,
     });
-    await expect(accepted).resolves.toBeUndefined();
+    await expect(accepted).resolves.toBe(1);
 
     const rejected = connection.sendInboxRecover("agent-1", "chat-2");
     const rejectFrame = parseSent(socket, socket.sent.length - 1);

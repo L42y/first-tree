@@ -68,8 +68,8 @@ type PendingInboxRecover = {
   ref: string;
   firstSentAt: number;
   timer: ReturnType<typeof setTimeout> | null;
-  promise: Promise<void>;
-  resolve: () => void;
+  promise: Promise<number>;
+  resolve: (resetCount: number) => void;
   reject: (err: Error) => void;
 };
 
@@ -629,9 +629,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
    * Ask the server to reset delivered-but-unacked entries for one chat and
    * redeliver them on this socket. Unlike ACKs, recovery is bounded: callers
    * must get an accepted/rejected/timeout outcome instead of waiting forever
-   * behind a per-chat recovery gate.
+   * behind a per-chat recovery gate. Resolves with the server's reset count —
+   * how many entries were still unacked — which is the only client-visible
+   * server ACK truth for crash-safe reconciliation (e.g. replay fences).
    */
-  sendInboxRecover(agentId: string, chatId: string): Promise<void> {
+  sendInboxRecover(agentId: string, chatId: string): Promise<number> {
     if (
       !this.ws ||
       this.ws.readyState !== WebSocket.OPEN ||
@@ -647,11 +649,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       ref: `recover_${randomUUID().slice(0, 12)}`,
       firstSentAt: Date.now(),
       timer: null,
-      promise: Promise.resolve(),
+      promise: Promise.resolve(0),
       resolve: () => {},
       reject: () => {},
     };
-    pending.promise = new Promise<void>((resolve, reject) => {
+    pending.promise = new Promise<number>((resolve, reject) => {
       pending.resolve = resolve;
       pending.reject = reject;
     });
@@ -851,7 +853,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       },
       "inbox:recover accepted",
     );
-    pending.resolve();
+    pending.resolve(resetCount);
   }
 
   private rejectPendingInboxRecover(pending: PendingInboxRecover, reason: string): void {

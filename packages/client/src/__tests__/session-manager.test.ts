@@ -205,6 +205,7 @@ function createSessionManager(opts: {
   log?: pino.Logger;
   agentConfigCache?: AgentConfigCache;
   recoverChat?: (chatId: string) => Promise<void>;
+  recoverChatWithCount?: (chatId: string) => Promise<number>;
   recoverRuntimeSessionProof?: (reasonCode: string) => Promise<void>;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
   onSessionRuntimeChange?: (chatId: string, state: RuntimeState) => void;
@@ -246,6 +247,7 @@ function createSessionManager(opts: {
     replayFencePath: opts.replayFencePath,
     ackEntry: opts.ackEntry ?? mockAckEntry(),
     recoverChat: opts.recoverChat,
+    recoverChatWithCount: opts.recoverChatWithCount,
     recoverRuntimeSessionProof: opts.recoverRuntimeSessionProof,
     agentConfigCache: opts.agentConfigCache,
     onSessionEvent: opts.onSessionEvent,
@@ -3160,6 +3162,105 @@ describe("SessionManager replay fence reconcile", () => {
       // The chat is unblocked: the next delivery routes into the provider.
       await sm.dispatch(mockEntry({ id: 32, chatId: "chat-rec", messageId: "msg-32" }));
       expect(handler.inject).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SessionManager replay fence startup reconciliation", () => {
+  function seedFenceStore(path: string, chatId: string, messageId: string): void {
+    const store = new ReplayFenceStore(path);
+    store.load();
+    store.fence({
+      chatId,
+      messageId,
+      provider: "kimi-code",
+      toolName: "Bash",
+      toolUseId: "agent-0:tool_1",
+      fencedAt: new Date().toISOString(),
+    });
+  }
+
+  it("clears a stale fence when the server confirms zero unacked entries after a crash, then admits the chat", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
+    try {
+      const fencePath = join(root, "fence.json");
+      // Pre-crash state: unsafe effect fenced, then the ACK committed
+      // server-side but the process died before the local clear.
+      seedFenceStore(fencePath, "chat-crash", "msg-1");
+      const recoverChatWithCount = vi.fn<(chatId: string) => Promise<number>>().mockResolvedValue(0);
+      const handler = createMockHandler();
+      const ackEntry = mockAckEntry();
+      // A fresh manager (post-crash) loads the fence file.
+      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+
+      await sm.reconcileReplayFencesWithServer();
+
+      expect(recoverChatWithCount).toHaveBeenCalledWith("chat-crash");
+      const reloaded = new ReplayFenceStore(fencePath);
+      reloaded.load();
+      expect(reloaded.hasFenceForChat("chat-crash")).toBe(false);
+
+      await sm.dispatch(mockEntry({ id: 41, chatId: "chat-crash", messageId: "msg-2" }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the fence and the chat hold when the server still resets unacked entries", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
+    try {
+      const fencePath = join(root, "fence.json");
+      seedFenceStore(fencePath, "chat-debt", "msg-1");
+      const recoverChatWithCount = vi.fn<(chatId: string) => Promise<number>>().mockResolvedValue(1);
+      const handler = createMockHandler();
+      const ackEntry = mockAckEntry();
+      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+
+      await sm.reconcileReplayFencesWithServer();
+
+      const reloaded = new ReplayFenceStore(fencePath);
+      reloaded.load();
+      expect(reloaded.hasFenceForChat("chat-debt")).toBe(true);
+
+      await sm.dispatch(mockEntry({ id: 42, chatId: "chat-debt", messageId: "msg-1" }));
+      expect(handler.start).not.toHaveBeenCalled();
+      expect(handler.resume).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps fences fail-closed when the readback fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
+    try {
+      const fencePath = join(root, "fence.json");
+      seedFenceStore(fencePath, "chat-fail", "msg-1");
+      const recoverChatWithCount = vi
+        .fn<(chatId: string) => Promise<number>>()
+        .mockRejectedValue(new Error("socket not bound"));
+      const handler = createMockHandler();
+      const ackEntry = mockAckEntry();
+      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+
+      await sm.reconcileReplayFencesWithServer();
+
+      const reloaded = new ReplayFenceStore(fencePath);
+      reloaded.load();
+      expect(reloaded.hasFenceForChat("chat-fail")).toBe(true);
+
+      await sm.dispatch(mockEntry({ id: 43, chatId: "chat-fail", messageId: "msg-9" }));
+      expect(handler.start).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
 
       await sm.shutdown();
     } finally {

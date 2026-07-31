@@ -368,6 +368,13 @@ type SessionManagerConfig = {
    */
   recoverChat?: (chatId: string) => Promise<void>;
   /**
+   * Optional count-returning variant of recoverChat used for crash-safe
+   * replay-fence reconciliation: resolves with the server's reset count
+   * (entries still unacked), the only client-visible server ACK truth.
+   * Without it the reconciliation conservatively keeps every fence.
+   */
+  recoverChatWithCount?: (chatId: string) => Promise<number>;
+  /**
    * Re-bind the owning agent after a bind-scoped HTTP proof failure. The
    * callback is agent-wide and must coalesce concurrent chat failures.
    */
@@ -1097,6 +1104,52 @@ export class SessionManager {
   private clearRetryState(entry: SessionEntry): void {
     this.clearRetryAttemptState(entry);
     entry.deferredMessages = [];
+  }
+
+  /**
+   * Crash-safe fence reconciliation driven by server ACK truth. After a
+   * crash the local fence file can lag the server: an entry ACKed just
+   * before the crash leaves a stale chat-wide fence with no automatic
+   * cleanup. Inbox recovery resets every delivered-but-unacked entry for a
+   * chat and reports how many it reset — zero means every fenced delivery
+   * in that chat is durably ACKed server-side, so those fences are stale
+   * and cleared. A nonzero count keeps the fences; the reset entries are
+   * redelivered and held by the route gate as recovery debt. Idempotent and
+   * replayable: safe to run on every startup/bind.
+   */
+  async reconcileReplayFencesWithServer(): Promise<void> {
+    if (!this.replayFence || this.replayFenceUnavailable || !this.config.recoverChatWithCount) return;
+    const recoverWithCount = this.config.recoverChatWithCount;
+    const chatIds = [...new Set(this.replayFence.snapshot().map((entry) => entry.chatId))];
+    for (const chatId of chatIds) {
+      let resetCount: number;
+      try {
+        resetCount = await recoverWithCount(chatId);
+      } catch (err) {
+        this.config.log.warn(
+          { err, chatId },
+          "replay fence reconciliation readback failed; keeping fences (fail-closed)",
+        );
+        continue;
+      }
+      if (resetCount > 0) continue;
+      for (const entry of this.replayFence.snapshot()) {
+        if (entry.chatId !== chatId) continue;
+        try {
+          this.replayFence.clear(entry.chatId, entry.messageId);
+          this.config.log.info(
+            { chatId, messageId: entry.messageId },
+            "cleared stale replay fence: delivery confirmed ACKed server-side",
+          );
+        } catch (err) {
+          this.config.log.error(
+            { err, chatId, messageId: entry.messageId },
+            "stale replay fence could not be cleared; chat stays fenced until the store is repaired",
+          );
+          this.config.onSessionRuntimeChange?.(chatId, "error");
+        }
+      }
+    }
   }
 
   private isChatReplayFenced(chatId: string): boolean {
