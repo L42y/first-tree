@@ -1098,10 +1098,10 @@ export class SessionManager {
     entry.deferredMessages = [];
   }
 
-  private isReplayFenced(chatId: string, message: SessionMessage): boolean {
+  private isChatReplayFenced(chatId: string): boolean {
     if (this.replayFenceUnavailable) return true;
     if (!this.replayFence) return false;
-    return this.replayFence.isFenced(chatId, message.id);
+    return this.replayFence.hasFenceForChat(chatId);
   }
 
   private createHandler(): AgentHandler {
@@ -1516,9 +1516,12 @@ export class SessionManager {
       }
     }
     if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
-    await this.inboxDelivery.finishTurn(chatId, messages, outcome);
+    // The coordinator reports "settled" only once the concrete entries left
+    // the ledger through a confirmed ACK; recovery debt, prefix gaps, and
+    // ACK rejections keep custody and surface as "retry".
+    const disposition = await this.inboxDelivery.finishTurn(chatId, messages, outcome);
     this.projectSessionRuntime(chatId);
-    return "settled";
+    return disposition;
   }
 
   private createDeliveryToken(chatId: string, routeLeaseValid: (() => boolean) | null = null): DeliveryToken {
@@ -1653,15 +1656,18 @@ export class SessionManager {
       this.config.log.info({ chatId, messageId: message.id }, "delivery held while session termination is pending");
       return;
     }
-    if (this.isReplayFenced(chatId, message)) {
-      // A previous provider turn for this concrete delivery already produced
-      // a non-read-only tool effect before an interruption. Re-entering the
-      // provider would replay that effect, so the delivery stays
-      // unacknowledged recovery debt until an operator resolves it.
+    if (this.isChatReplayFenced(chatId)) {
+      // A previous provider turn in this chat produced a non-read-only tool
+      // effect before an interruption and never settled. Re-entering the
+      // provider for the fenced head would replay that effect, and inbox ACK
+      // is prefix-based, so the chat's entire FIFO tail must hold behind it:
+      // every delivery stays unacknowledged recovery debt until an operator
+      // resolves the fenced head.
       this.config.log.error(
         { chatId, messageId: message.id },
-        "withholding provider re-entry for replay-fenced delivery; unsafe tool effect fenced before interruption",
+        "withholding provider re-entry for replay-fenced chat; unsafe tool effect fenced before interruption",
       );
+      this.config.onSessionRuntimeChange?.(chatId, "error");
       return;
     }
     const existing = this.sessions.get(chatId);

@@ -162,6 +162,31 @@ function kimiEventError(event: { code: string; message: string; retryable?: bool
   return error;
 }
 
+/**
+ * Marker the patched SDK's event dispatch rethrows instead of swallowing
+ * (`safeEmitLive`), so a failed replay-fence write aborts `prepareToolCall`
+ * BEFORE the tool task starts. Without the marker the SDK's live-event path
+ * catches listener errors and the unsafe effect would still execute.
+ */
+const REPLAY_FENCE_BLOCK_FLAG = "__firstTreeReplayFenceBlock";
+
+function replayFenceBlockError(cause: Error): Error {
+  const error = new Error(`replay fence persistence failed: ${cause.message}`) as Error & {
+    __firstTreeReplayFenceBlock?: boolean;
+  };
+  error.name = "KimiReplayFenceError";
+  error[REPLAY_FENCE_BLOCK_FLAG] = true;
+  return error;
+}
+
+function isReplayFenceBlockError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { __firstTreeReplayFenceBlock?: boolean })[REPLAY_FENCE_BLOCK_FLAG] === true
+  );
+}
+
 export function formatKimiCodeError(error: Error): string {
   const record = error as Error & { code?: string };
   const combined = `${record.code ?? ""} ${error.message}`.trim();
@@ -451,7 +476,14 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
           observation.unsafeToolEffectStarted = true;
           if (!observation.unsafeFenced) {
             observation.unsafeFenced = true;
-            observation.fenceError = fenceUnsafeDelivery(sessionCtx.chatId, messages, event.name, toolUseId);
+            const fenceFailure = fenceUnsafeDelivery(sessionCtx.chatId, messages, event.name, toolUseId);
+            if (fenceFailure) {
+              observation.fenceError = fenceFailure;
+              // Throw the marked error so the SDK aborts this tool call
+              // before the effect executes; the catch below only records
+              // the observation for settlement.
+              throw replayFenceBlockError(fenceFailure);
+            }
           }
         }
         attempt.setReplaySafety(observation.unsafeToolEffectStarted ? "unsafe" : "pre_visible");
@@ -508,6 +540,10 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       try {
         processKimiEvent(event, sessionCtx, attempt, observation, resolveEnded, messages);
       } catch (error) {
+        // Replay-fence blocks must propagate back into the SDK's tool
+        // dispatch so the unsafe effect never starts; every other listener
+        // error stays a local translation failure.
+        if (isReplayFenceBlockError(error)) throw error;
         sessionCtx.log(`kimi event translation failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
@@ -602,18 +638,33 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         return false;
       }
 
-      if (observation?.fenceError) {
-        // Fail closed: the unsafe tool effect could not be fenced durably,
-        // so consume the delivery as a terminal error instead of leaving an
-        // unfenced crash window where redelivery would replay the effect.
-        const fenceMessage = `replay fence persistence failed: ${observation.fenceError.message}`;
-        sessionCtx.emitEvent({ kind: "error", payload: { source: "runtime", message: fenceMessage } });
-        sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-        await token.complete(messages, {
-          status: "error",
-          completion: "consumed",
-          reason: "replay_fence_persist_failed",
-        });
+      const fenceFailure = observation?.fenceError ?? (thrown && isReplayFenceBlockError(thrown) ? thrown : null);
+      if (fenceFailure) {
+        // Fail closed: the unsafe tool call was aborted before its effect
+        // executed (the marked throw propagates through the SDK's tool
+        // dispatch), so custody here is purely about durability. Route the
+        // failure through the provider-attempt pipeline so a terminal
+        // settlement emits the durable provider-failure notice boundary
+        // before any consumed ACK.
+        attempt.recordSignal({ kind: "local_error", error: fenceFailure });
+        const fenceSettlement = attempt.settle({ attempt: attemptNumber });
+        if (fenceSettlement && fenceSettlement.decision.action !== "retry") {
+          emitSettlement(sessionCtx, fenceSettlement);
+          const formatted = formatKimiCodeError(fenceFailure);
+          await emitUsage(sessionCtx, activeSession, usageBaseline);
+          sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
+          sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+          const completion = await token.complete(messages, {
+            status: "error",
+            completion: "consumed",
+            reason: "replay_fence_persist_failed",
+          });
+          clearFencedDelivery(sessionCtx, messages, completion);
+          return false;
+        }
+        // Retryable/unclassified: retain custody. No effect was executed,
+        // so redelivery is safe once the fence store is healthy again.
+        token.retry(messages, "replay_fence_persist_failed");
         return false;
       }
 

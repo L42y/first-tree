@@ -83,6 +83,46 @@ async function flushAsyncWork(): Promise<void> {
   }
 }
 
+// Models the patched SDK's tool-dispatch contract: the live-event listener
+// runs BEFORE the tool effect starts; unmarked listener errors are swallowed,
+// while errors marked `__firstTreeReplayFenceBlock` abort the dispatch so the
+// effect never runs. This mirrors `prepareToolCall` awaiting the tool.call
+// dispatch before creating the runnable task, plus the First Tree patch that
+// rethrows marked errors out of `safeEmitLive`.
+class EffectGateFakeSession extends FakeSession {
+  effectCount = 0;
+  private readonly scriptEvents: KimiEvent[];
+
+  constructor(id: string, scriptEvents: KimiEvent[]) {
+    super(id, []);
+    this.scriptEvents = scriptEvents;
+  }
+
+  override async prompt(input: string): Promise<void> {
+    this.prompts.push(input);
+    for (const value of this.scriptEvents) {
+      try {
+        for (const listener of this.listeners) {
+          listener(value);
+        }
+      } catch (error) {
+        // Swallow unmarked listener errors like the SDK's safeEmitLive;
+        // rethrow only the replay-fence block marker.
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          (error as { __firstTreeReplayFenceBlock?: boolean }).__firstTreeReplayFenceBlock === true
+        ) {
+          throw error;
+        }
+      }
+      if (value.type === "tool.call.started" && !kimiToolIsReadOnly(value.name, value.args)) {
+        this.effectCount += 1;
+      }
+    }
+  }
+}
+
 function event(sessionId: string, value: Record<string, unknown>): KimiEvent {
   return { agentId: "main", sessionId, ...value } as KimiEvent;
 }
@@ -126,14 +166,19 @@ function failedTurn(
   ];
 }
 
-function makeToken(): DeliveryToken & { completed: TurnOutcome[]; retried: string[] } {
+function makeToken(
+  opts: { completeResult?: "settled" | "retry" } = {},
+): DeliveryToken & { completed: TurnOutcome[]; retried: string[] } {
   const completed: TurnOutcome[] = [];
   const retried: string[] = [];
   return {
     completed,
     retried,
     processingStarted: () => {},
-    complete: async (_messages, outcome) => void completed.push(outcome),
+    complete: async (_messages, outcome) => {
+      completed.push(outcome);
+      return opts.completeResult;
+    },
     retry: (_messages, reason) => void retried.push(reason),
     terminalRejected: async () => {},
   };
@@ -757,6 +802,9 @@ describe("Kimi background subagent lifecycle", () => {
     expect(source).toMatch(
       /getReadyAgent\("main"\);\s*\n\s*if \(main !== void 0 && this\.options\.drainAgentTasksOnStop\)/,
     );
+    // safeEmitLive must rethrow marked replay-fence block errors instead of
+    // swallowing them, so a failed fence write aborts the tool dispatch.
+    expect(source).toContain("__firstTreeReplayFenceBlock");
   });
 });
 
@@ -865,45 +913,93 @@ describe("Kimi replay fence", () => {
     expect(fence.entries).toHaveLength(1);
   });
 
-  it("settles as a terminal consumed error when the fence cannot be persisted", async () => {
+  it("blocks the unsafe effect and retains custody when the fence cannot be persisted", async () => {
     const id = "kimi-session-fence-failure";
     const fence = makeFence();
     fence.fence.mockImplementation(() => {
       throw new Error("disk full");
     });
-    const fakeSession = new FakeSession(id, [unsafeWriteTurn(id)]);
+    const fakeSession = new EffectGateFakeSession(id, unsafeWriteTurn(id));
     const handler = makeHandler(fakeSession, {}, { replayFence: fence });
     const events: SessionEvent[] = [];
     const token = makeToken();
 
     await handler.start(message("m1", "write the marker"), makeContext(events), token);
 
-    expect(token.completed).toEqual([
-      { status: "error", completion: "consumed", reason: "replay_fence_persist_failed" },
-    ]);
+    // The marked throw aborts the SDK tool dispatch before the effect runs,
+    // and the retryable classification retains delivery custody instead of
+    // ACKing: redelivery is safe because effect count is provably zero.
+    expect(fakeSession.effectCount).toBe(0);
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toContain("replay_fence_persist_failed");
     expect(events.some((item) => item.kind === "assistant_text")).toBe(false);
-    expect(events).toContainEqual({
-      kind: "error",
-      payload: { source: "runtime", message: "replay fence persistence failed: disk full" },
+    expect(events.filter((item) => item.kind === "turn_end")).toEqual([]);
+  });
+
+  it("settles through the durable-notice pipeline when the fence failure is non-retryable", async () => {
+    const id = "kimi-session-fence-config";
+    const fence = makeFence();
+    fence.fence.mockImplementation(() => {
+      throw new Error("bad config: replay fence store layout unsupported");
     });
+    const fakeSession = new EffectGateFakeSession(id, unsafeWriteTurn(id));
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+
+    await handler.start(message("m1", "write the marker"), makeContext(events), token);
+
+    expect(fakeSession.effectCount).toBe(0);
+    // Terminal settlement goes through the provider-attempt pipeline: the
+    // provider.retry event is what SessionManager turns into the durable
+    // chat-visible runtime notice before the consumed ACK.
+    expect(
+      events.some(
+        (item) =>
+          item.kind === "error" &&
+          item.payload.source === "runtime" &&
+          item.payload.message.startsWith("provider.retry:"),
+      ),
+    ).toBe(true);
+    expect(events.some((item) => item.kind === "assistant_text")).toBe(false);
     expect(events.filter((item) => item.kind === "turn_end")).toEqual([
       { kind: "turn_end", payload: { status: "error" } },
     ]);
+    expect(token.completed).toEqual([
+      { status: "error", completion: "consumed", reason: "replay_fence_persist_failed" },
+    ]);
   });
 
-  it("fails closed when no replay fence store is configured, while read-only turns still run", async () => {
+  it("retains custody when no replay fence store is configured", async () => {
     const id = "kimi-session-fence-missing";
-    const fakeSession = new FakeSession(id, [unsafeWriteTurn(id), successfulTurn(id, "read only ok")]);
+    const fakeSession = new EffectGateFakeSession(id, unsafeWriteTurn(id));
     const handler = makeHandler(fakeSession, {}, { replayFence: undefined });
     const events: SessionEvent[] = [];
     const token = makeToken();
 
     await handler.start(message("m1", "write the marker"), makeContext(events), token);
 
-    expect(token.completed).toEqual([
-      { status: "error", completion: "consumed", reason: "replay_fence_persist_failed" },
-    ]);
+    expect(fakeSession.effectCount).toBe(0);
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toContain("replay_fence_persist_failed");
     expect(events.some((item) => item.kind === "assistant_text")).toBe(false);
+  });
+
+  it("keeps the fence when the completion disposition retains server custody", async () => {
+    const id = "kimi-session-fence-ack-retry";
+    const fence = makeFence();
+    const fakeSession = new FakeSession(id, [unsafeWriteTurn(id)]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const token = makeToken({ completeResult: "retry" });
+
+    await handler.start(message("m1", "write the marker"), makeContext([]), token);
+
+    // The ACK did not commit (disposition "retry"), so the fence must
+    // survive: a later crash-redelivery of this delivery would otherwise
+    // replay the write.
+    expect(token.completed).toEqual([{ status: "success" }]);
+    expect(fence.clear).not.toHaveBeenCalled();
+    expect(fence.entries).toHaveLength(1);
   });
 
   it("does not require the fence store for a read-only turn", async () => {

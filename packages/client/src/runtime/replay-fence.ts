@@ -36,7 +36,28 @@ export class ReplayFenceError extends Error {
 }
 
 function keyOf(chatId: string, messageId: string): string {
-  return `${chatId}${messageId}`;
+  // Length-prefixed pair encoding: unambiguous for any id contents, unlike
+  // raw concatenation where ("a1", "b") and ("a", "1b") collide.
+  return `${chatId.length}:${chatId}${messageId}`;
+}
+
+function isValidEntry(entry: unknown): entry is ReplayFenceEntry {
+  if (typeof entry !== "object" || entry === null) return false;
+  const candidate = entry as Record<string, unknown>;
+  return (
+    typeof candidate.chatId === "string" &&
+    typeof candidate.messageId === "string" &&
+    typeof candidate.provider === "string" &&
+    typeof candidate.toolName === "string" &&
+    typeof candidate.toolUseId === "string" &&
+    typeof candidate.fencedAt === "string"
+  );
+}
+
+function readErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
 
 /**
@@ -64,15 +85,23 @@ export class ReplayFenceStore {
     this.filePath = filePath;
   }
 
-  /** Load persisted fences. Missing file means an empty store. */
+  /** Load persisted fences. Only a missing file (ENOENT) means an empty store. */
   load(): void {
     let raw: string;
     try {
       raw = readFileSync(this.filePath, "utf-8");
-    } catch {
-      // File does not exist yet — empty store, no fences.
-      this.loaded = true;
-      return;
+    } catch (error) {
+      if (readErrorCode(error) === "ENOENT") {
+        // First start — no fences persisted yet.
+        this.loaded = true;
+        return;
+      }
+      // EACCES / EISDIR / I/O errors: the persisted safety facts exist (or
+      // their state is unknown) but cannot be read. Fail closed — callers
+      // must treat the store as unavailable, never as empty.
+      throw new ReplayFenceError(
+        `replay fence store is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     let data: ReplayFenceData;
@@ -92,13 +121,7 @@ export class ReplayFenceStore {
 
     const loaded = new Map<string, ReplayFenceEntry>();
     for (const [key, entry] of Object.entries(data.entries)) {
-      if (
-        typeof entry !== "object" ||
-        entry === null ||
-        typeof entry.chatId !== "string" ||
-        typeof entry.messageId !== "string" ||
-        keyOf(entry.chatId, entry.messageId) !== key
-      ) {
+      if (!isValidEntry(entry) || keyOf(entry.chatId, entry.messageId) !== key) {
         throw new ReplayFenceError(`replay fence store has malformed entry: ${key}`);
       }
       loaded.set(key, entry);
@@ -109,6 +132,14 @@ export class ReplayFenceStore {
 
   isFenced(chatId: string, messageId: string): boolean {
     return this.entries.has(keyOf(chatId, messageId));
+  }
+
+  /** True when the chat has any unresolved fence — its whole FIFO tail must hold. */
+  hasFenceForChat(chatId: string): boolean {
+    for (const entry of this.entries.values()) {
+      if (entry.chatId === chatId) return true;
+    }
+    return false;
   }
 
   fence(entry: ReplayFenceEntry): void {
@@ -161,6 +192,22 @@ export class ReplayFenceStore {
         closeSync(fd);
       }
       renameSync(tmpPath, this.filePath);
+      // Durability scope: the write+fsync+rename sequence survives a process
+      // SIGKILL. The best-effort parent-directory fsync below extends that to
+      // host crashes on filesystems that require it; its failure is logged
+      // into the error rather than silently dropped, but a directory that
+      // cannot be fsynced does not undo the rename.
+      try {
+        const dirFd = openSync(dirname(this.filePath), constants.O_RDONLY);
+        try {
+          fsyncSync(dirFd);
+        } finally {
+          closeSync(dirFd);
+        }
+      } catch {
+        // Directory fsync unsupported (e.g. some virtual filesystems) — the
+        // file-level fsync above still guarantees process-crash durability.
+      }
     } catch (error) {
       throw new ReplayFenceError(
         `failed to persist replay fence: ${error instanceof Error ? error.message : String(error)}`,

@@ -7,6 +7,7 @@ import {
   encodeProviderRetryEventMessage,
   parseProviderRetryEventMessage,
   RUNTIME_NOTICE_METADATA_KEY,
+  type RuntimeState,
   type SessionEvent,
 } from "@first-tree/shared";
 import type pino from "pino";
@@ -206,6 +207,7 @@ function createSessionManager(opts: {
   recoverChat?: (chatId: string) => Promise<void>;
   recoverRuntimeSessionProof?: (reasonCode: string) => Promise<void>;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
+  onSessionRuntimeChange?: (chatId: string, state: RuntimeState) => void;
   confirmSessionEvent?: (chatId: string, event: SessionEvent) => Promise<void>;
   subprocessProbe?: SubprocessProbe;
   registryPath?: string;
@@ -247,6 +249,7 @@ function createSessionManager(opts: {
     recoverRuntimeSessionProof: opts.recoverRuntimeSessionProof,
     agentConfigCache: opts.agentConfigCache,
     onSessionEvent: opts.onSessionEvent,
+    onSessionRuntimeChange: opts.onSessionRuntimeChange,
     confirmSessionEvent: opts.confirmSessionEvent,
   });
 }
@@ -2831,14 +2834,20 @@ describe("SessionManager replay fence gate", () => {
     return mkdtempSync(join(tmpdir(), "sm-replay-fence-"));
   }
 
-  it("withholds a replay-fenced redelivery: no provider start, no ACK, debt retained", async () => {
+  it("withholds the fenced head and the chat's whole tail; other chats proceed", async () => {
     const root = makeTmp();
     try {
       const fencePath = join(root, "fence.json");
       seedFence(fencePath, "chat-1", "msg-1");
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath });
+      const runtimeStates: Array<{ chatId: string; state: RuntimeState }> = [];
+      const sm = createSessionManager({
+        handler,
+        ackEntry,
+        replayFencePath: fencePath,
+        onSessionRuntimeChange: (chatId, state) => runtimeStates.push({ chatId, state }),
+      });
 
       // The crashed delivery is redelivered after restart: it must NOT be
       // re-entered into the provider and must NOT be ACKed.
@@ -2848,8 +2857,17 @@ describe("SessionManager replay fence gate", () => {
       expect(handler.inject).not.toHaveBeenCalled();
       expect(ackEntry).not.toHaveBeenCalled();
 
-      // A different, unfenced delivery for the same chat runs normally.
+      // The same chat's later tail must also hold: inbox ACK is
+      // prefix-based, so letting msg-2 run would execute it out of order
+      // before the fenced head resolves.
       await sm.dispatch(mockEntry({ id: 2, chatId: "chat-1", messageId: "msg-2" }));
+      expect(handler.start).not.toHaveBeenCalled();
+      expect(handler.inject).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+      expect(runtimeStates).toContainEqual({ chatId: "chat-1", state: "error" });
+
+      // An unfenced chat is unaffected.
+      await sm.dispatch(mockEntry({ id: 3, chatId: "chat-2", messageId: "msg-9" }));
       expect(handler.start).toHaveBeenCalledTimes(1);
 
       await sm.shutdown();
@@ -2961,5 +2979,105 @@ describe("SessionManager replay fence gate", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("SessionManager completion disposition", () => {
+  function turnMessage(entryId: number, chatId: string, messageId: string): SessionMessage {
+    return {
+      inboxEntryId: entryId,
+      id: messageId,
+      chatId,
+      senderId: "sender-1",
+      format: "text",
+      content: "",
+      metadata: {},
+    };
+  }
+
+  it("returns retry when the server rejects the ACK, keeping delivery custody", async () => {
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockRejectedValue(new Error("ack boom"));
+    let capturedCtx: SessionContext | undefined;
+    const handler = createMockHandler({
+      async start(_msg, ctx) {
+        capturedCtx = ctx;
+        return "session-id-mock";
+      },
+    });
+    const sm = createSessionManager({ handler, ackEntry, recoverChat: async () => {} });
+
+    await sm.dispatch(mockEntry({ id: 7, chatId: "chat-ack", messageId: "msg-7" }));
+    const disposition = await capturedCtx?.finishTurn(turnMessage(7, "chat-ack", "msg-7"), {
+      status: "success",
+      terminal: true,
+    });
+
+    expect(disposition).toBe("retry");
+    expect(ackEntry).toHaveBeenCalledWith(7);
+
+    await sm.shutdown();
+  });
+
+  it("returns retry on a non-terminal prefix gap and holds custody pending recovery", async () => {
+    const ackEntry = mockAckEntry();
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    let capturedCtx: SessionContext | undefined;
+    const handler = createMockHandler({
+      async start(_msg, ctx) {
+        capturedCtx = ctx;
+        return "session-id-mock";
+      },
+    });
+    const sm = createSessionManager({ handler, ackEntry, recoverChat });
+
+    await sm.dispatch(mockEntry({ id: 11, chatId: "chat-gap", messageId: "msg-11" }));
+    await sm.dispatch(mockEntry({ id: 12, chatId: "chat-gap", messageId: "msg-12" }));
+    expect(handler.inject).toHaveBeenCalledTimes(1);
+
+    // Finishing the tail while the head is still open must not report a
+    // durable settlement: the ACK-through cannot cross the non-terminal
+    // prefix, so custody is retained and reported as retry.
+    const gap = await capturedCtx?.finishTurn(turnMessage(12, "chat-gap", "msg-12"), {
+      status: "success",
+      terminal: true,
+    });
+    expect(gap).toBe("retry");
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(recoverChat).toHaveBeenCalledWith("chat-gap");
+
+    // The prefix gap already moved the chat into recovery debt: further
+    // completions stay deferred (retry, no ACK) until recovery redelivers,
+    // so a late head completion cannot sneak an ACK past the debt either.
+    const deferred = await capturedCtx?.finishTurn(turnMessage(11, "chat-gap", "msg-11"), {
+      status: "success",
+      terminal: true,
+    });
+    expect(deferred).toBe("retry");
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
+  it("returns settled once the ACK commits the whole terminal prefix", async () => {
+    const ackEntry = mockAckEntry();
+    let capturedCtx: SessionContext | undefined;
+    const handler = createMockHandler({
+      async start(_msg, ctx) {
+        capturedCtx = ctx;
+        return "session-id-mock";
+      },
+    });
+    const sm = createSessionManager({ handler, ackEntry });
+
+    await sm.dispatch(mockEntry({ id: 21, chatId: "chat-settled", messageId: "msg-21" }));
+    const disposition = await capturedCtx?.finishTurn(turnMessage(21, "chat-settled", "msg-21"), {
+      status: "success",
+      terminal: true,
+    });
+
+    expect(disposition).toBe("settled");
+    expect(ackEntry).toHaveBeenCalledWith(21);
+
+    await sm.shutdown();
   });
 });

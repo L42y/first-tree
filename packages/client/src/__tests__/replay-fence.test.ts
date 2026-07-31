@@ -79,6 +79,53 @@ describe("ReplayFenceStore", () => {
     expect(store.isFenced("chat-1", "msg-1")).toBe(false);
   });
 
+  it("fails closed on non-ENOENT read failures (directory at store path)", () => {
+    const path = join(root, "fence-dir");
+    mkdirSync(path);
+    const store = new ReplayFenceStore(path);
+    expect(() => store.load()).toThrow(ReplayFenceError);
+    expect(() => store.load()).toThrow(/unreadable/);
+  });
+
+  it("fails closed on non-ENOENT read failures (permission denied)", () => {
+    const path = join(root, "fence.json");
+    writeFileSync(path, JSON.stringify({ version: 1, entries: {} }), "utf-8");
+    chmodSync(path, 0o000);
+    const store = new ReplayFenceStore(path);
+    expect(() => store.load()).toThrow(/unreadable/);
+    chmodSync(path, 0o600);
+  });
+
+  it("keeps id pairs with concatenation-colliding shapes distinct", () => {
+    const path = join(root, "fence.json");
+    const store = new ReplayFenceStore(path);
+    store.load();
+    store.fence(entry({ chatId: "a1", messageId: "b" }));
+
+    expect(store.isFenced("a1", "b")).toBe(true);
+    expect(store.isFenced("a", "1b")).toBe(false);
+    expect(store.hasFenceForChat("a")).toBe(false);
+    expect(store.hasFenceForChat("a1")).toBe(true);
+
+    store.fence(entry({ chatId: "a", messageId: "1b" }));
+    store.clear("a1", "b");
+    expect(store.isFenced("a1", "b")).toBe(false);
+    expect(store.isFenced("a", "1b")).toBe(true);
+    expect(store.hasFenceForChat("a")).toBe(true);
+  });
+
+  it("reports chat-level fence state for the FIFO hold", () => {
+    const path = join(root, "fence.json");
+    const store = new ReplayFenceStore(path);
+    store.load();
+    expect(store.hasFenceForChat("chat-1")).toBe(false);
+    store.fence(entry());
+    expect(store.hasFenceForChat("chat-1")).toBe(true);
+    expect(store.hasFenceForChat("chat-2")).toBe(false);
+    store.clear("chat-1", "msg-1");
+    expect(store.hasFenceForChat("chat-1")).toBe(false);
+  });
+
   it("fails closed on a corrupted store file", () => {
     const path = join(root, "fence.json");
     writeFileSync(path, "{ not json", "utf-8");
@@ -91,6 +138,20 @@ describe("ReplayFenceStore", () => {
     writeFileSync(path, JSON.stringify({ version: 99, entries: {} }), "utf-8");
     const store = new ReplayFenceStore(path);
     expect(() => store.load()).toThrow(/unsupported version/);
+  });
+
+  it("fails closed on a malformed entry whose fields fail validation", () => {
+    const path = join(root, "fence.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        entries: { "6:chat-1msg-1": { ...entry(), provider: 42 } },
+      }),
+      "utf-8",
+    );
+    const store = new ReplayFenceStore(path);
+    expect(() => store.load()).toThrow(/malformed entry/);
   });
 
   it("fails closed on a malformed entry whose key does not match its identity", () => {

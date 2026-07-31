@@ -1,7 +1,12 @@
 import type { InboxEntryWithMessage } from "@first-tree/shared";
 import type { pino } from "../observability/logger.js";
 import { Deduplicator } from "./deduplicator.js";
-import type { SessionMessage, TerminalRejectionEvidence, TurnOutcome } from "./handler.js";
+import type {
+  DeliveryCompletionDisposition,
+  SessionMessage,
+  TerminalRejectionEvidence,
+  TurnOutcome,
+} from "./handler.js";
 
 export type DeliveryWork = {
   chatId: string;
@@ -56,7 +61,7 @@ type ChatInboxLedger = {
   // keep classifying that burst as recovery while any redelivered work is unsettled.
   recoveryWindowOpen: boolean;
   admissionQueue: Promise<void> | null;
-  ackQueue: Promise<void> | null;
+  ackQueue: Promise<unknown> | null;
 };
 
 type InboxDeliveryCoordinatorConfig = {
@@ -246,14 +251,20 @@ export class InboxDeliveryCoordinator {
     chatId: string,
     messages: SessionMessage | readonly SessionMessage[],
     outcome: TurnOutcome,
-  ): Promise<void> {
+  ): Promise<DeliveryCompletionDisposition> {
     const throughEntryId = this.lastMessageEntryId(chatId, messages);
     if (throughEntryId === undefined) {
       this.config.log.warn({ chatId }, "turn completion ignored because no inboxEntryId was provided");
-      return;
+      return "retry";
     }
     this.markTerminal(chatId, messages, outcome);
-    await this.ackThrough(chatId, throughEntryId, "finish_turn", { requireTerminalPrefix: true });
+    // The completion is only "settled" once the concrete entries have left
+    // the ledger through a confirmed ACK. ACK rejection, recovery debt, and
+    // non-terminal prefix gaps all retain server custody and must surface as
+    // "retry" so callers (e.g. replay-fence cleanup) do not treat the
+    // delivery as durably finished.
+    const committed = await this.ackThrough(chatId, throughEntryId, "finish_turn", { requireTerminalPrefix: true });
+    return committed ? "settled" : "retry";
   }
 
   async terminalRejected(
@@ -451,11 +462,11 @@ export class InboxDeliveryCoordinator {
     throughEntryId: number,
     reason: string,
     opts: { requireTerminalPrefix?: boolean; requestRecoveryOnAckFailure?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const ledger = this.ledgers.get(chatId);
-    if (!ledger) return;
-    const prev = ledger.ackQueue ?? Promise.resolve();
-    const next = prev.catch(() => undefined).then(() => this.ackThroughNow(chatId, throughEntryId, reason, opts));
+    if (!ledger) return false;
+    const prev: Promise<unknown> = ledger.ackQueue ?? Promise.resolve(false);
+    const next = prev.catch(() => false).then(() => this.ackThroughNow(chatId, throughEntryId, reason, opts));
     const queueMarker = next.then(
       () => {},
       () => {},
@@ -463,7 +474,7 @@ export class InboxDeliveryCoordinator {
     ledger.ackQueue = queueMarker;
     this.emitWorkChanged(chatId);
     try {
-      await next;
+      return await next;
     } finally {
       if (ledger.ackQueue === queueMarker) {
         ledger.ackQueue = null;
@@ -478,20 +489,20 @@ export class InboxDeliveryCoordinator {
     throughEntryId: number,
     reason: string,
     opts: { requireTerminalPrefix?: boolean; requestRecoveryOnAckFailure?: boolean },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const ledger = this.ledgers.get(chatId);
-    if (!ledger || ledger.entries.length === 0) return;
+    if (!ledger || ledger.entries.length === 0) return false;
     if (ledger.recoveryDebt !== "none") {
       this.config.log.debug(
         { chatId, throughEntryId, reason },
         "ACK-through deferred because chat recovery is required",
       );
-      return;
+      return false;
     }
     const index = ledger.entries.findIndex((tracked) => tracked.entryId === throughEntryId);
     if (index < 0) {
       this.config.log.warn({ chatId, throughEntryId, reason }, "attempt completion ignored for untracked inbox entry");
-      return;
+      return false;
     }
 
     const ackPrefix = ledger.entries.slice(0, index + 1);
@@ -506,7 +517,7 @@ export class InboxDeliveryCoordinator {
         "ACK-through blocked because delivery prefix has non-terminal entries",
       );
       await this.markRecoveryDebt(chatId, `${reason}:non_terminal_prefix_gap`);
-      return;
+      return false;
     }
     let changed = false;
     for (const tracked of ackPrefix) {
@@ -533,11 +544,11 @@ export class InboxDeliveryCoordinator {
       void this.markRecoveryDebt(chatId, `${reason}:ack_failed`, {
         requestNow: opts.requestRecoveryOnAckFailure ?? true,
       });
-      return;
+      return false;
     }
 
     const current = this.ledgers.get(chatId);
-    if (!current) return;
+    if (!current) return false;
     const committed = current.entries.filter((tracked) => tracked.entryId <= throughEntryId);
     current.entries = current.entries.filter((tracked) => tracked.entryId > throughEntryId);
     for (const tracked of committed) {
@@ -551,6 +562,7 @@ export class InboxDeliveryCoordinator {
     }
     this.cleanupLedger(chatId);
     this.emitWorkChanged(chatId);
+    return true;
   }
 
   private async markRecoveryDebt(chatId: string, reason: string, opts: { requestNow?: boolean } = {}): Promise<void> {

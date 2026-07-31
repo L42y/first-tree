@@ -1,8 +1,22 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index 2d300d14b5e5375b0c4a90cc578341b62983f07b..f327220c02a1cdcacd9ef4edf8abca9aeb458ca1 100644
+index 2d300d14b5e5375b0c4a90cc578341b62983f07b..0800efda1a4390c2261ba7b4f695e56500519fe9 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -133036,6 +133036,7 @@ var Session$1 = class {
+@@ -74311,7 +74311,12 @@ function safeEmitLive(emit, event) {
+ 	let maybePromise;
+ 	try {
+ 		maybePromise = emit(event);
+-	} catch {
++	} catch (error) {
++		// Botiverse mirror: host lifecycle fences (e.g. First Tree's replay
++		// fence) mark errors that must abort the in-flight tool dispatch
++		// instead of being swallowed, so a failed durable write can never let
++		// an unsafe tool effect proceed.
++		if (error && typeof error === "object" && error.__firstTreeReplayFenceBlock === true) throw error;
+ 		return;
+ 	}
+ 	if (maybePromise !== void 0 && maybePromise !== null && typeof maybePromise.then === "function" && typeof maybePromise.catch === "function") maybePromise.catch(() => {});
+@@ -133036,6 +133041,7 @@ var Session$1 = class {
  		this.agents.clear();
  		const { warning } = agents["main"] === void 0 ? { warning: void 0 } : await this.resumeAgent("main");
  		const main = this.getReadyAgent("main");
@@ -10,7 +24,7 @@ index 2d300d14b5e5375b0c4a90cc578341b62983f07b..f327220c02a1cdcacd9ef4edf8abca9a
  		const profile = DEFAULT_AGENT_PROFILES["agent"];
  		if (main !== void 0 && profile !== void 0 && main.config.systemPrompt === "") await this.bootstrapAgentProfile(main, profile);
  		await this.triggerSessionStart("resume");
-@@ -153788,7 +153789,8 @@ var KimiCore = class {
+@@ -153788,7 +153794,8 @@ var KimiCore = class {
  			pluginCommands,
  			appVersion: this.appVersion,
  			additionalDirs,
