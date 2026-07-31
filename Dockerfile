@@ -5,7 +5,10 @@ WORKDIR /app
 
 # Copy package manifests for dependency layer caching. Only the packages
 # needed to build + run the SaaS server image: shared, server, web.
+# pnpm-workspace.yaml declares patchedDependencies, so the patch files must
+# be present before any pnpm install.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY patches/ patches/
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 COPY packages/web/package.json packages/web/

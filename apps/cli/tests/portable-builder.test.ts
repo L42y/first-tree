@@ -37,6 +37,7 @@ import {
   portableBuildRoots,
   portableTarCreateArgs,
   readWorkspacePackageManager,
+  readWorkspacePatchedDependencies,
   relativizeInternalSymlinks,
   renderInstallerForChannel,
   resolveNodeVersion,
@@ -304,6 +305,47 @@ describe("portable builder helpers", () => {
     expect(() => readWorkspacePackageManager({ packageManager: "pnpm@^10" })).toThrow(/exact pnpm version/);
     expect(() => readWorkspacePackageManager({})).toThrow(/exact pnpm version/);
     expect(readWorkspacePackageManager()).toMatch(/^pnpm@\d+\.\d+\.\d+$/);
+  });
+
+  it("carries workspace patchedDependencies into the portable app manifest", () => {
+    const patched = readWorkspacePatchedDependencies();
+    // The Kimi SDK resume-drain patch must reach the synthetic portable app;
+    // without it the app's generated lockfile resolves the unpatched SDK.
+    expect(patched).toHaveProperty(
+      "@botiverse/kimi-code-sdk@0.26.0-botiverse.2",
+      "patches/@botiverse__kimi-code-sdk@0.26.0-botiverse.2.patch",
+    );
+    for (const patchPath of Object.values(patched)) {
+      expect(patchPath.startsWith("patches/")).toBe(true);
+      expect(existsSync(join(REPO_ROOT, patchPath))).toBe(true);
+    }
+
+    const appPackage = packageJsonForApp({
+      channelConfig: { packageName: "first-tree", binName: "first-tree", aliasName: "ft" },
+      version: "1.2.3",
+      dependencies: { commander: "13.1.0" },
+      sourcePackage: {
+        description: "First Tree CLI",
+        license: "MIT",
+        repository: { type: "git", url: "https://example.test/first-tree.git" },
+        engines: { node: ">=22.13" },
+      },
+      patchedDependencies: patched,
+    });
+    expect(appPackage.pnpm).toEqual({ patchedDependencies: patched });
+
+    const unpatched = packageJsonForApp({
+      channelConfig: { packageName: "first-tree", binName: "first-tree", aliasName: "ft" },
+      version: "1.2.3",
+      dependencies: { commander: "13.1.0" },
+      sourcePackage: {
+        description: "First Tree CLI",
+        license: "MIT",
+        repository: { type: "git", url: "https://example.test/first-tree.git" },
+        engines: { node: ">=22.13" },
+      },
+    });
+    expect(unpatched).not.toHaveProperty("pnpm");
   });
 
   it("fails when a portable dependency is missing from locked pnpm output", () => {

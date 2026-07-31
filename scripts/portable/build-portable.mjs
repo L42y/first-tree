@@ -449,12 +449,38 @@ export function readWorkspacePackageManager(rootPackage = readJson(join(REPO_ROO
   return value;
 }
 
+// The workspace pins dependency patches in pnpm-workspace.yaml (for example
+// the Kimi SDK resume-drain patch). The synthetic portable app is a single
+// package without that workspace file, so its generated lockfile would
+// silently resolve the unpatched registry artifact. Extract the block with a
+// narrow indentation parse (this script must stay dependency-free) and inject
+// it into the app's own package.json so both portable install steps apply the
+// same patches.
+export function readWorkspacePatchedDependencies(workspaceYamlPath = join(REPO_ROOT, "pnpm-workspace.yaml")) {
+  const text = readFileSync(workspaceYamlPath, "utf8");
+  const patched = {};
+  let inBlock = false;
+  for (const line of text.split("\n")) {
+    if (!inBlock) {
+      if (/^patchedDependencies:\s*$/.test(line)) inBlock = true;
+      continue;
+    }
+    if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
+    if (!/^[ \t]+\S/.test(line)) break;
+    const match = line.match(/^\s+(?:'([^']+)'|"([^"]+)"|([^":]+)):\s*(?:'([^']+)'|"([^"]+)"|(\S+))\s*$/);
+    if (!match) fail(`unparseable patchedDependencies entry in ${workspaceYamlPath}: ${line}`);
+    patched[match[1] ?? match[2] ?? match[3]] = match[4] ?? match[5] ?? match[6];
+  }
+  return patched;
+}
+
 export function packageJsonForApp({
   channelConfig,
   version,
   dependencies,
   sourcePackage = readJson(join(CLI_ROOT, "package.json")),
   packageManager = null,
+  patchedDependencies = {},
 }) {
   return {
     name: channelConfig.packageName,
@@ -470,6 +496,7 @@ export function packageJsonForApp({
       [channelConfig.aliasName]: "./cli/index.mjs",
     },
     dependencies,
+    ...(Object.keys(patchedDependencies).length > 0 ? { pnpm: { patchedDependencies } } : {}),
   };
 }
 
@@ -653,14 +680,21 @@ async function prepareAppTemplate({ channel, channelConfig, version }) {
   cpSync(join(CLI_ROOT, "README.md"), join(appDir, "README.md"));
   cpSync(join(CLI_ROOT, "LICENSE"), join(appDir, "LICENSE"));
   copyPruneScripts(appDir);
+  const patchedDependencies = readWorkspacePatchedDependencies();
+  if (Object.keys(patchedDependencies).length > 0) {
+    cpSync(join(REPO_ROOT, "patches"), join(appDir, "patches"), { recursive: true });
+  }
   writeJson(
     join(appDir, "package.json"),
-    packageJsonForApp({ channelConfig, version, dependencies, sourcePackage, packageManager }),
+    packageJsonForApp({ channelConfig, version, dependencies, sourcePackage, packageManager, patchedDependencies }),
   );
   cpSync(join(REPO_ROOT, "pnpm-lock.yaml"), join(appDir, "pnpm-lock.yaml"));
 
   run("pnpm", PORTABLE_LOCKFILE_INSTALL_ARGS, { cwd: appDir });
   run("pnpm", PORTABLE_NODE_MODULES_INSTALL_ARGS, { cwd: appDir });
+  // The patches only matter while pnpm materializes node_modules; the
+  // shipped app must not carry them.
+  rmSync(join(appDir, "patches"), { recursive: true, force: true });
   for (const script of [
     "scripts/prune-codex-runtime-binary.mjs",
     "scripts/prune-claude-runtime-binary.mjs",
