@@ -146,6 +146,7 @@ function asRuntimeProvider(provider: string): RuntimeProvider | null {
     provider === "claude-code-tui" ||
     provider === "codex" ||
     provider === "cursor" ||
+    provider === "grok" ||
     provider === "kimi-code" ||
     provider === "opencode"
   ) {
@@ -171,6 +172,7 @@ function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null 
   // Same central-switch guard as the TUI line: a stale `ok` snapshot from a
   // daemon must not auto-pick a provider that has since been disabled.
   if (isRuntimeProviderEnabled("cursor") && caps.cursor?.state === "ok") return "cursor";
+  if (isRuntimeProviderEnabled("grok") && caps.grok?.state === "ok") return "grok";
   if (isRuntimeProviderEnabled("opencode") && caps.opencode?.state === "ok") return "opencode";
   // Any other provider (incl. one still disabled in a stale snapshot) is only
   // auto-picked when enabled.
@@ -188,6 +190,7 @@ function prettyRuntimeLabel(provider: RuntimeProvider): string {
   if (provider === "claude-code-tui") return "Claude Code CLI";
   if (provider === "codex") return "Codex";
   if (provider === "cursor") return "Cursor";
+  if (provider === "grok") return "Grok Build";
   if (provider === "kimi-code") return "Kimi Code";
   if (provider === "opencode") return "OpenCode";
   return provider;

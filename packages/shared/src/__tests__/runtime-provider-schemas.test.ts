@@ -25,6 +25,7 @@ describe("runtimeProviderSchema", () => {
     expect(runtimeProviderSchema.parse("claude-code-tui")).toBe("claude-code-tui");
     expect(runtimeProviderSchema.parse("codex")).toBe("codex");
     expect(runtimeProviderSchema.parse("cursor")).toBe("cursor");
+    expect(runtimeProviderSchema.parse("grok")).toBe("grok");
     expect(runtimeProviderSchema.parse("kimi-code")).toBe("kimi-code");
     expect(runtimeProviderSchema.parse("opencode")).toBe("opencode");
   });
@@ -39,6 +40,7 @@ describe("runtimeProviderSchema", () => {
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CLAUDE_CODE_TUI)).toBe("claude-code-tui");
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CODEX)).toBe("codex");
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CURSOR)).toBe("cursor");
+    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.GROK)).toBe("grok");
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.KIMI_CODE)).toBe("kimi-code");
     expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.OPENCODE)).toBe("opencode");
   });
@@ -51,6 +53,7 @@ describe("runtimeProviderSchema", () => {
     expect(isRuntimeProviderEnabled("claude-code")).toBe(true);
     expect(isRuntimeProviderEnabled("codex")).toBe(true);
     expect(isRuntimeProviderEnabled("cursor")).toBe(true);
+    expect(isRuntimeProviderEnabled("grok")).toBe(true);
     expect(isRuntimeProviderEnabled("kimi-code")).toBe(true);
     expect(isRuntimeProviderEnabled("opencode")).toBe(true);
     expect(isRuntimeProviderEnabled("claude-code-tui")).toBe(false);

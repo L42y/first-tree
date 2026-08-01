@@ -63,6 +63,7 @@ const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = {
   "claude-code-tui": ".claude/skills",
   codex: ".agents/skills",
   cursor: ".cursor/skills",
+  grok: ".grok/skills",
   "kimi-code": ".kimi-code/skills",
   opencode: ".opencode/skills",
 };

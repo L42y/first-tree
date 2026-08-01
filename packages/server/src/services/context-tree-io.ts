@@ -42,6 +42,11 @@ const CLAUDE_WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"
 // collide with claude's capitalized tools or codex's `command`/`file_change`.
 const CURSOR_READ_TOOLS = new Set(["read"]);
 const CURSOR_WRITE_TOOLS = new Set(["edit", "write"]);
+// Grok Build's handler-emitted tool names (ACP tool_call titles are the raw
+// tool ids). Interpreted ONLY when `runtimeProvider === "grok"` — same
+// no-collision reasoning as cursor's lowercase names above.
+const GROK_READ_TOOLS = new Set(["read_file"]);
+const GROK_WRITE_TOOLS = new Set(["write", "search_replace"]);
 const KIMI_READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 const KIMI_WRITE_TOOLS = new Set(["Write", "Edit"]);
 const OPENCODE_READ_TOOLS = new Set(["read", "grep", "glob"]);
@@ -60,6 +65,9 @@ const CONTEXT_TREE_IO_TOOL_NAMES = [
   "edit",
   "file_change",
   "read",
+  "read_file",
+  "run_terminal_cmd",
+  "search_replace",
   "shell",
   "write",
   "bash",
@@ -203,6 +211,7 @@ function isShellTool(runtimeProvider: string, toolName: string): boolean {
   return (
     (runtimeProvider === "codex" && toolName === "command") ||
     (runtimeProvider === "cursor" && toolName === "shell") ||
+    (runtimeProvider === "grok" && toolName === "run_terminal_cmd") ||
     (runtimeProvider === "kimi-code" && toolName === "Bash") ||
     (runtimeProvider === "opencode" && toolName === "bash") ||
     (isClaudeRuntime(runtimeProvider) && toolName === "Bash")
@@ -240,6 +249,9 @@ function skippedDecisionFastPathForNoRefs(
   if (runtimeProvider === "cursor" && (CURSOR_READ_TOOLS.has(toolName) || CURSOR_WRITE_TOOLS.has(toolName))) {
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
+  if (runtimeProvider === "grok" && (GROK_READ_TOOLS.has(toolName) || GROK_WRITE_TOOLS.has(toolName))) {
+    return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
+  }
   if (runtimeProvider === "kimi-code" && (KIMI_READ_TOOLS.has(toolName) || KIMI_WRITE_TOOLS.has(toolName))) {
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
@@ -275,6 +287,12 @@ function deriveEventIo(event: SessionEvent, runtimeProvider: string): EventIoDer
   }
   if (runtimeProvider === "cursor" && CURSOR_WRITE_TOOLS.has(toolName)) {
     return { action: "write", source: "cursor_write_tool" };
+  }
+  if (runtimeProvider === "grok" && GROK_READ_TOOLS.has(toolName)) {
+    return { action: "read", source: "grok_read_tool" };
+  }
+  if (runtimeProvider === "grok" && GROK_WRITE_TOOLS.has(toolName)) {
+    return { action: "write", source: "grok_write_tool" };
   }
   if (runtimeProvider === "kimi-code" && KIMI_READ_TOOLS.has(toolName)) {
     return { action: "read", source: "kimi_read_tool" };

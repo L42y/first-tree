@@ -48,6 +48,8 @@ function providerLabel(provider: RuntimeProvider): string {
       return "Claude Code";
     case "cursor":
       return "Cursor";
+    case "grok":
+      return "Grok Build";
     case "kimi-code":
       return "Kimi Code";
     case "opencode":

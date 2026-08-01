@@ -1,5 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { CODEX_EFFORT_OPTIONS } from "../reasoning-effort-section.js";
+import { CODEX_EFFORT_OPTIONS, EFFORT_HELP_BY_PROVIDER } from "../reasoning-effort-section.js";
+
+describe("grok reasoning effort help copy", () => {
+  it("describes next-turn existing-session semantics (set_model), never new-sessions-only", () => {
+    const copy = EFFORT_HELP_BY_PROVIDER.grok;
+    expect(copy).not.toContain("Applies to new sessions");
+    expect(copy).toContain("next turn");
+    expect(copy).toContain("existing sessions");
+    expect(copy).toContain("session/set_model");
+  });
+
+  it("unset removes only the effort override — it does not imply clearing an explicit model", () => {
+    const copy = EFFORT_HELP_BY_PROVIDER.grok;
+    expect(copy).toContain("removes only the effort override");
+    expect(copy).toContain("explicit model is still re-applied");
+    expect(copy).toContain("with model also unset");
+  });
+
+  it("states the re-applied AND confirmed semantics for an explicit effort", () => {
+    const copy = EFFORT_HELP_BY_PROVIDER.grok;
+    expect(copy).toContain("re-applied AND confirmed");
+    expect(copy).toContain("does not run if the provider does not confirm");
+  });
+});
 
 describe("Codex reasoning effort options", () => {
   it("orders the provider-native levels through max and ultra", () => {

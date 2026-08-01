@@ -79,6 +79,7 @@ describe("hasNonOkProvider", () => {
         "claude-code": okEntry(),
         codex: okEntry(),
         cursor: okEntry(),
+        grok: okEntry(),
         "kimi-code": okEntry(),
         opencode: okEntry(),
       }),

@@ -253,6 +253,48 @@ describe("Admin agent-config API (Step 2)", () => {
     expect(effort.json<{ error: string }>().error).toContain("not supported");
   });
 
+  it("accepts reasoningEffort and rejects serviceTier writes for grok agents", async () => {
+    const app = getApp();
+    const req = await authedRequest(app);
+    const agent = await (await seedAgentFactory(app))({
+      name: `cfg-grok-${crypto.randomUUID().slice(0, 8)}`,
+      type: "agent",
+      runtimeProvider: "grok",
+    });
+
+    // The grok payload variant HAS an effort channel — a fresh agent defaults
+    // to the "" inherit sentinel and a valid value is accepted and persisted.
+    const before = await req("GET", `/api/v1/agents/${agent.uuid}/config`);
+    expect(before.json().payload).toMatchObject({ kind: "grok", reasoningEffort: "" });
+
+    const ok = await req("PATCH", `/api/v1/agents/${agent.uuid}/config`, {
+      expectedVersion: 1,
+      payload: { reasoningEffort: "high" },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().payload.reasoningEffort).toBe("high");
+    await app.configService.flush(agent.uuid);
+
+    const after = await req("GET", `/api/v1/agents/${agent.uuid}/config`);
+    expect(after.json().payload.reasoningEffort).toBe("high");
+
+    // A codex-only value is rejected: the merged payload fails the grok
+    // variant's enum on the tagged-union re-parse.
+    const badEffort = await req("PATCH", `/api/v1/agents/${agent.uuid}/config`, {
+      expectedVersion: 2,
+      payload: { reasoningEffort: "xhigh" },
+    });
+    expect(badEffort.statusCode).toBe(400);
+
+    // serviceTier is codex-only — grok has no such channel.
+    const badTier = await req("PATCH", `/api/v1/agents/${agent.uuid}/config`, {
+      expectedVersion: 2,
+      payload: { serviceTier: "fast" },
+    });
+    expect(badTier.statusCode).toBe(400);
+    expect(badTier.json<{ error: string }>().error).toContain("only supported by the Codex");
+  });
+
   it("persists model-dependent max and ultra values for codex agents", async () => {
     const app = getApp();
     const req = await authedRequest(app);

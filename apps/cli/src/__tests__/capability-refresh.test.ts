@@ -36,6 +36,7 @@ const allOk = (): ClientCapabilities => ({
   "claude-code-tui": ok(),
   codex: ok(),
   cursor: ok(),
+  grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
 });
@@ -45,6 +46,7 @@ const codexMissing = (): ClientCapabilities => ({
   "claude-code-tui": ok(),
   codex: missing(),
   cursor: ok(),
+  grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
 });
@@ -74,6 +76,7 @@ const codexPendingSnapshot = (): ClientCapabilities => ({
   "claude-code-tui": ok(),
   codex: codexPending(),
   cursor: ok(),
+  grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
 });
@@ -84,6 +87,7 @@ const codexUnauthSnapshot = (): ClientCapabilities => ({
   "claude-code-tui": ok(),
   codex: codexUnauth(),
   cursor: ok(),
+  grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
 });

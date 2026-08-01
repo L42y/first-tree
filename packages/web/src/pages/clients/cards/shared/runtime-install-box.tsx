@@ -1,13 +1,7 @@
 import type { CapabilityEntry, RuntimeProvider } from "@first-tree/shared";
 import type { ReactNode } from "react";
 import { InlineCommand } from "./inline-command.js";
-import {
-  buildInstallCommand,
-  CURSOR_INSTALL_COMMAND,
-  PROVIDER_LABEL,
-  PROVIDER_LOGIN_COMMAND,
-  PROVIDER_NPM_PACKAGE,
-} from "./providers.js";
+import { buildInstallCommand, PROVIDER_LABEL, PROVIDER_LOGIN_COMMAND, providerInstallCommand } from "./providers.js";
 
 type RuntimeInstallBoxProps = {
   provider: RuntimeProvider;
@@ -60,7 +54,7 @@ export function RuntimeInstallBox({ provider, entry, hostname, os }: RuntimeInst
       <p className="text-caption" style={{ margin: 0, color: "var(--fg-3)" }}>
         {renderHeadlineWithCode(headline)}
       </p>
-      <InlineCommand command={command} ariaLabel={`${label} setup command`} />
+      {command !== null && <InlineCommand command={command} ariaLabel={`${label} setup command`} />}
     </div>
   );
 }
@@ -89,14 +83,26 @@ function renderHeadlineWithCode(text: string): ReactNode {
 /**
  * Pure helper — returns `{headline, command}` for a given capability
  * entry. Extracted for testability so the install-box's per-state
- * branching is unit-tested without DOM.
+ * branching is unit-tested without DOM. `command` is null when the
+ * platform makes installation impossible (grok on Windows): the caller
+ * renders the status headline only, never an install command.
  */
 export function installBoxView(
   entry: CapabilityEntry | null,
   provider: RuntimeProvider,
   hostname: string,
   os?: string | null,
-): { headline: string; command: string } {
+): { headline: string; command: string | null } {
+  // Grok Build is macOS/Linux-only in V1. The probe reports this as state
+  // `error` on win32; rendering the generic probe-error branch would print
+  // the official install command in a loop for a runtime First Tree does
+  // not support on this platform. Fail closed with a status instead.
+  if (provider === "grok" && (os === "win32" || os === "windows")) {
+    return {
+      headline: `${PROVIDER_LABEL[provider]} is not supported on Windows in V1 (macOS/Linux only). Nothing to install on ${hostname}.`,
+      command: null,
+    };
+  }
   if (!entry || entry.state === "missing") {
     // `claude-code-tui` needs the `claude` CLI AND tmux (>= 3.0); name the tmux
     // requirement explicitly so the box isn't read as a CLI-only install (the
@@ -108,10 +114,9 @@ export function installBoxView(
     return { headline, command: buildInstallCommand(provider, os) };
   }
   if (entry.state === "error") {
-    const npmPackage = PROVIDER_NPM_PACKAGE[provider];
     return {
       headline: `${PROVIDER_LABEL[provider]} probe failed: ${entry.error ?? "unknown error"}. Reinstall on ${hostname}:`,
-      command: npmPackage ? `npm install -g ${npmPackage}` : CURSOR_INSTALL_COMMAND,
+      command: providerInstallCommand(provider),
     };
   }
   // `ok` should not reach here — the Setup-incomplete card filters such

@@ -3,6 +3,7 @@ import {
   formatAuthHint,
   isClaudeAuthError,
   isCodexAuthError,
+  isGrokAuthError,
   isOpenCodeAuthError,
 } from "../handlers/auth-error-hint.js";
 
@@ -98,6 +99,35 @@ describe("isClaudeAuthError", () => {
   });
 });
 
+describe("isGrokAuthError", () => {
+  it("matches every plausible logged-out Grok Build wording", () => {
+    const authMessages = [
+      "Error: not logged in. Run `grok login` to authenticate.",
+      "not authenticated — please run grok login",
+      "Error: authentication required",
+      "Provider returned 401 Unauthorized",
+      "Failed to read credentials from ~/.grok/auth.json",
+    ];
+    for (const msg of authMessages) {
+      expect(isGrokAuthError(msg), `expected auth-error: ${msg}`).toBe(true);
+    }
+  });
+
+  it("does NOT match unrelated failures (capacity / transport / input)", () => {
+    const nonAuth = [
+      "HTTP 429 Too Many Requests",
+      "rate limit exceeded",
+      "resource has been exhausted",
+      "fetch failed",
+      "context length exceeded",
+      "",
+    ];
+    for (const msg of nonAuth) {
+      expect(isGrokAuthError(msg), `expected NOT auth-error: ${msg}`).toBe(false);
+    }
+  });
+});
+
 describe("isOpenCodeAuthError", () => {
   it("matches provider-owned credential failures without treating capacity failures as auth", () => {
     expect(isOpenCodeAuthError("Provider returned 401 Unauthorized: invalid API key")).toBe(true);
@@ -127,6 +157,15 @@ describe("formatAuthHint", () => {
     expect(hint).toContain("Anthropic");
     expect(hint).toContain("not First Tree's");
     expect(hint).toContain("authentication_failed");
+  });
+
+  it("targets `grok login` for the grok runtime and names Grok Build", () => {
+    const hint = formatAuthHint("grok", "Error: not logged in. Run `grok login` to authenticate.");
+    expect(hint).toContain("grok");
+    expect(hint).toContain("`grok login`");
+    expect(hint).toContain("Grok Build");
+    expect(hint).toContain("not First Tree's");
+    expect(hint).toContain("not logged in");
   });
 
   it("keeps OpenCode authentication host-local and points at the provider-owned login", () => {

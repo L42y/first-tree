@@ -8,6 +8,7 @@ import {
   DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_CURSOR_RUNTIME_CONFIG_PAYLOAD,
+  DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD,
   defaultRuntimeConfigPayload,
@@ -255,6 +256,40 @@ describe("agent runtime config — cursor variant", () => {
     // effort field into a provider that has no effort channel.
     const parsed = agentRuntimeConfigPayloadSchema.parse({ kind: "cursor", reasoningEffort: "high" });
     expect("reasoningEffort" in parsed).toBe(false);
+  });
+});
+
+/**
+ * Grok Build is a free-form-model provider WITH a separate effort channel:
+ * `model` is an exact provider-native id passed through verbatim (empty =
+ * omit `--model`, Grok picks its local default), and `reasoningEffort` maps
+ * to the CLI's `--effort <low|medium|high>` flag with `""` as the inherit
+ * sentinel (the flag is omitted).
+ */
+describe("agent runtime config — grok variant", () => {
+  it("DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD is kind=grok with an empty model and the effort inherit sentinel", () => {
+    expect(DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD).toMatchObject({ kind: "grok", model: "", reasoningEffort: "" });
+  });
+
+  it("defaultRuntimeConfigPayload('grok') selects the grok variant", () => {
+    expect(defaultRuntimeConfigPayload("grok")).toMatchObject({ kind: "grok", model: "", reasoningEffort: "" });
+  });
+
+  it("schema accepts an explicit grok payload with a free-form model id and a supported effort", () => {
+    const parsed = agentRuntimeConfigPayloadSchema.parse({
+      kind: "grok",
+      model: "grok-4.5",
+      reasoningEffort: "medium",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+    });
+    expect(parsed).toMatchObject({ kind: "grok", model: "grok-4.5", reasoningEffort: "medium" });
+  });
+
+  it("schema rejects effort values outside the Grok CLI's --effort channel", () => {
+    expect(() => agentRuntimeConfigPayloadSchema.parse({ kind: "grok", reasoningEffort: "max" })).toThrow();
+    expect(() => agentRuntimeConfigPayloadSchema.parse({ kind: "grok", reasoningEffort: "xhigh" })).toThrow();
   });
 });
 

@@ -168,6 +168,7 @@ describe("deriveRuntimeAuthView", () => {
     expect(providerSupportsInProductAuth("codex")).toBe(true);
     expect(providerSupportsInProductAuth("claude-code")).toBe(true);
     expect(providerSupportsInProductAuth("cursor")).toBe(true);
+    expect(providerSupportsInProductAuth("grok")).toBe(true);
     expect(providerSupportsInProductAuth("claude-code-tui")).toBe(false);
   });
 

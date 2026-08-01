@@ -64,6 +64,17 @@ const CURSOR_CATALOG: ProviderModelCatalog = {
   source: "provider-cli",
 };
 
+const GROK_CATALOG: ProviderModelCatalog = {
+  provider: "grok",
+  models: [
+    { id: "grok-4-heavy", label: "Grok 4 Heavy" },
+    { id: "grok-code-fast-1", label: "Grok Code Fast", hint: "fast", isDefault: true },
+  ],
+  defaultModelId: "grok-code-fast-1",
+  fetchedAt: "2026-07-17T00:00:00.000Z",
+  source: "provider-cli",
+};
+
 describe("buildCatalogModelOptions", () => {
   it("lists unset (with local default hint), discovered models, current custom value, and the custom entry", () => {
     const items = buildCatalogModelOptions(CURSOR_CATALOG, "my-account-model");
@@ -313,5 +324,50 @@ describe("ModelSection — daemon catalog", () => {
     });
     // Empty string = no override → the host provider's local default applies.
     expect(saved).toEqual([""]);
+  });
+
+  it("renders the grok catalog in the select, marking the local default", async () => {
+    providerModelsMocks.getProviderModels.mockResolvedValue(GROK_CATALOG);
+    const el = await renderWithQuery(
+      <ModelSection value="grok-4-heavy" onChange={() => {}} provider="grok" clientId="c1" />,
+    );
+
+    await flushUntil(
+      () => el.querySelector('button[aria-label="Model"]')?.textContent?.includes("Grok 4 Heavy") ?? false,
+    );
+    const trigger = el.querySelector<HTMLButtonElement>('button[aria-label="Model"]');
+    expect(trigger?.textContent).toContain("Grok 4 Heavy");
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("(unset — inherits local)");
+    expect(body).toContain("default: grok-code-fast-1");
+    expect(body).toContain("Grok Code Fast");
+    expect(body).toContain("Custom model id…");
+  });
+
+  it("saves a grok catalog pick verbatim", async () => {
+    providerModelsMocks.getProviderModels.mockResolvedValue(GROK_CATALOG);
+    const saved: string[] = [];
+    const el = await renderWithQuery(
+      <ModelSection value="" onChange={(v) => saved.push(v)} provider="grok" clientId="c1" />,
+    );
+
+    await flushUntil(() => {
+      const b = el.querySelector<HTMLButtonElement>('button[aria-label="Model"]');
+      return !!b && !b.disabled;
+    });
+    await act(async () => {
+      el.querySelector('button[aria-label="Model"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const option = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((b) =>
+      b.textContent?.includes("Grok Code Fast"),
+    );
+    await act(async () => {
+      option?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(saved).toEqual(["grok-code-fast-1"]);
   });
 });
