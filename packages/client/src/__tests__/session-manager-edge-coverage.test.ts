@@ -53,6 +53,7 @@ type SessionManagerInternals = {
   terminatePersistFailures: Set<string>;
   pendingTeardowns: Map<string, Set<AgentHandler>>;
   routeProducers: Map<string, Set<Promise<void>>>;
+  registry: SessionRegistry | null;
   pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
   sessionRuntimeStates: Map<string, RuntimeState>;
   currentTrigger: Map<string, { messageId: string; senderId: string }>;
@@ -4685,6 +4686,169 @@ describe("SessionManager edge coverage", () => {
     expect(i.pendingTeardowns.has(chatId)).toBe(false);
 
     await dispatch;
+  });
+
+  it("durably deletes the disk mapping on Reset after a terminal resume failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-reset-terminal-401-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-reset-terminal-401";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "old-provider-thread",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "suspended",
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const resumedHandler = handler({
+      resume: vi.fn().mockRejectedValue({ name: "ClientUserMismatchError", message: "401 unauthorized" }),
+    });
+    const sm = makeManager({ handlers: [resumedHandler], registryPath });
+    const i = internals(sm);
+    expect(sm.getEvictedChatIds()).toContain(chatId);
+
+    // Production path: dispatch drives the evicted resume, which fails
+    // terminally (provider 401) — terminal cleanup deletes the entry but
+    // leaves memory with no session and no evicted mapping.
+    await sm.dispatch(mockEntry({ id: 150, chatId, messageId: "msg-terminal-401" }));
+    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    expect(i.evictedMappings.has(chatId)).toBe(false);
+
+    // The debounced write may not have landed: the disk still shows the old
+    // thread when the Reset arrives (memory is empty). Even so, the
+    // terminate must durably flush BEFORE it resolves.
+    await sm.handleCommand(chatId, "session:terminate");
+    const persisted = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
+    expect(persisted.entries).toEqual({});
+
+    // A fresh manager over the same file reloads nothing, and the next real
+    // dispatch starts a FRESH provider thread — no resume of the old one.
+    const freshHandler = handler({ start: vi.fn().mockResolvedValue("fresh-thread") });
+    const reloaded = makeManager({ handlers: [freshHandler], registryPath });
+    expect(reloaded.getEvictedChatIds()).toEqual([]);
+    await reloaded.dispatch(mockEntry({ id: 151, chatId, messageId: "msg-after-reset" }));
+    expect(freshHandler.start).toHaveBeenCalledTimes(1);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(resumedHandler.resume).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+    await reloaded.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects a no-work terminate when the durable flush fails and converges on retry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-reset-nowork-flush-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-reset-nowork-flush";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "old-provider-thread",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "suspended",
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const sm = makeManager({ registryPath });
+    const i = internals(sm);
+    // Simulate the QA state: the mapping exists ONLY on disk (memory empty).
+    i.evictedMappings.delete(chatId);
+
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+
+    // No session/mapping/work/debt/producer in memory — the no-work path
+    // must still flush, and its failure must reject (agent-slot: applied:false).
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    const persistedBeforeRetry = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+      entries: Record<string, unknown>;
+    };
+    expect(Object.keys(persistedBeforeRetry.entries)).toContain(chatId);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Retry: the flush succeeds, the disk deletion is durable, and a reload
+    // does not resurrect the mapping.
+    await sm.handleCommand(chatId, "session:terminate");
+    const persistedAfterRetry = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+      entries: Record<string, unknown>;
+    };
+    expect(persistedAfterRetry.entries).toEqual({});
+    const reloaded = makeManager({ registryPath });
+    expect(reloaded.getEvictedChatIds()).toEqual([]);
+
+    await sm.shutdown();
+    await reloaded.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("preserves other chats on Reset and cancels the pending debounced snapshot", async () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "ft-reset-debounce-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatReset = "chat-reset-debounce";
+    const chatKeep = "chat-keep-debounce";
+    const writeEntries = (entries: Record<string, string>) =>
+      writeFileSync(
+        registryPath,
+        JSON.stringify({
+          version: 1,
+          entries: Object.fromEntries(
+            Object.entries(entries).map(([id, claudeSessionId]) => [
+              id,
+              { claudeSessionId, lastActivity: new Date(1_000).toISOString(), status: "suspended" },
+            ]),
+          ),
+        }),
+        "utf-8",
+      );
+    writeEntries({ [chatReset]: "thread-reset", [chatKeep]: "thread-keep" });
+    const sm = makeManager({ registryPath });
+    const i = internals(sm);
+    const registry = i.registry;
+    if (!registry) throw new Error("registry missing");
+
+    // A pending debounced snapshot that still CONTAINS the mapping being
+    // reset — scheduled before the terminate, as a suspend-time write would
+    // have been — must not resurrect the deletion after the Reset.
+    registry.save(
+      new Map([
+        [chatReset, { claudeSessionId: "thread-reset", lastActivity: 1_000, status: "suspended" }],
+        [chatKeep, { claudeSessionId: "thread-keep", lastActivity: 1_000, status: "suspended" }],
+      ]),
+    );
+
+    await sm.handleCommand(chatReset, "session:terminate");
+
+    const readEntries = () =>
+      (
+        JSON.parse(readFileSync(registryPath, "utf-8")) as {
+          entries: Record<string, { claudeSessionId: string }>;
+        }
+      ).entries;
+    expect(Object.keys(readEntries())).toEqual([chatKeep]);
+    expect(readEntries()[chatKeep]?.claudeSessionId).toBe("thread-keep");
+
+    // Fire any surviving debounce timer: the stale snapshot must not
+    // rewrite the deleted mapping back to disk.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(Object.keys(readEntries())).toEqual([chatKeep]);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("keeps chats with unresolved teardown debt in the held set", async () => {

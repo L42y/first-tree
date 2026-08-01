@@ -895,31 +895,14 @@ export class SessionManager {
 
     if (command === "session:terminate") {
       const session = this.sessions.get(chatId);
-      const hadMapping = this.evictedMappings.has(chatId);
-      const hasPendingQueue = this.pendingQueue.some((queued) => queued.chatId === chatId);
-      const hasInboxCustody = this.inboxDelivery.hasUnsettledWork(chatId);
-      // A chat whose previous terminate failed the final durable-flush step
-      // still has work: the deletion must reach disk before any applied:true.
-      const hasFailedTerminatePersist = this.terminatePersistFailures.has(chatId);
-      // Teardown debt (detached-but-unconfirmed-stop handlers) is work too:
-      // without it a chat whose entry is already gone would early-return a
-      // false applied:true over a possibly-live old run.
-      const hasPendingTeardown = (this.pendingTeardowns.get(chatId)?.size ?? 0) > 0;
-      // An in-flight route producer is work as well: a canceled start/resume
-      // can still materialize late, so the ack must wait for its settle (and
-      // the debt its discard registers) — see quiesceRouteProducers below.
-      const hasRouteProducer = (this.routeProducers.get(chatId)?.size ?? 0) > 0;
-      if (
-        !session &&
-        !hadMapping &&
-        !hasPendingQueue &&
-        !hasInboxCustody &&
-        !hasFailedTerminatePersist &&
-        !hasPendingTeardown &&
-        !hasRouteProducer
-      )
-        return;
-
+      // NOTE: there is deliberately NO no-work early return. Empty memory
+      // (no session, mapping, queue, custody, failure marker, debt, or
+      // producer) proves nothing about the DISK registry — a mapping
+      // persisted earlier (e.g. at suspend time) may still be on disk and
+      // would be reloaded as an evicted mapping after a crash, reviving the
+      // old provider thread. Every apply-acked terminate therefore runs the
+      // full body below, whose final step durably flushes the authoritative
+      // registry snapshot (see flushTerminateRegistry).
       this.invalidateDeliveryAdmission(chatId);
       this.config.log.info({ chatId }, "terminate command received");
       const termination = (async () => {
@@ -1016,20 +999,7 @@ export class SessionManager {
         await this.inboxDelivery.drainForTerminate(chatId);
 
         this.recomputeRuntimeState();
-        try {
-          // The Reset apply-ack is only truthful once the mapping deletion is
-          // durable: a crash between ack and a debounced write would reload
-          // the stale mapping on restart and revive the old provider session.
-          this.persistRegistry({ throwOnFailure: true });
-          this.terminatePersistFailures.delete(chatId);
-        } catch (err) {
-          // In-memory state is already gone but the deletion never reached
-          // disk. Remember the failed delete so a retry terminate re-runs the
-          // full body (and re-attempts the flush) instead of early-returning
-          // a false success from the admission guard above.
-          this.terminatePersistFailures.add(chatId);
-          throw err;
-        }
+        this.flushTerminateRegistry(chatId);
         this.drainPendingQueue();
       })();
       this.terminatingChats.set(chatId, termination);
@@ -1043,6 +1013,28 @@ export class SessionManager {
           this.terminatingChats.delete(chatId);
         }
       }
+    }
+  }
+
+  /**
+   * Durably flush the authoritative registry snapshot for a Reset
+   * terminate. The Reset apply-ack is only truthful once the mapping
+   * deletion is durable: a crash between ack and a debounced write would
+   * reload the stale mapping on restart and revive the old provider
+   * session. The flush is the CURRENT authoritative snapshot (all chats,
+   * not just this one), so other chats' mappings are preserved, and it
+   * cancels any older pending debounced snapshot so a stale write cannot
+   * resurrect the deletion later. A failure is recorded in
+   * terminatePersistFailures so a retry terminate re-runs the full body
+   * (and re-attempts the flush) instead of a false applied:true.
+   */
+  private flushTerminateRegistry(chatId: string): void {
+    try {
+      this.persistRegistry({ throwOnFailure: true });
+      this.terminatePersistFailures.delete(chatId);
+    } catch (err) {
+      this.terminatePersistFailures.add(chatId);
+      throw err;
     }
   }
 
@@ -2535,6 +2527,11 @@ export class SessionManager {
     this.currentTrigger.delete(chatId);
     this.recomputeRuntimeState();
     this.releaseActiveSlot(entry);
+    // Converge the registry like every other sessions.delete path: the
+    // resumable mapping for this chat must not linger on disk. This
+    // debounced write is hygiene only — a Reset terminate still carries its
+    // own synchronous crash boundary (flushTerminateRegistry).
+    this.persistRegistry();
     this.drainPendingQueue();
   }
 
