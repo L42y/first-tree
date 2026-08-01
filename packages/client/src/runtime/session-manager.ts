@@ -2550,8 +2550,29 @@ export class SessionManager {
    * failure, replacement-stop failure, slot contention) — single-flight
    * guarantees only one such path can run per chat at a time, so this is
    * the only re-arm handle.
+   *
+   * Fail closed: a re-arm only makes sense while this exact entry still
+   * owns the chat's retry lifecycle. A manager shutdown clears retry timers
+   * exactly once — a re-arm after that sweep would survive it and fire
+   * after AgentSlot.stopOnce() returned. A terminate explicitly cancels the
+   * retry timer — re-arming while one is in flight would resurrect a route
+   * the operator just stopped (the failed apply is retried by the operator,
+   * not by a stray timer).
    */
   private rearmRetryTimer(chatId: string, entry: SessionEntry, delayMs = 5_000): void {
+    if (this.shuttingDown) return;
+    if (this.terminatingChats.has(chatId)) return;
+    if (this.sessions.get(chatId) !== entry) return;
+    if (
+      entry.status !== "suspended" ||
+      entry.activeSlotHeld ||
+      entry.routeTransition !== null ||
+      entry.retryAttempt === 0
+    ) {
+      return;
+    }
+    // Defensive: never overwrite a live handle with a duplicate timer.
+    if (entry.retryTimer !== null) return;
     entry.retryNextAt = Date.now() + delayMs;
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;

@@ -4312,16 +4312,77 @@ describe("SessionManager edge coverage", () => {
     expect(i.sessions.has(chatId)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
-    // Converge: the next terminate re-attempts the strict stop and succeeds.
-    if (entry.retryTimer) {
-      clearTimeout(entry.retryTimer);
-      entry.retryTimer = null;
-    }
+    // No late re-arm: the terminate's in-flight window canceled the retry
+    // timer, and the failed stop's failure path must not resurrect one —
+    // nothing may install a provider route before the operator retries.
+    expect(entry.retryTimer).toBe(null);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(freshHandler.start).not.toHaveBeenCalled();
+
+    // The operator's retry path still works: the next terminate re-attempts
+    // the strict stop and converges.
     await sm.handleCommand(chatId, "session:terminate");
     expect(i.sessions.has(chatId)).toBe(false);
     expect(i.pendingTeardowns.has(chatId)).toBe(false);
 
     await sm.shutdown();
+  });
+
+  it("does not re-arm after manager shutdown begins when the replacement stop fails late", async () => {
+    vi.useFakeTimers();
+    const boom = new Error("replace stop failed");
+    let signalStopStarted: (() => void) | undefined;
+    let rejectStop: ((err: unknown) => void) | undefined;
+    const stopStarted = new Promise<void>((resolve) => {
+      signalStopStarted = resolve;
+    });
+    const stopGate = new Promise<void>((_resolve, reject) => {
+      rejectStop = reject;
+    });
+    const oldHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalStopStarted?.();
+          await stopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const freshHandler = handler();
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-shutdown-late-rearm";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: oldHandler,
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+    const entry = i.sessions.get(chatId);
+    if (!entry) throw new Error("entry missing");
+    const retrySpy = vi.spyOn(sm as unknown as { runRetry(id: string): Promise<void> }, "runRetry");
+
+    const retry = i.runRetry(chatId);
+    await stopStarted;
+    // Shutdown begins while the replacement stop is gated: its timer sweep
+    // runs BEFORE the stop fails — a fail-open re-arm would survive it.
+    const stopped = sm.shutdown();
+    rejectStop?.(boom);
+    await retry;
+    await stopped;
+
+    // Fail closed: the failure path must not create a timer once manager
+    // shutdown has begun — no re-arm handle exists and nothing fires after
+    // shutdown returned.
+    expect(entry.retryTimer).toBe(null);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(freshHandler.start).not.toHaveBeenCalled();
+    retrySpy.mockClear();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(retrySpy).not.toHaveBeenCalled();
   });
 
   it("manager shutdown does not return before its bounded follow-up attempt settles", async () => {
