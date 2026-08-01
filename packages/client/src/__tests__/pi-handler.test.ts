@@ -156,6 +156,20 @@ rl.on("line", (line) => {
     if (mode === "settlement_timeout" || mode === "after_write_hang") {
       return;
     }
+    if (mode === "bash_hold_until_abort") {
+      const bashStartFile = process.env.FT_PI_BASH_START_FILE ?? "";
+      write({
+        type: "tool_execution_start",
+        toolCallId: "bash-hold-1",
+        toolName: "bash",
+        args: { command: "sleep 60" },
+      });
+      if (bashStartFile) {
+        try { fs.writeFileSync(bashStartFile, "1"); } catch {}
+      }
+      // Hold the turn open until abort; do not emit agent_settled here.
+      return;
+    }
     if (mode === "usage_multi") {
       write({
         type: "message_update",
@@ -333,6 +347,12 @@ rl.on("line", (line) => {
       setTimeout(() => write({ type: "response", id, command: "abort", success: true }), 30);
       return;
     }
+    if (mode === "bash_hold_until_abort") {
+      write({ type: "tool_execution_end", toolCallId: "bash-hold-1", isError: true, result: "aborted" });
+      write({ type: "agent_settled" });
+      write({ type: "response", id, command: "abort", success: true });
+      return;
+    }
     write({ type: "response", id, command: "abort", success: true });
     write({ type: "agent_settled" });
     return;
@@ -350,6 +370,7 @@ let promptCountFile = "";
 let steerCountFile = "";
 let preflightFailRemainFile = "";
 let lastPromptFile = "";
+let bashStartFile = "";
 
 function runtimeConfig(overrides: Partial<AgentRuntimeConfig["payload"]> & { mcp?: boolean } = {}): AgentRuntimeConfig {
   const { mcp, prompt, model, env, gitRepos, resourceSkills, mcpServers } = overrides;
@@ -468,6 +489,7 @@ function createSyntheticSupervisor(
           FT_PI_STEER_COUNT_FILE: steerCountFile,
           FT_PI_PREFLIGHT_FAIL_REMAINING_FILE: preflightFailRemainFile,
           FT_PI_LAST_PROMPT_FILE: lastPromptFile,
+          FT_PI_BASH_START_FILE: bashStartFile,
           FT_PI_STATE_PROVIDER: process.env.FT_PI_STATE_PROVIDER ?? "openai-codex",
           FT_PI_STATE_MODEL: process.env.FT_PI_STATE_MODEL ?? "gpt-test",
           FT_PI_STATE_THINKING: process.env.FT_PI_STATE_THINKING ?? "",
@@ -537,10 +559,12 @@ beforeEach(() => {
   steerCountFile = join(workspaceRoot, "steer-count.txt");
   preflightFailRemainFile = join(workspaceRoot, "preflight-fail-remaining.txt");
   lastPromptFile = join(workspaceRoot, "last-prompt.txt");
+  bashStartFile = join(workspaceRoot, "bash-start.txt");
   writeFileSync(promptCountFile, "0");
   writeFileSync(steerCountFile, "0");
   writeFileSync(preflightFailRemainFile, "0");
   writeFileSync(lastPromptFile, "");
+  writeFileSync(bashStartFile, "0");
   delete process.env.FT_PI_TEST_MODE;
   delete process.env.FT_PI_STATE_PROVIDER;
   delete process.env.FT_PI_STATE_MODEL;
@@ -630,8 +654,16 @@ describe("Pi handler", () => {
     expect(expectedId).toBe(createHash("sha256").update("first-tree:agent-pi:chat-pi").digest("hex").slice(0, 32));
     const rpcSpec = specs.find((spec) => spec.args.includes("--mode"));
     expect(rpcSpec?.args).toEqual(
-      expect.arrayContaining(["--skill", join(workspaceRoot, ".agents", "skills"), "--session-id", expectedId]),
+      expect.arrayContaining([
+        "--skill",
+        join(workspaceRoot, ".agents", "skills"),
+        "--session-id",
+        expectedId,
+        "--tools",
+        "read,bash,edit,write,grep,find,ls",
+      ]),
     );
+    expect(rpcSpec?.args.filter((part) => part === "--tools")).toHaveLength(1);
     expect(token.processingStarted).toHaveBeenCalled();
     expect(events).toContainEqual({ kind: "turn_end", payload: { status: "success" } });
     expect(readCount(promptCountFile)).toBe(1);
@@ -1397,6 +1429,40 @@ describe("Pi handler", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(token2.retried).toEqual(["pi_shutdown"]);
     expect(token2.completed).toEqual([]);
+  });
+
+  it("graceful shutdown after accepted bash start settles provider-entered custody once", async () => {
+    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+    });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+    const startPromise = handler.start(message("m1", "run sleep"), makeContext(events), token);
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(token.processingStarted).toHaveBeenCalled();
+    await handler.shutdown();
+    await startPromise;
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "unsafe_replay",
+      }),
+    ]);
+    expect(events).toContainEqual({ kind: "turn_end", payload: { status: "error" } });
+    expect(
+      events.some(
+        (event) => event.kind === "error" && JSON.stringify(event.payload).includes("provider_failure_terminal"),
+      ),
+    ).toBe(true);
   });
 
   it("applies shared finite policy to active formatting failures without inbox retry", async () => {

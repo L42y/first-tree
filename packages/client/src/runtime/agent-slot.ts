@@ -582,17 +582,19 @@ export class AgentSlot {
     this.listeners = [];
     this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
     let firstError: unknown = null;
-    try {
-      await this.clientConnection.unbindAgent(this.config.agentId);
-    } catch (err) {
-      firstError = err;
-      this.logger.warn({ err }, "failed to unbind agent while stopping");
-    }
+    // Settle provider-entered custody (durable notice + ACK) while the agent is
+    // still bound, then unbind. Unbinding first can drop late settlement writes.
     try {
       await this.sessionManager?.shutdown(reason, opts.sessionShutdown);
     } catch (err) {
-      firstError ??= err;
+      firstError = err;
       this.logger.warn({ err }, "failed to shut down sessions while stopping");
+    }
+    try {
+      await this.clientConnection.unbindAgent(this.config.agentId);
+    } catch (err) {
+      firstError ??= err;
+      this.logger.warn({ err }, "failed to unbind agent while stopping");
     }
     this.cleanupOwnedRuntimeSessionToken();
     this.sessionManager = null;

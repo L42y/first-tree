@@ -5,6 +5,7 @@ import {
   PiRpcClient,
   PiRpcProtocolError,
   PiRpcTransportError,
+  piV1NativeToolsArg,
   splitPiJsonlBuffer,
 } from "../handlers/pi/rpc-client.js";
 import type { ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
@@ -155,15 +156,14 @@ describe("splitPiJsonlBuffer", () => {
 });
 
 describe("buildPiRpcArgs", () => {
-  it("builds the rpc offline session contract", () => {
-    expect(
-      buildPiRpcArgs({
-        sessionId: "abc",
-        sessionDir: "/tmp/sessions",
-        skillsDir: "/tmp/skills",
-        model: "gpt-test",
-      }),
-    ).toEqual([
+  it("builds the rpc offline session contract with the V1 native tools allowlist", () => {
+    const args = buildPiRpcArgs({
+      sessionId: "abc",
+      sessionDir: "/tmp/sessions",
+      skillsDir: "/tmp/skills",
+      model: "gpt-test",
+    });
+    expect(args).toEqual([
       "--mode",
       "rpc",
       "--offline",
@@ -173,6 +173,8 @@ describe("buildPiRpcArgs", () => {
       "/tmp/skills",
       "--no-prompt-templates",
       "--no-approve",
+      "--tools",
+      "read,bash,edit,write,grep,find,ls",
       "--session-id",
       "abc",
       "--session-dir",
@@ -180,6 +182,10 @@ describe("buildPiRpcArgs", () => {
       "--model",
       "gpt-test",
     ]);
+    expect(args.filter((part) => part === "--tools")).toHaveLength(1);
+    expect(args[args.indexOf("--tools") + 1]).toBe(piV1NativeToolsArg());
+    // Privacy: argv carries only path/session selectors — never user prompt text.
+    expect(args.some((part) => part.includes("user said") || part.includes("SECRET"))).toBe(false);
   });
 });
 

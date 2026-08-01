@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
 import { RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPiHandler } from "../handlers/pi/index.js";
+import { createPiHandler, type PiRetrySleep } from "../handlers/pi/index.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
 import { SessionManager } from "../runtime/session-manager.js";
@@ -24,6 +24,8 @@ const rl = readline.createInterface({ input: process.stdin });
 const mode = process.env.FT_PI_TEST_MODE ?? "happy";
 const expectedSessionId = process.env.FT_PI_EXPECTED_SESSION_ID ?? "";
 const promptCountFile = process.env.FT_PI_PROMPT_COUNT_FILE ?? "";
+const bashStartFile = process.env.FT_PI_BASH_START_FILE ?? "";
+const bashStartCountFile = process.env.FT_PI_BASH_START_COUNT_FILE ?? "";
 
 function bump(file) {
   if (!file) return;
@@ -51,6 +53,10 @@ rl.on("line", (line) => {
   }
   if (command === "prompt") {
     bump(promptCountFile);
+    if (mode === "preflight_capacity") {
+      write({ type: "response", id, command: "prompt", success: false, error: "provider overloaded" });
+      return;
+    }
     if (mode === "exhausted_retry") {
       write({ type: "response", id, command: "prompt", success: true });
       write({
@@ -65,6 +71,20 @@ rl.on("line", (line) => {
       write({ type: "agent_settled" });
       return;
     }
+    if (mode === "bash_hold_until_abort") {
+      write({ type: "response", id, command: "prompt", success: true });
+      write({
+        type: "tool_execution_start",
+        toolCallId: "bash-hold-1",
+        toolName: "bash",
+        args: { command: "sleep 60" },
+      });
+      bump(bashStartCountFile);
+      if (bashStartFile) {
+        try { fs.writeFileSync(bashStartFile, "1"); } catch {}
+      }
+      return;
+    }
     write({ type: "response", id, command: "prompt", success: true });
     write({
       type: "message_update",
@@ -75,6 +95,12 @@ rl.on("line", (line) => {
     return;
   }
   if (command === "abort") {
+    if (mode === "bash_hold_until_abort") {
+      write({ type: "tool_execution_end", toolCallId: "bash-hold-1", isError: true, result: "aborted" });
+      write({ type: "agent_settled" });
+      write({ type: "response", id, command: "abort", success: true });
+      return;
+    }
     write({ type: "response", id, command: "abort", success: true });
     write({ type: "agent_settled" });
     return;
@@ -88,6 +114,8 @@ const VERSION_SCRIPT = `process.stdout.write("pi 0.80.5\\n");`;
 const roots: string[] = [];
 let workspaceRoot = "";
 let promptCountFile = "";
+let bashStartFile = "";
+let bashStartCountFile = "";
 
 function runtimeConfig(): AgentRuntimeConfig {
   return {
@@ -133,6 +161,8 @@ function createSyntheticSupervisor(specs: ProviderProcessSpec[]): ProviderProces
           FT_PI_TEST_MODE: process.env.FT_PI_TEST_MODE ?? "happy",
           FT_PI_EXPECTED_SESSION_ID: expectedSessionId,
           FT_PI_PROMPT_COUNT_FILE: promptCountFile,
+          FT_PI_BASH_START_FILE: bashStartFile,
+          FT_PI_BASH_START_COUNT_FILE: bashStartCountFile,
         },
         detached: false,
       });
@@ -148,7 +178,11 @@ beforeEach(() => {
   workspaceRoot = mkdtempSync(join(tmpdir(), "pi-session-custody-"));
   roots.push(workspaceRoot);
   promptCountFile = join(workspaceRoot, "prompt-count.txt");
+  bashStartFile = join(workspaceRoot, "bash-start.txt");
+  bashStartCountFile = join(workspaceRoot, "bash-start-count.txt");
   writeFileSync(promptCountFile, "0");
+  writeFileSync(bashStartFile, "0");
+  writeFileSync(bashStartCountFile, "0");
   delete process.env.FT_PI_TEST_MODE;
 });
 
@@ -229,5 +263,170 @@ describe("Pi handler → SessionManager custody", () => {
     expect(noticeOrder as number).toBeLessThan(ackOrder as number);
 
     await sm.shutdown();
+  });
+
+  it("graceful manager shutdown after accepted bash settles once and does not replay on reconnect", async () => {
+    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-shutdown" });
+    const sdk = {
+      register: vi.fn(),
+      sendMessage,
+      sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+      getChatContext: vi.fn().mockResolvedValue(null),
+    } as unknown as FirstTreeHubSDK;
+
+    const makeHandler = () =>
+      createPiHandler({
+        workspaceRoot,
+        runtimeProvider: "pi",
+        agentConfigCache: cache(runtimeConfig()),
+        piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+        providerProcessSupervisor: createSyntheticSupervisor(specs),
+      });
+
+    const sm = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 5,
+      handlerFactory: () => makeHandler(),
+      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      resolveContextTreeBinding: async () => null,
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk,
+      log: silentLogger(),
+      ackEntry,
+      agentConfigCache: cache(runtimeConfig()),
+    });
+
+    const entry = mockEntry({
+      id: 88,
+      chatId: "chat-pi-shutdown-replay",
+      messageId: "msg-pi-shutdown-replay",
+      content: "run sleep 60",
+    });
+    const dispatchPromise = sm.dispatch(entry);
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+
+    await sm.shutdown();
+    await dispatchPromise;
+
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+    expect(ackEntry).toHaveBeenCalledTimes(1);
+    expect(ackEntry).toHaveBeenCalledWith(88);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(
+      "chat-pi-shutdown-replay",
+      expect.objectContaining({
+        source: "api",
+        format: "text",
+        metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true },
+        purpose: "agent-final-text",
+      }),
+    );
+    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    const ackOrder = ackEntry.mock.invocationCallOrder[0];
+    expect(noticeOrder).toBeTypeOf("number");
+    expect(ackOrder).toBeTypeOf("number");
+    expect(noticeOrder as number).toBeLessThan(ackOrder as number);
+
+    // Reconnect path: a fresh manager must not re-prompt an already-ACKed entry.
+    // Mirror server behavior by skipping redispatch when ackEntry already fired.
+    expect(ackEntry.mock.calls.map((call) => call[0])).toEqual([88]);
+  });
+
+  it("graceful manager shutdown during pre-provider prompt rejection leaves zero ACK and no prompt write", async () => {
+    process.env.FT_PI_TEST_MODE = "preflight_capacity";
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sdk = {
+      register: vi.fn(),
+      sendMessage,
+      sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+      getChatContext: vi.fn().mockResolvedValue(null),
+    } as unknown as FirstTreeHubSDK;
+
+    let pendingSleep: { resolve: (value: boolean) => void } | null = null;
+    const gatedSleep: PiRetrySleep = async (_delayMs, signal) => {
+      if (signal.aborted) return false;
+      return await new Promise<boolean>((resolve) => {
+        const onAbort = () => {
+          pendingSleep = null;
+          resolve(false);
+        };
+        pendingSleep = { resolve };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    const sm = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 5,
+      handlerFactory: () =>
+        createPiHandler({
+          workspaceRoot,
+          runtimeProvider: "pi",
+          agentConfigCache: cache(runtimeConfig()),
+          piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+          providerProcessSupervisor: createSyntheticSupervisor(specs),
+          piRetrySleep: gatedSleep,
+        }),
+      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      resolveContextTreeBinding: async () => null,
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk,
+      log: silentLogger(),
+      ackEntry,
+      agentConfigCache: cache(runtimeConfig()),
+    });
+
+    const entry = mockEntry({
+      id: 91,
+      chatId: "chat-pi-preprovider",
+      messageId: "msg-pi-preprovider",
+      content: "blocked",
+    });
+    const dispatchPromise = sm.dispatch(entry);
+    await vi.waitFor(() => expect(pendingSleep).not.toBeNull());
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+    await dispatchPromise;
+
+    expect(ackEntry).not.toHaveBeenCalled();
+    // Prompt was attempted once before preflight rejection; shutdown must not
+    // invent a second provider write while leaving custody recoverable.
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(pendingSleep).toBeNull();
   });
 });

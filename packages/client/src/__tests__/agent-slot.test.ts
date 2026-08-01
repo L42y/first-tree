@@ -1144,7 +1144,7 @@ describe("AgentSlot", () => {
     expect(state.logger.info).toHaveBeenCalledWith("stopped");
   });
 
-  it("surfaces session shutdown failures after a successful unbind", async () => {
+  it("surfaces session shutdown failures and still unbinds afterward", async () => {
     const { slot, connection, state } = await makeSlot();
     await slot.start();
     const session = state.sessions[0];
@@ -1154,7 +1154,13 @@ describe("AgentSlot", () => {
 
     await expect(slot.stop("operator stop")).rejects.toThrow("shutdown failed");
 
+    expect(session.shutdown).toHaveBeenCalled();
     expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
+    const shutdownOrder = session.shutdown.mock.invocationCallOrder[0];
+    const unbindOrder = connection.unbindAgent.mock.invocationCallOrder[0];
+    expect(shutdownOrder).toBeTypeOf("number");
+    expect(unbindOrder).toBeTypeOf("number");
+    expect(shutdownOrder as number).toBeLessThan(unbindOrder as number);
     expect(state.logger.warn).toHaveBeenCalledWith({ err }, "failed to shut down sessions while stopping");
     expect(state.logger.info).toHaveBeenCalledWith("stopped");
   });
@@ -1239,7 +1245,9 @@ describe("AgentSlot", () => {
     const session = state.sessions[0];
     if (!session) throw new Error("session missing");
 
+    const shutdown = deferred<void>();
     const unbind = deferred<void>();
+    session.shutdown.mockImplementationOnce(() => shutdown.promise);
     connection.unbindAgent.mockImplementationOnce(() => unbind.promise);
 
     connection.emit("agent:unbound", "agent-1", "agent_runtime_switch");
@@ -1252,12 +1260,18 @@ describe("AgentSlot", () => {
       },
     });
     await Promise.resolve();
-    expect(session.shutdown).not.toHaveBeenCalled();
+    // Session settlement runs before unbind so provider-entered custody can ACK.
+    expect(session.shutdown).toHaveBeenCalledTimes(1);
+    expect(connection.unbindAgent).not.toHaveBeenCalled();
+
+    shutdown.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
 
     unbind.resolve();
     await joinedStop;
 
-    expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
     expect(session.shutdown).toHaveBeenCalledTimes(1);
     expect(session.shutdown).toHaveBeenCalledWith("agent_runtime_switch", {
       clearPersistedRegistry: true,

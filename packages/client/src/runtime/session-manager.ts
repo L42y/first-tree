@@ -917,13 +917,18 @@ export class SessionManager {
       }
     }
 
-    const shutdowns = [...this.sessions.values()].map((session) => {
-      this.invalidateRouteTransition(session, reason ?? "manager_shutdown");
-      return session.activeSlotHeld
-        ? this.shutdownHandler(session.handler, reason ?? "manager_shutdown")
-        : Promise.resolve();
-    });
+    // Admission is already fenced via `shuttingDown`. Keep delivery leases valid
+    // while handlers drain so provider-entered turns can terminally settle
+    // (durable notice + ACK) before the route lease is retired. Invalidating
+    // first would ignore late token.complete and leave unsafe prefixes unacked.
+    const shutdownReason = reason ?? "manager_shutdown";
+    const shutdowns = [...this.sessions.values()].map((session) =>
+      session.activeSlotHeld ? this.shutdownHandler(session.handler, shutdownReason) : Promise.resolve(),
+    );
     await Promise.allSettled(shutdowns);
+    for (const session of this.sessions.values()) {
+      this.invalidateRouteTransition(session, shutdownReason);
+    }
 
     const reportSuspendedSessions = opts.reportSuspendedSessions ?? true;
     if (reportSuspendedSessions) {
@@ -1097,8 +1102,11 @@ export class SessionManager {
   }
 
   private isRouteLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
+    // `shuttingDown` is an admission fence only (see `routeMessage` /
+    // `dispatch`). Graceful manager shutdown must allow terminal delivery
+    // settlement while handlers drain; the route lease is retired afterward
+    // via `invalidateRouteTransition`.
     return (
-      !this.shuttingDown &&
       this.sessions.get(entry.chatId) === entry &&
       entry.routeTransitionGeneration === transition.generation &&
       entry.handler === transition.handler &&

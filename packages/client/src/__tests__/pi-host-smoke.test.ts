@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
@@ -204,4 +204,88 @@ describe.runIf(runHostSmoke)("Pi host smoke (real 0.83.x)", () => {
     expect(events).toContainEqual({ kind: "turn_end", payload: { status: "success" } });
     await handler.shutdown();
   }, 240_000);
+
+  it("exposes native grep/find/ls through PiRpcClient and createPiHandler", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "ft-pi-tools-smoke-"));
+    roots.push(workspaceRoot);
+    writeFileSync(join(workspaceRoot, "smoke-marker.txt"), "FT_PI_NATIVE_TOOLS_MARKER\n");
+    mkdirSync(join(workspaceRoot, "smoke-dir"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "smoke-dir", "nested.txt"), "nested\n");
+
+    const args = buildPiRpcArgs({
+      sessionId: `fttools${Date.now().toString(16)}`.slice(0, 32),
+      sessionDir: join(workspaceRoot, "sessions"),
+      skillsDir: join(workspaceRoot, "skills"),
+    });
+    expect(args.filter((part) => part === "--tools")).toHaveLength(1);
+    expect(args[args.indexOf("--tools") + 1]).toBe("read,bash,edit,write,grep,find,ls");
+
+    const rpcToolNames = new Set<string>();
+    const client = await PiRpcClient.start({
+      binary: process.env.PI_BIN ?? "pi",
+      args,
+      cwd: workspaceRoot,
+      env: Object.fromEntries(
+        Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      ),
+      supervisor: hostSupervisor(),
+      settlementTimeoutMs: 180_000,
+      onEvent(event) {
+        if (event.type === "tool_execution_start" && typeof event.toolName === "string") {
+          rpcToolNames.add(event.toolName.toLowerCase());
+        }
+      },
+    });
+    const rpcPrompt = await client.prompt(
+      [
+        "Use only the native tools ls, find, and grep — do not use bash.",
+        "1) Call ls on the current directory.",
+        "2) Call find for files named smoke-marker.txt.",
+        "3) Call grep for FT_PI_NATIVE_TOOLS_MARKER under the current directory.",
+        "After those three tool calls, reply with exactly: FT_PI_TOOLS_OK",
+      ].join(" "),
+    );
+    expect(rpcPrompt.success).toBe(true);
+    await client.waitForSettled();
+    expect(rpcToolNames.has("ls")).toBe(true);
+    expect(rpcToolNames.has("find")).toBe(true);
+    expect(rpcToolNames.has("grep")).toBe(true);
+    await client.close();
+
+    const events: SessionEvent[] = [];
+    const handlerToolNames = new Set<string>();
+    const token = makeToken();
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: process.env.PI_BIN ?? "pi" }),
+      providerProcessSupervisor: hostSupervisor(),
+      piSettlementTimeoutMs: 180_000,
+    });
+    const ctx = makeContext(events);
+    const originalEmit = ctx.emitEvent;
+    ctx.emitEvent = (event) => {
+      if (event.kind === "tool_call" && typeof event.payload?.name === "string") {
+        handlerToolNames.add(String(event.payload.name).toLowerCase());
+      }
+      originalEmit(event);
+    };
+    await handler.start(
+      message(
+        [
+          "Use only the native tools ls, find, and grep — do not use bash.",
+          "Call each of ls, find (smoke-marker.txt), and grep (FT_PI_NATIVE_TOOLS_MARKER) once,",
+          "then reply with exactly: FT_PI_HANDLER_TOOLS_OK",
+        ].join(" "),
+      ),
+      ctx,
+      token,
+    );
+    expect(token.completed).toEqual([expect.objectContaining({ status: "success" })]);
+    expect(handlerToolNames.has("ls")).toBe(true);
+    expect(handlerToolNames.has("find")).toBe(true);
+    expect(handlerToolNames.has("grep")).toBe(true);
+    await handler.shutdown();
+  }, 300_000);
 });

@@ -99,7 +99,7 @@ export function stablePiSessionId(agentId: string, chatId: string): string {
   return createHash("sha256").update(`first-tree:${agentId}:${chatId}`).digest("hex").slice(0, 32);
 }
 
-export { buildPiRpcArgs } from "./rpc-client.js";
+export { buildPiRpcArgs, PI_V1_NATIVE_TOOLS, piV1NativeToolsArg } from "./rpc-client.js";
 
 type ActiveTool = {
   name: string;
@@ -458,9 +458,38 @@ export const createPiHandler: HandlerFactory = (config) => {
     return drainCancellationReason !== null;
   }
 
+  function isGracefulShutdownLifecycleReason(reason: string | null): boolean {
+    if (!reason) return false;
+    return (
+      reason === "pi_shutdown" || reason === "manager_shutdown" || /(?:^|:)(?:manager_)?shutdown(?:$|:)/.test(reason)
+    );
+  }
+
   function recoverTurnUnlessLifecycleOwns(reason: string): void {
     if (lifecycleOwnsRecovery()) return;
     retryCustody(reason);
+  }
+
+  /**
+   * Graceful shutdown after Pi accepted a prompt must terminally settle the
+   * provider-entered prefix (exactly once) instead of leaving it delivered /
+   * unacked for reconnect replay. Suspend and pre-provider cancellations keep
+   * the recoverable retry path — and must retry here because `runTurn`'s
+   * `finally` clears custody before `endLifecycle` can.
+   */
+  async function settleLifecycleCancellation(sessionCtx: SessionContext, reason: string): Promise<void> {
+    if (isGracefulShutdownLifecycleReason(drainCancellationReason) && turnObservation?.promptAccepted === true) {
+      await settleAcceptedTurnFailure(
+        sessionCtx,
+        `pi lifecycle cancelled after provider entry (${drainCancellationReason ?? reason})`,
+      );
+      return;
+    }
+    if (lifecycleOwnsRecovery()) {
+      retryCustody(drainCancellationReason ?? reason);
+      return;
+    }
+    recoverTurnUnlessLifecycleOwns(reason);
   }
 
   function consumeOneShotPromptState(): void {
@@ -1231,7 +1260,7 @@ export const createPiHandler: HandlerFactory = (config) => {
         await awaitPendingSteers();
         const transportError = error instanceof Error ? error : new Error(String(error));
         if (!sessionActive) {
-          recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+          await settleLifecycleCancellation(sessionCtx, "pi_turn_cancelled");
           return false;
         }
         // Never downgrade accepted custody to pre_provider; never resend.
@@ -1258,7 +1287,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
 
       if (!sessionActive) {
-        recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+        await settleLifecycleCancellation(sessionCtx, "pi_turn_cancelled");
         return false;
       }
 
@@ -1835,8 +1864,8 @@ export const createPiHandler: HandlerFactory = (config) => {
       await endLifecycle(reason ?? "pi_suspend");
     },
 
-    async shutdown() {
-      await endLifecycle("pi_shutdown");
+    async shutdown(reason) {
+      await endLifecycle(reason ?? "pi_shutdown");
     },
   } satisfies AgentHandler;
 };

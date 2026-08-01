@@ -95,6 +95,18 @@ export function splitPiJsonlBuffer(buffer: string): { frames: string[]; rest: st
   return { frames, rest: buffer.slice(start) };
 }
 
+/**
+ * First Tree V1 Pi native tool surface. Pi 0.83 defaults to only
+ * `read,bash,edit,write`; `grep`/`find`/`ls` exist as built-ins but stay off
+ * unless `--tools` explicitly enables them. Keep this list as the single
+ * source of truth for spawn argv and contract tests.
+ */
+export const PI_V1_NATIVE_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+export function piV1NativeToolsArg(): string {
+  return PI_V1_NATIVE_TOOLS.join(",");
+}
+
 export function buildPiRpcArgs(input: {
   sessionId: string;
   sessionDir: string;
@@ -111,6 +123,8 @@ export function buildPiRpcArgs(input: {
     input.skillsDir,
     "--no-prompt-templates",
     "--no-approve",
+    "--tools",
+    piV1NativeToolsArg(),
     "--session-id",
     input.sessionId,
     "--session-dir",
