@@ -273,6 +273,29 @@ describe("PiRpcClient", () => {
     await client.close();
   });
 
+  it("classifies onCommandWritten failures after writeLine as after_write and fences", async () => {
+    process.env.FT_PI_TEST_MODE = "no_prompt_response";
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: supervisor(),
+      onCommandWritten: () => {
+        throw new Error("projection boom after prompt write");
+      },
+    });
+    await expect(client.prompt("hi")).rejects.toMatchObject({
+      name: "PiRpcTransportError",
+      writePhase: "after_write",
+      message: expect.stringContaining("projection boom after prompt write"),
+    });
+    expect(client.getPromptWriteCount()).toBe(1);
+    expect(client.isClosed).toBe(true);
+    await expect(client.prompt("again")).rejects.toMatchObject({ writePhase: "before_write" });
+    await client.close();
+  });
+
   it("marks prompt-response timeout as after_write and fences the client", async () => {
     process.env.FT_PI_TEST_MODE = "no_prompt_response";
     const client = await PiRpcClient.start({

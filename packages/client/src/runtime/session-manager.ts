@@ -1110,34 +1110,42 @@ export class SessionManager {
     return entry.routeTransition === transition && this.isRouteAdoptionValid(entry, transition);
   }
 
-  /**
-   * One-way shutdown admission/adoption fence. Once manager shutdown begins,
-   * late start/resume receipts must not adopt the route, drain deferred work,
-   * or resurrect registry state.
-   */
-  private isRouteAdoptionValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
-    return !this.shuttingDown && this.isDeliverySettlementLeaseValid(entry, transition);
-  }
-
-  /**
-   * Lease for already-issued delivery tokens during graceful handler drain.
-   * Intentionally ignores `shuttingDown` so provider-entered custody can still
-   * post a durable notice and ACK before `invalidateRouteTransition`.
-   */
-  private isDeliverySettlementLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
-    // Active turns hold a slot. Manual operator suspend releases the concurrency
-    // slot immediately but keeps `suspending` set while the delivery lease must
-    // still accept notice+ACK for the provider-entered prefix.
-    const leaseHolder =
-      (entry.status === "active" && entry.activeSlotHeld) ||
-      (entry.status === "suspended" && entry.suspending !== null);
+  /** Shared identity checks for delivery-route leases (generation/handler/entry). */
+  private isDeliveryRouteIdentityValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
     return (
       this.sessions.get(entry.chatId) === entry &&
       entry.routeTransitionGeneration === transition.generation &&
       entry.handler === transition.handler &&
-      !this.retiredHandlers.has(transition.handler) &&
-      leaseHolder
+      !this.retiredHandlers.has(transition.handler)
     );
+  }
+
+  /**
+   * Active mutation/adoption fence for SessionContext and route receipt adoption.
+   * Requires a live active slot and fails closed on manager shutdown. Manual
+   * operator suspend releases the slot immediately — ordinary mutations must
+   * not reopen through the settlement-only `suspended && suspending` window.
+   */
+  private isRouteAdoptionValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
+    return (
+      !this.shuttingDown &&
+      this.isDeliveryRouteIdentityValid(entry, transition) &&
+      entry.status === "active" &&
+      entry.activeSlotHeld
+    );
+  }
+
+  /**
+   * Lease for already-issued DeliveryToken notice+ACK during graceful drain.
+   * Ignores `shuttingDown` and additionally accepts the operator-suspend window
+   * (`suspended && suspending`) so provider-entered custody can still settle.
+   * Must not be used for ordinary SessionContext mutations.
+   */
+  private isDeliverySettlementLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
+    const leaseHolder =
+      (entry.status === "active" && entry.activeSlotHeld) ||
+      (entry.status === "suspended" && entry.suspending !== null);
+    return this.isDeliveryRouteIdentityValid(entry, transition) && leaseHolder;
   }
 
   /** Adoption-gated lease for inject / non-settlement route checks. */

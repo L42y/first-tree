@@ -279,17 +279,31 @@ export class PiRpcClient {
         reject(new PiRpcTransportError(`pi rpc request timed out: ${describePiRpcCommand(command)}`, "after_write"));
       }, timeoutMs);
       this.pending.set(id, { command, writePhase: "before_write", resolve, reject, timer });
+      let writeCommitted = false;
       try {
         const payload: Record<string, unknown> = { id, type: command, ...(params ?? {}) };
         this.writeLine(payload);
+        writeCommitted = true;
         if (command === "prompt") this.promptWriteCount += 1;
         if (command === "steer") this.steerWriteCount += 1;
         const pending = this.pending.get(id);
         if (pending) pending.writePhase = "after_write";
+        // Bookkeeping after a successful stdin write must never downgrade to
+        // before_write — that would unlock FT prompt retry across an entered turn.
         this.onCommandWritten?.(command);
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
+        if (writeCommitted) {
+          const afterWrite =
+            (error instanceof PiRpcTransportError || error instanceof PiRpcProtocolError) &&
+            error.writePhase === "after_write"
+              ? error
+              : new PiRpcTransportError(error instanceof Error ? error.message : String(error), "after_write");
+          this.failTransport(afterWrite);
+          reject(afterWrite);
+          return;
+        }
         reject(
           error instanceof PiRpcTransportError || error instanceof PiRpcProtocolError
             ? error

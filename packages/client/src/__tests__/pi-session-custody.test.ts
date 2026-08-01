@@ -731,6 +731,165 @@ describe("Pi handler → SessionManager custody", () => {
     expect(sm.activeCount).toBe(0);
   });
 
+  it("deferred start during operator suspend rejects non-terminal ctx mutations while notice-before-ACK settles", async () => {
+    let releaseStart: (() => void) | undefined;
+    let signalStarted: (() => void) | undefined;
+    let inFlightStart: Promise<void> | null = null;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const sessionEvents: SessionEvent[] = [];
+    const registryPath = join(workspaceRoot, "sessions-operator-suspend-deferred.json");
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-deferred" });
+    const forwardCalls: string[] = [];
+    const mutationCalls: string[] = [];
+
+    const deferredHandler: AgentHandler = {
+      start: async (message, ctx, token) => {
+        let resolveInFlight: (() => void) | undefined;
+        inFlightStart = new Promise<void>((resolve) => {
+          resolveInFlight = resolve;
+        });
+        try {
+          // Mark provider-entered so prepareOperatorSuspend can resolve the prefix
+          // even if token.complete races the settlement lease edge.
+          token?.processingStarted([message]);
+          signalStarted?.();
+          await gate;
+          // Operator-suspend settlement lease is open; ordinary mutations must not.
+          ctx.replaceSessionId?.("should-not-persist-suspend", "operator_suspend_probe");
+          mutationCalls.push("replaceSessionId");
+          ctx.failSessionForRecovery?.("operator_suspend_probe", "should-not-persist-suspend");
+          mutationCalls.push("failSessionForRecovery");
+          ctx.retryTurn(message, "operator_suspend_probe_retry");
+          mutationCalls.push("retryTurn");
+          ctx.markMessagesConsumed(message);
+          mutationCalls.push("markMessagesConsumed");
+          ctx.recordProviderActivity();
+          mutationCalls.push("recordProviderActivity");
+          await ctx.forwardResult("operator suspend probe forward");
+          forwardCalls.push("forwardResult");
+          ctx.emitEvent({ kind: "assistant_text", payload: { text: "operator suspend probe" } });
+          mutationCalls.push("assistant_text");
+          ctx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+          mutationCalls.push("turn_end");
+
+          ctx.emitEvent({
+            kind: "error",
+            payload: {
+              source: "runtime",
+              message: encodeProviderRetryEventMessage({
+                event: "provider_failure_terminal",
+                provider: "pi",
+                scope: "provider_turn",
+                category: "unknown",
+                reasonCode: "unsafe_replay",
+                replaySafety: "unsafe",
+                userSeverity: "error",
+                messagePreview: "operator suspend drain settle",
+              }),
+            },
+          });
+          if (!token) throw new Error("expected delivery token");
+          await token.complete([message], {
+            status: "error",
+            completion: "consumed",
+            reason: "unsafe_replay",
+          });
+          return { sessionId: "should-not-adopt-suspend", route: { kind: "owned", mode: "processing" } };
+        } finally {
+          resolveInFlight?.();
+        }
+      },
+      resume: async () => ({ sessionId: "unused", route: null }),
+      inject: () => ({ kind: "rejected", reason: "no_active_context", retryable: true }),
+      // Mirror Pi operator-suspend settle: release the deferred start and join
+      // notice+ACK before SessionManager invalidates the settlement lease.
+      suspend: async (_reason, opts) => {
+        if (opts?.settleProviderEntered === true) {
+          releaseStart?.();
+          await inFlightStart;
+        }
+      },
+      shutdown: async () => {},
+    };
+
+    const sm = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 5,
+      handlerFactory: () => deferredHandler,
+      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      resolveContextTreeBinding: async () => null,
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: {
+        register: vi.fn(),
+        sendMessage,
+        sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+        getChatContext: vi.fn().mockResolvedValue(null),
+      } as unknown as FirstTreeHubSDK,
+      log: silentLogger(),
+      ackEntry,
+      registryPath,
+      onSessionEvent: (_chatId, event) => void sessionEvents.push(event),
+      agentConfigCache: cache(runtimeConfig()),
+    });
+
+    const chatId = "chat-operator-suspend-deferred-mutate";
+    const dispatchPromise = sm.dispatch(
+      mockEntry({ id: 97, chatId, messageId: "msg-operator-suspend-deferred", content: "go" }),
+    );
+    await started;
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+      chatId,
+    )?.suspending;
+    await Promise.all([suspending ?? Promise.resolve(), dispatchPromise]);
+
+    expect(ackEntry).toHaveBeenCalledWith(97);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 97)).toHaveLength(1);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+      ackEntry.mock.invocationCallOrder[0] as number,
+    );
+    expect(sessionEvents.some((event) => event.kind === "assistant_text")).toBe(false);
+    expect(sessionEvents.some((event) => event.kind === "turn_end")).toBe(false);
+    expect(
+      sessionEvents.some(
+        (event) => event.kind === "error" && JSON.stringify(event.payload).includes("provider_failure_terminal"),
+      ),
+    ).toBe(true);
+    if (existsSync(registryPath)) {
+      const raw = JSON.parse(readFileSync(registryPath, "utf8")) as {
+        entries?: Record<string, { claudeSessionId?: string }>;
+      };
+      const ids = Object.values(raw.entries ?? {}).map((entry) => entry.claudeSessionId);
+      expect(ids).not.toContain("should-not-persist-suspend");
+      expect(ids).not.toContain("should-not-adopt-suspend");
+    }
+    expect(forwardCalls).toEqual(["forwardResult"]);
+    expect(mutationCalls.length).toBeGreaterThan(0);
+    expect(sm.activeCount).toBe(0);
+
+    await sm.shutdown();
+  });
+
   it("operator suspend after prompt write + unsafe tool settles once; resume cannot replay", async () => {
     process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
     const specs: ProviderProcessSpec[] = [];

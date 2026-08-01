@@ -1515,6 +1515,34 @@ describe("Pi handler", () => {
     expect(readCount(promptCountFile)).toBe(1);
   });
 
+  it("processingStarted throw after prompt write stays after-write and does not FT re-prompt", async () => {
+    process.env.FT_PI_TEST_MODE = "happy";
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+    });
+    const token = makeToken();
+    token.processingStarted.mockImplementation(() => {
+      throw new Error("session runtime projection failed");
+    });
+    await handler.start(message("m1", "hello"), makeContext([]), token);
+    // Child-side prompt counter can race SIGTERM after the stdin write is
+    // committed; custody must still consume once with no FT re-prompt.
+    // RPC unit coverage owns the after_write write-count assertion.
+    expect(readCount(promptCountFile)).toBeLessThanOrEqual(1);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+      }),
+    ]);
+    await handler.shutdown();
+  });
+
   it("operator suspend with settleProviderEntered settles write-committed unsafe tool once", async () => {
     process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
     const handler = createPiHandler({
