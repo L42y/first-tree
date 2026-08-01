@@ -5,11 +5,11 @@ import { prerelease, satisfies, valid } from "semver";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
-/** Lowest compatible CLI validated by the runtime contract. */
-export const PI_MINIMUM_VERSION = "0.80.4";
-export const PI_SUPPORTED_VERSION_RANGE = ">=0.80.4 <1.0.0";
-/** Host-local Pi installation surfaced in setup and error copy. */
-export const PI_INSTALL_COMMAND = `npm install -g @earendil-works/pi-coding-agent@^${PI_MINIMUM_VERSION}`;
+/** Lowest published compatible CLI validated by the runtime contract. */
+export const PI_MINIMUM_VERSION = "0.80.5";
+export const PI_SUPPORTED_VERSION_RANGE = ">=0.80.5 <1.0.0";
+/** Official unversioned install; runtime gate enforces `>=0.80.5 <1.0.0`. */
+export const PI_INSTALL_COMMAND = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent";
 export const PI_LOGIN_COMMAND = "pi # then run /login";
 
 export function formatPiBinaryMissingMessage(input: unknown): string {

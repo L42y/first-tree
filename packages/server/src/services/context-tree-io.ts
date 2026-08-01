@@ -51,7 +51,7 @@ const KIMI_READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 const KIMI_WRITE_TOOLS = new Set(["Write", "Edit"]);
 const OPENCODE_READ_TOOLS = new Set(["read", "grep", "glob"]);
 const OPENCODE_WRITE_TOOLS = new Set(["edit", "write", "patch"]);
-const PI_READ_TOOLS = new Set(["read"]);
+const PI_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const PI_WRITE_TOOLS = new Set(["write", "edit"]);
 const CONTEXT_TREE_IO_TOOL_NAMES = [
   "Bash",

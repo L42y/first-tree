@@ -81,7 +81,7 @@ export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = {
   // operator login/recovery surface for the shared ~/.kimi-code credential.
   "kimi-code": "@moonshot-ai/kimi-code",
   opencode: "opencode-ai@^1.18.7",
-  pi: "@earendil-works/pi-coding-agent@^0.80.4",
+  pi: "@earendil-works/pi-coding-agent",
 };
 
 /**
@@ -109,6 +109,10 @@ export const GROK_INSTALL_COMMAND = "curl -fsSL https://x.ai/cli/install.sh | ba
  */
 export function providerInstallCommand(provider: RuntimeProvider): string {
   const npmPackage = PROVIDER_NPM_PACKAGE[provider];
+  if (provider === "pi" && npmPackage) {
+    // Official Pi install disables dependency lifecycle scripts.
+    return `npm install -g --ignore-scripts ${npmPackage}`;
+  }
   if (npmPackage) return `npm install -g ${npmPackage}`;
   return provider === "grok" ? GROK_INSTALL_COMMAND : CURSOR_INSTALL_COMMAND;
 }
@@ -256,7 +260,7 @@ export function providerInstallHint(
     return `Run \`npm install -g opencode-ai@^1.18.7\` on this ${device}, then complete provider-owned setup with \`opencode auth login\`.`;
   }
   if (provider === "pi") {
-    return `Run \`npm install -g @earendil-works/pi-coding-agent@^0.80.4\` on this ${device}, then run \`pi\` and enter \`/login\`.`;
+    return `Run \`npm install -g --ignore-scripts @earendil-works/pi-coding-agent\` on this ${device}, then run \`pi\` and enter \`/login\`.`;
   }
   return `Install the OpenAI Codex CLI on this ${device}.`;
 }

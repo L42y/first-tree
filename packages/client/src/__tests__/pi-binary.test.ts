@@ -80,23 +80,23 @@ describe("Pi binary resolution", () => {
 
   it("surfaces external install and provider-owned auth instructions", () => {
     expect(formatPiBinaryMissingMessage("not found")).toContain(
-      "npm install -g @earendil-works/pi-coding-agent@^0.80.4",
+      "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
     );
     expect(formatPiBinaryMissingMessage("not found")).toContain("/login");
     expect(formatPiBinaryMissingMessage("not found")).not.toContain("export");
   });
 
   it("parses a stable semver without accepting prerelease or partial versions", () => {
-    expect(parsePiVersionOutput("pi 0.80.4")).toBe("0.80.4");
+    expect(parsePiVersionOutput("pi 0.80.5")).toBe("0.80.5");
     expect(parsePiVersionOutput("pi 0.80.5-beta.1")).toBeNull();
     expect(parsePiVersionOutput("pi 00.80.4")).toBeNull();
     expect(parsePiVersionOutput("not-a-version")).toBeNull();
   });
 
   it("accepts the supported range and fails closed outside it", () => {
-    expect(isSupportedPiVersion("0.80.4")).toBe(true);
+    expect(isSupportedPiVersion("0.80.5")).toBe(true);
     expect(isSupportedPiVersion("0.81.0")).toBe(true);
-    expect(isSupportedPiVersion("0.80.3")).toBe(false);
+    expect(isSupportedPiVersion("0.80.4")).toBe(false);
     expect(isSupportedPiVersion("1.0.0")).toBe(false);
     expect(isSupportedPiVersion(null)).toBe(false);
   });

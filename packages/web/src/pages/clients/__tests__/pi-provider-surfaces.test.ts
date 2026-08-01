@@ -14,11 +14,13 @@ describe("Pi provider surfaces", () => {
     expect(providerSupportsInProductAuth("pi")).toBe(false);
   });
 
-  it("shows the pinned package family and provider-owned login command", () => {
+  it("shows the official unversioned install and provider-owned login command", () => {
     expect(buildInstallCommand("pi")).toBe(
-      "npm install -g @earendil-works/pi-coding-agent@^0.80.4\npi # then run /login",
+      "npm install -g --ignore-scripts @earendil-works/pi-coding-agent\npi # then run /login",
     );
-    expect(providerInstallHint("pi", "darwin")).toContain("@earendil-works/pi-coding-agent@^0.80.4");
+    expect(providerInstallHint("pi", "darwin")).toContain(
+      "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+    );
     expect(providerInstallHint("pi", "darwin")).toContain("/login");
     expect(providerInstallHint("pi", "darwin")).toContain("Mac");
   });

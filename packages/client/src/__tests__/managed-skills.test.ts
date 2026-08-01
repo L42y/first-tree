@@ -210,7 +210,7 @@ describe("managed Skill reconciler", () => {
         (count, source) => count + (source.match(/reconcileManagedSkillsForConfig\(/g)?.length ?? 0),
         0,
       ),
-    ).toBe(16);
+    ).toBe(17);
     expect(handlerSources.every((source) => !source.includes("reconcileManagedSkills({"))).toBe(true);
     for (const source of [handlerSources[2] ?? "", handlerSources[3] ?? "", handlerSources[4] ?? ""]) {
       expect(source).toContain("if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;");

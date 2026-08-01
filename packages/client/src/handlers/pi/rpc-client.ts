@@ -2,12 +2,15 @@ import type { ChildProcess } from "node:child_process";
 import type { ProviderProcessSupervisor } from "../../runtime/provider-process-supervisor.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_SETTLEMENT_TIMEOUT_MS = 20 * 60_000;
 const STDERR_LIMIT = 8_000;
+const CLOSE_TERM_GRACE_MS = 5_000;
 const LINE_SEPARATOR = "\n";
 const LINE_SEPARATOR_CODE = LINE_SEPARATOR.charCodeAt(0);
 const CARRIAGE_RETURN_CODE = "\r".charCodeAt(0);
 
 export type PiRpcResponse = {
+  command: string;
   success: boolean;
   error?: string;
   data?: unknown;
@@ -23,6 +26,8 @@ export type PiRpcClientOptions = {
   supervisor: ProviderProcessSupervisor;
   label?: string;
   requestTimeoutMs?: number;
+  settlementTimeoutMs?: number;
+  closeGraceMs?: number;
   onEvent?: PiRpcEventCallback;
   onLog?: (message: string) => void;
 };
@@ -34,8 +39,22 @@ export class PiRpcTransportError extends Error {
   }
 }
 
+export class PiRpcProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PiRpcProtocolError";
+  }
+}
+
 type PendingRequest = {
+  command: string;
   resolve: (value: PiRpcResponse) => void;
+  reject: (reason: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+type SettlementWaiter = {
+  resolve: () => void;
   reject: (reason: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -82,26 +101,40 @@ export function buildPiRpcArgs(input: {
   return args;
 }
 
+/**
+ * Pi RPC commands are the command object itself (`{id, type:"prompt", ...}`),
+ * not a wrapped `{type:"request", command, params}` envelope.
+ */
 export class PiRpcClient {
   private readonly requestTimeoutMs: number;
+  private readonly settlementTimeoutMs: number;
+  private readonly closeGraceMs: number;
   private readonly onEvent?: PiRpcEventCallback;
   private readonly onLog?: (message: string) => void;
   private child: ChildProcess | null = null;
   private exited: Promise<void> | null = null;
   private stdoutBuffer = "";
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly settlementWaiters = new Set<SettlementWaiter>();
   private nextId = 1;
   private closed = false;
+  private settledSeen = false;
   private stderrTail = "";
+  private fatalError: Error | null = null;
 
   private constructor(
     child: ChildProcess,
     exited: Promise<void>,
-    options: Pick<PiRpcClientOptions, "requestTimeoutMs" | "onEvent" | "onLog">,
+    options: Pick<
+      PiRpcClientOptions,
+      "requestTimeoutMs" | "settlementTimeoutMs" | "closeGraceMs" | "onEvent" | "onLog"
+    >,
   ) {
     this.child = child;
     this.exited = exited;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.settlementTimeoutMs = options.settlementTimeoutMs ?? DEFAULT_SETTLEMENT_TIMEOUT_MS;
+    this.closeGraceMs = options.closeGraceMs ?? CLOSE_TERM_GRACE_MS;
     this.onEvent = options.onEvent;
     this.onLog = options.onLog;
 
@@ -112,14 +145,13 @@ export class PiRpcClient {
       this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_LIMIT);
     });
     child.on("error", (error) => {
-      this.failAllPending(new PiRpcTransportError(error.message));
-      this.closed = true;
+      this.failTransport(new PiRpcTransportError(error.message));
     });
     child.on("close", (code, signal) => {
       if (!this.closed) {
         const detail = this.stderrTail.trim();
         const suffix = detail ? ` stderr: ${detail}` : "";
-        this.failAllPending(
+        this.failTransport(
           new PiRpcTransportError(
             `pi rpc exited${code === null ? "" : ` with code ${code}`}${signal ? ` signal ${signal}` : ""}.${suffix}`,
           ),
@@ -151,11 +183,20 @@ export class PiRpcClient {
     return this.closed;
   }
 
+  get hasSettled(): boolean {
+    return this.settledSeen;
+  }
+
+  clearSettled(): void {
+    this.settledSeen = false;
+  }
+
   async request(
     command: string,
     params?: Record<string, unknown>,
     timeoutMs = this.requestTimeoutMs,
   ): Promise<PiRpcResponse> {
+    if (this.fatalError) throw this.fatalError;
     if (this.closed || !this.child?.stdin || this.child.stdin.destroyed) {
       throw new PiRpcTransportError("pi rpc transport is closed");
     }
@@ -165,10 +206,10 @@ export class PiRpcClient {
         this.pending.delete(id);
         reject(new PiRpcTransportError(`pi rpc request timed out: ${command}`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { command, resolve, reject, timer });
       try {
-        const payload: Record<string, unknown> = { type: "request", id, command };
-        if (params !== undefined) payload.params = params;
+        // Official wire: command name is `type`, fields are siblings of `id`.
+        const payload: Record<string, unknown> = { id, type: command, ...(params ?? {}) };
         this.writeLine(payload);
       } catch (error) {
         clearTimeout(timer);
@@ -179,6 +220,7 @@ export class PiRpcClient {
   }
 
   async prompt(message: string): Promise<PiRpcResponse> {
+    this.clearSettled();
     return this.request("prompt", { message });
   }
 
@@ -194,24 +236,83 @@ export class PiRpcClient {
     return this.request("get_state");
   }
 
+  /**
+   * Wait until `agent_settled` is observed, or fail on transport/protocol/
+   * settlement timeout. Callers may also race this against abort responses.
+   */
+  waitForSettled(timeoutMs = this.settlementTimeoutMs): Promise<void> {
+    if (this.fatalError) return Promise.reject(this.fatalError);
+    if (this.settledSeen) return Promise.resolve();
+    if (this.closed) {
+      return Promise.reject(this.fatalError ?? new PiRpcTransportError("pi rpc transport closed before settlement"));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.settlementWaiters.delete(waiter);
+        reject(new PiRpcTransportError("pi rpc settlement timed out waiting for agent_settled"));
+      }, timeoutMs);
+      const waiter: SettlementWaiter = {
+        resolve: () => {
+          clearTimeout(timer);
+          this.settlementWaiters.delete(waiter);
+          resolve();
+        },
+        reject: (reason) => {
+          clearTimeout(timer);
+          this.settlementWaiters.delete(waiter);
+          reject(reason);
+        },
+        timer,
+      };
+      this.settlementWaiters.add(waiter);
+    });
+  }
+
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed && !this.child) return;
     this.closed = true;
+    const child = this.child;
     try {
-      if (this.child?.stdin && !this.child.stdin.destroyed) {
-        this.child.stdin.end();
+      if (child?.stdin && !child.stdin.destroyed) {
+        child.stdin.end();
       }
     } catch {
       // stdin may already be closed.
     }
-    if (this.exited) {
-      try {
-        await this.exited;
-      } catch {
-        // Process exit observation is best-effort during close.
+
+    if (child && this.exited) {
+      const exited = this.exited;
+      const timed = new Promise<"timeout">((resolve) => {
+        setTimeout(() => resolve("timeout"), this.closeGraceMs);
+      });
+      const first = await Promise.race([exited.then(() => "exited" as const), timed]);
+      if (first === "timeout" && !child.killed) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // ignore
+        }
+        const second = await Promise.race([
+          exited.then(() => "exited" as const),
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), this.closeGraceMs)),
+        ]);
+        if (second === "timeout" && !child.killed) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+          try {
+            await exited;
+          } catch {
+            // ignore
+          }
+        }
       }
     }
-    this.failAllPending(new PiRpcTransportError("pi rpc transport closed"));
+
+    this.failAllPending(this.fatalError ?? new PiRpcTransportError("pi rpc transport closed"));
+    this.failSettlementWaiters(this.fatalError ?? new PiRpcTransportError("pi rpc transport closed"));
     this.child = null;
   }
 
@@ -235,23 +336,38 @@ export class PiRpcClient {
     try {
       const value: unknown = JSON.parse(frame);
       if (!value || typeof value !== "object" || Array.isArray(value)) {
-        this.onLog?.(`pi rpc ignored non-object frame: ${frame.slice(0, 200)}`);
+        this.failTransport(new PiRpcProtocolError(`pi rpc non-object JSONL frame: ${frame.slice(0, 200)}`));
         return;
       }
       parsed = value as Record<string, unknown>;
     } catch {
-      this.onLog?.(`pi rpc ignored invalid JSON frame: ${frame.slice(0, 200)}`);
+      this.failTransport(new PiRpcProtocolError(`pi rpc invalid JSONL frame: ${frame.slice(0, 200)}`));
       return;
     }
 
     if (parsed.type === "response") {
       const id = parsed.id;
       const key = typeof id === "string" || typeof id === "number" ? String(id) : null;
-      if (!key) return;
+      if (!key) {
+        this.failTransport(new PiRpcProtocolError("pi rpc response missing id"));
+        return;
+      }
       const pending = this.pending.get(key);
-      if (!pending) return;
+      if (!pending) {
+        this.onLog?.(`pi rpc unmatched response id=${key}`);
+        return;
+      }
       clearTimeout(pending.timer);
       this.pending.delete(key);
+      const echoed = typeof parsed.command === "string" ? parsed.command : "";
+      if (!echoed || echoed !== pending.command) {
+        pending.reject(
+          new PiRpcProtocolError(
+            `pi rpc response command mismatch: expected ${pending.command}, got ${echoed || "<missing>"}`,
+          ),
+        );
+        return;
+      }
       const success = parsed.success === true;
       const error =
         typeof parsed.error === "string"
@@ -260,15 +376,41 @@ export class PiRpcClient {
             ? parsed.message
             : undefined;
       pending.resolve({
+        command: pending.command,
         success,
         ...(error ? { error } : {}),
         ...(parsed.data !== undefined ? { data: parsed.data } : {}),
-        ...(parsed.result !== undefined ? { data: parsed.result } : {}),
       });
       return;
     }
 
+    if (typeof parsed.type !== "string") {
+      this.failTransport(new PiRpcProtocolError(`pi rpc frame missing type: ${frame.slice(0, 200)}`));
+      return;
+    }
+
+    if (parsed.type === "agent_settled") {
+      this.settledSeen = true;
+      for (const waiter of [...this.settlementWaiters]) waiter.resolve();
+    }
+
     this.onEvent?.(parsed);
+  }
+
+  private failTransport(error: Error): void {
+    if (!this.fatalError) this.fatalError = error;
+    this.closed = true;
+    this.failAllPending(error);
+    this.failSettlementWaiters(error);
+    this.onLog?.(error.message);
+    const child = this.child;
+    if (child && !child.killed) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private failAllPending(error: Error): void {
@@ -277,5 +419,10 @@ export class PiRpcClient {
       pending.reject(error);
     }
     this.pending.clear();
+  }
+
+  private failSettlementWaiters(error: Error): void {
+    for (const waiter of [...this.settlementWaiters]) waiter.reject(error);
+    this.settlementWaiters.clear();
   }
 }
