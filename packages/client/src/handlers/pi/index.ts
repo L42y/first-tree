@@ -29,6 +29,7 @@ import type {
   AgentHandler,
   DeliveryToken,
   HandlerFactory,
+  HandlerShutdownOptions,
   SessionContext,
   SessionMessage,
 } from "../../runtime/handler.js";
@@ -425,6 +426,8 @@ export const createPiHandler: HandlerFactory = (config) => {
   let drainInProgress = false;
   let drainingBatch: QueuedDelivery[] | null = null;
   let drainCancellationReason: string | null = null;
+  /** Set only for SessionManager full graceful drain — not inferred from reason text. */
+  let settleProviderEnteredOnLifecycle = false;
   let lifecycleGeneration = 0;
   let currentRetryAbort: AbortController | null = null;
   const queuedMessages: QueuedDelivery[] = [];
@@ -458,27 +461,21 @@ export const createPiHandler: HandlerFactory = (config) => {
     return drainCancellationReason !== null;
   }
 
-  function isGracefulShutdownLifecycleReason(reason: string | null): boolean {
-    if (!reason) return false;
-    return (
-      reason === "pi_shutdown" || reason === "manager_shutdown" || /(?:^|:)(?:manager_)?shutdown(?:$|:)/.test(reason)
-    );
-  }
-
   function recoverTurnUnlessLifecycleOwns(reason: string): void {
     if (lifecycleOwnsRecovery()) return;
     retryCustody(reason);
   }
 
   /**
-   * Graceful shutdown after Pi accepted a prompt must terminally settle the
-   * provider-entered prefix (exactly once) instead of leaving it delivered /
-   * unacked for reconnect replay. Suspend and pre-provider cancellations keep
-   * the recoverable retry path — and must retry here because `runTurn`'s
-   * `finally` clears custody before `endLifecycle` can.
+   * Full manager/client graceful drain (`settleProviderEnteredOnLifecycle`) after
+   * Pi accepted a prompt must terminally settle the provider-entered prefix
+   * exactly once. The diagnostic reason string is irrelevant — SessionManager
+   * sets the flag explicitly. Suspend and route-retire shutdowns keep the
+   * recoverable retry path (and must retry here because `runTurn`'s `finally`
+   * clears custody before `endLifecycle` can).
    */
   async function settleLifecycleCancellation(sessionCtx: SessionContext, reason: string): Promise<void> {
-    if (isGracefulShutdownLifecycleReason(drainCancellationReason) && turnObservation?.promptAccepted === true) {
+    if (settleProviderEnteredOnLifecycle && turnObservation?.promptAccepted === true) {
       await settleAcceptedTurnFailure(
         sessionCtx,
         `pi lifecycle cancelled after provider entry (${drainCancellationReason ?? reason})`,
@@ -1576,13 +1573,14 @@ export const createPiHandler: HandlerFactory = (config) => {
     for (const entry of queuedMessages.splice(0)) entry.token.retry(entry.message, reason);
   }
 
-  async function endLifecycle(recoveryReason: string): Promise<void> {
+  async function endLifecycle(recoveryReason: string, opts: { settleProviderEntered?: boolean } = {}): Promise<void> {
     sessionActive = false;
     drainCancellationReason = recoveryReason;
+    settleProviderEnteredOnLifecycle = opts.settleProviderEntered === true;
     lifecycleGeneration += 1;
     currentRetryAbort?.abort();
     if (streaming && rpcClient && !rpcClient.isClosed) {
-      await abortAndWaitForSettlement(recoveryReason.includes("shutdown") ? "shutdown" : "suspend");
+      await abortAndWaitForSettlement(settleProviderEnteredOnLifecycle ? "shutdown" : "suspend");
     }
     await Promise.all([
       currentTurnPromise?.then(
@@ -1599,6 +1597,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     retryCustody(recoveryReason);
     await closeRpcClient();
     drainCancellationReason = null;
+    settleProviderEnteredOnLifecycle = false;
     currentRetryAbort = null;
     currentTurnPromise = null;
     currentDrainPromise = null;
@@ -1861,11 +1860,13 @@ export const createPiHandler: HandlerFactory = (config) => {
     },
 
     async suspend(reason) {
-      await endLifecycle(reason ?? "pi_suspend");
+      await endLifecycle(reason ?? "pi_suspend", { settleProviderEntered: false });
     },
 
-    async shutdown(reason) {
-      await endLifecycle(reason ?? "pi_shutdown");
+    async shutdown(reason, opts?: HandlerShutdownOptions) {
+      await endLifecycle(reason ?? "pi_shutdown", {
+        settleProviderEntered: opts?.settleProviderEntered === true,
+      });
     },
   } satisfies AgentHandler;
 };

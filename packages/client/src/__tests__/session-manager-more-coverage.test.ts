@@ -897,7 +897,7 @@ describe("SessionManager additional shutdown and finalization coverage", () => {
       expect(raw.entries).toEqual({});
       expect(onStateChange).toHaveBeenCalledWith("chat-clear-registry", "active");
       expect(onStateChange).not.toHaveBeenCalledWith("chat-clear-registry", "suspended");
-      expect(handler.shutdown).toHaveBeenCalledWith("runtime-switch");
+      expect(handler.shutdown).toHaveBeenCalledWith("runtime-switch", { settleProviderEntered: true });
       expect(sm.totalCount).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });

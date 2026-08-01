@@ -265,28 +265,19 @@ describe("Pi handler → SessionManager custody", () => {
     await sm.shutdown();
   });
 
-  it("graceful manager shutdown after accepted bash settles once and does not replay on reconnect", async () => {
-    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
-    const specs: ProviderProcessSpec[] = [];
-    const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-shutdown" });
+  function makePiSessionManager(input: {
+    specs: ProviderProcessSpec[];
+    ackEntry: ReturnType<typeof mockAckEntry>;
+    sendMessage: ReturnType<typeof vi.fn>;
+    onHandler?: (handler: ReturnType<typeof createPiHandler>) => void;
+  }): SessionManager {
     const sdk = {
       register: vi.fn(),
-      sendMessage,
+      sendMessage: input.sendMessage,
       sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
       getChatContext: vi.fn().mockResolvedValue(null),
     } as unknown as FirstTreeHubSDK;
-
-    const makeHandler = () =>
-      createPiHandler({
-        workspaceRoot,
-        runtimeProvider: "pi",
-        agentConfigCache: cache(runtimeConfig()),
-        piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
-        providerProcessSupervisor: createSyntheticSupervisor(specs),
-      });
-
-    const sm = new SessionManager({
+    return new SessionManager({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -294,7 +285,17 @@ describe("Pi handler → SessionManager custody", () => {
         reconcile_interval_seconds: 300,
       },
       concurrency: 5,
-      handlerFactory: () => makeHandler(),
+      handlerFactory: () => {
+        const handler = createPiHandler({
+          workspaceRoot,
+          runtimeProvider: "pi",
+          agentConfigCache: cache(runtimeConfig()),
+          piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+          providerProcessSupervisor: createSyntheticSupervisor(input.specs),
+        });
+        input.onHandler?.(handler);
+        return handler;
+      },
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
@@ -308,8 +309,33 @@ describe("Pi handler → SessionManager custody", () => {
       },
       sdk,
       log: silentLogger(),
-      ackEntry,
+      ackEntry: input.ackEntry,
       agentConfigCache: cache(runtimeConfig()),
+    });
+  }
+
+  it.each([
+    ["agent_runtime_switch"],
+    ["runtime switched by server"],
+    ["operator stop"],
+  ] as const)("graceful manager shutdown reason %s settles accepted bash once without start adoption", async (shutdownReason) => {
+    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-shutdown" });
+    const shutdownCalls: Array<{ reason?: string; opts?: { settleProviderEntered?: boolean } }> = [];
+
+    const sm = makePiSessionManager({
+      specs,
+      ackEntry,
+      sendMessage,
+      onHandler: (handler) => {
+        const original = handler.shutdown.bind(handler);
+        handler.shutdown = async (reason, opts) => {
+          shutdownCalls.push({ reason, opts });
+          return original(reason, opts);
+        };
+      },
     });
 
     const entry = mockEntry({
@@ -321,34 +347,64 @@ describe("Pi handler → SessionManager custody", () => {
     const dispatchPromise = sm.dispatch(entry);
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
-    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
 
-    await sm.shutdown();
+    await sm.shutdown(shutdownReason);
     await dispatchPromise;
 
+    // Full manager drain settles explicitly; a later stale-start discard may
+    // retire the same handler without settleProviderEntered (ACK-none path).
+    expect(shutdownCalls[0]).toEqual({
+      reason: shutdownReason,
+      opts: { settleProviderEntered: true },
+    });
+    expect(shutdownCalls.filter((call) => call.opts?.settleProviderEntered === true)).toHaveLength(1);
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
     expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
     expect(ackEntry).toHaveBeenCalledTimes(1);
     expect(ackEntry).toHaveBeenCalledWith(88);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(
-      "chat-pi-shutdown-replay",
-      expect.objectContaining({
-        source: "api",
-        format: "text",
-        metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true },
-        purpose: "agent-final-text",
-      }),
-    );
     const noticeOrder = sendMessage.mock.invocationCallOrder[0];
     const ackOrder = ackEntry.mock.invocationCallOrder[0];
-    expect(noticeOrder).toBeTypeOf("number");
-    expect(ackOrder).toBeTypeOf("number");
     expect(noticeOrder as number).toBeLessThan(ackOrder as number);
+    // Deferred start receipt must not adopt/resurrect after manager drain.
+    expect(sm.totalCount).toBe(0);
+    expect(sm.activeCount).toBe(0);
+  });
 
-    // Reconnect path: a fresh manager must not re-prompt an already-ACKed entry.
-    // Mirror server behavior by skipping redispatch when ackEntry already fired.
-    expect(ackEntry.mock.calls.map((call) => call[0])).toEqual([88]);
+  it("deferred resume race: manager shutdown settles accepted token without resume adoption", async () => {
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-resume" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    await sm.dispatch(mockEntry({ id: 70, chatId: "chat-pi-resume-race", messageId: "msg-first", content: "first" }));
+    expect(ackEntry).toHaveBeenCalledWith(70);
+    await sm.handleCommand("chat-pi-resume-race", "session:suspend");
+
+    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
+    writeFileSync(bashStartFile, "0");
+    writeFileSync(bashStartCountFile, "0");
+    const promptsBeforeResume = Number(readFileSync(promptCountFile, "utf8")) || 0;
+
+    const resumePromise = sm.dispatch(
+      mockEntry({ id: 71, chatId: "chat-pi-resume-race", messageId: "msg-resume", content: "run sleep" }),
+    );
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeResume + 1);
+
+    await sm.shutdown("client_switch_interrupted");
+    await resumePromise;
+
+    expect(ackEntry).toHaveBeenCalledWith(71);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 71)).toHaveLength(1);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    const ack71Index = ackEntry.mock.calls.findIndex((call) => call[0] === 71);
+    const ack71Order = ackEntry.mock.invocationCallOrder[ack71Index];
+    expect(noticeOrder as number).toBeLessThan(ack71Order as number);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+    expect(sm.totalCount).toBe(0);
+    expect(sm.activeCount).toBe(0);
   });
 
   it("graceful manager shutdown during pre-provider prompt rejection leaves zero ACK and no prompt write", async () => {

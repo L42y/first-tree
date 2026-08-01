@@ -340,8 +340,21 @@ export type AgentHandler = {
   /** Idle timeout. Close query, preserve state for resume. */
   suspend(reason?: string): Promise<void>;
 
-  /** Eviction or runtime shutdown. Same as suspend(). */
-  shutdown(reason?: string): Promise<void>;
+  /**
+   * Eviction or runtime shutdown. Same as suspend() unless
+   * `opts.settleProviderEntered` is set by SessionManager's full graceful drain.
+   */
+  shutdown(reason?: string, opts?: HandlerShutdownOptions): Promise<void>;
+};
+
+/**
+ * Options for {@link AgentHandler.shutdown}. The diagnostic `reason` string is
+ * not a custody contract — SessionManager sets `settleProviderEntered` only for
+ * full manager/client graceful drain. Route retirement / forced preemption leave
+ * it unset so provider-entered work stays recoverable (ACK-none).
+ */
+export type HandlerShutdownOptions = {
+  settleProviderEntered?: boolean;
 };
 
 /**

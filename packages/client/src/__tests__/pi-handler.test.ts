@@ -1446,7 +1446,8 @@ describe("Pi handler", () => {
     await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
     expect(readCount(promptCountFile)).toBe(1);
     expect(token.processingStarted).toHaveBeenCalled();
-    await handler.shutdown();
+    // Reason text is diagnostic only — settlement requires the explicit flag.
+    await handler.shutdown("runtime switched by server", { settleProviderEntered: true });
     await startPromise;
     expect(readCount(promptCountFile)).toBe(1);
     expect(token.retried).toEqual([]);
@@ -1463,6 +1464,25 @@ describe("Pi handler", () => {
         (event) => event.kind === "error" && JSON.stringify(event.payload).includes("provider_failure_terminal"),
       ),
     ).toBe(true);
+  });
+
+  it("route-retire shutdown without settleProviderEntered keeps accepted bash recoverable", async () => {
+    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+    });
+    const token = makeToken();
+    const startPromise = handler.start(message("m1", "run sleep"), makeContext([]), token);
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    await handler.shutdown("session_evicted");
+    await startPromise;
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toEqual(["session_evicted"]);
+    expect(readCount(promptCountFile)).toBe(1);
   });
 
   it("applies shared finite policy to active formatting failures without inbox retry", async () => {

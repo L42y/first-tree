@@ -3282,7 +3282,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(i.sessions.has("chat-unowned")).toBe(false);
     expect(sm.activeCount).toBe(0);
-    await vi.waitFor(() => expect(badShutdown).toHaveBeenCalledWith("test_unowned_route"));
+    await vi.waitFor(() => expect(badShutdown).toHaveBeenCalledWith("test_unowned_route", {}));
     await sm.shutdown();
   });
 

@@ -917,13 +917,14 @@ export class SessionManager {
       }
     }
 
-    // Admission is already fenced via `shuttingDown`. Keep delivery leases valid
-    // while handlers drain so provider-entered turns can terminally settle
-    // (durable notice + ACK) before the route lease is retired. Invalidating
-    // first would ignore late token.complete and leave unsafe prefixes unacked.
+    // Admission/adoption is fenced via `shuttingDown`. Delivery-settlement leases
+    // stay valid until after handlers drain so provider-entered turns can post a
+    // durable notice and ACK. Invalidating first would ignore late token.complete.
     const shutdownReason = reason ?? "manager_shutdown";
     const shutdowns = [...this.sessions.values()].map((session) =>
-      session.activeSlotHeld ? this.shutdownHandler(session.handler, shutdownReason) : Promise.resolve(),
+      session.activeSlotHeld
+        ? this.shutdownHandler(session.handler, shutdownReason, { settleProviderEntered: true })
+        : Promise.resolve(),
     );
     await Promise.allSettled(shutdowns);
     for (const session of this.sessions.values()) {
@@ -1098,14 +1099,24 @@ export class SessionManager {
   }
 
   private isCurrentRouteTransition(entry: SessionEntry, transition: RouteTransitionToken): boolean {
-    return entry.routeTransition === transition && this.isRouteLeaseValid(entry, transition);
+    return entry.routeTransition === transition && this.isRouteAdoptionValid(entry, transition);
   }
 
-  private isRouteLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
-    // `shuttingDown` is an admission fence only (see `routeMessage` /
-    // `dispatch`). Graceful manager shutdown must allow terminal delivery
-    // settlement while handlers drain; the route lease is retired afterward
-    // via `invalidateRouteTransition`.
+  /**
+   * One-way shutdown admission/adoption fence. Once manager shutdown begins,
+   * late start/resume receipts must not adopt the route, drain deferred work,
+   * or resurrect registry state.
+   */
+  private isRouteAdoptionValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
+    return !this.shuttingDown && this.isDeliverySettlementLeaseValid(entry, transition);
+  }
+
+  /**
+   * Lease for already-issued delivery tokens during graceful handler drain.
+   * Intentionally ignores `shuttingDown` so provider-entered custody can still
+   * post a durable notice and ACK before `invalidateRouteTransition`.
+   */
+  private isDeliverySettlementLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
     return (
       this.sessions.get(entry.chatId) === entry &&
       entry.routeTransitionGeneration === transition.generation &&
@@ -1116,17 +1127,30 @@ export class SessionManager {
     );
   }
 
+  /** Adoption-gated lease for inject / non-settlement route checks. */
+  private isRouteLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
+    return this.isRouteAdoptionValid(entry, transition);
+  }
+
   private completeRouteTransition(entry: SessionEntry, transition: RouteTransitionToken): boolean {
     if (!this.isCurrentRouteTransition(entry, transition)) return false;
     entry.routeTransition = null;
     return true;
   }
 
-  private shutdownHandler(handler: AgentHandler, reason: string, opts: { afterPrior?: boolean } = {}): Promise<void> {
+  private shutdownHandler(
+    handler: AgentHandler,
+    reason: string,
+    opts: { afterPrior?: boolean; settleProviderEntered?: boolean } = {},
+  ): Promise<void> {
     const prior = this.handlerShutdowns.get(handler);
     if (prior && opts.afterPrior !== true) return prior;
     const shutdown = (prior ?? Promise.resolve())
-      .then(() => handler.shutdown(reason))
+      .then(() =>
+        handler.shutdown(reason, {
+          ...(opts.settleProviderEntered === true ? { settleProviderEntered: true } : {}),
+        }),
+      )
       .catch((err) => {
         this.config.log.warn({ reason, err }, "handler shutdown failed");
       });
@@ -1783,8 +1807,10 @@ export class SessionManager {
     this.sessions.set(chatId, entry);
     this.claimActiveSlot(entry);
     const transition = this.beginRouteTransition(entry, handler, evicted ? "resume" : "start");
-    const routeLeaseValid = () => this.isRouteLeaseValid(entry, transition);
-    const ctx = this.buildSessionContext(chatId, routeLeaseValid);
+    // Adoption stays fenced by `shuttingDown` via isCurrentRouteTransition;
+    // settlement lease ignores it so an in-flight accepted turn can still ACK.
+    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
+    const ctx = this.buildSessionContext(chatId, settlementValid);
     if (evicted) this.evictedMappings.delete(chatId);
 
     // Report `active` before runtime projection. `session:runtime` frames are
@@ -1794,7 +1820,7 @@ export class SessionManager {
     this.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
     try {
       this.setCurrentTrigger(chatId, message);
-      const token = this.createDeliveryToken(chatId, routeLeaseValid);
+      const token = this.createDeliveryToken(chatId, settlementValid);
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
@@ -1884,8 +1910,8 @@ export class SessionManager {
     entry.status = "active";
     this.claimActiveSlot(entry);
     const transition = this.beginRouteTransition(entry, routeHandler, "resume");
-    const routeLeaseValid = () => this.isRouteLeaseValid(entry, transition);
-    const ctx = this.buildSessionContext(entry.chatId, routeLeaseValid);
+    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
+    const ctx = this.buildSessionContext(entry.chatId, settlementValid);
     entry.lastActivity = Date.now();
 
     this.notifySessionState(entry.chatId, "active");
@@ -1901,7 +1927,7 @@ export class SessionManager {
       // assignment back, a fresh-start fallback would persist the OLD id,
       // and the next suspend→resume cycle would re-trigger the same
       // missing-transcript fallback ad infinitum.
-      const token = message ? this.createDeliveryToken(entry.chatId, routeLeaseValid) : undefined;
+      const token = message ? this.createDeliveryToken(entry.chatId, settlementValid) : undefined;
       const resumeResult = token
         ? await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx, token)
         : await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx);
@@ -2287,14 +2313,14 @@ export class SessionManager {
     this.claimActiveSlot(entry);
     entry.lastActivity = Date.now();
     const transition = this.beginRouteTransition(entry, newHandler, retryRoute.kind);
-    const routeLeaseValid = () => this.isRouteLeaseValid(entry, transition);
-    const ctx = this.buildSessionContext(chatId, routeLeaseValid);
+    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
+    const ctx = this.buildSessionContext(chatId, settlementValid);
 
     this.notifySessionState(chatId, "active");
     this.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
     try {
       if (retryHeadMessage) this.setCurrentTrigger(chatId, retryHeadMessage);
-      const token = retryHeadMessage ? this.createDeliveryToken(chatId, routeLeaseValid) : undefined;
+      const token = retryHeadMessage ? this.createDeliveryToken(chatId, settlementValid) : undefined;
       if (retryRoute.kind === "resume") {
         const resumeResult = token
           ? await newHandler.resume(retryHeadMessage ?? undefined, retryRoute.previousSessionId, ctx, token)
@@ -2309,7 +2335,7 @@ export class SessionManager {
         }
       } else {
         const receipt = normalizeStartReceipt(
-          await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, routeLeaseValid)),
+          await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, settlementValid)),
         );
         if (!this.isCurrentRouteTransition(entry, transition)) {
           this.discardStaleRouteTransition(transition, "session_retry_start_stale_completion");

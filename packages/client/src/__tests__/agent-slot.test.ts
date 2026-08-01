@@ -1273,6 +1273,9 @@ describe("AgentSlot", () => {
     await joinedStop;
 
     expect(session.shutdown).toHaveBeenCalledTimes(1);
+    // AgentSlot forwards the diagnostic reason; SessionManager maps full graceful
+    // drain to handler.shutdown(..., { settleProviderEntered: true }) independently
+    // of that string (see pi-session-custody runtime-switch regressions).
     expect(session.shutdown).toHaveBeenCalledWith("agent_runtime_switch", {
       clearPersistedRegistry: true,
       reportSuspendedSessions: false,
