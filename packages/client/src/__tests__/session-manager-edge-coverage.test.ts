@@ -3667,6 +3667,143 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("abandons a retry install when a terminate wins the debt-settle race", async () => {
+    let signalDebtStopStarted: (() => void) | undefined;
+    let resolveDebtStop: (() => void) | undefined;
+    const debtStopStarted = new Promise<void>((resolve) => {
+      signalDebtStopStarted = resolve;
+    });
+    const debtStopGate = new Promise<void>((resolve) => {
+      resolveDebtStop = resolve;
+    });
+    const debtHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalDebtStopStarted?.();
+          await debtStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const freshHandler = handler();
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-retry-vs-terminate";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+    i.registerPendingTeardown(chatId, debtHandler);
+
+    // The retry waits on the gated debt stop; the terminate joins the same
+    // shutdown and must not ack while it is unconfirmed.
+    const retry = i.runRetry(chatId);
+    await debtStopStarted;
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    let terminateSettled = false;
+    void terminate.then(() => {
+      terminateSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(terminateSettled).toBe(false);
+
+    // The stop confirms: the retry's post-settle re-validation sees the
+    // in-flight terminate and ABANDONS the install — no fresh handler, no
+    // new route producer — and only then may the terminate ack.
+    resolveDebtStop?.();
+    await retry;
+    await terminate;
+    expect(freshHandler.start).not.toHaveBeenCalled();
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("installs the retry route after the debt settles when no terminate intervenes", async () => {
+    const debtHandler = handler();
+    const freshHandler = handler({ resume: vi.fn().mockResolvedValue("retry-session") });
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-retry-after-debt-settle";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+    i.registerPendingTeardown(chatId, debtHandler);
+
+    await i.runRetry(chatId);
+
+    expect(freshHandler.resume).toHaveBeenCalledTimes(1);
+    expect(debtHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+
+    await sm.shutdown();
+  });
+
+  it("abandons a retry install when manager shutdown starts during the debt settle", async () => {
+    let signalDebtStopStarted: (() => void) | undefined;
+    let resolveDebtStop: (() => void) | undefined;
+    const debtStopStarted = new Promise<void>((resolve) => {
+      signalDebtStopStarted = resolve;
+    });
+    const debtStopGate = new Promise<void>((resolve) => {
+      resolveDebtStop = resolve;
+    });
+    const debtHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalDebtStopStarted?.();
+          await debtStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const freshHandler = handler();
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-retry-vs-shutdown";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+    i.registerPendingTeardown(chatId, debtHandler);
+
+    const retry = i.runRetry(chatId);
+    await debtStopStarted;
+
+    // Manager shutdown starts while the retry waits on the debt stop: the
+    // post-settle re-validation must abandon the install.
+    const stopped = sm.shutdown();
+    let stopSettled = false;
+    void stopped.then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopSettled).toBe(false);
+
+    resolveDebtStop?.();
+    await retry;
+    await stopped;
+    expect(freshHandler.start).not.toHaveBeenCalled();
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+  });
+
   it("keeps chats with unresolved teardown debt in the held set", async () => {
     const sm = makeManager();
     const i = internals(sm);

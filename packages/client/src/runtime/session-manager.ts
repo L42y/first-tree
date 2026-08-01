@@ -1960,6 +1960,14 @@ export class SessionManager {
     if (!(await this.settleTeardownDebtBeforeRoute(chatId))) {
       throw new Error("route admission: teardown debt settle failed");
     }
+    // The settle awaited: re-validate the fences — a terminate or manager
+    // shutdown may have started meanwhile. A terminate owns the chat's
+    // delivery state now (hold silently); a shutdown keeps the delivery in
+    // retry custody.
+    if (this.shuttingDown) {
+      this.retryDeliveryTurn(chatId, message, "manager_shutdown");
+      return;
+    }
     // The settle awaited: a terminate may have started meanwhile — it owns
     // the chat's delivery state now, so hold instead of installing a route.
     if (this.terminatingChats.has(chatId)) return;
@@ -2552,6 +2560,26 @@ export class SessionManager {
           this.config.log.warn({ chatId, err }, "session retry rearm failed");
         });
       }, nextDelay);
+      return;
+    }
+
+    // The settle awaited: re-validate before installing anything. A
+    // terminate may have started while this retry waited on the debt — it
+    // snapshots and drains the SAME debt and its producer quiesce has
+    // already passed, so installing now would ack over a live fresh route.
+    // Same for a manager shutdown. Abandon the install per the entry-guard
+    // semantics at the top of this function: no new handler is installed,
+    // and the retry choreography is left to whoever now owns the chat
+    // (terminate clears the entry; shutdown clears the timers).
+    if (this.shuttingDown) return;
+    if (this.terminatingChats.has(chatId)) return;
+    if (
+      this.sessions.get(chatId) !== entry ||
+      entry.status !== "suspended" ||
+      entry.activeSlotHeld ||
+      entry.routeTransition !== null ||
+      entry.retryAttempt === 0
+    ) {
       return;
     }
 
