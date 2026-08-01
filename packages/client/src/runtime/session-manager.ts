@@ -1355,9 +1355,17 @@ export class SessionManager {
    */
   private reconcileReplayFences(chatId: string, messageIds: readonly string[]): void {
     if (!this.replayFence) return;
+    const replayFence = this.replayFence;
     // Converge only on a real fence transition: an ordinary never-fenced
     // turn must never fire a post-fence recovery.
     let transitioned = false;
+    const fencedMessageIds = messageIds.filter((messageId) => replayFence.isFenced(chatId, messageId));
+    if (fencedMessageIds.length > 0) {
+      // Invariant: authoritative settlement marker BEFORE any local fence
+      // clear. The ACK is already server-confirmed, so the marker must
+      // survive even if the clear below fails on I/O.
+      this.inboxDelivery.markFenceSettled(chatId, fencedMessageIds);
+    }
     for (const messageId of messageIds) {
       if (!this.replayFence.isFenced(chatId, messageId)) continue;
       transitioned = true;

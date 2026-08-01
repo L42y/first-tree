@@ -3822,3 +3822,76 @@ describe("SessionManager pre-ledger settlement race", () => {
     }
   });
 });
+
+describe("SessionManager confirmed-ACK fence settlement suppression", () => {
+  it("suppresses a stale duplicate after a fenced delivery ACKs, even across suspend", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sm-ack-tombstone-"));
+    try {
+      const fencePath = join(root, "fence.json");
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+      const ackEntry = mockAckEntry();
+      let capturedCtx: SessionContext | undefined;
+      let capturedFence: ReplayFenceStore | undefined;
+      const handler = createMockHandler({
+        start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
+          capturedCtx = ctx;
+          return "session-id-mock";
+        }),
+      });
+      const sm = createSessionManager({
+        ackEntry,
+        recoverChat,
+        replayFencePath: fencePath,
+        handlerFactory: (config) => {
+          capturedFence = config.replayFence as ReplayFenceStore;
+          return handler;
+        },
+      });
+
+      // A fenced unsafe delivery runs and ACKs successfully.
+      await sm.dispatch(mockEntry({ id: 81, chatId: "chat-acktomb", messageId: "msg-1" }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      capturedFence?.fence({
+        chatId: "chat-acktomb",
+        messageId: "msg-1",
+        provider: "kimi-code",
+        toolName: "Write",
+        toolUseId: "write-1",
+        fencedAt: new Date().toISOString(),
+      });
+      const disposition = await capturedCtx?.finishTurn(
+        {
+          inboxEntryId: 81,
+          id: "msg-1",
+          chatId: "chat-acktomb",
+          senderId: "s",
+          format: "text",
+          content: "",
+          metadata: {},
+        },
+        { status: "success", terminal: true },
+      );
+      expect(disposition).toBe("settled");
+      const reloaded = new ReplayFenceStore(fencePath);
+      reloaded.load();
+      expect(reloaded.hasFenceForChat("chat-acktomb")).toBe(false);
+
+      // The session goes away; a stale duplicate of the settled delivery
+      // must be suppressed at receive() — no resume, no start, no effect,
+      // no new ACK.
+      await sm.handleCommand("chat-acktomb", "session:suspend");
+      await sm.dispatch(mockEntry({ id: 81, chatId: "chat-acktomb", messageId: "msg-1" }));
+      expect(handler.resume).not.toHaveBeenCalled();
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      expect(ackEntry).toHaveBeenCalledTimes(1);
+
+      // A genuine newer unacked delivery still flows normally.
+      await sm.dispatch(mockEntry({ id: 82, chatId: "chat-acktomb", messageId: "msg-2" }));
+      expect(handler.resume).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

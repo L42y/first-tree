@@ -284,10 +284,15 @@ export class InboxDeliveryCoordinator {
    * keeping them would let a stray duplicate frame re-admit an
    * already-settled unsafe delivery into the provider.
    */
-  settleReplayFencedEntries(chatId: string, messageIds: readonly string[]): void {
-    // Register the settlement fact for EVERY proven id first — independent
-    // of whether a ledger entry exists yet (a frame may still be parked
-    // before receive()).
+  /**
+   * Register the settlement fact for proven-settled deliveries. This is
+   * THE shared suppression boundary for every server-proven settlement of
+   * a fenced delivery — probe or confirmed ACK — and must run BEFORE the
+   * local fence is cleared, so a later stale frame is suppressed at
+   * receive() instead of resuming the provider. Independent of ledger
+   * membership (a frame may still be parked before receive()).
+   */
+  markFenceSettled(chatId: string, messageIds: readonly string[]): void {
     let markers = this.fenceSettledMessages.get(chatId);
     if (!markers) {
       markers = new Set();
@@ -302,6 +307,10 @@ export class InboxDeliveryCoordinator {
         "fence-settled marker set exceeds the defensive bound; refusing to evict safety markers",
       );
     }
+  }
+
+  settleReplayFencedEntries(chatId: string, messageIds: readonly string[]): void {
+    this.markFenceSettled(chatId, messageIds);
     const ledger = this.ledgers.get(chatId);
     if (!ledger) return;
     const ids = new Set(messageIds);
