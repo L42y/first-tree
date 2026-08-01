@@ -6,6 +6,12 @@
  * (E415 Unsupported Media Type / "invalid path"). pnpm symlink layouts produce
  * exactly those names when `bundleDependencies` are packed without materializing
  * real in-package copies first.
+ *
+ * Invariant: every member name must be a POSIX-canonical path under `package/`
+ * (or the bare `package` directory entry). Dot segments, empty segments,
+ * backslashes, absolute paths, and link targets that resolve outside `package/`
+ * are rejected. GNU/PAX long-name / extended headers are fail-closed because
+ * this parser does not interpret them — silently skipping would under-enumerate.
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,8 +23,12 @@ import { gunzipSync, gzipSync } from "node:zlib";
  * @typedef {{ name: string, typeFlag: string, linkname?: string }} TarEntry
  */
 
+/** GNU long-name / PAX extended headers this parser does not interpret. */
+const UNSUPPORTED_TYPE_FLAGS = new Set(["L", "K", "x", "g", "X"]);
+
 /**
  * List entries from a `.tgz` (gzip+ustar) using only Node builtins.
+ * Fail closed on GNU/PAX long-name / extended headers.
  * @param {string} tarballPath
  * @returns {TarEntry[]}
  */
@@ -37,9 +47,16 @@ export function listNpmTarballEntries(tarballPath) {
       throw new Error(`invalid tar size field at offset ${offset}`);
     }
     const typeFlag = String.fromCharCode(header[156] || 0) || "0";
+    if (UNSUPPORTED_TYPE_FLAGS.has(typeFlag)) {
+      throw new Error(
+        `unsupported tar typeflag '${typeFlag}' at offset ${offset} (GNU/PAX long-name or extended header); fail closed rather than under-enumerate`,
+      );
+    }
     const linkname = readTarString(header, 157, 100);
     const magic = readTarString(header, 257, 6);
     const prefix = magic.startsWith("ustar") ? readTarString(header, 345, 155) : "";
+    // Preserve backslashes in the joined name so the safety classifier can reject
+    // non-POSIX separators explicitly (rather than silently normalizing them).
     const fullName = prefix ? `${prefix}/${name}` : name;
     entries.push({
       name: fullName,
@@ -65,6 +82,55 @@ function readTarString(header, start, length) {
 }
 
 /**
+ * Return null when `name` is not a POSIX-canonical path under `package/`.
+ * @param {string} name
+ * @returns {string | null} relative path under package/ ("" for the package dir itself)
+ */
+export function packageRelativeCanonicalPath(name) {
+  if (name.includes("\0") || name.includes("\\")) return null;
+  if (name.startsWith("/")) return null;
+  if (name === "package") return "";
+  if (!name.startsWith("package/")) return null;
+  const rel = name.slice("package/".length);
+  if (rel === "") return "";
+  const parts = rel.split("/");
+  for (const part of parts) {
+    if (part === "" || part === "." || part === "..") return null;
+  }
+  return rel;
+}
+
+/**
+ * Resolve a tar link target relative to the entry's directory and prove the
+ * result stays under `package/`. Returns the canonical package-relative path
+ * or null when the link escapes / is non-canonical.
+ * @param {string} entryName
+ * @param {string} linkTarget
+ */
+export function resolveTarLinkWithinPackage(entryName, linkTarget) {
+  if (!linkTarget || linkTarget.includes("\0") || linkTarget.includes("\\")) return null;
+  if (linkTarget.startsWith("/")) return null;
+
+  const entryRel = packageRelativeCanonicalPath(entryName);
+  if (entryRel === null) return null;
+
+  const entryDirParts = entryName === "package" ? ["package"] : entryName.split("/").slice(0, -1);
+  const stack = [...entryDirParts];
+  for (const part of linkTarget.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (stack.length <= 1) return null; // would leave package/
+      stack.pop();
+      continue;
+    }
+    stack.push(part);
+  }
+  if (stack[0] !== "package") return null;
+  const resolved = stack.join("/");
+  return packageRelativeCanonicalPath(resolved) === null ? null : resolved;
+}
+
+/**
  * Return human-readable violations for registry-unsafe entry names / link targets.
  * @param {TarEntry[]} entries
  * @returns {string[]}
@@ -73,27 +139,21 @@ export function findUnsafeNpmTarballEntries(entries) {
   /** @type {string[]} */
   const violations = [];
   for (const entry of entries) {
-    // npm pack payloads must place every member under the canonical `package/`
-    // root (or the bare `package` directory entry). Rootless names like
-    // `outside.txt` are registry-unsafe even without `..` traversal.
-    if (entry.name !== "package" && !entry.name.startsWith("package/")) {
-      violations.push(`missing package/ root: ${entry.name}`);
-      continue;
-    }
-    const rel = entry.name === "package" ? "" : entry.name.slice("package/".length);
-    const parts = rel === "" ? [] : rel.split("/");
-    if (parts.includes("..")) {
-      violations.push(`traversal path: ${entry.name}`);
-      continue;
-    }
-    if (rel.startsWith("/") || entry.name.startsWith("/")) {
-      violations.push(`absolute path: ${entry.name}`);
+    const rel = packageRelativeCanonicalPath(entry.name);
+    if (rel === null) {
+      if (entry.name.includes("\\") || entry.name.includes("\0")) {
+        violations.push(`non-posix path separator: ${entry.name}`);
+      } else if (!entry.name.startsWith("package/") && entry.name !== "package") {
+        violations.push(`missing package/ root: ${entry.name}`);
+      } else {
+        violations.push(`non-canonical package path: ${entry.name}`);
+      }
       continue;
     }
     if (entry.typeFlag === "2" || entry.typeFlag === "1") {
       const target = entry.linkname ?? "";
-      const targetParts = target.split("/");
-      if (target.startsWith("/") || targetParts.includes("..") || target.includes("node_modules/.pnpm/")) {
+      const resolved = resolveTarLinkWithinPackage(entry.name, target);
+      if (resolved === null) {
         violations.push(`escaping ${entry.typeFlag === "2" ? "symlink" : "hardlink"}: ${entry.name} -> ${target}`);
       }
     }
@@ -165,7 +225,6 @@ function buildUstarHeader(name, size, typeFlag, linkname) {
   writeTarField(header, 157, 100, linkname);
   writeTarField(header, 257, 6, "ustar");
   writeTarField(header, 263, 2, "00");
-  // checksum: sum of header bytes with checksum field as spaces
   writeTarField(header, 148, 8, "        ");
   let sum = 0;
   for (const byte of header) sum += byte;
@@ -185,6 +244,29 @@ function writeTarField(header, start, length, value) {
   buf.copy(header, start);
 }
 
+function expectReject(label, files, needle) {
+  const dir = mkdtempSync(pathJoin(tmpdir(), "npm-tarball-safety-case-"));
+  try {
+    const path = pathJoin(dir, "case.tgz");
+    writeSyntheticNpmTarball(path, files);
+    const violations = findUnsafeNpmTarballEntries(listNpmTarballEntries(path));
+    if (!violations.some((line) => line.includes(needle))) {
+      throw new Error(
+        `${label}: expected violation containing ${JSON.stringify(needle)}, got ${JSON.stringify(violations)}`,
+      );
+    }
+    let rejected = false;
+    try {
+      assertNpmTarballRegistrySafe(path);
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) throw new Error(`${label}: expected assertNpmTarballRegistrySafe to throw`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function runSelftest() {
   const dir = mkdtempSync(pathJoin(tmpdir(), "npm-tarball-safety-selftest-"));
   try {
@@ -195,44 +277,72 @@ function runSelftest() {
         name: "package/node_modules/@botiverse/kimi-code-sdk/package.json",
         content: '{"name":"@botiverse/kimi-code-sdk"}',
       },
+      {
+        name: "package/node_modules/@botiverse/kimi-code-sdk/dist/index.mjs",
+        content: "export {}",
+        typeFlag: "2",
+        linkname: "./other.mjs",
+      },
+    ]);
+    // Re-write safe tarball without the relative link that stays in-package —
+    // keep a plain safe set for the happy path.
+    writeSyntheticNpmTarball(safePath, [
+      { name: "package/package.json", content: '{"name":"demo"}' },
+      {
+        name: "package/node_modules/@botiverse/kimi-code-sdk/package.json",
+        content: '{"name":"@botiverse/kimi-code-sdk"}',
+      },
     ]);
     assertNpmTarballRegistrySafe(safePath);
 
-    const badPath = pathJoin(dir, "bad.tgz");
-    // Mirrors the registry-rejected layout from staging publish run 30703432848.
-    writeSyntheticNpmTarball(badPath, [
-      {
-        name: "package/../../node_modules/.pnpm/@botiverse+kimi-code-sdk@0.26.0/node_modules/@antfu/utils/LICENSE",
-        content: "license",
-      },
-    ]);
-    const violations = findUnsafeNpmTarballEntries(listNpmTarballEntries(badPath));
-    if (!violations.some((line) => line.includes("traversal path"))) {
-      throw new Error("expected traversal violation for synthetic pnpm layout");
-    }
-    let rejected = false;
-    try {
-      assertNpmTarballRegistrySafe(badPath);
-    } catch {
-      rejected = true;
-    }
-    if (!rejected) throw new Error("expected registry-safe assertion to reject traversal tarball");
+    expectReject(
+      "pnpm traversal",
+      [
+        {
+          name: "package/../../node_modules/.pnpm/@botiverse+kimi-code-sdk@0.26.0/node_modules/@antfu/utils/LICENSE",
+          content: "license",
+        },
+      ],
+      "non-canonical package path",
+    );
+    expectReject("rootless entry", [{ name: "outside.txt", content: "x" }], "missing package/ root");
+    expectReject("dot segment", [{ name: "package/./inside.txt", content: "x" }], "non-canonical package path");
+    expectReject(
+      "backslash traversal",
+      [{ name: "package\\..\\outside.txt", content: "x" }],
+      "non-posix path separator",
+    );
+    expectReject("empty segment", [{ name: "package//inside.txt", content: "x" }], "non-canonical package path");
+    expectReject(
+      "escaping symlink",
+      [
+        {
+          name: "package/node_modules/demo/link",
+          typeFlag: "2",
+          linkname: "../../../outside",
+        },
+      ],
+      "escaping symlink",
+    );
 
-    const rootlessPath = pathJoin(dir, "rootless.tgz");
-    writeSyntheticNpmTarball(rootlessPath, [{ name: "outside.txt", content: "x" }]);
-    const rootlessViolations = findUnsafeNpmTarballEntries(listNpmTarballEntries(rootlessPath));
-    if (!rootlessViolations.some((line) => line.includes("missing package/ root"))) {
-      throw new Error("expected missing package/ root violation for rootless entry");
-    }
-    let rootlessRejected = false;
+    // In-package relative symlink must be accepted.
+    const okLink = pathJoin(dir, "ok-link.tgz");
+    writeSyntheticNpmTarball(okLink, [
+      { name: "package/a/file.txt", content: "a" },
+      { name: "package/a/link", typeFlag: "2", linkname: "./file.txt" },
+    ]);
+    assertNpmTarballRegistrySafe(okLink);
+
+    // GNU long-name typeflag must fail closed at parse time.
+    const gnuPath = pathJoin(dir, "gnu.tgz");
+    writeSyntheticNpmTarball(gnuPath, [{ name: "package/ignored", content: "", typeFlag: "L" }]);
+    let gnuFailed = false;
     try {
-      assertNpmTarballRegistrySafe(rootlessPath);
-    } catch {
-      rootlessRejected = true;
+      listNpmTarballEntries(gnuPath);
+    } catch (error) {
+      gnuFailed = error instanceof Error && error.message.includes("unsupported tar typeflag");
     }
-    if (!rootlessRejected) {
-      throw new Error("expected registry-safe assertion to reject rootless entry");
-    }
+    if (!gnuFailed) throw new Error("expected GNU long-name typeflag to fail closed");
 
     console.log("npm-tarball-safety: selftest PASS");
   } finally {

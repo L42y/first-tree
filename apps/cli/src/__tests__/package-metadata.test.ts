@@ -161,7 +161,13 @@ describe("trusted-publishing npm toolchain contract", () => {
     // workspace symlink graph recoverable by a subsequent prepare/restore.
     const postpack = pkg.scripts?.postpack ?? "";
     expect(postpack.indexOf("materialize-bundled-deps.mjs restore")).toBeLessThan(postpack.indexOf("rm -rf skills"));
-    expect(readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toContain("assertNpmTarballRegistrySafe");
+    const smoke = readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"));
+    expect(smoke).toContain("assertNpmTarballRegistrySafe");
+    // Helpers must throw so finally/cleanup always runs; only the outermost
+    // main() may set process.exitCode.
+    const failFn = smoke.match(/function fail\([^)]*\) \{[^}]*\}/)?.[0] ?? "";
+    expect(failFn).toContain("throw new SmokeFailure");
+    expect(failFn).not.toContain("process.exit");
   });
 
   it("restores every original symlink after a mid-prepare failure", () => {
@@ -175,10 +181,25 @@ describe("trusted-publishing npm toolchain contract", () => {
     }
     expect(result.stdout).toContain("selftest-recovery PASS");
   });
+
+  it("cleans tarballs, temp consumers, and symlinks after a release-pack smoke failure", () => {
+    const result = spawnSync(
+      process.execPath,
+      [join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"), "selftest-cleanup"],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      },
+    );
+    if (result.status !== 0) {
+      throw new Error(`release-pack-smoke selftest-cleanup failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest-cleanup PASS");
+  });
 });
 
 describe("npm tarball registry-safety helper", () => {
-  it("accepts canonical package-root paths and rejects traversal and rootless layouts", () => {
+  it("accepts canonical package-root paths and rejects traversal, rootless, and escaping layouts", () => {
     const result = spawnSync(process.execPath, [join(REPO_ROOT, "scripts", "npm-tarball-safety.mjs")], {
       encoding: "utf8",
     });

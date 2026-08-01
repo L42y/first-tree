@@ -16,10 +16,14 @@
  *   prepack  → node scripts/materialize-bundled-deps.mjs prepare
  *   postpack → node scripts/materialize-bundled-deps.mjs restore
  *
- * Recovery: each original symlink target is persisted to the restore manifest
- * *before* that link is unlinked, via an atomic rename. A mid-prepare failure
- * (or a later `prepare` that finds a stranded manifest) restores every recorded
- * target so the pnpm workspace cannot be left with unrecoverable real copies.
+ * Recovery (failure-atomic):
+ *   1. Preflight the full bundle closure and require every entry to still be a
+ *      symlink (collect every original link target).
+ *   2. Persist the COMPLETE restore journal with write-temp + rename BEFORE the
+ *      first unlink/cpSync.
+ *   3. Mutate. Any failure (or a later prepare that finds a stranded journal)
+ *      runs idempotent restore, which can repair a mix of still-linked and
+ *      already-materialized entries.
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -91,8 +95,7 @@ function listBundleClosure(rootPkg) {
   return ordered;
 }
 
-/** Persist the recovery manifest via write-temp + rename so a crash cannot leave
- * a half-written JSON that omits already-unlinked targets. */
+/** Persist the recovery journal via write-temp + rename. */
 function persistManifest(entries) {
   const tmpPath = `${MANIFEST_PATH}.${process.pid}.tmp`;
   writeFileSync(tmpPath, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`);
@@ -124,12 +127,42 @@ function parseFailAfter(argv) {
   return null;
 }
 
+/**
+ * Read every closure entry that must be materialized. Fail closed unless each
+ * path is still a recoverable symlink.
+ * @returns {{ name: string, path: string, linkTarget: string, resolvedSource: string }[]}
+ */
+function preflightEntries(names) {
+  /** @type {{ name: string, path: string, linkTarget: string, resolvedSource: string }[]} */
+  const entries = [];
+  for (const name of names) {
+    const dir = packageDir(name);
+    if (!existsSync(join(dir, "package.json")) && !lstatSyncSafe(dir)?.isSymbolicLink()) {
+      throw new Error(`bundle closure package missing from node_modules: ${name}`);
+    }
+    const stat = lstatSyncSafe(dir);
+    if (!stat) throw new Error(`cannot stat ${name}`);
+    if (!stat.isSymbolicLink()) {
+      throw new Error(
+        `expected symlink for ${name} but found a real path; refusing to materialize without a recoverable link target`,
+      );
+    }
+    entries.push({
+      name,
+      path: relative(PACKAGE_ROOT, dir),
+      linkTarget: readlinkSync(dir),
+      resolvedSource: realpathSync(dir),
+    });
+  }
+  return entries;
+}
+
 function prepare(options = {}) {
   const failAfter = options.failAfter ?? null;
 
   if (existsSync(MANIFEST_PATH)) {
-    // A previous prepare without restore (interrupted pack). Restore first so we
-    // never nest a real copy on top of another real copy.
+    // A previous prepare without restore (interrupted pack / crashed mutation).
+    // Restore first so we never nest a real copy on top of another real copy.
     restore({ allowMissing: true });
   }
 
@@ -137,40 +170,22 @@ function prepare(options = {}) {
   const names = listBundleClosure(rootPkg);
   if (names.length === 0) return;
 
-  /** @type {{ name: string, path: string, linkTarget: string }[]} */
-  const entries = [];
-  let mutated = 0;
-
+  /** @type {{ name: string, path: string, linkTarget: string, resolvedSource: string }[]} */
+  let entries;
   try {
-    for (const name of names) {
-      const dir = packageDir(name);
-      if (!existsSync(join(dir, "package.json")) && !lstatSyncSafe(dir)?.isSymbolicLink()) {
-        throw new Error(`bundle closure package missing from node_modules: ${name}`);
-      }
-      const stat = lstatSyncSafe(dir);
-      if (!stat) throw new Error(`cannot stat ${name}`);
-      if (!stat.isSymbolicLink()) {
-        // After a successful restore-at-start, every closure entry must still be
-        // a symlink. A real directory here means a prior run lost its recovery
-        // record — fail closed rather than skip and strand the workspace.
-        throw new Error(
-          `expected symlink for ${name} but found a real path; refusing to materialize without a recoverable link target`,
-        );
-      }
+    entries = preflightEntries(names);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 
-      const linkTarget = readlinkSync(dir);
-      const resolvedSource = realpathSync(dir);
-      const entry = {
-        name,
-        path: relative(PACKAGE_ROOT, dir),
-        linkTarget,
-      };
+  // Persist the COMPLETE journal before the first destructive mutation.
+  const journal = entries.map(({ name, path, linkTarget }) => ({ name, path, linkTarget }));
+  persistManifest(journal);
 
-      // Record the original target BEFORE unlinking so any later failure in this
-      // loop (or process death after the rename) can restore via the manifest.
-      entries.push(entry);
-      persistManifest(entries);
-
+  let mutated = 0;
+  try {
+    for (const entry of entries) {
+      const dir = join(PACKAGE_ROOT, entry.path);
       // Unlink the symlink itself — never rmSync a directory symlink without
       // care: Node may treat the target as the path and raise EISDIR.
       unlinkSync(dir);
@@ -184,10 +199,10 @@ function prepare(options = {}) {
       // Copy package files only. The package directory under .pnpm has no nested
       // node_modules of its own; its deps live as sibling symlinks that we
       // materialize separately via the closure walk.
-      cpSync(resolvedSource, dir, { recursive: true, dereference: true });
+      cpSync(entry.resolvedSource, dir, { recursive: true, dereference: true });
     }
   } catch (error) {
-    // Best-effort rollback of every entry already recorded in the manifest.
+    // Best-effort rollback from the full journal (covers partial materialize).
     try {
       restore({ allowMissing: true });
     } catch (restoreError) {
@@ -205,6 +220,11 @@ function prepare(options = {}) {
   }
 }
 
+/**
+ * Idempotent restore from the journal. Each entry may still be a symlink (not
+ * yet mutated) or a real directory (already copied); both become the recorded
+ * original symlink target.
+ */
 function restore(options = {}) {
   if (!existsSync(MANIFEST_PATH)) {
     if (options.allowMissing === true) return;
@@ -213,20 +233,25 @@ function restore(options = {}) {
   const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
   const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
   for (const entry of entries) {
+    if (typeof entry?.path !== "string" || typeof entry?.linkTarget !== "string") {
+      throw new Error("restore journal entry missing path/linkTarget");
+    }
     const dir = join(PACKAGE_ROOT, entry.path);
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dirname(dir), { recursive: true });
     symlinkSync(entry.linkTarget, dir);
   }
   rmSync(MANIFEST_PATH, { force: true });
+  rmSync(`${MANIFEST_PATH}.${process.pid}.tmp`, { force: true });
   if (entries.length > 0) {
     console.log(`materialize-bundled-deps: restored ${entries.length} symlink(s)`);
   }
 }
 
 /**
- * Regression: capture symlink targets, force a mid-prepare failure, prove every
- * original symlink (and the absence of a stranded manifest) is restored.
+ * Regression: capture symlink targets, force a mid-prepare failure after at
+ * least one replacement, prove every original symlink is restored with no
+ * stranded journal/real-copy, then prove a clean prepare+restore still works.
  */
 function selftestRecovery() {
   const rootPkg = readPackageJson(PACKAGE_ROOT);
@@ -235,7 +260,6 @@ function selftestRecovery() {
     fail("selftest-recovery needs at least two bundle-closure packages to inject a mid-prepare failure");
   }
 
-  // Start from a clean symlink workspace.
   if (existsSync(MANIFEST_PATH)) restore({ allowMissing: true });
 
   /** @type {Map<string, string>} */
@@ -249,7 +273,9 @@ function selftestRecovery() {
     before.set(name, readlinkSync(dir));
   }
 
-  // Run prepare in a child so process.exit from fail() does not kill this harness.
+  // Confirm the journal is fully written before the injected failure: the child
+  // fails after the first unlink, so recovery must use the preflight journal
+  // that already listed every closure entry.
   const child = spawnSync(process.execPath, [THIS_SCRIPT, "prepare", "--fail-after=1"], {
     cwd: PACKAGE_ROOT,
     encoding: "utf8",
@@ -274,8 +300,46 @@ function selftestRecovery() {
     }
   }
 
+  // Clean prepare + restore must still succeed after the failure path.
+  const prepareOk = spawnSync(process.execPath, [THIS_SCRIPT, "prepare"], {
+    cwd: PACKAGE_ROOT,
+    encoding: "utf8",
+  });
+  if (prepareOk.status !== 0) {
+    fail(`selftest-recovery follow-up prepare failed:\n${prepareOk.stderr || prepareOk.stdout}`);
+  }
+  if (!existsSync(MANIFEST_PATH)) {
+    fail("selftest-recovery follow-up prepare did not leave a restore manifest");
+  }
+  for (const name of names) {
+    const dir = packageDir(name);
+    if (lstatSyncSafe(dir)?.isSymbolicLink()) {
+      fail(`selftest-recovery follow-up prepare left ${name} as a symlink`);
+    }
+  }
+  const restoreOk = spawnSync(process.execPath, [THIS_SCRIPT, "restore"], {
+    cwd: PACKAGE_ROOT,
+    encoding: "utf8",
+  });
+  if (restoreOk.status !== 0) {
+    fail(`selftest-recovery follow-up restore failed:\n${restoreOk.stderr || restoreOk.stdout}`);
+  }
+  if (existsSync(MANIFEST_PATH)) {
+    fail("selftest-recovery follow-up restore left a stranded manifest");
+  }
+  for (const name of names) {
+    const dir = packageDir(name);
+    const stat = lstatSyncSafe(dir);
+    if (!stat?.isSymbolicLink()) {
+      fail(`selftest-recovery follow-up restore did not restore symlink for ${name}`);
+    }
+    if (readlinkSync(dir) !== before.get(name)) {
+      fail(`selftest-recovery follow-up restore wrong target for ${name}`);
+    }
+  }
+
   console.log(
-    `materialize-bundled-deps: selftest-recovery PASS (${names.length} symlinks restored after mid-prepare failure)`,
+    `materialize-bundled-deps: selftest-recovery PASS (${names.length} symlinks restored after mid-prepare failure; clean prepare/restore ok)`,
   );
 }
 

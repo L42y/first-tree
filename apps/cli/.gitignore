@@ -15,4 +15,3 @@
 # Written by `materialize-bundled-deps.mjs prepare` during prepack so postpack
 # can restore pnpm symlinks. Never commit a stranded pack-time workspace mutation.
 /.bundled-deps-materialize.json
-
