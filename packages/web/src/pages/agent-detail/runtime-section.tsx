@@ -34,6 +34,7 @@ const RUNTIME_NAME: Record<RuntimeProvider, string> = {
   grok: "Grok Build",
   "kimi-code": "Kimi Code",
   opencode: "OpenCode",
+  pi: "Pi",
 };
 
 export function RuntimeSection(props: RuntimeSectionProps) {

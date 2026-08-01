@@ -70,6 +70,7 @@ export {
   shouldFullReprobe,
 } from "./runtime/capabilities/index.js";
 export { probeOpenCodeCapability } from "./runtime/capabilities/opencode.js";
+export { probePiCapability } from "./runtime/capabilities/pi.js";
 
 export type {
   AdoptOptions,
@@ -135,6 +136,17 @@ export {
   parseOpenCodeVersionOutput,
   resolveOpenCodeRuntimeBinary,
 } from "./runtime/opencode-binary.js";
+export {
+  findPiExecutableOnPath,
+  formatPiBinaryMissingMessage,
+  isSupportedPiVersion,
+  PI_INSTALL_COMMAND,
+  PI_LOGIN_COMMAND,
+  PI_MINIMUM_VERSION,
+  PI_SUPPORTED_VERSION_RANGE,
+  parsePiVersionOutput,
+  resolvePiRuntimeBinary,
+} from "./runtime/pi-binary.js";
 export {
   createDefaultProviderProcessSupervisor,
   type ProviderProcessSpec,

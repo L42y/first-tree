@@ -271,6 +271,12 @@ export async function discoverProviderModels(
         "OpenCode model discovery is not enabled in V1; enter the provider-native provider/model id",
         deps,
       );
+    case "pi":
+      return unavailable(
+        provider,
+        "Pi model discovery is not enabled in V1; enter the provider-native provider/model id",
+        deps,
+      );
     case "claude-code":
     case "claude-code-tui":
     case "codex":

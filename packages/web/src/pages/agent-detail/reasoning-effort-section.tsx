@@ -55,6 +55,7 @@ const EFFORT_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, SelectOption[]> = {
   grok: GROK_EFFORT_OPTIONS,
   "kimi-code": [],
   opencode: [],
+  pi: [],
 };
 
 export const EFFORT_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
@@ -65,6 +66,7 @@ export const EFFORT_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
   grok: "Applies from the next turn, on new and existing sessions (re-applied AND confirmed via session/set_model after every session open — the turn does not run if the provider does not confirm the effective effort). Unset removes only the effort override — an explicit model is still re-applied; with model also unset, the next turn resets to Grok's default model.",
   "kimi-code": "Kimi thinking configuration is inherited from the local Kimi configuration.",
   opencode: "OpenCode model variants are provider-native; there is no separate First Tree effort control.",
+  pi: "Pi thinking level is inherited from the local Pi configuration; there is no separate First Tree effort control.",
 };
 
 export type ReasoningEffortSectionProps = {

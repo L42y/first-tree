@@ -84,6 +84,7 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, ModelOption[]> = {
   grok: [],
   "kimi-code": [],
   opencode: [],
+  pi: [],
 };
 
 const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
@@ -97,6 +98,7 @@ const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
     "Options come from this computer's ~/.kimi-code config when reachable. Passed to new sessions. Unset uses the model configured in ~/.kimi-code.",
   opencode:
     "Enter an exact OpenCode provider/model id. It is passed through verbatim on the next turn; unset inherits the host-local OpenCode configuration.",
+  pi: "Enter an exact Pi provider/model id. It is passed through verbatim on the next turn; unset inherits the host-local Pi configuration.",
 };
 
 /** Extra note when discovery is unsupported / offline / timed out (`null` from the API helper). */
@@ -463,9 +465,11 @@ function FreeFormModelInput({
             ? "auto (Grok default)"
             : provider === "opencode"
               ? "local OpenCode default"
-              : provider === "cursor"
-                ? "auto (Cursor default)"
-                : "provider default"
+              : provider === "pi"
+                ? "local Pi default"
+                : provider === "cursor"
+                  ? "auto (Cursor default)"
+                  : "provider default"
       }
       className="font-mono"
       aria-label="Model"

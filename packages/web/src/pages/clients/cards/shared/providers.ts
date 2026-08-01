@@ -23,6 +23,7 @@ export const PROVIDER_ORDER: RuntimeProvider[] = [
   RUNTIME_PROVIDERS.GROK,
   RUNTIME_PROVIDERS.KIMI_CODE,
   RUNTIME_PROVIDERS.OPENCODE,
+  RUNTIME_PROVIDERS.PI,
 ].filter((p) => isRuntimeProviderEnabled(p));
 
 export const PROVIDER_LABEL: Record<RuntimeProvider, string> = {
@@ -33,6 +34,7 @@ export const PROVIDER_LABEL: Record<RuntimeProvider, string> = {
   grok: "Grok Build",
   "kimi-code": "Kimi Code",
   opencode: "OpenCode",
+  pi: "Pi",
 };
 
 const KNOWN_RUNTIME_PROVIDERS: readonly string[] = Object.values(RUNTIME_PROVIDERS);
@@ -79,6 +81,7 @@ export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = {
   // operator login/recovery surface for the shared ~/.kimi-code credential.
   "kimi-code": "@moonshot-ai/kimi-code",
   opencode: "opencode-ai@^1.18.7",
+  pi: "@earendil-works/pi-coding-agent@^0.80.4",
 };
 
 /**
@@ -125,6 +128,7 @@ export const PROVIDER_LOGIN_COMMAND: Record<RuntimeProvider, string> = {
   grok: "grok login",
   "kimi-code": "kimi # then run /login",
   opencode: "opencode auth login",
+  pi: "pi # then run /login",
 };
 
 /**
@@ -250,6 +254,9 @@ export function providerInstallHint(
   }
   if (provider === "opencode") {
     return `Run \`npm install -g opencode-ai@^1.18.7\` on this ${device}, then complete provider-owned setup with \`opencode auth login\`.`;
+  }
+  if (provider === "pi") {
+    return `Run \`npm install -g @earendil-works/pi-coding-agent@^0.80.4\` on this ${device}, then run \`pi\` and enter \`/login\`.`;
   }
   return `Install the OpenAI Codex CLI on this ${device}.`;
 }

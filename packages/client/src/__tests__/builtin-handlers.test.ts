@@ -123,6 +123,19 @@ describe("Built-in Handlers", () => {
     expect(typeof handler.shutdown).toBe("function");
   });
 
+  it("registers pi handler with a valid session-oriented shape", () => {
+    registerBuiltinHandlers();
+
+    const factory = getHandlerFactory("pi");
+    expect(typeof factory).toBe("function");
+    const handler = factory({ workspaceRoot: "/tmp/test", runtimeProvider: "pi" });
+    expect(typeof handler.start).toBe("function");
+    expect(typeof handler.resume).toBe("function");
+    expect(typeof handler.inject).toBe("function");
+    expect(typeof handler.suspend).toBe("function");
+    expect(typeof handler.shutdown).toBe("function");
+  });
+
   it("codex factory returns a valid session-oriented handler", () => {
     registerBuiltinHandlers();
 

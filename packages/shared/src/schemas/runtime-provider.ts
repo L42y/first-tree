@@ -13,6 +13,7 @@ export const RUNTIME_PROVIDERS = {
   GROK: "grok",
   KIMI_CODE: "kimi-code",
   OPENCODE: "opencode",
+  PI: "pi",
 } as const;
 
 export const runtimeProviderSchema = z.enum([
@@ -23,6 +24,7 @@ export const runtimeProviderSchema = z.enum([
   "grok",
   "kimi-code",
   "opencode",
+  "pi",
 ]);
 export type RuntimeProvider = z.infer<typeof runtimeProviderSchema>;
 

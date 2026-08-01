@@ -193,6 +193,8 @@ export const contextTreeIoSourceSchema = z.enum([
   "kimi_write_tool",
   "opencode_read_tool",
   "opencode_write_tool",
+  "pi_read_tool",
+  "pi_write_tool",
   "shell_command",
   "git_status_delta",
 ]);

@@ -54,6 +54,8 @@ function providerLabel(provider: RuntimeProvider): string {
       return "Kimi Code";
     case "opencode":
       return "OpenCode";
+    case "pi":
+      return "Pi";
     default:
       return provider;
   }
