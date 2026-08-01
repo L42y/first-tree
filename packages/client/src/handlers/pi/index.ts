@@ -438,8 +438,12 @@ export const createPiHandler: HandlerFactory = (config) => {
   let drainInProgress = false;
   let drainingBatch: QueuedDelivery[] | null = null;
   let drainCancellationReason: string | null = null;
-  /** Set only for SessionManager full graceful drain — not inferred from reason text. */
-  let settleProviderEnteredOnLifecycle = false;
+  /**
+   * Explicit settlement mode from SessionManager — not inferred from reason text.
+   * - graceful_drain: full manager/client shutdown
+   * - operator_suspend: manual session:suspend resolution boundary
+   */
+  let settleProviderEnteredMode: "graceful_drain" | "operator_suspend" | null = null;
   let lifecycleGeneration = 0;
   let currentRetryAbort: AbortController | null = null;
   const queuedMessages: QueuedDelivery[] = [];
@@ -478,30 +482,34 @@ export const createPiHandler: HandlerFactory = (config) => {
     retryCustody(reason);
   }
 
-  function hasProviderEntryEvidence(observation: TurnObservation | null): boolean {
+  function hasProviderEntryEvidence(
+    observation: TurnObservation | null,
+    mode: "graceful_drain" | "operator_suspend",
+  ): boolean {
     if (!observation) return false;
-    // Proven preflight rejection stays recoverable even though the prompt line
-    // was written. After-write unknown is write-committed without accept/reject.
+    // After-write unknown: write-committed without accept/reject.
     const afterWriteUnknown =
       observation.promptWriteCommitted && !observation.promptAccepted && !observation.promptPreflightRejected;
-    return (
+    const enteredVisible =
       afterWriteUnknown ||
       observation.promptAccepted ||
       observation.unsafeToolEffectStarted ||
-      observation.userVisibleEmitted
-    );
+      observation.userVisibleEmitted;
+    if (enteredVisible) return true;
+    // Manual operator suspend resolves any prompt that crossed into Pi stdin
+    // (including a proven preflight rejection). Full graceful drain keeps
+    // preflight-only work recoverable/unacked.
+    return mode === "operator_suspend" && observation.promptWriteCommitted;
   }
 
   /**
-   * Full manager/client graceful drain (`settleProviderEnteredOnLifecycle`) after
-   * a prompt may have entered Pi must terminally settle that prefix exactly once.
-   * Provider-entry authority is prompt write/accept/tool/user-visible evidence —
-   * not `streaming`. Suspend and route-retire keep the recoverable retry path
-   * (and must retry here because `runTurn`'s `finally` clears custody before
-   * `endLifecycle` can).
+   * When SessionManager sets an explicit settle mode, terminally settle the
+   * provider-entered prefix exactly once. Provider-entry authority is prompt
+   * write/accept/tool/user-visible evidence — not `streaming`. Route-retire /
+   * forced preemption leave settle mode unset (recoverable retry).
    */
   async function settleLifecycleCancellation(sessionCtx: SessionContext, reason: string): Promise<void> {
-    if (settleProviderEnteredOnLifecycle && hasProviderEntryEvidence(turnObservation)) {
+    if (settleProviderEnteredMode && hasProviderEntryEvidence(turnObservation, settleProviderEnteredMode)) {
       await settleAcceptedTurnFailure(
         sessionCtx,
         `pi lifecycle cancelled after provider entry (${drainCancellationReason ?? reason})`,
@@ -852,6 +860,9 @@ export const createPiHandler: HandlerFactory = (config) => {
           if (!turnObservation.promptAccepted) {
             turnObservation.attempt.setReplaySafety("provider_entered");
           }
+          // Provider-entry boundary for operator-suspend resolution: the prompt
+          // line crossed into Pi stdin. True before-write never reaches here.
+          for (const entry of turnCustody) entry.token.processingStarted(entry.messages);
         }
       },
       onLog: (message) => sessionCtx.log(message),
@@ -1621,10 +1632,13 @@ export const createPiHandler: HandlerFactory = (config) => {
     for (const entry of queuedMessages.splice(0)) entry.token.retry(entry.message, reason);
   }
 
-  async function endLifecycle(recoveryReason: string, opts: { settleProviderEntered?: boolean } = {}): Promise<void> {
+  async function endLifecycle(
+    recoveryReason: string,
+    opts: { settleProviderEntered?: boolean; settleMode?: "graceful_drain" | "operator_suspend" } = {},
+  ): Promise<void> {
     sessionActive = false;
     drainCancellationReason = recoveryReason;
-    settleProviderEnteredOnLifecycle = opts.settleProviderEntered === true;
+    settleProviderEnteredMode = opts.settleMode ?? (opts.settleProviderEntered === true ? "graceful_drain" : null);
     lifecycleGeneration += 1;
     currentRetryAbort?.abort();
     // Abort whenever a prompt may have entered Pi — do not wait for first stream event.
@@ -1634,13 +1648,21 @@ export const createPiHandler: HandlerFactory = (config) => {
       (streaming ||
         turnObservation?.promptWriteCommitted === true ||
         turnObservation?.promptAccepted === true ||
-        (settleProviderEnteredOnLifecycle && currentTurnPromise !== null));
+        (settleProviderEnteredMode !== null && currentTurnPromise !== null));
     if (mayNeedAbort) {
-      await abortAndWaitForSettlement(settleProviderEnteredOnLifecycle ? "shutdown" : "suspend");
+      await abortAndWaitForSettlement(settleProviderEnteredMode !== null ? "shutdown" : "suspend");
     }
-    // Fence any still-pending prompt response so the turn can join settlement
-    // promptly (write-committed / accepted-with-no-events gaps).
-    if (settleProviderEnteredOnLifecycle && currentTurnPromise && rpcClient && !rpcClient.isClosed) {
+    // Fence any still-pending prompt response so the turn can join promptly.
+    // Abort alone does not resolve a withheld prompt RPC response; without this
+    // close, write-committed gaps hang until request timeout even on plain suspend.
+    if (
+      currentTurnPromise &&
+      rpcClient &&
+      !rpcClient.isClosed &&
+      (settleProviderEnteredMode !== null ||
+        turnObservation?.promptWriteCommitted === true ||
+        turnObservation?.promptAccepted === true)
+    ) {
       await closeRpcClient();
     }
     await Promise.all([
@@ -1658,7 +1680,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     retryCustody(recoveryReason);
     await closeRpcClient();
     drainCancellationReason = null;
-    settleProviderEnteredOnLifecycle = false;
+    settleProviderEnteredMode = null;
     currentRetryAbort = null;
     currentTurnPromise = null;
     currentDrainPromise = null;
@@ -2009,13 +2031,21 @@ export const createPiHandler: HandlerFactory = (config) => {
       return { kind: "owned", mode: "queued" };
     },
 
-    async suspend(reason) {
-      await endLifecycle(reason ?? "pi_suspend", { settleProviderEntered: false });
+    async suspend(reason, opts?: HandlerShutdownOptions) {
+      // Manual operator suspend passes settleProviderEntered explicitly.
+      // Idle yield / preemption leave it unset (recoverable / ACK-none).
+      await endLifecycle(reason ?? "pi_suspend", {
+        ...(opts?.settleProviderEntered === true
+          ? { settleProviderEntered: true, settleMode: "operator_suspend" as const }
+          : {}),
+      });
     },
 
     async shutdown(reason, opts?: HandlerShutdownOptions) {
       await endLifecycle(reason ?? "pi_shutdown", {
-        settleProviderEntered: opts?.settleProviderEntered === true,
+        ...(opts?.settleProviderEntered === true
+          ? { settleProviderEntered: true, settleMode: "graceful_drain" as const }
+          : {}),
       });
     },
   } satisfies AgentHandler;

@@ -725,7 +725,8 @@ describe("Pi handler", () => {
     const events: SessionEvent[] = [];
     const token = makeToken();
     await handler.start(message("m1", "work"), makeContext(events), token);
-    expect(token.processingStarted).not.toHaveBeenCalled();
+    // Prompt stdin write is the provider-entry boundary (operator-suspend / recovery).
+    expect(token.processingStarted).toHaveBeenCalled();
     expect(token.completed).toEqual([expect.objectContaining({ status: "error", completion: "consumed" })]);
     expect(readCount(promptCountFile)).toBe(1);
     expect(readSessionBriefingFingerprint(workspaceRoot, stablePiSessionId("agent-pi", "chat-pi"))).toBeNull();
@@ -1126,11 +1127,14 @@ describe("Pi handler", () => {
       piSettlementTimeoutMs: 300,
       piRequestTimeoutMs: 80,
     });
-    const sessionCtx = makeContext([]);
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
     const startToken = makeToken();
     const steerToken = makeToken();
     const startPromise = handler.start(message("m1", "first"), sessionCtx, startToken);
+    // processingStarted now tracks prompt write; wait for stream before steer.
     await vi.waitFor(() => expect(startToken.processingStarted).toHaveBeenCalled());
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "assistant_text")).toBe(true));
     handler.inject(message("m2", "steer-me"), steerToken);
     await startPromise;
     await vi.waitFor(() => expect(steerToken.completed.length + steerToken.retried.length).toBeGreaterThan(0), {
@@ -1508,6 +1512,60 @@ describe("Pi handler", () => {
     await startPromise;
     expect(token.completed).toEqual([]);
     expect(token.retried).toEqual(["session_evicted"]);
+    expect(readCount(promptCountFile)).toBe(1);
+  });
+
+  it("operator suspend with settleProviderEntered settles write-committed unsafe tool once", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+    });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+    const startPromise = handler.start(message("m1", "run sleep"), makeContext(events), token);
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    expect(token.processingStarted).toHaveBeenCalled();
+    await handler.suspend("operator_suspended", { settleProviderEntered: true });
+    await startPromise;
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "unsafe_replay",
+      }),
+    ]);
+    expect(
+      events.some(
+        (event) =>
+          event.kind === "error" &&
+          (JSON.stringify(event.payload).includes("provider_failure_terminal") ||
+            JSON.stringify(event.payload).includes("provider_retry_exhausted")),
+      ),
+    ).toBe(true);
+  });
+
+  it("plain suspend without settleProviderEntered keeps write-committed unsafe tool recoverable", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+    });
+    const token = makeToken();
+    const startPromise = handler.start(message("m1", "run sleep"), makeContext([]), token);
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    await handler.suspend("concurrency_preempted");
+    await startPromise;
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toEqual(["concurrency_preempted"]);
     expect(readCount(promptCountFile)).toBe(1);
   });
 

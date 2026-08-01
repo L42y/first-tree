@@ -298,6 +298,7 @@ describe("Pi handler → SessionManager custody", () => {
     ackEntry: ReturnType<typeof mockAckEntry>;
     sendMessage: ReturnType<typeof vi.fn>;
     onHandler?: (handler: ReturnType<typeof createPiHandler>) => void;
+    recoverChat?: (chatId: string) => Promise<void>;
   }): SessionManager {
     const sdk = {
       register: vi.fn(),
@@ -338,6 +339,7 @@ describe("Pi handler → SessionManager custody", () => {
       sdk,
       log: silentLogger(),
       ackEntry: input.ackEntry,
+      ...(input.recoverChat ? { recoverChat: input.recoverChat } : {}),
       agentConfigCache: cache(runtimeConfig()),
     });
   }
@@ -727,6 +729,155 @@ describe("Pi handler → SessionManager custody", () => {
     );
     expect(sm.totalCount).toBe(0);
     expect(sm.activeCount).toBe(0);
+  });
+
+  it("operator suspend after prompt write + unsafe tool settles once; resume cannot replay", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-suspend" });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const suspendCalls: Array<{ reason?: string; opts?: { settleProviderEntered?: boolean } }> = [];
+    const sm = makePiSessionManager({
+      specs,
+      ackEntry,
+      sendMessage,
+      recoverChat,
+      onHandler: (handler) => {
+        const original = handler.suspend.bind(handler);
+        handler.suspend = async (reason, opts) => {
+          suspendCalls.push({ reason, opts });
+          return original(reason, opts);
+        };
+      },
+    });
+
+    const chatId = "chat-pi-operator-suspend-write";
+    const dispatchPromise = sm.dispatch(
+      mockEntry({
+        id: 96,
+        chatId,
+        messageId: "msg-pi-operator-suspend-write",
+        content: "run sleep",
+      }),
+    );
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+      chatId,
+    )?.suspending;
+    await Promise.all([suspending ?? Promise.resolve(), dispatchPromise]);
+
+    expect(suspendCalls.some((call) => call.opts?.settleProviderEntered === true)).toBe(true);
+    expect(ackEntry).toHaveBeenCalledWith(96);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 96)).toHaveLength(1);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+      ackEntry.mock.invocationCallOrder[0] as number,
+    );
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+    // Settled prefix leaves no recovery debt for the server to redeliver/replay.
+    expect(recoverChat).not.toHaveBeenCalled();
+
+    // Control resume (no inbox input) must not create prompt/tool #2.
+    await sm.handleCommand(chatId, "session:resume");
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 96)).toHaveLength(1);
+    expect(recoverChat).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
+  it("operator suspend before prompt write: zero prompt writes and no ACK", async () => {
+    let releaseRefresh: (() => void) | undefined;
+    let signalRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefresh = resolve;
+    });
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const config = runtimeConfig();
+    const gatedCache: AgentConfigCache = {
+      get: () => config,
+      refresh: async () => {
+        signalRefresh?.();
+        await refreshGate;
+        return config;
+      },
+      refreshIfNewer: async () => config,
+      updateSdk: () => {},
+      updateUrls: () => {},
+      allReferencedUrls: () => new Set(),
+      forget: () => {},
+    };
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
+    const sm = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 5,
+      handlerFactory: () =>
+        createPiHandler({
+          workspaceRoot,
+          runtimeProvider: "pi",
+          agentConfigCache: gatedCache,
+          piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+          providerProcessSupervisor: createSyntheticSupervisor(specs),
+        }),
+      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      resolveContextTreeBinding: async () => null,
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: {
+        register: vi.fn(),
+        sendMessage,
+        sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+        getChatContext: vi.fn().mockResolvedValue(null),
+      } as unknown as FirstTreeHubSDK,
+      log: silentLogger(),
+      ackEntry,
+      agentConfigCache: gatedCache,
+    });
+
+    const chatId = "chat-pi-operator-suspend-before-write";
+    const dispatchPromise = sm.dispatch(
+      mockEntry({
+        id: 98,
+        chatId,
+        messageId: "msg-pi-operator-suspend-before-write",
+        content: "blocked early",
+      }),
+    );
+    await refreshStarted;
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(0);
+
+    await sm.handleCommand(chatId, "session:suspend");
+    releaseRefresh?.();
+    await dispatchPromise;
+
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(0);
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    await sm.shutdown();
   });
 
   it("true before-write shutdown control: zero prompt writes, recoverable (no ACK)", async () => {

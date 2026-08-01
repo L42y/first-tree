@@ -337,8 +337,13 @@ export type AgentHandler = {
   /** Message arrives while session is active. Push into provider-owned queue or reject. */
   inject(message: SessionMessage, token?: DeliveryToken): HandlerRouteReceipt | undefined;
 
-  /** Idle timeout. Close query, preserve state for resume. */
-  suspend(reason?: string): Promise<void>;
+  /**
+   * Idle timeout / operator pause. Close query, preserve state for resume.
+   * SessionManager sets `opts.settleProviderEntered` for manual operator suspend
+   * so the contiguous provider-entered prefix can settle before ACK; idle yield
+   * and forced preemption leave it unset.
+   */
+  suspend(reason?: string, opts?: HandlerShutdownOptions): Promise<void>;
 
   /**
    * Eviction or runtime shutdown. Same as suspend() unless
@@ -348,10 +353,11 @@ export type AgentHandler = {
 };
 
 /**
- * Options for {@link AgentHandler.shutdown}. The diagnostic `reason` string is
- * not a custody contract — SessionManager sets `settleProviderEntered` only for
- * full manager/client graceful drain. Route retirement / forced preemption leave
- * it unset so provider-entered work stays recoverable (ACK-none).
+ * Options for {@link AgentHandler.suspend} / {@link AgentHandler.shutdown}.
+ * The diagnostic `reason` string is not a custody contract — SessionManager sets
+ * `settleProviderEntered` explicitly for full manager/client graceful drain and
+ * for manual operator suspend. Route retirement / forced preemption leave it
+ * unset so provider-entered work stays recoverable (ACK-none).
  */
 export type HandlerShutdownOptions = {
   settleProviderEntered?: boolean;

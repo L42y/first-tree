@@ -1125,13 +1125,18 @@ export class SessionManager {
    * post a durable notice and ACK before `invalidateRouteTransition`.
    */
   private isDeliverySettlementLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
+    // Active turns hold a slot. Manual operator suspend releases the concurrency
+    // slot immediately but keeps `suspending` set while the delivery lease must
+    // still accept notice+ACK for the provider-entered prefix.
+    const leaseHolder =
+      (entry.status === "active" && entry.activeSlotHeld) ||
+      (entry.status === "suspended" && entry.suspending !== null);
     return (
       this.sessions.get(entry.chatId) === entry &&
       entry.routeTransitionGeneration === transition.generation &&
       entry.handler === transition.handler &&
       !this.retiredHandlers.has(transition.handler) &&
-      entry.status === "active" &&
-      entry.activeSlotHeld
+      leaseHolder
     );
   }
 
@@ -1174,18 +1179,23 @@ export class SessionManager {
     void this.shutdownHandler(transition.handler, reason);
   }
 
-  private invalidateRouteTransition(entry: SessionEntry, reason: string): RouteTransitionToken | null {
-    this.invalidateDeliveryAdmission(entry.chatId);
+  private clearRouteTransition(entry: SessionEntry): RouteTransitionToken | null {
     const transition = entry.routeTransition;
     entry.routeTransitionGeneration++;
     entry.routeTransition = null;
+    return transition;
+  }
+
+  private invalidateRouteTransition(entry: SessionEntry, reason: string): RouteTransitionToken | null {
+    this.invalidateDeliveryAdmission(entry.chatId);
+    const transition = this.clearRouteTransition(entry);
     if (transition) this.retireTransitionHandler(transition, reason);
     return transition;
   }
 
-  private discardStaleRouteTransition(transition: RouteTransitionToken, reason: string): void {
+  private discardStaleRouteTransition(transition: RouteTransitionToken, reason: string): Promise<void> {
     this.retiredHandlers.add(transition.handler);
-    void this.shutdownHandler(transition.handler, reason, { afterPrior: true });
+    return this.shutdownHandler(transition.handler, reason, { afterPrior: true });
   }
 
   private claimActiveSlot(entry: SessionEntry): void {
@@ -1845,7 +1855,7 @@ export class SessionManager {
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_eviction_resume_stale_completion");
+          await this.discardStaleRouteTransition(transition, "session_eviction_resume_stale_completion");
           return;
         }
         if (!this.adoptResumeReceipt(entry, message, receipt, "session_eviction_resume_unowned_delivery")) return;
@@ -1853,7 +1863,7 @@ export class SessionManager {
       } else {
         const receipt = normalizeStartReceipt(await handler.start(message, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_start_stale_completion");
+          await this.discardStaleRouteTransition(transition, "session_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -1864,14 +1874,14 @@ export class SessionManager {
         this.config.log.info({ chatId, sessionId: entry.claudeSessionId }, "session created");
       }
       if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_start_stale_adoption");
+        await this.discardStaleRouteTransition(transition, "session_start_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_start_stale_failure");
+        await this.discardStaleRouteTransition(transition, "session_start_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_start_failed");
@@ -1955,13 +1965,13 @@ export class SessionManager {
         ? await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx, token)
         : await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx);
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_resume_stale_completion");
+        await this.discardStaleRouteTransition(transition, "session_resume_stale_completion");
         return;
       }
       const receipt = normalizeResumeReceipt(resumeResult);
       if (!this.adoptResumeReceipt(entry, message, receipt, "session_resume_unowned_delivery")) return;
       if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_resume_stale_adoption");
+        await this.discardStaleRouteTransition(transition, "session_resume_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
@@ -1969,7 +1979,7 @@ export class SessionManager {
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_resume_stale_failure");
+        await this.discardStaleRouteTransition(transition, "session_resume_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_resume_failed");
@@ -2351,7 +2361,7 @@ export class SessionManager {
           ? await newHandler.resume(retryHeadMessage ?? undefined, retryRoute.previousSessionId, ctx, token)
           : await newHandler.resume(undefined, retryRoute.previousSessionId, ctx);
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_retry_resume_stale_completion");
+          await this.discardStaleRouteTransition(transition, "session_retry_resume_stale_completion");
           return;
         }
         const receipt = normalizeResumeReceipt(resumeResult);
@@ -2363,7 +2373,7 @@ export class SessionManager {
           await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, routeLeases)),
         );
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_retry_start_stale_completion");
+          await this.discardStaleRouteTransition(transition, "session_retry_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -2376,7 +2386,7 @@ export class SessionManager {
       const succeededScope = entry.lastRetryScope ?? (previousAvailable(entry) ? "session_resume" : "session_start");
       const succeededClassification = this.retryClassificationForEntry(entry);
       if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_retry_stale_adoption");
+        await this.discardStaleRouteTransition(transition, "session_retry_stale_adoption");
         return;
       }
       this.clearRetryAttemptState(entry);
@@ -2411,7 +2421,7 @@ export class SessionManager {
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_retry_stale_failure");
+        await this.discardStaleRouteTransition(transition, "session_retry_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_retry_failed");
@@ -2643,49 +2653,80 @@ export class SessionManager {
       drainQueue: true,
     },
   ): void {
-    const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
-    // A canceled fresh start has never established a provider-neutral resume
-    // handle. Keeping that entry as "suspended" would make redelivery call
-    // resume(undefined/empty-id) instead of starting a replacement route.
-    // Drop only the local SessionEntry; coordinator recovery retains the head.
-    const canceledUnestablishedStart = canceledTransition?.phase === "start";
-    if (canceledTransition) entry.deferredMessages = [];
-    if (canceledUnestablishedStart) this.clearRetryState(entry);
-    const prepare = opts.operatorResolution
-      ? this.inboxDelivery.prepareOperatorSuspend(entry.chatId)
-      : opts.ackConsumedPrefix
-        ? this.inboxDelivery.prepareSuspend(entry.chatId, opts.reason)
-        : Promise.resolve(this.inboxDelivery.prepareEvict(entry.chatId, opts.reason));
+    // Capture before any invalidate: a canceled fresh start has never established
+    // a provider-neutral resume handle. Drop only the local SessionEntry after
+    // preparation; coordinator recovery retains the head.
+    const unestablishedStart = entry.routeTransition?.phase === "start";
+    if (unestablishedStart) {
+      entry.deferredMessages = [];
+      this.clearRetryState(entry);
+    } else if (entry.routeTransition) {
+      entry.deferredMessages = [];
+    }
+
     entry.status = "suspended";
     this.releaseActiveSlot(entry);
     // Clear per-session runtime state on suspend
     this.sessionRuntimeStates.delete(entry.chatId);
     this.recomputeRuntimeState();
-    entry.suspending = prepare
-      .then(() => {
-        if (canceledTransition || this.retiredHandlers.has(entry.handler)) {
-          void this.shutdownHandler(canceledTransition?.handler ?? entry.handler, opts.reason);
+
+    entry.suspending = (async () => {
+      try {
+        if (opts.operatorResolution) {
+          // Manual operator suspend is a resolution boundary for the contiguous
+          // provider-entered prefix. Fence in-flight start/resume *adoption*
+          // immediately by clearing the route pointer, but keep
+          // routeTransitionGeneration stable through settle so already-issued
+          // DeliveryTokens can still post notice+ACK. Bump + retire only after.
+          // Do not re-bump delivery admission here — handleCommand already did.
+          const inFlightTransition = entry.routeTransition;
+          entry.routeTransition = null;
+          try {
+            await entry.handler.suspend(opts.reason, { settleProviderEntered: true });
+            await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
+          } finally {
+            entry.routeTransitionGeneration++;
+            if (inFlightTransition) {
+              this.retiredHandlers.add(inFlightTransition.handler);
+              await this.shutdownHandler(inFlightTransition.handler, opts.reason);
+            } else if (!this.retiredHandlers.has(entry.handler)) {
+              await this.shutdownHandler(entry.handler, opts.reason);
+            }
+          }
           return;
         }
-        return entry.handler.suspend(opts.reason);
-      })
-      .catch((err) => {
-        this.config.log.warn({ chatId: entry.chatId, err }, "suspend preparation error");
-      })
-      .then(() => undefined)
-      .catch((err) => {
-        this.config.log.warn({ chatId: entry.chatId, err }, "suspend error");
-      })
-      .finally(() => {
+
+        const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
+        if (opts.ackConsumedPrefix) {
+          await this.inboxDelivery.prepareSuspend(entry.chatId, opts.reason);
+        } else {
+          this.inboxDelivery.prepareEvict(entry.chatId, opts.reason);
+        }
+        if (canceledTransition || this.retiredHandlers.has(entry.handler)) {
+          await this.shutdownHandler(canceledTransition?.handler ?? entry.handler, opts.reason);
+          return;
+        }
+        await entry.handler.suspend(opts.reason);
+      } catch (err) {
+        try {
+          this.config.log.warn({ chatId: entry.chatId, err }, "suspend error");
+        } catch (logErr) {
+          // Second-stage warn must not reject the suspending promise if the
+          // logger transport itself throws.
+          this.config.log.warn({ chatId: entry.chatId, err: logErr }, "suspend error");
+        }
+      } finally {
         entry.suspending = null;
         // Keep the unestablished entry addressable until preparation settles:
         // dispatch() uses its suspending promise as the same-chat admission
         // fence while operator ACK/recovery decisions are still in flight.
-        if (canceledUnestablishedStart && this.sessions.get(entry.chatId) === entry) {
+        if (unestablishedStart && this.sessions.get(entry.chatId) === entry) {
           this.sessions.delete(entry.chatId);
           this.currentTrigger.delete(entry.chatId);
         }
-      });
+      }
+    })();
+
     this.persistRegistry();
     this.notifySessionState(entry.chatId, "suspended");
 
