@@ -533,3 +533,51 @@ describe("listSettledMessageIdsForScope (per-delivery settlement truth)", () => 
     ).toEqual([msg1, msg2]);
   });
 });
+
+describe("listSettledMessageIdsForScope under an oversized unrelated backlog", () => {
+  const getApp = useTestApp();
+
+  it("proves a settled fenced head even with 501 unacked tail rows in the same chat", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const a1 = await createTestAgent(app, { name: `big-a1-${uid}` });
+    const a2 = await createTestAgent(app, { name: `big-a2-${uid}` });
+
+    const chatRes = await a1.request("POST", "/api/v1/agent/chats", {
+      type: "group",
+      participantIds: [a2.agent.uuid],
+    });
+    const chatId = chatRes.json().id;
+    const headId = (
+      await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+        format: "text",
+        content: "settled fenced head",
+        receiverNames: [a2.agent.name],
+      })
+    ).json().id;
+
+    // 501 unrelated unacked tail rows — far beyond any response cap.
+    for (let i = 0; i < 501; i += 1) {
+      await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+        format: "text",
+        content: `tail ${i}`,
+        receiverNames: [a2.agent.name],
+      });
+    }
+
+    // The head is ACKed; the tail stays pending/delivered.
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "acked", ackedAt: new Date() })
+      .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.messageId, headId)));
+
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(501);
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [headId],
+      }),
+    ).toEqual([headId]);
+  });
+});

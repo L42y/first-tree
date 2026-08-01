@@ -14,6 +14,7 @@ import {
   attachmentRefsFromMetadata,
   deriveRepoLocalPath,
   encodeProviderRetryEventMessage,
+  INBOX_FENCE_PROBE_MAX_IDS,
   imageAttachmentRefsFromMetadata,
   isImageBatchRefContent,
   isImageRefContent,
@@ -721,16 +722,21 @@ export class SessionManager {
         // turn, but same-chat later messages must still be able to append once
         // this entry has reached handler membership.
         const deliveryKind: SlotDeliveryKind = isRecoveryRedelivery ? "recovery" : "fresh";
-        routePromise = this.routeMessage(chatId, message, deliveryKind).catch(async (err) => {
-          if (this.inboxDelivery.hasEntry(work)) {
-            const proofReason = this.runtimeSessionProofReasonForError(err);
-            if (proofReason && (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, message, proofReason))) {
-              return;
+        routePromise = this.routeMessage(chatId, message, deliveryKind, decision.readmitted === true).catch(
+          async (err) => {
+            if (this.inboxDelivery.hasEntry(work)) {
+              const proofReason = this.runtimeSessionProofReasonForError(err);
+              if (
+                proofReason &&
+                (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, message, proofReason))
+              ) {
+                return;
+              }
+              this.retryDeliveryTurn(chatId, message, "route_message_failed");
             }
-            this.retryDeliveryTurn(chatId, message, "route_message_failed");
-          }
-          throw err;
-        });
+            throw err;
+          },
+        );
       });
     } catch (err) {
       if (this.inboxDelivery.hasEntry(work)) {
@@ -968,6 +974,10 @@ export class SessionManager {
       clearTimeout(timer);
     }
     this.replayFenceRetryTimers.clear();
+    for (const timer of this.postFenceRecoveryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.postFenceRecoveryTimers.clear();
 
     const shutdowns = [...this.sessions.values()].map((session) => {
       this.invalidateRouteTransition(session, reason ?? "manager_shutdown");
@@ -1160,22 +1170,31 @@ export class SessionManager {
       ),
     ];
     if (fencedMessageIds.length === 0) return;
-    let settledIds: readonly string[];
-    try {
-      settledIds = await probe(chatId, fencedMessageIds);
-    } catch (err) {
-      this.config.log.warn({ err, chatId }, "replay fence settlement probe failed; keeping fences (fail-closed)");
-      return;
-    }
-    // Only ids from THIS request may prove settlement; anything else is a
-    // protocol violation and must not clear anything.
-    const requested = new Set(fencedMessageIds);
-    const settled = new Set([...settledIds].filter((id) => requested.has(id)));
-    if (settled.size !== settledIds.length) {
-      this.config.log.warn(
-        { chatId, settled: settledIds, requested: fencedMessageIds },
-        "fence probe returned ids outside the request; ignoring them",
-      );
+    // Probe in wire-sized chunks: oversized frames are rejected outright
+    // and would fail-closed forever. A failed chunk keeps its (and every
+    // later chunk's) ids fenced; earlier chunks still contribute proof.
+    const settled = new Set<string>();
+    for (let offset = 0; offset < fencedMessageIds.length; offset += INBOX_FENCE_PROBE_MAX_IDS) {
+      const chunk = fencedMessageIds.slice(offset, offset + INBOX_FENCE_PROBE_MAX_IDS);
+      let settledIds: readonly string[];
+      try {
+        settledIds = await probe(chatId, chunk);
+      } catch (err) {
+        this.config.log.warn(
+          { err, chatId, chunkOffset: offset },
+          "replay fence settlement probe failed; keeping unproven fences (fail-closed)",
+        );
+        break;
+      }
+      // Only ids from THIS chunk may prove settlement; anything else is a
+      // protocol violation and must not clear anything.
+      const requested = new Set(chunk);
+      for (const id of settledIds) {
+        if (requested.has(id)) settled.add(id);
+        else {
+          this.config.log.warn({ chatId, id }, "fence probe returned an id outside the request chunk; ignoring it");
+        }
+      }
     }
     const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
     for (const messageId of fencedMessageIds) {
@@ -1231,16 +1250,52 @@ export class SessionManager {
   private async onChatFencesCleared(chatId: string): Promise<void> {
     this.stopReplayFenceReconcileLoop(chatId);
     if (this.config.recoverChat && this.inboxDelivery.hasUnsettledWork(chatId)) {
-      try {
-        await this.config.recoverChat(chatId);
-      } catch (err) {
-        this.config.log.warn(
-          { err, chatId },
-          "post-fence-clear recovery failed; withheld deliveries stay recovery debt",
-        );
-      }
+      this.beginPostFenceRecovery(chatId);
+      return;
     }
     this.projectSessionRuntime(chatId);
+  }
+
+  /** Chats whose post-fence-clear recovery has not yet succeeded. */
+  private readonly postFenceRecoveryDebt = new Set<string>();
+  private readonly postFenceRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly postFenceRecoveryInFlight = new Map<string, Promise<void>>();
+
+  /**
+   * Fire the ONE successful destructive recovery that redelivers the
+   * withheld tail after a fence clear, coalescing concurrent convergences
+   * and retrying failures on a timer (failures hold new admissions via the
+   * post-fence debt gate; retries are not duplicate successes).
+   */
+  private beginPostFenceRecovery(chatId: string): void {
+    if (this.shuttingDown || !this.config.recoverChat) return;
+    if (this.postFenceRecoveryInFlight.has(chatId) || this.postFenceRecoveryTimers.has(chatId)) return;
+    this.postFenceRecoveryDebt.add(chatId);
+    const recoverChat = this.config.recoverChat;
+    const inFlight = (async () => {
+      try {
+        await recoverChat(chatId);
+        this.postFenceRecoveryDebt.delete(chatId);
+        this.config.log.info({ chatId }, "post-fence-clear recovery accepted; redelivery may proceed");
+      } catch (err) {
+        this.config.log.warn({ err, chatId }, "post-fence-clear recovery failed; retrying on a timer");
+        this.armPostFenceRecoveryTimer(chatId);
+      } finally {
+        this.postFenceRecoveryInFlight.delete(chatId);
+        this.projectSessionRuntime(chatId);
+      }
+    })();
+    this.postFenceRecoveryInFlight.set(chatId, inFlight);
+    void inFlight.catch(() => {});
+  }
+
+  private armPostFenceRecoveryTimer(chatId: string): void {
+    if (this.shuttingDown) return;
+    const timer = setTimeout(() => {
+      this.postFenceRecoveryTimers.delete(chatId);
+      this.beginPostFenceRecovery(chatId);
+    }, REPLAY_FENCE_RECONCILE_INTERVAL_MS);
+    this.postFenceRecoveryTimers.set(chatId, timer);
   }
 
   /**
@@ -1304,7 +1359,12 @@ export class SessionManager {
    */
   private reconcileReplayFences(chatId: string, messageIds: readonly string[]): void {
     if (!this.replayFence) return;
+    // Converge only on a real fence transition: an ordinary never-fenced
+    // turn must never fire a post-fence recovery.
+    let transitioned = false;
     for (const messageId of messageIds) {
+      if (!this.replayFence.isFenced(chatId, messageId)) continue;
+      transitioned = true;
       try {
         this.replayFence.clear(chatId, messageId);
       } catch (err) {
@@ -1321,7 +1381,7 @@ export class SessionManager {
         this.config.onSessionRuntimeChange?.(chatId, "error");
       }
     }
-    if (!this.replayFence.hasFenceForChat(chatId)) {
+    if (transitioned && !this.replayFence.hasFenceForChat(chatId)) {
       void this.onChatFencesCleared(chatId).catch((err) => {
         this.config.log.warn({ err, chatId }, "post-fence-clear convergence failed");
       });
@@ -1871,6 +1931,7 @@ export class SessionManager {
     chatId: string,
     message: SessionMessage,
     deliveryKind: SlotDeliveryKind = "fresh",
+    readmitted = false,
   ): Promise<void> {
     if (this.shuttingDown) {
       this.retryDeliveryTurn(chatId, message, "manager_shutdown");
@@ -1896,6 +1957,17 @@ export class SessionManager {
       this.config.onSessionRuntimeChange?.(chatId, "error");
       this.inboxDelivery.markReplayFenceWithheld(chatId, [message.id]);
       this.ensureReplayFenceReconcileLoop(chatId);
+      return;
+    }
+    if (this.postFenceRecoveryDebt.has(chatId) && !readmitted) {
+      // A post-fence-clear recovery is in flight or being retried: hold new
+      // admissions so the still-unacked tail keeps FIFO order until the
+      // server redelivery (which re-admits these withheld entries) lands.
+      this.config.log.info(
+        { chatId, messageId: message.id },
+        "holding delivery while post-fence-clear recovery is pending",
+      );
+      this.inboxDelivery.markReplayFenceWithheld(chatId, [message.id]);
       return;
     }
     const existing = this.sessions.get(chatId);

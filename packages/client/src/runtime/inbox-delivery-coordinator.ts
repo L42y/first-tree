@@ -15,7 +15,9 @@ export type DeliveryWork = {
 };
 
 export type DeliveryDecision =
-  | { kind: "deliver"; work: DeliveryWork }
+  // `readmitted` marks a previously fence-withheld entry re-admitted for a
+  // fresh route-gate evaluation, so recovery-debt FIFO gates let it pass.
+  | { kind: "deliver"; work: DeliveryWork; readmitted?: boolean }
   | { kind: "duplicate-in-flight" }
   | { kind: "recovering" };
 
@@ -89,6 +91,13 @@ export class InboxDeliveryCoordinator {
   private readonly config: InboxDeliveryCoordinatorConfig;
   private readonly deduplicator = new Deduplicator(1000);
   private readonly recentlySettled = new Deduplicator(1000);
+  /**
+   * Tombstones for fence-probe-settled deliveries. Distinct from
+   * recentlySettled: committed entries deliberately allow one post-commit
+   * reprocess (ack-lost recovery), while a probe-settled unsafe delivery
+   * must never re-enter the provider from a stray frame.
+   */
+  private readonly fenceSettledKeys = new Deduplicator(1000);
   private readonly ledgers = new Map<string, ChatInboxLedger>();
   private readonly recoveringChats = new Map<string, Promise<void>>();
 
@@ -113,7 +122,7 @@ export class InboxDeliveryCoordinator {
         // the flag is consumed here).
         activeByEntryId.replayFencedWithheld = undefined;
         this.emitWorkChanged(chatId);
-        return { kind: "deliver", work: { chatId, entryId: entry.id, messageId } };
+        return { kind: "deliver", work: { chatId, entryId: entry.id, messageId }, readmitted: true };
       }
       this.config.log.debug(
         { chatId, messageId, entryId: entry.id, phase: activeByEntryId.phase },
@@ -124,6 +133,13 @@ export class InboxDeliveryCoordinator {
           requireTerminalPrefix: true,
         });
       }
+      return { kind: "duplicate-in-flight" };
+    }
+
+    // Tombstone: this exact delivery was proven settled by a fence probe —
+    // suppress stray duplicate frames instead of reprocessing.
+    if (this.fenceSettledKeys.has(this.settledKey({ chatId, entryId: entry.id, messageId }))) {
+      this.config.log.debug({ chatId, messageId, entryId: entry.id }, "suppressing frame for already-settled delivery");
       return { kind: "duplicate-in-flight" };
     }
 
@@ -260,6 +276,13 @@ export class InboxDeliveryCoordinator {
     const ledger = this.ledgers.get(chatId);
     if (!ledger) return;
     const ids = new Set(messageIds);
+    for (const tracked of ledger.entries) {
+      if (ids.has(tracked.messageId)) {
+        this.fenceSettledKeys.isDuplicate(
+          this.settledKey({ chatId, entryId: tracked.entryId, messageId: tracked.messageId }),
+        );
+      }
+    }
     ledger.entries = ledger.entries.filter((tracked) => !ids.has(tracked.messageId));
     this.cleanupLedger(chatId);
     this.emitWorkChanged(chatId);
