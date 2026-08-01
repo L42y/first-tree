@@ -163,6 +163,9 @@ describe("trusted-publishing npm toolchain contract", () => {
     expect(postpack.indexOf("materialize-bundled-deps.mjs restore")).toBeLessThan(postpack.indexOf("rm -rf skills"));
     const smoke = readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"));
     expect(smoke).toContain("assertNpmTarballRegistrySafe");
+    // Pack into a run-owned destination so the deterministic name/version
+    // filename cannot overwrite a pre-existing apps/cli artifact.
+    expect(smoke).toContain("--pack-destination");
     // Helpers must throw so finally/cleanup always runs; only the outermost
     // main() may set process.exitCode.
     const failFn = smoke.match(/function fail\([^)]*\) \{[^}]*\}/)?.[0] ?? "";
@@ -197,7 +200,7 @@ describe("trusted-publishing npm toolchain contract", () => {
     expect(result.stdout).toContain("selftest-cleanup PASS");
   });
 
-  it("preserves pre-existing first-tree-dev tarballs across smoke success and failure cleanup", () => {
+  it("preserves a same-name pre-existing first-tree-dev tarball across smoke success and failure cleanup", () => {
     const result = spawnSync(
       process.execPath,
       [join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"), "selftest-preserve-preexisting"],
