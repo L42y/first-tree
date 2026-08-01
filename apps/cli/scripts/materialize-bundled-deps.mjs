@@ -16,10 +16,12 @@
  *   prepack  → node scripts/materialize-bundled-deps.mjs prepare
  *   postpack → node scripts/materialize-bundled-deps.mjs restore
  *
- * Restore puts the original symlink targets back so the pnpm workspace stays
- * consistent after a local pack. The restore manifest lives beside this package
- * and is removed on restore.
+ * Recovery: each original symlink target is persisted to the restore manifest
+ * *before* that link is unlinked, via an atomic rename. A mid-prepare failure
+ * (or a later `prepare` that finds a stranded manifest) restores every recorded
+ * target so the pnpm workspace cannot be left with unrecoverable real copies.
  */
+import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -28,6 +30,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -40,6 +43,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = dirname(SCRIPT_DIR);
 const NODE_MODULES = join(PACKAGE_ROOT, "node_modules");
 const MANIFEST_PATH = join(PACKAGE_ROOT, ".bundled-deps-materialize.json");
+const THIS_SCRIPT = fileURLToPath(import.meta.url);
 
 function fail(message) {
   console.error(`materialize-bundled-deps: ${message}`);
@@ -87,7 +91,42 @@ function listBundleClosure(rootPkg) {
   return ordered;
 }
 
-function prepare() {
+/** Persist the recovery manifest via write-temp + rename so a crash cannot leave
+ * a half-written JSON that omits already-unlinked targets. */
+function persistManifest(entries) {
+  const tmpPath = `${MANIFEST_PATH}.${process.pid}.tmp`;
+  writeFileSync(tmpPath, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`);
+  renameSync(tmpPath, MANIFEST_PATH);
+}
+
+function parseFailAfter(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--fail-after") {
+      const value = Number.parseInt(argv[i + 1] ?? "", 10);
+      if (!Number.isFinite(value) || value < 1) fail("--fail-after requires a positive integer");
+      return value;
+    }
+    if (arg.startsWith("--fail-after=")) {
+      const value = Number.parseInt(arg.slice("--fail-after=".length), 10);
+      if (!Number.isFinite(value) || value < 1) fail("--fail-after requires a positive integer");
+      return value;
+    }
+  }
+  const fromEnv = process.env.MATERIALIZE_BUNDLED_DEPS_FAIL_AFTER;
+  if (fromEnv !== undefined && fromEnv !== "") {
+    const value = Number.parseInt(fromEnv, 10);
+    if (!Number.isFinite(value) || value < 1) {
+      fail("MATERIALIZE_BUNDLED_DEPS_FAIL_AFTER requires a positive integer");
+    }
+    return value;
+  }
+  return null;
+}
+
+function prepare(options = {}) {
+  const failAfter = options.failAfter ?? null;
+
   if (existsSync(MANIFEST_PATH)) {
     // A previous prepare without restore (interrupted pack). Restore first so we
     // never nest a real copy on top of another real copy.
@@ -98,36 +137,69 @@ function prepare() {
   const names = listBundleClosure(rootPkg);
   if (names.length === 0) return;
 
+  /** @type {{ name: string, path: string, linkTarget: string }[]} */
   const entries = [];
-  for (const name of names) {
-    const dir = packageDir(name);
-    if (!existsSync(join(dir, "package.json")) && !lstatSyncSafe(dir)?.isSymbolicLink()) {
-      fail(`bundle closure package missing from node_modules: ${name}`);
+  let mutated = 0;
+
+  try {
+    for (const name of names) {
+      const dir = packageDir(name);
+      if (!existsSync(join(dir, "package.json")) && !lstatSyncSafe(dir)?.isSymbolicLink()) {
+        throw new Error(`bundle closure package missing from node_modules: ${name}`);
+      }
+      const stat = lstatSyncSafe(dir);
+      if (!stat) throw new Error(`cannot stat ${name}`);
+      if (!stat.isSymbolicLink()) {
+        // After a successful restore-at-start, every closure entry must still be
+        // a symlink. A real directory here means a prior run lost its recovery
+        // record — fail closed rather than skip and strand the workspace.
+        throw new Error(
+          `expected symlink for ${name} but found a real path; refusing to materialize without a recoverable link target`,
+        );
+      }
+
+      const linkTarget = readlinkSync(dir);
+      const resolvedSource = realpathSync(dir);
+      const entry = {
+        name,
+        path: relative(PACKAGE_ROOT, dir),
+        linkTarget,
+      };
+
+      // Record the original target BEFORE unlinking so any later failure in this
+      // loop (or process death after the rename) can restore via the manifest.
+      entries.push(entry);
+      persistManifest(entries);
+
+      // Unlink the symlink itself — never rmSync a directory symlink without
+      // care: Node may treat the target as the path and raise EISDIR.
+      unlinkSync(dir);
+      mutated += 1;
+
+      if (failAfter !== null && mutated >= failAfter) {
+        throw new Error(`injected mid-prepare failure after ${mutated} unlink(s)`);
+      }
+
+      mkdirSync(dirname(dir), { recursive: true });
+      // Copy package files only. The package directory under .pnpm has no nested
+      // node_modules of its own; its deps live as sibling symlinks that we
+      // materialize separately via the closure walk.
+      cpSync(resolvedSource, dir, { recursive: true, dereference: true });
     }
-    const stat = lstatSyncSafe(dir);
-    if (!stat) fail(`cannot stat ${name}`);
-    if (!stat.isSymbolicLink()) {
-      // Already a real directory (e.g. re-entrant prepare). Leave it alone.
-      continue;
+  } catch (error) {
+    // Best-effort rollback of every entry already recorded in the manifest.
+    try {
+      restore({ allowMissing: true });
+    } catch (restoreError) {
+      console.error(
+        `materialize-bundled-deps: restore after prepare failure also failed: ${
+          restoreError instanceof Error ? restoreError.message : restoreError
+        }`,
+      );
     }
-    const linkTarget = readlinkSync(dir);
-    const resolvedSource = realpathSync(dir);
-    // Unlink the symlink itself — never rmSync a directory symlink without
-    // care: Node may treat the target as the path and raise EISDIR.
-    unlinkSync(dir);
-    mkdirSync(dirname(dir), { recursive: true });
-    // Copy package files only. The package directory under .pnpm has no nested
-    // node_modules of its own; its deps live as sibling symlinks that we
-    // materialize separately via the closure walk.
-    cpSync(resolvedSource, dir, { recursive: true, dereference: true });
-    entries.push({
-      name,
-      path: relative(PACKAGE_ROOT, dir),
-      linkTarget,
-    });
+    fail(error instanceof Error ? error.message : String(error));
   }
 
-  writeFileSync(MANIFEST_PATH, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`);
   if (entries.length > 0) {
     console.log(`materialize-bundled-deps: prepared ${entries.length} pack input(s) as real directories`);
   }
@@ -152,7 +224,64 @@ function restore(options = {}) {
   }
 }
 
-const action = process.argv[2] ?? "prepare";
-if (action === "prepare") prepare();
+/**
+ * Regression: capture symlink targets, force a mid-prepare failure, prove every
+ * original symlink (and the absence of a stranded manifest) is restored.
+ */
+function selftestRecovery() {
+  const rootPkg = readPackageJson(PACKAGE_ROOT);
+  const names = listBundleClosure(rootPkg);
+  if (names.length < 2) {
+    fail("selftest-recovery needs at least two bundle-closure packages to inject a mid-prepare failure");
+  }
+
+  // Start from a clean symlink workspace.
+  if (existsSync(MANIFEST_PATH)) restore({ allowMissing: true });
+
+  /** @type {Map<string, string>} */
+  const before = new Map();
+  for (const name of names) {
+    const dir = packageDir(name);
+    const stat = lstatSyncSafe(dir);
+    if (!stat?.isSymbolicLink()) {
+      fail(`selftest-recovery precondition failed: ${name} is not a symlink`);
+    }
+    before.set(name, readlinkSync(dir));
+  }
+
+  // Run prepare in a child so process.exit from fail() does not kill this harness.
+  const child = spawnSync(process.execPath, [THIS_SCRIPT, "prepare", "--fail-after=1"], {
+    cwd: PACKAGE_ROOT,
+    encoding: "utf8",
+  });
+  if (child.status === 0) {
+    fail("selftest-recovery expected prepare --fail-after=1 to exit non-zero");
+  }
+
+  if (existsSync(MANIFEST_PATH)) {
+    fail("selftest-recovery left a stranded restore manifest");
+  }
+
+  for (const name of names) {
+    const dir = packageDir(name);
+    const stat = lstatSyncSafe(dir);
+    if (!stat?.isSymbolicLink()) {
+      fail(`selftest-recovery did not restore symlink for ${name}`);
+    }
+    const target = readlinkSync(dir);
+    if (target !== before.get(name)) {
+      fail(`selftest-recovery restored wrong target for ${name}: ${target} (want ${before.get(name)})`);
+    }
+  }
+
+  console.log(
+    `materialize-bundled-deps: selftest-recovery PASS (${names.length} symlinks restored after mid-prepare failure)`,
+  );
+}
+
+const argv = process.argv.slice(2);
+const action = argv[0] ?? "prepare";
+if (action === "prepare") prepare({ failAfter: parseFailAfter(argv.slice(1)) });
 else if (action === "restore") restore();
-else fail(`unknown action '${action}' (expected prepare|restore)`);
+else if (action === "selftest-recovery") selftestRecovery();
+else fail(`unknown action '${action}' (expected prepare|restore|selftest-recovery)`);

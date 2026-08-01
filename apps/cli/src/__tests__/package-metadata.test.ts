@@ -163,10 +163,22 @@ describe("trusted-publishing npm toolchain contract", () => {
     expect(postpack.indexOf("materialize-bundled-deps.mjs restore")).toBeLessThan(postpack.indexOf("rm -rf skills"));
     expect(readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toContain("assertNpmTarballRegistrySafe");
   });
+
+  it("restores every original symlink after a mid-prepare failure", () => {
+    const materialize = join(CLI_ROOT, "scripts", "materialize-bundled-deps.mjs");
+    const result = spawnSync(process.execPath, [materialize, "selftest-recovery"], {
+      cwd: CLI_ROOT,
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      throw new Error(`materialize selftest-recovery failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest-recovery PASS");
+  });
 });
 
 describe("npm tarball registry-safety helper", () => {
-  it("accepts canonical package-root paths and rejects pnpm traversal layouts", () => {
+  it("accepts canonical package-root paths and rejects traversal and rootless layouts", () => {
     const result = spawnSync(process.execPath, [join(REPO_ROOT, "scripts", "npm-tarball-safety.mjs")], {
       encoding: "utf8",
     });

@@ -73,8 +73,15 @@ export function findUnsafeNpmTarballEntries(entries) {
   /** @type {string[]} */
   const violations = [];
   for (const entry of entries) {
-    const rel = entry.name.startsWith("package/") ? entry.name.slice("package/".length) : entry.name;
-    const parts = rel.split("/");
+    // npm pack payloads must place every member under the canonical `package/`
+    // root (or the bare `package` directory entry). Rootless names like
+    // `outside.txt` are registry-unsafe even without `..` traversal.
+    if (entry.name !== "package" && !entry.name.startsWith("package/")) {
+      violations.push(`missing package/ root: ${entry.name}`);
+      continue;
+    }
+    const rel = entry.name === "package" ? "" : entry.name.slice("package/".length);
+    const parts = rel === "" ? [] : rel.split("/");
     if (parts.includes("..")) {
       violations.push(`traversal path: ${entry.name}`);
       continue;
@@ -210,6 +217,23 @@ function runSelftest() {
       rejected = true;
     }
     if (!rejected) throw new Error("expected registry-safe assertion to reject traversal tarball");
+
+    const rootlessPath = pathJoin(dir, "rootless.tgz");
+    writeSyntheticNpmTarball(rootlessPath, [{ name: "outside.txt", content: "x" }]);
+    const rootlessViolations = findUnsafeNpmTarballEntries(listNpmTarballEntries(rootlessPath));
+    if (!rootlessViolations.some((line) => line.includes("missing package/ root"))) {
+      throw new Error("expected missing package/ root violation for rootless entry");
+    }
+    let rootlessRejected = false;
+    try {
+      assertNpmTarballRegistrySafe(rootlessPath);
+    } catch {
+      rootlessRejected = true;
+    }
+    if (!rootlessRejected) {
+      throw new Error("expected registry-safe assertion to reject rootless entry");
+    }
+
     console.log("npm-tarball-safety: selftest PASS");
   } finally {
     rmSync(dir, { recursive: true, force: true });
