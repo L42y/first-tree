@@ -19,6 +19,7 @@ import {
   type ContextTreeAttribution,
   resolveContextTreeRelativePath,
   toolFileRefsFromShellCommand,
+  withContextTreeRepoHeadCommit,
 } from "../../runtime/context-tree-file-refs.js";
 import {
   type ContextTreeGitWriteTracker,
@@ -46,7 +47,6 @@ import {
   supportsDefaultProviderProcessSupervision,
 } from "../../runtime/provider-process-supervisor.js";
 import { maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
-import { redactErrorPreview } from "../../runtime/redact-error-preview.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -64,6 +64,34 @@ const VERSION_GATE_TIMEOUT_MS = 30_000;
 const PI_SESSIONS_DIR = ".first-tree-workspace/pi-sessions";
 const PI_SKILLS_DIR = ".agents/skills";
 const NORMAL_STOP_REASONS = new Set(["stop", "toolUse", "length"]);
+/** Pi 0.83 thinking-level suffixes; anything else after `:` stays in the model id. */
+const PI_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * Allow-listed Pi diagnostics for logs/chat. Never echo arbitrary provider /
+ * prompt / stderr prose — only stable classification tokens.
+ */
+export function sanitizePiProviderDetail(raw: string): string {
+  const lower = raw.trim().toLowerCase();
+  if (!lower) return "pi_provider_error";
+  if (/missing credentials|no api key|\/login|not authenticated|auth required|unauthorized|forbidden/.test(lower)) {
+    return "pi_auth_required";
+  }
+  if (/overloaded|rate.?limit|capacity|too many requests|resource has been exhausted/.test(lower)) {
+    return "pi_capacity_limited";
+  }
+  if (/timed out|timeout|etimedout/.test(lower)) return "pi_timeout";
+  if (/unsupported version|not a supported pi|requires >=/.test(lower)) return "pi_unsupported_version";
+  if (/not supported on windows/.test(lower)) return "pi_platform_unsupported";
+  if (/pi cli is missing|no pi binary|not (?:found|installed)/.test(lower)) return "pi_binary_missing";
+  if (/managed mcp|mcp servers are not supported/.test(lower)) return "pi_mcp_unsupported";
+  if (/model mismatch|thinkinglevel mismatch|model selector is invalid/.test(lower)) return "pi_model_mismatch";
+  if (/session identity mismatch/.test(lower)) return "pi_session_mismatch";
+  if (/transport|stdin|closed|exited|desync|command mismatch|invalid jsonl|settlement|protocol/.test(lower)) {
+    return "pi_transport_error";
+  }
+  return "pi_provider_error";
+}
 
 export function stablePiSessionId(agentId: string, chatId: string): string {
   return createHash("sha256").update(`first-tree:${agentId}:${chatId}`).digest("hex").slice(0, 32);
@@ -112,26 +140,34 @@ export type PiModelSelector = {
   raw: string;
 };
 
-/** Parse `provider/model` or `provider/model:<thinking>`. */
+/**
+ * Parse `provider/model` or `provider/model:<thinking>`.
+ * Mirror Pi 0.83: keep the full model id unless the final `:` suffix is an
+ * exact thinking level (`off|minimal|low|medium|high|xhigh|max`).
+ */
 export function parsePiModelSelector(raw: string): PiModelSelector | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const thinkingSplit = trimmed.lastIndexOf(":");
-  let thinkingLevel: string | null = null;
-  let base = trimmed;
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0 || slash === trimmed.length - 1) return null;
+  const provider = trimmed.slice(0, slash);
+  const rest = trimmed.slice(slash + 1);
+  const thinkingSplit = rest.lastIndexOf(":");
   if (thinkingSplit > 0) {
-    const maybeThinking = trimmed.slice(thinkingSplit + 1);
-    if (maybeThinking && !maybeThinking.includes("/")) {
-      thinkingLevel = maybeThinking;
-      base = trimmed.slice(0, thinkingSplit);
+    const maybeThinking = rest.slice(thinkingSplit + 1);
+    if (PI_THINKING_LEVELS.has(maybeThinking)) {
+      return {
+        provider,
+        modelId: rest.slice(0, thinkingSplit),
+        thinkingLevel: maybeThinking,
+        raw: trimmed,
+      };
     }
   }
-  const slash = base.indexOf("/");
-  if (slash <= 0 || slash === base.length - 1) return null;
   return {
-    provider: base.slice(0, slash),
-    modelId: base.slice(slash + 1),
-    thinkingLevel,
+    provider,
+    modelId: rest,
+    thinkingLevel: null,
     raw: trimmed,
   };
 }
@@ -229,20 +265,20 @@ export function resolvePiNativeToolRefs(input: {
   const write = lowered === "write" || lowered === "edit";
   const pathKind =
     lowered === "grep" || lowered === "find" || lowered === "ls" ? ("directory" as const) : ("file" as const);
-  return [
-    {
-      origin: write ? "file_change" : "tool_arg",
-      localPath: absolutePath,
-      pathKind,
-      ...(contextTreeRepoUrl && repoRelativePath
-        ? {
-            repoUrl: contextTreeRepoUrl,
-            ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
-            repoRelativePath,
-          }
-        : {}),
-    },
-  ];
+  const ref: ToolFileRef = {
+    origin: write ? "file_change" : "tool_arg",
+    localPath: absolutePath,
+    pathKind,
+    ...(contextTreeRepoUrl && repoRelativePath
+      ? {
+          repoUrl: contextTreeRepoUrl,
+          ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
+          repoRelativePath,
+        }
+      : {}),
+  };
+  // Read-path refs observe the exact Context Tree HEAD; write tools rely on git deltas.
+  return [write ? ref : withContextTreeRepoHeadCommit(ref, absolutePath)];
 }
 
 function piToolIsReadOnly(name: string): boolean {
@@ -370,11 +406,12 @@ export const createPiHandler: HandlerFactory = (config) => {
   let oneShotConsumed = false;
 
   function consumeOneShotPromptState(): void {
-    if (oneShotConsumed) return;
-    oneShotConsumed = true;
-    pendingChatContextPrompt = null;
-    // Advance briefing fingerprint at the accept/unknown custody boundary so the
-    // next user message never re-attaches the same one-shot re-read material.
+    // Chat-context prompt is session-one-shot; briefing fingerprint advances on
+    // every accept/unknown boundary so idle refresh can attach each new version once.
+    if (!oneShotConsumed) {
+      oneShotConsumed = true;
+      pendingChatContextPrompt = null;
+    }
     if (cwd && sessionId && activeBriefingText) {
       writeSessionBriefingFingerprint(cwd, sessionId, computeBriefingFingerprint(activeBriefingText));
     }
@@ -601,10 +638,9 @@ export const createPiHandler: HandlerFactory = (config) => {
     }
     const version = parsePiVersionOutput(`${outcome.stdout}\n${outcome.stderr}`);
     if (outcome.exitCode !== 0 || !isSupportedPiVersion(version)) {
-      const detail = redactErrorPreview(outcome.stderr || outcome.stdout || `exit ${outcome.exitCode}`, 800);
       throw new Error(
         `Pi runtime provider mismatch: unsupported version. First Tree requires ${PI_SUPPORTED_VERSION_RANGE}; ` +
-          `observed ${version ?? "no parseable version"}. ${detail}`,
+          `observed ${version ?? "no parseable version"}.`,
       );
     }
     versionReady = true;
@@ -786,7 +822,7 @@ export const createPiHandler: HandlerFactory = (config) => {
           turnObservation.provisionalError = reason;
           if (turnObservation.promptAccepted) updateReplaySafety(turnObservation);
         }
-        sessionCtx.log(`pi assistant provisional error: ${reason.slice(0, 400)}`);
+        sessionCtx.log(`pi assistant provisional error: ${sanitizePiProviderDetail(reason)}`);
         return;
       }
       return;
@@ -841,10 +877,10 @@ export const createPiHandler: HandlerFactory = (config) => {
     }
 
     if (type === "auto_retry_start") {
-      const message =
-        typeof event.errorMessage === "string" ? `pi auto_retry_start: ${event.errorMessage}` : "pi auto_retry_start";
+      const detail =
+        typeof event.errorMessage === "string" ? sanitizePiProviderDetail(event.errorMessage) : "pi_provider_error";
       // Diagnostic only — Pi still owns the retry; do not surface as terminal.
-      sessionCtx.log(message.slice(0, 400));
+      sessionCtx.log(`pi auto_retry_start: ${detail}`);
       return;
     }
 
@@ -876,7 +912,8 @@ export const createPiHandler: HandlerFactory = (config) => {
   }
 
   function formatPiFailure(message: string): string {
-    return isPiAuthError(message) ? formatAuthHint("pi", message) : message;
+    const detail = sanitizePiProviderDetail(message);
+    return detail === "pi_auth_required" || isPiAuthError(message) ? formatAuthHint("pi", detail) : detail;
   }
 
   async function completeCustody(outcome: Parameters<DeliveryToken["complete"]>[1]): Promise<"settled" | "retry"> {
@@ -893,11 +930,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     for (const entry of turnCustody.splice(0)) entry.token.retry(entry.messages, reason);
   }
 
-  async function settleAcceptedTurnFailure(
-    sessionCtx: SessionContext,
-    attemptNumber: number,
-    failure: string,
-  ): Promise<void> {
+  async function settleAcceptedTurnFailure(sessionCtx: SessionContext, failure: string): Promise<void> {
     if (!turnObservation) {
       retryCustody("pi_turn_missing_observation");
       return;
@@ -911,16 +944,17 @@ export const createPiHandler: HandlerFactory = (config) => {
           : "provider_entered",
     );
     const formatted = formatPiFailure(failure);
+    const publicDetail = sanitizePiProviderDetail(failure);
     turnObservation.attempt.recordSignal({
       kind: "provider_error",
+      // Classify on the original provider phrasing; only the preview is allow-listed.
       error: failure,
-      messagePreview: formatted,
+      messagePreview: publicDetail,
     });
-    const settlement = turnObservation.attempt.settle({ attempt: attemptNumber });
-    // Pi already exhausted its own retry. Never emit/follow an FT retry settlement.
-    if (settlement && settlement.decision.action === "stop") {
-      emitSettlement(sessionCtx, settlement);
-    }
+    // Pi already owned/exhausted its retry: settle at the shared budget ceiling so
+    // capacity/transient map to provider_retry_exhausted (never FT re-prompt).
+    const settlement = turnObservation.attempt.settle({ attempt: maxRetries + 1 });
+    if (settlement) emitSettlement(sessionCtx, settlement);
     const failedUsage = readTurnUsage(turnObservation);
     if (failedUsage) {
       sessionCtx.emitEvent({
@@ -941,9 +975,9 @@ export const createPiHandler: HandlerFactory = (config) => {
       completion: "consumed",
       reason: isPiAuthError(failure)
         ? "credential"
-        : settlement?.decision.action === "stop"
-          ? settlement.decision.reasonCode
-          : "pi_accepted_turn_failed",
+        : settlement?.decision.action === "stop" && settlement.decision.terminalKind === "exhausted"
+          ? "provider_retry_exhausted"
+          : (settlement?.decision.reasonCode ?? "pi_accepted_turn_failed"),
     });
   }
 
@@ -1071,23 +1105,34 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
 
       if (!promptResponse?.success) {
-        // Preflight rejection: retain one-shot context; do not mark provider_entered.
+        // Preflight rejection: retain one-shot context; proven pre_provider — follow shared retry.
         const failure = promptResponse?.error ?? "pi prompt rejected";
         const formatted = formatPiFailure(failure);
+        const publicDetail = sanitizePiProviderDetail(failure);
         turnObservation.attempt.setReplaySafety("pre_provider");
         turnObservation.attempt.recordSignal({
           kind: "provider_error",
           error: failure,
-          messagePreview: formatted,
+          messagePreview: publicDetail,
         });
         const settlement = turnObservation.attempt.settle({ attempt: attemptNumber });
+        if (settlement && settlement.decision.action === "retry") {
+          const delayMs = settlement.decision.delayMs;
+          emitSettlement(sessionCtx, settlement);
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+          continue;
+        }
         if (settlement) emitSettlement(sessionCtx, settlement);
         sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
         await completeCustody({
           status: "error",
           completion: "consumed",
-          reason: isPiAuthError(failure) ? "credential" : (settlement?.decision.reasonCode ?? "pi_preflight_failed"),
+          reason: isPiAuthError(failure)
+            ? "credential"
+            : settlement?.decision.action === "stop" && settlement.decision.terminalKind === "exhausted"
+              ? "provider_retry_exhausted"
+              : (settlement?.decision.reasonCode ?? "pi_preflight_failed"),
         });
         return false;
       }
@@ -1149,7 +1194,7 @@ export const createPiHandler: HandlerFactory = (config) => {
           ? `pi stopReason=${turnObservation.stopReason}`
           : null);
       if (acceptedFailure) {
-        await settleAcceptedTurnFailure(sessionCtx, attemptNumber, acceptedFailure);
+        await settleAcceptedTurnFailure(sessionCtx, acceptedFailure);
         return false;
       }
 
@@ -1256,6 +1301,46 @@ export const createPiHandler: HandlerFactory = (config) => {
     };
   }
 
+  function isPiDeterministicConfigError(error: unknown): boolean {
+    const text = error instanceof Error ? error.message : String(error);
+    return (
+      /managed mcp servers are not supported/i.test(text) ||
+      /runtime provider mismatch/i.test(text) ||
+      /not supported on windows in v1/i.test(text) ||
+      /unsupported version/i.test(text)
+    );
+  }
+
+  async function consumeQueuedBatchAsTerminalConfig(
+    drained: Array<{ message: SessionMessage; token: DeliveryToken }>,
+    sessionCtx: SessionContext,
+    error: unknown,
+  ): Promise<void> {
+    const raw = error instanceof Error ? error.message : String(error);
+    const publicDetail = sanitizePiProviderDetail(raw);
+    const attempt = new ProviderAttempt({
+      provider: runtimeProvider,
+      scope: "provider_turn",
+      source: "session",
+    });
+    attempt.setReplaySafety("pre_provider");
+    attempt.recordSignal({ kind: "provider_error", error: raw, messagePreview: publicDetail });
+    const settlement = attempt.settle({ attempt: 1 });
+    if (settlement) emitSettlement(sessionCtx, settlement);
+    sessionCtx.emitEvent({
+      kind: "error",
+      payload: { source: "sdk", message: formatPiFailure(raw).slice(0, 2000) },
+    });
+    sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+    for (const entry of drained) {
+      await entry.token.complete([entry.message], {
+        status: "error",
+        completion: "consumed",
+        reason: settlement?.decision.reasonCode ?? "pi_configuration_error",
+      });
+    }
+  }
+
   async function mergeAndRun(
     drained: Array<{ message: SessionMessage; token: DeliveryToken }>,
     sessionCtx: SessionContext,
@@ -1268,9 +1353,7 @@ export const createPiHandler: HandlerFactory = (config) => {
         prompts.push(await sessionCtx.formatInboundContent(entry.message));
       } catch (error) {
         failed = true;
-        sessionCtx.log(
-          `pi queued message formatting failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        sessionCtx.log(`pi queued message formatting failed: ${sanitizePiProviderDetail(String(error))}`);
       }
     }
     if (failed || prompts.length === 0) {
@@ -1301,7 +1384,11 @@ export const createPiHandler: HandlerFactory = (config) => {
         try {
           await mergeAndRun(drained, sessionCtx);
         } catch (error) {
-          sessionCtx.log(`pi queued turn failed: ${error instanceof Error ? error.message : String(error)}`);
+          if (isPiDeterministicConfigError(error)) {
+            await consumeQueuedBatchAsTerminalConfig(drained, sessionCtx, error);
+            return;
+          }
+          sessionCtx.log(`pi queued turn failed: ${sanitizePiProviderDetail(String(error))}`);
           for (const entry of drained) entry.token.retry(entry.message, "pi_queued_turn_failed");
         }
       })().finally(() => {

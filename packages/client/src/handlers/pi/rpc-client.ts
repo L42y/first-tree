@@ -163,17 +163,19 @@ export class PiRpcClient {
     child.stderr?.on("data", (chunk: string) => {
       this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_LIMIT);
     });
-    child.on("error", (error) => {
-      this.failTransport(new PiRpcTransportError(error.message, "after_write"));
+    child.on("error", () => {
+      this.failTransport(new PiRpcTransportError("pi rpc child spawn/error", "after_write"));
     });
     child.on("close", (code, signal) => {
       this.processExited = true;
       if (!this.closed) {
-        const detail = redactErrorPreview(this.stderrTail.trim(), 200);
-        const suffix = detail ? ` stderr: ${detail}` : "";
+        // Never attach stderr tails — they may contain prompts/assistant text.
+        const stderrBytes = this.stderrTail.length;
         this.failTransport(
           new PiRpcTransportError(
-            `pi rpc exited${code === null ? "" : ` with code ${code}`}${signal ? ` signal ${signal}` : ""}.${suffix}`,
+            `pi rpc exited${code === null ? "" : ` with code ${code}`}${signal ? ` signal ${signal}` : ""}${
+              stderrBytes > 0 ? ` stderr_bytes=${stderrBytes}` : ""
+            }`,
             "after_write",
           ),
         );
@@ -473,7 +475,8 @@ export class PiRpcClient {
     this.closed = true;
     this.failAllPending(error);
     this.failSettlementWaiters(error);
-    this.onLog?.(redactErrorPreview(error.message, 400));
+    // Structural diagnostics only — never echo raw provider/frame/stderr prose.
+    this.onLog?.(redactErrorPreview(error.message.replace(/[^\x20-\x7E]/g, "?").slice(0, 120), 120));
     const child = this.child;
     if (child && !this.processExited) {
       try {

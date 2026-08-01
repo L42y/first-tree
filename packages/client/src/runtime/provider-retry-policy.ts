@@ -532,7 +532,10 @@ function isCredential(
   // the shared classifier already covers, so they need a grok-only branch.
   if (provider === "grok" && /not logged in|grok login|auth\.json/.test(text)) return true;
   // Pi CLI logged-out / missing-key phrasings (kept in sync with isPiAuthError).
-  return provider === "pi" && /missing credentials|no api key|\/login|auth required|not authenticated/.test(text);
+  return (
+    provider === "pi" &&
+    /missing credentials|no api key|\/login|auth[_ ]required|not authenticated|pi_auth_required/.test(text)
+  );
 }
 
 function credentialReason(base: Classification): string {

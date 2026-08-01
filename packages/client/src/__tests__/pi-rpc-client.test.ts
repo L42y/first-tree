@@ -311,4 +311,40 @@ describe("PiRpcClient", () => {
     expect(client.getSteerWriteCount()).toBe(1);
     await client.close();
   });
+
+  it("does not surface private stderr prose on process exit", async () => {
+    process.env.FT_PI_TEST_MODE = "stderr_exit";
+    const logs: string[] = [];
+    const privateScript = `
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", () => {
+  process.stderr.write("PRIVATE_PROMPT_IN_STDERR please ignore\\n");
+  process.exit(2);
+});
+`;
+    const localSupervisor = {
+      spawn(spec: { options: { env?: NodeJS.ProcessEnv } & object }) {
+        const child = spawn(process.execPath, ["-e", privateScript], {
+          ...spec.options,
+          detached: false,
+        });
+        return {
+          child,
+          exited: new Promise<void>((resolve) => child.on("close", () => resolve())),
+        };
+      },
+    };
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: localSupervisor as ProviderProcessSupervisor,
+      onLog: (message) => logs.push(message),
+    });
+    await expect(client.prompt("hi")).rejects.toThrow(/exited/);
+    expect(logs.join("\n")).not.toContain("PRIVATE_PROMPT_IN_STDERR");
+    await client.close();
+  });
 });
