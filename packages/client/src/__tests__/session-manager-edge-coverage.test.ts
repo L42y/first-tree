@@ -52,6 +52,7 @@ type SessionManagerInternals = {
   terminatingChats: Map<string, Promise<void>>;
   terminatePersistFailures: Set<string>;
   pendingTeardowns: Map<string, Set<AgentHandler>>;
+  routeProducers: Map<string, Set<Promise<void>>>;
   pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
   sessionRuntimeStates: Map<string, RuntimeState>;
   currentTrigger: Map<string, { messageId: string; senderId: string }>;
@@ -1534,6 +1535,13 @@ describe("SessionManager edge coverage", () => {
     expect(sm.activeCount).toBe(1);
 
     resolveAck?.();
+    // The tail route now waits for the canceled start's producer to settle
+    // (quiesce-before-route) instead of racing its late materialization.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(replacement.start).not.toHaveBeenCalled();
+
+    resolveStart?.();
     await tailDispatch;
 
     expect(i.sessions.get(chatId)?.claudeSessionId).toBe("replacement-tail-session");
@@ -2053,15 +2061,21 @@ describe("SessionManager edge coverage", () => {
     expect(sm.activeCount).toBe(2);
 
     const recoveredHeadDispatch = sm.dispatch(headEntry);
-    await freshResumeStarted;
-    await sm.dispatch(tailEntry);
-    expect(i.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
-    expect(requesterHandler.suspend).toHaveBeenCalledTimes(1);
+    // The fresh route now waits for the preempted (canceled) old producer
+    // to settle instead of racing its late materialization.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(freshHandler.resume).not.toHaveBeenCalled();
 
     resolveOldResume?.();
     await headDispatch;
     expect(i.sessions.get(chatId)?.claudeSessionId).toBe("previous-preemption-session");
     expect(oldHandler.inject).not.toHaveBeenCalled();
+
+    await freshResumeStarted;
+    await sm.dispatch(tailEntry);
+    expect(i.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(requesterHandler.suspend).toHaveBeenCalledTimes(1);
 
     resolveFreshResume?.();
     await recoveredHeadDispatch;
@@ -3186,11 +3200,11 @@ describe("SessionManager edge coverage", () => {
 
     // Register-only debt got a fresh teardown; the shared handler was torn
     // down once despite two chat registrations. allSettled semantics: the
-    // failed join does not reject manager shutdown — but the sweep does give
-    // the failed stop one best-effort retry (the detach attempt plus the
-    // retry, both rejecting here, hence two calls).
+    // failed join does not reject manager shutdown — but the bounded pass
+    // retries the failed stop (detach attempt + sweep join + one bounded
+    // retry, all rejecting here, hence three calls).
     expect(registerOnlyHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(failedDetachHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(failedDetachHandler.shutdown).toHaveBeenCalledTimes(3);
     expect(sharedHandler.shutdown).toHaveBeenCalledTimes(1);
   });
 
@@ -3360,12 +3374,15 @@ describe("SessionManager edge coverage", () => {
     await stopStarted;
     const terminate = sm.handleCommand(chatId, "session:terminate");
 
-    // The stop succeeds — but with the terminate now in flight, the resume
-    // must hit the fence instead of installing a fresh handler that the
-    // terminate would ack over.
+    // The stop succeeds — but with the terminate in flight, the resume must
+    // abandon the install instead of installing a fresh handler the
+    // terminate would ack over: either the fence rejects it, or the
+    // terminate wins and removes the entry first (silent abandon).
     resolveStop?.();
-    await expect(resume).rejects.toThrow(/fenced/);
-    await terminate;
+    const [resumeResult] = await Promise.allSettled([resume, terminate]);
+    if (resumeResult.status === "rejected") {
+      expect((resumeResult.reason as Error).message).toMatch(/fenced/);
+    }
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(i.sessions.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
@@ -3802,6 +3819,305 @@ describe("SessionManager edge coverage", () => {
     await stopped;
     expect(freshHandler.start).not.toHaveBeenCalled();
     expect(freshHandler.resume).not.toHaveBeenCalled();
+  });
+
+  it("quiesces a canceled route producer before admitting a fresh route, and force-keeps producer-only chats", async () => {
+    let signalStartStarted: (() => void) | undefined;
+    let resolveStart: (() => void) | undefined;
+    const startStarted = new Promise<void>((resolve) => {
+      signalStartStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    });
+    const canceledHandler = handler({
+      start: vi.fn().mockImplementation(async () => {
+        signalStartStarted?.();
+        await startGate;
+        return "stale-canceled-session";
+      }),
+    });
+    const freshHandler = handler({ start: vi.fn().mockResolvedValue("fresh-route-session") });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [canceledHandler, freshHandler], recoverChat });
+    const i = internals(sm);
+    const chatId = "chat-quiesce-before-route";
+
+    const headDispatch = sm.dispatch(mockEntry({ id: 110, chatId, messageId: "msg-quiesce-head" }));
+    await startStarted;
+
+    // Pause cancels the start; the boundary stop succeeds and the entry is
+    // dropped — the chat is producer-only now (no entry, no debt), and must
+    // still be held / force-kept or the reconcile channel breaks.
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(sm.getHeldChatIds(new Set())).toContain(chatId);
+
+    // The next delivery drives the server-side recovery; the redelivery
+    // after it must NOT start a fresh route while the canceled producer is
+    // still in flight.
+    await sm.dispatch(mockEntry({ id: 111, chatId, messageId: "msg-quiesce-recovery" }));
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
+    await vi.waitFor(() => expect(i.inboxDelivery.snapshot(chatId).recoveryDebt).toBe("none"));
+    const redelivery = sm.dispatch(mockEntry({ id: 112, chatId, messageId: "msg-quiesce-tail" }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(freshHandler.start).not.toHaveBeenCalled();
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+
+    // The producer settles (stale completion → discard → strict afterPrior
+    // stop), and only then is the fresh route admitted.
+    resolveStart?.();
+    await redelivery;
+    expect(freshHandler.start).toHaveBeenCalledTimes(1);
+    expect(canceledHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.routeProducers.has(chatId)).toBe(false);
+
+    await headDispatch;
+    await sm.shutdown();
+  });
+
+  it("serializes concurrent same-chat resumes to exactly one provider resume", async () => {
+    let signalDebtStopStarted: (() => void) | undefined;
+    let resolveDebtStop: (() => void) | undefined;
+    const debtStopStarted = new Promise<void>((resolve) => {
+      signalDebtStopStarted = resolve;
+    });
+    const debtStopGate = new Promise<void>((resolve) => {
+      resolveDebtStop = resolve;
+    });
+    const debtHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalDebtStopStarted?.();
+          await debtStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const sessionHandler = handler({ resume: vi.fn().mockResolvedValue("resumed-session") });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-concurrent-resumes";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
+    i.registerPendingTeardown(chatId, debtHandler);
+
+    // Both dispatches reach resumeSession and wait on the same gated debt
+    // stop. After it confirms, exactly ONE waiter may install the route.
+    const first = sm.dispatch(mockEntry({ id: 112, chatId, messageId: "msg-resume-a" }));
+    const second = sm.dispatch(mockEntry({ id: 113, chatId, messageId: "msg-resume-b" }));
+    await debtStopStarted;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sessionHandler.resume).not.toHaveBeenCalled();
+
+    resolveDebtStop?.();
+    await first;
+    await second;
+
+    // Exactly one provider resume; the loser's message was deferred onto the
+    // winning route (custody) and injected after adoption.
+    expect(sessionHandler.resume).toHaveBeenCalledTimes(1);
+    expect(sessionHandler.inject).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+  });
+
+  it("re-dispatches through the fresh selection when the session appears during the debt settle", async () => {
+    let signalDebtStopStarted: (() => void) | undefined;
+    let resolveDebtStop: (() => void) | undefined;
+    const debtStopStarted = new Promise<void>((resolve) => {
+      signalDebtStopStarted = resolve;
+    });
+    const debtStopGate = new Promise<void>((resolve) => {
+      resolveDebtStop = resolve;
+    });
+    const debtHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalDebtStopStarted?.();
+          await debtStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const otherPathHandler = handler();
+    const freshHandler = handler();
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-start-selection-stale";
+    i.registerPendingTeardown(chatId, debtHandler);
+
+    const dispatch = sm.dispatch(mockEntry({ id: 114, chatId, messageId: "msg-stale-selection" }));
+    await debtStopStarted;
+
+    // Another path creates the session while this start waits on the debt.
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: otherPathHandler, status: "active" }));
+    i._activeCount = 1;
+
+    resolveDebtStop?.();
+    await dispatch;
+
+    // No duplicate entry and no second provider route: the message is
+    // injected into the existing session instead.
+    expect(freshHandler.start).not.toHaveBeenCalled();
+    expect(otherPathHandler.inject).toHaveBeenCalledTimes(1);
+    expect(i.sessions.get(chatId)?.handler).toBe(otherPathHandler);
+
+    await sm.shutdown();
+  });
+
+  it("confirms the replaced handler stopped before installing a retry route", async () => {
+    const boom = new Error("replace stop failed");
+    let signalReplaceStopStarted: (() => void) | undefined;
+    let rejectReplaceStop: ((err: unknown) => void) | undefined;
+    const replaceStopStarted = new Promise<void>((resolve) => {
+      signalReplaceStopStarted = resolve;
+    });
+    const replaceStopGate = new Promise<void>((_resolve, reject) => {
+      rejectReplaceStop = reject;
+    });
+    const oldHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalReplaceStopStarted?.();
+          await replaceStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const freshHandler = handler({ resume: vi.fn().mockResolvedValue("retry-route-session") });
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-retry-replace-stop";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: oldHandler,
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+
+    // The replacement stop is gated: the fresh handler must NOT be installed
+    // while the old one's stop is unconfirmed.
+    const firstAttempt = i.runRetry(chatId);
+    await replaceStopStarted;
+    await Promise.resolve();
+    expect(i.sessions.get(chatId)?.handler).toBe(oldHandler);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+
+    // Stop failure: the retry keeps custody — debt registered, timer
+    // re-armed, nothing installed.
+    rejectReplaceStop?.(boom);
+    await firstAttempt;
+    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+    expect(i.sessions.get(chatId)?.retryTimer).not.toBe(null);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+
+    // Next attempt: the stop confirms and the retry route installs.
+    const entry = i.sessions.get(chatId);
+    if (entry?.retryTimer) {
+      clearTimeout(entry.retryTimer);
+      entry.retryTimer = null;
+    }
+    await i.runRetry(chatId);
+    expect(freshHandler.resume).toHaveBeenCalledTimes(1);
+    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+
+    await sm.shutdown();
+  });
+
+  it("never leaves an unsettled route producer when the route fails", async () => {
+    const failingHandler = handler({
+      start: vi.fn().mockRejectedValue(new Error("provider start failed")),
+    });
+    const sm = makeManager({ handlers: [failingHandler] });
+    const i = internals(sm);
+    const chatId = "chat-producer-settles-on-failure";
+
+    await sm.dispatch(mockEntry({ id: 115, chatId, messageId: "msg-producer-failure" }));
+
+    // The route failed, but the producer settled through the finally — no
+    // quiesce can ever wait on this chat forever, and the failure followed
+    // the existing classification path.
+    expect(i.routeProducers.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("manager shutdown bounded-retries a late afterPrior stop failure before returning", async () => {
+    const boom = new Error("late stop failed");
+    let signalStartStarted: (() => void) | undefined;
+    let resolveStart: (() => void) | undefined;
+    const startStarted = new Promise<void>((resolve) => {
+      signalStartStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      resolveStart = resolve;
+    });
+    let signalLateStopStarted: (() => void) | undefined;
+    let rejectLateStop: ((err: unknown) => void) | undefined;
+    const lateStopStarted = new Promise<void>((resolve) => {
+      signalLateStopStarted = resolve;
+    });
+    const lateStopGate = new Promise<void>((_resolve, reject) => {
+      rejectLateStop = reject;
+    });
+    const pendingHandler = handler({
+      start: vi.fn().mockImplementation(async () => {
+        signalStartStarted?.();
+        await startGate;
+        return "stale-session";
+      }),
+      shutdown: vi
+        .fn()
+        // First call: the suspend boundary's pre-materialization stop.
+        .mockResolvedValueOnce(undefined)
+        // Second call: the discard's afterPrior stop — fails late.
+        .mockImplementationOnce(async () => {
+          signalLateStopStarted?.();
+          await lateStopGate;
+        })
+        // Third call: the bounded best-effort retry — succeeds.
+        .mockResolvedValue(undefined),
+    });
+    const sm = makeManager({ handlers: [pendingHandler] });
+    const i = internals(sm);
+    const chatId = "chat-shutdown-late-stop-retry";
+
+    const dispatch = sm.dispatch(mockEntry({ id: 116, chatId, messageId: "msg-late-stop-retry" }));
+    await startStarted;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+
+    const stopped = sm.shutdown();
+    let stopSettled = false;
+    void stopped.then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopSettled).toBe(false);
+
+    // The start materializes late during shutdown; its afterPrior stop
+    // fails, and shutdown must not return while the debt is unconfirmed.
+    resolveStart?.();
+    await lateStopStarted;
+    expect(stopSettled).toBe(false);
+
+    rejectLateStop?.(boom);
+    await stopped;
+
+    // Bounded: exactly one best-effort retry (3 stops total), then shutdown
+    // returns with the debt cleared — the last owner did not drop it.
+    expect(pendingHandler.shutdown).toHaveBeenCalledTimes(3);
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+
+    await dispatch;
   });
 
   it("keeps chats with unresolved teardown debt in the held set", async () => {
