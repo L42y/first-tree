@@ -189,17 +189,22 @@ function prepare(options = {}) {
       // Unlink the symlink itself — never rmSync a directory symlink without
       // care: Node may treat the target as the path and raise EISDIR.
       unlinkSync(dir);
-      mutated += 1;
-
-      if (failAfter !== null && mutated >= failAfter) {
-        throw new Error(`injected mid-prepare failure after ${mutated} unlink(s)`);
-      }
-
       mkdirSync(dirname(dir), { recursive: true });
       // Copy package files only. The package directory under .pnpm has no nested
       // node_modules of its own; its deps live as sibling symlinks that we
       // materialize separately via the closure walk.
       cpSync(entry.resolvedSource, dir, { recursive: true, dereference: true });
+      mutated += 1;
+
+      // Inject only AFTER a successful real-directory replacement so restore is
+      // proven against a partially-materialized workspace (not merely an unlink).
+      if (failAfter !== null && mutated >= failAfter) {
+        const afterCopy = lstatSyncSafe(dir);
+        if (!afterCopy || afterCopy.isSymbolicLink()) {
+          throw new Error("injected failure precondition failed: expected a real directory after cpSync");
+        }
+        throw new Error(`injected mid-prepare failure after ${mutated} successful materialization(s)`);
+      }
     }
   } catch (error) {
     // Best-effort rollback from the full journal (covers partial materialize).
@@ -273,15 +278,19 @@ function selftestRecovery() {
     before.set(name, readlinkSync(dir));
   }
 
-  // Confirm the journal is fully written before the injected failure: the child
-  // fails after the first unlink, so recovery must use the preflight journal
-  // that already listed every closure entry.
+  // Child fails after the first successful cpSync (real directory present) and
+  // before the next entry, so restore must delete that copy and recreate every
+  // original symlink from the preflight journal.
   const child = spawnSync(process.execPath, [THIS_SCRIPT, "prepare", "--fail-after=1"], {
     cwd: PACKAGE_ROOT,
     encoding: "utf8",
   });
   if (child.status === 0) {
     fail("selftest-recovery expected prepare --fail-after=1 to exit non-zero");
+  }
+  const childOut = `${child.stdout}\n${child.stderr}`;
+  if (!childOut.includes("successful materialization")) {
+    fail(`selftest-recovery expected failure after a successful copy, got:\n${childOut}`);
   }
 
   if (existsSync(MANIFEST_PATH)) {
