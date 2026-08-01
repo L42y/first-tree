@@ -15,16 +15,27 @@
  *      resume option threading, resume main-agent flag application, and the
  *      awaited replay-fence authorization hook.
  *
- * Failures throw; the outermost handler always cleans tarballs, temp consumers,
- * and any stranded materialize journal before exiting non-zero. Helpers never
- * call `process.exit`.
+ * Failures throw; the outermost handler always cleans *this run's* tarballs,
+ * temp consumers, and any stranded materialize journal before exiting non-zero.
+ * Pre-existing `first-tree-dev-*.tgz` files in apps/cli are snapshotted and
+ * preserved. Helpers never call `process.exit`.
  *
  * No registry publish, no credentials, no network beyond npm itself.
  */
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,13 +77,45 @@ function run(command, args, options = {}) {
 function listCliTarballs() {
   return readdirSync(CLI_ROOT)
     .filter((name) => /^first-tree-dev-.*\.tgz$/.test(name))
-    .map((name) => join(CLI_ROOT, name));
+    .map((name) => join(CLI_ROOT, name))
+    .sort();
 }
 
-function cleanupPackArtifacts(workDir) {
+/**
+ * Track which tarballs this invocation may delete. Pre-existing developer
+ * artifacts are snapshotted at process start and never removed.
+ * @type {{ preexisting: Set<string>, owned: Set<string> }}
+ */
+const tarballOwnership = {
+  preexisting: new Set(),
+  owned: new Set(),
+};
+
+function snapshotPreexistingTarballs() {
+  tarballOwnership.preexisting = new Set(listCliTarballs());
+  tarballOwnership.owned = new Set();
+}
+
+/** Record tarballs created since the preexisting snapshot as owned by this run. */
+function adoptNewTarballs() {
   for (const tarball of listCliTarballs()) {
+    if (!tarballOwnership.preexisting.has(tarball)) {
+      tarballOwnership.owned.add(tarball);
+    }
+  }
+}
+
+/**
+ * Remove only work-owned pack artifacts (new tarballs + optional temp dir +
+ * stranded materialize journal). Never deletes preexisting tarballs.
+ * @param {string | undefined} workDir
+ */
+function cleanupPackArtifacts(workDir) {
+  adoptNewTarballs();
+  for (const tarball of tarballOwnership.owned) {
     rmSync(tarball, { force: true });
   }
+  tarballOwnership.owned.clear();
   if (workDir) {
     rmSync(workDir, { recursive: true, force: true });
   }
@@ -89,9 +132,20 @@ function cleanupPackArtifacts(workDir) {
   }
 }
 
+/**
+ * @param {Map<string, string>} symlinkSnapshot
+ */
 function assertCleanWorkspace(symlinkSnapshot) {
-  if (listCliTarballs().length !== 0) {
-    fail(`cleanup left tarball residue: ${listCliTarballs().join(", ")}`);
+  const current = new Set(listCliTarballs());
+  for (const tarball of current) {
+    if (!tarballOwnership.preexisting.has(tarball)) {
+      fail(`cleanup left work-owned tarball residue: ${tarball}`);
+    }
+  }
+  for (const tarball of tarballOwnership.preexisting) {
+    if (!existsSync(tarball)) {
+      fail(`cleanup deleted pre-existing tarball it does not own: ${tarball}`);
+    }
   }
   if (existsSync(MANIFEST_PATH)) {
     fail("cleanup left stranded materialize manifest");
@@ -153,11 +207,11 @@ function runSmoke() {
   try {
     const consumerDir = join(work, "consumer");
     run("npm", ["pack", "--json"], { cwd: CLI_ROOT });
-    const tarballs = listCliTarballs();
-    if (tarballs.length !== 1) {
-      fail(`expected exactly one first-tree-dev tarball in apps/cli, got ${tarballs.length}`);
+    adoptNewTarballs();
+    if (tarballOwnership.owned.size !== 1) {
+      fail(`expected exactly one new first-tree-dev tarball, got ${tarballOwnership.owned.size}`);
     }
-    const tarball = tarballs[0];
+    const tarball = [...tarballOwnership.owned][0];
     const tarballName = tarball.split("/").pop();
 
     const safety = assertNpmTarballRegistrySafe(tarball);
@@ -212,8 +266,8 @@ function runSmoke() {
 
 /**
  * Deterministic negative cleanup regression: pack succeeds, then an injected
- * post-pack failure must still remove tgz/temp/manifest and restore symlinks
- * before the process exits non-zero.
+ * post-pack failure must still remove *this run's* tgz/temp/manifest and
+ * restore symlinks — without deleting pre-existing tarballs.
  */
 function selftestCleanup() {
   if (!existsSync(join(CLI_ROOT, "dist", "cli", "index.mjs"))) {
@@ -225,8 +279,10 @@ function selftestCleanup() {
   try {
     try {
       run("npm", ["pack", "--json"], { cwd: CLI_ROOT });
-      const tarballs = listCliTarballs();
-      if (tarballs.length !== 1) fail(`expected one tarball before injected failure, got ${tarballs.length}`);
+      adoptNewTarballs();
+      if (tarballOwnership.owned.size !== 1) {
+        fail(`expected one new tarball before injected failure, got ${tarballOwnership.owned.size}`);
+      }
       fail("injected post-pack failure for cleanup regression");
     } catch (error) {
       if (!(error instanceof SmokeFailure) || !error.message.includes("injected post-pack failure")) {
@@ -244,12 +300,72 @@ function selftestCleanup() {
   console.log("release-pack-smoke: selftest-cleanup PASS");
 }
 
+/**
+ * Prove cleanup preserves developer-owned tarballs that pre-existed this run,
+ * on both the success cleanup path and the top-level failure path.
+ */
+function selftestPreservePreexistingTarball() {
+  const sentinel = join(CLI_ROOT, "first-tree-dev-0.0.0-sentinel-preexisting.tgz");
+  writeFileSync(sentinel, "preexisting-sentinel\n");
+  try {
+    // Re-snapshot so the sentinel counts as preexisting for this selftest.
+    snapshotPreexistingTarballs();
+    if (!tarballOwnership.preexisting.has(sentinel)) {
+      fail("selftest-preserve: sentinel was not recorded as preexisting");
+    }
+
+    if (!existsSync(join(CLI_ROOT, "dist", "cli", "index.mjs"))) {
+      fail("apps/cli/dist is missing — run `pnpm build` before selftest-preserve-preexisting");
+    }
+    const symlinkSnapshot = captureBundledSymlinks();
+
+    // Success-path cleanup: pack then clean; sentinel must survive.
+    const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-preserve-"));
+    try {
+      run("npm", ["pack", "--json"], { cwd: CLI_ROOT });
+      adoptNewTarballs();
+      if (tarballOwnership.owned.size < 1) fail("selftest-preserve: pack produced no owned tarball");
+      if (tarballOwnership.owned.has(sentinel)) {
+        fail("selftest-preserve: sentinel incorrectly marked owned");
+      }
+    } finally {
+      cleanupPackArtifacts(work);
+    }
+    assertCleanWorkspace(symlinkSnapshot);
+    if (!existsSync(sentinel) || readFileSync(sentinel, "utf8") !== "preexisting-sentinel\n") {
+      fail("selftest-preserve: success cleanup deleted or altered the sentinel tarball");
+    }
+
+    // Failure-path cleanup via top-level catch (missing action / early fail):
+    // snapshot already includes sentinel; cleanup must not remove it.
+    try {
+      fail("injected top-level failure for preexisting preservation");
+    } catch (error) {
+      if (!(error instanceof SmokeFailure)) throw error;
+      cleanupPackArtifacts(undefined);
+    }
+    if (!existsSync(sentinel) || readFileSync(sentinel, "utf8") !== "preexisting-sentinel\n") {
+      fail("selftest-preserve: failure cleanup deleted or altered the sentinel tarball");
+    }
+
+    console.log("release-pack-smoke: selftest-preserve-preexisting PASS");
+  } finally {
+    rmSync(sentinel, { force: true });
+    // Drop the sentinel from the in-memory preexisting set for any later action
+    // in the same process (selftests are process-isolated via spawn in vitest).
+    tarballOwnership.preexisting.delete(sentinel);
+  }
+}
+
 function main() {
+  snapshotPreexistingTarballs();
   const action = process.argv[2];
   try {
     if (action === "selftest-cleanup") selftestCleanup();
+    else if (action === "selftest-preserve-preexisting") selftestPreservePreexistingTarball();
     else if (action === undefined) runSmoke();
-    else fail(`unknown action '${action}' (expected default smoke or selftest-cleanup)`);
+    else
+      fail(`unknown action '${action}' (expected default smoke, selftest-cleanup, or selftest-preserve-preexisting)`);
   } catch (error) {
     try {
       cleanupPackArtifacts(undefined);

@@ -150,11 +150,20 @@ export function findUnsafeNpmTarballEntries(entries) {
       }
       continue;
     }
-    if (entry.typeFlag === "2" || entry.typeFlag === "1") {
+    if (entry.typeFlag === "2") {
+      // Symlink targets are resolved relative to the link entry's directory.
       const target = entry.linkname ?? "";
       const resolved = resolveTarLinkWithinPackage(entry.name, target);
       if (resolved === null) {
-        violations.push(`escaping ${entry.typeFlag === "2" ? "symlink" : "hardlink"}: ${entry.name} -> ${target}`);
+        violations.push(`escaping symlink: ${entry.name} -> ${target}`);
+      }
+    } else if (entry.typeFlag === "1") {
+      // Hardlink targets are archive-root paths, not directory-relative. Require
+      // the linkname itself to be a canonical package/... member path so a
+      // nested entry cannot smuggle `../outside` through relative resolution.
+      const target = entry.linkname ?? "";
+      if (packageRelativeCanonicalPath(target) === null) {
+        violations.push(`escaping hardlink: ${entry.name} -> ${target}`);
       }
     }
   }
@@ -324,6 +333,19 @@ function runSelftest() {
       ],
       "escaping symlink",
     );
+    // Hardlink targets are archive-root paths: `../outside` must NOT be accepted
+    // via directory-relative resolution from a nested entry.
+    expectReject(
+      "escaping hardlink",
+      [
+        {
+          name: "package/node_modules/demo/hard",
+          typeFlag: "1",
+          linkname: "../outside",
+        },
+      ],
+      "escaping hardlink",
+    );
 
     // In-package relative symlink must be accepted.
     const okLink = pathJoin(dir, "ok-link.tgz");
@@ -332,6 +354,14 @@ function runSelftest() {
       { name: "package/a/link", typeFlag: "2", linkname: "./file.txt" },
     ]);
     assertNpmTarballRegistrySafe(okLink);
+
+    // Canonical hardlink target under package/ must be accepted.
+    const okHard = pathJoin(dir, "ok-hard.tgz");
+    writeSyntheticNpmTarball(okHard, [
+      { name: "package/a/file.txt", content: "a" },
+      { name: "package/a/hard", typeFlag: "1", linkname: "package/a/file.txt" },
+    ]);
+    assertNpmTarballRegistrySafe(okHard);
 
     // GNU long-name typeflag must fail closed at parse time.
     const gnuPath = pathJoin(dir, "gnu.tgz");

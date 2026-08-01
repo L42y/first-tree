@@ -196,6 +196,21 @@ describe("trusted-publishing npm toolchain contract", () => {
     }
     expect(result.stdout).toContain("selftest-cleanup PASS");
   });
+
+  it("preserves pre-existing first-tree-dev tarballs across smoke success and failure cleanup", () => {
+    const result = spawnSync(
+      process.execPath,
+      [join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"), "selftest-preserve-preexisting"],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      },
+    );
+    if (result.status !== 0) {
+      throw new Error(`release-pack-smoke selftest-preserve-preexisting failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest-preserve-preexisting PASS");
+  });
 });
 
 describe("npm tarball registry-safety helper", () => {
