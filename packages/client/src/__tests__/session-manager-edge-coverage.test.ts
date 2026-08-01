@@ -4030,6 +4030,171 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("registers the retry replacement stop as debt before it starts, so terminate must join it", async () => {
+    let signalReplaceStopStarted: (() => void) | undefined;
+    let resolveReplaceStop: (() => void) | undefined;
+    const replaceStopStarted = new Promise<void>((resolve) => {
+      signalReplaceStopStarted = resolve;
+    });
+    const replaceStopGate = new Promise<void>((resolve) => {
+      resolveReplaceStop = resolve;
+    });
+    const oldHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalReplaceStopStarted?.();
+          await replaceStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const freshHandler = handler();
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-retry-stop-debt-first";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: oldHandler,
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+
+    const retry = i.runRetry(chatId);
+    await replaceStopStarted;
+    // The stop was registered as debt BEFORE it started — while it is gated
+    // the entry is slot-free, but the terminate must still join the debt
+    // instead of acking over an unsettled stop.
+    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    let terminateSettled = false;
+    void terminate.then(() => {
+      terminateSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(terminateSettled).toBe(false);
+
+    resolveReplaceStop?.();
+    await retry;
+    await terminate;
+    expect(oldHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("manager shutdown waits for a gated retry replacement stop", async () => {
+    let signalReplaceStopStarted: (() => void) | undefined;
+    let resolveReplaceStop: (() => void) | undefined;
+    const replaceStopStarted = new Promise<void>((resolve) => {
+      signalReplaceStopStarted = resolve;
+    });
+    const replaceStopGate = new Promise<void>((resolve) => {
+      resolveReplaceStop = resolve;
+    });
+    const oldHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalReplaceStopStarted?.();
+          await replaceStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const freshHandler = handler();
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-shutdown-retry-stop";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: oldHandler,
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+
+    const retry = i.runRetry(chatId);
+    await replaceStopStarted;
+
+    const stopped = sm.shutdown();
+    let stopSettled = false;
+    void stopped.then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopSettled).toBe(false);
+
+    resolveReplaceStop?.();
+    await retry;
+    await stopped;
+    // Joined, not duplicated; the retry abandoned the install once manager
+    // shutdown began.
+    expect(oldHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(freshHandler.start).not.toHaveBeenCalled();
+  });
+
+  it("coalesces overlapping runRetry attempts into exactly one replacement route", async () => {
+    let signalReplaceStopStarted: (() => void) | undefined;
+    let resolveReplaceStop: (() => void) | undefined;
+    const replaceStopStarted = new Promise<void>((resolve) => {
+      signalReplaceStopStarted = resolve;
+    });
+    const replaceStopGate = new Promise<void>((resolve) => {
+      resolveReplaceStop = resolve;
+    });
+    const oldHandler = handler({
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalReplaceStopStarted?.();
+          await replaceStopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const firstFresh = handler({ resume: vi.fn().mockResolvedValue("fresh-route-session") });
+    const secondFresh = handler();
+    const sm = makeManager({ handlers: [firstFresh, secondFresh] });
+    const i = internals(sm);
+    const chatId = "chat-overlapping-retries";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: oldHandler,
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+
+    // Timer + immediate-style overlapping retries: both join the same gated
+    // replacement stop, but exactly one may install the replacement route.
+    const first = i.runRetry(chatId);
+    const second = i.runRetry(chatId);
+    await replaceStopStarted;
+
+    resolveReplaceStop?.();
+    await first;
+    await second;
+
+    expect(firstFresh.resume).toHaveBeenCalledTimes(1);
+    expect(secondFresh.resume).not.toHaveBeenCalled();
+    expect(secondFresh.start).not.toHaveBeenCalled();
+    expect(i.sessions.get(chatId)?.handler).toBe(firstFresh);
+
+    await sm.shutdown();
+  });
+
   it("never leaves an unsettled route producer when the route fails", async () => {
     const failingHandler = handler({
       start: vi.fn().mockRejectedValue(new Error("provider start failed")),

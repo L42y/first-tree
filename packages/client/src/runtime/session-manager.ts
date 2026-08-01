@@ -1736,7 +1736,6 @@ export class SessionManager {
     outcome: TurnOutcome,
     deliveryLeaseValid: (() => boolean) | null = null,
   ): Promise<DeliveryCompletionDisposition> {
-    console.error("DBG-CDT", chatId, "lease", deliveryLeaseValid ? deliveryLeaseValid() : "n/a");
     if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
     const retryReason = this.errorCompletionRetryReason(outcome);
     if (retryReason) {
@@ -2677,18 +2676,21 @@ export class SessionManager {
       return;
     }
 
-    // Fresh handler — the old one may have closed its SDK transport. But
-    // registering its debt is NOT a stop: the replaced handler must be
-    // CONFIRMED stopped before the fresh one is installed, or the chat runs
-    // two live handlers. Strict boundary — on failure the debt is
-    // registered (joinable for terminate/reconcile) and the retry keeps its
-    // custody via the same re-arm as slot contention, instead of silently
+    // Fresh handler — the old one may have closed its SDK transport. But the
+    // replaced handler must be CONFIRMED stopped before the fresh one is
+    // installed, or the chat runs two live handlers. The debt is registered
+    // BEFORE the stop starts: while the stop is in flight the entry is
+    // slot-free, so an untracked stop would let a terminate ack (or a
+    // manager shutdown return) over a handler whose stop has not settled.
+    // The raw face clears the debt on a confirmed stop; a failure keeps it
+    // (joinable for terminate/reconcile) and the retry keeps its custody
+    // via the same re-arm as slot contention, instead of silently
     // continuing.
+    this.registerPendingTeardown(chatId, entry.handler);
     try {
       await this.shutdownHandler(entry.handler, "session_retry_replace", { observeFailure: true });
       this.dropPendingTeardown(chatId, entry.handler);
     } catch (err) {
-      this.registerPendingTeardown(chatId, entry.handler);
       this.config.log.warn({ chatId, err }, "session retry replace-stop failed; keeping retry custody");
       const nextDelay = 5_000;
       entry.retryNextAt = Date.now() + nextDelay;
@@ -2700,10 +2702,23 @@ export class SessionManager {
       }, nextDelay);
       return;
     }
-    // The stop awaited: a terminate/shutdown may have started meanwhile, or
-    // the entry may have been replaced — abandon the install instead of
-    // swapping a handler into a chat someone else now owns.
-    if (this.shuttingDown || this.terminatingChats.has(chatId) || this.sessions.get(chatId) !== entry) return;
+    // The stop awaited: re-run the FULL retry-eligibility CAS — a terminate
+    // or manager shutdown may have started meanwhile, the entry may have
+    // been replaced, and an overlapping runRetry (timer + immediate) may
+    // already have installed the replacement route. Abandon the install
+    // instead of opening a second provider route for the same retry head;
+    // the winner's route owns the head's custody.
+    if (
+      this.shuttingDown ||
+      this.terminatingChats.has(chatId) ||
+      this.sessions.get(chatId) !== entry ||
+      entry.status !== "suspended" ||
+      entry.activeSlotHeld ||
+      entry.routeTransition !== null ||
+      entry.retryAttempt === 0
+    ) {
+      return;
+    }
 
     const newHandler = this.createHandler();
     entry.handler = newHandler;
