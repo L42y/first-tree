@@ -1,9 +1,14 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD } from "@first-tree/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createKimiCodeHandler } from "../handlers/kimi-code.js";
+import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../runtime/handler.js";
+import { ReplayFenceStore } from "../runtime/replay-fence.js";
+import { mockCtxPlumbing } from "./test-helpers.js";
 
 /**
  * End-to-end regression through the REAL patched `@botiverse/kimi-code-sdk`
@@ -23,7 +28,8 @@ class MockOpenAIProvider {
   requests: Array<{ stream: boolean; toolNames: string[] }> = [];
   private step = 0;
 
-  constructor(private readonly toolCall: ToolCallSpec) {}
+  /** Tool calls to emit, one per LLM request; later requests get plain text. */
+  constructor(private readonly toolCalls: ToolCallSpec[]) {}
 
   async start(): Promise<void> {
     const server = createServer((req, res) => void this.handle(req, res));
@@ -55,24 +61,24 @@ class MockOpenAIProvider {
       toolNames: (parsed.tools ?? []).map((tool) => tool.function?.name ?? ""),
     });
     this.step += 1;
-    const withToolCall = this.step === 1;
+    const toolCall = this.toolCalls[this.step - 1];
     if (parsed.stream === true) {
-      this.respondSse(res, withToolCall);
+      this.respondSse(res, toolCall);
     } else {
-      this.respondJson(res, withToolCall);
+      this.respondJson(res, toolCall);
     }
   }
 
-  private respondJson(res: ServerResponse, withToolCall: boolean): void {
-    const message = withToolCall
+  private respondJson(res: ServerResponse, toolCall: ToolCallSpec | undefined): void {
+    const message = toolCall
       ? {
           role: "assistant",
           content: null,
           tool_calls: [
             {
-              id: this.toolCall.id,
+              id: toolCall.id,
               type: "function",
-              function: { name: this.toolCall.name, arguments: this.toolCall.arguments },
+              function: { name: toolCall.name, arguments: toolCall.arguments },
             },
           ],
         }
@@ -84,13 +90,13 @@ class MockOpenAIProvider {
         object: "chat.completion",
         created: 0,
         model: "mock-model",
-        choices: [{ index: 0, message, finish_reason: withToolCall ? "tool_calls" : "stop" }],
+        choices: [{ index: 0, message, finish_reason: toolCall ? "tool_calls" : "stop" }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       }),
     );
   }
 
-  private respondSse(res: ServerResponse, withToolCall: boolean): void {
+  private respondSse(res: ServerResponse, toolCall: ToolCallSpec | undefined): void {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
     const chunk = (delta: Record<string, unknown>, finish: string | null) =>
       `data: ${JSON.stringify({
@@ -100,7 +106,7 @@ class MockOpenAIProvider {
         model: "mock-model",
         choices: [{ index: 0, delta, finish_reason: finish }],
       })}\n\n`;
-    if (withToolCall) {
+    if (toolCall) {
       res.write(chunk({ role: "assistant", content: "" }, null));
       res.write(
         chunk(
@@ -108,16 +114,16 @@ class MockOpenAIProvider {
             tool_calls: [
               {
                 index: 0,
-                id: this.toolCall.id,
+                id: toolCall.id,
                 type: "function",
-                function: { name: this.toolCall.name, arguments: "" },
+                function: { name: toolCall.name, arguments: "" },
               },
             ],
           },
           null,
         ),
       );
-      res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: this.toolCall.arguments } }] }, null));
+      res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: toolCall.arguments } }] }, null));
       res.write(chunk({}, "tool_calls"));
     } else {
       res.write(chunk({ role: "assistant", content: "turn done" }, null));
@@ -181,11 +187,13 @@ const MARKER_NAME = "authorize-hook-effect-marker.txt";
 beforeEach(async () => {
   homeDir = mkdtempSync(join(tmpdir(), "kimi-sdk-hook-home-"));
   workDir = mkdtempSync(join(tmpdir(), "kimi-sdk-hook-work-"));
-  provider = new MockOpenAIProvider({
-    id: "call_bash_marker",
-    name: "Bash",
-    arguments: JSON.stringify({ command: `touch ${MARKER_NAME}` }),
-  });
+  provider = new MockOpenAIProvider([
+    {
+      id: "call_bash_marker",
+      name: "Bash",
+      arguments: JSON.stringify({ command: `touch ${MARKER_NAME}` }),
+    },
+  ]);
   await provider.start();
   writeFileSync(
     join(homeDir, "config.toml"),
@@ -235,6 +243,74 @@ async function createHarness(): Promise<SdkHarness> {
   });
 }
 
+/** Repoint the mock provider at a new tool-call script (config.toml rewrite). */
+async function reconfigureProvider(toolCalls: ToolCallSpec[]): Promise<void> {
+  await provider.stop();
+  provider = new MockOpenAIProvider(toolCalls);
+  await provider.start();
+  writeFileSync(
+    join(homeDir, "config.toml"),
+    [
+      'default_provider = "mock"',
+      'default_model = "mock-model"',
+      "telemetry = false",
+      "",
+      "[providers.mock]",
+      'type = "openai"',
+      `base_url = "http://127.0.0.1:${provider.port}/v1"`,
+      'api_key = "mock-key"',
+      "",
+      '[models."mock-model"]',
+      'provider = "mock"',
+      'model = "mock-model"',
+      "max_context_size = 131072",
+      'capabilities = ["tool_use"]',
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+}
+
+function handlerMessage(id: string, content: string): SessionMessage {
+  return { id, chatId: "chat-e2e", senderId: "human-1", format: "text", content, metadata: {} };
+}
+
+function handlerToken(): DeliveryToken & { completed: TurnOutcome[]; retried: string[] } {
+  const completed: TurnOutcome[] = [];
+  const retried: string[] = [];
+  return {
+    completed,
+    retried,
+    processingStarted: () => {},
+    complete: async (_messages, outcome) => {
+      completed.push(outcome);
+    },
+    retry: (_messages, reason) => void retried.push(reason),
+    terminalRejected: async () => {},
+  };
+}
+
+function handlerContext(): SessionContext {
+  const sendMessage = vi.fn().mockResolvedValue(undefined);
+  return {
+    agent: {
+      agentId: "agent-e2e",
+      inboxId: "inbox-e2e",
+      displayName: "e2e-agent",
+      type: "agent",
+      visibility: "organization",
+      delegateMention: null,
+      metadata: {},
+    },
+    sdk: { sendMessage } as unknown as SessionContext["sdk"],
+    chatId: "chat-e2e",
+    log: () => {},
+    recordProviderActivity: () => {},
+    emitEvent: () => {},
+    ...mockCtxPlumbing({ sendMessage }, "chat-e2e"),
+  };
+}
+
 describe("patched SDK authorize boundary (real bundle + mock provider)", () => {
   it("invokes the host hook with session/agent identity and blocks the unsafe effect when it throws", async () => {
     const hookCalls: Array<{ sessionId?: string; agentId?: string; toolName: string }> = [];
@@ -272,5 +348,54 @@ describe("patched SDK authorize boundary (real bundle + mock provider)", () => {
     await session.close();
 
     expect(existsSync(join(workDir, MARKER_NAME))).toBe(true);
+  }, 60_000);
+
+  it("blocks BOTH unsafe calls across a real handler turn when the fence store keeps failing", async () => {
+    await reconfigureProvider([
+      { id: "call_bash_one", name: "Bash", arguments: JSON.stringify({ command: "touch marker-one.txt" }) },
+      { id: "call_bash_two", name: "Bash", arguments: JSON.stringify({ command: "touch marker-two.txt" }) },
+    ]);
+    // Real fence store in an unwritable directory: every persist fails.
+    const fenceDir = mkdtempSync(join(tmpdir(), "kimi-sdk-fence-blocked-"));
+    chmodSync(fenceDir, 0o500);
+    const fenceStore = new ReplayFenceStore(join(fenceDir, "fence.json"));
+    fenceStore.load();
+    const require = createRequire(import.meta.url);
+    const sdk = (await import(
+      require.resolve("@botiverse/kimi-code-sdk", { paths: [join(process.cwd(), "src", "__tests__")] })
+    )) as {
+      createKimiHarness(options: Record<string, unknown>): SdkHarness;
+    };
+
+    const handler = createKimiCodeHandler({
+      workspaceRoot: workDir,
+      runtimeProvider: "kimi-code",
+      agentConfigCache: {
+        refresh: async () => ({ payload: DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD }),
+        get: () => ({ payload: DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD }),
+      },
+      kimiHarnessFactory: () =>
+        sdk.createKimiHarness({
+          identity: { userAgentProduct: "first-tree-test", version: "0.0.0" },
+          uiMode: "first-tree",
+          homeDir,
+        }),
+      replayFence: fenceStore,
+    });
+    const token = handlerToken();
+
+    await handler.start(handlerMessage("m1", "run two bash writes"), handlerContext(), token);
+    await handler.shutdown("test-done");
+    chmodSync(fenceDir, 0o700);
+    rmSync(fenceDir, { recursive: true, force: true });
+
+    // The first call was blocked at the authorize boundary, and the second
+    // hit the fail-closed fenceError path: neither marker may exist, and the
+    // delivery keeps custody instead of a false terminal ACK.
+    expect(existsSync(join(workDir, "marker-one.txt"))).toBe(false);
+    expect(existsSync(join(workDir, "marker-two.txt"))).toBe(false);
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toContain("replay_fence_persist_failed");
+    expect(fenceStore.snapshot()).toEqual([]);
   }, 60_000);
 });

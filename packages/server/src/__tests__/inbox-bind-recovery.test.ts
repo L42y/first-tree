@@ -410,3 +410,51 @@ describe("inbox same-socket chat recovery", () => {
     await expect(inboxService.assertInboxOwner("inbox-a", "inbox-a")).resolves.toBeUndefined();
   });
 });
+
+describe("countUnackedForScope (authoritative unacked backlog)", () => {
+  const getApp = useTestApp();
+
+  it("counts pending AND delivered rows, so a bind-reset unacked row still blocks a settlement claim", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const a1 = await createTestAgent(app, { name: `count-a1-${uid}` });
+    const a2 = await createTestAgent(app, { name: `count-a2-${uid}` });
+
+    const chatRes = await a1.request("POST", "/api/v1/agent/chats", {
+      type: "group",
+      participantIds: [a2.agent.uuid],
+    });
+    const chatId = chatRes.json().id;
+    const msgRes = await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+      format: "text",
+      content: "count pending vs delivered",
+      receiverNames: [a2.agent.name],
+    });
+    const messageId = msgRes.json().id;
+
+    // Fresh row: pending → outstanding is 1 while the delivered reset count
+    // a recovery would report is 0. This is the bind-reset race shape: a
+    // resetCount of 0 must never be read as "settled".
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(1);
+
+    // Claim (delivered) → still outstanding 1.
+    const claimed = await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageId);
+    expect(claimed).toHaveLength(1);
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(1);
+
+    // Bind-style reset back to pending → a second recover would reset 0
+    // delivered rows, yet the outstanding truth stays 1.
+    const recovered = await inboxService.recoverUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId });
+    expect(recovered.resetEntryIds).toHaveLength(1);
+    const secondRecover = await inboxService.recoverUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId });
+    expect(secondRecover.resetEntryIds).toHaveLength(0);
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(1);
+
+    // Only a real ACK settles the scope.
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "acked", ackedAt: new Date() })
+      .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.chatId, chatId)));
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(0);
+  });
+});

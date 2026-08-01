@@ -68,9 +68,21 @@ type PendingInboxRecover = {
   ref: string;
   firstSentAt: number;
   timer: ReturnType<typeof setTimeout> | null;
-  promise: Promise<number>;
-  resolve: (resetCount: number) => void;
+  promise: Promise<InboxRecoverResult>;
+  resolve: (result: InboxRecoverResult) => void;
   reject: (err: Error) => void;
+};
+
+/**
+ * Result of an accepted inbox recovery. `resetCount` only covers rows the
+ * reset moved out of `delivered`; `unackedOutstanding` is the server's
+ * authoritative pending+delivered backlog for the chat scope, and is the
+ * only value that may prove settlement when it is zero. Older servers omit
+ * it — absence must be treated as unknown, never as zero.
+ */
+export type InboxRecoverResult = {
+  resetCount: number;
+  unackedOutstanding?: number;
 };
 
 type PendingSessionEvent = {
@@ -629,11 +641,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
    * Ask the server to reset delivered-but-unacked entries for one chat and
    * redeliver them on this socket. Unlike ACKs, recovery is bounded: callers
    * must get an accepted/rejected/timeout outcome instead of waiting forever
-   * behind a per-chat recovery gate. Resolves with the server's reset count —
-   * how many entries were still unacked — which is the only client-visible
-   * server ACK truth for crash-safe reconciliation (e.g. replay fences).
+   * behind a per-chat recovery gate. Resolves with the server's reset count
+   * plus (on new servers) the authoritative unacked outstanding count —
+   * the only client-visible server ACK truth for crash-safe reconciliation.
    */
-  sendInboxRecover(agentId: string, chatId: string): Promise<number> {
+  sendInboxRecover(agentId: string, chatId: string): Promise<InboxRecoverResult> {
     if (
       !this.ws ||
       this.ws.readyState !== WebSocket.OPEN ||
@@ -649,11 +661,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       ref: `recover_${randomUUID().slice(0, 12)}`,
       firstSentAt: Date.now(),
       timer: null,
-      promise: Promise.resolve(0),
+      promise: Promise.resolve({ resetCount: 0 }),
       resolve: () => {},
       reject: () => {},
     };
-    pending.promise = new Promise<number>((resolve, reject) => {
+    pending.promise = new Promise<InboxRecoverResult>((resolve, reject) => {
       pending.resolve = resolve;
       pending.reject = reject;
     });
@@ -839,7 +851,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     }
   }
 
-  private resolvePendingInboxRecover(pending: PendingInboxRecover, resetCount: number): void {
+  private resolvePendingInboxRecover(
+    pending: PendingInboxRecover,
+    resetCount: number,
+    unackedOutstanding?: number,
+  ): void {
     this.clearPendingInboxRecoverTimer(pending);
     this.pendingInboxRecovers.delete(pending.ref);
     this.wsLogger.debug(
@@ -848,12 +864,13 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         chatId: pending.chatId,
         ref: pending.ref,
         resetCount,
+        unackedOutstanding,
         latencyMs: Date.now() - pending.firstSentAt,
         recoverEvent: "inbox_recover_accepted",
       },
       "inbox:recover accepted",
     );
-    pending.resolve(resetCount);
+    pending.resolve({ resetCount, unackedOutstanding });
   }
 
   private rejectPendingInboxRecover(pending: PendingInboxRecover, reason: string): void {
@@ -1740,7 +1757,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         );
         return;
       }
-      this.resolvePendingInboxRecover(pending, parsed.data.resetCount);
+      this.resolvePendingInboxRecover(pending, parsed.data.resetCount, parsed.data.unackedOutstanding);
       return;
     }
 

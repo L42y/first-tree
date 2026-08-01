@@ -954,6 +954,115 @@ describe("Kimi replay fence", () => {
     expect(events.filter((item) => item.kind === "turn_end")).toEqual([]);
   });
 
+  it("keeps blocking every later unsafe call after a fence persistence failure", async () => {
+    const id = "kimi-session-fence-double";
+    const fence = makeFence();
+    fence.fence.mockImplementation(() => {
+      throw new Error("disk full");
+    });
+    const fakeSession = new EffectGateFakeSession(id, [
+      event(id, { type: "turn.started", turnId: 1 }),
+      event(id, {
+        type: "tool.call.started",
+        turnId: 1,
+        toolCallId: "write-1",
+        name: "Write",
+        args: { path: "one.txt", content: "one" },
+      }),
+      event(id, { type: "tool.result", turnId: 1, toolCallId: "write-1", isError: true, output: "blocked" }),
+      // The model reacts to the blocked result with a second unsafe call:
+      // without the fail-closed guard this would take the fast path and run.
+      event(id, {
+        type: "tool.call.started",
+        turnId: 1,
+        toolCallId: "write-2",
+        name: "Write",
+        args: { path: "two.txt", content: "two" },
+      }),
+      event(id, { type: "tool.result", turnId: 1, toolCallId: "write-2", isError: true, output: "blocked" }),
+      event(id, { type: "assistant.delta", turnId: 1, delta: "both blocked" }),
+      event(id, { type: "turn.ended", turnId: 1, reason: "completed" }),
+    ]);
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const token = makeToken();
+
+    await handler.start(message("m1", "write twice"), makeContext([]), token);
+
+    expect(fakeSession.effectCount).toBe(0);
+    // The second call hit the fenceError fast path and never attempted a
+    // write again — proof it did not silently become "authorized".
+    expect(fence.fence).toHaveBeenCalledTimes(1);
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toContain("replay_fence_persist_failed");
+  });
+
+  it("rolls back a partial fence so a failed multi-message persist authorizes nothing", async () => {
+    const id = "kimi-session-fence-partial";
+    const fence = makeFence();
+    const originalFence = fence.fence.getMockImplementation();
+    fence.fence.mockImplementation((entry: ReplayFenceEntry) => {
+      if (entry.messageId === "m3") throw new Error("disk full on second message");
+      originalFence?.(entry);
+    });
+    const fakeSession = new GatedFakeSession(id);
+    const handler = makeHandler(fakeSession, {}, { replayFence: fence });
+    const events: SessionEvent[] = [];
+    const token1 = makeToken();
+    const token2 = makeToken();
+    const token3 = makeToken();
+    const startPromise = handler.start(message("m1", "first turn"), makeContext(events), token1);
+
+    await fakeSession.promptSeen;
+    // Two more deliveries arrive while the first turn is active; they merge
+    // into ONE fused turn whose messages share a single fence batch.
+    expect(handler.inject(message("m2", "queued two"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    expect(handler.inject(message("m3", "queued three"), token3)).toEqual({ kind: "owned", mode: "queued" });
+    fakeSession.emit(event(id, { type: "turn.started", turnId: 1 }));
+    fakeSession.emit(event(id, { type: "assistant.delta", turnId: 1, delta: "first done" }));
+    fakeSession.emit(event(id, { type: "turn.ended", turnId: 1, reason: "completed" }));
+    await startPromise;
+    expect(token1.completed).toEqual([{ status: "success" }]);
+
+    // The fused turn's prompt arrives after the drain; drive its events
+    // explicitly: an unsafe call whose fence persists for m2 but fails for
+    // m3 — the m2 entry must be rolled back, and the following unsafe call
+    // must stay blocked.
+    await vi.waitFor(() => expect(fakeSession.prompts).toHaveLength(2));
+    fakeSession.emit(event(id, { type: "turn.started", turnId: 2 }));
+    fakeSession.emit(
+      event(id, {
+        type: "tool.call.started",
+        turnId: 2,
+        toolCallId: "write-1",
+        name: "Write",
+        args: { path: "partial.txt", content: "x" },
+      }),
+    );
+    fakeSession.emit(
+      event(id, { type: "tool.result", turnId: 2, toolCallId: "write-1", isError: true, output: "blocked" }),
+    );
+    fakeSession.emit(
+      event(id, {
+        type: "tool.call.started",
+        turnId: 2,
+        toolCallId: "write-2",
+        name: "Write",
+        args: { path: "partial2.txt", content: "x" },
+      }),
+    );
+    fakeSession.emit(
+      event(id, { type: "tool.result", turnId: 2, toolCallId: "write-2", isError: true, output: "blocked" }),
+    );
+    fakeSession.emit(event(id, { type: "turn.ended", turnId: 2, reason: "completed" }));
+    await flushAsyncWork();
+
+    expect(fence.clear).toHaveBeenCalledWith("chat-kimi", "m2");
+    expect(fence.entries).toEqual([]);
+    expect(token2.completed).toEqual([]);
+    expect(token2.retried).toContain("replay_fence_persist_failed");
+    expect(token3.completed).toEqual([]);
+  });
+
   it("settles through the durable-notice pipeline when the fence failure is non-retryable", async () => {
     const id = "kimi-session-fence-config";
     const fence = makeFence();

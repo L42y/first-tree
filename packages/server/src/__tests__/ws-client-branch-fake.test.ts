@@ -354,6 +354,7 @@ describe("Agent client WS branch fakes", () => {
     vi.spyOn(inboxService, "claimBacklogForPushFair").mockResolvedValue([]);
     vi.spyOn(inboxService, "claimBacklogForPushForChat").mockResolvedValue([]);
     vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValue({ resetEntryIds: [] });
+    vi.spyOn(inboxService, "countUnackedForScope").mockResolvedValue(0);
     vi.spyOn(inboxService, "ackEntryByIdForBoundAgents").mockResolvedValue({
       ok: true,
       throughEntry: inboxDbRow(),
@@ -615,12 +616,14 @@ describe("Agent client WS branch fakes", () => {
       agentId: "agent_1",
       chatId: "chat_1",
       resetCount: 0,
+      unackedOutstanding: 0,
     });
   });
 
   it("opens a same-socket recovery circuit after repeated identical debt without progress", async () => {
     mockSuccessfulBindServices();
     const recoverSpy = vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValue({ resetEntryIds: [101] });
+    vi.spyOn(inboxService, "countUnackedForScope").mockResolvedValue(1);
     const { handler } = routeHarness(
       queuedDb([
         [{ id: "user_1", status: "active" }],
@@ -644,6 +647,7 @@ describe("Agent client WS branch fakes", () => {
         agentId: "agent_1",
         chatId: "chat_no_progress",
         resetCount: 1,
+        unackedOutstanding: 1,
       });
     }
 
@@ -705,6 +709,7 @@ describe("Agent client WS branch fakes", () => {
       agentId: "agent_1",
       chatId: "chat_no_progress",
       resetCount: 1,
+      unackedOutstanding: 1,
     });
     expect(recoverSpy).toHaveBeenCalledTimes(4);
   });

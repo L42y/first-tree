@@ -81,7 +81,17 @@ export const inboxRecoverAcceptedFrameSchema = z.object({
   ref: z.string().min(1),
   agentId: z.string().min(1),
   chatId: z.string().min(1),
+  /** Rows the recovery reset from delivered back to pending. */
   resetCount: z.number().int().nonnegative(),
+  /**
+   * Authoritative unacked backlog for the chat scope: rows in EITHER
+   * `pending` or `delivered`, counted inside the same serialized recovery
+   * boundary. Only `0` proves every delivery in the chat settled — a plain
+   * `resetCount` of 0 cannot, since unacked rows may already be `pending`
+   * (e.g. after a bind reset). Optional so older servers stay compatible;
+   * consumers must treat its absence as "unknown", never as zero.
+   */
+  unackedOutstanding: z.number().int().nonnegative().optional(),
 });
 export type InboxRecoverAcceptedFrame = z.infer<typeof inboxRecoverAcceptedFrameSchema>;
 

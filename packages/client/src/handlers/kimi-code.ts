@@ -271,6 +271,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     toolUseId: string,
   ): Error | null {
     if (!replayFence) return new Error("replay fence store is not configured");
+    const fencedMessageIds: string[] = [];
     for (const msg of messages) {
       try {
         replayFence.fence({
@@ -281,7 +282,19 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
           toolUseId,
           fencedAt: new Date().toISOString(),
         });
+        fencedMessageIds.push(msg.id);
       } catch (error) {
+        // Roll back the entries written by THIS call: the tool call is
+        // blocked, so no effect exists to protect, and a partial fence would
+        // wrongly mark the delivery as authorized (or strand the chat in
+        // permanent recovery debt once custody is retained).
+        for (const messageId of fencedMessageIds) {
+          try {
+            replayFence.clear(chatId, messageId);
+          } catch {
+            // A fence that cannot even be removed stays — conservative.
+          }
+        }
         return error instanceof Error ? error : new Error(String(error));
       }
     }
@@ -550,13 +563,19 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     beforeToolCallHooks.set(activeSession.id, beforeToolCallHook);
     function beforeToolCallHook(info: HostBeforeToolCallInfo): void {
       if (kimiToolIsReadOnly(info.toolName, info.args)) return;
+      if (observation.fenceError) {
+        // Fail-closed: a previous fence write failed in this attempt, so no
+        // later unsafe call may execute either — the SDK turns each throw
+        // into a blocked result and continues, and without this guard the
+        // next call would run unfenced.
+        throw new Error(`replay fence persistence failed: ${observation.fenceError.message}`);
+      }
       if (observation.unsafeFenced) {
         // A previous unsafe call was already fenced and allowed through.
         observation.unsafeToolEffectStarted = true;
         attempt.setReplaySafety("unsafe");
         return;
       }
-      observation.unsafeFenced = true;
       const agentId = typeof info.agentId === "string" && info.agentId.length > 0 ? info.agentId : KIMI_MAIN_AGENT_ID;
       const toolUseId = agentId === KIMI_MAIN_AGENT_ID ? info.toolCallId : `${agentId}:${info.toolCallId}`;
       const fenceFailure = fenceUnsafeDelivery(sessionCtx.chatId, messages, info.toolName, toolUseId);
@@ -567,8 +586,10 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         observation.fenceError = fenceFailure;
         throw new Error(`replay fence persistence failed: ${fenceFailure.message}`);
       }
-      // Fence persisted — the delivery is protected even if this effect
-      // executes and the process dies afterwards.
+      // Only now is the delivery durably authorized: every message of the
+      // delivery is fenced, so this effect may execute and later unsafe
+      // calls in the attempt may take the fenced fast path.
+      observation.unsafeFenced = true;
       observation.unsafeToolEffectStarted = true;
       attempt.setReplaySafety("unsafe");
     }

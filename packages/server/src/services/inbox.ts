@@ -680,6 +680,28 @@ export type RecoverUnackedForScopeResult = {
 };
 
 /**
+ * Authoritative unacked backlog for one inbox scope: rows in EITHER
+ * `pending` or `delivered` (both unsettled per the wire contract; only
+ * `acked` is settlement). `recoverUnackedForScope`'s reset count alone can
+ * never prove settlement, because unacked rows may already be `pending`
+ * (e.g. after a bind reset). Callers must compute this inside the same
+ * serialized recovery boundary as the reset itself.
+ */
+export async function countUnackedForScope(db: Database, opts: { inboxId: string; chatId?: string }): Promise<number> {
+  const conditions = [
+    eq(inboxEntries.inboxId, opts.inboxId),
+    inArray(inboxEntries.status, ["pending", "delivered"]),
+    eq(inboxEntries.notify, true),
+  ];
+  if (opts.chatId !== undefined) conditions.push(eq(inboxEntries.chatId, opts.chatId));
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(inboxEntries)
+    .where(and(...conditions));
+  return rows[0]?.count ?? 0;
+}
+
+/**
  * Reset delivered-but-unacked notify rows for a single inbox, optionally
  * narrowed to one chat, and return the concrete ids that were reset. The id
  * list lets the WS layer remove only those entries from same-socket in-flight

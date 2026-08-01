@@ -1857,6 +1857,13 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   } else {
                     inboxRecoverProgress.delete(progressKey);
                   }
+                  // Counted inside the same serialized chain as the reset:
+                  // unacked rows may already be `pending` (bind reset), so
+                  // only pending+delivered = 0 proves the chat settled.
+                  const unackedOutstanding = await inboxService.countUnackedForScope(app.db, {
+                    inboxId: info.inboxId,
+                    chatId,
+                  });
                   socket.send(
                     JSON.stringify({
                       type: "inbox:recover:accepted",
@@ -1864,6 +1871,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                       agentId,
                       chatId,
                       resetCount: recovered.resetEntryIds.length,
+                      unackedOutstanding,
                     }),
                   );
                   await drainBacklogForAgent(agentId, info.inboxId, { source: "recover", chatId });
