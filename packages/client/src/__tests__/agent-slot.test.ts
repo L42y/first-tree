@@ -1158,11 +1158,39 @@ describe("AgentSlot", () => {
     expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
     const shutdownOrder = session.shutdown.mock.invocationCallOrder[0];
     const unbindOrder = connection.unbindAgent.mock.invocationCallOrder[0];
+    const clearOrder = connection.clearRuntimeSessionTokenProvider.mock.invocationCallOrder[0];
     expect(shutdownOrder).toBeTypeOf("number");
     expect(unbindOrder).toBeTypeOf("number");
+    expect(clearOrder).toBeTypeOf("number");
     expect(shutdownOrder as number).toBeLessThan(unbindOrder as number);
+    // Proof provider must outlive SM.shutdown so notice HTTP can still resolve
+    // the current runtime-session token during drain.
+    expect(shutdownOrder as number).toBeLessThan(clearOrder as number);
     expect(state.logger.warn).toHaveBeenCalledWith({ err }, "failed to shut down sessions while stopping");
     expect(state.logger.info).toHaveBeenCalledWith("stopped");
+  });
+
+  it("keeps the runtime-session token provider registered while sessionManager.shutdown runs", async () => {
+    const { slot, connection, state } = await makeSlot({
+      activeRuntimeChatIds: ["chat-1"],
+      runtimeSessionToken: "runtime-token-live",
+    });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const seenDuringShutdown: Array<string | undefined> = [];
+    session.shutdown.mockImplementationOnce(async () => {
+      seenDuringShutdown.push(connection.tokenProviders.get("agent-1")?.());
+    });
+
+    await slot.stop("agent_runtime_switch");
+
+    expect(seenDuringShutdown).toEqual(["runtime-token-live"]);
+    expect(connection.tokenProviders.has("agent-1")).toBe(false);
+    const shutdownOrder = session.shutdown.mock.invocationCallOrder[0] as number;
+    const clearOrder = connection.clearRuntimeSessionTokenProvider.mock.invocationCallOrder[0] as number;
+    expect(shutdownOrder).toBeLessThan(clearOrder);
   });
 
   it("logs a forced-stop failure raised by a server unbind event", async () => {

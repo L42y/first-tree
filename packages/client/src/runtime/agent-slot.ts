@@ -580,29 +580,37 @@ export class AgentSlot {
       this.clientConnection.off(entry.event, entry.fn);
     }
     this.listeners = [];
-    this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
     let firstError: unknown = null;
     // Settle provider-entered custody (durable notice + ACK) while the agent is
-    // still bound, then unbind. Unbinding first can drop late settlement writes.
+    // still bound *and* the dynamic runtime-session proof provider is still
+    // registered. Clearing the provider first falls the bound SDK back to a
+    // possibly-stale bind-time token, so notice HTTP can fail closed and leave
+    // the entered turn unacked for reconnect replay.
     try {
-      await this.sessionManager?.shutdown(reason, opts.sessionShutdown);
-    } catch (err) {
-      firstError = err;
-      this.logger.warn({ err }, "failed to shut down sessions while stopping");
+      try {
+        await this.sessionManager?.shutdown(reason, opts.sessionShutdown);
+      } catch (err) {
+        firstError = err;
+        this.logger.warn({ err }, "failed to shut down sessions while stopping");
+      }
+      try {
+        await this.clientConnection.unbindAgent(this.config.agentId);
+      } catch (err) {
+        firstError ??= err;
+        this.logger.warn({ err }, "failed to unbind agent while stopping");
+      }
+    } finally {
+      // Cleanup runs exactly once even when drain/unbind fails — but never before
+      // SessionManager.shutdown has joined (success or failure).
+      this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
+      this.cleanupOwnedRuntimeSessionToken();
+      this.sessionManager = null;
+      this.agentConfigCache = null;
+      this.sdk = null;
+      this.activeRuntimeChatIds = null;
+      this.activeRuntimeChatIdsRefreshInFlight = null;
+      this.inboxId = null;
     }
-    try {
-      await this.clientConnection.unbindAgent(this.config.agentId);
-    } catch (err) {
-      firstError ??= err;
-      this.logger.warn({ err }, "failed to unbind agent while stopping");
-    }
-    this.cleanupOwnedRuntimeSessionToken();
-    this.sessionManager = null;
-    this.agentConfigCache = null;
-    this.sdk = null;
-    this.activeRuntimeChatIds = null;
-    this.activeRuntimeChatIdsRefreshInFlight = null;
-    this.inboxId = null;
     this.logger.info("stopped");
     if (firstError) throw firstError;
   }
@@ -627,27 +635,30 @@ export class AgentSlot {
       this.clientConnection.off(entry.event, entry.fn);
     }
     this.listeners = [];
-    this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
-    if (opts.unbind) {
-      try {
-        await this.clientConnection.unbindAgent(this.config.agentId);
-      } catch (err) {
-        this.logger.warn({ err }, "failed to unbind after aborted agent start");
-      }
-    }
     try {
-      await this.sessionManager?.shutdown();
-    } catch (err) {
-      this.logger.warn({ err }, "failed to shut down sessions after aborted agent start");
+      try {
+        await this.sessionManager?.shutdown();
+      } catch (err) {
+        this.logger.warn({ err }, "failed to shut down sessions after aborted agent start");
+      }
+      if (opts.unbind) {
+        try {
+          await this.clientConnection.unbindAgent(this.config.agentId);
+        } catch (err) {
+          this.logger.warn({ err }, "failed to unbind after aborted agent start");
+        }
+      }
+    } finally {
+      this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
+      this.cleanupOwnedRuntimeSessionToken();
+      this.sessionManager = null;
+      this.agentConfigCache = null;
+      this.sdk = null;
+      this.activeRuntimeChatIds = null;
+      this.activeRuntimeChatIdsRefreshInFlight = null;
+      this.inboxId = null;
+      this.runtimeSessionTokenMutationError = null;
     }
-    this.cleanupOwnedRuntimeSessionToken();
-    this.sessionManager = null;
-    this.agentConfigCache = null;
-    this.sdk = null;
-    this.activeRuntimeChatIds = null;
-    this.activeRuntimeChatIdsRefreshInFlight = null;
-    this.inboxId = null;
-    this.runtimeSessionTokenMutationError = null;
   }
 
   private reportSessionState(chatId: string, state: SessionState): void {
