@@ -363,6 +363,28 @@ function extractAssistantMessageFields(message: Record<string, unknown> | null):
   };
 }
 
+export type PiRetrySleep = (delayMs: number, signal: AbortSignal) => Promise<boolean>;
+
+type QueuedDelivery = { message: SessionMessage; token: DeliveryToken };
+
+/** Abortable retry backoff — shared by active pre-provider drain and turn preflight loops. */
+export async function defaultPiRetrySleep(delayMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false;
+  return new Promise<boolean>((resolveDelay) => {
+    let settled = false;
+    const finish = (completed: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolveDelay(completed);
+    };
+    const onAbort = () => finish(false);
+    const timer = setTimeout(() => finish(true), delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export const createPiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider ?? "pi");
@@ -382,6 +404,7 @@ export const createPiHandler: HandlerFactory = (config) => {
   const settlementTimeoutMs =
     typeof config.piSettlementTimeoutMs === "number" ? config.piSettlementTimeoutMs : undefined;
   const requestTimeoutMs = typeof config.piRequestTimeoutMs === "number" ? config.piRequestTimeoutMs : undefined;
+  const retrySleep = (config.piRetrySleep as PiRetrySleep | undefined) ?? defaultPiRetrySleep;
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -394,12 +417,17 @@ export const createPiHandler: HandlerFactory = (config) => {
   let sessionActive = false;
   let initialTurnPreparing = false;
   let currentTurnPromise: Promise<boolean> | null = null;
+  let currentDrainPromise: Promise<void> | null = null;
   let streaming = false;
   let versionReady = false;
   let pendingChatContextPrompt: string | null = null;
   let drainScheduled = false;
   let drainInProgress = false;
-  const queuedMessages: Array<{ message: SessionMessage; token: DeliveryToken }> = [];
+  let drainingBatch: QueuedDelivery[] | null = null;
+  let drainCancellationReason: string | null = null;
+  let lifecycleGeneration = 0;
+  let currentRetryAbort: AbortController | null = null;
+  const queuedMessages: QueuedDelivery[] = [];
   const activeTools = new Map<string, ActiveTool>();
   const pendingSteerWork = new Set<Promise<void>>();
   const gitWriteTracker: ContextTreeGitWriteTracker = createContextTreeGitWriteTracker({
@@ -415,6 +443,25 @@ export const createPiHandler: HandlerFactory = (config) => {
   let activeResourceConfigVersion = 0;
   let activeBriefingText: string | null = null;
   let oneShotConsumed = false;
+
+  async function sleepForRetry(delayMs: number): Promise<boolean> {
+    const abort = new AbortController();
+    currentRetryAbort = abort;
+    try {
+      return await retrySleep(delayMs, abort.signal);
+    } finally {
+      if (currentRetryAbort === abort) currentRetryAbort = null;
+    }
+  }
+
+  function lifecycleOwnsRecovery(): boolean {
+    return drainCancellationReason !== null;
+  }
+
+  function recoverTurnUnlessLifecycleOwns(reason: string): void {
+    if (lifecycleOwnsRecovery()) return;
+    retryCustody(reason);
+  }
 
   function consumeOneShotPromptState(): void {
     // Chat-context prompt is session-one-shot; briefing fingerprint advances on
@@ -1042,7 +1089,7 @@ export const createPiHandler: HandlerFactory = (config) => {
 
     for (let attemptNumber = 1; attemptNumber <= maxRetries + 1; attemptNumber += 1) {
       if (!sessionActive) {
-        retryCustody("pi_turn_cancelled");
+        recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
         return false;
       }
       if (activeClient.isClosed) {
@@ -1087,7 +1134,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
 
       if (!sessionActive) {
-        retryCustody("pi_turn_cancelled");
+        recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
         return false;
       }
 
@@ -1099,7 +1146,11 @@ export const createPiHandler: HandlerFactory = (config) => {
           if (settlement && settlement.decision.action === "retry") {
             const delayMs = settlement.decision.delayMs;
             emitSettlement(sessionCtx, settlement);
-            await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+            const completedDelay = await sleepForRetry(delayMs);
+            if (!completedDelay || !sessionActive || lifecycleOwnsRecovery()) {
+              recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+              return false;
+            }
             continue;
           }
           if (settlement) emitSettlement(sessionCtx, settlement);
@@ -1146,7 +1197,11 @@ export const createPiHandler: HandlerFactory = (config) => {
         if (settlement && settlement.decision.action === "retry") {
           const delayMs = settlement.decision.delayMs;
           emitSettlement(sessionCtx, settlement);
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+          const completedDelay = await sleepForRetry(delayMs);
+          if (!completedDelay || !sessionActive || lifecycleOwnsRecovery()) {
+            recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+            return false;
+          }
           continue;
         }
         if (settlement) emitSettlement(sessionCtx, settlement);
@@ -1176,7 +1231,7 @@ export const createPiHandler: HandlerFactory = (config) => {
         await awaitPendingSteers();
         const transportError = error instanceof Error ? error : new Error(String(error));
         if (!sessionActive) {
-          retryCustody("pi_turn_cancelled");
+          recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
           return false;
         }
         // Never downgrade accepted custody to pre_provider; never resend.
@@ -1203,7 +1258,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
 
       if (!sessionActive) {
-        retryCustody("pi_turn_cancelled");
+        recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
         return false;
       }
 
@@ -1278,7 +1333,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       turnObservation = null;
       turnCustody = [];
       streaming = false;
-      scheduleQueuedMessagesDrain();
+      if (sessionActive && !lifecycleOwnsRecovery()) scheduleQueuedMessagesDrain();
     }
   }
 
@@ -1384,10 +1439,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     return { action: "stop" };
   }
 
-  async function mergeAndRun(
-    drained: Array<{ message: SessionMessage; token: DeliveryToken }>,
-    sessionCtx: SessionContext,
-  ): Promise<void> {
+  async function mergeAndRun(drained: QueuedDelivery[], sessionCtx: SessionContext): Promise<void> {
     const prepared = await refreshPreparedSession(sessionCtx);
     const prompts: string[] = [];
     for (const entry of drained) {
@@ -1406,42 +1458,128 @@ export const createPiHandler: HandlerFactory = (config) => {
     );
   }
 
+  function finishDrainingBatch(batch: QueuedDelivery[]): void {
+    if (drainingBatch === batch) drainingBatch = null;
+  }
+
+  function retryDrainingBatch(batch: QueuedDelivery[], reason: string): void {
+    if (drainingBatch !== batch) return;
+    finishDrainingBatch(batch);
+    for (const entry of batch) entry.token.retry(entry.message, reason);
+  }
+
+  function drainStillOwns(batch: QueuedDelivery[], drainGeneration: number): boolean {
+    return (
+      sessionActive && !lifecycleOwnsRecovery() && lifecycleGeneration === drainGeneration && drainingBatch === batch
+    );
+  }
+
+  async function runQueuedDrain(
+    drained: QueuedDelivery[],
+    sessionCtx: SessionContext,
+    drainGeneration: number,
+  ): Promise<void> {
+    let attemptNumber = 1;
+    while (drainStillOwns(drained, drainGeneration)) {
+      try {
+        await mergeAndRun(drained, sessionCtx);
+        finishDrainingBatch(drained);
+        return;
+      } catch (error) {
+        if (!drainStillOwns(drained, drainGeneration)) return;
+        const outcome = await settleQueuedPreProviderFailure(drained, sessionCtx, error, attemptNumber);
+        if (outcome.action !== "retry") {
+          finishDrainingBatch(drained);
+          return;
+        }
+        if (!drainStillOwns(drained, drainGeneration)) return;
+        const completedDelay = await sleepForRetry(outcome.delayMs);
+        // Lifecycle end aborts the sleep and recovers the batch exactly once.
+        if (!completedDelay || !drainStillOwns(drained, drainGeneration)) return;
+        attemptNumber += 1;
+      }
+    }
+  }
+
   function scheduleQueuedMessagesDrain(): void {
-    if (drainScheduled || drainInProgress || initialTurnPreparing) return;
+    if (drainScheduled || drainInProgress || drainingBatch || initialTurnPreparing || lifecycleOwnsRecovery()) {
+      return;
+    }
     if (!sessionActive || !ctx || !cwd || !sessionId || currentTurnPromise || queuedMessages.length === 0) return;
     drainScheduled = true;
     setImmediate(() => {
       drainScheduled = false;
-      if (!sessionActive || !ctx || !cwd || !sessionId || currentTurnPromise || queuedMessages.length === 0) return;
+      if (
+        drainInProgress ||
+        drainingBatch ||
+        lifecycleOwnsRecovery() ||
+        !sessionActive ||
+        !ctx ||
+        !cwd ||
+        !sessionId ||
+        currentTurnPromise ||
+        queuedMessages.length === 0
+      ) {
+        return;
+      }
       const sessionCtx = ctx;
       const drained = queuedMessages.splice(0);
+      const drainGeneration = lifecycleGeneration;
+      drainingBatch = drained;
       drainInProgress = true;
-      void (async () => {
-        let attemptNumber = 1;
-        while (sessionActive) {
-          try {
-            await mergeAndRun(drained, sessionCtx);
-            return;
-          } catch (error) {
-            const outcome = await settleQueuedPreProviderFailure(drained, sessionCtx, error, attemptNumber);
-            if (outcome.action !== "retry") return;
-            await new Promise((resolveDelay) => setTimeout(resolveDelay, outcome.delayMs));
-            if (!sessionActive) {
-              for (const entry of drained) entry.token.retry(entry.message, "pi_turn_cancelled");
-              return;
-            }
-            attemptNumber += 1;
-          }
-        }
-      })().finally(() => {
-        drainInProgress = false;
-        scheduleQueuedMessagesDrain();
-      });
+      const drainPromise = runQueuedDrain(drained, sessionCtx, drainGeneration)
+        .catch((error) => {
+          if (lifecycleOwnsRecovery()) return;
+          sessionCtx.log(`pi queued turn failed: ${sanitizePiProviderDetail(String(error))}`);
+          retryDrainingBatch(drained, "pi_queued_turn_failed");
+        })
+        .finally(() => {
+          if (!lifecycleOwnsRecovery() && drainingBatch === drained) finishDrainingBatch(drained);
+          drainInProgress = false;
+          if (currentDrainPromise === drainPromise) currentDrainPromise = null;
+          if (sessionActive && !lifecycleOwnsRecovery()) scheduleQueuedMessagesDrain();
+        });
+      currentDrainPromise = drainPromise;
     });
   }
 
   function retryQueuedMessages(reason: string): void {
     for (const entry of queuedMessages.splice(0)) entry.token.retry(entry.message, reason);
+  }
+
+  async function endLifecycle(recoveryReason: string): Promise<void> {
+    sessionActive = false;
+    drainCancellationReason = recoveryReason;
+    lifecycleGeneration += 1;
+    currentRetryAbort?.abort();
+    if (streaming && rpcClient && !rpcClient.isClosed) {
+      await abortAndWaitForSettlement(recoveryReason.includes("shutdown") ? "shutdown" : "suspend");
+    }
+    await Promise.all([
+      currentTurnPromise?.then(
+        () => undefined,
+        () => undefined,
+      ),
+      currentDrainPromise?.then(
+        () => undefined,
+        () => undefined,
+      ),
+    ]);
+    if (drainingBatch) retryDrainingBatch(drainingBatch, recoveryReason);
+    retryQueuedMessages(recoveryReason);
+    retryCustody(recoveryReason);
+    await closeRpcClient();
+    drainCancellationReason = null;
+    currentRetryAbort = null;
+    currentTurnPromise = null;
+    currentDrainPromise = null;
+    initialTurnPreparing = false;
+    ctx = null;
+    cwd = null;
+    sessionId = null;
+    activePayload = null;
+    streaming = false;
+    activeTools.clear();
   }
 
   async function prepareSession(sessionCtx: SessionContext): Promise<PreparedSession> {
@@ -1694,37 +1832,11 @@ export const createPiHandler: HandlerFactory = (config) => {
     },
 
     async suspend(reason) {
-      sessionActive = false;
-      retryQueuedMessages(reason ?? "pi_suspend");
-      if (streaming && rpcClient && !rpcClient.isClosed) {
-        await abortAndWaitForSettlement("suspend");
-        retryCustody(reason ?? "pi_suspend");
-      } else {
-        retryCustody(reason ?? "pi_suspend");
-      }
-      await closeRpcClient();
-      ctx = null;
-      cwd = null;
-      sessionId = null;
-      activePayload = null;
-      streaming = false;
+      await endLifecycle(reason ?? "pi_suspend");
     },
 
     async shutdown() {
-      sessionActive = false;
-      retryQueuedMessages("pi_shutdown");
-      if (streaming && rpcClient && !rpcClient.isClosed) {
-        await abortAndWaitForSettlement("shutdown");
-        retryCustody("pi_shutdown");
-      } else {
-        retryCustody("pi_shutdown");
-      }
-      await closeRpcClient();
-      ctx = null;
-      cwd = null;
-      sessionId = null;
-      activePayload = null;
-      streaming = false;
+      await endLifecycle("pi_shutdown");
     },
   } satisfies AgentHandler;
 };

@@ -7,6 +7,7 @@ import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPiHandler,
+  type PiRetrySleep,
   parsePiModelSelector,
   resolvePiNativeToolRefs,
   sanitizePiProviderDetail,
@@ -491,6 +492,42 @@ function readCount(file: string): number {
   } catch {
     return 0;
   }
+}
+
+/** Deterministic abortable sleep for lifecycle regressions. */
+function createGateableRetrySleep(): {
+  sleep: PiRetrySleep;
+  pendingDelay: () => number | null;
+  release: (completed: boolean) => void;
+} {
+  let pending: {
+    delayMs: number;
+    resolve: (value: boolean) => void;
+    signal: AbortSignal;
+    onAbort: () => void;
+  } | null = null;
+  const sleep: PiRetrySleep = async (delayMs, signal) => {
+    if (signal.aborted) return false;
+    return new Promise<boolean>((resolve) => {
+      const onAbort = () => {
+        if (pending?.resolve === resolve) pending = null;
+        resolve(false);
+      };
+      pending = { delayMs, resolve, signal, onAbort };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+  return {
+    sleep,
+    pendingDelay: () => pending?.delayMs ?? null,
+    release: (completed) => {
+      const current = pending;
+      if (!current) return;
+      pending = null;
+      current.signal.removeEventListener("abort", current.onAbort);
+      current.resolve(completed);
+    },
+  };
 }
 
 beforeEach(() => {
@@ -1285,6 +1322,81 @@ describe("Pi handler", () => {
     expect(runtimeMessages.some((message) => message.includes("provider_retry_scheduled"))).toBe(true);
     expect(runtimeMessages.some((message) => message.includes("provider_retry_exhausted"))).toBe(true);
     await handler.shutdown();
+  });
+
+  it("suspend during active pre-provider backoff recovers once with no late token mutation", async () => {
+    const gate = createGateableRetrySleep();
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+      piRetrySleep: gate.sleep,
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    await handler.start(message("m1", "first"), sessionCtx, makeToken());
+    const promptsAfterStart = readCount(promptCountFile);
+    sessionCtx.formatInboundContent = async () => {
+      throw new Error("synthetic format failure for lifecycle");
+    };
+    const token2 = makeToken();
+    expect(handler.inject(message("m2", "format-fail"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() =>
+      expect(
+        events.some(
+          (event) => event.kind === "error" && JSON.stringify(event.payload).includes("provider_retry_scheduled"),
+        ),
+      ).toBe(true),
+    );
+    await vi.waitFor(() => expect(gate.pendingDelay()).toBeTypeOf("number"));
+    await handler.suspend("pi_suspend");
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(token2.completed).toEqual([]);
+    expect(token2.retried).toEqual(["pi_suspend"]);
+    // Advancing/releasing the retired backoff must not mutate custody again.
+    gate.release(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(token2.retried).toEqual(["pi_suspend"]);
+    expect(token2.completed).toEqual([]);
+  });
+
+  it("shutdown during active pre-provider backoff recovers once with no late token mutation", async () => {
+    const gate = createGateableRetrySleep();
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+      piRetrySleep: gate.sleep,
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    await handler.start(message("m1", "first"), sessionCtx, makeToken());
+    const promptsAfterStart = readCount(promptCountFile);
+    sessionCtx.formatInboundContent = async () => {
+      throw new Error("synthetic format failure for lifecycle");
+    };
+    const token2 = makeToken();
+    expect(handler.inject(message("m2", "format-fail"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() =>
+      expect(
+        events.some(
+          (event) => event.kind === "error" && JSON.stringify(event.payload).includes("provider_retry_scheduled"),
+        ),
+      ).toBe(true),
+    );
+    await vi.waitFor(() => expect(gate.pendingDelay()).toBeTypeOf("number"));
+    await handler.shutdown();
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(token2.completed).toEqual([]);
+    expect(token2.retried).toEqual(["pi_shutdown"]);
+    gate.release(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(token2.retried).toEqual(["pi_shutdown"]);
+    expect(token2.completed).toEqual([]);
   });
 
   it("applies shared finite policy to active formatting failures without inbox retry", async () => {
