@@ -120,6 +120,29 @@ function emitCodexTerminalProviderFailure(ctx: SessionContext, messagePreview: s
   });
 }
 
+function emitPiTerminalProviderFailure(
+  ctx: SessionContext,
+  messagePreview: string,
+  category: "credential" | "capability" = "credential",
+): void {
+  ctx.emitEvent({
+    kind: "error",
+    payload: {
+      source: "runtime",
+      message: encodeProviderRetryEventMessage({
+        event: "provider_failure_terminal",
+        provider: "pi",
+        scope: "provider_turn",
+        category,
+        reasonCode: category === "credential" ? "provider_credential_required" : "pi_binary_missing",
+        replaySafety: "provider_entered",
+        userSeverity: "error",
+        messagePreview,
+      }),
+    },
+  });
+}
+
 function emitRuntimeSessionProofFailure(ctx: SessionContext, reasonCode = "runtime_session_invalid"): void {
   ctx.emitEvent({
     kind: "error",
@@ -2054,6 +2077,58 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
     expect(notice).toContain("credentials need attention");
     expect(notice).toContain("refresh token was revoked");
     expect(ackEntry).toHaveBeenCalledWith(21);
+    const [noticeOrder] = sendMessage.mock.invocationCallOrder;
+    const [ackOrder] = ackEntry.mock.invocationCallOrder;
+    if (noticeOrder === undefined || ackOrder === undefined) throw new Error("expected notice and ack order");
+    expect(noticeOrder).toBeLessThan(ackOrder);
+
+    await sm.shutdown();
+  });
+
+  it("posts a durable Pi auth/capability notice before ACKing terminal failure", async () => {
+    const ackEntry = vi.fn().mockResolvedValue(undefined);
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi" });
+    const sdk = {
+      register: vi.fn(),
+      sendMessage,
+      sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+    } as unknown as FirstTreeHubSDK;
+    let capturedCtx: SessionContext | undefined;
+    let capturedToken: DeliveryToken | undefined;
+    let capturedMessage: SessionMessage | undefined;
+    const handler = createMockHandler({
+      start: vi.fn(async (message, ctx, token) => {
+        capturedMessage = message;
+        capturedCtx = ctx;
+        capturedToken = token;
+        return { sessionId: "session-id-pi", route: { kind: "owned", mode: "queued" } as const };
+      }),
+    });
+    const sm = createSessionManager({
+      handler,
+      ackEntry,
+      sdk,
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "pi" },
+    });
+
+    await sm.dispatch(mockEntry({ id: 31, chatId: "chat-pi-terminal", messageId: "msg-pi-terminal" }));
+    if (!capturedCtx || !capturedToken || !capturedMessage) throw new Error("delivery was not captured");
+
+    emitPiTerminalProviderFailure(capturedCtx, "missing credentials — run /login");
+    const completionDisposition = await capturedToken.complete(capturedMessage, {
+      status: "error",
+      terminal: true,
+      completion: "consumed",
+      reason: "credential",
+    });
+
+    expect(completionDisposition).toBe("settled");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const notice = String(sendMessage.mock.calls[0]?.[1].content);
+    expect(notice).toContain("Pi could not run this turn");
+    expect(notice).toContain("credentials need attention");
+    expect(notice).toContain("missing credentials");
+    expect(ackEntry).toHaveBeenCalledWith(31);
     const [noticeOrder] = sendMessage.mock.invocationCallOrder;
     const [ackOrder] = ackEntry.mock.invocationCallOrder;
     if (noticeOrder === undefined || ackOrder === undefined) throw new Error("expected notice and ack order");

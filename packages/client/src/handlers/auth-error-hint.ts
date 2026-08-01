@@ -123,6 +123,7 @@ const PI_AUTH_KEYWORDS: readonly string[] = [
   "not authenticated",
   "unauthorized",
   "missing credentials",
+  "no api key",
   "auth required",
 ];
 

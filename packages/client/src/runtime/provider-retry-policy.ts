@@ -133,6 +133,27 @@ export function classifyProviderFailure(
       sourceKind: base.kind,
     };
   }
+  if (context.provider === "pi" && /not supported on windows in v1/.test(text)) {
+    return {
+      category: "capability",
+      reasonCode: "pi_platform_unsupported",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
+  if (
+    context.provider === "pi" &&
+    (/unsupported version/.test(text) || /is not a supported pi/.test(text) || /requires >=/.test(text))
+  ) {
+    return {
+      category: "capability",
+      reasonCode: "pi_binary_unsupported",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
   if (isCapability(text, base)) {
     return {
       category: "capability",
@@ -509,7 +530,9 @@ function isCredential(
   // handlers/auth-error-hint.ts). Same provider-gating rationale as cursor:
   // "not logged in" / "grok login" / "auth.json" carry no generic auth token
   // the shared classifier already covers, so they need a grok-only branch.
-  return provider === "grok" && /not logged in|grok login|auth\.json/.test(text);
+  if (provider === "grok" && /not logged in|grok login|auth\.json/.test(text)) return true;
+  // Pi CLI logged-out / missing-key phrasings (kept in sync with isPiAuthError).
+  return provider === "pi" && /missing credentials|no api key|\/login|auth required|not authenticated/.test(text);
 }
 
 function credentialReason(base: Classification): string {

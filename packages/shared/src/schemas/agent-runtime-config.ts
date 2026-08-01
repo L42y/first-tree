@@ -320,8 +320,9 @@ const opencodeRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend(
 const piRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
   kind: z.literal("pi"),
   // Pi model identifiers are provider-native `provider/model` values (optional
-  // `:<thinking>` suffix). An empty value inherits the operator's local Pi
-  // default; non-empty values are forwarded as one `--model` argv entry.
+  // `:<thinking>` suffix). Empty model semantics: an existing stable Pi session
+  // keeps its persisted model; only a new session uses Pi's local default.
+  // Non-empty values are forwarded as one `--model` argv entry.
 });
 
 const grokRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({

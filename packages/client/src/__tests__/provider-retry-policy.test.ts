@@ -303,6 +303,58 @@ describe("classifyProviderFailure", () => {
     ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
   });
 
+  it("classifies Pi credential phrasings as needs_operator and does not unknown-retry them", () => {
+    for (const message of ["missing credentials", "No API key configured", "run /login to continue"]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "sdk",
+      });
+      expect(c, message).toMatchObject({ category: "credential" });
+      expect(
+        decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    }
+  });
+
+  it("classifies Pi missing/unsupported/platform failures as permanent capability", () => {
+    const missing = classifyProviderFailure(
+      new Error("Pi CLI is missing on this machine. First Tree does not bundle or install Pi"),
+      { provider: "pi", scope: "session_start", source: "session" },
+    );
+    expect(missing).toMatchObject({ category: "capability", reasonCode: "pi_binary_missing" });
+
+    const unsupported = classifyProviderFailure(
+      new Error("Pi runtime provider mismatch: unsupported version. First Tree requires >=0.80.5 <1.0.0"),
+      { provider: "pi", scope: "session_start", source: "session" },
+    );
+    expect(unsupported).toMatchObject({ category: "capability", reasonCode: "pi_binary_unsupported" });
+
+    const windows = classifyProviderFailure(
+      new Error("Pi runtime provider is not supported on Windows in V1 (macOS/Linux only)"),
+      { provider: "pi", scope: "session_start", source: "session" },
+    );
+    expect(windows).toMatchObject({ category: "capability", reasonCode: "pi_platform_unsupported" });
+
+    for (const c of [missing, unsupported, windows]) {
+      expect(
+        decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    }
+  });
+
+  it("retries Pi version-probe timeout as transient transport", () => {
+    const err = new Error(
+      "pi --version smoke check did not complete (transient host condition); will retry. Detail: `pi --version` timed out",
+    );
+    err.name = "PiBinaryVerifyTransientError";
+    const c = classifyProviderFailure(err, { provider: "pi", scope: "session_start", source: "session" });
+    expect(c).toMatchObject({ category: "transient_transport", reasonCode: "pi_verify_transient" });
+    expect(
+      decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "retry" });
+  });
+
   it("a codex backend AbortSignal.timeout is transient_transport and retried", () => {
     const err = new DOMException("The operation was aborted due to timeout", "TimeoutError");
     const c = classifyProviderFailure(err, { provider: "codex", scope: "provider_turn", source: "sdk" });

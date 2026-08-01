@@ -36,8 +36,9 @@ surface, skills projection, or provider supervisor changes.
   handler. Re-probing must not launch Pi, inspect auth/config, list models, or contact a model provider. Windows stays
   unavailable.
 - Provider selection: Web and CLI expose Pi only on a client advertising the capability. The config defaults to an empty
-  model, accepts an exact provider-native `provider/model` string, and exposes no separate reasoning-effort control.
-  Empty model on an existing persisted Pi session inherits that session's model (no forced host-default reset).
+  model, accepts an exact provider-native `provider/model` or `provider/model:<thinking>` string, and exposes no
+  separate reasoning-effort control. Empty model keeps an existing persisted Pi session's model; only a brand-new
+  session uses Pi's local default (no forced host-default reset on resume).
 - Runtime gates: the first active use launches `pi --version` through the provider supervisor and requires a stable
   release in `>=0.80.5 <1.0.0`; older, `>=1.0.0`, prerelease, and unparseable output fail closed. Transient launch
   timeouts remain retryable.

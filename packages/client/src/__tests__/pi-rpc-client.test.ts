@@ -31,12 +31,23 @@ rl.on("line", (line) => {
     return;
   }
   if (command === "prompt") {
+    if (mode === "no_prompt_response") {
+      return;
+    }
+    if (mode === "command_mismatch") {
+      write({ type: "response", id, command: "get_state", success: true, data: {} });
+      return;
+    }
     write({ type: "response", id, command: "prompt", success: true });
     if (mode === "bad_frame") {
       process.stdout.write("not-json\\n");
       return;
     }
     if (mode === "settlement_hang") {
+      return;
+    }
+    if (mode === "secret_frame") {
+      process.stdout.write("not-json SUPER_SECRET_USER_PROMPT\\n");
       return;
     }
     write({
@@ -232,6 +243,72 @@ describe("PiRpcClient", () => {
     const abortPromise = client.abort();
     const [abort] = await Promise.all([abortPromise, settledPromise]);
     expect(abort.success).toBe(true);
+    await client.close();
+  });
+
+  it("marks prompt-response timeout as after_write and fences the client", async () => {
+    process.env.FT_PI_TEST_MODE = "no_prompt_response";
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: supervisor(),
+      requestTimeoutMs: 40,
+    });
+    await expect(client.prompt("hi")).rejects.toMatchObject({
+      name: "PiRpcTransportError",
+      writePhase: "after_write",
+    });
+    expect(client.getPromptWriteCount()).toBe(1);
+    expect(client.isClosed).toBe(true);
+    await expect(client.prompt("again")).rejects.toMatchObject({ writePhase: "before_write" });
+    await client.close();
+  });
+
+  it("fences the transport on command mismatch", async () => {
+    process.env.FT_PI_TEST_MODE = "command_mismatch";
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: supervisor(),
+    });
+    await expect(client.prompt("hi")).rejects.toBeInstanceOf(PiRpcProtocolError);
+    expect(client.isClosed).toBe(true);
+    expect(client.getPromptWriteCount()).toBe(1);
+    await client.close();
+  });
+
+  it("redacts invalid frames instead of logging raw payload content", async () => {
+    process.env.FT_PI_TEST_MODE = "secret_frame";
+    const logs: string[] = [];
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: supervisor(),
+      settlementTimeoutMs: 200,
+      onLog: (message) => logs.push(message),
+    });
+    await client.prompt("hi");
+    await expect(client.waitForSettled()).rejects.toBeInstanceOf(PiRpcProtocolError);
+    expect(logs.join("\\n")).not.toContain("SUPER_SECRET_USER_PROMPT");
+    await client.close();
+  });
+
+  it("counts steer writes exactly once", async () => {
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: supervisor(),
+    });
+    await client.steer("nudge");
+    expect(client.getSteerWriteCount()).toBe(1);
     await client.close();
   });
 });

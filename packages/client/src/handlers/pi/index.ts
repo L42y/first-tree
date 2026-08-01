@@ -57,7 +57,7 @@ import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../ru
 import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { formatAuthHint, isPiAuthError } from "../auth-error-hint.js";
-import { buildPiRpcArgs, PiRpcClient, PiRpcProtocolError, PiRpcTransportError } from "./rpc-client.js";
+import { buildPiRpcArgs, isPiRpcBeforeWriteError, PiRpcClient, PiRpcProtocolError } from "./rpc-client.js";
 
 const RESULT_PREVIEW_LIMIT = 400;
 const VERSION_GATE_TIMEOUT_MS = 30_000;
@@ -88,17 +88,53 @@ type PiUsage = { inputTokens: number; cachedInputTokens: number; outputTokens: n
 type TurnObservation = {
   assistantText: string;
   settled: boolean;
+  /** Provisional assistant error while Pi may still auto-retry. */
+  provisionalError: string | null;
+  /** Final accepted-turn failure after Pi exhausted auto-retry (or abnormal stop). */
   turnError: string | null;
   thinkingEmitted: boolean;
   unsafeToolEffectStarted: boolean;
   userVisibleEmitted: boolean;
   usage: PiUsage | null;
+  usageKeys: Set<string>;
   provider: string | null;
   model: string | null;
   stopReason: string | null;
   autoRetryFailed: string | null;
+  promptAccepted: boolean;
   attempt: ProviderAttempt;
 };
+
+export type PiModelSelector = {
+  provider: string;
+  modelId: string;
+  thinkingLevel: string | null;
+  raw: string;
+};
+
+/** Parse `provider/model` or `provider/model:<thinking>`. */
+export function parsePiModelSelector(raw: string): PiModelSelector | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const thinkingSplit = trimmed.lastIndexOf(":");
+  let thinkingLevel: string | null = null;
+  let base = trimmed;
+  if (thinkingSplit > 0) {
+    const maybeThinking = trimmed.slice(thinkingSplit + 1);
+    if (maybeThinking && !maybeThinking.includes("/")) {
+      thinkingLevel = maybeThinking;
+      base = trimmed.slice(0, thinkingSplit);
+    }
+  }
+  const slash = base.indexOf("/");
+  if (slash <= 0 || slash === base.length - 1) return null;
+  return {
+    provider: base.slice(0, slash),
+    modelId: base.slice(slash + 1),
+    thinkingLevel,
+    raw: trimmed,
+  };
+}
 
 type PreparedSession = {
   payload: AgentRuntimeConfigPayload;
@@ -140,45 +176,122 @@ function inputPathForTool(_name: string, args: unknown): string | null {
   return null;
 }
 
+/** Pure tool-arg → file-ref mapping used by the handler and unit tests. */
+export function resolvePiNativeToolRefs(input: {
+  name: string;
+  args: unknown;
+  workspaceCwd: string;
+  contextTreePath?: string | null;
+  contextTreeRepoUrl?: string | null;
+  contextTreeBranch?: string | null;
+}): ToolFileRef[] {
+  const lowered = input.name.toLowerCase();
+  const contextTreePath = input.contextTreePath ?? null;
+  const contextTreeRepoUrl = input.contextTreeRepoUrl ?? null;
+  const contextTreeBranch = input.contextTreeBranch ?? null;
+  if (lowered === "bash") {
+    const command = asRecord(input.args)?.command;
+    if (typeof command !== "string") return [];
+    const commandCwd = asRecord(input.args)?.cwd;
+    return toolFileRefsFromShellCommand({
+      command,
+      cwd: typeof commandCwd === "string" ? commandCwd : input.workspaceCwd,
+      contextTreePath,
+      contextTreeRepoUrl,
+      contextTreeBranch,
+    });
+  }
+  const record = asRecord(input.args);
+  // Only explicit filesystem path/directory args qualify — never grep/find `pattern`.
+  const pathCandidate =
+    inputPathForTool(input.name, input.args) ??
+    (typeof record?.target_directory === "string"
+      ? record.target_directory
+      : typeof record?.directory === "string"
+        ? record.directory
+        : typeof record?.cwd === "string" && (lowered === "ls" || lowered === "find")
+          ? record.cwd
+          : null);
+  if (!pathCandidate) return [];
+  if (
+    lowered !== "read" &&
+    lowered !== "write" &&
+    lowered !== "edit" &&
+    lowered !== "grep" &&
+    lowered !== "find" &&
+    lowered !== "ls"
+  ) {
+    return [];
+  }
+  const absolutePath = isAbsolute(pathCandidate) ? resolve(pathCandidate) : resolve(input.workspaceCwd, pathCandidate);
+  const attribution: ContextTreeAttribution = { contextTreePath, contextTreeRepoUrl };
+  const repoRelativePath = resolveContextTreeRelativePath(absolutePath, attribution);
+  const write = lowered === "write" || lowered === "edit";
+  const pathKind =
+    lowered === "grep" || lowered === "find" || lowered === "ls" ? ("directory" as const) : ("file" as const);
+  return [
+    {
+      origin: write ? "file_change" : "tool_arg",
+      localPath: absolutePath,
+      pathKind,
+      ...(contextTreeRepoUrl && repoRelativePath
+        ? {
+            repoUrl: contextTreeRepoUrl,
+            ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
+            repoRelativePath,
+          }
+        : {}),
+    },
+  ];
+}
+
 function piToolIsReadOnly(name: string): boolean {
   const lowered = name.toLowerCase();
   return lowered === "read" || lowered === "grep" || lowered === "find" || lowered === "ls";
 }
 
-function spawnScopedFingerprint(payload: AgentRuntimeConfigPayload, skillsDir: string): string {
+function spawnScopedFingerprint(payload: AgentRuntimeConfigPayload, skillsDir: string, skillsDigest: string): string {
   const envEntries = [...payload.env].map((entry) => `${entry.key}=${entry.value}`).sort();
   return JSON.stringify({
     model: payload.model ?? "",
     env: envEntries,
     skillsDir,
+    skillsDigest,
     gitRepos: payload.gitRepos ?? [],
   });
 }
 
+function skillsContentDigest(teamSkills: readonly ReconciledTeamSkill[], resourceConfigVersion: number): string {
+  const parts = teamSkills.map((skill) => `${skill.key}:${skill.revision}:${skill.installedDigest}`).sort();
+  return `v${resourceConfigVersion}|${parts.join("|")}`;
+}
+
+function sanitizeNonNegInt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  return Math.floor(value);
+}
+
 function normalizePiUsage(usage: Record<string, unknown> | null): PiUsage | null {
   if (!usage) return null;
-  const input =
-    typeof usage.input === "number" ? usage.input : typeof usage.inputTokens === "number" ? usage.inputTokens : null;
-  const output =
-    typeof usage.output === "number"
-      ? usage.output
-      : typeof usage.outputTokens === "number"
-        ? usage.outputTokens
-        : null;
-  const cacheRead =
-    typeof usage.cacheRead === "number"
-      ? usage.cacheRead
-      : typeof usage.cachedInputTokens === "number"
-        ? usage.cachedInputTokens
-        : typeof usage.cacheReadTokens === "number"
-          ? usage.cacheReadTokens
-          : 0;
-  if (input === null && output === null) return null;
-  return {
-    inputTokens: input ?? 0,
-    cachedInputTokens: cacheRead,
-    outputTokens: output ?? 0,
-  };
+  try {
+    const input = sanitizeNonNegInt(usage.input) ?? sanitizeNonNegInt(usage.inputTokens);
+    const output = sanitizeNonNegInt(usage.output) ?? sanitizeNonNegInt(usage.outputTokens);
+    const cacheRead =
+      sanitizeNonNegInt(usage.cacheRead) ??
+      sanitizeNonNegInt(usage.cachedInputTokens) ??
+      sanitizeNonNegInt(usage.cacheReadTokens) ??
+      0;
+    const cacheWrite = sanitizeNonNegInt(usage.cacheWrite) ?? sanitizeNonNegInt(usage.cacheWriteTokens) ?? 0;
+    if (input === null && output === null && cacheRead === 0 && cacheWrite === 0) return null;
+    // First Tree uncached input = provider input + cacheWrite (disjoint Pi buckets).
+    return {
+      inputTokens: (input ?? 0) + cacheWrite,
+      cachedInputTokens: cacheRead,
+      outputTokens: output ?? 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function readTurnUsage(observation: TurnObservation): PiUsage | null {
@@ -221,6 +334,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     typeof config.piVersionGateTimeoutMs === "number" ? config.piVersionGateTimeoutMs : VERSION_GATE_TIMEOUT_MS;
   const settlementTimeoutMs =
     typeof config.piSettlementTimeoutMs === "number" ? config.piSettlementTimeoutMs : undefined;
+  const requestTimeoutMs = typeof config.piRequestTimeoutMs === "number" ? config.piRequestTimeoutMs : undefined;
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -250,6 +364,21 @@ export const createPiHandler: HandlerFactory = (config) => {
   let turnObservation: TurnObservation | null = null;
   let turnCustody: CustodyEntry[] = [];
   let activeSpawnFingerprint: string | null = null;
+  let activeSkillsDigest = "";
+  let activeResourceConfigVersion = 0;
+  let activeBriefingText: string | null = null;
+  let oneShotConsumed = false;
+
+  function consumeOneShotPromptState(): void {
+    if (oneShotConsumed) return;
+    oneShotConsumed = true;
+    pendingChatContextPrompt = null;
+    // Advance briefing fingerprint at the accept/unknown custody boundary so the
+    // next user message never re-attaches the same one-shot re-read material.
+    if (cwd && sessionId && activeBriefingText) {
+      writeSessionBriefingFingerprint(cwd, sessionId, computeBriefingFingerprint(activeBriefingText));
+    }
+  }
 
   async function awaitPendingSteers(): Promise<void> {
     while (pendingSteerWork.size > 0) {
@@ -269,6 +398,9 @@ export const createPiHandler: HandlerFactory = (config) => {
       observation.attempt.setReplaySafety("unsafe");
     } else if (observation.userVisibleEmitted) {
       observation.attempt.markUserVisibleOutput();
+    } else if (observation.promptAccepted) {
+      // Never downgrade accepted custody back to pre_provider.
+      observation.attempt.setReplaySafety("provider_entered");
     } else {
       observation.attempt.setReplaySafety("pre_provider");
     }
@@ -311,60 +443,14 @@ export const createPiHandler: HandlerFactory = (config) => {
   }
 
   function nativeToolRefs(name: string, args: unknown, workspaceCwd: string): ToolFileRef[] {
-    const lowered = name.toLowerCase();
-    if (lowered === "bash") {
-      const command = asRecord(args)?.command;
-      if (typeof command !== "string") return [];
-      const commandCwd = asRecord(args)?.cwd;
-      return toolFileRefsFromShellCommand({
-        command,
-        cwd: typeof commandCwd === "string" ? commandCwd : workspaceCwd,
-        contextTreePath,
-        contextTreeRepoUrl,
-        contextTreeBranch,
-      });
-    }
-    const record = asRecord(args);
-    const pathCandidate =
-      inputPathForTool(name, args) ??
-      (typeof record?.path === "string"
-        ? record.path
-        : typeof record?.pattern === "string"
-          ? record.pattern
-          : typeof record?.target_directory === "string"
-            ? record.target_directory
-            : null);
-    if (!pathCandidate) return [];
-    if (
-      lowered !== "read" &&
-      lowered !== "write" &&
-      lowered !== "edit" &&
-      lowered !== "grep" &&
-      lowered !== "find" &&
-      lowered !== "ls"
-    ) {
-      return [];
-    }
-    const absolutePath = isAbsolute(pathCandidate) ? resolve(pathCandidate) : resolve(workspaceCwd, pathCandidate);
-    const attribution: ContextTreeAttribution = { contextTreePath, contextTreeRepoUrl };
-    const repoRelativePath = resolveContextTreeRelativePath(absolutePath, attribution);
-    const write = lowered === "write" || lowered === "edit";
-    const pathKind =
-      lowered === "grep" || lowered === "find" || lowered === "ls" ? ("directory" as const) : ("file" as const);
-    return [
-      {
-        origin: write ? "file_change" : "tool_arg",
-        localPath: absolutePath,
-        pathKind,
-        ...(contextTreeRepoUrl && repoRelativePath
-          ? {
-              repoUrl: contextTreeRepoUrl,
-              ...(contextTreeBranch ? { repoBranch: contextTreeBranch } : {}),
-              repoRelativePath,
-            }
-          : {}),
-      },
-    ];
+    return resolvePiNativeToolRefs({
+      name,
+      args,
+      workspaceCwd,
+      contextTreePath,
+      contextTreeRepoUrl,
+      contextTreeBranch,
+    });
   }
 
   function refsForCompletedTool(input: {
@@ -543,29 +629,31 @@ export const createPiHandler: HandlerFactory = (config) => {
 
   function assertConfiguredModel(state: Awaited<ReturnType<PiRpcClient["getState"]>>, model: string): void {
     if (!model) return;
+    const expected = parsePiModelSelector(model);
+    if (!expected) {
+      throw new Error(`Pi model selector is invalid: ${model}. Use provider/model or provider/model:<thinking>.`);
+    }
     const data = asRecord(state.data);
     const reported = asRecord(data?.model);
     const reportedId = typeof reported?.id === "string" ? reported.id : null;
     const reportedProvider = typeof reported?.provider === "string" ? reported.provider : null;
-    const composite =
-      reportedProvider && reportedId ? `${reportedProvider}/${reportedId}` : (reportedId ?? reportedProvider);
-    // Accept exact id, provider/id, or a configured value that ends with the model id.
-    if (
-      composite === model ||
-      reportedId === model ||
-      (reportedId !== null && (model.endsWith(`/${reportedId}`) || model === reportedId))
-    ) {
-      return;
+    const reportedThinking = typeof data?.thinkingLevel === "string" ? data.thinkingLevel : null;
+    if (reportedProvider !== expected.provider || reportedId !== expected.modelId) {
+      throw new Error(
+        `Pi model mismatch: configured ${expected.provider}/${expected.modelId}, get_state reported ` +
+          `${reportedProvider ?? "?"}/${reportedId ?? "?"}. No silent provider/model fallback.`,
+      );
     }
-    throw new Error(
-      `Pi model mismatch: configured ${model}, get_state reported ${composite ?? "no model"}. ` +
-        "First Tree does not mutate operator-global Pi config; restart the RPC session after a model change.",
-    );
+    if (expected.thinkingLevel && reportedThinking !== expected.thinkingLevel) {
+      throw new Error(
+        `Pi thinkingLevel mismatch: configured ${expected.thinkingLevel}, get_state reported ${reportedThinking ?? "none"}.`,
+      );
+    }
   }
 
   async function ensureRpcClient(prepared: PreparedSession, sessionCtx: SessionContext): Promise<PiRpcClient> {
     rejectMcpConfiguration(prepared.payload);
-    const nextFingerprint = spawnScopedFingerprint(prepared.payload, prepared.skillsDir);
+    const nextFingerprint = spawnScopedFingerprint(prepared.payload, prepared.skillsDir, activeSkillsDigest);
     if (rpcClient && !rpcClient.isClosed && activeSpawnFingerprint === nextFingerprint) {
       return rpcClient;
     }
@@ -593,6 +681,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       supervisor: processSupervisor,
       label: "pi rpc session",
       ...(settlementTimeoutMs !== undefined ? { settlementTimeoutMs } : {}),
+      ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
       onEvent: (event) => {
         if (ctx) processPiEvent(event, ctx);
       },
@@ -623,12 +712,35 @@ export const createPiHandler: HandlerFactory = (config) => {
   }
 
   function adoptAssistantMessage(message: Record<string, unknown> | null): void {
-    if (!turnObservation) return;
-    const fields = extractAssistantMessageFields(message);
-    if (fields.usage) turnObservation.usage = fields.usage;
-    if (fields.provider) turnObservation.provider = fields.provider;
-    if (fields.model) turnObservation.model = fields.model;
-    if (fields.stopReason) turnObservation.stopReason = fields.stopReason;
+    if (!turnObservation || !message) return;
+    try {
+      const fields = extractAssistantMessageFields(message);
+      if (fields.provider) turnObservation.provider = fields.provider;
+      if (fields.model) turnObservation.model = fields.model;
+      if (fields.stopReason) turnObservation.stopReason = fields.stopReason;
+      if (fields.usage) {
+        const key = [
+          String(message.timestamp ?? ""),
+          fields.provider ?? "",
+          fields.model ?? "",
+          String(fields.usage.inputTokens),
+          String(fields.usage.cachedInputTokens),
+          String(fields.usage.outputTokens),
+        ].join("|");
+        if (!turnObservation.usageKeys.has(key)) {
+          turnObservation.usageKeys.add(key);
+          if (!turnObservation.usage) {
+            turnObservation.usage = { ...fields.usage };
+          } else {
+            turnObservation.usage.inputTokens += fields.usage.inputTokens;
+            turnObservation.usage.cachedInputTokens += fields.usage.cachedInputTokens;
+            turnObservation.usage.outputTokens += fields.usage.outputTokens;
+          }
+        }
+      }
+    } catch {
+      // Malformed telemetry must not throw after settlement.
+    }
   }
 
   function processPiEvent(event: Record<string, unknown>, sessionCtx: SessionContext): void {
@@ -644,7 +756,8 @@ export const createPiHandler: HandlerFactory = (config) => {
         if (delta && turnObservation) {
           turnObservation.assistantText += delta;
           turnObservation.userVisibleEmitted = true;
-          updateReplaySafety(turnObservation);
+          turnObservation.provisionalError = null;
+          if (turnObservation.promptAccepted) updateReplaySafety(turnObservation);
           sessionCtx.emitEvent({ kind: "assistant_text", payload: { text: delta } });
         }
         return;
@@ -659,17 +772,21 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
       if (eventType === "error") {
         streaming = true;
+        const errorObj = asRecord(assistantEvent?.error);
         const reason =
-          typeof assistantEvent?.reason === "string"
-            ? assistantEvent.reason
-            : typeof assistantEvent?.error === "string"
-              ? assistantEvent.error
-              : "assistant message error";
+          typeof errorObj?.errorMessage === "string"
+            ? errorObj.errorMessage
+            : typeof assistantEvent?.errorMessage === "string"
+              ? assistantEvent.errorMessage
+              : typeof assistantEvent?.reason === "string"
+                ? assistantEvent.reason
+                : "assistant message error";
         if (turnObservation) {
-          turnObservation.turnError = reason;
-          updateReplaySafety(turnObservation);
+          // Keep provisional until auto_retry_end; do not emit a terminal user error yet.
+          turnObservation.provisionalError = reason;
+          if (turnObservation.promptAccepted) updateReplaySafety(turnObservation);
         }
-        sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: reason.slice(0, 2000) } });
+        sessionCtx.log(`pi assistant provisional error: ${reason.slice(0, 400)}`);
         return;
       }
       return;
@@ -726,15 +843,27 @@ export const createPiHandler: HandlerFactory = (config) => {
     if (type === "auto_retry_start") {
       const message =
         typeof event.errorMessage === "string" ? `pi auto_retry_start: ${event.errorMessage}` : "pi auto_retry_start";
-      sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: message.slice(0, 2000) } });
+      // Diagnostic only — Pi still owns the retry; do not surface as terminal.
+      sessionCtx.log(message.slice(0, 400));
       return;
     }
 
     if (type === "auto_retry_end") {
-      if (event.success === false) {
-        const finalError = typeof event.finalError === "string" ? event.finalError : "pi auto_retry_end failed";
-        if (turnObservation) turnObservation.autoRetryFailed = finalError;
-        sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: finalError.slice(0, 2000) } });
+      if (event.success === true) {
+        if (turnObservation) {
+          turnObservation.provisionalError = null;
+          turnObservation.autoRetryFailed = null;
+        }
+        return;
+      }
+      const finalError =
+        typeof event.finalError === "string"
+          ? event.finalError
+          : (turnObservation?.provisionalError ?? "pi auto_retry_end failed");
+      if (turnObservation) {
+        turnObservation.autoRetryFailed = finalError;
+        turnObservation.turnError = finalError;
+        turnObservation.provisionalError = null;
       }
       return;
     }
@@ -768,12 +897,19 @@ export const createPiHandler: HandlerFactory = (config) => {
     sessionCtx: SessionContext,
     attemptNumber: number,
     failure: string,
-  ): Promise<"retry_attempt" | "finished"> {
+  ): Promise<void> {
     if (!turnObservation) {
       retryCustody("pi_turn_missing_observation");
-      return "finished";
+      return;
     }
-    updateReplaySafety(turnObservation);
+    // Pi already owned/exhausted its internal retry. Never stack another FT prompt resend.
+    turnObservation.attempt.setReplaySafety(
+      turnObservation.unsafeToolEffectStarted
+        ? "unsafe"
+        : turnObservation.userVisibleEmitted
+          ? "user_visible"
+          : "provider_entered",
+    );
     const formatted = formatPiFailure(failure);
     turnObservation.attempt.recordSignal({
       kind: "provider_error",
@@ -781,13 +917,10 @@ export const createPiHandler: HandlerFactory = (config) => {
       messagePreview: formatted,
     });
     const settlement = turnObservation.attempt.settle({ attempt: attemptNumber });
-    if (settlement && settlement.decision.action === "retry") {
+    // Pi already exhausted its own retry. Never emit/follow an FT retry settlement.
+    if (settlement && settlement.decision.action === "stop") {
       emitSettlement(sessionCtx, settlement);
-      const delayMs = settlement.decision.delayMs;
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
-      return "retry_attempt";
     }
-    if (settlement) emitSettlement(sessionCtx, settlement);
     const failedUsage = readTurnUsage(turnObservation);
     if (failedUsage) {
       sessionCtx.emitEvent({
@@ -806,9 +939,12 @@ export const createPiHandler: HandlerFactory = (config) => {
     await completeCustody({
       status: "error",
       completion: "consumed",
-      reason: settlement?.decision.reasonCode ?? "pi_accepted_turn_failed",
+      reason: isPiAuthError(failure)
+        ? "credential"
+        : settlement?.decision.action === "stop"
+          ? settlement.decision.reasonCode
+          : "pi_accepted_turn_failed",
     });
-    return "finished";
   }
 
   async function executeTurn(
@@ -818,18 +954,22 @@ export const createPiHandler: HandlerFactory = (config) => {
     client: PiRpcClient,
   ): Promise<boolean> {
     turnCustody = custody.map((entry) => ({ messages: entry.messages, token: entry.token }));
+    let activeClient = client;
     turnObservation = {
       assistantText: "",
       settled: false,
+      provisionalError: null,
       turnError: null,
       thinkingEmitted: false,
       unsafeToolEffectStarted: false,
       userVisibleEmitted: false,
       usage: null,
+      usageKeys: new Set(),
       provider: null,
       model: null,
       stopReason: null,
       autoRetryFailed: null,
+      promptAccepted: false,
       attempt: new ProviderAttempt({
         provider: runtimeProvider,
         scope: "provider_turn",
@@ -844,23 +984,35 @@ export const createPiHandler: HandlerFactory = (config) => {
         retryCustody("pi_turn_cancelled");
         return false;
       }
+      if (activeClient.isClosed) {
+        // Before-write FT retries need a live client; never reuse a fenced process.
+        if (!cwd || !sessionId || !ctx) {
+          retryCustody("pi_client_closed");
+          return false;
+        }
+        const prepared = await refreshPreparedSession(sessionCtx);
+        activeClient = await ensureRpcClient(prepared, sessionCtx);
+      }
       turnObservation.assistantText = "";
       turnObservation.settled = false;
+      turnObservation.provisionalError = null;
       turnObservation.turnError = null;
       turnObservation.thinkingEmitted = false;
       turnObservation.unsafeToolEffectStarted = false;
       turnObservation.userVisibleEmitted = false;
       turnObservation.usage = null;
+      turnObservation.usageKeys = new Set();
       turnObservation.provider = null;
       turnObservation.model = null;
       turnObservation.stopReason = null;
       turnObservation.autoRetryFailed = null;
+      turnObservation.promptAccepted = false;
       turnObservation.attempt = new ProviderAttempt({
         provider: runtimeProvider,
         scope: "provider_turn",
         source: "stream",
       });
-      client.clearSettled();
+      activeClient.clearSettled();
       activeTools.clear();
       streaming = false;
       gitWriteTracker.captureBaseline();
@@ -868,7 +1020,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       let promptResponse: Awaited<ReturnType<PiRpcClient["prompt"]>> | null = null;
       let thrown: Error | null = null;
       try {
-        promptResponse = await client.prompt(prompt);
+        promptResponse = await activeClient.prompt(prompt);
       } catch (error) {
         thrown = error instanceof Error ? error : new Error(String(error));
       }
@@ -879,58 +1031,50 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
 
       if (thrown) {
-        // prompt() writes the JSONL command before awaiting the response. A
-        // timeout/transport loss after that write is unknown/provider_entered
-        // custody — fence the process and do not auto-resend the same prompt.
-        const afterWrite =
-          thrown instanceof PiRpcTransportError ||
-          thrown instanceof PiRpcProtocolError ||
-          /timed out|transport|closed|exited/i.test(thrown.message);
-        if (afterWrite) {
-          turnObservation.attempt.setReplaySafety("provider_entered");
-          turnObservation.attempt.recordSignal({ kind: "transport_close", error: thrown });
+        if (isPiRpcBeforeWriteError(thrown)) {
+          turnObservation.attempt.setReplaySafety("pre_provider");
+          turnObservation.attempt.recordSignal({ kind: "local_error", error: thrown });
           const settlement = turnObservation.attempt.settle({ attempt: attemptNumber });
+          if (settlement && settlement.decision.action === "retry") {
+            const delayMs = settlement.decision.delayMs;
+            emitSettlement(sessionCtx, settlement);
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+            continue;
+          }
           if (settlement) emitSettlement(sessionCtx, settlement);
           const formatted = formatPiFailure(thrown.message);
           sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
           sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-          await closeRpcClient();
           await completeCustody({
             status: "error",
             completion: "consumed",
-            reason: settlement?.decision.reasonCode ?? "pi_prompt_response_unknown",
+            reason: settlement?.decision.reasonCode ?? "pi_transport_error",
           });
           return false;
         }
-        updateReplaySafety(turnObservation);
-        turnObservation.attempt.recordSignal({ kind: "local_error", error: thrown });
+        // After-write / unknown: fence and consume — never auto-resend.
+        consumeOneShotPromptState();
+        turnObservation.attempt.setReplaySafety("provider_entered");
+        turnObservation.attempt.recordSignal({ kind: "transport_close", error: thrown });
         const settlement = turnObservation.attempt.settle({ attempt: attemptNumber });
-        if (settlement && settlement.decision.action === "retry") {
-          emitSettlement(sessionCtx, settlement);
-          const delayMs = settlement.decision.delayMs;
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
-          continue;
-        }
         if (settlement) emitSettlement(sessionCtx, settlement);
         const formatted = formatPiFailure(thrown.message);
         sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+        await closeRpcClient();
         await completeCustody({
           status: "error",
           completion: "consumed",
-          reason: settlement?.decision.reasonCode ?? "pi_transport_error",
+          reason: settlement?.decision.reasonCode ?? "pi_prompt_response_unknown",
         });
         return false;
       }
 
-      // Prompt was accepted: later failures start at provider_entered.
-      turnObservation.attempt.setReplaySafety("provider_entered");
-
       if (!promptResponse?.success) {
-        // Preflight rejection: prompt was not accepted. Failures after acceptance
-        // arrive through events; do not FT-retry an unaccepted prompt here.
+        // Preflight rejection: retain one-shot context; do not mark provider_entered.
         const failure = promptResponse?.error ?? "pi prompt rejected";
         const formatted = formatPiFailure(failure);
+        turnObservation.attempt.setReplaySafety("pre_provider");
         turnObservation.attempt.recordSignal({
           kind: "provider_error",
           error: failure,
@@ -948,10 +1092,14 @@ export const createPiHandler: HandlerFactory = (config) => {
         return false;
       }
 
+      // Accepted: consume one-shot state and mark provider_entered for all later failures.
+      turnObservation.promptAccepted = true;
+      turnObservation.attempt.setReplaySafety("provider_entered");
+      consumeOneShotPromptState();
       for (const entry of turnCustody) entry.token.processingStarted(entry.messages);
 
       try {
-        await client.waitForSettled();
+        await activeClient.waitForSettled();
       } catch (error) {
         await awaitPendingSteers();
         const transportError = error instanceof Error ? error : new Error(String(error));
@@ -959,25 +1107,21 @@ export const createPiHandler: HandlerFactory = (config) => {
           retryCustody("pi_turn_cancelled");
           return false;
         }
-        updateReplaySafety(turnObservation);
-        turnObservation.attempt.recordSignal({
-          kind:
-            transportError instanceof PiRpcProtocolError || transportError instanceof PiRpcTransportError
-              ? "local_error"
-              : "transport_close",
-          error: transportError,
-        });
+        // Never downgrade accepted custody to pre_provider; never resend.
+        turnObservation.attempt.setReplaySafety(
+          turnObservation.unsafeToolEffectStarted
+            ? "unsafe"
+            : turnObservation.userVisibleEmitted
+              ? "user_visible"
+              : "provider_entered",
+        );
+        turnObservation.attempt.recordSignal({ kind: "transport_close", error: transportError });
         const settlement = turnObservation.attempt.settle({ attempt: attemptNumber });
-        if (settlement && settlement.decision.action === "retry") {
-          emitSettlement(sessionCtx, settlement);
-          const delayMs = settlement.decision.delayMs;
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
-          continue;
-        }
         if (settlement) emitSettlement(sessionCtx, settlement);
         const formatted = formatPiFailure(transportError.message);
         sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+        await closeRpcClient();
         await completeCustody({
           status: "error",
           completion: "consumed",
@@ -996,12 +1140,16 @@ export const createPiHandler: HandlerFactory = (config) => {
       const acceptedFailure =
         turnObservation.autoRetryFailed ??
         turnObservation.turnError ??
+        (turnObservation.provisionalError &&
+        turnObservation.stopReason &&
+        !NORMAL_STOP_REASONS.has(turnObservation.stopReason)
+          ? turnObservation.provisionalError
+          : null) ??
         (turnObservation.stopReason && !NORMAL_STOP_REASONS.has(turnObservation.stopReason)
           ? `pi stopReason=${turnObservation.stopReason}`
           : null);
       if (acceptedFailure) {
-        const result = await settleAcceptedTurnFailure(sessionCtx, attemptNumber, acceptedFailure);
-        if (result === "retry_attempt") continue;
+        await settleAcceptedTurnFailure(sessionCtx, attemptNumber, acceptedFailure);
         return false;
       }
 
@@ -1036,7 +1184,6 @@ export const createPiHandler: HandlerFactory = (config) => {
       sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
       const completion = await completeCustody({ status: "success" });
       if (completion === "retry") return false;
-      pendingChatContextPrompt = null;
       return true;
     }
 
@@ -1067,9 +1214,11 @@ export const createPiHandler: HandlerFactory = (config) => {
     if (!cwd || !sessionId) throw new Error("pi session is not prepared");
     let runtimeConfig: AgentRuntimeConfig | null = null;
     let payload: AgentRuntimeConfigPayload | null = activePayload;
+    let payloadResolved = false;
     if (agentConfigCache) {
       runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
       payload = runtimeConfig.payload;
+      payloadResolved = true;
     }
     payload ??= { ...DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD };
     if (payload.kind !== "pi") {
@@ -1077,16 +1226,25 @@ export const createPiHandler: HandlerFactory = (config) => {
     }
     rejectMcpConfiguration(payload);
     sourceReposForPrompt = declaredSourceRepos(cwd, payload);
-    reconciledTeamSkills = (
-      await reconcileManagedSkillsForConfig(
-        cwd,
-        runtimeProvider,
-        runtimeConfig,
-        sessionCtx.log,
-        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-      )
-    ).teamSkills;
+    const reconcile = await reconcileManagedSkillsForConfig(
+      cwd,
+      runtimeProvider,
+      runtimeConfig,
+      sessionCtx.log,
+      teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+    );
+    reconciledTeamSkills = reconcile.teamSkills;
+    activeResourceConfigVersion = reconcile.resourceConfigVersion;
+    activeSkillsDigest = skillsContentDigest(reconciledTeamSkills, activeResourceConfigVersion);
     const briefing = buildBriefing(sessionCtx, payload, cwd);
+    ensureAgentBootstrap({
+      workspace: cwd,
+      sessionCtx,
+      contextTreePath,
+      briefing,
+      currentSourceRepoNames: currentSourceRepoNamesFromPayload(payload, payloadResolved),
+    });
+    activeBriefingText = briefing;
     activePayload = payload;
     return {
       payload,
@@ -1121,19 +1279,12 @@ export const createPiHandler: HandlerFactory = (config) => {
     }
     const client = await ensureRpcClient(prepared, sessionCtx);
     const prompt = await buildTurnPrompt(sessionCtx, prompts.join("\n\n"), prepared);
-    const delivered = await runTurn(
+    await runTurn(
       prompt,
       sessionCtx,
       drained.map((entry) => ({ messages: [entry.message], token: entry.token })),
       client,
     );
-    if (delivered) {
-      writeSessionBriefingFingerprint(
-        prepared.workspaceCwd,
-        prepared.sessionId,
-        computeBriefingFingerprint(prepared.briefing),
-      );
-    }
   }
 
   function scheduleQueuedMessagesDrain(): void {
@@ -1200,15 +1351,16 @@ export const createPiHandler: HandlerFactory = (config) => {
     sessionCtx.log(`Pi binary: ${resolution.binary}`);
 
     sourceReposForPrompt = declaredSourceRepos(workspaceCwd, payload);
-    reconciledTeamSkills = (
-      await reconcileManagedSkillsForConfig(
-        workspaceCwd,
-        runtimeProvider,
-        runtimeConfig,
-        sessionCtx.log,
-        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-      )
-    ).teamSkills;
+    const reconcile = await reconcileManagedSkillsForConfig(
+      workspaceCwd,
+      runtimeProvider,
+      runtimeConfig,
+      sessionCtx.log,
+      teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+    );
+    reconciledTeamSkills = reconcile.teamSkills;
+    activeResourceConfigVersion = reconcile.resourceConfigVersion;
+    activeSkillsDigest = skillsContentDigest(reconciledTeamSkills, activeResourceConfigVersion);
     const briefing = buildBriefing(sessionCtx, payload, workspaceCwd);
     ensureAgentBootstrap({
       workspace: workspaceCwd,
@@ -1221,6 +1373,8 @@ export const createPiHandler: HandlerFactory = (config) => {
 
     const chatContext = await fetchChatContextOrLog(sessionCtx);
     pendingChatContextPrompt = [renderRuntimeOutputContract(), chatContext].filter(Boolean).join("\n\n");
+    oneShotConsumed = false;
+    activeBriefingText = briefing;
     activePayload = payload;
     sessionActive = true;
 
@@ -1300,14 +1454,7 @@ export const createPiHandler: HandlerFactory = (config) => {
         const client = await ensureRpcClient(prepared, sessionCtx);
         const basePrompt = await sessionCtx.formatInboundContent(message);
         const prompt = await buildTurnPrompt(sessionCtx, basePrompt, prepared);
-        const delivered = await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
-        if (delivered) {
-          writeSessionBriefingFingerprint(
-            prepared.workspaceCwd,
-            prepared.sessionId,
-            computeBriefingFingerprint(prepared.briefing),
-          );
-        }
+        await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
       } catch (error) {
         if (error instanceof PiBinaryVerifyTransientError) {
           deliveryToken.retry([message], "pi_version_gate_transient");
@@ -1344,14 +1491,7 @@ export const createPiHandler: HandlerFactory = (config) => {
           const client = await ensureRpcClient(prepared, sessionCtx);
           const basePrompt = await sessionCtx.formatInboundContent(message);
           const prompt = await buildTurnPrompt(sessionCtx, basePrompt, prepared);
-          const delivered = await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
-          if (delivered) {
-            writeSessionBriefingFingerprint(
-              prepared.workspaceCwd,
-              prepared.sessionId,
-              computeBriefingFingerprint(prepared.briefing),
-            );
-          }
+          await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
         } catch (error) {
           if (error instanceof PiBinaryVerifyTransientError) {
             deliveryToken.retry([message], "pi_version_gate_transient");
@@ -1401,7 +1541,18 @@ export const createPiHandler: HandlerFactory = (config) => {
           } catch (error) {
             const messageText = error instanceof Error ? error.message : String(error);
             ctx?.log(`pi steer failed: ${messageText}`);
-            deliveryToken.retry(message, "pi_steer_failed");
+            if (isPiRpcBeforeWriteError(error)) {
+              // Proven before-write: safe to retry without duplicating a JSONL steer.
+              deliveryToken.retry(message, "pi_steer_failed_before_write");
+              return;
+            }
+            // After-write / unknown: fence and consume — never auto-resend the same steer.
+            await closeRpcClient();
+            await deliveryToken.complete([message], {
+              status: "error",
+              completion: "consumed",
+              reason: "pi_steer_after_write_unknown",
+            });
           }
         })();
         pendingSteerWork.add(steerWork);
