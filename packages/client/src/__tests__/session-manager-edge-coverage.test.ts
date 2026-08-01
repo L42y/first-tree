@@ -4393,6 +4393,149 @@ describe("SessionManager edge coverage", () => {
     expect(i.pendingTeardowns.has(chatId)).toBe(false);
   });
 
+  it("caps concurrent replacement installs at the configured concurrency across chats", async () => {
+    let signalStopA: (() => void) | undefined;
+    let resolveStopA: (() => void) | undefined;
+    let signalStopB: (() => void) | undefined;
+    let resolveStopB: (() => void) | undefined;
+    const stopStartedA = new Promise<void>((resolve) => {
+      signalStopA = resolve;
+    });
+    const stopStartedB = new Promise<void>((resolve) => {
+      signalStopB = resolve;
+    });
+    const stopGateA = new Promise<void>((resolve) => {
+      resolveStopA = resolve;
+    });
+    const stopGateB = new Promise<void>((resolve) => {
+      resolveStopB = resolve;
+    });
+    const oldHandlerA = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalStopA?.();
+        await stopGateA;
+      }),
+    });
+    const oldHandlerB = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalStopB?.();
+        await stopGateB;
+      }),
+    });
+    const freshA = handler({ resume: vi.fn().mockResolvedValue("session-a") });
+    const freshB = handler({ resume: vi.fn().mockResolvedValue("session-b") });
+    const sm = makeManager({ handlers: [freshA, freshB], concurrency: 1 });
+    const i = internals(sm);
+    const entryA = makeSessionRecord("chat-cap-a", {
+      handler: oldHandlerA,
+      status: "suspended",
+      retryAttempt: 1,
+      retryHeadMessage: makeMessage("chat-cap-a"),
+    });
+    const entryB = makeSessionRecord("chat-cap-b", {
+      handler: oldHandlerB,
+      status: "suspended",
+      retryAttempt: 1,
+      retryHeadMessage: makeMessage("chat-cap-b"),
+    });
+    i.sessions.set(entryA.chatId, entryA);
+    i.sessions.set(entryB.chatId, entryB);
+    // Give chat A owned processing work so its (winning) session cannot be
+    // preempted by the loser's acquire — the loser must re-arm instead.
+    const ownedEntry = mockEntry({ id: 131, chatId: entryA.chatId, messageId: "msg-cap-a-owned" });
+    i.inboxDelivery.receive(ownedEntry);
+    i.inboxDelivery.markOwned({ chatId: entryA.chatId, entryId: ownedEntry.id, messageId: ownedEntry.message.id });
+    i.inboxDelivery.markProcessingStarted(entryA.chatId, messageFromEntry(ownedEntry));
+
+    // Both retries wait on their own replacement stop; the capacity check
+    // now happens AFTER the stop + CAS, so they cannot both pass it.
+    const retryA = i.runRetry(entryA.chatId);
+    const retryB = i.runRetry(entryB.chatId);
+    await Promise.all([stopStartedA, stopStartedB]);
+    expect(sm.activeCount).toBe(0);
+
+    resolveStopA?.();
+    resolveStopB?.();
+    await retryA;
+    await retryB;
+
+    // Invariant: at most one slot held, exactly one provider route live.
+    expect(sm.activeCount).toBe(1);
+    expect(freshA.resume).toHaveBeenCalledTimes(1);
+    expect(freshB.resume).not.toHaveBeenCalled();
+    expect(freshB.start).not.toHaveBeenCalled();
+    // The loser keeps retry custody: still in transient-retry, timer armed.
+    expect(entryB.retryAttempt).toBe(1);
+    expect(entryB.retryTimer).not.toBe(null);
+
+    if (entryB.retryTimer) {
+      clearTimeout(entryB.retryTimer);
+      entryB.retryTimer = null;
+    }
+    await sm.shutdown();
+  });
+
+  it("does not install over capacity when another route takes the slot during the replacement stop", async () => {
+    let signalStopStarted: (() => void) | undefined;
+    let resolveStop: (() => void) | undefined;
+    const stopStarted = new Promise<void>((resolve) => {
+      signalStopStarted = resolve;
+    });
+    const stopGate = new Promise<void>((resolve) => {
+      resolveStop = resolve;
+    });
+    const oldHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalStopStarted?.();
+        await stopGate;
+      }),
+    });
+    const freshA = handler();
+    const handlerC = handler({ start: vi.fn().mockResolvedValue("c-session") });
+    const sm = makeManager({ handlers: [handlerC, freshA], concurrency: 1 });
+    const i = internals(sm);
+    const chatId = "chat-freed-slot-retry";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: oldHandler,
+        status: "suspended",
+        retryAttempt: 1,
+        retryHeadMessage: makeMessage(chatId),
+      }),
+    );
+    const entry = i.sessions.get(chatId);
+    if (!entry) throw new Error("entry missing");
+
+    const retry = i.runRetry(chatId);
+    await stopStarted;
+
+    // While the replacement stop is gated, another route takes the freed
+    // slot — and holds owned processing work so it cannot be preempted.
+    const cEntry = mockEntry({ id: 140, chatId: "chat-freed-slot-c", messageId: "msg-c" });
+    await sm.dispatch(cEntry);
+    expect(handlerC.start).toHaveBeenCalledTimes(1);
+    expect(sm.activeCount).toBe(1);
+    i.inboxDelivery.markOwned({ chatId: "chat-freed-slot-c", entryId: cEntry.id, messageId: cEntry.message.id });
+    i.inboxDelivery.markProcessingStarted("chat-freed-slot-c", messageFromEntry(cEntry));
+
+    // The stop settles: the retry must NOT install over capacity — it keeps
+    // custody via re-arm (not abandon).
+    resolveStop?.();
+    await retry;
+    expect(freshA.start).not.toHaveBeenCalled();
+    expect(freshA.resume).not.toHaveBeenCalled();
+    expect(sm.activeCount).toBe(1);
+    expect(entry.retryAttempt).toBe(1);
+    expect(entry.retryTimer).not.toBe(null);
+
+    if (entry.retryTimer) {
+      clearTimeout(entry.retryTimer);
+      entry.retryTimer = null;
+    }
+    await sm.shutdown();
+  });
+
   it("never leaves an unsettled route producer when the route fails", async () => {
     const failingHandler = handler({
       start: vi.fn().mockRejectedValue(new Error("provider start failed")),

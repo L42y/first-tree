@@ -2544,6 +2544,23 @@ export class SessionManager {
    * `triggerImmediateRetry`). Re-builds the handler — the old one may have
    * had its SDK transport torn down.
    */
+  /**
+   * Re-arm a chat's transient-retry timer with the standard short delay.
+   * Shared by every executeRetry exit that keeps retry custody (debt-settle
+   * failure, replacement-stop failure, slot contention) — single-flight
+   * guarantees only one such path can run per chat at a time, so this is
+   * the only re-arm handle.
+   */
+  private rearmRetryTimer(chatId: string, entry: SessionEntry, delayMs = 5_000): void {
+    entry.retryNextAt = Date.now() + delayMs;
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = null;
+      this.runRetry(chatId).catch((err) => {
+        this.config.log.warn({ chatId, err }, "session retry rearm failed");
+      });
+    }, delayMs);
+  }
+
   private runRetry(chatId: string): Promise<void> {
     // Single-flight per chat: the whole execution — including a failing
     // replacement shutdown and the re-arm timer it creates — must have
@@ -2658,14 +2675,7 @@ export class SessionManager {
     // retry builds a fresh handler. On failure keep retry custody — re-arm
     // with the same short-delay pass as slot contention below.
     if (!(await this.settleTeardownDebtBeforeRoute(chatId))) {
-      const nextDelay = 5_000;
-      entry.retryNextAt = Date.now() + nextDelay;
-      entry.retryTimer = setTimeout(() => {
-        entry.retryTimer = null;
-        this.runRetry(chatId).catch((err) => {
-          this.config.log.warn({ chatId, err }, "session retry rearm failed");
-        });
-      }, nextDelay);
+      this.rearmRetryTimer(chatId, entry);
       return;
     }
 
@@ -2689,22 +2699,6 @@ export class SessionManager {
       return;
     }
 
-    // Enforce concurrency limit before claiming the slot. If we cannot, the
-    // entry stays in transient-retry state and a future retry / message will
-    // try again.
-    if (!this.acquireActiveSlot(chatId, retryRoute.message, "recovery", { queueOnFailure: false })) {
-      // Couldn't get a slot — re-arm the timer with a short delay.
-      const nextDelay = 5_000;
-      entry.retryNextAt = Date.now() + nextDelay;
-      entry.retryTimer = setTimeout(() => {
-        entry.retryTimer = null;
-        this.runRetry(chatId).catch((err) => {
-          this.config.log.warn({ chatId, err }, "session retry rearm failed");
-        });
-      }, nextDelay);
-      return;
-    }
-
     // Fresh handler — the old one may have closed its SDK transport. But the
     // replaced handler must be CONFIRMED stopped before the fresh one is
     // installed, or the chat runs two live handlers. The debt is registered
@@ -2721,14 +2715,7 @@ export class SessionManager {
       this.dropPendingTeardown(chatId, entry.handler);
     } catch (err) {
       this.config.log.warn({ chatId, err }, "session retry replace-stop failed; keeping retry custody");
-      const nextDelay = 5_000;
-      entry.retryNextAt = Date.now() + nextDelay;
-      entry.retryTimer = setTimeout(() => {
-        entry.retryTimer = null;
-        this.runRetry(chatId).catch((retryErr) => {
-          this.config.log.warn({ chatId, err: retryErr }, "session retry rearm failed");
-        });
-      }, nextDelay);
+      this.rearmRetryTimer(chatId, entry);
       return;
     }
     // The stop awaited: re-run the FULL retry-eligibility CAS — a terminate
@@ -2746,6 +2733,20 @@ export class SessionManager {
       entry.routeTransition !== null ||
       entry.retryAttempt === 0
     ) {
+      return;
+    }
+
+    // Capacity decision LAST, immediately before the synchronous install.
+    // Acquiring earlier would be a check-then-act race across chats: two
+    // retries could both pass the check while each awaits its own
+    // replacement stop (or while another route consumes the freed slot),
+    // then both claim — exceeding the configured concurrency. With the
+    // acquire directly adjacent to the claim (no await in between), the
+    // invariant `activeCount <= concurrency` holds under any interleaving.
+    // On failure the entry stays in transient-retry state and a future
+    // retry / message will try again.
+    if (!this.acquireActiveSlot(chatId, retryRoute.message, "recovery", { queueOnFailure: false })) {
+      this.rearmRetryTimer(chatId, entry);
       return;
     }
 
