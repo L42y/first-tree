@@ -554,6 +554,12 @@ export class SessionManager {
    * shutdown join these before they may ack/return.
    */
   private readonly routeProducers = new Map<string, Set<Promise<void>>>();
+  /**
+   * Per-chat single-flight registry for `runRetry` executions. An
+   * overlapping trigger (timer fire + immediate delivery trigger) joins the
+   * in-flight execution instead of running a second one — see runRetry.
+   */
+  private readonly retryFlights = new Map<string, Promise<void>>();
   /** Monotonic fence for delivery work that is still inside the async admission pipeline. */
   private readonly admissionGenerations = new Map<string, number>();
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
@@ -2538,7 +2544,30 @@ export class SessionManager {
    * `triggerImmediateRetry`). Re-builds the handler — the old one may have
    * had its SDK transport torn down.
    */
-  private async runRetry(chatId: string): Promise<void> {
+  private runRetry(chatId: string): Promise<void> {
+    // Single-flight per chat: the whole execution — including a failing
+    // replacement shutdown and the re-arm timer it creates — must have
+    // exactly one concurrent owner. Without this, two overlapping callers
+    // (retry timer + immediate trigger) would both run the failure path
+    // and each arm its own re-arm timer, the second handle overwriting the
+    // first in `entry.retryTimer` and leaving an untracked timer that
+    // manager shutdown cannot clear.
+    const inFlight = this.retryFlights.get(chatId);
+    if (inFlight) return inFlight;
+    const flight = this.executeRetry(chatId);
+    this.retryFlights.set(chatId, flight);
+    void flight.then(
+      () => {
+        if (this.retryFlights.get(chatId) === flight) this.retryFlights.delete(chatId);
+      },
+      () => {
+        if (this.retryFlights.get(chatId) === flight) this.retryFlights.delete(chatId);
+      },
+    );
+    return flight;
+  }
+
+  private async executeRetry(chatId: string): Promise<void> {
     if (this.shuttingDown) return;
     const entry = this.sessions.get(chatId);
     if (!entry) return;
