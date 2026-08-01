@@ -1135,7 +1135,7 @@ export class SessionManager {
     const chatIds = [...new Set(this.replayFence.snapshot().map((entry) => entry.chatId))];
     for (const chatId of chatIds) {
       await this.reconcileReplayFenceForChat(chatId);
-      this.ensureReplayFenceReconcileLoop(chatId);
+      this.ensureReplayFenceReconcileLoop(chatId, { immediate: false });
     }
   }
 
@@ -1167,7 +1167,16 @@ export class SessionManager {
       this.config.log.warn({ err, chatId }, "replay fence settlement probe failed; keeping fences (fail-closed)");
       return;
     }
-    const settled = new Set(settledIds);
+    // Only ids from THIS request may prove settlement; anything else is a
+    // protocol violation and must not clear anything.
+    const requested = new Set(fencedMessageIds);
+    const settled = new Set([...settledIds].filter((id) => requested.has(id)));
+    if (settled.size !== settledIds.length) {
+      this.config.log.warn(
+        { chatId, settled: settledIds, requested: fencedMessageIds },
+        "fence probe returned ids outside the request; ignoring them",
+      );
+    }
     const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
     for (const messageId of fencedMessageIds) {
       if (settled.has(messageId)) proven.add(messageId);
@@ -1187,10 +1196,12 @@ export class SessionManager {
     if (!this.replayFence) return;
     const proven = this.provenSettledFences.get(chatId);
     if (!proven) return;
+    const clearedMessageIds: string[] = [];
     for (const messageId of [...proven]) {
       try {
         this.replayFence.clear(chatId, messageId);
         proven.delete(messageId);
+        clearedMessageIds.push(messageId);
         this.config.log.info(
           { chatId, messageId },
           "cleared stale replay fence: delivery confirmed settled server-side",
@@ -1204,12 +1215,21 @@ export class SessionManager {
       }
     }
     if (proven.size === 0) this.provenSettledFences.delete(chatId);
+    if (clearedMessageIds.length > 0) this.inboxDelivery.settleReplayFencedEntries(chatId, clearedMessageIds);
     if (this.replayFence.hasFenceForChat(chatId)) return;
+    await this.onChatFencesCleared(chatId);
+  }
+
+  /**
+   * The single convergence point for "the last replay fence of a chat is
+   * gone" — reached from the probe loop, the committed-ACK callback, and
+   * local clear retries. Stops the retry loop and fires ONE destructive
+   * recovery so the server resets and redelivers only the still-unacked
+   * tail; the coordinator re-admits fence-withheld entries instead of
+   * deduplicating them. Already-settled heads are never re-driven.
+   */
+  private async onChatFencesCleared(chatId: string): Promise<void> {
     this.stopReplayFenceReconcileLoop(chatId);
-    // Single destructive recovery to re-drive whatever the gate withheld:
-    // the server resets and redelivers the rows, and the coordinator
-    // re-admits fence-withheld ledger entries instead of deduplicating
-    // them. This is the ONLY redrive path — exactly-once by construction.
     if (this.config.recoverChat && this.inboxDelivery.hasUnsettledWork(chatId)) {
       try {
         await this.config.recoverChat(chatId);
@@ -1228,12 +1248,14 @@ export class SessionManager {
    * no dependence on another dispatch — and alternates between retrying
    * local clears of server-proven fences and re-reading server truth.
    */
-  private ensureReplayFenceReconcileLoop(chatId: string): void {
+  private ensureReplayFenceReconcileLoop(chatId: string, opts: { immediate?: boolean } = {}): void {
     if (this.shuttingDown) return;
     if (this.replayFenceRetryTimers.has(chatId)) return;
-    void this.reconcileReplayFenceForChat(chatId).catch((err) => {
-      this.config.log.warn({ err, chatId }, "replay fence reconciliation attempt failed");
-    });
+    if (opts.immediate !== false) {
+      void this.reconcileReplayFenceForChat(chatId).catch((err) => {
+        this.config.log.warn({ err, chatId }, "replay fence reconciliation attempt failed");
+      });
+    }
     this.armReplayFenceRetryTimer(chatId);
   }
 
@@ -1286,12 +1308,23 @@ export class SessionManager {
       try {
         this.replayFence.clear(chatId, messageId);
       } catch (err) {
+        // The ACK is already confirmed server-side, so this key is proven
+        // settled; the retry loop redoes only the local clear.
+        const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
+        proven.add(messageId);
+        this.provenSettledFences.set(chatId, proven);
+        this.ensureReplayFenceReconcileLoop(chatId, { immediate: false });
         this.config.log.error(
           { err, chatId, messageId },
-          "replay fence could not be cleared after confirmed ACK; chat stays fenced until the store is repaired",
+          "replay fence could not be cleared after confirmed ACK; the retry loop will redo the local clear",
         );
         this.config.onSessionRuntimeChange?.(chatId, "error");
       }
+    }
+    if (!this.replayFence.hasFenceForChat(chatId)) {
+      void this.onChatFencesCleared(chatId).catch((err) => {
+        this.config.log.warn({ err, chatId }, "post-fence-clear convergence failed");
+      });
     }
   }
 

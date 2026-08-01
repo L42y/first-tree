@@ -250,6 +250,21 @@ export class InboxDeliveryCoordinator {
     }
   }
 
+  /**
+   * Drop ledger entries the server proved durably settled (fence probe).
+   * The client never observed their ACK, but the server is authoritative:
+   * keeping them would let a stray duplicate frame re-admit an
+   * already-settled unsafe delivery into the provider.
+   */
+  settleReplayFencedEntries(chatId: string, messageIds: readonly string[]): void {
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger) return;
+    const ids = new Set(messageIds);
+    ledger.entries = ledger.entries.filter((tracked) => !ids.has(tracked.messageId));
+    this.cleanupLedger(chatId);
+    this.emitWorkChanged(chatId);
+  }
+
   markOwned(work: DeliveryWork): DeliveryRouteOwnership {
     const tracked = this.findEntry(work.chatId, work.entryId);
     if (!tracked) {
