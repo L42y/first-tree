@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,5 +145,34 @@ describe("trusted-publishing npm toolchain contract", () => {
     expect(ci).toContain("npm install -g npm@11.5.1");
     expect(ci).toContain("node scripts/release-pack-smoke.mjs");
     expect(existsSync(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toBe(true);
+  });
+
+  it("materializes bundled deps around pack so pnpm symlink targets cannot escape the tarball", () => {
+    const pkg = readJson(join(CLI_ROOT, "package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    const materialize = join(CLI_ROOT, "scripts", "materialize-bundled-deps.mjs");
+    const safety = join(REPO_ROOT, "scripts", "npm-tarball-safety.mjs");
+    expect(existsSync(materialize)).toBe(true);
+    expect(existsSync(safety)).toBe(true);
+    expect(pkg.scripts?.prepack ?? "").toContain("materialize-bundled-deps.mjs prepare");
+    expect(pkg.scripts?.postpack ?? "").toContain("materialize-bundled-deps.mjs restore");
+    // Restore must run before skill cleanup so a failed restore still leaves the
+    // workspace symlink graph recoverable by a subsequent prepare/restore.
+    const postpack = pkg.scripts?.postpack ?? "";
+    expect(postpack.indexOf("materialize-bundled-deps.mjs restore")).toBeLessThan(postpack.indexOf("rm -rf skills"));
+    expect(readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toContain("assertNpmTarballRegistrySafe");
+  });
+});
+
+describe("npm tarball registry-safety helper", () => {
+  it("accepts canonical package-root paths and rejects pnpm traversal layouts", () => {
+    const result = spawnSync(process.execPath, [join(REPO_ROOT, "scripts", "npm-tarball-safety.mjs")], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      throw new Error(`npm-tarball-safety selftest failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest PASS");
   });
 });

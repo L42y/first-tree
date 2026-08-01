@@ -4,23 +4,28 @@
  * built CLI under the trusted-publishing npm client the workflow pins.
  *
  *   1. `npm pack` the built apps/cli package through REAL pack semantics
- *      (prepack copies skills, postpack cleans up — no --ignore-scripts).
- *   2. Install the tarball into an empty consumer with plain npm.
- *   3. Run the public CLI (`--version`).
- *   4. Resolve the bundled `@botiverse/kimi-code-sdk` from the consumer and
- *      assert the patched sites this PR ships: create-time drain flag, resume
- *      option threading, resume main-agent flag application, and the awaited
- *      replay-fence authorization hook.
+ *      (prepack copies skills + materializes bundled deps, postpack restores —
+ *      no --ignore-scripts).
+ *   2. Enumerate every tarball entry and reject traversal / absolute /
+ *      escaping-link paths (the npm registry E415 class).
+ *   3. Install the tarball into an empty consumer with plain npm.
+ *   4. Run the public CLI (`--version`).
+ *   5. Resolve the bundled `@botiverse/kimi-code-sdk` from the consumer and
+ *      assert the patched sites this release ships: create-time drain flag,
+ *      resume option threading, resume main-agent flag application, and the
+ *      awaited replay-fence authorization hook.
  *
  * No registry publish, no credentials, no network beyond npm itself.
  * Everything happens in a disposable temp directory removed on exit.
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertNpmTarballRegistrySafe } from "./npm-tarball-safety.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
@@ -61,6 +66,13 @@ try {
   const tarball = tarballs[0];
   const tarballName = tarballs[0].split("/").pop();
   try {
+    let safety;
+    try {
+      safety = assertNpmTarballRegistrySafe(tarball);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+
     run("npm", ["install", "--prefix", consumerDir, tarball]);
     const binName = "first-tree-dev";
     const binPath = join(consumerDir, "node_modules", ".bin", binName);
@@ -98,8 +110,10 @@ try {
       `import(${JSON.stringify(`file://${sdkEntry}`)}).then(() => process.exit(0), (error) => { console.error(error); process.exit(1); })`,
     ]);
 
+    const sha256 = createHash("sha256").update(readFileSync(tarball)).digest("hex");
+    const bytes = statSync(tarball).size;
     console.log(
-      `release-pack-smoke: PASS — packed ${tarballName}, consumer CLI ${versionText}, bundled patched Kimi SDK verified`,
+      `release-pack-smoke: PASS — packed ${tarballName} (${bytes} B, sha256=${sha256}, ${safety.entryCount} entries), consumer CLI ${versionText}, registry-safe paths, bundled patched Kimi SDK verified`,
     );
   } finally {
     // Real pack semantics write the tarball into the package dir; never
@@ -108,4 +122,12 @@ try {
   }
 } finally {
   rmSync(work, { recursive: true, force: true });
+  // Belt-and-suspenders: pack lifecycle should restore, but never leave the
+  // materialize manifest or a stranded real copy if postpack was interrupted.
+  const manifest = join(CLI_ROOT, ".bundled-deps-materialize.json");
+  if (existsSync(manifest)) {
+    run(process.execPath, [join(CLI_ROOT, "scripts", "materialize-bundled-deps.mjs"), "restore"], {
+      cwd: CLI_ROOT,
+    });
+  }
 }
