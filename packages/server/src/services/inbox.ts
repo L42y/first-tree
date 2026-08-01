@@ -701,6 +701,36 @@ export async function countUnackedForScope(db: Database, opts: { inboxId: string
   return rows[0]?.count ?? 0;
 }
 
+/** Cap for the message-level unacked list; larger backlogs omit the field so consumers stay conservative. */
+export const UNACKED_MESSAGE_IDS_LIMIT = 500;
+
+/**
+ * Message-level companion to {@link countUnackedForScope}: the concrete
+ * unacked message ids for one chat scope. Settlement truth is per delivery —
+ * a newer unacked tail must not make an already-settled fenced head look
+ * unsettled. Returns null when the backlog exceeds UNACKED_MESSAGE_IDS_LIMIT
+ * (callers must treat that as unknown, never as empty).
+ */
+export async function listUnackedMessageIdsForScope(
+  db: Database,
+  opts: { inboxId: string; chatId: string },
+): Promise<string[] | null> {
+  const rows = await db
+    .select({ messageId: inboxEntries.messageId })
+    .from(inboxEntries)
+    .where(
+      and(
+        eq(inboxEntries.inboxId, opts.inboxId),
+        eq(inboxEntries.chatId, opts.chatId),
+        inArray(inboxEntries.status, ["pending", "delivered"]),
+        eq(inboxEntries.notify, true),
+      ),
+    )
+    .limit(UNACKED_MESSAGE_IDS_LIMIT + 1);
+  if (rows.length > UNACKED_MESSAGE_IDS_LIMIT) return null;
+  return rows.map((row) => row.messageId);
+}
+
 /**
  * Reset delivered-but-unacked notify rows for a single inbox, optionally
  * narrowed to one chat, and return the concrete ids that were reset. The id

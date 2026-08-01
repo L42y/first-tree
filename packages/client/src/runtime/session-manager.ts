@@ -429,6 +429,9 @@ const MAX_EVICTED_MAPPINGS = 500;
  * without turning every redelivery burst into an inbox-recovery storm.
  */
 const REPLAY_FENCE_RECONCILE_INTERVAL_MS = 30_000;
+
+/** In-memory cap for gate-withheld messages awaiting a fence clear. */
+const MAX_WITHHELD_REPLAY_FENCED_MESSAGES = 50;
 const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
 
 /**
@@ -965,6 +968,10 @@ export class SessionManager {
         session.retryTimer = null;
       }
     }
+    for (const timer of this.replayFenceRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.replayFenceRetryTimers.clear();
 
     const shutdowns = [...this.sessions.values()].map((session) => {
       this.invalidateRouteTransition(session, reason ?? "manager_shutdown");
@@ -1117,29 +1124,36 @@ export class SessionManager {
   }
 
   /**
-   * Crash-safe fence reconciliation driven by authoritative server ACK
-   * truth. After a crash the local fence file can lag the server: an entry
-   * ACKed just before the crash leaves a stale chat-wide fence with no
-   * automatic cleanup. The server's recovery reply carries
-   * `unackedOutstanding` — the pending+delivered backlog for the chat
-   * scope, counted inside the same serialized boundary — and only `0`
-   * proves every fenced delivery settled, so those fences are stale and
-   * cleared. Any other outcome (backlog present, field absent on an older
-   * server, readback failure) keeps the fences fail-closed. Idempotent and
-   * replayable: runs on startup/bind and is retried on withheld dispatches.
+   * Crash-safe fence reconciliation driven by authoritative server
+   * settlement truth. After a crash the local fence file can lag the
+   * server: an entry ACKed just before the crash leaves a stale chat-wide
+   * fence with no automatic cleanup. The server's recovery reply carries
+   * the pending+delivered backlog for the chat scope — as a count
+   * (`unackedOutstanding`, proving settlement only at exactly 0) and, on
+   * new servers, per-message (`unackedMessageIds`), so an already-settled
+   * fenced head can clear even while a newer unacked tail exists. Anything
+   * less than authoritative truth keeps the fences fail-closed. Idempotent
+   * and replayable: runs on startup/rebind and on the per-chat retry loop.
    */
   async reconcileReplayFencesWithServer(): Promise<void> {
     if (!this.replayFence || this.replayFenceUnavailable) return;
     const chatIds = [...new Set(this.replayFence.snapshot().map((entry) => entry.chatId))];
     for (const chatId of chatIds) {
       await this.reconcileReplayFenceForChat(chatId);
+      this.ensureReplayFenceReconcileLoop(chatId);
     }
   }
 
-  /** In-flight guard so gate-triggered reconciliations coalesce per chat. */
-  private readonly replayFenceReconciliations = new Map<string, Promise<void>>();
-  /** Per-chat spacing for gate-triggered reconciliation retries. */
-  private readonly replayFenceReconcileAt = new Map<string, number>();
+  /**
+   * Fence keys the server has authoritatively proven settled. Once a key
+   * lands here its settlement fact cannot be revoked by later tail traffic;
+   * the retry loop only needs to redo the LOCAL clear, not the readback.
+   */
+  private readonly provenSettledFences = new Map<string, Set<string>>();
+  /** Messages withheld by the fence gate, re-driven once the fence clears. */
+  private readonly withheldReplayFencedMessages = new Map<string, SessionMessage[]>();
+  /** Per-chat retry timers for the reconciliation/clear loop. */
+  private readonly replayFenceRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   private async reconcileReplayFenceForChat(chatId: string): Promise<void> {
     if (!this.replayFence || this.replayFenceUnavailable || !this.config.recoverChatWithCount) return;
@@ -1154,47 +1168,125 @@ export class SessionManager {
       );
       return;
     }
-    if (result.unackedOutstanding !== 0) {
-      // Backlog present, or an older server omitted the authoritative
-      // field: either way this is NOT proof of settlement — keep fences.
+    const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
+    if (result.unackedMessageIds !== undefined) {
+      // Message-level truth: a fenced delivery is settled iff the server's
+      // unacked list does not contain it — a newer unacked tail cannot
+      // block the stale head's cleanup.
+      const unacked = new Set(result.unackedMessageIds);
+      for (const entry of this.replayFence.snapshot()) {
+        if (entry.chatId === chatId && !unacked.has(entry.messageId)) proven.add(entry.messageId);
+      }
+    } else if (result.unackedOutstanding === 0) {
+      for (const entry of this.replayFence.snapshot()) {
+        if (entry.chatId === chatId) proven.add(entry.messageId);
+      }
+    } else {
+      // Backlog present without per-message detail, or an older server
+      // omitted the fields: NOT proof of settlement — keep fences.
       return;
     }
-    for (const entry of this.replayFence.snapshot()) {
-      if (entry.chatId !== chatId) continue;
-      try {
-        this.replayFence.clear(entry.chatId, entry.messageId);
-        this.config.log.info(
-          { chatId, messageId: entry.messageId },
-          "cleared stale replay fence: delivery confirmed settled server-side",
-        );
-      } catch (err) {
-        this.config.log.error(
-          { err, chatId, messageId: entry.messageId },
-          "stale replay fence could not be cleared; chat stays fenced until a later reconciliation succeeds",
-        );
-        this.config.onSessionRuntimeChange?.(chatId, "error");
-      }
+    if (proven.size > 0) {
+      this.provenSettledFences.set(chatId, proven);
+      await this.clearProvenSettledFences(chatId);
     }
   }
 
   /**
-   * Gate-triggered retry: a withheld chat gets a bounded re-reconciliation
-   * so a transient readback/clear failure converges without a restart.
+   * Clear every server-proven-settled fence for the chat, retrying local
+   * I/O failures through the loop. When the last fence goes, withheld
+   * deliveries re-enter routing and the chat's runtime projection recovers.
    */
-  private scheduleReplayFenceReconcile(chatId: string): void {
-    if (!this.config.recoverChatWithCount) return;
-    const now = Date.now();
-    const nextAt = this.replayFenceReconcileAt.get(chatId) ?? 0;
-    if (now < nextAt || this.replayFenceReconciliations.has(chatId)) return;
-    this.replayFenceReconcileAt.set(chatId, now + REPLAY_FENCE_RECONCILE_INTERVAL_MS);
-    const pending = this.reconcileReplayFenceForChat(chatId)
-      .catch((err) => {
-        this.config.log.warn({ err, chatId }, "replay fence reconciliation attempt failed");
-      })
-      .finally(() => {
-        if (this.replayFenceReconciliations.get(chatId) === pending) this.replayFenceReconciliations.delete(chatId);
-      });
-    this.replayFenceReconciliations.set(chatId, pending);
+  private async clearProvenSettledFences(chatId: string): Promise<void> {
+    if (!this.replayFence) return;
+    const proven = this.provenSettledFences.get(chatId);
+    if (!proven) return;
+    for (const messageId of [...proven]) {
+      try {
+        this.replayFence.clear(chatId, messageId);
+        proven.delete(messageId);
+        this.config.log.info(
+          { chatId, messageId },
+          "cleared stale replay fence: delivery confirmed settled server-side",
+        );
+      } catch (err) {
+        this.config.log.error(
+          { err, chatId, messageId },
+          "stale replay fence could not be cleared; the retry loop will redo the local clear",
+        );
+        this.config.onSessionRuntimeChange?.(chatId, "error");
+      }
+    }
+    if (proven.size === 0) this.provenSettledFences.delete(chatId);
+    if (!this.replayFence.hasFenceForChat(chatId)) {
+      this.stopReplayFenceReconcileLoop(chatId);
+      await this.drainWithheldReplayFencedMessages(chatId);
+    }
+  }
+
+  /** Re-drive deliveries the gate withheld while the fence was up. */
+  private async drainWithheldReplayFencedMessages(chatId: string): Promise<void> {
+    const withheld = this.withheldReplayFencedMessages.get(chatId);
+    if (!withheld || withheld.length === 0) return;
+    this.withheldReplayFencedMessages.delete(chatId);
+    for (const message of withheld) {
+      this.config.log.info(
+        { chatId, messageId: message.id },
+        "re-driving replay-fence-withheld delivery after fence clear",
+      );
+      try {
+        await this.routeMessage(chatId, message, "fresh");
+      } catch (err) {
+        this.config.log.warn({ err, chatId, messageId: message.id }, "withheld delivery re-drive failed");
+        this.retryDeliveryTurn(chatId, message, "replay_fence_redrive_failed");
+      }
+    }
+    this.projectSessionRuntime(chatId);
+  }
+
+  /**
+   * Start (or keep) the per-chat retry loop. The timer fires on its own —
+   * no dependence on another dispatch — and alternates between retrying
+   * local clears of server-proven fences and re-reading server truth.
+   */
+  private ensureReplayFenceReconcileLoop(chatId: string): void {
+    if (this.shuttingDown) return;
+    if (this.replayFenceRetryTimers.has(chatId)) return;
+    void this.reconcileReplayFenceForChat(chatId).catch((err) => {
+      this.config.log.warn({ err, chatId }, "replay fence reconciliation attempt failed");
+    });
+    this.armReplayFenceRetryTimer(chatId);
+  }
+
+  private armReplayFenceRetryTimer(chatId: string): void {
+    const timer = setTimeout(() => {
+      this.replayFenceRetryTimers.delete(chatId);
+      void this.runReplayFenceReconcileLoop(chatId);
+    }, REPLAY_FENCE_RECONCILE_INTERVAL_MS);
+    this.replayFenceRetryTimers.set(chatId, timer);
+  }
+
+  private async runReplayFenceReconcileLoop(chatId: string): Promise<void> {
+    if (this.shuttingDown || !this.replayFence) return;
+    try {
+      if ((this.provenSettledFences.get(chatId)?.size ?? 0) > 0) {
+        await this.clearProvenSettledFences(chatId);
+      } else {
+        await this.reconcileReplayFenceForChat(chatId);
+      }
+    } catch (err) {
+      this.config.log.warn({ err, chatId }, "replay fence reconciliation loop iteration failed");
+    }
+    if (!this.shuttingDown && this.replayFence.hasFenceForChat(chatId)) {
+      this.armReplayFenceRetryTimer(chatId);
+    }
+  }
+
+  private stopReplayFenceReconcileLoop(chatId: string): void {
+    const timer = this.replayFenceRetryTimers.get(chatId);
+    if (timer) clearTimeout(timer);
+    this.replayFenceRetryTimers.delete(chatId);
+    this.provenSettledFences.delete(chatId);
   }
 
   private isChatReplayFenced(chatId: string): boolean {
@@ -1782,13 +1874,25 @@ export class SessionManager {
       // provider for the fenced head would replay that effect, and inbox ACK
       // is prefix-based, so the chat's entire FIFO tail must hold behind it:
       // every delivery stays unacknowledged recovery debt until an operator
-      // resolves the fenced head.
+      // resolves the fenced head. The message is buffered in memory so a
+      // later fence clear can re-drive it in-process; the server row stays
+      // delivered/unacked as the durable copy.
       this.config.log.error(
         { chatId, messageId: message.id },
         "withholding provider re-entry for replay-fenced chat; unsafe tool effect fenced before interruption",
       );
       this.config.onSessionRuntimeChange?.(chatId, "error");
-      this.scheduleReplayFenceReconcile(chatId);
+      const withheld = this.withheldReplayFencedMessages.get(chatId) ?? [];
+      if (withheld.length < MAX_WITHHELD_REPLAY_FENCED_MESSAGES) {
+        withheld.push(message);
+        this.withheldReplayFencedMessages.set(chatId, withheld);
+      } else {
+        this.config.log.error(
+          { chatId, messageId: message.id },
+          "replay-fence withheld buffer full; delivery relies on server redelivery",
+        );
+      }
+      this.ensureReplayFenceReconcileLoop(chatId);
       return;
     }
     const existing = this.sessions.get(chatId);

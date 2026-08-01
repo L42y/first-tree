@@ -229,6 +229,13 @@ export class AgentSlot {
         // reconcile. Reconnects with an existing SessionManager are handled
         // here.
         if (!this.sessionManager) return;
+        // Replay-fence reconciliation on every (re)bind: an ACK committed
+        // while this client was offline can leave a stale fence the startup
+        // pass never revisits. Outstanding truth counts pending+delivered,
+        // so running it before the bind drain is safe.
+        void this.sessionManager.reconcileReplayFencesWithServer?.().catch((err) => {
+          this.logger.warn({ err }, "replay fence rebind reconciliation failed; keeping fences (fail-closed)");
+        });
         void this.refreshActiveRuntimeChatIds("bind").finally(() => {
           this.fullStateSync();
           this.scheduleActiveRuntimeChatIdsRefresh();

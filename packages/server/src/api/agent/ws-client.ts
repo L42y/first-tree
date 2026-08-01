@@ -1859,8 +1859,14 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   }
                   // Counted inside the same serialized chain as the reset:
                   // unacked rows may already be `pending` (bind reset), so
-                  // only pending+delivered = 0 proves the chat settled.
+                  // only pending+delivered = 0 proves the chat settled. The
+                  // message-level list lets the client settle individual
+                  // fenced deliveries even when a newer unacked tail exists.
                   const unackedOutstanding = await inboxService.countUnackedForScope(app.db, {
+                    inboxId: info.inboxId,
+                    chatId,
+                  });
+                  const unackedMessageIds = await inboxService.listUnackedMessageIdsForScope(app.db, {
                     inboxId: info.inboxId,
                     chatId,
                   });
@@ -1872,6 +1878,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                       chatId,
                       resetCount: recovered.resetEntryIds.length,
                       unackedOutstanding,
+                      ...(unackedMessageIds !== null ? { unackedMessageIds } : {}),
                     }),
                   );
                   await drainBacklogForAgent(agentId, info.inboxId, { source: "recover", chatId });

@@ -76,13 +76,15 @@ type PendingInboxRecover = {
 /**
  * Result of an accepted inbox recovery. `resetCount` only covers rows the
  * reset moved out of `delivered`; `unackedOutstanding` is the server's
- * authoritative pending+delivered backlog for the chat scope, and is the
- * only value that may prove settlement when it is zero. Older servers omit
- * it — absence must be treated as unknown, never as zero.
+ * authoritative pending+delivered backlog for the chat scope, and
+ * `unackedMessageIds` its message-level form. Only `unackedOutstanding === 0`
+ * or an explicit id list may prove settlement; older servers omit them, and
+ * absence must be treated as unknown, never as zero/empty.
  */
 export type InboxRecoverResult = {
   resetCount: number;
   unackedOutstanding?: number;
+  unackedMessageIds?: string[];
 };
 
 type PendingSessionEvent = {
@@ -855,6 +857,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     pending: PendingInboxRecover,
     resetCount: number,
     unackedOutstanding?: number,
+    unackedMessageIds?: string[],
   ): void {
     this.clearPendingInboxRecoverTimer(pending);
     this.pendingInboxRecovers.delete(pending.ref);
@@ -865,12 +868,13 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         ref: pending.ref,
         resetCount,
         unackedOutstanding,
+        unackedCount: unackedMessageIds?.length,
         latencyMs: Date.now() - pending.firstSentAt,
         recoverEvent: "inbox_recover_accepted",
       },
       "inbox:recover accepted",
     );
-    pending.resolve({ resetCount, unackedOutstanding });
+    pending.resolve({ resetCount, unackedOutstanding, unackedMessageIds });
   }
 
   private rejectPendingInboxRecover(pending: PendingInboxRecover, reason: string): void {
@@ -1757,7 +1761,12 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         );
         return;
       }
-      this.resolvePendingInboxRecover(pending, parsed.data.resetCount, parsed.data.unackedOutstanding);
+      this.resolvePendingInboxRecover(
+        pending,
+        parsed.data.resetCount,
+        parsed.data.unackedOutstanding,
+        parsed.data.unackedMessageIds,
+      );
       return;
     }
 

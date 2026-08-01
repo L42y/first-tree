@@ -30,6 +30,7 @@ type FakeSessionState = {
   >;
   applyStaleChatIds: ReturnType<typeof vi.fn<(chatIds: string[]) => void>>;
   noteBindRecoveryComplete: ReturnType<typeof vi.fn<() => void>>;
+  reconcileReplayFencesWithServer: ReturnType<typeof vi.fn<() => Promise<void>>>;
   updateTransport: ReturnType<typeof vi.fn<(sdk: unknown, agentConfigCache?: unknown) => void>>;
   shutdown: ReturnType<typeof vi.fn<(reason?: string, opts?: unknown) => Promise<void>>>;
 };
@@ -244,6 +245,7 @@ function installMocks(
           handleCommand: vi.fn(async () => {}),
           applyStaleChatIds: vi.fn(),
           noteBindRecoveryComplete: vi.fn(),
+          reconcileReplayFencesWithServer: vi.fn(async () => {}),
           updateTransport: vi.fn(),
           shutdown: vi.fn(async () => {}),
         };
@@ -287,6 +289,10 @@ function installMocks(
 
       noteBindRecoveryComplete(): void {
         this.state.noteBindRecoveryComplete();
+      }
+
+      reconcileReplayFencesWithServer(): Promise<void> {
+        return this.state.reconcileReplayFencesWithServer();
       }
 
       updateTransport(sdk: unknown, agentConfigCache?: unknown): void {
@@ -750,6 +756,7 @@ describe("AgentSlot", () => {
 
     const nextSdk = makeSdk({ activeRuntimeChatIds: ["chat-2"] });
     vi.mocked(sdk.listActiveRuntimeChatIds).mockClear();
+    session.reconcileReplayFencesWithServer.mockClear();
 
     connection.emit("agent:bound", {
       agentId: "agent-1",
@@ -766,6 +773,7 @@ describe("AgentSlot", () => {
     expect(vi.mocked(sdk.listActiveRuntimeChatIds)).not.toHaveBeenCalled();
     expect(session.updateTransport).toHaveBeenCalledWith(nextSdk, expect.anything());
     expect(session.noteBindRecoveryComplete).toHaveBeenCalled();
+    expect(session.reconcileReplayFencesWithServer).toHaveBeenCalledTimes(1);
 
     await slot.stop();
   });

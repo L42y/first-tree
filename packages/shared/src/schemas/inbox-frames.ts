@@ -92,6 +92,14 @@ export const inboxRecoverAcceptedFrameSchema = z.object({
    * consumers must treat its absence as "unknown", never as zero.
    */
   unackedOutstanding: z.number().int().nonnegative().optional(),
+  /**
+   * Message-level settlement truth: the concrete unacked message ids for
+   * the chat scope. Settlement is per delivery, so a newer unacked tail
+   * must not keep an already-settled fenced head fenced. Omitted when the
+   * backlog exceeds the server's list cap or on older servers; consumers
+   * must treat absence as unknown, never as empty.
+   */
+  unackedMessageIds: z.array(z.string().min(1)).max(500).optional(),
 });
 export type InboxRecoverAcceptedFrame = z.infer<typeof inboxRecoverAcceptedFrameSchema>;
 
