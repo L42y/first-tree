@@ -722,21 +722,16 @@ export class SessionManager {
         // turn, but same-chat later messages must still be able to append once
         // this entry has reached handler membership.
         const deliveryKind: SlotDeliveryKind = isRecoveryRedelivery ? "recovery" : "fresh";
-        routePromise = this.routeMessage(chatId, message, deliveryKind, decision.readmitted === true).catch(
-          async (err) => {
-            if (this.inboxDelivery.hasEntry(work)) {
-              const proofReason = this.runtimeSessionProofReasonForError(err);
-              if (
-                proofReason &&
-                (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, message, proofReason))
-              ) {
-                return;
-              }
-              this.retryDeliveryTurn(chatId, message, "route_message_failed");
+        routePromise = this.routeMessage(chatId, message, deliveryKind).catch(async (err) => {
+          if (this.inboxDelivery.hasEntry(work)) {
+            const proofReason = this.runtimeSessionProofReasonForError(err);
+            if (proofReason && (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, message, proofReason))) {
+              return;
             }
-            throw err;
-          },
-        );
+            this.retryDeliveryTurn(chatId, message, "route_message_failed");
+          }
+          throw err;
+        });
       });
     } catch (err) {
       if (this.inboxDelivery.hasEntry(work)) {
@@ -1932,7 +1927,6 @@ export class SessionManager {
     chatId: string,
     message: SessionMessage,
     deliveryKind: SlotDeliveryKind = "fresh",
-    readmitted = false,
   ): Promise<void> {
     if (this.shuttingDown) {
       this.retryDeliveryTurn(chatId, message, "manager_shutdown");
@@ -1960,10 +1954,12 @@ export class SessionManager {
       this.ensureReplayFenceReconcileLoop(chatId);
       return;
     }
-    if (this.postFenceRecoveryDebt.has(chatId) && !readmitted) {
-      // A post-fence-clear recovery is in flight or being retried: hold new
-      // admissions so the still-unacked tail keeps FIFO order until the
-      // server redelivery (which re-admits these withheld entries) lands.
+    if (this.postFenceRecoveryDebt.has(chatId)) {
+      // A post-fence-clear recovery is in flight or being retried: hold
+      // EVERY admission until one recovery is durably accepted. A
+      // re-admitted duplicate only proves local withholding, never recovery
+      // success, so it must not bypass the debt either — it is simply
+      // re-marked and redelivered by the eventual accepted recovery.
       this.config.log.info(
         { chatId, messageId: message.id },
         "holding delivery while post-fence-clear recovery is pending",

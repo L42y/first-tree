@@ -23,6 +23,7 @@ import type {
   SessionMessage,
   TurnOutcome,
 } from "../runtime/handler.js";
+import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
 import { ReplayFenceStore } from "../runtime/replay-fence.js";
 import { SessionManager } from "../runtime/session-manager.js";
@@ -3625,9 +3626,13 @@ describe("SessionManager replay fence convergence matrix", () => {
       expect(reloaded.hasFenceForChat("chat-postretry")).toBe(false);
 
       // While the recovery is failing, a NEW message must not overtake the
-      // withheld tail — it is held too, without another recovery firing.
+      // withheld tail — and a DUPLICATE of the withheld entry must not
+      // bypass the debt either (local withholding is not recovery success).
       await sm.dispatch(mockEntry({ id: 77, chatId: "chat-postretry", messageId: "msg-3" }));
+      await sm.dispatch(mockEntry({ id: 76, chatId: "chat-postretry", messageId: "msg-2" }));
+      await sm.dispatch(mockEntry({ id: 76, chatId: "chat-postretry", messageId: "msg-2" }));
       expect(handler.start).not.toHaveBeenCalled();
+      expect(handler.inject).not.toHaveBeenCalled();
       expect(recoverChat).toHaveBeenCalledTimes(1);
 
       // The timer retries: the second recovery succeeds exactly once, and
@@ -3699,5 +3704,44 @@ describe("SessionManager replay fence convergence matrix", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("InboxDeliveryCoordinator fence-settled tombstones at high water", () => {
+  it("suppresses first and last stale frames beyond 1000 settled entries while real redelivery still flows", () => {
+    const coordinator = new InboxDeliveryCoordinator({
+      ackEntry: async () => {},
+      onWorkChanged: () => {},
+      log: silentLogger(),
+    });
+
+    // 1100 fenced-withheld entries become probe-settled — well past the old
+    // 1000-entry FIFO dedup horizon and above the supported per-chat cap.
+    const ids: string[] = [];
+    for (let i = 0; i < 1100; i += 1) {
+      const messageId = `settled-${i}`;
+      ids.push(messageId);
+      const entry = mockEntry({ id: 1000 + i, chatId: "chat-cap", messageId });
+      expect(coordinator.receive(entry).kind).toBe("deliver");
+      coordinator.markReplayFenceWithheld("chat-cap", [messageId]);
+    }
+    const tail = mockEntry({ id: 3001, chatId: "chat-cap", messageId: "tail-live" });
+    expect(coordinator.receive(tail).kind).toBe("deliver");
+    coordinator.markReplayFenceWithheld("chat-cap", ["tail-live"]);
+
+    coordinator.settleReplayFencedEntries("chat-cap", ids);
+
+    // First and last settled heads' stale frames are both tombstoned.
+    expect(coordinator.receive(mockEntry({ id: 1000, chatId: "chat-cap", messageId: "settled-0" })).kind).toBe(
+      "duplicate-in-flight",
+    );
+    expect(coordinator.receive(mockEntry({ id: 2099, chatId: "chat-cap", messageId: "settled-1099" })).kind).toBe(
+      "duplicate-in-flight",
+    );
+
+    // The genuinely unacked tail still re-admits and routes.
+    expect(coordinator.receive(mockEntry({ id: 3001, chatId: "chat-cap", messageId: "tail-live" })).kind).toBe(
+      "deliver",
+    );
   });
 });
