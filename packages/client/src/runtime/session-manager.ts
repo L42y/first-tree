@@ -1241,6 +1241,10 @@ export class SessionManager {
   }
 
   private hasRuntimeSyncForceKeep(chatId: string): boolean {
+    // Unresolved teardown debt force-keeps the chat: its handler is not
+    // confirmed stopped, so dropping the chat from the held report would
+    // lose the reconcile retry channel for the debt.
+    if (this.pendingTeardowns.has(chatId)) return true;
     if (this.pendingQueue.some((queued) => queued.chatId === chatId)) return true;
     if (this.hasPendingTransientRetry(chatId)) return true;
     return this.inboxDelivery.hasUnsettledWork(chatId);

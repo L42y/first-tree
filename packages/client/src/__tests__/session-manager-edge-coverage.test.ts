@@ -3371,6 +3371,39 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("force-keeps debt chats under a production active set and converges via reconcile retry", async () => {
+    const boom = new Error("debt shutdown failed");
+    const debtHandler = handler({
+      shutdown: vi.fn().mockRejectedValueOnce(boom).mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-debt-force-keep";
+    i.registerPendingTeardown(chatId, debtHandler);
+
+    // Production shape: AgentSlot.reconcileNow always passes
+    // activeRuntimeChatIds, and an archived/hidden chat is not in it. The
+    // teardown debt must force-keep the chat in the held report.
+    const activeSet = new Set(["chat-other-active"]);
+    expect(sm.getHeldChatIds(activeSet)).toContain(chatId);
+
+    // Server declares it stale: the strict teardown runs and fails — the
+    // rejection is observed (no unhandled rejection), the debt and the held
+    // status survive for the next reconcile pass.
+    sm.applyStaleChatIds([chatId]);
+    await vi.waitFor(() => expect(debtHandler.shutdown).toHaveBeenCalledTimes(1));
+    expect(i.pendingTeardowns.has(chatId)).toBe(true);
+    expect(sm.getHeldChatIds(activeSet)).toContain(chatId);
+
+    // Next reconcile pass: the teardown succeeds, the debt clears, and the
+    // chat finally leaves the held set.
+    sm.applyStaleChatIds([chatId]);
+    await vi.waitFor(() => expect(i.pendingTeardowns.has(chatId)).toBe(false));
+    expect(sm.getHeldChatIds(activeSet)).not.toContain(chatId);
+
+    await sm.shutdown();
+  });
+
   it("does not evict a chat with unresolved teardown debt", async () => {
     const sm = makeManager({ maxSessions: 1 });
     const i = internals(sm);

@@ -889,6 +889,40 @@ describe("AgentSlot", () => {
     await slot.stop();
   });
 
+  it("reconciles a debt-only chat via the production active-set path and applies the stale retry", async () => {
+    const { slot, connection, state } = await makeSlot({ activeRuntimeChatIds: ["chat-1"] });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    // The real SessionManager force-keeps teardown-debt chats even when the
+    // active set excludes them (pinned in session-manager tests); spy the
+    // slot's manager to reproduce that contract and pin the wire path:
+    // reconcileNow must pass the active runtime set through and still send
+    // the debt chat.
+    const manager = Reflect.get(slot, "sessionManager") as {
+      getHeldChatIds(activeChatIds?: ReadonlySet<string> | null): string[];
+    };
+    const heldSpy = vi.spyOn(manager, "getHeldChatIds").mockReturnValue(["chat-debt-only"]);
+    const reconcile = Reflect.get(slot, "reconcileNow");
+    if (typeof reconcile !== "function") throw new Error("private method missing");
+
+    connection.sendSessionReconcile.mockClear();
+    reconcile.call(slot);
+    expect(heldSpy).toHaveBeenCalledWith(new Set(["chat-1"]));
+    expect(connection.sendSessionReconcile).toHaveBeenCalledWith("agent-1", ["chat-debt-only"]);
+
+    // Server judges the debt chat stale → the client applies the strict
+    // terminate retry.
+    connection.emit("session:reconcile:result", {
+      agentId: "agent-1",
+      staleChatIds: ["chat-debt-only"],
+    } satisfies SessionReconcileResult);
+    expect(session.applyStaleChatIds).toHaveBeenCalledWith(["chat-debt-only"]);
+
+    await slot.stop();
+  });
+
   it("adopts the latest runtime SDK after a reconnect rebind", async () => {
     const { slot, connection, sdk, state } = await makeSlot({ activeRuntimeChatIds: ["chat-1"] });
     await slot.start();
