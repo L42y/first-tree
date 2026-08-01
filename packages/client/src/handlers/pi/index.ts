@@ -132,6 +132,10 @@ type TurnObservation = {
   model: string | null;
   stopReason: string | null;
   autoRetryFailed: string | null;
+  /** True once the prompt JSONL line was written to Pi stdin (response may still be pending). */
+  promptWriteCommitted: boolean;
+  /** True when Pi returned a definitive preflight rejection (success:false) for this write. */
+  promptPreflightRejected: boolean;
   promptAccepted: boolean;
   attempt: ProviderAttempt;
 };
@@ -197,6 +201,14 @@ export class PiBinaryVerifyTransientError extends Error {
   constructor(reason: string) {
     super(`pi --version smoke check did not complete (transient host condition); will retry. Detail: ${reason}`);
     this.name = "PiBinaryVerifyTransientError";
+  }
+}
+
+/** Thrown when prepare/start observes that lifecycle shutdown cancelled this generation. */
+export class PiLifecycleCancelledError extends Error {
+  constructor(phase: string) {
+    super(`pi lifecycle cancelled during ${phase}`);
+    this.name = "PiLifecycleCancelledError";
   }
 }
 
@@ -466,16 +478,30 @@ export const createPiHandler: HandlerFactory = (config) => {
     retryCustody(reason);
   }
 
+  function hasProviderEntryEvidence(observation: TurnObservation | null): boolean {
+    if (!observation) return false;
+    // Proven preflight rejection stays recoverable even though the prompt line
+    // was written. After-write unknown is write-committed without accept/reject.
+    const afterWriteUnknown =
+      observation.promptWriteCommitted && !observation.promptAccepted && !observation.promptPreflightRejected;
+    return (
+      afterWriteUnknown ||
+      observation.promptAccepted ||
+      observation.unsafeToolEffectStarted ||
+      observation.userVisibleEmitted
+    );
+  }
+
   /**
    * Full manager/client graceful drain (`settleProviderEnteredOnLifecycle`) after
-   * Pi accepted a prompt must terminally settle the provider-entered prefix
-   * exactly once. The diagnostic reason string is irrelevant — SessionManager
-   * sets the flag explicitly. Suspend and route-retire shutdowns keep the
-   * recoverable retry path (and must retry here because `runTurn`'s `finally`
-   * clears custody before `endLifecycle` can).
+   * a prompt may have entered Pi must terminally settle that prefix exactly once.
+   * Provider-entry authority is prompt write/accept/tool/user-visible evidence —
+   * not `streaming`. Suspend and route-retire keep the recoverable retry path
+   * (and must retry here because `runTurn`'s `finally` clears custody before
+   * `endLifecycle` can).
    */
   async function settleLifecycleCancellation(sessionCtx: SessionContext, reason: string): Promise<void> {
-    if (settleProviderEnteredOnLifecycle && turnObservation?.promptAccepted === true) {
+    if (settleProviderEnteredOnLifecycle && hasProviderEntryEvidence(turnObservation)) {
       await settleAcceptedTurnFailure(
         sessionCtx,
         `pi lifecycle cancelled after provider entry (${drainCancellationReason ?? reason})`,
@@ -819,6 +845,15 @@ export const createPiHandler: HandlerFactory = (config) => {
       onEvent: (event) => {
         if (ctx) processPiEvent(event, ctx);
       },
+      onCommandWritten: (command) => {
+        if (command === "prompt" && turnObservation) {
+          turnObservation.promptWriteCommitted = true;
+          // Written but not yet accepted — treat as after-write unknown for replay.
+          if (!turnObservation.promptAccepted) {
+            turnObservation.attempt.setReplaySafety("provider_entered");
+          }
+        }
+      },
       onLog: (message) => sessionCtx.log(message),
     });
     activeSpawnFingerprint = nextFingerprint;
@@ -1036,6 +1071,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       return;
     }
     // Pi already owned/exhausted its internal retry. Never stack another FT prompt resend.
+    // promptWriteCommitted without accept is after-write unknown — still provider_entered.
     turnObservation.attempt.setReplaySafety(
       turnObservation.unsafeToolEffectStarted
         ? "unsafe"
@@ -1103,6 +1139,8 @@ export const createPiHandler: HandlerFactory = (config) => {
       model: null,
       stopReason: null,
       autoRetryFailed: null,
+      promptWriteCommitted: false,
+      promptPreflightRejected: false,
       promptAccepted: false,
       attempt: new ProviderAttempt({
         provider: runtimeProvider,
@@ -1115,7 +1153,7 @@ export const createPiHandler: HandlerFactory = (config) => {
 
     for (let attemptNumber = 1; attemptNumber <= maxRetries + 1; attemptNumber += 1) {
       if (!sessionActive) {
-        recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+        await settleLifecycleCancellation(sessionCtx, "pi_turn_cancelled");
         return false;
       }
       if (activeClient.isClosed) {
@@ -1140,6 +1178,8 @@ export const createPiHandler: HandlerFactory = (config) => {
       turnObservation.model = null;
       turnObservation.stopReason = null;
       turnObservation.autoRetryFailed = null;
+      turnObservation.promptWriteCommitted = false;
+      turnObservation.promptPreflightRejected = false;
       turnObservation.promptAccepted = false;
       turnObservation.attempt = new ProviderAttempt({
         provider: runtimeProvider,
@@ -1160,7 +1200,8 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
 
       if (!sessionActive) {
-        recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+        // Shutdown during prompt await — settle by write/accept evidence, not blind retry.
+        await settleLifecycleCancellation(sessionCtx, "pi_turn_cancelled");
         return false;
       }
 
@@ -1174,7 +1215,7 @@ export const createPiHandler: HandlerFactory = (config) => {
             emitSettlement(sessionCtx, settlement);
             const completedDelay = await sleepForRetry(delayMs);
             if (!completedDelay || !sessionActive || lifecycleOwnsRecovery()) {
-              recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+              await settleLifecycleCancellation(sessionCtx, "pi_turn_cancelled");
               return false;
             }
             continue;
@@ -1191,6 +1232,11 @@ export const createPiHandler: HandlerFactory = (config) => {
           return false;
         }
         // After-write / unknown: fence and consume — never auto-resend.
+        // Lifecycle drain prefers settleLifecycleCancellation (durable notice path).
+        if (lifecycleOwnsRecovery()) {
+          await settleLifecycleCancellation(sessionCtx, "pi_turn_cancelled");
+          return false;
+        }
         consumeOneShotPromptState();
         turnObservation.attempt.setReplaySafety("provider_entered");
         turnObservation.attempt.recordSignal({ kind: "transport_close", error: thrown });
@@ -1213,6 +1259,7 @@ export const createPiHandler: HandlerFactory = (config) => {
         const failure = promptResponse?.error ?? "pi prompt rejected";
         const formatted = formatPiFailure(failure);
         const publicDetail = sanitizePiProviderDetail(failure);
+        turnObservation.promptPreflightRejected = true;
         turnObservation.attempt.setReplaySafety("pre_provider");
         turnObservation.attempt.recordSignal({
           kind: "provider_error",
@@ -1225,7 +1272,7 @@ export const createPiHandler: HandlerFactory = (config) => {
           emitSettlement(sessionCtx, settlement);
           const completedDelay = await sleepForRetry(delayMs);
           if (!completedDelay || !sessionActive || lifecycleOwnsRecovery()) {
-            recoverTurnUnlessLifecycleOwns("pi_turn_cancelled");
+            await settleLifecycleCancellation(sessionCtx, "pi_turn_cancelled");
             return false;
           }
           continue;
@@ -1246,6 +1293,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       }
 
       // Accepted: consume one-shot state and mark provider_entered for all later failures.
+      turnObservation.promptWriteCommitted = true;
       turnObservation.promptAccepted = true;
       turnObservation.attempt.setReplaySafety("provider_entered");
       consumeOneShotPromptState();
@@ -1579,8 +1627,21 @@ export const createPiHandler: HandlerFactory = (config) => {
     settleProviderEnteredOnLifecycle = opts.settleProviderEntered === true;
     lifecycleGeneration += 1;
     currentRetryAbort?.abort();
-    if (streaming && rpcClient && !rpcClient.isClosed) {
+    // Abort whenever a prompt may have entered Pi — do not wait for first stream event.
+    const mayNeedAbort =
+      rpcClient !== null &&
+      !rpcClient.isClosed &&
+      (streaming ||
+        turnObservation?.promptWriteCommitted === true ||
+        turnObservation?.promptAccepted === true ||
+        (settleProviderEnteredOnLifecycle && currentTurnPromise !== null));
+    if (mayNeedAbort) {
       await abortAndWaitForSettlement(settleProviderEnteredOnLifecycle ? "shutdown" : "suspend");
+    }
+    // Fence any still-pending prompt response so the turn can join settlement
+    // promptly (write-committed / accepted-with-no-events gaps).
+    if (settleProviderEnteredOnLifecycle && currentTurnPromise && rpcClient && !rpcClient.isClosed) {
+      await closeRpcClient();
     }
     await Promise.all([
       currentTurnPromise?.then(
@@ -1610,7 +1671,14 @@ export const createPiHandler: HandlerFactory = (config) => {
     activeTools.clear();
   }
 
+  function assertLifecycleGeneration(generation: number, phase: string): void {
+    if (generation !== lifecycleGeneration) {
+      throw new PiLifecycleCancelledError(phase);
+    }
+  }
+
   async function prepareSession(sessionCtx: SessionContext): Promise<PreparedSession> {
+    const generation = lifecycleGeneration;
     if (isLandingCampaignTrialAgentMetadata(sessionCtx.agent.metadata)) {
       throw new Error("landing campaign trial agents require the codex app-server workspace-only runtime");
     }
@@ -1631,6 +1699,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
       payload = runtimeConfig.payload;
     }
+    assertLifecycleGeneration(generation, "prepare_refresh");
     const payloadResolved = payload !== null;
     payload ??= { ...DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD };
     if (payload.kind !== "pi") {
@@ -1653,6 +1722,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       sessionCtx.log,
       teamSkillBundleResolverFromSdk(sessionCtx.sdk),
     );
+    assertLifecycleGeneration(generation, "prepare_skills");
     reconciledTeamSkills = reconcile.teamSkills;
     activeResourceConfigVersion = reconcile.resourceConfigVersion;
     activeSkillsDigest = skillsContentDigest(reconciledTeamSkills, activeResourceConfigVersion);
@@ -1667,10 +1737,12 @@ export const createPiHandler: HandlerFactory = (config) => {
     markWorkspaceInitComplete(workspaceCwd);
 
     const chatContext = await fetchChatContextOrLog(sessionCtx);
+    assertLifecycleGeneration(generation, "prepare_chat_context");
     pendingChatContextPrompt = [renderRuntimeOutputContract(), chatContext].filter(Boolean).join("\n\n");
     oneShotConsumed = false;
     activeBriefingText = briefing;
     activePayload = payload;
+    assertLifecycleGeneration(generation, "prepare_activate");
     sessionActive = true;
 
     return {
@@ -1741,19 +1813,52 @@ export const createPiHandler: HandlerFactory = (config) => {
       try {
         prepared = await prepareSession(sessionCtx);
       } catch (error) {
+        if (error instanceof PiLifecycleCancelledError) {
+          deliveryToken.retry([message], "pi_turn_cancelled");
+          return explicitToken
+            ? {
+                sessionId: stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId),
+                route: { kind: "owned", mode: "processing" },
+              }
+            : stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId);
+        }
         await cleanupFailedInitialization();
         throw error;
+      }
+      if (!sessionActive) {
+        deliveryToken.retry([message], "pi_turn_cancelled");
+        return explicitToken
+          ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
+          : prepared.sessionId;
       }
       initialTurnPreparing = true;
       try {
         const client = await ensureRpcClient(prepared, sessionCtx);
+        if (!sessionActive) {
+          deliveryToken.retry([message], "pi_turn_cancelled");
+          return explicitToken
+            ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
+            : prepared.sessionId;
+        }
         const basePrompt = await sessionCtx.formatInboundContent(message);
+        if (!sessionActive) {
+          deliveryToken.retry([message], "pi_turn_cancelled");
+          return explicitToken
+            ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
+            : prepared.sessionId;
+        }
         const prompt = await buildTurnPrompt(sessionCtx, basePrompt, prepared);
         await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
       } catch (error) {
         if (error instanceof PiBinaryVerifyTransientError) {
           deliveryToken.retry([message], "pi_version_gate_transient");
           throw error;
+        }
+        if (error instanceof PiLifecycleCancelledError) {
+          deliveryToken.retry([message], "pi_turn_cancelled");
+          return explicitToken
+            ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
+            : prepared.sessionId;
         }
         await cleanupFailedInitialization();
         throw error;
@@ -1773,6 +1878,15 @@ export const createPiHandler: HandlerFactory = (config) => {
       try {
         prepared = await prepareSession(sessionCtx);
       } catch (error) {
+        if (error instanceof PiLifecycleCancelledError) {
+          if (message) deliveryToken.retry([message], "pi_turn_cancelled");
+          return explicitToken
+            ? {
+                sessionId: stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId),
+                route: message ? { kind: "owned", mode: "processing" } : null,
+              }
+            : stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId);
+        }
         await cleanupFailedInitialization();
         throw error;
       }
@@ -1781,16 +1895,52 @@ export const createPiHandler: HandlerFactory = (config) => {
         throw new Error(`Pi resume session identity mismatch: expected ${prepared.sessionId}, resume requested ${id}`);
       }
       if (message) {
+        if (!sessionActive) {
+          deliveryToken.retry([message], "pi_turn_cancelled");
+          return explicitToken
+            ? {
+                sessionId: prepared.sessionId,
+                route: { kind: "owned", mode: "processing" },
+              }
+            : prepared.sessionId;
+        }
         initialTurnPreparing = true;
         try {
           const client = await ensureRpcClient(prepared, sessionCtx);
+          if (!sessionActive) {
+            deliveryToken.retry([message], "pi_turn_cancelled");
+            return explicitToken
+              ? {
+                  sessionId: prepared.sessionId,
+                  route: { kind: "owned", mode: "processing" },
+                }
+              : prepared.sessionId;
+          }
           const basePrompt = await sessionCtx.formatInboundContent(message);
+          if (!sessionActive) {
+            deliveryToken.retry([message], "pi_turn_cancelled");
+            return explicitToken
+              ? {
+                  sessionId: prepared.sessionId,
+                  route: { kind: "owned", mode: "processing" },
+                }
+              : prepared.sessionId;
+          }
           const prompt = await buildTurnPrompt(sessionCtx, basePrompt, prepared);
           await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
         } catch (error) {
           if (error instanceof PiBinaryVerifyTransientError) {
             deliveryToken.retry([message], "pi_version_gate_transient");
             throw error;
+          }
+          if (error instanceof PiLifecycleCancelledError) {
+            deliveryToken.retry([message], "pi_turn_cancelled");
+            return explicitToken
+              ? {
+                  sessionId: prepared.sessionId,
+                  route: { kind: "owned", mode: "processing" },
+                }
+              : prepared.sessionId;
           }
           await cleanupFailedInitialization();
           throw error;

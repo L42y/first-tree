@@ -43,6 +43,8 @@ export type PiRpcClientOptions = {
   settlementTimeoutMs?: number;
   closeGraceMs?: number;
   onEvent?: PiRpcEventCallback;
+  /** Fired after a command line is successfully written to Pi stdin. */
+  onCommandWritten?: (command: string) => void;
   onLog?: (message: string) => void;
 };
 
@@ -149,6 +151,7 @@ export class PiRpcClient {
   private readonly settlementTimeoutMs: number;
   private readonly closeGraceMs: number;
   private readonly onEvent?: PiRpcEventCallback;
+  private readonly onCommandWritten?: (command: string) => void;
   private readonly onLog?: (message: string) => void;
   private child: ChildProcess | null = null;
   private exited: Promise<void> | null = null;
@@ -170,7 +173,7 @@ export class PiRpcClient {
     exited: Promise<void>,
     options: Pick<
       PiRpcClientOptions,
-      "requestTimeoutMs" | "settlementTimeoutMs" | "closeGraceMs" | "onEvent" | "onLog"
+      "requestTimeoutMs" | "settlementTimeoutMs" | "closeGraceMs" | "onEvent" | "onCommandWritten" | "onLog"
     >,
   ) {
     this.child = child;
@@ -179,6 +182,7 @@ export class PiRpcClient {
     this.settlementTimeoutMs = options.settlementTimeoutMs ?? DEFAULT_SETTLEMENT_TIMEOUT_MS;
     this.closeGraceMs = options.closeGraceMs ?? CLOSE_TERM_GRACE_MS;
     this.onEvent = options.onEvent;
+    this.onCommandWritten = options.onCommandWritten;
     this.onLog = options.onLog;
 
     child.stdout?.setEncoding("utf8");
@@ -282,6 +286,7 @@ export class PiRpcClient {
         if (command === "steer") this.steerWriteCount += 1;
         const pending = this.pending.get(id);
         if (pending) pending.writePhase = "after_write";
+        this.onCommandWritten?.(command);
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);

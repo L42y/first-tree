@@ -117,7 +117,28 @@ rl.on("line", (line) => {
       write({ type: "response", id, command: "get_state", success: true, data: {} });
       return;
     }
+    if (mode === "prompt_write_tool_no_response") {
+      const bashStartFile = process.env.FT_PI_BASH_START_FILE ?? "";
+      // Write committed; response withheld; unsafe tool may still start.
+      write({
+        type: "tool_execution_start",
+        toolCallId: "bash-hold-1",
+        toolName: "bash",
+        args: { command: "sleep 60" },
+      });
+      if (bashStartFile) {
+        try { fs.writeFileSync(bashStartFile, "1"); } catch {}
+      }
+      return;
+    }
     write({ type: "response", id, command: "prompt", success: true });
+    if (mode === "prompt_accepted_no_events") {
+      const bashStartFile = process.env.FT_PI_BASH_START_FILE ?? "";
+      if (bashStartFile) {
+        try { fs.writeFileSync(bashStartFile, "1"); } catch {}
+      }
+      return;
+    }
     if (mode === "accepted_error" || mode === "exhausted_retry") {
       write({
         type: "message_update",
@@ -347,8 +368,13 @@ rl.on("line", (line) => {
       setTimeout(() => write({ type: "response", id, command: "abort", success: true }), 30);
       return;
     }
-    if (mode === "bash_hold_until_abort") {
+    if (mode === "bash_hold_until_abort" || mode === "prompt_write_tool_no_response") {
       write({ type: "tool_execution_end", toolCallId: "bash-hold-1", isError: true, result: "aborted" });
+      write({ type: "agent_settled" });
+      write({ type: "response", id, command: "abort", success: true });
+      return;
+    }
+    if (mode === "prompt_accepted_no_events") {
       write({ type: "agent_settled" });
       write({ type: "response", id, command: "abort", success: true });
       return;
@@ -1483,6 +1509,73 @@ describe("Pi handler", () => {
     expect(token.completed).toEqual([]);
     expect(token.retried).toEqual(["session_evicted"]);
     expect(readCount(promptCountFile)).toBe(1);
+  });
+
+  it("graceful shutdown after prompt write withheld + unsafe tool settles without replay", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+    });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+    const startPromise = handler.start(message("m1", "run sleep"), makeContext(events), token);
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    expect(readCount(promptCountFile)).toBe(1);
+    await handler.shutdown("agent_runtime_switch", { settleProviderEntered: true });
+    await startPromise;
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "unsafe_replay",
+      }),
+    ]);
+    expect(
+      events.some(
+        (event) => event.kind === "error" && JSON.stringify(event.payload).includes("provider_failure_terminal"),
+      ),
+    ).toBe(true);
+  });
+
+  it("graceful shutdown after prompt accept with no first event settles provider-entered once", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_accepted_no_events";
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor([]),
+      piSettlementTimeoutMs: 60_000,
+    });
+    const events: SessionEvent[] = [];
+    const token = makeToken();
+    const startPromise = handler.start(message("m1", "hello"), makeContext(events), token);
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    expect(readCount(promptCountFile)).toBe(1);
+    await handler.shutdown("runtime switched by server", { settleProviderEntered: true });
+    await startPromise;
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+      }),
+    ]);
+    expect(
+      events.some(
+        (event) =>
+          event.kind === "error" &&
+          (JSON.stringify(event.payload).includes("provider_failure_terminal") ||
+            JSON.stringify(event.payload).includes("provider_retry_exhausted")),
+      ),
+    ).toBe(true);
   });
 
   it("applies shared finite policy to active formatting failures without inbox retry", async () => {

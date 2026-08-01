@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentRuntimeConfig } from "@first-tree/shared";
-import { RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
+import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
+import { encodeProviderRetryEventMessage, RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPiHandler, type PiRetrySleep } from "../handlers/pi/index.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
+import type { AgentHandler } from "../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
 import { SessionManager } from "../runtime/session-manager.js";
 import type { FirstTreeHubSDK } from "../sdk.js";
@@ -85,6 +86,28 @@ rl.on("line", (line) => {
       }
       return;
     }
+    // Prompt line written; response withheld; unsafe tool may still start.
+    if (mode === "prompt_write_tool_no_response") {
+      write({
+        type: "tool_execution_start",
+        toolCallId: "bash-hold-1",
+        toolName: "bash",
+        args: { command: "sleep 60" },
+      });
+      bump(bashStartCountFile);
+      if (bashStartFile) {
+        try { fs.writeFileSync(bashStartFile, "1"); } catch {}
+      }
+      return;
+    }
+    // Prompt accepted; no first stream event / settlement.
+    if (mode === "prompt_accepted_no_events") {
+      write({ type: "response", id, command: "prompt", success: true });
+      if (bashStartFile) {
+        try { fs.writeFileSync(bashStartFile, "1"); } catch {}
+      }
+      return;
+    }
     write({ type: "response", id, command: "prompt", success: true });
     write({
       type: "message_update",
@@ -95,8 +118,13 @@ rl.on("line", (line) => {
     return;
   }
   if (command === "abort") {
-    if (mode === "bash_hold_until_abort") {
+    if (mode === "bash_hold_until_abort" || mode === "prompt_write_tool_no_response") {
       write({ type: "tool_execution_end", toolCallId: "bash-hold-1", isError: true, result: "aborted" });
+      write({ type: "agent_settled" });
+      write({ type: "response", id, command: "abort", success: true });
+      return;
+    }
+    if (mode === "prompt_accepted_no_events") {
       write({ type: "agent_settled" });
       write({ type: "response", id, command: "abort", success: true });
       return;
@@ -484,5 +512,306 @@ describe("Pi handler → SessionManager custody", () => {
     // invent a second provider write while leaving custody recoverable.
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
     expect(pendingSleep).toBeNull();
+  });
+
+  it("deferred start after shutdown rejects non-terminal ctx mutations while notice-before-ACK settles", async () => {
+    let releaseStart: (() => void) | undefined;
+    let signalStarted: (() => void) | undefined;
+    let inFlightStart: Promise<void> | null = null;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const sessionEvents: SessionEvent[] = [];
+    const registryPath = join(workspaceRoot, "sessions-deferred.json");
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-deferred" });
+    const forwardCalls: string[] = [];
+    const mutationCalls: string[] = [];
+
+    const deferredHandler: AgentHandler = {
+      start: async (message, ctx, token) => {
+        let resolveInFlight: (() => void) | undefined;
+        inFlightStart = new Promise<void>((resolve) => {
+          resolveInFlight = resolve;
+        });
+        try {
+          signalStarted?.();
+          await gate;
+          // Shutdown fence is up — these mutations must be rejected / no-ops.
+          ctx.replaceSessionId?.("should-not-persist", "deferred_probe");
+          mutationCalls.push("replaceSessionId");
+          ctx.failSessionForRecovery?.("deferred_probe", "should-not-persist");
+          mutationCalls.push("failSessionForRecovery");
+          ctx.retryTurn(message, "deferred_probe_retry");
+          mutationCalls.push("retryTurn");
+          ctx.markMessagesConsumed(message);
+          mutationCalls.push("markMessagesConsumed");
+          ctx.recordProviderActivity();
+          mutationCalls.push("recordProviderActivity");
+          await ctx.forwardResult("deferred probe forward");
+          forwardCalls.push("forwardResult");
+          ctx.emitEvent({ kind: "assistant_text", payload: { text: "deferred probe" } });
+          mutationCalls.push("assistant_text");
+          ctx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+          mutationCalls.push("turn_end");
+
+          // Narrow drain path: terminal provider-failure event + token settle.
+          ctx.emitEvent({
+            kind: "error",
+            payload: {
+              source: "runtime",
+              message: encodeProviderRetryEventMessage({
+                event: "provider_failure_terminal",
+                provider: "pi",
+                scope: "provider_turn",
+                category: "unknown",
+                reasonCode: "unsafe_replay",
+                replaySafety: "unsafe",
+                userSeverity: "error",
+                messagePreview: "deferred drain settle",
+              }),
+            },
+          });
+          if (!token) throw new Error("expected delivery token");
+          await token.complete([message], {
+            status: "error",
+            completion: "consumed",
+            reason: "unsafe_replay",
+          });
+          return { sessionId: "should-not-adopt", route: { kind: "owned", mode: "processing" } };
+        } finally {
+          resolveInFlight?.();
+        }
+      },
+      resume: async () => ({ sessionId: "unused", route: null }),
+      inject: () => ({ kind: "rejected", reason: "no_active_context", retryable: true }),
+      suspend: async () => {},
+      // Mirror Pi: release the deferred start and wait for notice+ACK before
+      // SessionManager invalidates the settlement lease.
+      shutdown: async () => {
+        releaseStart?.();
+        await inFlightStart;
+      },
+    };
+
+    const sm = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 5,
+      handlerFactory: () => deferredHandler,
+      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      resolveContextTreeBinding: async () => null,
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: {
+        register: vi.fn(),
+        sendMessage,
+        sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+        getChatContext: vi.fn().mockResolvedValue(null),
+      } as unknown as FirstTreeHubSDK,
+      log: silentLogger(),
+      ackEntry,
+      registryPath,
+      onSessionEvent: (_chatId, event) => void sessionEvents.push(event),
+      agentConfigCache: cache(runtimeConfig()),
+    });
+
+    const dispatchPromise = sm.dispatch(
+      mockEntry({ id: 92, chatId: "chat-deferred-mutate", messageId: "msg-deferred", content: "go" }),
+    );
+    await started;
+    await sm.shutdown("client_switch_interrupted");
+    await dispatchPromise;
+
+    expect(ackEntry).toHaveBeenCalledWith(92);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    const ackOrder = ackEntry.mock.invocationCallOrder[0];
+    expect(noticeOrder as number).toBeLessThan(ackOrder as number);
+    // Non-terminal session events must not cross the drain fence.
+    expect(sessionEvents.some((event) => event.kind === "assistant_text")).toBe(false);
+    expect(sessionEvents.some((event) => event.kind === "turn_end")).toBe(false);
+    expect(
+      sessionEvents.some(
+        (event) => event.kind === "error" && JSON.stringify(event.payload).includes("provider_failure_terminal"),
+      ),
+    ).toBe(true);
+    // Unadopted provider session id must not land in the registry mid-drain.
+    if (existsSync(registryPath)) {
+      const raw = JSON.parse(readFileSync(registryPath, "utf8")) as {
+        entries?: Record<string, { claudeSessionId?: string }>;
+      };
+      const ids = Object.values(raw.entries ?? {}).map((entry) => entry.claudeSessionId);
+      expect(ids).not.toContain("should-not-persist");
+      expect(ids).not.toContain("should-not-adopt");
+    }
+    expect(forwardCalls).toEqual(["forwardResult"]);
+    expect(mutationCalls.length).toBeGreaterThan(0);
+    expect(sm.totalCount).toBe(0);
+    expect(sm.activeCount).toBe(0);
+  });
+
+  it("prompt write withheld + unsafe tool start: manager shutdown settles once without late mutation", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-write-gap" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    const dispatchPromise = sm.dispatch(
+      mockEntry({
+        id: 93,
+        chatId: "chat-pi-write-gap",
+        messageId: "msg-pi-write-gap",
+        content: "run sleep",
+      }),
+    );
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+
+    await sm.shutdown("agent_runtime_switch");
+    await dispatchPromise;
+
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+    expect(ackEntry).toHaveBeenCalledTimes(1);
+    expect(ackEntry).toHaveBeenCalledWith(93);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+      ackEntry.mock.invocationCallOrder[0] as number,
+    );
+    expect(sm.totalCount).toBe(0);
+    expect(sm.activeCount).toBe(0);
+  });
+
+  it("prompt accepted with no first event: manager shutdown aborts and settles without replay", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_accepted_no_events";
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-no-events" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    const dispatchPromise = sm.dispatch(
+      mockEntry({
+        id: 94,
+        chatId: "chat-pi-no-events",
+        messageId: "msg-pi-no-events",
+        content: "hello",
+      }),
+    );
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+
+    await sm.shutdown("runtime switched by server");
+    await dispatchPromise;
+
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(ackEntry).toHaveBeenCalledWith(94);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+      ackEntry.mock.invocationCallOrder[0] as number,
+    );
+    expect(sm.totalCount).toBe(0);
+    expect(sm.activeCount).toBe(0);
+  });
+
+  it("true before-write shutdown control: zero prompt writes, recoverable (no ACK)", async () => {
+    let releaseRefresh: (() => void) | undefined;
+    let signalRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefresh = resolve;
+    });
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const config = runtimeConfig();
+    const gatedCache: AgentConfigCache = {
+      get: () => config,
+      refresh: async () => {
+        signalRefresh?.();
+        await refreshGate;
+        return config;
+      },
+      refreshIfNewer: async () => config,
+      updateSdk: () => {},
+      updateUrls: () => {},
+      allReferencedUrls: () => new Set(),
+      forget: () => {},
+    };
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
+    const sm = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 5,
+      handlerFactory: () =>
+        createPiHandler({
+          workspaceRoot,
+          runtimeProvider: "pi",
+          agentConfigCache: gatedCache,
+          piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+          providerProcessSupervisor: createSyntheticSupervisor(specs),
+        }),
+      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      resolveContextTreeBinding: async () => null,
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: {
+        register: vi.fn(),
+        sendMessage,
+        sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+        getChatContext: vi.fn().mockResolvedValue(null),
+      } as unknown as FirstTreeHubSDK,
+      log: silentLogger(),
+      ackEntry,
+      agentConfigCache: gatedCache,
+    });
+
+    const dispatchPromise = sm.dispatch(
+      mockEntry({
+        id: 95,
+        chatId: "chat-pi-before-write",
+        messageId: "msg-pi-before-write",
+        content: "blocked early",
+      }),
+    );
+    await refreshStarted;
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(0);
+
+    await sm.shutdown("operator stop");
+    releaseRefresh?.();
+    await dispatchPromise;
+
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(0);
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sm.totalCount).toBe(0);
+    expect(sm.activeCount).toBe(0);
   });
 });

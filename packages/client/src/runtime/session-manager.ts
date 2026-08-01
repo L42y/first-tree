@@ -430,6 +430,14 @@ function jitteredReaffirmDelay(): number {
   return RUNTIME_REAFFIRM_BASE_MS + offset;
 }
 
+/** Structured terminal provider-failure events that feed the durable runtime notice. */
+function isTerminalProviderFailureSessionEvent(event: SessionEvent): boolean {
+  if (event.kind !== "error") return false;
+  const payload = parseProviderRetryEventMessage(event.payload.message);
+  if (!payload) return false;
+  return shouldPostProviderFailureRuntimeNotice(payload) || isRuntimeSessionProofFailure(payload);
+}
+
 function resumableProviderSessionId(...candidates: Array<string | null | undefined>): string | null {
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
@@ -1514,11 +1522,21 @@ export class SessionManager {
     return "settled";
   }
 
-  private createDeliveryToken(chatId: string, routeLeaseValid: (() => boolean) | null = null): DeliveryToken {
+  private createDeliveryToken(
+    chatId: string,
+    lease:
+      | (() => boolean)
+      | {
+          mutationValid: () => boolean;
+          settlementValid: () => boolean;
+        }
+      | null = null,
+  ): DeliveryToken {
     let terminalReported = false;
-    const isValid = () => routeLeaseValid?.() ?? true;
+    const mutationValid = () => (typeof lease === "function" ? lease() : (lease?.mutationValid() ?? true));
+    const settlementValid = () => (typeof lease === "function" ? lease() : (lease?.settlementValid() ?? true));
     const claimTerminal = (action: string): boolean => {
-      if (!isValid()) {
+      if (!settlementValid()) {
         this.config.log.debug({ chatId, action }, "delivery token outcome ignored after route invalidation");
         return false;
       }
@@ -1531,13 +1549,14 @@ export class SessionManager {
     };
     return {
       processingStarted: (messages) => {
-        if (terminalReported || !isValid()) return;
+        // Processing-start is a route mutation — fenced by shuttingDown.
+        if (terminalReported || !mutationValid()) return;
         this.inboxDelivery.markProcessingStarted(chatId, messages);
         this.projectSessionRuntime(chatId);
       },
       complete: async (messages, outcome) => {
         if (!claimTerminal("complete")) return "retry";
-        return await this.completeDeliveryTurn(chatId, messages, outcome, isValid);
+        return await this.completeDeliveryTurn(chatId, messages, outcome, settlementValid);
       },
       retry: (messages, reason) => {
         if (!claimTerminal("retry")) return;
@@ -1548,18 +1567,18 @@ export class SessionManager {
         if (!claimTerminal("terminalRejected")) return;
         if (
           this.pendingRuntimeSessionProofFailure(chatId) &&
-          (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, messages, undefined, isValid))
+          (await this.holdDeliveryForRuntimeSessionProofRecovery(chatId, messages, undefined, settlementValid))
         ) {
           return;
         }
-        const noticeResult = await this.postPendingRuntimeFailureNotice(chatId, isValid);
-        if (!isValid()) return;
+        const noticeResult = await this.postPendingRuntimeFailureNotice(chatId, settlementValid);
+        if (!settlementValid()) return;
         if (noticeResult.kind === "runtime_session_proof") {
           const held = await this.holdDeliveryForRuntimeSessionProofRecovery(
             chatId,
             messages,
             noticeResult.reasonCode,
-            isValid,
+            settlementValid,
           );
           if (held) return;
           this.retryDeliveryTurn(chatId, messages, "runtime_session_proof_hold_failed");
@@ -1807,10 +1826,12 @@ export class SessionManager {
     this.sessions.set(chatId, entry);
     this.claimActiveSlot(entry);
     const transition = this.beginRouteTransition(entry, handler, evicted ? "resume" : "start");
-    // Adoption stays fenced by `shuttingDown` via isCurrentRouteTransition;
-    // settlement lease ignores it so an in-flight accepted turn can still ACK.
+    // Adoption/mutations stay fenced by `shuttingDown`; settlement lease ignores
+    // it so an in-flight entered turn can still emit the durable notice + ACK.
+    const mutationValid = () => this.isRouteAdoptionValid(entry, transition);
     const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
-    const ctx = this.buildSessionContext(chatId, settlementValid);
+    const routeLeases = { mutationValid, settlementValid };
+    const ctx = this.buildSessionContext(chatId, routeLeases);
     if (evicted) this.evictedMappings.delete(chatId);
 
     // Report `active` before runtime projection. `session:runtime` frames are
@@ -1820,7 +1841,7 @@ export class SessionManager {
     this.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
     try {
       this.setCurrentTrigger(chatId, message);
-      const token = this.createDeliveryToken(chatId, settlementValid);
+      const token = this.createDeliveryToken(chatId, routeLeases);
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
@@ -1910,8 +1931,10 @@ export class SessionManager {
     entry.status = "active";
     this.claimActiveSlot(entry);
     const transition = this.beginRouteTransition(entry, routeHandler, "resume");
+    const mutationValid = () => this.isRouteAdoptionValid(entry, transition);
     const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
-    const ctx = this.buildSessionContext(entry.chatId, settlementValid);
+    const routeLeases = { mutationValid, settlementValid };
+    const ctx = this.buildSessionContext(entry.chatId, routeLeases);
     entry.lastActivity = Date.now();
 
     this.notifySessionState(entry.chatId, "active");
@@ -1927,7 +1950,7 @@ export class SessionManager {
       // assignment back, a fresh-start fallback would persist the OLD id,
       // and the next suspend→resume cycle would re-trigger the same
       // missing-transcript fallback ad infinitum.
-      const token = message ? this.createDeliveryToken(entry.chatId, settlementValid) : undefined;
+      const token = message ? this.createDeliveryToken(entry.chatId, routeLeases) : undefined;
       const resumeResult = token
         ? await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx, token)
         : await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx);
@@ -2313,14 +2336,16 @@ export class SessionManager {
     this.claimActiveSlot(entry);
     entry.lastActivity = Date.now();
     const transition = this.beginRouteTransition(entry, newHandler, retryRoute.kind);
+    const mutationValid = () => this.isRouteAdoptionValid(entry, transition);
     const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
-    const ctx = this.buildSessionContext(chatId, settlementValid);
+    const routeLeases = { mutationValid, settlementValid };
+    const ctx = this.buildSessionContext(chatId, routeLeases);
 
     this.notifySessionState(chatId, "active");
     this.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
     try {
       if (retryHeadMessage) this.setCurrentTrigger(chatId, retryHeadMessage);
-      const token = retryHeadMessage ? this.createDeliveryToken(chatId, settlementValid) : undefined;
+      const token = retryHeadMessage ? this.createDeliveryToken(chatId, routeLeases) : undefined;
       if (retryRoute.kind === "resume") {
         const resumeResult = token
           ? await newHandler.resume(retryHeadMessage ?? undefined, retryRoute.previousSessionId, ctx, token)
@@ -2335,7 +2360,7 @@ export class SessionManager {
         }
       } else {
         const receipt = normalizeStartReceipt(
-          await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, settlementValid)),
+          await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, routeLeases)),
         );
         if (!this.isCurrentRouteTransition(entry, transition)) {
           this.discardStaleRouteTransition(transition, "session_retry_start_stale_completion");
@@ -2912,7 +2937,21 @@ export class SessionManager {
     this.config.onStateChange(chatId, state);
   }
 
-  private buildSessionContext(chatId: string, routeLeaseValid: (() => boolean) | null = null): SessionContext {
+  private buildSessionContext(
+    chatId: string,
+    lease:
+      | (() => boolean)
+      | {
+          /** Fenced by shuttingDown — route/session/registry mutations. */
+          mutationValid: () => boolean;
+          /** Ignores shuttingDown — terminal notice capture + finish/retry only. */
+          settlementValid: () => boolean;
+        }
+      | null = null,
+  ): SessionContext {
+    const mutationValid = typeof lease === "function" ? lease : (lease?.mutationValid ?? null);
+    const settlementValid =
+      typeof lease === "function" ? lease : (lease?.settlementValid ?? lease?.mutationValid ?? null);
     const sessionLog = this.config.log.child({ chatId });
     const currentSdk = () => this.config.sdk;
     // Runtime-facing string log (handler + result-sink expect a simple
@@ -3000,38 +3039,50 @@ export class SessionManager {
       log,
       chatId,
       recordProviderActivity: () => {
-        if (routeLeaseValid && !routeLeaseValid()) return;
+        if (mutationValid && !mutationValid()) return;
         const entry = this.sessions.get(chatId);
         if (entry && entry.status === "active") {
           entry.lastActivity = Date.now();
         }
       },
       emitEvent: (event) => {
-        if (routeLeaseValid && !routeLeaseValid()) return;
+        // During graceful drain, only structured terminal provider-failure events
+        // may cross the settlement lease (durable notice capture). All other
+        // session-context events stay behind the shuttingDown adoption fence.
+        if (isTerminalProviderFailureSessionEvent(event)) {
+          if (settlementValid && !settlementValid()) return;
+          this.config.onSessionEvent?.(chatId, event);
+          if (settlementValid && !settlementValid()) return;
+          this.captureRuntimeFailureNotice(chatId, event, settlementValid);
+          return;
+        }
+        if (mutationValid && !mutationValid()) return;
         this.config.onSessionEvent?.(chatId, event);
-        if (routeLeaseValid && !routeLeaseValid()) return;
-        this.captureRuntimeFailureNotice(chatId, event, routeLeaseValid);
+        if (mutationValid && !mutationValid()) return;
+        this.captureRuntimeFailureNotice(chatId, event, mutationValid);
       },
       emitEventConfirmed: (event) => {
-        if (routeLeaseValid && !routeLeaseValid()) {
+        if (mutationValid && !mutationValid()) {
           return Promise.reject(new Error("route transition invalidated"));
         }
-        return this.confirmSessionEventOrThrow(chatId, event, routeLeaseValid);
+        return this.confirmSessionEventOrThrow(chatId, event, mutationValid);
       },
       forwardResult: (text) => {
-        if (routeLeaseValid && !routeLeaseValid()) return Promise.resolve();
+        if (mutationValid && !mutationValid()) return Promise.resolve();
         return forwardResult(text);
       },
       markMessagesConsumed: (messages) => {
-        if (routeLeaseValid && !routeLeaseValid()) return;
+        if (mutationValid && !mutationValid()) return;
         this.inboxDelivery.markProcessingStarted(chatId, messages);
       },
       finishTurn: (messages, outcome) => {
-        if (routeLeaseValid && !routeLeaseValid()) return Promise.resolve();
-        return this.completeDeliveryTurn(chatId, messages, outcome, routeLeaseValid);
+        // SessionContext finish/retry stay behind the adoption fence. Already-issued
+        // DeliveryTokens carry the settlement lease for drain notice+ACK.
+        if (mutationValid && !mutationValid()) return Promise.resolve();
+        return this.completeDeliveryTurn(chatId, messages, outcome, mutationValid);
       },
       retryTurn: (messages, reason) => {
-        if (routeLeaseValid && !routeLeaseValid()) return;
+        if (mutationValid && !mutationValid()) return;
         this.retryDeliveryTurn(chatId, messages, reason);
         this.projectSessionRuntime(chatId);
       },
@@ -3048,11 +3099,11 @@ export class SessionManager {
         );
       },
       failSessionForRecovery: (reason, sessionId) => {
-        if (routeLeaseValid && !routeLeaseValid()) return;
+        if (mutationValid && !mutationValid()) return;
         this.failSessionForRecovery(chatId, reason, sessionId);
       },
       replaceSessionId: (sessionId, reason) => {
-        if (routeLeaseValid && !routeLeaseValid()) return;
+        if (mutationValid && !mutationValid()) return;
         const entry = this.sessions.get(chatId);
         if (!entry) return;
         const previousSessionId = entry.claudeSessionId;
