@@ -167,6 +167,7 @@ function makeApp(extra: Record<string, unknown> = {}): { app: unknown; routes: R
   const routes: RegisteredRoute[] = [];
   const app = {
     db: { name: "db" },
+    config: {},
     addContentTypeParser: vi.fn(),
     delete(path: string, optionsOrHandler: unknown, maybeHandler?: unknown): void {
       addRoute(routes, "DELETE", path, optionsOrHandler, maybeHandler);

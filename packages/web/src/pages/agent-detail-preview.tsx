@@ -39,6 +39,7 @@ const UUID = "agent-preview";
 
 const RESOURCES: AgentResourcesOutput = {
   version: 7,
+  templateIds: [],
   effective: {
     version: 7,
     repos: [

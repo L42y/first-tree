@@ -104,6 +104,42 @@ export type ResourcesServiceOptions = {
   attachmentBlobStore?: AttachmentBlobStore;
 };
 
+/**
+ * Serialize Team Skill name checks for one Team. Held for the whole
+ * transaction by Team Skill create/update and by Template adoption imports,
+ * always before any attachment quota or source-row lock.
+ */
+export async function lockTeamSkillNames(targetDb: Database, organizationId: string): Promise<void> {
+  await targetDb.execute(sql`SELECT pg_advisory_xact_lock(hashtext('team_skill_name'), hashtext(${organizationId}))`);
+}
+
+/**
+ * Reject an active/stale Team Skill with the same case-insensitive name.
+ * Must be called while holding `lockTeamSkillNames`.
+ */
+export async function assertTeamSkillNameAvailable(
+  targetDb: Database,
+  organizationId: string,
+  name: string,
+  excludeResourceId = "",
+): Promise<void> {
+  const [existing] = await targetDb
+    .select({ id: resources.id })
+    .from(resources)
+    .where(
+      and(
+        eq(resources.organizationId, organizationId),
+        eq(resources.scope, "team"),
+        eq(resources.type, "skill"),
+        inArray(resources.status, ["active", "stale"]),
+        ne(resources.id, excludeResourceId),
+        sql`lower(${resources.name}) = lower(${name})`,
+      ),
+    )
+    .limit(1);
+  if (existing) throw new ConflictError(`A Team Skill named "${name}" already exists`);
+}
+
 export function createResourcesService(opts: ResourcesServiceOptions): ResourcesService {
   const { db, notifier } = opts;
   const attachmentBlobStore = opts.attachmentBlobStore ?? createUnavailableAttachmentBlobStore();
@@ -228,33 +264,6 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     if (!row) {
       throw new BadRequestError("Skill bundle attachment must be a ready attachment owned by this organization");
     }
-  }
-
-  async function lockTeamSkillNames(targetDb: Database, organizationId: string): Promise<void> {
-    await targetDb.execute(sql`SELECT pg_advisory_xact_lock(hashtext('team_skill_name'), hashtext(${organizationId}))`);
-  }
-
-  async function assertTeamSkillNameAvailable(
-    targetDb: Database,
-    organizationId: string,
-    name: string,
-    excludeResourceId = "",
-  ): Promise<void> {
-    const [existing] = await targetDb
-      .select({ id: resources.id })
-      .from(resources)
-      .where(
-        and(
-          eq(resources.organizationId, organizationId),
-          eq(resources.scope, "team"),
-          eq(resources.type, "skill"),
-          inArray(resources.status, ["active", "stale"]),
-          ne(resources.id, excludeResourceId),
-          sql`lower(${resources.name}) = lower(${name})`,
-        ),
-      )
-      .limit(1);
-    if (existing) throw new ConflictError(`A Team Skill named "${name}" already exists`);
   }
 
   function makePreviewTeamResource(args: {
@@ -649,6 +658,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     applyRepoLocalPathDedup(repos, unavailable);
     await applySkillBundleAvailability(skills, resourceRows, agent.organizationId, unavailable);
     applyPayloadValidation(skills, mcp, unavailable);
+    applyMcpNameDedup(mcp, unavailable);
 
     return {
       version,
@@ -701,6 +711,35 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         });
       }
       seen.add(localPath);
+    }
+  }
+
+  function applyMcpNameDedup(rows: EffectiveResourceRow[], unavailable: EffectiveAgentResources["unavailable"]): void {
+    // Provider adapters key MCP servers by name, so a name collision can
+    // never reach the runtime: every row in a duplicate group becomes
+    // unavailable instead of silently picking a winner. This holds no matter
+    // which ordinary Resource/binding mutation produced the overlap.
+    const groups = new Map<string, EffectiveResourceRow[]>();
+    for (const row of rows) {
+      if (row.mode !== "enabled") continue;
+      const payload = row.payload as { name?: unknown } | null;
+      const name = typeof payload?.name === "string" ? payload.name.toLowerCase() : null;
+      if (!name) continue;
+      const group = groups.get(name) ?? [];
+      group.push(row);
+      groups.set(name, group);
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      for (const row of group) {
+        row.mode = "unavailable";
+        row.unavailableReason = "duplicate_mcp_name";
+        unavailable.push({
+          type: "mcp",
+          id: row.resourceId ?? row.bindingId ?? row.id,
+          reason: "duplicate_mcp_name",
+        });
+      }
     }
   }
 
@@ -1362,6 +1401,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     async getAgentResources(agentId) {
       const agent = await loadAgent(agentId);
       const effective = await resolveEffectiveResources(agentId);
+      const [configRow] = await db
+        .select({ templateIds: agentConfigs.templateIds })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, agentId))
+        .limit(1);
       const bindingRows = await db
         .select()
         .from(agentResourceBindings)
@@ -1380,6 +1424,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         .orderBy(resources.type, resources.name);
       return {
         version: effective.version,
+        templateIds: configRow?.templateIds ?? [],
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),
@@ -1411,6 +1456,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             `Agent resources "${agentId}" version mismatch: expected ${input.expectedVersion}, got ${current?.version ?? "missing"}`,
           );
         }
+        const existingBindings = await targetDb
+          .select()
+          .from(agentResourceBindings)
+          .where(eq(agentResourceBindings.agentId, agentId));
+        const existingById = new Map(existingBindings.map((row) => [row.id, row]));
         await targetDb.delete(agentResourceBindings).where(eq(agentResourceBindings.agentId, agentId));
         for (let idx = 0; idx < input.bindings.length; idx++) {
           const binding = input.bindings[idx];
@@ -1419,8 +1469,24 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           const resourceId = binding.agentExtraRepo
             ? await findOrCreateAgentRepoResource(targetDb, agentId, agent.organizationId, binding, actorId)
             : (binding.resourceId ?? null);
+          // Preserve the original row — including Template provenance — when
+          // the caller round-trips an unchanged binding (order included). A
+          // semantic change turns the row into a fresh manual binding with
+          // no provenance.
+          const nextOrder = binding.order ?? idx + 1;
+          const prior = binding.id ? existingById.get(binding.id) : undefined;
+          const carryProvenance =
+            prior !== undefined &&
+            prior.type === binding.type &&
+            prior.mode === binding.mode &&
+            prior.resourceId === resourceId &&
+            prior.replacesResourceId === (binding.replacesResourceId ?? null) &&
+            prior.inlinePromptBody === (binding.inlinePromptBody ?? null) &&
+            prior.repoRef === (binding.repoRef ?? null) &&
+            prior.repoLocalPath === (binding.repoLocalPath ?? null) &&
+            prior.order === nextOrder;
           await targetDb.insert(agentResourceBindings).values({
-            id: uuidv7(),
+            id: carryProvenance ? prior.id : uuidv7(),
             organizationId: agent.organizationId,
             agentId,
             type: binding.type,
@@ -1430,14 +1496,23 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
             inlinePromptBody: binding.inlinePromptBody ?? null,
             repoRef: binding.repoRef ?? null,
             repoLocalPath: binding.repoLocalPath ?? null,
-            order: binding.order ?? idx + 1,
-            createdBy: actorId,
-            updatedBy: actorId,
+            order: nextOrder,
+            originTemplateId: carryProvenance ? prior.originTemplateId : null,
+            originComponentKey: carryProvenance ? prior.originComponentKey : null,
+            createdBy: carryProvenance ? prior.createdBy : actorId,
+            updatedBy: carryProvenance ? prior.updatedBy : actorId,
+            createdAt: carryProvenance ? prior.createdAt : undefined,
+            updatedAt: carryProvenance ? prior.updatedAt : undefined,
           });
         }
       });
       await notifyAgents([agentId]);
       const effective = await resolveEffectiveResources(agentId);
+      const [configRow] = await db
+        .select({ templateIds: agentConfigs.templateIds })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, agentId))
+        .limit(1);
       const bindingRows = await db
         .select()
         .from(agentResourceBindings)
@@ -1456,6 +1531,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         .orderBy(resources.type, resources.name);
       return {
         version: effective.version,
+        templateIds: configRow?.templateIds ?? [],
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),

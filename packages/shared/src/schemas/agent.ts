@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentTemplateIdsSchema } from "./agent-template.js";
 import { paginationQuerySchema } from "./common.js";
 import { presenceStatusSchema, runtimeStateSchema } from "./presence.js";
 import { runtimeProviderSchema } from "./runtime-provider.js";
@@ -166,6 +167,12 @@ export const createAgentSchema = z.object({
    * pinned client's reported capabilities (or be force-overridden).
    */
   runtimeProvider: runtimeProviderSchema.optional(),
+  /**
+   * Official Agent Templates to adopt atomically with creation. The server
+   * imports their components into Team Resources and creates explicit
+   * bindings inside the same transaction; omit for a plain create.
+   */
+  templateIds: agentTemplateIdsSchema.optional(),
 });
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 

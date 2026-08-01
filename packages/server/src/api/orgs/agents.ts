@@ -159,7 +159,13 @@ export async function orgAgentRoutes(app: FastifyInstance): Promise<void> {
         source: body.source ?? "admin-api",
         managerId,
       },
-      { adoptAsDelegateIfFirst: managerId === scope.memberId },
+      {
+        adoptAsDelegateIfFirst: managerId === scope.memberId,
+        attachmentBlobStore: app.attachmentBlobStore,
+        templatePublisherOrgId: app.config.agentTemplates?.publisherOrgId,
+        templateActorMemberId: scope.memberId,
+        templateActorHumanAgentId: scope.humanAgentId,
+      },
     );
     notifyClientAgentPinned(agent);
     return reply.status(201).send({

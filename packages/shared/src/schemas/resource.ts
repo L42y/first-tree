@@ -412,6 +412,8 @@ export type EffectiveAgentResources = z.infer<typeof effectiveAgentResourcesSche
 
 export const agentResourcesOutputSchema = z.object({
   version: z.number().int().positive(),
+  /** Adopted official Agent Template ids (0-3, canonical order). */
+  templateIds: z.array(z.string().uuid()),
   effective: effectiveAgentResourcesSchema,
   bindings: z.array(agentResourceBindingInputSchema),
   availableTeamResources: z.array(resourceRowSchema),

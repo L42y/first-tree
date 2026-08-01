@@ -37,6 +37,8 @@ import {
   agentNotLandingCampaignTrialCondition,
   agentVisibilityCondition,
 } from "./access-control.js";
+import { initializeAdoptedTemplates } from "./agent-template-adoption.js";
+import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 import { resolveDefaultOrgId } from "./organization.js";
 import { recomputeWatchersForAgent } from "./watcher.js";
 
@@ -417,7 +419,14 @@ async function resolveFallbackManagerId(db: Database, orgId: string): Promise<st
 export async function createAgent(
   db: Database,
   data: CreateAgent & { managerId?: string },
-  options: { force?: boolean; adoptAsDelegateIfFirst?: boolean } = {},
+  options: {
+    force?: boolean;
+    adoptAsDelegateIfFirst?: boolean;
+    attachmentBlobStore?: AttachmentBlobStore;
+    templatePublisherOrgId?: string;
+    templateActorMemberId?: string;
+    templateActorHumanAgentId?: string;
+  } = {},
 ) {
   const uuid = uuidv7();
   const name = data.name ?? null;
@@ -619,6 +628,25 @@ export async function createAgent(
           updatedBy: "system",
         })
         .onConflictDoNothing();
+
+      // Adopted official Agent Templates import into Team Resources and bind
+      // inside this same transaction — the new Agent, its config, the Team
+      // copies, and the bindings are all-or-nothing.
+      if (data.templateIds && data.templateIds.length > 0) {
+        if (!options.attachmentBlobStore) throw new Error("attachmentBlobStore is required for Template adoption");
+        if (!options.templateActorMemberId || !options.templateActorHumanAgentId) {
+          throw new Error("Template actor identity is required for Template adoption");
+        }
+        await initializeAdoptedTemplates(
+          tx as unknown as Database,
+          options.attachmentBlobStore,
+          options.templatePublisherOrgId,
+          { uuid: row.uuid, organizationId: orgId, type: data.type },
+          data.templateIds,
+          options.templateActorMemberId,
+          options.templateActorHumanAgentId,
+        );
+      }
 
       // First-agent → delegate adoption. When a member creates their FIRST
       // non-human agent and hasn't picked a delegate yet, adopt it as their
