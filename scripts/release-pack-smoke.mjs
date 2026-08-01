@@ -11,7 +11,10 @@
  *      escaping-link / non-canonical package paths (the npm registry E415 class).
  *   3. Install the tarball into an empty consumer with plain npm.
  *   4. Run the public CLI (`--version`).
- *   5. Resolve the bundled `@botiverse/kimi-code-sdk` from the consumer and
+ *   5. Fail-closed if the built `context-integration` release payload is
+ *      missing from the pack source or from the empty-consumer install
+ *      (guards Turbo cache hits that restore only `dist/**`).
+ *   6. Resolve the bundled `@botiverse/kimi-code-sdk` from the consumer and
  *      assert the patched sites this release ships: create-time drain flag,
  *      resume option threading, resume main-agent flag application, and the
  *      awaited replay-fence authorization hook.
@@ -43,13 +46,16 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertNpmTarballRegistrySafe } from "./npm-tarball-safety.mjs";
+import { assertNpmTarballRegistrySafe, listNpmTarballEntries } from "./npm-tarball-safety.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 const CLI_ROOT = join(REPO_ROOT, "apps", "cli");
 const MATERIALIZE_SCRIPT = join(CLI_ROOT, "scripts", "materialize-bundled-deps.mjs");
 const MANIFEST_PATH = join(CLI_ROOT, ".bundled-deps-materialize.json");
+const CONTEXT_INTEGRATION_ROOT = join(CLI_ROOT, "context-integration");
+const CONTEXT_INTEGRATION_MANIFEST = join(CONTEXT_INTEGRATION_ROOT, "release-manifest.json");
+const PACKAGED_CONTEXT_MANIFEST_ENTRY = "package/context-integration/release-manifest.json";
 
 class SmokeFailure extends Error {
   /** @param {string} message */
@@ -197,6 +203,80 @@ function assertCleanWorkspace(symlinkSnapshot) {
   }
 }
 
+/**
+ * Fail closed before pack when the release payload Turbo must restore is gone
+ * (postpack deletes it; a dist-only cache hit must not silently pack without it).
+ * @returns {{ version: string, bundleDigest: string, providers: string[] }}
+ */
+function assertSourceContextIntegrationPresent() {
+  if (!existsSync(CONTEXT_INTEGRATION_MANIFEST)) {
+    fail(
+      "apps/cli/context-integration/release-manifest.json is missing — run a full `pnpm build` that restores context-integration/** (Turbo build outputs must include it)",
+    );
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(CONTEXT_INTEGRATION_MANIFEST, "utf8"));
+  } catch (error) {
+    fail(
+      `apps/cli/context-integration/release-manifest.json is not valid JSON: ${
+        error instanceof Error ? error.message : error
+      }`,
+    );
+  }
+  if (!manifest || typeof manifest !== "object" || typeof manifest.bundleDigest !== "string") {
+    fail("apps/cli/context-integration/release-manifest.json is missing bundleDigest");
+  }
+  const providers = Object.keys(manifest.providers ?? {});
+  if (providers.length < 1) {
+    fail("apps/cli/context-integration/release-manifest.json declares no providers");
+  }
+  for (const provider of providers) {
+    const providerRoot = join(CONTEXT_INTEGRATION_ROOT, provider);
+    if (!existsSync(providerRoot)) {
+      fail(`apps/cli/context-integration missing provider payload directory: ${provider}`);
+    }
+  }
+  return {
+    version: String(manifest.version ?? ""),
+    bundleDigest: manifest.bundleDigest,
+    providers,
+  };
+}
+
+/**
+ * @param {string} consumerDir
+ * @param {{ bundleDigest: string, providers: string[] }} source
+ */
+function assertConsumerContextIntegration(consumerDir, source) {
+  const packagedRoot = join(consumerDir, "node_modules", "first-tree-dev", "context-integration");
+  const packagedManifestPath = join(packagedRoot, "release-manifest.json");
+  if (!existsSync(packagedManifestPath)) {
+    fail(`consumer is missing packaged context-integration/release-manifest.json at ${packagedManifestPath}`);
+  }
+  const packaged = JSON.parse(readFileSync(packagedManifestPath, "utf8"));
+  if (packaged.bundleDigest !== source.bundleDigest) {
+    fail(
+      `consumer context-integration bundleDigest mismatch: source=${source.bundleDigest} packaged=${packaged.bundleDigest}`,
+    );
+  }
+  for (const provider of source.providers) {
+    if (!existsSync(join(packagedRoot, provider))) {
+      fail(`consumer context-integration missing provider payload: ${provider}`);
+    }
+  }
+}
+
+/**
+ * @param {string} tarballPath
+ */
+function assertTarballContainsContextIntegration(tarballPath) {
+  const entries = listNpmTarballEntries(tarballPath);
+  if (!entries.some((entry) => entry.name === PACKAGED_CONTEXT_MANIFEST_ENTRY)) {
+    fail(`tarball is missing ${PACKAGED_CONTEXT_MANIFEST_ENTRY}`);
+  }
+}
+
 function captureBundledSymlinks() {
   /** @type {Map<string, string>} */
   const snapshot = new Map();
@@ -231,6 +311,7 @@ function runSmoke() {
   if (!existsSync(join(CLI_ROOT, "dist", "cli", "index.mjs")) || !existsSync(join(CLI_ROOT, "dist", "index.mjs"))) {
     fail("apps/cli/dist is missing — run `pnpm build` first");
   }
+  const contextIntegration = assertSourceContextIntegrationPresent();
 
   const symlinkSnapshot = captureBundledSymlinks();
   const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-"));
@@ -242,6 +323,7 @@ function runSmoke() {
     const tarballName = basename(tarball);
 
     const safety = assertNpmTarballRegistrySafe(tarball);
+    assertTarballContainsContextIntegration(tarball);
 
     run("npm", ["install", "--prefix", consumerDir, tarball]);
     const binName = "first-tree-dev";
@@ -250,6 +332,8 @@ function runSmoke() {
     const version = run(binPath, ["--version"]);
     const versionText = version.stdout.trim();
     if (!/^\d+\.\d+\.\d+/.test(versionText)) fail(`unexpected --version output: ${versionText}`);
+
+    assertConsumerContextIntegration(consumerDir, contextIntegration);
 
     const sdkEntry = join(
       consumerDir,
@@ -283,7 +367,7 @@ function runSmoke() {
     const sha256 = sha256File(tarball);
     const bytes = statSync(tarball).size;
     console.log(
-      `release-pack-smoke: PASS — packed ${tarballName} (${bytes} B, sha256=${sha256}, ${safety.entryCount} entries), consumer CLI ${versionText}, registry-safe paths, bundled patched Kimi SDK verified`,
+      `release-pack-smoke: PASS — packed ${tarballName} (${bytes} B, sha256=${sha256}, ${safety.entryCount} entries), consumer CLI ${versionText}, registry-safe paths, context-integration ${contextIntegration.bundleDigest}, bundled patched Kimi SDK verified`,
     );
   } finally {
     cleanupPackArtifacts(work);
@@ -487,15 +571,74 @@ function selftestPreservePreexistingTarball() {
   }
 }
 
+/**
+ * Neuter regression: populate a private Turbo cache from a full CLI build,
+ * delete context-integration (as postpack does), then prove a cache-hit build
+ * restores the release payload so pack smoke stays complete (not the 817-entry
+ * dist-only false green).
+ */
+function selftestTurboContextIntegrationCache() {
+  const turboJson = JSON.parse(readFileSync(join(CLI_ROOT, "turbo.json"), "utf8"));
+  const outputs = turboJson?.tasks?.build?.outputs;
+  if (!Array.isArray(outputs) || !outputs.includes("context-integration/**")) {
+    fail('apps/cli/turbo.json build.outputs must include "context-integration/**"');
+  }
+  if (!outputs.includes("dist/**")) {
+    fail('apps/cli/turbo.json build.outputs must include "dist/**"');
+  }
+
+  const cacheDir = mkdtempSync(join(tmpdir(), "first-tree-turbo-ci-cache-"));
+  try {
+    // Force a real build into an isolated cache so outputs include the payload.
+    run("pnpm", ["exec", "turbo", "run", "build", "--filter=first-tree-dev", "--force", "--cache-dir", cacheDir], {
+      cwd: REPO_ROOT,
+    });
+    const seeded = assertSourceContextIntegrationPresent();
+    const seededDigest = seeded.bundleDigest;
+
+    rmSync(CONTEXT_INTEGRATION_ROOT, { recursive: true, force: true });
+    if (existsSync(CONTEXT_INTEGRATION_MANIFEST)) {
+      fail("selftest-turbo-cache: failed to delete context-integration before cache-hit build");
+    }
+
+    const hit = run("pnpm", ["exec", "turbo", "run", "build", "--filter=first-tree-dev", "--cache-dir", cacheDir], {
+      cwd: REPO_ROOT,
+    });
+    const hitLog = `${hit.stdout}\n${hit.stderr}`;
+    if (!/first-tree-dev:build:\s*cache (hit|HIT)/i.test(hitLog) && !/cache hit/i.test(hitLog)) {
+      // Turbo prints "cache hit, replaying logs" — accept either stream.
+      if (!/cache hit/i.test(hitLog)) {
+        fail(`selftest-turbo-cache: expected cache hit for first-tree-dev#build\n${hitLog}`);
+      }
+    }
+
+    const restored = assertSourceContextIntegrationPresent();
+    if (restored.bundleDigest !== seededDigest) {
+      fail(`selftest-turbo-cache: restored bundleDigest ${restored.bundleDigest} !== seeded ${seededDigest}`);
+    }
+
+    // Pack smoke must remain complete after a cache-hit restore (not 817 / dist-only).
+    runSmoke();
+    console.log(
+      `release-pack-smoke: selftest-turbo-context-integration-cache PASS — restored ${seededDigest} via turbo cache hit`,
+    );
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+}
+
 function main() {
   snapshotPreexistingTarballs();
   const action = process.argv[2];
   try {
     if (action === "selftest-cleanup") selftestCleanup();
     else if (action === "selftest-preserve-preexisting") selftestPreservePreexistingTarball();
+    else if (action === "selftest-turbo-context-integration-cache") selftestTurboContextIntegrationCache();
     else if (action === undefined) runSmoke();
     else
-      fail(`unknown action '${action}' (expected default smoke, selftest-cleanup, or selftest-preserve-preexisting)`);
+      fail(
+        `unknown action '${action}' (expected default smoke, selftest-cleanup, selftest-preserve-preexisting, or selftest-turbo-context-integration-cache)`,
+      );
   } catch (error) {
     try {
       cleanupPackArtifacts(undefined);

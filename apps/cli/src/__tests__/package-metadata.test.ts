@@ -166,11 +166,24 @@ describe("trusted-publishing npm toolchain contract", () => {
     // Pack into a run-owned destination so the deterministic name/version
     // filename cannot overwrite a pre-existing apps/cli artifact.
     expect(smoke).toContain("--pack-destination");
+    // Incomplete Turbo cache restores (dist-only) must not PASS smoke.
+    expect(smoke).toContain("assertSourceContextIntegrationPresent");
+    expect(smoke).toContain("assertConsumerContextIntegration");
+    expect(smoke).toContain("package/context-integration/release-manifest.json");
     // Helpers must throw so finally/cleanup always runs; only the outermost
     // main() may set process.exitCode.
     const failFn = smoke.match(/function fail\([^)]*\) \{[^}]*\}/)?.[0] ?? "";
     expect(failFn).toContain("throw new SmokeFailure");
     expect(failFn).not.toContain("process.exit");
+  });
+
+  it("declares context-integration as a turbo build output so cache hits restore the release payload", () => {
+    const turbo = readJson(join(CLI_ROOT, "turbo.json")) as {
+      tasks?: { build?: { outputs?: string[] } };
+    };
+    const outputs = turbo.tasks?.build?.outputs ?? [];
+    expect(outputs).toContain("dist/**");
+    expect(outputs).toContain("context-integration/**");
   });
 
   it("restores every original symlink after a mid-prepare failure", () => {
@@ -214,6 +227,24 @@ describe("trusted-publishing npm toolchain contract", () => {
     }
     expect(result.stdout).toContain("selftest-preserve-preexisting PASS");
   });
+
+  it("restores context-integration from a turbo cache hit after the directory is deleted", () => {
+    const result = spawnSync(
+      process.execPath,
+      [join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"), "selftest-turbo-context-integration-cache"],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        env: process.env,
+      },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        `release-pack-smoke selftest-turbo-context-integration-cache failed:\n${result.stderr || result.stdout}`,
+      );
+    }
+    expect(result.stdout).toContain("selftest-turbo-context-integration-cache PASS");
+  }, 180_000);
 });
 
 describe("npm tarball registry-safety helper", () => {
