@@ -39,6 +39,7 @@ import { AgentSwitcherStrip } from "./agent-detail/agent-switcher-strip.js";
 import { useAgentResources } from "./agent-detail/capability-section.js";
 import { ContextBar } from "./agent-detail/context-bar.js";
 import type { AgentDetailContext, RuntimeSwitchClaimView } from "./agent-detail/layout-context.js";
+import { ResponsibilitiesSection } from "./agent-detail/responsibilities-section.js";
 import { buildTabs, type TabDef } from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
 import { useLegacyAnchorRedirect } from "./agent-detail/use-legacy-anchor-redirect.js";
@@ -520,6 +521,27 @@ function AgentDetailPageView() {
           runtimeState={agent.runtimeState}
           visible={contextBarVisible}
         />
+      )}
+
+      {!isHuman && toolsResources.data && (
+        <div
+          style={{
+            padding: "var(--sp-3_5) var(--sp-5) 0",
+            maxWidth: "var(--agent-detail-rail)",
+            marginLeft: "auto",
+            marginRight: "auto",
+            width: "100%",
+          }}
+        >
+          <ResponsibilitiesSection
+            agentUuid={agent.uuid}
+            agentStatus={agent.status}
+            canManage={canEditConfig}
+            templateIds={toolsResources.data.templateIds}
+            adoptedTemplates={toolsResources.data.adoptedTemplates}
+            version={toolsResources.data.version}
+          />
+        </div>
       )}
 
       <TabsNav tabs={tabs} agentUuid={uuid} currentTabKey={currentTabKey} badges={tabBadges} />

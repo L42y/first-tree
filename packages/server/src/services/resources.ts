@@ -42,6 +42,7 @@ import { members } from "../db/schema/members.js";
 import { resources } from "../db/schema/resources.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
+import { buildAdoptedTemplateSummaries } from "./agent-templates.js";
 import { deleteAttachmentIfUnreferenced } from "./attachment.js";
 import { type AttachmentBlobStore, createUnavailableAttachmentBlobStore } from "./attachment-blob-store.js";
 import {
@@ -102,6 +103,8 @@ export type ResourcesServiceOptions = {
   db: Database;
   notifier: Notifier;
   attachmentBlobStore?: AttachmentBlobStore;
+  /** Publisher Team for public-safe adopted-Template summaries (control plane only). */
+  agentTemplatePublisherOrgId?: string;
 };
 
 /**
@@ -143,6 +146,7 @@ export async function assertTeamSkillNameAvailable(
 export function createResourcesService(opts: ResourcesServiceOptions): ResourcesService {
   const { db, notifier } = opts;
   const attachmentBlobStore = opts.attachmentBlobStore ?? createUnavailableAttachmentBlobStore();
+  const agentTemplatePublisherOrgId = opts.agentTemplatePublisherOrgId;
 
   async function notifyAgents(agentIds: Iterable<string>): Promise<void> {
     await Promise.allSettled(Array.from(new Set(agentIds)).map((id) => notifier.notifyConfigChange(`agent:${id}`)));
@@ -228,6 +232,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       defaultEnabled: row.defaultEnabled,
       status: row.status,
       payload: row.payload,
+      originTemplateId: row.originTemplateId,
       createdBy: row.createdBy,
       updatedBy: row.updatedBy,
       createdAt: row.createdAt.toISOString(),
@@ -463,6 +468,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       mode: args.mode,
       defaultEnabled: args.resource?.defaultEnabled ?? null,
       payload: args.resource?.payload ?? null,
+      originTemplateId: args.resource?.originTemplateId ?? null,
       repo: args.repo ?? null,
       promptBody: args.promptBody ?? null,
       unavailableReason: args.unavailableReason ?? null,
@@ -1422,9 +1428,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           ),
         )
         .orderBy(resources.type, resources.name);
+      const templateIds = configRow?.templateIds ?? [];
       return {
         version: effective.version,
-        templateIds: configRow?.templateIds ?? [],
+        templateIds,
+        adoptedTemplates: await buildAdoptedTemplateSummaries(db, agentTemplatePublisherOrgId, templateIds),
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),
@@ -1529,9 +1537,11 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
           ),
         )
         .orderBy(resources.type, resources.name);
+      const templateIds = configRow?.templateIds ?? [];
       return {
         version: effective.version,
-        templateIds: configRow?.templateIds ?? [],
+        templateIds,
+        adoptedTemplates: await buildAdoptedTemplateSummaries(db, agentTemplatePublisherOrgId, templateIds),
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),

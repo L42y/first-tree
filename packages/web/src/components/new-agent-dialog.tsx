@@ -2,15 +2,19 @@ import {
   AGENT_NAME_MAX_LENGTH,
   AGENT_NAME_REGEX,
   type Agent,
+  type AgentTemplatePublicTemplate,
   type AgentVisibility,
   type ClientCapabilities,
   isReservedAgentName,
   isRuntimeProviderEnabled,
+  MAX_AGENT_TEMPLATE_IDS,
   type RuntimeProvider,
 } from "@first-tree/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { trackEvent } from "../analytics.js";
 import { type ConnectTokenResponse, getClientCapabilities, type HubClient, listClients } from "../api/activity.js";
+import { listAgentTemplates } from "../api/agent-templates.js";
 import { checkAgentNameAvailability, createAgent } from "../api/agents.js";
 import { ApiError, api, type ValidationIssue } from "../api/client.js";
 import { useAuth } from "../auth/auth-context.js";
@@ -210,7 +214,7 @@ function availabilityReasonMessage(reason: "invalid" | "reserved" | "taken"): st
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: (agent: Agent, runtimeProvider: RuntimeProvider) => void;
+  onCreated: (agent: Agent, runtimeProvider: RuntimeProvider, templateCount: number) => void;
 };
 
 type AvailabilityState =
@@ -267,6 +271,34 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
 
   const [clientErrors, setClientErrors] = useState<FieldErrors>({});
 
+  // Optional official Template responsibilities (0-3, unordered,
+  // single-template-first). Loaded from the public-safe catalog only; a
+  // failed/empty catalog simply hides the section and leaves the plain
+  // create path untouched.
+  const [templateCatalog, setTemplateCatalog] = useState<AgentTemplatePublicTemplate[]>([]);
+  const [templateCatalogLoaded, setTemplateCatalogLoaded] = useState(false);
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void listAgentTemplates()
+      .then((res) => {
+        if (cancelled) return;
+        setTemplateCatalog(res.templates.filter((template) => template.status === "active"));
+        setTemplateCatalogLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTemplateCatalog([]);
+        setTemplateCatalogLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   useEffect(() => {
     if (open) {
       setDisplayName("");
@@ -286,6 +318,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
       setConnectTokenExpiresAt(null);
       resetTokenCopy();
       setClientErrors({});
+      setTemplateCatalog([]);
+      setTemplateCatalogLoaded(false);
+      setSelectedTemplateIds([]);
+      setTemplatePickerOpen(false);
     }
   }, [open, resetTokenCopy]);
 
@@ -544,7 +580,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
         : false;
 
   const createMut = useMutation({
-    mutationFn: async (opts: { clientId?: string }) => {
+    mutationFn: async (opts: { clientId?: string; templateIds: string[] }) => {
       const effectiveDisplay = displayName.trim() || effectiveHandle || "Untitled assistant";
       return createAgent({
         name: effectiveHandle || undefined,
@@ -558,16 +594,24 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
         // (auth.ts member pick) and creating into "wherever the JWT lands"
         // is the source of "I created it in atf, why is it in gandy02?".
         ...(organizationId ? { organizationId } : {}),
+        ...(opts.templateIds.length > 0 ? { templateIds: opts.templateIds } : {}),
       });
     },
-    onSuccess: (agent) => {
+    onSuccess: (agent, variables) => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
       queryClient.invalidateQueries({ queryKey: ["activity"] });
       // Refresh /me so onboardingStep flips to "completed" — otherwise the
       // onboarding banner sticks around even though the user just
       // created an agent through this non-onboarding path.
       void refreshMe();
-      onCreated(agent, runtime);
+      // Every count comes from the submit-time snapshot, so a later
+      // Remove/close during the pending window cannot misreport it.
+      if (variables.templateIds.length > 0) {
+        trackEvent("agent_template_create_success", { template_count: variables.templateIds.length });
+      }
+      // The draft-open event belongs to the caller's navigate path — this
+      // component only reports creation, never navigation.
+      onCreated(agent, runtime, variables.templateIds.length);
     },
   });
 
@@ -617,7 +661,9 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
     // focused element re-enables submit, etc.) doesn't push an
     // un-runnable agent through.
     if (okRuntimes.length === 0 || !okRuntimes.includes(runtime)) return;
-    createMut.mutate({ clientId: pickedClientId });
+    // Snapshot the selection at submit time; mutation variables keep it
+    // stable through the pending window.
+    createMut.mutate({ clientId: pickedClientId, templateIds: [...selectedTemplateIds] });
   }
 
   const canSubmit =
@@ -628,9 +674,32 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
     okRuntimes.length > 0 &&
     okRuntimes.includes(runtime);
 
+  const selectedTemplates = useMemo(
+    () =>
+      selectedTemplateIds
+        .map((id) => templateCatalog.find((template) => template.id === id))
+        .filter((template): template is AgentTemplatePublicTemplate => template !== undefined),
+    [selectedTemplateIds, templateCatalog],
+  );
+  const addableTemplates = useMemo(
+    () => templateCatalog.filter((template) => !selectedTemplateIds.includes(template.id)),
+    [templateCatalog, selectedTemplateIds],
+  );
+
+  function toggleTemplate(template: AgentTemplatePublicTemplate): void {
+    if (selectedTemplateIds.includes(template.id)) {
+      setSelectedTemplateIds((prev) => prev.filter((id) => id !== template.id));
+      trackEvent("agent_template_select", { surface: "new_agent", action: "remove", slug: template.slug });
+      return;
+    }
+    if (selectedTemplateIds.length >= MAX_AGENT_TEMPLATE_IDS) return;
+    setSelectedTemplateIds((prev) => [...prev, template.id]);
+    trackEvent("agent_template_select", { surface: "new_agent", action: "add", slug: template.slug });
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New Agent</DialogTitle>
         </DialogHeader>
@@ -765,6 +834,77 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
               </OptionCard>
             </div>
           </div>
+
+          {/* Optional official Template responsibilities. Hidden entirely when
+              the catalog is empty or failed to load — the plain create path
+              stays byte-identical in those cases. */}
+          {templateCatalogLoaded && templateCatalog.length > 0 && (
+            <div className="space-y-2">
+              <Label>Responsibilities (optional)</Label>
+              {selectedTemplates.length === 0 && !templatePickerOpen && (
+                <div className="space-y-2">
+                  <p className="text-caption text-muted-foreground">
+                    Start from an official template — or create from scratch.
+                  </p>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setTemplatePickerOpen(true)}>
+                    Choose a template
+                  </Button>
+                </div>
+              )}
+              {selectedTemplates.map((template) => (
+                <div
+                  key={template.id}
+                  className="rounded-[var(--radius-panel)] border border-border px-3 py-2 space-y-1"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-body font-medium">{template.name}</div>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => toggleTemplate(template)}>
+                      Remove
+                    </Button>
+                  </div>
+                  <div className="text-caption text-muted-foreground">{template.public.tagline}</div>
+                  <div className="text-caption text-muted-foreground">{template.public.purpose}</div>
+                  <div className="text-caption text-muted-foreground">For {template.public.targetUsers}</div>
+                  <div className="text-caption text-muted-foreground">{template.public.userValue}</div>
+                  <div className="text-caption text-muted-foreground">{template.public.toolsAndSkillsSummary}</div>
+                </div>
+              ))}
+              {selectedTemplates.length > 0 &&
+                selectedTemplates.length < MAX_AGENT_TEMPLATE_IDS &&
+                !templatePickerOpen &&
+                addableTemplates.length > 0 && (
+                  <Button type="button" variant="outline" size="sm" onClick={() => setTemplatePickerOpen(true)}>
+                    Add another responsibility
+                  </Button>
+                )}
+              {selectedTemplates.length >= MAX_AGENT_TEMPLATE_IDS && (
+                <p className="text-caption text-muted-foreground">
+                  Up to {MAX_AGENT_TEMPLATE_IDS} responsibilities per agent.
+                </p>
+              )}
+              {templatePickerOpen && addableTemplates.length > 0 && (
+                <div className="space-y-2">
+                  {addableTemplates.map((template) => (
+                    <OptionCard
+                      key={template.id}
+                      name="agent-template"
+                      checked={selectedTemplateIds.includes(template.id)}
+                      onSelect={() => {
+                        toggleTemplate(template);
+                        setTemplatePickerOpen(false);
+                      }}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-body font-medium">{template.name}</div>
+                        <div className="text-caption text-muted-foreground">{template.public.tagline}</div>
+                        <div className="text-caption text-muted-foreground">{template.public.purpose}</div>
+                      </div>
+                    </OptionCard>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/*
             "Where it runs" block. The computer card and runtime row each render

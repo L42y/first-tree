@@ -360,6 +360,8 @@ export const resourceRowSchema = z.object({
   defaultEnabled: resourceDefaultEnabledSchema.nullable(),
   status: resourceStatusSchema,
   payload: z.unknown(),
+  /** Historical origin: the official Agent Template this Resource was imported from, if any. */
+  originTemplateId: z.string().uuid().nullable(),
   createdBy: z.string(),
   updatedBy: z.string(),
   createdAt: z.string(),
@@ -390,6 +392,8 @@ export const effectiveResourceRowSchema = z.object({
   repo: gitRepoSchema.nullable(),
   promptBody: z.string().nullable(),
   unavailableReason: z.string().nullable(),
+  /** Historical origin Template id when the underlying Resource was imported from one. */
+  originTemplateId: z.string().uuid().nullable(),
   order: z.number().int(),
 });
 export type EffectiveResourceRow = z.infer<typeof effectiveResourceRowSchema>;
@@ -409,16 +413,6 @@ export const effectiveAgentResourcesSchema = z.object({
   ),
 });
 export type EffectiveAgentResources = z.infer<typeof effectiveAgentResourcesSchema>;
-
-export const agentResourcesOutputSchema = z.object({
-  version: z.number().int().positive(),
-  /** Adopted official Agent Template ids (0-3, canonical order). */
-  templateIds: z.array(z.string().uuid()),
-  effective: effectiveAgentResourcesSchema,
-  bindings: z.array(agentResourceBindingInputSchema),
-  availableTeamResources: z.array(resourceRowSchema),
-});
-export type AgentResourcesOutput = z.infer<typeof agentResourcesOutputSchema>;
 
 export const resourceUsageOutputSchema = z.object({
   resourceId: z.string(),

@@ -299,7 +299,7 @@ describe("NewAgentDialog extra branches", () => {
       }),
     );
     expect(authMock.value.refreshMe).toHaveBeenCalled();
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "codex");
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "codex", 0);
   });
 
   // Dropped "offers in-product Connect when the picked computer has an

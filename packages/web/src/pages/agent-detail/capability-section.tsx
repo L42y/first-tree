@@ -24,7 +24,7 @@ import { Section } from "../../components/ui/section.js";
 import { normalizeRepoUrl } from "../../lib/normalize-repo-url.js";
 import { typeLabelSingular } from "../settings/resource-editors.js";
 import { ResourceRowView, type RowMenu, type RowStatusMarker, type RowToggle } from "./resource-row.js";
-import { sourceLabel } from "./resource-source.js";
+import { sourceLabel, templateSourceLabel } from "./resource-source.js";
 import { titleWithSemantics, useJustSaved } from "./save-semantics.js";
 
 /**
@@ -139,6 +139,7 @@ export function ResourceTypeSection(props: {
       !activeBindingIds.has(resource.id),
   );
   const rows = data.effective[resourceBucket(type)];
+  const templateNameById = new Map(data.adoptedTemplates.map((summary) => [summary.id, summary.name]));
   return (
     <Section
       title={titleWithSemantics(typeLabel(type), saved)}
@@ -171,6 +172,7 @@ export function ResourceTypeSection(props: {
             <EffectiveRow
               key={row.id}
               row={row}
+              templateName={row.originTemplateId ? (templateNameById.get(row.originTemplateId) ?? null) : undefined}
               canEdit={canEdit}
               bindings={currentBindings}
               pending={pending}
@@ -322,6 +324,8 @@ function MenuButton(props: { children: ReactNode; muted?: boolean; disabled?: bo
 
 function EffectiveRow(props: {
   row: EffectiveResourceRow;
+  /** Resolved Template name when the row was imported from one; undefined otherwise. */
+  templateName?: string | null;
   canEdit: boolean;
   bindings: AgentResourceBindingInput[];
   pending: boolean;
@@ -334,7 +338,7 @@ function EffectiveRow(props: {
   // raw `source` enum (that used to duplicate the source under skills/MCP rows).
   const subtitle = row.mode === "unavailable" ? row.unavailableReason : rowSubtitle(row);
   const status = statusMarker(row.mode);
-  const source = sourceLabel(row.source);
+  const source = props.templateName !== undefined ? templateSourceLabel(props.templateName) : sourceLabel(row.source);
   const isTeamRecommended = row.source === "team_recommended";
   const canRemove = !!row.bindingId && props.bindings.some((b) => b.id === row.bindingId);
   // Mono only for technical detail (repo URL, MCP command). A skill description

@@ -6,7 +6,14 @@ import {
   mcpStdioServerSchema,
   runtimeSkillBundleSchema,
 } from "./agent-runtime-config.js";
-import { PROMPT_RESOURCE_BODY_MAX_CHARS, promptResourcePayloadSchema, skillResourcePayloadSchema } from "./resource.js";
+import {
+  agentResourceBindingInputSchema,
+  effectiveAgentResourcesSchema,
+  PROMPT_RESOURCE_BODY_MAX_CHARS,
+  promptResourcePayloadSchema,
+  resourceRowSchema,
+  skillResourcePayloadSchema,
+} from "./resource.js";
 
 /**
  * Official Agent Template domain contract (schema/persistence only).
@@ -579,3 +586,75 @@ export const agentTemplateDetailListSchema = z
   })
   .strict();
 export type AgentTemplateDetailList = z.infer<typeof agentTemplateDetailListSchema>;
+
+/**
+ * Public-safe summary of one adopted Template in the Agent Detail control
+ * plane. `missing` covers deleted, draft, or projection-invalid rows; no
+ * payload, component, bundle, or connection detail ever appears here.
+ */
+export const agentTemplateAdoptionSummarySchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      id: z.string().uuid(),
+      status: z.literal("active"),
+      slug: agentTemplateSlugSchema,
+      name: agentTemplateNameSchema,
+      public: agentTemplatePublicProfileSchema,
+      replacement: z.null(),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().uuid(),
+      status: z.literal("retired"),
+      slug: agentTemplateSlugSchema,
+      name: agentTemplateNameSchema,
+      public: agentTemplatePublicProfileSchema,
+      replacement: agentTemplateReplacementSummarySchema.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().uuid(),
+      status: z.literal("missing"),
+      slug: z.null(),
+      name: z.null(),
+      public: z.null(),
+      replacement: z.null(),
+    })
+    .strict(),
+]);
+export type AgentTemplateAdoptionSummary = z.infer<typeof agentTemplateAdoptionSummarySchema>;
+
+export const agentResourcesOutputSchema = z
+  .object({
+    version: z.number().int().positive(),
+    /** Adopted official Agent Template ids (0-3, canonical order). */
+    templateIds: agentTemplateIdsSchema,
+    /** Same-order public-safe summaries for `templateIds`. */
+    adoptedTemplates: z.array(agentTemplateAdoptionSummarySchema),
+    effective: effectiveAgentResourcesSchema,
+    bindings: z.array(agentResourceBindingInputSchema),
+    availableTeamResources: z.array(resourceRowSchema),
+  })
+  .strict()
+  .superRefine((output, ctx) => {
+    if (output.adoptedTemplates.length !== output.templateIds.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["adoptedTemplates"],
+        message: "adoptedTemplates must have exactly one summary per templateId.",
+      });
+      return;
+    }
+    for (const [index, summary] of output.adoptedTemplates.entries()) {
+      if (summary.id !== output.templateIds[index]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["adoptedTemplates", index, "id"],
+          message: "adoptedTemplates must be in the same order as templateIds.",
+        });
+      }
+    }
+  });
+export type AgentResourcesOutput = z.infer<typeof agentResourcesOutputSchema>;
