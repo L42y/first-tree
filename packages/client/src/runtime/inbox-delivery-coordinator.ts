@@ -51,6 +51,13 @@ type TrackedDelivery = {
     reason: string;
     startedAt: number;
   };
+  /**
+   * Set when the replay-fence gate withheld this delivery before any route
+   * ownership or processing started. A later redelivery of such an entry
+   * must be re-admitted (not swallowed as duplicate-in-flight) once the
+   * fence is gone — the server row is the only durable copy.
+   */
+  replayFencedWithheld?: boolean;
 };
 
 type ChatInboxLedger = {
@@ -100,6 +107,14 @@ export class InboxDeliveryCoordinator {
 
     const activeByEntryId = ledger.entries.find((tracked) => tracked.entryId === entry.id);
     if (activeByEntryId) {
+      if (activeByEntryId.replayFencedWithheld) {
+        // Previously withheld by the replay-fence gate before any custody:
+        // re-admit so the route gate can re-evaluate (exactly-once, since
+        // the flag is consumed here).
+        activeByEntryId.replayFencedWithheld = undefined;
+        this.emitWorkChanged(chatId);
+        return { kind: "deliver", work: { chatId, entryId: entry.id, messageId } };
+      }
       this.config.log.debug(
         { chatId, messageId, entryId: entry.id, phase: activeByEntryId.phase },
         "redelivery observed for active ledger entry",
@@ -216,6 +231,23 @@ export class InboxDeliveryCoordinator {
     };
     void next.then(cleanup, cleanup);
     return next;
+  }
+
+  /**
+   * Mark ledger entries withheld by the replay-fence gate (no custody
+   * taken). Their next redelivery is re-admitted instead of swallowed as
+   * duplicate-in-flight — the only path that lets server redelivery drive a
+   * withheld delivery once its fence clears.
+   */
+  markReplayFenceWithheld(chatId: string, messageIds: readonly string[]): void {
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger) return;
+    const ids = new Set(messageIds);
+    for (const tracked of ledger.entries) {
+      if (ids.has(tracked.messageId) && tracked.phase === "open" && tracked.processingStartedAt === undefined) {
+        tracked.replayFencedWithheld = true;
+      }
+    }
   }
 
   markOwned(work: DeliveryWork): DeliveryRouteOwnership {

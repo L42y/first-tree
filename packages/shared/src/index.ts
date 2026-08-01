@@ -801,6 +801,9 @@ export type {
   InboxAckRejectedFrame,
   InboxAckRejectedReason,
   InboxDeliverFrame,
+  InboxFenceProbeAcceptedFrame,
+  InboxFenceProbeFrame,
+  InboxFenceProbeRejectedFrame,
   InboxRecoverAcceptedFrame,
   InboxRecoverFrame,
   InboxRecoverRejectedFrame,
@@ -808,12 +811,16 @@ export type {
 } from "./schemas/inbox-frames.js";
 // -- WebSocket inbox data-plane frames --
 export {
+  INBOX_FENCE_PROBE_MAX_IDS,
   inboxAckAcceptedDispositionSchema,
   inboxAckAcceptedFrameSchema,
   inboxAckFrameSchema,
   inboxAckRejectedFrameSchema,
   inboxAckRejectedReasonSchema,
   inboxDeliverFrameSchema,
+  inboxFenceProbeAcceptedFrameSchema,
+  inboxFenceProbeFrameSchema,
+  inboxFenceProbeRejectedFrameSchema,
   inboxRecoverAcceptedFrameSchema,
   inboxRecoverFrameSchema,
   inboxRecoverRejectedFrameSchema,

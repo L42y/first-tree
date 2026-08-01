@@ -701,34 +701,40 @@ export async function countUnackedForScope(db: Database, opts: { inboxId: string
   return rows[0]?.count ?? 0;
 }
 
-/** Cap for the message-level unacked list; larger backlogs omit the field so consumers stay conservative. */
-export const UNACKED_MESSAGE_IDS_LIMIT = 500;
+/** Cap for one fence-probe request; the client chunks larger fence sets. */
+export const FENCE_PROBE_MAX_IDS = 50;
 
 /**
- * Message-level companion to {@link countUnackedForScope}: the concrete
- * unacked message ids for one chat scope. Settlement truth is per delivery —
- * a newer unacked tail must not make an already-settled fenced head look
- * unsettled. Returns null when the backlog exceeds UNACKED_MESSAGE_IDS_LIMIT
- * (callers must treat that as unknown, never as empty).
+ * Per-delivery settlement truth for the replay-fence probe: of the probed
+ * message ids, which are durably settled — the delivery's notify row EXISTS
+ * in the chat scope and is no longer unsettled (pending/delivered). An id
+ * with no row at all is UNKNOWN, not settled, and must never clear a fence.
+ * Settlement is per concrete inbox delivery — unrelated backlog size must
+ * never dilute the answer. Must be called inside the same serialized
+ * recovery boundary as resets.
  */
-export async function listUnackedMessageIdsForScope(
+export async function listSettledMessageIdsForScope(
   db: Database,
-  opts: { inboxId: string; chatId: string },
-): Promise<string[] | null> {
+  opts: { inboxId: string; chatId: string; messageIds: string[] },
+): Promise<string[]> {
+  const uniqueIds = [...new Set(opts.messageIds)];
+  if (uniqueIds.length === 0) return [];
   const rows = await db
-    .select({ messageId: inboxEntries.messageId })
+    .select({ messageId: inboxEntries.messageId, status: inboxEntries.status })
     .from(inboxEntries)
     .where(
       and(
         eq(inboxEntries.inboxId, opts.inboxId),
         eq(inboxEntries.chatId, opts.chatId),
-        inArray(inboxEntries.status, ["pending", "delivered"]),
+        inArray(inboxEntries.messageId, uniqueIds),
         eq(inboxEntries.notify, true),
       ),
-    )
-    .limit(UNACKED_MESSAGE_IDS_LIMIT + 1);
-  if (rows.length > UNACKED_MESSAGE_IDS_LIMIT) return null;
-  return rows.map((row) => row.messageId);
+    );
+  const known = new Set(rows.map((row) => row.messageId));
+  const unacked = new Set(
+    rows.filter((row) => row.status === "pending" || row.status === "delivered").map((row) => row.messageId),
+  );
+  return uniqueIds.filter((id) => known.has(id) && !unacked.has(id));
 }
 
 /**

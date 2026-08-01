@@ -365,7 +365,10 @@ export class AgentSlot {
         runtimeSessionTokenFile: this.runtimeSessionTokenFile,
         ackEntry,
         recoverChat,
-        recoverChatWithCount: (chatId) => this.clientConnection.sendInboxRecover(agent.agentId, chatId),
+        probeFencedSettlement: async (chatId, messageIds) => {
+          const result = await this.clientConnection.sendInboxFenceProbe(agent.agentId, chatId, [...messageIds]);
+          return result.settledMessageIds;
+        },
         recoverRuntimeSessionProof: (reasonCode) => this.recoverRuntimeSessionProof(reasonCode),
         onStateChange: (chatId, state) => this.reportSessionState(chatId, state),
         onRuntimeStateChange: (state) => this.reportRuntimeState(state),

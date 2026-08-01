@@ -11,6 +11,7 @@ import {
   type InboxEntryWithMessage,
   inboxAckFrameSchema,
   inboxDeliverFrameSchema,
+  inboxFenceProbeFrameSchema,
   inboxRecoverFrameSchema,
   PROVIDER_MODELS_LIST_TYPE,
   PROVIDER_MODELS_RESULT_TYPE,
@@ -1859,14 +1860,8 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   }
                   // Counted inside the same serialized chain as the reset:
                   // unacked rows may already be `pending` (bind reset), so
-                  // only pending+delivered = 0 proves the chat settled. The
-                  // message-level list lets the client settle individual
-                  // fenced deliveries even when a newer unacked tail exists.
+                  // only pending+delivered = 0 proves the chat settled.
                   const unackedOutstanding = await inboxService.countUnackedForScope(app.db, {
-                    inboxId: info.inboxId,
-                    chatId,
-                  });
-                  const unackedMessageIds = await inboxService.listUnackedMessageIdsForScope(app.db, {
                     inboxId: info.inboxId,
                     chatId,
                   });
@@ -1878,7 +1873,6 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                       chatId,
                       resetCount: recovered.resetEntryIds.length,
                       unackedOutstanding,
-                      ...(unackedMessageIds !== null ? { unackedMessageIds } : {}),
                     }),
                   );
                   await drainBacklogForAgent(agentId, info.inboxId, { source: "recover", chatId });
@@ -1887,6 +1881,69 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   socket.send(
                     JSON.stringify({
                       type: "inbox:recover:rejected",
+                      ref,
+                      agentId,
+                      chatId,
+                      reason: "recover_failed",
+                    }),
+                  );
+                }
+              });
+            } else if (type === "inbox:fence-probe") {
+              const payloadResult = inboxFenceProbeFrameSchema.safeParse(msg);
+              if (!payloadResult.success) {
+                app.log.warn(
+                  {
+                    clientId,
+                    issues: payloadResult.error.issues.map((i) => ({
+                      path: i.path.join("."),
+                      code: i.code,
+                      message: i.message,
+                    })),
+                  },
+                  "malformed inbox:fence-probe frame — replying error",
+                );
+                socket.send(JSON.stringify({ type: "error", message: "Malformed inbox:fence-probe frame" }));
+                return;
+              }
+              const { agentId, chatId, ref, messageIds } = payloadResult.data;
+              // Read-only settlement probe, but serialized through the same
+              // boundary as recovery so the answer is consistent with any
+              // concurrent reset/drain.
+              await chainInboxDelivery("__socket", async () => {
+                const info = boundAgents.get(agentId);
+                if (!info || !(await ensureAgentStillRoutedHere(agentId))) {
+                  socket.send(
+                    JSON.stringify({
+                      type: "inbox:fence-probe:rejected",
+                      ref,
+                      agentId,
+                      chatId,
+                      reason: "agent_not_bound",
+                    }),
+                  );
+                  return;
+                }
+                try {
+                  const settledMessageIds = await inboxService.listSettledMessageIdsForScope(app.db, {
+                    inboxId: info.inboxId,
+                    chatId,
+                    messageIds,
+                  });
+                  socket.send(
+                    JSON.stringify({
+                      type: "inbox:fence-probe:accepted",
+                      ref,
+                      agentId,
+                      chatId,
+                      settledMessageIds,
+                    }),
+                  );
+                } catch (err) {
+                  app.log.error({ err, agentId, chatId }, "inbox:fence-probe handling failed");
+                  socket.send(
+                    JSON.stringify({
+                      type: "inbox:fence-probe:rejected",
                       ref,
                       agentId,
                       chatId,

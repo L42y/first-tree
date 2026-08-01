@@ -459,14 +459,14 @@ describe("countUnackedForScope (authoritative unacked backlog)", () => {
   });
 });
 
-describe("listUnackedMessageIdsForScope (message-level settlement truth)", () => {
+describe("listSettledMessageIdsForScope (per-delivery settlement truth)", () => {
   const getApp = useTestApp();
 
-  it("distinguishes a settled head from an unacked tail in the same chat", async () => {
+  it("proves a settled head without being diluted by an unacked tail in the same chat", async () => {
     const app = getApp();
     const uid = crypto.randomUUID().slice(0, 6);
-    const a1 = await createTestAgent(app, { name: `list-a1-${uid}` });
-    const a2 = await createTestAgent(app, { name: `list-a2-${uid}` });
+    const a1 = await createTestAgent(app, { name: `probe-a1-${uid}` });
+    const a2 = await createTestAgent(app, { name: `probe-a2-${uid}` });
 
     const chatRes = await a1.request("POST", "/api/v1/agent/chats", {
       type: "group",
@@ -488,29 +488,48 @@ describe("listUnackedMessageIdsForScope (message-level settlement truth)", () =>
       })
     ).json().id;
 
-    // Both unacked initially.
-    expect(await inboxService.listUnackedMessageIdsForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toEqual([
-      msg1,
-      msg2,
-    ]);
+    // Both unsettled initially.
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, msg2],
+      }),
+    ).toEqual([]);
 
-    // ACK the head only: the tail stays, the head disappears from the
-    // unacked list — a stale fence for the head can clear while the tail
-    // is genuinely outstanding.
+    // ACK the head only: it is proven settled even though the tail is
+    // still outstanding — the exact fenced-head + newer-tail scenario.
     await app.db
       .update(inboxEntries)
       .set({ status: "acked", ackedAt: new Date() })
       .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.messageId, msg1)));
-    expect(await inboxService.listUnackedMessageIdsForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toEqual([
-      msg2,
-    ]);
-    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(1);
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, msg2],
+      }),
+    ).toEqual([msg1]);
+
+    // Unknown ids are not proven; a fully settled scope proves everything.
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, "msg-unknown"],
+      }),
+    ).toEqual([msg1]);
 
     await app.db
       .update(inboxEntries)
       .set({ status: "acked", ackedAt: new Date() })
       .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.messageId, msg2)));
-    expect(await inboxService.listUnackedMessageIdsForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toEqual([]);
-    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(0);
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, msg2],
+      }),
+    ).toEqual([msg1, msg2]);
   });
 });

@@ -627,6 +627,55 @@ describe("ClientConnection — WebSocket edge coverage", () => {
     expect(socket.closeCalls).toHaveLength(0);
   });
 
+  it("sends fence probes and settles on accepted or rejected frames without any destructive effect", async () => {
+    const connection = await makeConnection();
+    const internal = priv(connection);
+    const socket = await openRegisteredConnection(connection, { wsInboxAckConfirm: true });
+
+    const bindPromise = internal.sendBind("agent-1", "codex");
+    const bindFrame = parseSent(socket, socket.sent.length - 1);
+    socket.emitMessage({
+      type: "agent:bound",
+      ref: bindFrame.ref,
+      agentId: "agent-1",
+      displayName: "Agent One",
+      agentType: "agent",
+    });
+    await bindPromise;
+
+    const accepted = connection.sendInboxFenceProbe("agent-1", "chat-1", ["msg-1", "msg-2"]);
+    const probeFrame = parseSent(socket, socket.sent.length - 1);
+    expect(probeFrame).toMatchObject({
+      type: "inbox:fence-probe",
+      agentId: "agent-1",
+      chatId: "chat-1",
+      messageIds: ["msg-1", "msg-2"],
+    });
+    expect(typeof probeFrame.ref).toBe("string");
+
+    socket.emitMessage({
+      type: "inbox:fence-probe:accepted",
+      ref: probeFrame.ref,
+      agentId: "agent-1",
+      chatId: "chat-1",
+      settledMessageIds: ["msg-1"],
+    });
+    await expect(accepted).resolves.toEqual({ settledMessageIds: ["msg-1"] });
+
+    const rejected = connection.sendInboxFenceProbe("agent-1", "chat-2", ["msg-3"]);
+    const rejectFrame = parseSent(socket, socket.sent.length - 1);
+    socket.emitMessage({
+      type: "inbox:fence-probe:rejected",
+      ref: rejectFrame.ref,
+      agentId: "agent-1",
+      chatId: "chat-2",
+      reason: "agent_not_bound",
+    });
+    await expect(rejected).rejects.toThrow("agent_not_bound");
+    // Read-only probe: a rejection never tears down the socket.
+    expect(socket.closeCalls).toHaveLength(0);
+  });
+
   it("forces a reconnect when an inbox recovery confirmation times out", async () => {
     vi.useFakeTimers();
     const connection = await makeConnection();

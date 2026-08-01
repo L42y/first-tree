@@ -205,7 +205,7 @@ function createSessionManager(opts: {
   log?: pino.Logger;
   agentConfigCache?: AgentConfigCache;
   recoverChat?: (chatId: string) => Promise<void>;
-  recoverChatWithCount?: (chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number }>;
+  probeFencedSettlement?: (chatId: string, messageIds: readonly string[]) => Promise<readonly string[]>;
   recoverRuntimeSessionProof?: (reasonCode: string) => Promise<void>;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
   onSessionRuntimeChange?: (chatId: string, state: RuntimeState) => void;
@@ -247,7 +247,7 @@ function createSessionManager(opts: {
     replayFencePath: opts.replayFencePath,
     ackEntry: opts.ackEntry ?? mockAckEntry(),
     recoverChat: opts.recoverChat,
-    recoverChatWithCount: opts.recoverChatWithCount,
+    probeFencedSettlement: opts.probeFencedSettlement,
     recoverRuntimeSessionProof: opts.recoverRuntimeSessionProof,
     agentConfigCache: opts.agentConfigCache,
     onSessionEvent: opts.onSessionEvent,
@@ -3184,24 +3184,26 @@ describe("SessionManager replay fence startup reconciliation", () => {
     });
   }
 
-  it("clears a stale fence when the server confirms zero unacked entries after a crash, then admits the chat", async () => {
+  function makeProbe(settled: readonly string[]) {
+    return vi.fn(async (_chatId: string, _messageIds: readonly string[]) => [...settled]);
+  }
+
+  it("clears a stale fence when the probe proves the fenced delivery settled, then admits the chat", async () => {
     const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
     try {
       const fencePath = join(root, "fence.json");
       // Pre-crash state: unsafe effect fenced, then the ACK committed
       // server-side but the process died before the local clear.
       seedFenceStore(fencePath, "chat-crash", "msg-1");
-      const recoverChatWithCount = vi
-        .fn<(chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number }>>()
-        .mockResolvedValue({ resetCount: 0, unackedOutstanding: 0 });
+      const probeFencedSettlement = makeProbe(["msg-1"]);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
       // A fresh manager (post-crash) loads the fence file.
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
 
       await sm.reconcileReplayFencesWithServer();
 
-      expect(recoverChatWithCount).toHaveBeenCalledWith("chat-crash");
+      expect(probeFencedSettlement).toHaveBeenCalledWith("chat-crash", ["msg-1"]);
       const reloaded = new ReplayFenceStore(fencePath);
       reloaded.load();
       expect(reloaded.hasFenceForChat("chat-crash")).toBe(false);
@@ -3215,17 +3217,15 @@ describe("SessionManager replay fence startup reconciliation", () => {
     }
   });
 
-  it("keeps the fence and the chat hold when the server still resets unacked entries", async () => {
+  it("keeps the fence and the chat hold when the probe leaves the fenced delivery unsettled", async () => {
     const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
     try {
       const fencePath = join(root, "fence.json");
       seedFenceStore(fencePath, "chat-debt", "msg-1");
-      const recoverChatWithCount = vi
-        .fn<(chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number }>>()
-        .mockResolvedValue({ resetCount: 1, unackedOutstanding: 1 });
+      const probeFencedSettlement = makeProbe([]);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
 
       await sm.reconcileReplayFencesWithServer();
 
@@ -3244,17 +3244,17 @@ describe("SessionManager replay fence startup reconciliation", () => {
     }
   });
 
-  it("keeps fences fail-closed when the readback fails", async () => {
+  it("keeps fences fail-closed when the probe fails or is absent", async () => {
     const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
     try {
       const fencePath = join(root, "fence.json");
       seedFenceStore(fencePath, "chat-fail", "msg-1");
-      const recoverChatWithCount = vi
-        .fn<(chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number }>>()
+      const probeFencedSettlement = vi
+        .fn<(chatId: string, messageIds: readonly string[]) => Promise<readonly string[]>>()
         .mockRejectedValue(new Error("socket not bound"));
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
 
       await sm.reconcileReplayFencesWithServer();
 
@@ -3272,90 +3272,52 @@ describe("SessionManager replay fence startup reconciliation", () => {
     }
   });
 
-  it("does NOT clear when delivered resetCount is 0 but unacked backlog is still pending", async () => {
-    const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
-    try {
-      const fencePath = join(root, "fence.json");
-      seedFenceStore(fencePath, "chat-pending", "msg-1");
-      // Bind reset moved the unacked row to pending BEFORE the recovery ran:
-      // the delivered resetCount is 0, but the authoritative outstanding is
-      // not. Clearing here would let the pending backlog replay the effect.
-      const recoverChatWithCount = vi
-        .fn<(chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number }>>()
-        .mockResolvedValue({ resetCount: 0, unackedOutstanding: 1 });
-      const handler = createMockHandler();
-      const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
-
-      await sm.reconcileReplayFencesWithServer();
-
-      const reloaded = new ReplayFenceStore(fencePath);
-      reloaded.load();
-      expect(reloaded.hasFenceForChat("chat-pending")).toBe(true);
-
-      // The later backlog delivery must not enter the provider either.
-      await sm.dispatch(mockEntry({ id: 44, chatId: "chat-pending", messageId: "msg-1" }));
-      expect(handler.start).not.toHaveBeenCalled();
-      expect(handler.resume).not.toHaveBeenCalled();
-      expect(ackEntry).not.toHaveBeenCalled();
-
-      await sm.shutdown();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps fences when an older server omits the authoritative outstanding field", async () => {
-    const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
-    try {
-      const fencePath = join(root, "fence.json");
-      seedFenceStore(fencePath, "chat-old", "msg-1");
-      const recoverChatWithCount = vi
-        .fn<(chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number }>>()
-        .mockResolvedValue({ resetCount: 0 });
-      const handler = createMockHandler();
-      const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
-
-      await sm.reconcileReplayFencesWithServer();
-
-      const reloaded = new ReplayFenceStore(fencePath);
-      reloaded.load();
-      expect(reloaded.hasFenceForChat("chat-old")).toBe(true);
-
-      await sm.shutdown();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("clears a settled stale head even with a newer unacked tail, then admits the buffered tail", async () => {
+  it("clears a settled stale head, then one recovery redelivers the withheld tail into the provider exactly once", async () => {
     const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
     try {
       const fencePath = join(root, "fence.json");
       seedFenceStore(fencePath, "chat-tail", "msg-1");
-      // Server truth: msg-1 settled; only the newer tail msg-2 is unacked.
-      const recoverChatWithCount = vi
-        .fn<
-          (chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number; unackedMessageIds?: string[] }>
-        >()
-        .mockResolvedValue({ resetCount: 0, unackedOutstanding: 1, unackedMessageIds: ["msg-2"] });
+      // Hold the probe so both deliveries are verifiably withheld+marked
+      // before the settlement proof lands.
+      let resolveProbe: (settled: readonly string[]) => void = () => {};
+      const probeResult = new Promise<readonly string[]>((resolvePromise) => {
+        resolveProbe = resolvePromise;
+      });
+      const probeFencedSettlement = vi.fn(async (_chatId: string, _messageIds: readonly string[]) => probeResult);
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+      const sm = createSessionManager({
+        handler,
+        ackEntry,
+        replayFencePath: fencePath,
+        probeFencedSettlement,
+        recoverChat,
+      });
 
-      // Both the fenced head and the tail are withheld and buffered.
+      // Both the fenced head and the tail are withheld and marked in the ledger.
       await sm.dispatch(mockEntry({ id: 45, chatId: "chat-tail", messageId: "msg-1" }));
       await sm.dispatch(mockEntry({ id: 46, chatId: "chat-tail", messageId: "msg-2" }));
+      await vi.waitFor(() => expect(probeFencedSettlement).toHaveBeenCalledTimes(1));
+      expect(handler.start).not.toHaveBeenCalled();
 
-      // The gate's first reconciliation proves msg-1 settled (it is NOT in
-      // the unacked list), clears it, and re-drives the buffered deliveries
-      // — no further dispatch or timer advance needed.
-      await vi.waitFor(() => expect(handler.start).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() => expect(handler.inject).toHaveBeenCalledTimes(1));
+      // The probe proves msg-1 settled, clears it, and fires exactly one
+      // destructive recovery for the withheld backlog.
+      resolveProbe(["msg-1"]);
+      await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+      expect(recoverChat).toHaveBeenCalledWith("chat-tail");
       const reloaded = new ReplayFenceStore(fencePath);
       reloaded.load();
       expect(reloaded.hasFenceForChat("chat-tail")).toBe(false);
+      expect(handler.start).not.toHaveBeenCalled();
+
+      // The server's redelivery re-admits the withheld entries — and a
+      // duplicated redelivery frame cannot start a second provider turn.
+      await sm.dispatch(mockEntry({ id: 45, chatId: "chat-tail", messageId: "msg-1" }));
+      await sm.dispatch(mockEntry({ id: 45, chatId: "chat-tail", messageId: "msg-1" }));
+      await sm.dispatch(mockEntry({ id: 46, chatId: "chat-tail", messageId: "msg-2" }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      expect(handler.inject).toHaveBeenCalledTimes(1);
 
       await sm.shutdown();
     } finally {
@@ -3363,39 +3325,40 @@ describe("SessionManager replay fence startup reconciliation", () => {
     }
   });
 
-  it("retries a failed local clear on the retry timer without any new dispatch or manual reconcile", async () => {
+  it("retries a failed local clear on the retry timer without any new dispatch or probe", async () => {
     vi.useFakeTimers();
     const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
     try {
       const fencePath = join(root, "fence.json");
       seedFenceStore(fencePath, "chat-timer", "msg-1");
-      const recoverChatWithCount = vi
-        .fn<
-          (chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number; unackedMessageIds?: string[] }>
-        >()
-        .mockResolvedValue({ resetCount: 0, unackedOutstanding: 0, unackedMessageIds: [] });
+      const probeFencedSettlement = makeProbe(["msg-1"]);
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
-      const sm = createSessionManager({ handler, replayFencePath: fencePath, recoverChatWithCount });
+      const sm = createSessionManager({ handler, replayFencePath: fencePath, probeFencedSettlement, recoverChat });
 
-      // Clear fails on I/O during the first gate-triggered reconciliation.
+      // Clear fails on I/O during the first gate-triggered probe round.
       chmodSync(root, 0o500);
       await sm.dispatch(mockEntry({ id: 47, chatId: "chat-timer", messageId: "msg-1" }));
-      await vi.waitFor(() => expect(recoverChatWithCount).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(probeFencedSettlement).toHaveBeenCalledTimes(1));
       let reloaded = new ReplayFenceStore(fencePath);
       reloaded.load();
       expect(reloaded.hasFenceForChat("chat-timer")).toBe(true);
       expect(handler.start).not.toHaveBeenCalled();
 
-      // Repair the store, then ONLY advance the timer: the loop must redo
-      // the local clear of the already-proven-settled fence and re-drive
-      // the buffered delivery — no readback, no new dispatch.
+      // Repair the store, then ONLY advance the timer: the loop redoes the
+      // local clear of the already-proven fence (no new probe) and fires
+      // the single redrive recovery.
       chmodSync(root, 0o700);
-      recoverChatWithCount.mockClear();
+      probeFencedSettlement.mockClear();
       await vi.advanceTimersByTimeAsync(31_000);
       reloaded = new ReplayFenceStore(fencePath);
       reloaded.load();
       expect(reloaded.hasFenceForChat("chat-timer")).toBe(false);
-      expect(recoverChatWithCount).not.toHaveBeenCalled();
+      expect(probeFencedSettlement).not.toHaveBeenCalled();
+      expect(recoverChat).toHaveBeenCalledTimes(1);
+
+      // The redelivery now routes into the provider.
+      await sm.dispatch(mockEntry({ id: 47, chatId: "chat-timer", messageId: "msg-1" }));
       expect(handler.start).toHaveBeenCalledTimes(1);
 
       await sm.shutdown();
@@ -3406,20 +3369,23 @@ describe("SessionManager replay fence startup reconciliation", () => {
     }
   });
 
-  it("never clears on the retry timer without authoritative settlement truth", async () => {
+  it("never clears on the retry timer without settlement proof, and never fires a destructive recover", async () => {
     vi.useFakeTimers();
     const root = mkdtempSync(join(tmpdir(), "sm-fence-startup-"));
     try {
       const fencePath = join(root, "fence.json");
       seedFenceStore(fencePath, "chat-never", "msg-1");
-      const recoverChatWithCount = vi
-        .fn<
-          (chatId: string) => Promise<{ resetCount: number; unackedOutstanding?: number; unackedMessageIds?: string[] }>
-        >()
-        .mockResolvedValue({ resetCount: 0, unackedOutstanding: 2, unackedMessageIds: ["msg-1", "msg-2"] });
+      const probeFencedSettlement = makeProbe([]);
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, recoverChatWithCount });
+      const sm = createSessionManager({
+        handler,
+        ackEntry,
+        replayFencePath: fencePath,
+        probeFencedSettlement,
+        recoverChat,
+      });
 
       await sm.dispatch(mockEntry({ id: 49, chatId: "chat-never", messageId: "msg-1" }));
       await vi.advanceTimersByTimeAsync(95_000);
@@ -3429,8 +3395,10 @@ describe("SessionManager replay fence startup reconciliation", () => {
       expect(reloaded.hasFenceForChat("chat-never")).toBe(true);
       expect(handler.start).not.toHaveBeenCalled();
       expect(ackEntry).not.toHaveBeenCalled();
-      // The loop kept re-reading server truth on its own schedule.
-      expect(recoverChatWithCount.mock.calls.length).toBeGreaterThanOrEqual(3);
+      // The loop keeps re-probing on its own schedule — read-only, so no
+      // destructive reset/no-progress circuit can trip.
+      expect(probeFencedSettlement.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(recoverChat).not.toHaveBeenCalled();
 
       await sm.shutdown();
     } finally {

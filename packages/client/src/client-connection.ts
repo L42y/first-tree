@@ -14,6 +14,8 @@ import {
   inboxAckAcceptedFrameSchema,
   inboxAckRejectedFrameSchema,
   inboxDeliverFrameSchema,
+  inboxFenceProbeAcceptedFrameSchema,
+  inboxFenceProbeRejectedFrameSchema,
   inboxRecoverAcceptedFrameSchema,
   inboxRecoverRejectedFrameSchema,
   PROVIDER_MODELS_LIST_TYPE,
@@ -73,18 +75,33 @@ type PendingInboxRecover = {
   reject: (err: Error) => void;
 };
 
+type PendingInboxFenceProbe = {
+  agentId: string;
+  chatId: string;
+  ref: string;
+  firstSentAt: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  promise: Promise<InboxFenceProbeResult>;
+  resolve: (result: InboxFenceProbeResult) => void;
+  reject: (err: Error) => void;
+};
+
+/** Result of a fence settlement probe: the probed ids proven settled server-side. */
+export type InboxFenceProbeResult = {
+  settledMessageIds: string[];
+};
+
 /**
  * Result of an accepted inbox recovery. `resetCount` only covers rows the
  * reset moved out of `delivered`; `unackedOutstanding` is the server's
  * authoritative pending+delivered backlog for the chat scope, and
- * `unackedMessageIds` its message-level form. Only `unackedOutstanding === 0`
+Only `unackedOutstanding === 0`
  * or an explicit id list may prove settlement; older servers omit them, and
  * absence must be treated as unknown, never as zero/empty.
  */
 export type InboxRecoverResult = {
   resetCount: number;
   unackedOutstanding?: number;
-  unackedMessageIds?: string[];
 };
 
 type PendingSessionEvent = {
@@ -535,6 +552,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   private readonly bindRetryRecords = new Map<string, BindRetryRecord>();
   private readonly pendingInboxAcks = new Map<number, PendingInboxAck>();
   private readonly pendingInboxRecovers = new Map<string, PendingInboxRecover>();
+  private readonly pendingInboxFenceProbes = new Map<string, PendingInboxFenceProbe>();
   private readonly pendingSessionEvents = new Map<string, PendingSessionEvent>();
   private readonly socketBoundAgentIds = new Set<string>();
 
@@ -688,6 +706,106 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       this.forceReconnectAfterInboxRecoverTimeout(pending);
     }, INBOX_RECOVER_CONFIRM_TIMEOUT_MS);
     return pending.promise;
+  }
+
+  /**
+   * Read-only settlement probe for concrete fenced deliveries. Resolves
+   * with the probed message ids the server proves settled (no unsettled
+   * notify row), computed inside the server's serialized recovery
+   * boundary. Bounded confirmation like recovery, but never destructive:
+   * no reset, no redelivery, and timeout only rejects.
+   */
+  sendInboxFenceProbe(agentId: string, chatId: string, messageIds: string[]): Promise<InboxFenceProbeResult> {
+    if (
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      !this.registered ||
+      !this.socketBoundAgentIds.has(agentId)
+    ) {
+      return Promise.reject(new Error("inbox:fence-probe unavailable; socket not bound"));
+    }
+
+    const pending: PendingInboxFenceProbe = {
+      agentId,
+      chatId,
+      ref: `fenceprobe_${randomUUID().slice(0, 12)}`,
+      firstSentAt: Date.now(),
+      timer: null,
+      promise: Promise.resolve({ settledMessageIds: [] }),
+      resolve: () => {},
+      reject: () => {},
+    };
+    pending.promise = new Promise<InboxFenceProbeResult>((resolve, reject) => {
+      pending.resolve = resolve;
+      pending.reject = reject;
+    });
+    this.pendingInboxFenceProbes.set(pending.ref, pending);
+    this.ws.send(JSON.stringify({ type: "inbox:fence-probe", ref: pending.ref, agentId, chatId, messageIds }));
+    this.wsLogger.debug(
+      { agentId, chatId, ref: pending.ref, probeCount: messageIds.length, recoverEvent: "inbox_fence_probe_sent" },
+      "inbox:fence-probe sent",
+    );
+    pending.timer = setTimeout(() => {
+      if (!this.pendingInboxFenceProbes.has(pending.ref)) return;
+      this.pendingInboxFenceProbes.delete(pending.ref);
+      pending.reject(new Error("inbox:fence-probe confirmation timed out"));
+    }, INBOX_RECOVER_CONFIRM_TIMEOUT_MS);
+    return pending.promise;
+  }
+
+  private resolvePendingInboxFenceProbe(pending: PendingInboxFenceProbe, settledMessageIds: string[]): void {
+    this.clearPendingInboxFenceProbeTimer(pending);
+    this.pendingInboxFenceProbes.delete(pending.ref);
+    this.wsLogger.debug(
+      {
+        agentId: pending.agentId,
+        chatId: pending.chatId,
+        ref: pending.ref,
+        settledCount: settledMessageIds.length,
+        latencyMs: Date.now() - pending.firstSentAt,
+        recoverEvent: "inbox_fence_probe_accepted",
+      },
+      "inbox:fence-probe accepted",
+    );
+    pending.resolve({ settledMessageIds });
+  }
+
+  private rejectPendingInboxFenceProbe(pending: PendingInboxFenceProbe, reason: string): void {
+    this.clearPendingInboxFenceProbeTimer(pending);
+    this.pendingInboxFenceProbes.delete(pending.ref);
+    this.wsLogger.warn(
+      {
+        agentId: pending.agentId,
+        chatId: pending.chatId,
+        ref: pending.ref,
+        reason,
+        latencyMs: Date.now() - pending.firstSentAt,
+        recoverEvent: "inbox_fence_probe_rejected",
+      },
+      "inbox:fence-probe rejected",
+    );
+    pending.reject(new Error(`inbox:fence-probe rejected (${reason})`));
+  }
+
+  private clearPendingInboxFenceProbeTimer(pending: PendingInboxFenceProbe): void {
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+  }
+
+  private rejectAllPendingInboxFenceProbes(reason: string): void {
+    for (const pending of this.pendingInboxFenceProbes.values()) {
+      this.clearPendingInboxFenceProbeTimer(pending);
+      pending.reject(new Error(reason));
+    }
+    this.pendingInboxFenceProbes.clear();
+  }
+
+  private rejectPendingInboxFenceProbesForAgent(agentId: string, reason: string): void {
+    for (const pending of [...this.pendingInboxFenceProbes.values()]) {
+      if (pending.agentId === agentId) this.rejectPendingInboxFenceProbe(pending, reason);
+    }
   }
 
   private canSendClientFrame(): boolean {
@@ -857,7 +975,6 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     pending: PendingInboxRecover,
     resetCount: number,
     unackedOutstanding?: number,
-    unackedMessageIds?: string[],
   ): void {
     this.clearPendingInboxRecoverTimer(pending);
     this.pendingInboxRecovers.delete(pending.ref);
@@ -868,13 +985,12 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         ref: pending.ref,
         resetCount,
         unackedOutstanding,
-        unackedCount: unackedMessageIds?.length,
         latencyMs: Date.now() - pending.firstSentAt,
         recoverEvent: "inbox_recover_accepted",
       },
       "inbox:recover accepted",
     );
-    pending.resolve({ resetCount, unackedOutstanding, unackedMessageIds });
+    pending.resolve({ resetCount, unackedOutstanding });
   }
 
   private rejectPendingInboxRecover(pending: PendingInboxRecover, reason: string): void {
@@ -1033,6 +1149,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     this.socketBoundAgentIds.delete(agentId);
     this.rejectPendingInboxAcksForAgent(agentId, "agent_unbound");
     this.rejectPendingInboxRecoversForAgent(agentId, "agent_unbound");
+    this.rejectPendingInboxFenceProbesForAgent(agentId, "agent_unbound");
     this.rejectPendingSessionEventsForAgent(agentId, "agent_unbound");
     if (!shouldNotifyServer || !this.ws) return;
     this.ws.send(JSON.stringify({ type: "agent:unbind", agentId }));
@@ -1129,6 +1246,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     this.rejectAllPendingBinds("Client disconnected");
     this.rejectAllPendingInboxAcks("Client disconnected");
     this.rejectAllPendingInboxRecovers("Client disconnected");
+    this.rejectAllPendingInboxFenceProbes("Client disconnected");
     this.rejectAllPendingSessionEvents("Client disconnected");
     if (this.ws) {
       this.ws.removeAllListeners();
@@ -1294,6 +1412,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         this.socketBoundAgentIds.clear();
         this.rejectAllPendingBinds("WebSocket closed");
         this.rejectAllPendingInboxRecovers("WebSocket closed");
+        this.rejectAllPendingInboxFenceProbes("WebSocket closed");
         this.rejectAllPendingSessionEvents("WebSocket closed");
 
         if (!settled) {
@@ -1571,6 +1690,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       this.socketBoundAgentIds.delete(agentId);
       this.rejectPendingInboxAcksForAgent(agentId, "agent_unbound");
       this.rejectPendingInboxRecoversForAgent(agentId, "agent_unbound");
+      this.rejectPendingInboxFenceProbesForAgent(agentId, "agent_unbound");
       this.rejectPendingSessionEventsForAgent(agentId, "agent_unbound");
       this.emit("agent:unbound", agentId);
       return;
@@ -1761,12 +1881,43 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         );
         return;
       }
-      this.resolvePendingInboxRecover(
-        pending,
-        parsed.data.resetCount,
-        parsed.data.unackedOutstanding,
-        parsed.data.unackedMessageIds,
-      );
+      this.resolvePendingInboxRecover(pending, parsed.data.resetCount, parsed.data.unackedOutstanding);
+      return;
+    }
+
+    if (type === "inbox:fence-probe:accepted") {
+      const parsed = inboxFenceProbeAcceptedFrameSchema.safeParse(msg);
+      if (!parsed.success) {
+        this.wsLogger.warn(
+          { issues: parsed.error.issues.map((i) => i.message) },
+          "ignoring malformed inbox:fence-probe:accepted frame",
+        );
+        return;
+      }
+      const pending = this.pendingInboxFenceProbes.get(parsed.data.ref);
+      if (!pending || pending.agentId !== parsed.data.agentId || pending.chatId !== parsed.data.chatId) {
+        this.wsLogger.debug(
+          { agentId: parsed.data.agentId, chatId: parsed.data.chatId, ref: parsed.data.ref },
+          "inbox:fence-probe:accepted matched no pending probe",
+        );
+        return;
+      }
+      this.resolvePendingInboxFenceProbe(pending, parsed.data.settledMessageIds);
+      return;
+    }
+
+    if (type === "inbox:fence-probe:rejected") {
+      const parsed = inboxFenceProbeRejectedFrameSchema.safeParse(msg);
+      if (!parsed.success) {
+        this.wsLogger.warn(
+          { issues: parsed.error.issues.map((i) => i.message) },
+          "ignoring malformed inbox:fence-probe:rejected frame",
+        );
+        return;
+      }
+      const pending = this.pendingInboxFenceProbes.get(parsed.data.ref);
+      if (!pending) return;
+      this.rejectPendingInboxFenceProbe(pending, parsed.data.reason);
       return;
     }
 
