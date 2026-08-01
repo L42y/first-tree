@@ -1171,8 +1171,9 @@ export class SessionManager {
     ];
     if (fencedMessageIds.length === 0) return;
     // Probe in wire-sized chunks: oversized frames are rejected outright
-    // and would fail-closed forever. A failed chunk keeps its (and every
-    // later chunk's) ids fenced; earlier chunks still contribute proof.
+    // and would fail-closed forever. Settlement proof is merged ONLY when
+    // every chunk succeeds — a rejected/timed-out chunk discards the whole
+    // round and keeps every fence (fail-closed).
     const settled = new Set<string>();
     for (let offset = 0; offset < fencedMessageIds.length; offset += INBOX_FENCE_PROBE_MAX_IDS) {
       const chunk = fencedMessageIds.slice(offset, offset + INBOX_FENCE_PROBE_MAX_IDS);
@@ -1182,9 +1183,9 @@ export class SessionManager {
       } catch (err) {
         this.config.log.warn(
           { err, chatId, chunkOffset: offset },
-          "replay fence settlement probe failed; keeping unproven fences (fail-closed)",
+          "replay fence settlement probe failed; discarding this round and keeping every fence (fail-closed)",
         );
-        break;
+        return;
       }
       // Only ids from THIS chunk may prove settlement; anything else is a
       // protocol violation and must not clear anything.

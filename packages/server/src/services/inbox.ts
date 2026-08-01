@@ -1,4 +1,5 @@
 import {
+  INBOX_FENCE_PROBE_MAX_IDS,
   type InboxEntryWithMessage,
   inboxEntryStatusSchema,
   messageSourceSchema,
@@ -701,8 +702,8 @@ export async function countUnackedForScope(db: Database, opts: { inboxId: string
   return rows[0]?.count ?? 0;
 }
 
-/** Cap for one fence-probe request; the client chunks larger fence sets. */
-export const FENCE_PROBE_MAX_IDS = 50;
+/** Cap for one fence-probe request — the shared wire constant; the client chunks larger fence sets. */
+export const FENCE_PROBE_MAX_IDS = INBOX_FENCE_PROBE_MAX_IDS;
 
 /**
  * Per-delivery settlement truth for the replay-fence probe: of the probed

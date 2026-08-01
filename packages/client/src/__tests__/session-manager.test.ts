@@ -3678,19 +3678,19 @@ describe("SessionManager replay fence convergence matrix", () => {
 
       await sm.reconcileReplayFencesWithServer();
 
-      // The failing middle chunk stops the pass: chunks 1 proves and
-      // clears, chunks 2-3 stay fenced (and the timer loop retries them).
+      // All-or-nothing per round: the failing middle chunk discards the
+      // whole round — even the first chunk's proofs must NOT clear.
       expect(probeCalls.map((chunk) => chunk.length)).toEqual([50, 50]);
       const reloaded = new ReplayFenceStore(fencePath);
       reloaded.load();
-      expect(reloaded.isFenced("chat-chunks", "msg-1")).toBe(false);
-      expect(reloaded.isFenced("chat-chunks", "msg-50")).toBe(false);
+      expect(reloaded.isFenced("chat-chunks", "msg-1")).toBe(true);
+      expect(reloaded.isFenced("chat-chunks", "msg-50")).toBe(true);
       expect(reloaded.isFenced("chat-chunks", "msg-51")).toBe(true);
       expect(reloaded.isFenced("chat-chunks", "msg-101")).toBe(true);
 
-      // The retry loop re-probes the remainder — a later success settles it.
+      // A later round with every chunk succeeding merges proof and clears.
       await sm.reconcileReplayFencesWithServer();
-      expect(probeCalls.map((chunk) => chunk.length)).toEqual([50, 50, 50, 1]);
+      expect(probeCalls.slice(2).map((chunk) => chunk.length)).toEqual([50, 50, 1]);
       const after = new ReplayFenceStore(fencePath);
       after.load();
       expect(after.hasFenceForChat("chat-chunks")).toBe(false);
