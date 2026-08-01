@@ -73,6 +73,11 @@ type SessionManagerInternals = {
   _activeCount: number;
   registerPendingTeardown(chatId: string, handler: AgentHandler): void;
   detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void;
+  discardStaleRouteTransition(
+    chatId: string,
+    transition: { generation: number; handler: AgentHandler; phase: "start" | "resume" },
+    reason: string,
+  ): void;
   acquireActiveSlot(
     chatId: string,
     message: SessionMessage | null,
@@ -3084,8 +3089,6 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ maxSessions: 1 });
     const i = internals(sm);
     const chatId = "chat-late-debt-drain";
-    // A suspended session still in `sessions` — a concurrent eviction can
-    // detach its handler while the terminate below is mid-drain.
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: evictedHandler, status: "suspended" }));
     i.registerPendingTeardown(chatId, debtHandler);
 
@@ -3101,10 +3104,11 @@ describe("SessionManager edge coverage", () => {
     );
     await firstShutdownStarted;
 
-    // Concurrent max-session eviction detaches the still-present session's
-    // handler — a NEW debt the in-flight terminate's snapshot never saw.
-    i.evictIfNeeded();
-    expect(i.sessions.has(chatId)).toBe(false);
+    // Concurrent lifecycle activity registers a NEW debt mid-drain (late
+    // producers include a stale route discard or the suspend finally) —
+    // one the in-flight terminate's first snapshot never saw. (Eviction no
+    // longer produces it here: chats with debt are force-kept.)
+    i.registerPendingTeardown(chatId, evictedHandler);
     expect(i.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
     expect(terminateSettled).toBe(false);
 
@@ -3235,6 +3239,182 @@ describe("SessionManager edge coverage", () => {
 
     expect(stopSettled).toBe(true);
     expect(startHandler.shutdown).toHaveBeenCalledTimes(2);
+  });
+
+  it("registers late-materialization shutdowns in the teardown authority", async () => {
+    const boom = new Error("stale shutdown failed");
+    let signalStaleStarted: (() => void) | undefined;
+    let rejectStale: ((err: unknown) => void) | undefined;
+    const staleStarted = new Promise<void>((resolve) => {
+      signalStaleStarted = resolve;
+    });
+    const staleGate = new Promise<void>((_resolve, reject) => {
+      rejectStale = reject;
+    });
+    const staleHandler = handler({
+      shutdown: vi
+        .fn()
+        // First call: the suspend boundary's pre-materialization shutdown.
+        .mockResolvedValueOnce(undefined)
+        // Second call: the discard's afterPrior shutdown, gated then failed.
+        .mockImplementationOnce(async () => {
+          signalStaleStarted?.();
+          await staleGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-late-materialization";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: staleHandler,
+        status: "active",
+        routeTransition: { generation: 0, handler: staleHandler, phase: "start" },
+      }),
+    );
+    i._activeCount = 1;
+
+    // Suspend cancels the start; the boundary's FIRST shutdown succeeds and
+    // the entry is dropped with no debt (the stop was confirmed).
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    expect(staleHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+
+    // The canceled start MATERIALIZES late: the discard's second shutdown
+    // (afterPrior — the first was a no-op over a not-yet-started handler)
+    // must enter the teardown authority instead of running ownerless.
+    i.discardStaleRouteTransition(
+      chatId,
+      { generation: 0, handler: staleHandler, phase: "start" },
+      "test_stale_completion",
+    );
+    await staleStarted;
+    expect(i.pendingTeardowns.get(chatId)?.has(staleHandler)).toBe(true);
+
+    // A terminate joins the in-flight second shutdown; its failure rejects
+    // the apply and keeps the debt retryable.
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    rejectStale?.(boom);
+    await expect(terminate).rejects.toBe(boom);
+    expect(i.pendingTeardowns.get(chatId)?.has(staleHandler)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    // Retry converges.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(staleHandler.shutdown).toHaveBeenCalledTimes(3);
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("fences resume handler installation while a terminate is draining", async () => {
+    const suspendBoom = new Error("suspend failed");
+    let signalStopStarted: (() => void) | undefined;
+    let resolveStop: (() => void) | undefined;
+    const stopStarted = new Promise<void>((resolve) => {
+      signalStopStarted = resolve;
+    });
+    const stopGate = new Promise<void>((resolve) => {
+      resolveStop = resolve;
+    });
+    const oldHandler = handler({
+      suspend: vi.fn().mockRejectedValue(suspendBoom),
+      shutdown: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          signalStopStarted?.();
+          await stopGate;
+        })
+        .mockResolvedValue(undefined),
+    });
+    const freshHandler = handler();
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-resume-fenced-by-terminate";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(i.sessions.get(chatId)?.suspendError).not.toBe(null);
+
+    // Resume's strict stop of the failed-suspend handler is gated; the
+    // terminate joins the same raw shutdown.
+    const resume = sm.handleCommand(chatId, "session:resume");
+    await stopStarted;
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+
+    // The stop succeeds — but with the terminate now in flight, the resume
+    // must hit the fence instead of installing a fresh handler that the
+    // terminate would ack over.
+    resolveStop?.();
+    await expect(resume).rejects.toThrow(/fenced/);
+    await terminate;
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("keeps chats with unresolved teardown debt in the held set", async () => {
+    const sm = makeManager();
+    const i = internals(sm);
+    // A chat whose only trace is teardown debt must stay held: dropping it
+    // would lose the reconcile retry channel for the unconfirmed stop.
+    i.registerPendingTeardown("chat-debt-only", handler());
+    expect(sm.getHeldChatIds()).toContain("chat-debt-only");
+    await sm.shutdown();
+  });
+
+  it("does not evict a chat with unresolved teardown debt", async () => {
+    const sm = makeManager({ maxSessions: 1 });
+    const i = internals(sm);
+    const debtChat = "chat-force-keep-debt";
+    const otherChat = "chat-force-keep-other";
+    i.sessions.set(debtChat, makeSessionRecord(debtChat, { status: "suspended", lastActivity: 1_000 }));
+    i.sessions.set(otherChat, makeSessionRecord(otherChat, { status: "suspended", lastActivity: 2_000 }));
+    i.registerPendingTeardown(debtChat, handler());
+
+    // The debt chat is the older non-active session and would be the
+    // preferred victim; the force-keep skips it, so the other chat is
+    // evicted instead.
+    i.evictIfNeeded();
+    expect(i.sessions.has(debtChat)).toBe(true);
+    expect(i.sessions.has(otherChat)).toBe(false);
+
+    await sm.shutdown();
+  });
+
+  it("terminal cleanup leaves no fake teardown debt once the stop confirms", async () => {
+    const targetHandler = handler({
+      resume: vi.fn().mockRejectedValue({ name: "ClientUserMismatchError", message: "wrong client" }),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-terminal-no-fake-debt";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: targetHandler,
+        status: "suspended",
+        claudeSessionId: "previous-session",
+      }),
+    );
+
+    await sm.dispatch(mockEntry({ id: 80, chatId, messageId: "msg-terminal-no-fake-debt" }));
+
+    // The terminal path registers-then-shuts-down the handler: the stop
+    // confirmed, so no register-only "fake" debt lingers.
+    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    expect(targetHandler.shutdown).toHaveBeenCalled();
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+
+    await sm.shutdown();
   });
 
   it("rejects an active-slot terminate when handler shutdown fails, then lets a retry succeed", async () => {

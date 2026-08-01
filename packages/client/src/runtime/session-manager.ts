@@ -1027,6 +1027,12 @@ export class SessionManager {
     for (const id of this.evictedMappings.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
+    // Unresolved teardown debt keeps the chat held: the handler is not
+    // confirmed stopped, so the server must keep this chat in the sync set —
+    // dropping it would lose the reconcile retry channel for the debt.
+    for (const id of this.pendingTeardowns.keys()) {
+      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+    }
     return [...ids];
   }
 
@@ -1388,9 +1394,21 @@ export class SessionManager {
     return transition;
   }
 
-  private discardStaleRouteTransition(transition: RouteTransitionToken, reason: string): void {
+  private discardStaleRouteTransition(chatId: string, transition: RouteTransitionToken, reason: string): void {
     this.retiredHandlers.add(transition.handler);
-    void this.shutdownHandler(transition.handler, reason, { afterPrior: true });
+    // A stale route completion MATERIALIZES the handler (the canceled
+    // start/resume returned late), so it needs a NEW shutdown chained after
+    // any prior (a pre-materialization shutdown was a no-op). That stop's
+    // outcome enters the pending-teardown authority: on failure the
+    // possibly-live stale handler stays joinable for a ref'd terminate /
+    // reconcile retry / manager shutdown instead of becoming ownerless.
+    this.registerPendingTeardown(chatId, transition.handler);
+    void this.shutdownHandler(transition.handler, reason, { afterPrior: true, observeFailure: true }).then(
+      () => this.dropPendingTeardown(chatId, transition.handler),
+      () => {
+        // Failure keeps the debt — a later terminate / reconcile retries it.
+      },
+    );
   }
 
   private claimActiveSlot(entry: SessionEntry): void {
@@ -1897,7 +1915,7 @@ export class SessionManager {
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_eviction_resume_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_eviction_resume_stale_completion");
           return;
         }
         if (!this.adoptResumeReceipt(entry, message, receipt, "session_eviction_resume_unowned_delivery")) return;
@@ -1905,7 +1923,7 @@ export class SessionManager {
       } else {
         const receipt = normalizeStartReceipt(await handler.start(message, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_start_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -1916,14 +1934,14 @@ export class SessionManager {
         this.config.log.info({ chatId, sessionId: entry.claudeSessionId }, "session created");
       }
       if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_start_stale_adoption");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_start_stale_failure");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_start_failed");
@@ -1989,6 +2007,16 @@ export class SessionManager {
       this.retiredHandlers.add(entry.handler);
     }
 
+    // Fence: a terminate in flight for this chat shares the very shutdown
+    // this resume may have just joined — installing a fresh handler now
+    // would let that terminate drain the OLD debt and ack while the NEW
+    // handler is still running. Abort instead; the route callers treat the
+    // failure with resume's existing error semantics (the terminate clears
+    // admission and pending delivery state on its own).
+    if (this.terminatingChats.has(entry.chatId)) {
+      throw new Error("session resume fenced: terminate in flight for chat");
+    }
+
     // Admin-triggered resume has no provider input. It may use idle capacity,
     // but it must not preempt unrelated working turns.
     const slotKind: SlotDeliveryKind = message ? deliveryKind : "control";
@@ -2021,13 +2049,13 @@ export class SessionManager {
         ? await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx, token)
         : await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx);
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_resume_stale_completion");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_completion");
         return;
       }
       const receipt = normalizeResumeReceipt(resumeResult);
       if (!this.adoptResumeReceipt(entry, message, receipt, "session_resume_unowned_delivery")) return;
       if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_resume_stale_adoption");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
@@ -2035,7 +2063,7 @@ export class SessionManager {
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_resume_stale_failure");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_resume_failed");
@@ -2277,9 +2305,11 @@ export class SessionManager {
     }
 
     if (this.sessions.get(chatId) !== entry) return;
-    // Terminal cleanup does not shut the entry handler down itself, so its
-    // stop is unconfirmed — record the debt for a later ref'd terminate.
-    this.registerPendingTeardown(chatId, entry.handler);
+    // Terminal cleanup previously left the handler's stop unconfirmed
+    // (register-only debt that lingered until a terminate). Register-then-
+    // shutdown instead: the debt mirrors the real shutdown timeline — a
+    // confirmed stop drops it immediately, a failure keeps it retryable.
+    this.detachHandlerWithPendingTeardown(chatId, entry.handler, "session_terminal_failure");
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
@@ -2419,7 +2449,7 @@ export class SessionManager {
           ? await newHandler.resume(retryHeadMessage ?? undefined, retryRoute.previousSessionId, ctx, token)
           : await newHandler.resume(undefined, retryRoute.previousSessionId, ctx);
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_retry_resume_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_resume_stale_completion");
           return;
         }
         const receipt = normalizeResumeReceipt(resumeResult);
@@ -2431,7 +2461,7 @@ export class SessionManager {
           await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, routeLeaseValid)),
         );
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(transition, "session_retry_start_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -2444,7 +2474,7 @@ export class SessionManager {
       const succeededScope = entry.lastRetryScope ?? (previousAvailable(entry) ? "session_resume" : "session_start");
       const succeededClassification = this.retryClassificationForEntry(entry);
       if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_retry_stale_adoption");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_adoption");
         return;
       }
       this.clearRetryAttemptState(entry);
@@ -2479,7 +2509,7 @@ export class SessionManager {
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(transition, "session_retry_stale_failure");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_retry_failed");
@@ -2871,6 +2901,10 @@ export class SessionManager {
     let idleActiveCandidate: { key: string; session: SessionEntry } | null = null;
     let idleActiveSubprocessCandidate: { key: string; session: SessionEntry } | null = null;
     for (const [key, session] of this.sessions) {
+      // A chat with unresolved teardown debt is not a burden-free victim:
+      // its detached handlers are still being confirmed stopped, so keep it
+      // out of the candidate set (force-keep).
+      if (this.pendingTeardowns.has(key)) continue;
       if (session.status !== "active") {
         if (!nonActiveCandidate || session.lastActivity < nonActiveCandidate.session.lastActivity) {
           nonActiveCandidate = { key, session };
