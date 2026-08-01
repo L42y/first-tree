@@ -223,11 +223,16 @@ jobs:
       # trusted-publishing client is pinned to the exact version QA qualifies
       # (a floated range already broke this boundary upstream). Smoke the real
       # pack → empty-consumer install → public CLI → patched SDK chain on
-      # every CLI-affecting PR.
+      # every CLI-affecting PR. The turbo context-integration cache selftest
+      # wraps that same runSmoke() path after proving a cache hit restores
+      # context-integration/** — keep it as a shell step (not Vitest), because
+      # the forced rebuild + pack chain exceeds the worker IPC heartbeat that
+      # previously failed jobs with `Timeout calling "onTaskUpdate"` even when
+      # every assertion passed.
       - name: Pin trusted-publishing npm client
         run: npm install -g npm@11.5.1
-      - name: Release pack smoke (bundled Kimi SDK)
-        run: node scripts/release-pack-smoke.mjs
+      - name: Release pack smoke (bundled Kimi SDK + turbo context-integration cache)
+        run: node scripts/release-pack-smoke.mjs selftest-turbo-context-integration-cache
       # Keep the CLI behind Turbo so an unchanged first-tree-dev#test task can
       # use cache while its package script releases heap between batches.
       - run: pnpm exec turbo run test --filter=first-tree-dev --concurrency=1

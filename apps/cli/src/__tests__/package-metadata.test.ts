@@ -143,8 +143,27 @@ describe("trusted-publishing npm toolchain contract", () => {
   it("runs a real release-pack smoke under the pinned client on CLI-affecting PRs", () => {
     const ci = readText(CI_WORKFLOW);
     expect(ci).toContain("npm install -g npm@11.5.1");
-    expect(ci).toContain("node scripts/release-pack-smoke.mjs");
+    // Heavy turbo cache + real pack smoke stays a shell step outside Vitest
+    // (same class of failure as building dist inside beforeAll).
+    expect(ci).toContain("node scripts/release-pack-smoke.mjs selftest-turbo-context-integration-cache");
+    expect(ci).toContain("Release pack smoke (bundled Kimi SDK + turbo context-integration cache)");
+    // Do not also run the default smoke in the same job — the selftest already
+    // ends in runSmoke() (pack → consumer → bundled SDK).
+    expect(ci).not.toMatch(/^\s*run:\s*node scripts\/release-pack-smoke\.mjs\s*$/m);
     expect(existsSync(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toBe(true);
+
+    const smoke = readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"));
+    // Prove the CI-selected selftest does not bypass the real release smoke.
+    const cacheFnStart = smoke.indexOf("function selftestTurboContextIntegrationCache()");
+    const mainFnStart = smoke.indexOf("\nfunction main()");
+    expect(cacheFnStart).toBeGreaterThanOrEqual(0);
+    expect(mainFnStart).toBeGreaterThan(cacheFnStart);
+    const cacheSelftest = smoke.slice(cacheFnStart, mainFnStart);
+    expect(cacheSelftest).toContain("runSmoke()");
+    expect(cacheSelftest).toContain('turbo.json build.outputs must include "context-integration/**"');
+    // This file must not spawn the heavy selftest inside Vitest workers.
+    const thisFile = readText(join(HERE, "package-metadata.test.ts"));
+    expect(thisFile).not.toMatch(/spawnSync\([\s\S]{0,400}selftest-turbo-context-integration-cache/);
   });
 
   it("materializes bundled deps around pack so pnpm symlink targets cannot escape the tarball", () => {
@@ -227,24 +246,6 @@ describe("trusted-publishing npm toolchain contract", () => {
     }
     expect(result.stdout).toContain("selftest-preserve-preexisting PASS");
   });
-
-  it("restores context-integration from a turbo cache hit after the directory is deleted", () => {
-    const result = spawnSync(
-      process.execPath,
-      [join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"), "selftest-turbo-context-integration-cache"],
-      {
-        cwd: REPO_ROOT,
-        encoding: "utf8",
-        env: process.env,
-      },
-    );
-    if (result.status !== 0) {
-      throw new Error(
-        `release-pack-smoke selftest-turbo-context-integration-cache failed:\n${result.stderr || result.stdout}`,
-      );
-    }
-    expect(result.stdout).toContain("selftest-turbo-context-integration-cache PASS");
-  }, 180_000);
 });
 
 describe("npm tarball registry-safety helper", () => {
