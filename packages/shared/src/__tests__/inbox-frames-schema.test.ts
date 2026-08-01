@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  INBOX_FENCE_PROBE_MAX_IDS,
   inboxAckAcceptedFrameSchema,
   inboxAckFrameSchema,
   inboxAckRejectedFrameSchema,
   inboxDeliverFrameSchema,
+  inboxFenceProbeAcceptedFrameSchema,
+  inboxFenceProbeFrameSchema,
+  inboxFenceProbeRejectedFrameSchema,
   inboxRecoverAcceptedFrameSchema,
   inboxRecoverFrameSchema,
   inboxRecoverRejectedFrameSchema,
@@ -253,5 +257,57 @@ describe("inboxRecoverRejectedFrameSchema", () => {
       reason: "agent_not_bound",
     });
     expect(res.success).toBe(true);
+  });
+});
+
+describe("inbox:fence-probe frames", () => {
+  it("accepts a well-formed probe and answer", () => {
+    expect(
+      inboxFenceProbeFrameSchema.safeParse({
+        type: "inbox:fence-probe",
+        ref: "r1",
+        agentId: "a1",
+        chatId: "c1",
+        messageIds: ["m1", "m2"],
+      }).success,
+    ).toBe(true);
+    expect(
+      inboxFenceProbeAcceptedFrameSchema.safeParse({
+        type: "inbox:fence-probe:accepted",
+        ref: "r1",
+        agentId: "a1",
+        chatId: "c1",
+        settledMessageIds: ["m1"],
+      }).success,
+    ).toBe(true);
+    expect(
+      inboxFenceProbeRejectedFrameSchema.safeParse({
+        type: "inbox:fence-probe:rejected",
+        ref: "r1",
+        agentId: "a1",
+        reason: "agent_not_bound",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects empty and oversized id lists", () => {
+    expect(
+      inboxFenceProbeFrameSchema.safeParse({
+        type: "inbox:fence-probe",
+        ref: "r1",
+        agentId: "a1",
+        chatId: "c1",
+        messageIds: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      inboxFenceProbeFrameSchema.safeParse({
+        type: "inbox:fence-probe",
+        ref: "r1",
+        agentId: "a1",
+        chatId: "c1",
+        messageIds: Array.from({ length: INBOX_FENCE_PROBE_MAX_IDS + 1 }, (_, i) => `m${i}`),
+      }).success,
+    ).toBe(false);
   });
 });

@@ -410,3 +410,174 @@ describe("inbox same-socket chat recovery", () => {
     await expect(inboxService.assertInboxOwner("inbox-a", "inbox-a")).resolves.toBeUndefined();
   });
 });
+
+describe("countUnackedForScope (authoritative unacked backlog)", () => {
+  const getApp = useTestApp();
+
+  it("counts pending AND delivered rows, so a bind-reset unacked row still blocks a settlement claim", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const a1 = await createTestAgent(app, { name: `count-a1-${uid}` });
+    const a2 = await createTestAgent(app, { name: `count-a2-${uid}` });
+
+    const chatRes = await a1.request("POST", "/api/v1/agent/chats", {
+      type: "group",
+      participantIds: [a2.agent.uuid],
+    });
+    const chatId = chatRes.json().id;
+    const msgRes = await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+      format: "text",
+      content: "count pending vs delivered",
+      receiverNames: [a2.agent.name],
+    });
+    const messageId = msgRes.json().id;
+
+    // Fresh row: pending → outstanding is 1 while the delivered reset count
+    // a recovery would report is 0. This is the bind-reset race shape: a
+    // resetCount of 0 must never be read as "settled".
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(1);
+
+    // Claim (delivered) → still outstanding 1.
+    const claimed = await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageId);
+    expect(claimed).toHaveLength(1);
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(1);
+
+    // Bind-style reset back to pending → a second recover would reset 0
+    // delivered rows, yet the outstanding truth stays 1.
+    const recovered = await inboxService.recoverUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId });
+    expect(recovered.resetEntryIds).toHaveLength(1);
+    const secondRecover = await inboxService.recoverUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId });
+    expect(secondRecover.resetEntryIds).toHaveLength(0);
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(1);
+
+    // Only a real ACK settles the scope.
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "acked", ackedAt: new Date() })
+      .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.chatId, chatId)));
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(0);
+  });
+});
+
+describe("listSettledMessageIdsForScope (per-delivery settlement truth)", () => {
+  const getApp = useTestApp();
+
+  it("proves a settled head without being diluted by an unacked tail in the same chat", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const a1 = await createTestAgent(app, { name: `probe-a1-${uid}` });
+    const a2 = await createTestAgent(app, { name: `probe-a2-${uid}` });
+
+    const chatRes = await a1.request("POST", "/api/v1/agent/chats", {
+      type: "group",
+      participantIds: [a2.agent.uuid],
+    });
+    const chatId = chatRes.json().id;
+    const msg1 = (
+      await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+        format: "text",
+        content: "settled head",
+        receiverNames: [a2.agent.name],
+      })
+    ).json().id;
+    const msg2 = (
+      await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+        format: "text",
+        content: "unacked tail",
+        receiverNames: [a2.agent.name],
+      })
+    ).json().id;
+
+    // Both unsettled initially.
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, msg2],
+      }),
+    ).toEqual([]);
+
+    // ACK the head only: it is proven settled even though the tail is
+    // still outstanding — the exact fenced-head + newer-tail scenario.
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "acked", ackedAt: new Date() })
+      .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.messageId, msg1)));
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, msg2],
+      }),
+    ).toEqual([msg1]);
+
+    // Unknown ids are not proven; a fully settled scope proves everything.
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, "msg-unknown"],
+      }),
+    ).toEqual([msg1]);
+
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "acked", ackedAt: new Date() })
+      .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.messageId, msg2)));
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [msg1, msg2],
+      }),
+    ).toEqual([msg1, msg2]);
+  });
+});
+
+describe("listSettledMessageIdsForScope under an oversized unrelated backlog", () => {
+  const getApp = useTestApp();
+
+  it("proves a settled fenced head even with 501 unacked tail rows in the same chat", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const a1 = await createTestAgent(app, { name: `big-a1-${uid}` });
+    const a2 = await createTestAgent(app, { name: `big-a2-${uid}` });
+
+    const chatRes = await a1.request("POST", "/api/v1/agent/chats", {
+      type: "group",
+      participantIds: [a2.agent.uuid],
+    });
+    const chatId = chatRes.json().id;
+    const headId = (
+      await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+        format: "text",
+        content: "settled fenced head",
+        receiverNames: [a2.agent.name],
+      })
+    ).json().id;
+
+    // 501 unrelated unacked tail rows — far beyond any response cap.
+    for (let i = 0; i < 501; i += 1) {
+      await a1.request("POST", `/api/v1/agent/chats/${chatId}/messages`, {
+        format: "text",
+        content: `tail ${i}`,
+        receiverNames: [a2.agent.name],
+      });
+    }
+
+    // The head is ACKed; the tail stays pending/delivered.
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "acked", ackedAt: new Date() })
+      .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.messageId, headId)));
+
+    expect(await inboxService.countUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId })).toBe(501);
+    expect(
+      await inboxService.listSettledMessageIdsForScope(app.db, {
+        inboxId: a2.agent.inboxId,
+        chatId,
+        messageIds: [headId],
+      }),
+    ).toEqual([headId]);
+  });
+});

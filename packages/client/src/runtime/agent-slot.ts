@@ -229,6 +229,13 @@ export class AgentSlot {
         // reconcile. Reconnects with an existing SessionManager are handled
         // here.
         if (!this.sessionManager) return;
+        // Replay-fence reconciliation on every (re)bind: an ACK committed
+        // while this client was offline can leave a stale fence the startup
+        // pass never revisits. Outstanding truth counts pending+delivered,
+        // so running it before the bind drain is safe.
+        void this.sessionManager.reconcileReplayFencesWithServer?.().catch((err) => {
+          this.logger.warn({ err }, "replay fence rebind reconciliation failed; keeping fences (fail-closed)");
+        });
         void this.refreshActiveRuntimeChatIds("bind").finally(() => {
           this.fullStateSync();
           this.scheduleActiveRuntimeChatIdsRefresh();
@@ -308,9 +315,12 @@ export class AgentSlot {
       this.throwIfRuntimeSessionTokenMutationFailed();
 
       const registryPath = join(defaultDataDir(), "sessions", `${this.config.name}.json`);
+      const replayFencePath = join(defaultDataDir(), "sessions", `${this.config.name}.replay-fence.json`);
 
       const ackEntry = (entryId: number) => this.clientConnection.sendInboxAck(entryId, agent.agentId);
-      const recoverChat = (chatId: string) => this.clientConnection.sendInboxRecover(agent.agentId, chatId);
+      const recoverChat = async (chatId: string) => {
+        await this.clientConnection.sendInboxRecover(agent.agentId, chatId);
+      };
       const runtimeProvider = runtimeProviderSchema.safeParse(runtimeType);
 
       // Defer idle-suspend while a provider has a live background subprocess
@@ -350,10 +360,15 @@ export class AgentSlot {
         sdk,
         log: this.logger,
         registryPath,
+        replayFencePath,
         agentConfigCache: this.agentConfigCache,
         runtimeSessionTokenFile: this.runtimeSessionTokenFile,
         ackEntry,
         recoverChat,
+        probeFencedSettlement: async (chatId, messageIds) => {
+          const result = await this.clientConnection.sendInboxFenceProbe(agent.agentId, chatId, [...messageIds]);
+          return result.settledMessageIds;
+        },
         recoverRuntimeSessionProof: (reasonCode) => this.recoverRuntimeSessionProof(reasonCode),
         onStateChange: (chatId, state) => this.reportSessionState(chatId, state),
         onRuntimeStateChange: (state) => this.reportRuntimeState(state),
@@ -398,6 +413,14 @@ export class AgentSlot {
           });
         }
       }
+
+      // Crash-safe replay-fence reconciliation: a fence whose delivery was
+      // ACKed just before a crash would otherwise stall its chat forever.
+      // Server ACK truth (inbox recovery reset count) decides; failures keep
+      // fences fail-closed. Optional-call: slot tests stub a partial manager.
+      await this.sessionManager.reconcileReplayFencesWithServer?.().catch((err) => {
+        this.logger.warn({ err }, "replay fence startup reconciliation failed; keeping fences (fail-closed)");
+      });
 
       await this.refreshActiveRuntimeChatIds("startup");
       // Initial-startup fullStateSync. The `on("agent:bound", onBound)`

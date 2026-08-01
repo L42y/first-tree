@@ -53,6 +53,13 @@ classification, or Context Tree Kimi-tool derivation changes.
   unsupported diagnostic is emitted. Verify the stdio/http/SSE projection shapes without retaining secret headers.
   An empty managed list must omit the caller field so operator-global and project Kimi configuration keep their normal
   behavior.
+- Background subagents: instruct Kimi to launch two background subagents (`Agent` with `run_in_background`) whose work
+  runs longer than a deliberately short client idle threshold (for example 5 seconds). Verify both SDK `createSession`
+  and `resumeSession` carry `drainAgentTasksOnStop`, the session keeps reporting activity instead of idle-suspending,
+  subagent text never appears as the agent's own assistant output, subagent tool effects stay observable with
+  collision-safe tool-call ids while main-agent ids stay raw, and exactly one successful turn-end plus delivery
+  completion lands only after the main agent has consumed both subagent completions. Repeat the scenario once across a
+  suspend/resume boundary.
 - Failure and replay: prove a transient connection/rate error retries only before visible/unsafe output. After `Write`,
   `Edit`, or an unproven `Bash`, a failure must stop as unsafe replay rather than repeat the side effect; a later
   read-only tool must not downgrade that unsafe state.
@@ -70,7 +77,8 @@ Context Tree rows, and verified auth/failure boundaries.
 
 `FAIL` means a reproducible product violation such as device OAuth launched by First Tree, credentials exposed, model
 silently changed, missing standing role contract on resume, unsafe side effects replayed, terminal failure ACKed without
-the durable notice, configured caller MCP absent after create/resume, or absent Context Tree evidence.
+the durable notice, a delivery settled before the main agent consumed its background subagents (or child text leaking
+into assistant output), configured caller MCP absent after create/resume, or absent Context Tree evidence.
 
 `BLOCKED` means the Kimi account, credential, provider entitlement/network, or isolated run-cell topology prevented a
 live branch. Mocked SDK unit tests do not turn a blocked live branch into PASS. `INCONCLUSIVE` means the turn ran but

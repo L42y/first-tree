@@ -294,7 +294,7 @@ describe("ClientConnection — additional branch coverage", () => {
 
     await expect(eventPromise).resolves.toBeUndefined();
     await expect(ackPromise).resolves.toBeUndefined();
-    await expect(recoverPromise).resolves.toBeUndefined();
+    await expect(recoverPromise).resolves.toEqual({ resetCount: 2, unackedOutstanding: undefined });
   });
 
   it("times out confirmed session events and keeps later rejection frames from double-settling", async () => {

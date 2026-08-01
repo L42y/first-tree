@@ -80,4 +80,69 @@ describe("npm package metadata", () => {
 
     expect(dependencies["fs-native-extensions"]).toBe("^1.5.0");
   });
+
+  it("bundles the patched Kimi SDK and declares its runtime dependencies for consumers", () => {
+    const pkg = readJson(join(CLI_ROOT, "package.json")) as Record<string, unknown>;
+    // The workspace pins the Kimi SDK through a pnpm patch (see
+    // pnpm-workspace.yaml). npm consumers cannot apply that patch, so the
+    // tarball must carry the patched artifact as a bundled dependency, and
+    // the SDK's own runtime deps must be regular CLI dependencies so the
+    // bundled copy resolves them from the consumer's top-level node_modules.
+    expect(pkg.bundleDependencies).toEqual(["@botiverse/kimi-code-sdk"]);
+    const dependencies = packageDependencies(pkg);
+    for (const sdkRuntimeDep of ["@antfu/utils", "smol-toml", "yazl"]) {
+      expect(dependencies[sdkRuntimeDep]).toBeDefined();
+    }
+    expect(dependencies["@botiverse/kimi-code-sdk"]).toBe("0.26.0-botiverse.2");
+  });
+});
+
+describe("workspace dependency-patch distribution", () => {
+  it("copies the pnpm patch files into the Docker dependency stage before install", () => {
+    const dockerfile = readText(join(REPO_ROOT, "Dockerfile"));
+    const copyPatches = dockerfile.indexOf("COPY patches/ patches/");
+    const install = dockerfile.indexOf("pnpm install --frozen-lockfile");
+    expect(copyPatches).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(-1);
+    expect(copyPatches).toBeLessThan(install);
+  });
+
+  it("points every patchedDependencies entry at a patch file that exists and ships to Docker", () => {
+    const workspaceYaml = readText(join(REPO_ROOT, "pnpm-workspace.yaml"));
+    const match = workspaceYaml.match(/patchedDependencies:\n((?:[ \t]+\S.*\n?)+)/);
+    expect(match).not.toBeNull();
+    if (!match) throw new Error("patchedDependencies block missing from pnpm-workspace.yaml");
+    const entries = [...match[1].matchAll(/^\s+(['"]?)([^'":]+)\1:\s*(.+?)\s*$/gm)];
+    expect(entries.length).toBeGreaterThan(0);
+    const dockerignore = readText(join(REPO_ROOT, ".dockerignore"));
+    for (const entry of entries) {
+      const patchPath = entry[3];
+      expect(patchPath.startsWith("patches/")).toBe(true);
+      expect(existsSync(join(REPO_ROOT, patchPath))).toBe(true);
+    }
+    expect(dockerignore).not.toMatch(/^patches\/?$/m);
+  });
+});
+
+describe("trusted-publishing npm toolchain contract", () => {
+  const PUBLISH_WORKFLOW = join(REPO_ROOT, ".github", "workflows", "publish-npm-package.yml");
+  const CI_WORKFLOW = join(REPO_ROOT, ".github", "workflows", "ci.yml");
+
+  it("pins every trusted-publishing npm install to the exact QA-qualified version, with no moving selector", () => {
+    const workflow = readText(PUBLISH_WORKFLOW);
+    const installs = [...workflow.matchAll(/npm install -g npm@(\S+)/g)].map((match) => match[1]);
+    // prod CLI, staging CLI, and shared alpha must all be covered.
+    expect(installs.length).toBeGreaterThanOrEqual(3);
+    for (const selector of installs) {
+      expect(selector).toBe("11.5.1");
+    }
+    expect(workflow).not.toMatch(/npm@(latest|next|\^|~)/);
+  });
+
+  it("runs a real release-pack smoke under the pinned client on CLI-affecting PRs", () => {
+    const ci = readText(CI_WORKFLOW);
+    expect(ci).toContain("npm install -g npm@11.5.1");
+    expect(ci).toContain("node scripts/release-pack-smoke.mjs");
+    expect(existsSync(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toBe(true);
+  });
 });

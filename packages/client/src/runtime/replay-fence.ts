@@ -1,0 +1,217 @@
+import { closeSync, constants, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+
+const FENCE_VERSION = 1;
+
+/** One durable replay-fence record, bound to a concrete chat + inbox message. */
+export type ReplayFenceEntry = {
+  readonly chatId: string;
+  readonly messageId: string;
+  readonly provider: string;
+  /** First observed non-read-only tool effect that made replay unsafe. */
+  readonly toolName: string;
+  readonly toolUseId: string;
+  /** ISO 8601 time the fence was persisted. */
+  readonly fencedAt: string;
+};
+
+type ReplayFenceData = {
+  version: number;
+  entries: Record<string, ReplayFenceEntry>;
+};
+
+/** Narrow surface handlers need; the full store also exposes load/isFenced. */
+export type ReplayFenceWriter = {
+  /** Persist a fence; throws ReplayFenceError when the durable write fails. */
+  fence(entry: ReplayFenceEntry): void;
+  /** Drop a fence after its delivery settled; throws ReplayFenceError on write failure. */
+  clear(chatId: string, messageId: string): void;
+};
+
+export class ReplayFenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReplayFenceError";
+  }
+}
+
+function keyOf(chatId: string, messageId: string): string {
+  // Length-prefixed pair encoding: unambiguous for any id contents, unlike
+  // raw concatenation where ("a1", "b") and ("a", "1b") collide.
+  return `${chatId.length}:${chatId}${messageId}`;
+}
+
+function isValidEntry(entry: unknown): entry is ReplayFenceEntry {
+  if (typeof entry !== "object" || entry === null) return false;
+  const candidate = entry as Record<string, unknown>;
+  return (
+    typeof candidate.chatId === "string" &&
+    typeof candidate.messageId === "string" &&
+    typeof candidate.provider === "string" &&
+    typeof candidate.toolName === "string" &&
+    typeof candidate.toolUseId === "string" &&
+    typeof candidate.fencedAt === "string"
+  );
+}
+
+function readErrorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
+
+/**
+ * ReplayFenceStore — durable record of provider-entered deliveries that have
+ * already produced a non-read-only tool effect. Unlike SessionRegistry, these
+ * facts are safety-critical: every mutation is written synchronously
+ * (write-then-fsync-then-rename) and failures THROW instead of being logged
+ * and swallowed. A store that cannot be trusted must fail closed — callers
+ * treat load/persist errors as "do not re-enter the provider", never as
+ * "safe to replay".
+ *
+ * Lifecycle: a handler fences (chatId, messageId) as soon as it observes an
+ * unsafe tool call start, and clears the fence only after the delivery's
+ * terminal settlement is confirmed. A crash in between leaves the fence on
+ * disk, and the next process's dispatch gate refuses to start/resume a
+ * provider turn for that concrete message, keeping it as unacknowledged
+ * recovery debt instead of replaying the effect.
+ */
+export class ReplayFenceStore {
+  private readonly filePath: string;
+  private entries = new Map<string, ReplayFenceEntry>();
+  private loaded = false;
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+  }
+
+  /** Load persisted fences. Only a missing file (ENOENT) means an empty store. */
+  load(): void {
+    let raw: string;
+    try {
+      raw = readFileSync(this.filePath, "utf-8");
+    } catch (error) {
+      if (readErrorCode(error) === "ENOENT") {
+        // First start — no fences persisted yet.
+        this.loaded = true;
+        return;
+      }
+      // EACCES / EISDIR / I/O errors: the persisted safety facts exist (or
+      // their state is unknown) but cannot be read. Fail closed — callers
+      // must treat the store as unavailable, never as empty.
+      throw new ReplayFenceError(
+        `replay fence store is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    let data: ReplayFenceData;
+    try {
+      data = JSON.parse(raw) as ReplayFenceData;
+    } catch (error) {
+      throw new ReplayFenceError(
+        `replay fence store is corrupted: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (typeof data !== "object" || data === null || data.version !== FENCE_VERSION) {
+      throw new ReplayFenceError(`replay fence store has unsupported version: ${String(data?.version)}`);
+    }
+    if (typeof data.entries !== "object" || data.entries === null || Array.isArray(data.entries)) {
+      throw new ReplayFenceError("replay fence store has malformed entries");
+    }
+
+    const loaded = new Map<string, ReplayFenceEntry>();
+    for (const [key, entry] of Object.entries(data.entries)) {
+      if (!isValidEntry(entry) || keyOf(entry.chatId, entry.messageId) !== key) {
+        throw new ReplayFenceError(`replay fence store has malformed entry: ${key}`);
+      }
+      loaded.set(key, entry);
+    }
+    this.entries = loaded;
+    this.loaded = true;
+  }
+
+  isFenced(chatId: string, messageId: string): boolean {
+    return this.entries.has(keyOf(chatId, messageId));
+  }
+
+  /** True when the chat has any unresolved fence — its whole FIFO tail must hold. */
+  hasFenceForChat(chatId: string): boolean {
+    for (const entry of this.entries.values()) {
+      if (entry.chatId === chatId) return true;
+    }
+    return false;
+  }
+
+  fence(entry: ReplayFenceEntry): void {
+    const key = keyOf(entry.chatId, entry.messageId);
+    if (this.entries.has(key)) return;
+    this.entries.set(key, entry);
+    try {
+      this.persist();
+    } catch (error) {
+      this.entries.delete(key);
+      throw error;
+    }
+  }
+
+  clear(chatId: string, messageId: string): void {
+    const key = keyOf(chatId, messageId);
+    const existing = this.entries.get(key);
+    if (!existing) return;
+    this.entries.delete(key);
+    try {
+      this.persist();
+    } catch (error) {
+      this.entries.set(key, existing);
+      throw error;
+    }
+  }
+
+  /** Test/debug surface: current in-memory fence records. */
+  snapshot(): readonly ReplayFenceEntry[] {
+    return [...this.entries.values()];
+  }
+
+  get isLoaded(): boolean {
+    return this.loaded;
+  }
+
+  private persist(): void {
+    const data: ReplayFenceData = { version: FENCE_VERSION, entries: {} };
+    for (const [key, entry] of this.entries) {
+      data.entries[key] = entry;
+    }
+    const tmpPath = `${this.filePath}.tmp`;
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+      const fd = openSync(tmpPath, constants.O_RDONLY);
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmpPath, this.filePath);
+      // Durability scope: the write+fsync+rename sequence survives a process
+      // SIGKILL. The best-effort parent-directory fsync below extends that to
+      // host crashes on filesystems that require it; its failure is logged
+      // into the error rather than silently dropped, but a directory that
+      // cannot be fsynced does not undo the rename.
+      try {
+        const dirFd = openSync(dirname(this.filePath), constants.O_RDONLY);
+        try {
+          fsyncSync(dirFd);
+        } finally {
+          closeSync(dirFd);
+        }
+      } catch {
+        // Directory fsync unsupported (e.g. some virtual filesystems) — the
+        // file-level fsync above still guarantees process-crash durability.
+      }
+    } catch (error) {
+      throw new ReplayFenceError(
+        `failed to persist replay fence: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}

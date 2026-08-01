@@ -1,7 +1,12 @@
 import type { InboxEntryWithMessage } from "@first-tree/shared";
 import type { pino } from "../observability/logger.js";
 import { Deduplicator } from "./deduplicator.js";
-import type { SessionMessage, TerminalRejectionEvidence, TurnOutcome } from "./handler.js";
+import type {
+  DeliveryCompletionDisposition,
+  SessionMessage,
+  TerminalRejectionEvidence,
+  TurnOutcome,
+} from "./handler.js";
 
 export type DeliveryWork = {
   chatId: string;
@@ -27,6 +32,13 @@ export type WorkSnapshot = {
 };
 
 type DeliveryPhase = "open" | "owned" | "terminal";
+
+/**
+ * Defensive per-chat bound for fence-settled markers. Practically
+ * unreachable — markers only exist for unsafe-interrupted deliveries —
+ * and eviction would be a safety hole, so overflow only logs loudly.
+ */
+const FENCE_SETTLED_MARKER_WARN_PER_CHAT = 16384;
 type RecoveryDebt = "none" | "required" | "running";
 
 type TrackedDelivery = {
@@ -46,6 +58,13 @@ type TrackedDelivery = {
     reason: string;
     startedAt: number;
   };
+  /**
+   * Set when the replay-fence gate withheld this delivery before any route
+   * ownership or processing started. A later redelivery of such an entry
+   * must be re-admitted (not swallowed as duplicate-in-flight) once the
+   * fence is gone — the server row is the only durable copy.
+   */
+  replayFencedWithheld?: boolean;
 };
 
 type ChatInboxLedger = {
@@ -56,13 +75,20 @@ type ChatInboxLedger = {
   // keep classifying that burst as recovery while any redelivered work is unsettled.
   recoveryWindowOpen: boolean;
   admissionQueue: Promise<void> | null;
-  ackQueue: Promise<void> | null;
+  ackQueue: Promise<unknown> | null;
 };
 
 type InboxDeliveryCoordinatorConfig = {
   ackEntry: (entryId: number) => Promise<void>;
   recoverChat?: (chatId: string) => Promise<void>;
   onWorkChanged: (chatId: string) => void;
+  /**
+   * Called after concrete ledger entries are durably committed through a
+   * confirmed ACK — including the recovery/redelivery retry path, which is
+   * the only settlement route left when the original completion could not
+   * ACK. Consumers reconcile per-delivery safety facts (replay fences) here.
+   */
+  onDeliveriesCommitted?: (chatId: string, messageIds: readonly string[]) => void;
   log: pino.Logger;
 };
 
@@ -70,6 +96,20 @@ export class InboxDeliveryCoordinator {
   private readonly config: InboxDeliveryCoordinatorConfig;
   private readonly deduplicator = new Deduplicator(1000);
   private readonly recentlySettled = new Deduplicator(1000);
+  /**
+   * Settlement markers for fence-probe-settled deliveries, keyed by
+   * (chatId, messageId) — the delivery's ackable identity. Registered
+   * UNCONDITIONALLY at settlement proof, independent of ledger membership:
+   * a frame parked before receive() (e.g. behind a suspending session)
+   * must be just as suppressed as a tracked one. Distinct from
+   * recentlySettled: committed entries deliberately allow one post-commit
+   * reprocess (ack-lost recovery), while a probe-settled unsafe delivery
+   * must never re-enter the provider from a stray frame.
+   *
+   * No wall-clock expiry: a clock jump must never authorize an unsafe
+   * re-entry. Fences are exceptional, so the set stays tiny in practice.
+   */
+  private readonly fenceSettledMessages = new Map<string, Set<string>>();
   private readonly ledgers = new Map<string, ChatInboxLedger>();
   private readonly recoveringChats = new Map<string, Promise<void>>();
 
@@ -88,6 +128,14 @@ export class InboxDeliveryCoordinator {
 
     const activeByEntryId = ledger.entries.find((tracked) => tracked.entryId === entry.id);
     if (activeByEntryId) {
+      if (activeByEntryId.replayFencedWithheld) {
+        // Previously withheld by the replay-fence gate before any custody:
+        // re-admit so the route gate can re-evaluate (exactly-once, since
+        // the flag is consumed here).
+        activeByEntryId.replayFencedWithheld = undefined;
+        this.emitWorkChanged(chatId);
+        return { kind: "deliver", work: { chatId, entryId: entry.id, messageId } };
+      }
       this.config.log.debug(
         { chatId, messageId, entryId: entry.id, phase: activeByEntryId.phase },
         "redelivery observed for active ledger entry",
@@ -97,6 +145,13 @@ export class InboxDeliveryCoordinator {
           requireTerminalPrefix: true,
         });
       }
+      return { kind: "duplicate-in-flight" };
+    }
+
+    // Settlement marker: this delivery was proven settled by a fence probe —
+    // suppress stray frames instead of reprocessing them into the provider.
+    if (this.fenceSettledMessages.get(chatId)?.has(messageId)) {
+      this.config.log.debug({ chatId, messageId, entryId: entry.id }, "suppressing frame for already-settled delivery");
       return { kind: "duplicate-in-flight" };
     }
 
@@ -206,6 +261,64 @@ export class InboxDeliveryCoordinator {
     return next;
   }
 
+  /**
+   * Mark ledger entries withheld by the replay-fence gate (no custody
+   * taken). Their next redelivery is re-admitted instead of swallowed as
+   * duplicate-in-flight — the only path that lets server redelivery drive a
+   * withheld delivery once its fence clears.
+   */
+  markReplayFenceWithheld(chatId: string, messageIds: readonly string[]): void {
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger) return;
+    const ids = new Set(messageIds);
+    for (const tracked of ledger.entries) {
+      if (ids.has(tracked.messageId) && tracked.phase === "open" && tracked.processingStartedAt === undefined) {
+        tracked.replayFencedWithheld = true;
+      }
+    }
+  }
+
+  /**
+   * Drop ledger entries the server proved durably settled (fence probe).
+   * The client never observed their ACK, but the server is authoritative:
+   * keeping them would let a stray duplicate frame re-admit an
+   * already-settled unsafe delivery into the provider.
+   */
+  /**
+   * Register the settlement fact for proven-settled deliveries. This is
+   * THE shared suppression boundary for every server-proven settlement of
+   * a fenced delivery — probe or confirmed ACK — and must run BEFORE the
+   * local fence is cleared, so a later stale frame is suppressed at
+   * receive() instead of resuming the provider. Independent of ledger
+   * membership (a frame may still be parked before receive()).
+   */
+  markFenceSettled(chatId: string, messageIds: readonly string[]): void {
+    let markers = this.fenceSettledMessages.get(chatId);
+    if (!markers) {
+      markers = new Set();
+      this.fenceSettledMessages.set(chatId, markers);
+    }
+    for (const messageId of messageIds) {
+      markers.add(messageId);
+    }
+    if (markers.size > FENCE_SETTLED_MARKER_WARN_PER_CHAT) {
+      this.config.log.error(
+        { chatId, count: markers.size },
+        "fence-settled marker set exceeds the defensive bound; refusing to evict safety markers",
+      );
+    }
+  }
+
+  settleReplayFencedEntries(chatId: string, messageIds: readonly string[]): void {
+    this.markFenceSettled(chatId, messageIds);
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger) return;
+    const ids = new Set(messageIds);
+    ledger.entries = ledger.entries.filter((tracked) => !ids.has(tracked.messageId));
+    this.cleanupLedger(chatId);
+    this.emitWorkChanged(chatId);
+  }
+
   markOwned(work: DeliveryWork): DeliveryRouteOwnership {
     const tracked = this.findEntry(work.chatId, work.entryId);
     if (!tracked) {
@@ -246,14 +359,20 @@ export class InboxDeliveryCoordinator {
     chatId: string,
     messages: SessionMessage | readonly SessionMessage[],
     outcome: TurnOutcome,
-  ): Promise<void> {
+  ): Promise<DeliveryCompletionDisposition> {
     const throughEntryId = this.lastMessageEntryId(chatId, messages);
     if (throughEntryId === undefined) {
       this.config.log.warn({ chatId }, "turn completion ignored because no inboxEntryId was provided");
-      return;
+      return "retry";
     }
     this.markTerminal(chatId, messages, outcome);
-    await this.ackThrough(chatId, throughEntryId, "finish_turn", { requireTerminalPrefix: true });
+    // The completion is only "settled" once the concrete entries have left
+    // the ledger through a confirmed ACK. ACK rejection, recovery debt, and
+    // non-terminal prefix gaps all retain server custody and must surface as
+    // "retry" so callers (e.g. replay-fence cleanup) do not treat the
+    // delivery as durably finished.
+    const committed = await this.ackThrough(chatId, throughEntryId, "finish_turn", { requireTerminalPrefix: true });
+    return committed ? "settled" : "retry";
   }
 
   async terminalRejected(
@@ -451,11 +570,11 @@ export class InboxDeliveryCoordinator {
     throughEntryId: number,
     reason: string,
     opts: { requireTerminalPrefix?: boolean; requestRecoveryOnAckFailure?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const ledger = this.ledgers.get(chatId);
-    if (!ledger) return;
-    const prev = ledger.ackQueue ?? Promise.resolve();
-    const next = prev.catch(() => undefined).then(() => this.ackThroughNow(chatId, throughEntryId, reason, opts));
+    if (!ledger) return false;
+    const prev: Promise<unknown> = ledger.ackQueue ?? Promise.resolve(false);
+    const next = prev.catch(() => false).then(() => this.ackThroughNow(chatId, throughEntryId, reason, opts));
     const queueMarker = next.then(
       () => {},
       () => {},
@@ -463,7 +582,7 @@ export class InboxDeliveryCoordinator {
     ledger.ackQueue = queueMarker;
     this.emitWorkChanged(chatId);
     try {
-      await next;
+      return await next;
     } finally {
       if (ledger.ackQueue === queueMarker) {
         ledger.ackQueue = null;
@@ -478,20 +597,20 @@ export class InboxDeliveryCoordinator {
     throughEntryId: number,
     reason: string,
     opts: { requireTerminalPrefix?: boolean; requestRecoveryOnAckFailure?: boolean },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const ledger = this.ledgers.get(chatId);
-    if (!ledger || ledger.entries.length === 0) return;
+    if (!ledger || ledger.entries.length === 0) return false;
     if (ledger.recoveryDebt !== "none") {
       this.config.log.debug(
         { chatId, throughEntryId, reason },
         "ACK-through deferred because chat recovery is required",
       );
-      return;
+      return false;
     }
     const index = ledger.entries.findIndex((tracked) => tracked.entryId === throughEntryId);
     if (index < 0) {
       this.config.log.warn({ chatId, throughEntryId, reason }, "attempt completion ignored for untracked inbox entry");
-      return;
+      return false;
     }
 
     const ackPrefix = ledger.entries.slice(0, index + 1);
@@ -506,7 +625,7 @@ export class InboxDeliveryCoordinator {
         "ACK-through blocked because delivery prefix has non-terminal entries",
       );
       await this.markRecoveryDebt(chatId, `${reason}:non_terminal_prefix_gap`);
-      return;
+      return false;
     }
     let changed = false;
     for (const tracked of ackPrefix) {
@@ -533,11 +652,11 @@ export class InboxDeliveryCoordinator {
       void this.markRecoveryDebt(chatId, `${reason}:ack_failed`, {
         requestNow: opts.requestRecoveryOnAckFailure ?? true,
       });
-      return;
+      return false;
     }
 
     const current = this.ledgers.get(chatId);
-    if (!current) return;
+    if (!current) return false;
     const committed = current.entries.filter((tracked) => tracked.entryId <= throughEntryId);
     current.entries = current.entries.filter((tracked) => tracked.entryId > throughEntryId);
     for (const tracked of committed) {
@@ -546,11 +665,18 @@ export class InboxDeliveryCoordinator {
         this.settledKey({ chatId, entryId: tracked.entryId, messageId: tracked.messageId }),
       );
     }
+    if (committed.length > 0) {
+      this.config.onDeliveriesCommitted?.(
+        chatId,
+        committed.map((tracked) => tracked.messageId),
+      );
+    }
     if (current.entries.length === 0 && current.recoveryDebt === "required") {
       current.recoveryDebt = "none";
     }
     this.cleanupLedger(chatId);
     this.emitWorkChanged(chatId);
+    return true;
   }
 
   private async markRecoveryDebt(chatId: string, reason: string, opts: { requestNow?: boolean } = {}): Promise<void> {
