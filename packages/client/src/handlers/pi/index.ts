@@ -46,7 +46,7 @@ import {
   type ProviderProcessSupervisor,
   supportsDefaultProviderProcessSupervision,
 } from "../../runtime/provider-process-supervisor.js";
-import { maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
+import { classifyProviderFailure, maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -133,17 +133,27 @@ type TurnObservation = {
   attempt: ProviderAttempt;
 };
 
+export type PiModelThinkingCandidate = {
+  modelId: string;
+  thinkingLevel: string;
+};
+
 export type PiModelSelector = {
   provider: string;
+  /** Full model id after `provider/` — Pi tries this exact id first. */
   modelId: string;
-  thinkingLevel: string | null;
+  /**
+   * When the final `:` suffix is a Pi thinking level, the prefix+level pair Pi
+   * may resolve if the exact full id is not a registered model.
+   */
+  thinkingCandidate: PiModelThinkingCandidate | null;
   raw: string;
 };
 
 /**
- * Parse `provider/model` or `provider/model:<thinking>`.
- * Mirror Pi 0.83: keep the full model id unless the final `:` suffix is an
- * exact thinking level (`off|minimal|low|medium|high|xhigh|max`).
+ * Parse `provider/model…` while preserving Pi 0.83 exact-first semantics.
+ * The full post-slash id stays in `modelId`; a thinking-level suffix is only
+ * exposed as `thinkingCandidate` for the fallback interpretation.
  */
 export function parsePiModelSelector(raw: string): PiModelSelector | null {
   const trimmed = raw.trim();
@@ -152,22 +162,21 @@ export function parsePiModelSelector(raw: string): PiModelSelector | null {
   if (slash <= 0 || slash === trimmed.length - 1) return null;
   const provider = trimmed.slice(0, slash);
   const rest = trimmed.slice(slash + 1);
+  let thinkingCandidate: PiModelThinkingCandidate | null = null;
   const thinkingSplit = rest.lastIndexOf(":");
   if (thinkingSplit > 0) {
     const maybeThinking = rest.slice(thinkingSplit + 1);
     if (PI_THINKING_LEVELS.has(maybeThinking)) {
-      return {
-        provider,
+      thinkingCandidate = {
         modelId: rest.slice(0, thinkingSplit),
         thinkingLevel: maybeThinking,
-        raw: trimmed,
       };
     }
   }
   return {
     provider,
     modelId: rest,
-    thinkingLevel: null,
+    thinkingCandidate,
     raw: trimmed,
   };
 }
@@ -674,17 +683,29 @@ export const createPiHandler: HandlerFactory = (config) => {
     const reportedId = typeof reported?.id === "string" ? reported.id : null;
     const reportedProvider = typeof reported?.provider === "string" ? reported.provider : null;
     const reportedThinking = typeof data?.thinkingLevel === "string" ? data.thinkingLevel : null;
-    if (reportedProvider !== expected.provider || reportedId !== expected.modelId) {
+    if (reportedProvider !== expected.provider) {
       throw new Error(
         `Pi model mismatch: configured ${expected.provider}/${expected.modelId}, get_state reported ` +
           `${reportedProvider ?? "?"}/${reportedId ?? "?"}. No silent provider/model fallback.`,
       );
     }
-    if (expected.thinkingLevel && reportedThinking !== expected.thinkingLevel) {
-      throw new Error(
-        `Pi thinkingLevel mismatch: configured ${expected.thinkingLevel}, get_state reported ${reportedThinking ?? "none"}.`,
-      );
+    // Pi 0.83 exact-first: accept the full selector id when that is what resolved.
+    if (reportedId === expected.modelId) {
+      return;
     }
+    const candidate = expected.thinkingCandidate;
+    if (candidate && reportedId === candidate.modelId) {
+      if (reportedThinking !== candidate.thinkingLevel) {
+        throw new Error(
+          `Pi thinkingLevel mismatch: configured ${candidate.thinkingLevel}, get_state reported ${reportedThinking ?? "none"}.`,
+        );
+      }
+      return;
+    }
+    throw new Error(
+      `Pi model mismatch: configured ${expected.provider}/${expected.modelId}, get_state reported ` +
+        `${reportedProvider ?? "?"}/${reportedId ?? "?"}. No silent provider/model fallback.`,
+    );
   }
 
   async function ensureRpcClient(prepared: PreparedSession, sessionCtx: SessionContext): Promise<PiRpcClient> {
@@ -1302,13 +1323,14 @@ export const createPiHandler: HandlerFactory = (config) => {
   }
 
   function isPiDeterministicConfigError(error: unknown): boolean {
-    const text = error instanceof Error ? error.message : String(error);
-    return (
-      /managed mcp servers are not supported/i.test(text) ||
-      /runtime provider mismatch/i.test(text) ||
-      /not supported on windows in v1/i.test(text) ||
-      /unsupported version/i.test(text)
-    );
+    // Single source of truth: shared classifier (Pi-gated model/MCP config +
+    // capability gates). Do not maintain a parallel regex list here.
+    const classification = classifyProviderFailure(error, {
+      provider: runtimeProvider,
+      scope: "provider_turn",
+      source: "session",
+    });
+    return classification.category === "configuration" || classification.category === "capability";
   }
 
   async function consumeQueuedBatchAsTerminalConfig(

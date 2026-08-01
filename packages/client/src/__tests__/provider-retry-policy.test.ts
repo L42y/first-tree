@@ -343,6 +343,31 @@ describe("classifyProviderFailure", () => {
     }
   });
 
+  it("classifies Pi model configuration phrases as terminal configuration", () => {
+    for (const message of [
+      "Pi model selector is invalid: bad",
+      "Pi model mismatch: configured openai-codex/gpt-test, get_state reported anthropic/gpt-test",
+      "Pi thinkingLevel mismatch: configured high, get_state reported low",
+    ]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "session",
+      });
+      expect(c, message).toMatchObject({
+        category: "configuration",
+        reasonCode: "pi_model_configuration_error",
+      });
+      expect(
+        decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+      // Must not leak into other providers as configuration.
+      expect(
+        classifyProviderFailure(new Error(message), { provider: "codex", scope: "provider_turn", source: "session" }),
+      ).toMatchObject({ category: "unknown", reasonCode: "unknown" });
+    }
+  });
+
   it("retries Pi version-probe timeout as transient transport", () => {
     const err = new Error(
       "pi --version smoke check did not complete (transient host condition); will retry. Detail: `pi --version` timed out",

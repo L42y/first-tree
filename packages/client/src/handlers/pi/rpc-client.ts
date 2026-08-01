@@ -10,6 +10,16 @@ const CLOSE_KILL_WAIT_MS = 5_000;
 const LINE_SEPARATOR = "\n";
 const LINE_SEPARATOR_CODE = LINE_SEPARATOR.charCodeAt(0);
 const CARRIAGE_RETURN_CODE = "\r".charCodeAt(0);
+/** Host-issued RPC command names — safe to echo; anything else is `unknown`. */
+const PI_RPC_KNOWN_COMMANDS = new Set(["get_state", "prompt", "steer", "abort", "subscribe", "unsubscribe"]);
+
+function describePiRpcCommand(command: string): string {
+  return PI_RPC_KNOWN_COMMANDS.has(command) ? command : "unknown";
+}
+
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
 
 export type PiRpcWritePhase = "before_write" | "after_write";
 
@@ -245,8 +255,10 @@ export class PiRpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         // The command line was already written; treat timeout as after-write and fence.
-        this.failTransport(new PiRpcTransportError(`pi rpc request timed out: ${command}`, "after_write"));
-        reject(new PiRpcTransportError(`pi rpc request timed out: ${command}`, "after_write"));
+        this.failTransport(
+          new PiRpcTransportError(`pi rpc request timed out: ${describePiRpcCommand(command)}`, "after_write"),
+        );
+        reject(new PiRpcTransportError(`pi rpc request timed out: ${describePiRpcCommand(command)}`, "after_write"));
       }, timeoutMs);
       this.pending.set(id, { command, writePhase: "before_write", resolve, reject, timer });
       try {
@@ -419,7 +431,8 @@ export class PiRpcClient {
       }
       const pending = this.pending.get(key);
       if (!pending) {
-        this.onLog?.(`pi rpc unmatched response id=${key}`);
+        // Never log provider-controlled response ids — they may carry private prose.
+        this.onLog?.(`pi rpc unmatched response (id_type=${typeof id} id_bytes=${utf8ByteLength(key)})`);
         return;
       }
       clearTimeout(pending.timer);
@@ -427,18 +440,15 @@ export class PiRpcClient {
       const echoed = typeof parsed.command === "string" ? parsed.command : "";
       if (!echoed || echoed !== pending.command) {
         // Command mismatch desynchronizes the stream — fence the whole transport.
-        this.failTransport(
-          new PiRpcProtocolError(
-            `pi rpc response command mismatch: expected ${pending.command}, got ${echoed || "<missing>"}`,
-            "after_write",
-          ),
-        );
-        pending.reject(
-          new PiRpcProtocolError(
-            `pi rpc response command mismatch: expected ${pending.command}, got ${echoed || "<missing>"}`,
-            "after_write",
-          ),
-        );
+        // Emit allow-listed command tokens + byte counts only; never raw echo.
+        const detail =
+          `pi rpc response command mismatch ` +
+          `(expected=${describePiRpcCommand(pending.command)} ` +
+          `expected_bytes=${utf8ByteLength(pending.command)} ` +
+          `got=${describePiRpcCommand(echoed)} ` +
+          `got_bytes=${utf8ByteLength(echoed)})`;
+        this.failTransport(new PiRpcProtocolError(detail, "after_write"));
+        pending.reject(new PiRpcProtocolError(detail, "after_write"));
         return;
       }
       const success = parsed.success === true;

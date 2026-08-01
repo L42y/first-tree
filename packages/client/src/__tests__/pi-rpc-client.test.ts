@@ -38,6 +38,27 @@ rl.on("line", (line) => {
       write({ type: "response", id, command: "get_state", success: true, data: {} });
       return;
     }
+    if (mode === "secret_command_mismatch") {
+      write({
+        type: "response",
+        id,
+        command: "PRIVATE_USER_PROMPT_IN_COMMAND please ignore",
+        success: true,
+        data: {},
+      });
+      return;
+    }
+    if (mode === "secret_unmatched_id") {
+      write({ type: "response", id, command: "prompt", success: true });
+      write({
+        type: "response",
+        id: "PRIVATE_USER_PROMPT_IN_ID please ignore",
+        command: "prompt",
+        success: true,
+      });
+      write({ type: "agent_settled" });
+      return;
+    }
     write({ type: "response", id, command: "prompt", success: true });
     if (mode === "bad_frame") {
       process.stdout.write("not-json\\n");
@@ -278,6 +299,46 @@ describe("PiRpcClient", () => {
     await expect(client.prompt("hi")).rejects.toBeInstanceOf(PiRpcProtocolError);
     expect(client.isClosed).toBe(true);
     expect(client.getPromptWriteCount()).toBe(1);
+    await client.close();
+  });
+
+  it("does not retain secret-bearing echoed command text on mismatch", async () => {
+    process.env.FT_PI_TEST_MODE = "secret_command_mismatch";
+    const logs: string[] = [];
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: supervisor(),
+      onLog: (message) => logs.push(message),
+    });
+    const error = await client.prompt("hi").catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(PiRpcProtocolError);
+    const text = `${error instanceof Error ? error.message : String(error)}\n${logs.join("\n")}`;
+    expect(text).not.toContain("PRIVATE_USER_PROMPT");
+    expect(text).toMatch(/command mismatch/);
+    expect(text).toMatch(/got=unknown/);
+    expect(client.isClosed).toBe(true);
+    await client.close();
+  });
+
+  it("does not retain secret-bearing unmatched response ids in logs", async () => {
+    process.env.FT_PI_TEST_MODE = "secret_unmatched_id";
+    const logs: string[] = [];
+    const client = await PiRpcClient.start({
+      binary: process.execPath,
+      args: ["--mode", "rpc"],
+      cwd: process.cwd(),
+      env: process.env as Record<string, string>,
+      supervisor: supervisor(),
+      onLog: (message) => logs.push(message),
+    });
+    await client.prompt("hi");
+    await client.waitForSettled();
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/unmatched response/);
+    expect(joined).not.toContain("PRIVATE_USER_PROMPT");
     await client.close();
   });
 

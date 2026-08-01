@@ -546,6 +546,16 @@ function isCapability(text: string, base: Classification): boolean {
   return base.reasonCode.includes("binary_missing") || /binary missing|executable missing|unable to locate/.test(text);
 }
 
+function isPiModelConfiguration(text: string): boolean {
+  return /model selector is invalid|model mismatch|thinkinglevel mismatch|pi_model_mismatch|pi_model_configuration/.test(
+    text,
+  );
+}
+
+function isPiMcpConfiguration(text: string): boolean {
+  return /managed mcp servers are not supported|mcp servers are not supported|pi_mcp_unsupported/.test(text);
+}
+
 function isConfiguration(text: string, base: Classification, provider: RuntimeProvider): boolean {
   if (
     base.reasonCode.includes("mismatch") ||
@@ -555,6 +565,9 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
   }
   if (provider === "codex" && isCodexServiceTierConfiguration(text)) return true;
   if (provider === "kimi-code" && /model\.not_configured|model\.config_invalid/.test(text)) return true;
+  // Pi model/MCP configuration gates — keep provider-gated so shared English
+  // phrases cannot terminalize another provider's retryable failures.
+  if (provider === "pi" && (isPiModelConfiguration(text) || isPiMcpConfiguration(text))) return true;
   // Cursor CLI literal invalid-model / explicit-deny / trust-wall phrasings
   // (captured in Phase 0). Gated to the cursor provider: this classifier is
   // shared and configuration wins over capacity in the classify chain, so an
@@ -567,6 +580,8 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
 
 function configurationReason(text: string, base: Classification, provider: RuntimeProvider): string {
   if (provider === "codex" && isCodexServiceTierConfiguration(text)) return "codex_service_tier_unsupported";
+  if (provider === "pi" && isPiModelConfiguration(text)) return "pi_model_configuration_error";
+  if (provider === "pi" && isPiMcpConfiguration(text)) return "pi_mcp_unsupported";
   return base.reasonCode === "unknown" ? "provider_configuration_error" : base.reasonCode;
 }
 

@@ -509,23 +509,23 @@ afterEach(() => {
 });
 
 describe("parsePiModelSelector", () => {
-  it("parses provider/model and optional thinking", () => {
+  it("keeps the exact full model id and only exposes thinking as a candidate", () => {
     expect(parsePiModelSelector("openai-codex/gpt-5")).toEqual({
       provider: "openai-codex",
       modelId: "gpt-5",
-      thinkingLevel: null,
+      thinkingCandidate: null,
       raw: "openai-codex/gpt-5",
     });
     expect(parsePiModelSelector("openai-codex/gpt-5:high")).toEqual({
       provider: "openai-codex",
-      modelId: "gpt-5",
-      thinkingLevel: "high",
+      modelId: "gpt-5:high",
+      thinkingCandidate: { modelId: "gpt-5", thinkingLevel: "high" },
       raw: "openai-codex/gpt-5:high",
     });
     expect(parsePiModelSelector("ollama/llama3.2:latest")).toEqual({
       provider: "ollama",
       modelId: "llama3.2:latest",
-      thinkingLevel: null,
+      thinkingCandidate: null,
       raw: "ollama/llama3.2:latest",
     });
     expect(parsePiModelSelector("gpt-5")).toBeNull();
@@ -813,7 +813,7 @@ describe("Pi handler", () => {
     await handler.shutdown();
   });
 
-  it("asserts configured provider/model/thinking from get_state", async () => {
+  it("accepts thinking-split get_state when Pi resolved prefix + thinking level", async () => {
     process.env.FT_PI_STATE_PROVIDER = "openai-codex";
     process.env.FT_PI_STATE_MODEL = "gpt-test";
     process.env.FT_PI_STATE_THINKING = "high";
@@ -822,6 +822,38 @@ describe("Pi handler", () => {
       workspaceRoot,
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig({ model: "openai-codex/gpt-test:high" })),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    await handler.start(message("m1", "work"), makeContext([]), makeToken());
+    await handler.shutdown();
+  });
+
+  it("accepts exact full model ids ending in a thinking-level suffix", async () => {
+    process.env.FT_PI_STATE_PROVIDER = "openai-codex";
+    process.env.FT_PI_STATE_MODEL = "gpt-test:high";
+    delete process.env.FT_PI_STATE_THINKING;
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig({ model: "openai-codex/gpt-test:high" })),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    await handler.start(message("m1", "work"), makeContext([]), makeToken());
+    await handler.shutdown();
+  });
+
+  it("accepts non-thinking colon suffixes such as :latest as exact model ids", async () => {
+    process.env.FT_PI_STATE_PROVIDER = "ollama";
+    process.env.FT_PI_STATE_MODEL = "llama3.2:latest";
+    delete process.env.FT_PI_STATE_THINKING;
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig({ model: "ollama/llama3.2:latest" })),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
       providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
@@ -1113,6 +1145,48 @@ describe("Pi handler", () => {
     expect(readCount(promptCountFile)).toBe(promptsAfterStart);
     expect(token2.retried).toEqual([]);
     expect(token2.completed).toEqual([expect.objectContaining({ status: "error", completion: "consumed" })]);
+    expect(
+      events.some(
+        (event) =>
+          event.kind === "error" &&
+          event.payload?.source === "runtime" &&
+          String(event.payload?.message).includes("provider_failure_terminal"),
+      ),
+    ).toBe(true);
+    await handler.shutdown();
+  });
+
+  it("consumes active model-refresh mismatch with durable notice and no prompt rewrite", async () => {
+    process.env.FT_PI_STATE_PROVIDER = "openai-codex";
+    process.env.FT_PI_STATE_MODEL = "gpt-test";
+    const agentCache = cache(runtimeConfig({ model: "openai-codex/gpt-test" }));
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: agentCache,
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    await handler.start(message("m1", "first"), sessionCtx, makeToken());
+    const promptsAfterStart = readCount(promptCountFile);
+    // Mutate cached model so the next hot-path inject restarts RPC and fails
+    // assertConfiguredModel against the still-reported get_state id.
+    agentCache.set(runtimeConfig({ model: "openai-codex/other-model" }));
+    const token2 = makeToken();
+    expect(handler.inject(message("m2", "model-now"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(token2.completed.length).toBe(1));
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(token2.retried).toEqual([]);
+    expect(token2.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "pi_model_configuration_error",
+      }),
+    ]);
     expect(
       events.some(
         (event) =>
