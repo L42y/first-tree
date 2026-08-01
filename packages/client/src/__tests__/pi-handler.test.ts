@@ -34,6 +34,8 @@ const lastPromptFile = process.env.FT_PI_LAST_PROMPT_FILE ?? "";
 const modelProvider = process.env.FT_PI_STATE_PROVIDER ?? "openai-codex";
 const modelId = process.env.FT_PI_STATE_MODEL ?? "gpt-test";
 const thinkingLevel = process.env.FT_PI_STATE_THINKING ?? "";
+const stateSessionOverride = process.env.FT_PI_STATE_SESSION_ID ?? "";
+const stateMalformed = process.env.FT_PI_STATE_MALFORMED === "1";
 
 function bump(file) {
   if (!file) return;
@@ -62,8 +64,12 @@ rl.on("line", (line) => {
   const id = req.id;
   const command = req.type;
   if (command === "get_state") {
+    if (stateMalformed) {
+      write({ type: "response", id, command: "get_state", success: true, data: null });
+      return;
+    }
     const data = {
-      sessionId: expectedSessionId,
+      sessionId: stateSessionOverride || expectedSessionId,
       isStreaming: false,
       messageCount: 0,
       model: { id: modelId, provider: modelProvider },
@@ -437,15 +443,20 @@ function makeContext(events: SessionEvent[], logs: string[] = []): SessionContex
 
 function createSyntheticSupervisor(
   specs: ProviderProcessSpec[],
-  options?: { hangVersion?: boolean; skillMarkerDir?: string },
+  options?: { hangVersion?: boolean; hangVersionFromSpawn?: number; skillMarkerDir?: string },
 ): ProviderProcessSupervisor {
+  let versionSpawnCount = 0;
   return {
     spawn(spec) {
       specs.push(spec);
       const isVersion = spec.args[0] === "--version";
+      if (isVersion) versionSpawnCount += 1;
+      const hangVersion =
+        options?.hangVersion === true ||
+        (options?.hangVersionFromSpawn !== undefined && versionSpawnCount >= options.hangVersionFromSpawn);
       const sessionIdArgIndex = spec.args.indexOf("--session-id");
       const expectedSessionId = sessionIdArgIndex >= 0 ? String(spec.args[sessionIdArgIndex + 1] ?? "") : "";
-      const script = isVersion ? (options?.hangVersion ? VERSION_HANG_SCRIPT : VERSION_SCRIPT) : RPC_CHILD_SCRIPT;
+      const script = isVersion ? (hangVersion ? VERSION_HANG_SCRIPT : VERSION_SCRIPT) : RPC_CHILD_SCRIPT;
       const child = spawn(process.execPath, ["-e", script], {
         ...spec.options,
         env: {
@@ -459,6 +470,8 @@ function createSyntheticSupervisor(
           FT_PI_STATE_PROVIDER: process.env.FT_PI_STATE_PROVIDER ?? "openai-codex",
           FT_PI_STATE_MODEL: process.env.FT_PI_STATE_MODEL ?? "gpt-test",
           FT_PI_STATE_THINKING: process.env.FT_PI_STATE_THINKING ?? "",
+          FT_PI_STATE_SESSION_ID: process.env.FT_PI_STATE_SESSION_ID ?? "",
+          FT_PI_STATE_MALFORMED: process.env.FT_PI_STATE_MALFORMED ?? "",
           FT_PI_SKILL_MARKER_DIR: options?.skillMarkerDir ?? "",
           FT_PI_TREE_PATH: process.env.FT_PI_TREE_PATH ?? "",
         },
@@ -495,6 +508,8 @@ beforeEach(() => {
   delete process.env.FT_PI_STATE_PROVIDER;
   delete process.env.FT_PI_STATE_MODEL;
   delete process.env.FT_PI_STATE_THINKING;
+  delete process.env.FT_PI_STATE_SESSION_ID;
+  delete process.env.FT_PI_STATE_MALFORMED;
   delete process.env.FT_PI_TREE_PATH;
   vi.restoreAllMocks();
 });
@@ -504,6 +519,8 @@ afterEach(() => {
   delete process.env.FT_PI_STATE_PROVIDER;
   delete process.env.FT_PI_STATE_MODEL;
   delete process.env.FT_PI_STATE_THINKING;
+  delete process.env.FT_PI_STATE_SESSION_ID;
+  delete process.env.FT_PI_STATE_MALFORMED;
   delete process.env.FT_PI_TREE_PATH;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -1155,6 +1172,157 @@ describe("Pi handler", () => {
     ).toBe(true);
     await handler.shutdown();
   });
+
+  it("consumes active wrong get_state session id with protocol terminal notice", async () => {
+    const agentCache = cache(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v1", sensitive: false }] }));
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: agentCache,
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    await handler.start(message("m1", "first"), sessionCtx, makeToken());
+    const promptsAfterStart = readCount(promptCountFile);
+    process.env.FT_PI_STATE_SESSION_ID = "wrong-session-id";
+    agentCache.set(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v2", sensitive: false }] }));
+    const token2 = makeToken();
+    expect(handler.inject(message("m2", "restart"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(token2.completed.length).toBe(1));
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(token2.retried).toEqual([]);
+    expect(token2.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "pi_protocol_error",
+      }),
+    ]);
+    expect(
+      events.some(
+        (event) =>
+          event.kind === "error" &&
+          event.payload?.source === "runtime" &&
+          String(event.payload?.message).includes("provider_failure_terminal"),
+      ),
+    ).toBe(true);
+    await handler.shutdown();
+  });
+
+  it("consumes active malformed get_state with protocol terminal notice", async () => {
+    const agentCache = cache(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v1", sensitive: false }] }));
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: agentCache,
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    await handler.start(message("m1", "first"), sessionCtx, makeToken());
+    const promptsAfterStart = readCount(promptCountFile);
+    process.env.FT_PI_STATE_MALFORMED = "1";
+    agentCache.set(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v2", sensitive: false }] }));
+    const token2 = makeToken();
+    expect(handler.inject(message("m2", "restart"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(token2.completed.length).toBe(1));
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(token2.retried).toEqual([]);
+    expect(token2.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "pi_protocol_error",
+      }),
+    ]);
+    expect(
+      events.some(
+        (event) =>
+          event.kind === "error" &&
+          event.payload?.source === "runtime" &&
+          String(event.payload?.message).includes("provider_failure_terminal"),
+      ),
+    ).toBe(true);
+    await handler.shutdown();
+  });
+
+  it("exhausts active version-gate timeout through shared finite retry then consumes", async () => {
+    const agentCache = cache(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v1", sensitive: false }] }));
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: agentCache,
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs, { hangVersionFromSpawn: 2 }),
+      piVersionGateTimeoutMs: 40,
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    await handler.start(message("m1", "first"), sessionCtx, makeToken());
+    const promptsAfterStart = readCount(promptCountFile);
+    agentCache.set(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v2", sensitive: false }] }));
+    const token2 = makeToken();
+    expect(handler.inject(message("m2", "restart"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(token2.completed.length).toBe(1), { timeout: 10_000 });
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(token2.retried).toEqual([]);
+    expect(token2.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "provider_retry_exhausted",
+      }),
+    ]);
+    const runtimeMessages = events
+      .filter((event) => event.kind === "error")
+      .map((event) => JSON.stringify(event.payload));
+    expect(runtimeMessages.some((message) => message.includes("provider_retry_scheduled"))).toBe(true);
+    expect(runtimeMessages.some((message) => message.includes("provider_retry_exhausted"))).toBe(true);
+    await handler.shutdown();
+  });
+
+  it("applies shared finite policy to active formatting failures without inbox retry", async () => {
+    const agentCache = cache(runtimeConfig());
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: agentCache,
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    await handler.start(message("m1", "first"), sessionCtx, makeToken());
+    sessionCtx.formatInboundContent = async () => {
+      throw new Error("synthetic format failure for shared policy");
+    };
+    const promptsAfterStart = readCount(promptCountFile);
+    const token2 = makeToken();
+    expect(handler.inject(message("m2", "format-fail"), token2)).toEqual({ kind: "owned", mode: "queued" });
+    await vi.waitFor(() => expect(token2.completed.length).toBe(1), { timeout: 30_000 });
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(token2.retried).toEqual([]);
+    expect(token2.completed).toEqual([
+      expect.objectContaining({
+        status: "error",
+        completion: "consumed",
+        reason: "provider_retry_exhausted",
+      }),
+    ]);
+    const runtimeMessages = events
+      .filter((event) => event.kind === "error")
+      .map((event) => JSON.stringify(event.payload));
+    expect(runtimeMessages.some((message) => message.includes("provider_retry_scheduled"))).toBe(true);
+    expect(runtimeMessages.some((message) => message.includes("provider_retry_exhausted"))).toBe(true);
+    await handler.shutdown();
+  }, 35_000);
 
   it("consumes active model-refresh mismatch with durable notice and no prompt rewrite", async () => {
     process.env.FT_PI_STATE_PROVIDER = "openai-codex";

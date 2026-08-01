@@ -343,6 +343,31 @@ describe("classifyProviderFailure", () => {
     }
   });
 
+  it("classifies Pi protocol/get_state failures as terminal capability", () => {
+    for (const message of [
+      "Pi session identity mismatch: expected abc, get_state reported wrong",
+      "pi get_state response missing data object",
+      "pi get_state response missing sessionId",
+    ]) {
+      const err = Object.assign(new Error(message), {
+        name: message.includes("missing") ? "PiRpcProtocolError" : "Error",
+      });
+      if (message.includes("session identity")) err.name = "PiRpcProtocolError";
+      const c = classifyProviderFailure(err, {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "session",
+      });
+      expect(c, message).toMatchObject({
+        category: "capability",
+        reasonCode: "pi_protocol_error",
+      });
+      expect(
+        decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    }
+  });
+
   it("classifies Pi model configuration phrases as terminal configuration", () => {
     for (const message of [
       "Pi model selector is invalid: bad",

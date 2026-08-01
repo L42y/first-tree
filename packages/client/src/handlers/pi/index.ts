@@ -46,7 +46,7 @@ import {
   type ProviderProcessSupervisor,
   supportsDefaultProviderProcessSupervision,
 } from "../../runtime/provider-process-supervisor.js";
-import { classifyProviderFailure, maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
+import { maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -86,7 +86,9 @@ export function sanitizePiProviderDetail(raw: string): string {
   if (/pi cli is missing|no pi binary|not (?:found|installed)/.test(lower)) return "pi_binary_missing";
   if (/managed mcp|mcp servers are not supported/.test(lower)) return "pi_mcp_unsupported";
   if (/model mismatch|thinkinglevel mismatch|model selector is invalid/.test(lower)) return "pi_model_mismatch";
-  if (/session identity mismatch/.test(lower)) return "pi_session_mismatch";
+  if (/session identity mismatch|get_state response missing|pi get_state failed/.test(lower)) {
+    return "pi_protocol_error";
+  }
   if (/transport|stdin|closed|exited|desync|command mismatch|invalid jsonl|settlement|protocol/.test(lower)) {
     return "pi_transport_error";
   }
@@ -668,7 +670,9 @@ export const createPiHandler: HandlerFactory = (config) => {
       throw new PiRpcProtocolError("pi get_state response missing sessionId");
     }
     if (reported !== expectedSessionId) {
-      throw new Error(`Pi session identity mismatch: expected ${expectedSessionId}, get_state reported ${reported}`);
+      throw new PiRpcProtocolError(
+        `Pi session identity mismatch: expected ${expectedSessionId}, get_state reported ${reported}`,
+      );
     }
   }
 
@@ -760,6 +764,8 @@ export const createPiHandler: HandlerFactory = (config) => {
     const client = rpcClient;
     rpcClient = null;
     activeSpawnFingerprint = null;
+    // Re-verify the host binary on the next spawn (env/binary may have changed).
+    versionReady = false;
     if (!client) return;
     try {
       await client.close();
@@ -1322,22 +1328,17 @@ export const createPiHandler: HandlerFactory = (config) => {
     };
   }
 
-  function isPiDeterministicConfigError(error: unknown): boolean {
-    // Single source of truth: shared classifier (Pi-gated model/MCP config +
-    // capability gates). Do not maintain a parallel regex list here.
-    const classification = classifyProviderFailure(error, {
-      provider: runtimeProvider,
-      scope: "provider_turn",
-      source: "session",
-    });
-    return classification.category === "configuration" || classification.category === "capability";
-  }
-
-  async function consumeQueuedBatchAsTerminalConfig(
+  /**
+   * Shared-policy settlement for active pre-provider failures (refresh, format,
+   * RPC restart, get_state, version gate). Retains the drained batch and
+   * one-shot custody; never unbounded inbox `token.retry`.
+   */
+  async function settleQueuedPreProviderFailure(
     drained: Array<{ message: SessionMessage; token: DeliveryToken }>,
     sessionCtx: SessionContext,
     error: unknown,
-  ): Promise<void> {
+    attemptNumber: number,
+  ): Promise<{ action: "retry"; delayMs: number } | { action: "stop" }> {
     const raw = error instanceof Error ? error.message : String(error);
     const publicDetail = sanitizePiProviderDetail(raw);
     const attempt = new ProviderAttempt({
@@ -1346,21 +1347,41 @@ export const createPiHandler: HandlerFactory = (config) => {
       source: "session",
     });
     attempt.setReplaySafety("pre_provider");
-    attempt.recordSignal({ kind: "provider_error", error: raw, messagePreview: publicDetail });
-    const settlement = attempt.settle({ attempt: 1 });
-    if (settlement) emitSettlement(sessionCtx, settlement);
+    attempt.recordSignal({ kind: "provider_error", error, messagePreview: publicDetail });
+    const settlement = attempt.settle({ attempt: attemptNumber });
+    if (!settlement) {
+      sessionCtx.log(`pi queued turn unclassified: ${publicDetail}`);
+      for (const entry of drained) {
+        await entry.token.complete([entry.message], {
+          status: "error",
+          completion: "consumed",
+          reason: "pi_queued_turn_failed",
+        });
+      }
+      return { action: "stop" };
+    }
+    emitSettlement(sessionCtx, settlement);
+    if (settlement.decision.action === "retry") {
+      sessionCtx.log(
+        `pi queued pre-provider retry scheduled: ${settlement.decision.reasonCode} attempt=${attemptNumber}`,
+      );
+      return { action: "retry", delayMs: settlement.decision.delayMs };
+    }
     sessionCtx.emitEvent({
       kind: "error",
       payload: { source: "sdk", message: formatPiFailure(raw).slice(0, 2000) },
     });
     sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+    const reason =
+      settlement.decision.terminalKind === "exhausted" ? "provider_retry_exhausted" : settlement.decision.reasonCode;
     for (const entry of drained) {
       await entry.token.complete([entry.message], {
         status: "error",
         completion: "consumed",
-        reason: settlement?.decision.reasonCode ?? "pi_configuration_error",
+        reason,
       });
     }
+    return { action: "stop" };
   }
 
   async function mergeAndRun(
@@ -1369,18 +1390,11 @@ export const createPiHandler: HandlerFactory = (config) => {
   ): Promise<void> {
     const prepared = await refreshPreparedSession(sessionCtx);
     const prompts: string[] = [];
-    let failed = false;
     for (const entry of drained) {
-      try {
-        prompts.push(await sessionCtx.formatInboundContent(entry.message));
-      } catch (error) {
-        failed = true;
-        sessionCtx.log(`pi queued message formatting failed: ${sanitizePiProviderDetail(String(error))}`);
-      }
+      prompts.push(await sessionCtx.formatInboundContent(entry.message));
     }
-    if (failed || prompts.length === 0) {
-      for (const entry of drained) entry.token.retry(entry.message, "pi_queued_turn_format_failed");
-      return;
+    if (prompts.length === 0) {
+      throw new Error("pi queued turn produced no prompt text");
     }
     const client = await ensureRpcClient(prepared, sessionCtx);
     const prompt = await buildTurnPrompt(sessionCtx, prompts.join("\n\n"), prepared);
@@ -1403,15 +1417,21 @@ export const createPiHandler: HandlerFactory = (config) => {
       const drained = queuedMessages.splice(0);
       drainInProgress = true;
       void (async () => {
-        try {
-          await mergeAndRun(drained, sessionCtx);
-        } catch (error) {
-          if (isPiDeterministicConfigError(error)) {
-            await consumeQueuedBatchAsTerminalConfig(drained, sessionCtx, error);
+        let attemptNumber = 1;
+        while (sessionActive) {
+          try {
+            await mergeAndRun(drained, sessionCtx);
             return;
+          } catch (error) {
+            const outcome = await settleQueuedPreProviderFailure(drained, sessionCtx, error, attemptNumber);
+            if (outcome.action !== "retry") return;
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, outcome.delayMs));
+            if (!sessionActive) {
+              for (const entry of drained) entry.token.retry(entry.message, "pi_turn_cancelled");
+              return;
+            }
+            attemptNumber += 1;
           }
-          sessionCtx.log(`pi queued turn failed: ${sanitizePiProviderDetail(String(error))}`);
-          for (const entry of drained) entry.token.retry(entry.message, "pi_queued_turn_failed");
         }
       })().finally(() => {
         drainInProgress = false;

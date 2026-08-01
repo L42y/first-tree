@@ -154,6 +154,17 @@ export function classifyProviderFailure(
       sourceKind: base.kind,
     };
   }
+  // Malformed/incompatible get_state and stable-session identity drift are
+  // protocol failures — terminal capability, never unknown-retry forever.
+  if (context.provider === "pi" && isPiProtocolError(shape.name, text)) {
+    return {
+      category: "capability",
+      reasonCode: "pi_protocol_error",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
   if (isCapability(text, base)) {
     return {
       category: "capability",
@@ -544,6 +555,15 @@ function credentialReason(base: Classification): string {
 
 function isCapability(text: string, base: Classification): boolean {
   return base.reasonCode.includes("binary_missing") || /binary missing|executable missing|unable to locate/.test(text);
+}
+
+function isPiProtocolError(name: string | undefined, text: string): boolean {
+  const named = (name ?? "").toLowerCase();
+  return (
+    named.includes("pirpcprotocolerror") ||
+    /session identity mismatch|pi_session_mismatch|pi_protocol_error/.test(text) ||
+    /get_state response missing|pi get_state failed|get_state failed/.test(text)
+  );
 }
 
 function isPiModelConfiguration(text: string): boolean {
