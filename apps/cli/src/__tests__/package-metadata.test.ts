@@ -123,3 +123,26 @@ describe("workspace dependency-patch distribution", () => {
     expect(dockerignore).not.toMatch(/^patches\/?$/m);
   });
 });
+
+describe("trusted-publishing npm toolchain contract", () => {
+  const PUBLISH_WORKFLOW = join(REPO_ROOT, ".github", "workflows", "publish-npm-package.yml");
+  const CI_WORKFLOW = join(REPO_ROOT, ".github", "workflows", "ci.yml");
+
+  it("pins every trusted-publishing npm install to the exact QA-qualified version, with no moving selector", () => {
+    const workflow = readText(PUBLISH_WORKFLOW);
+    const installs = [...workflow.matchAll(/npm install -g npm@(\S+)/g)].map((match) => match[1]);
+    // prod CLI, staging CLI, and shared alpha must all be covered.
+    expect(installs.length).toBeGreaterThanOrEqual(3);
+    for (const selector of installs) {
+      expect(selector).toBe("11.5.1");
+    }
+    expect(workflow).not.toMatch(/npm@(latest|next|\^|~)/);
+  });
+
+  it("runs a real release-pack smoke under the pinned client on CLI-affecting PRs", () => {
+    const ci = readText(CI_WORKFLOW);
+    expect(ci).toContain("npm install -g npm@11.5.1");
+    expect(ci).toContain("node scripts/release-pack-smoke.mjs");
+    expect(existsSync(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toBe(true);
+  });
+});

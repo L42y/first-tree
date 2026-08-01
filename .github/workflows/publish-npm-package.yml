@@ -60,7 +60,7 @@ jobs:
           cache: "pnpm"
 
       - name: Ensure trusted publishing npm version
-        run: npm install -g npm@^11.5.1
+        run: npm install -g npm@11.5.1
 
       - name: Validate stable release tag
         id: release
@@ -281,7 +281,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Ensure trusted publishing npm version
-        run: npm install -g npm@^11.5.1
+        run: npm install -g npm@11.5.1
 
       - name: Resolve staging version
         id: version
@@ -485,7 +485,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Ensure trusted publishing npm version
-        run: npm install -g npm@^11.5.1
+        run: npm install -g npm@11.5.1
 
       - name: Resolve alpha version
         id: version
