@@ -328,20 +328,68 @@ function selftestCleanup() {
 }
 
 /**
+ * Assert the deterministic apps/cli collision path still holds the exact
+ * preexisting bytes/digest, then that run-owned residue is gone and bundled
+ * symlinks match the pre-smoke snapshot.
+ * @param {string} collisionPath
+ * @param {string} expectedDigest
+ * @param {Buffer} expectedBytes
+ * @param {Map<string, string>} symlinkSnapshot
+ * @param {string} phase
+ * @param {string | undefined} workDir
+ * @param {string | undefined} packedPath
+ */
+function assertPreservedCollision(
+  collisionPath,
+  expectedDigest,
+  expectedBytes,
+  symlinkSnapshot,
+  phase,
+  workDir,
+  packedPath,
+) {
+  if (!existsSync(collisionPath)) {
+    fail(`selftest-preserve [${phase}]: deterministic preexisting tarball missing`);
+  }
+  const digest = sha256File(collisionPath);
+  if (digest !== expectedDigest) {
+    fail(`selftest-preserve [${phase}]: digest changed (was ${expectedDigest}, now ${digest})`);
+  }
+  if (Buffer.compare(readFileSync(collisionPath), expectedBytes) !== 0) {
+    fail(`selftest-preserve [${phase}]: preexisting bytes changed`);
+  }
+  assertCleanWorkspace(symlinkSnapshot);
+  if (workDir && existsSync(workDir)) {
+    fail(`selftest-preserve [${phase}]: left run-owned work directory`);
+  }
+  if (packedPath && existsSync(packedPath)) {
+    fail(`selftest-preserve [${phase}]: left run-owned packed tarball`);
+  }
+  if (existsSync(MANIFEST_PATH)) {
+    fail(`selftest-preserve [${phase}]: left stranded materialize manifest`);
+  }
+}
+
+/**
  * Prove pack destination isolation preserves a pre-existing artifact that
- * already uses npm pack's deterministic current name/version filename —
- * verified by content digest across success and failure cleanup.
+ * already uses npm pack's deterministic current name/version filename
+ * (e.g. first-tree-dev-0.5.18.tgz) — verified by exact bytes + sha256 across
+ * success cleanup, post-pack failure cleanup, and invalid/early failure cleanup.
  */
 function selftestPreservePreexistingTarball() {
   const deterministicName = expectedPackFilename();
   const collisionPath = join(CLI_ROOT, deterministicName);
-  const sentinelBody = `preexisting-deterministic-sentinel:${deterministicName}\n`;
+  // Fixed 31-byte sentinel matching the real collision shape reviewers reproduce.
+  const sentinelBody = Buffer.from("preexisting-sentinel-31-bytes!\n", "utf8");
+  if (sentinelBody.length !== 31) {
+    fail(`selftest-preserve: sentinel must be 31 bytes, got ${sentinelBody.length}`);
+  }
   const createdBySelftest = !existsSync(collisionPath);
   if (createdBySelftest) {
     writeFileSync(collisionPath, sentinelBody);
   }
+  const expectedBytes = readFileSync(collisionPath);
   const expectedDigest = sha256File(collisionPath);
-  const expectedBytes = createdBySelftest ? sentinelBody : readFileSync(collisionPath);
 
   try {
     snapshotPreexistingTarballs();
@@ -357,48 +405,79 @@ function selftestPreservePreexistingTarball() {
     }
     const symlinkSnapshot = captureBundledSymlinks();
 
-    // Success-path: pack into run-owned destination; collision path must keep
-    // the exact preexisting bytes (path-only ownership cannot catch overwrite).
-    const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-preserve-"));
-    activeWorkDir = work;
-    try {
-      const packed = packCliInto(join(work, "pack"));
-      if (basename(packed) !== deterministicName) {
-        fail(`selftest-preserve: packed name ${basename(packed)} !== ${deterministicName}`);
+    // 1) Success-path: pack into run-owned destination; collision path untouched.
+    {
+      const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-preserve-ok-"));
+      activeWorkDir = work;
+      let packed;
+      try {
+        packed = packCliInto(join(work, "pack"));
+        if (basename(packed) !== deterministicName) {
+          fail(`selftest-preserve: packed name ${basename(packed)} !== ${deterministicName}`);
+        }
+        if (sha256File(packed) === expectedDigest) {
+          fail("selftest-preserve: packed artifact unexpectedly matched preexisting digest");
+        }
+        if (sha256File(collisionPath) !== expectedDigest) {
+          fail("selftest-preserve: pack overwrote the deterministic preexisting tarball");
+        }
+      } finally {
+        cleanupPackArtifacts(work);
       }
-      if (sha256File(packed) === expectedDigest && createdBySelftest) {
-        fail("selftest-preserve: packed artifact unexpectedly matched sentinel digest");
-      }
-      if (sha256File(collisionPath) !== expectedDigest) {
-        fail("selftest-preserve: pack overwrote the deterministic preexisting tarball");
-      }
-    } finally {
-      cleanupPackArtifacts(work);
-    }
-    assertCleanWorkspace(symlinkSnapshot);
-    if (!existsSync(collisionPath) || sha256File(collisionPath) !== expectedDigest) {
-      fail("selftest-preserve: success cleanup deleted or altered the deterministic preexisting tarball");
-    }
-    if (createdBySelftest && readFileSync(collisionPath, "utf8") !== sentinelBody) {
-      fail("selftest-preserve: sentinel body changed after success cleanup");
+      assertPreservedCollision(collisionPath, expectedDigest, expectedBytes, symlinkSnapshot, "success", work, packed);
     }
 
-    // Failure-path cleanup via top-level catch must likewise leave digests alone.
+    // 2) Post-pack failure: pack succeeds into temp, then injected failure cleanup
+    // must remove run-owned outputs without touching the collision path.
+    {
+      const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-preserve-post-"));
+      activeWorkDir = work;
+      let packed;
+      let failedAsExpected = false;
+      try {
+        try {
+          packed = packCliInto(join(work, "pack"));
+          fail("injected post-pack failure for preexisting preservation");
+        } catch (error) {
+          if (!(error instanceof SmokeFailure) || !error.message.includes("injected post-pack failure")) {
+            throw error;
+          }
+          failedAsExpected = true;
+        }
+      } finally {
+        cleanupPackArtifacts(work);
+      }
+      if (!failedAsExpected) fail("selftest-preserve: post-pack failure path not taken");
+      assertPreservedCollision(
+        collisionPath,
+        expectedDigest,
+        expectedBytes,
+        symlinkSnapshot,
+        "post-pack-failure",
+        work,
+        packed,
+      );
+    }
     try {
-      fail("injected top-level failure for preexisting preservation");
+      fail("injected early failure for preexisting preservation");
     } catch (error) {
-      if (!(error instanceof SmokeFailure)) throw error;
+      if (!(error instanceof SmokeFailure) || !error.message.includes("injected early failure")) {
+        throw error;
+      }
       cleanupPackArtifacts(undefined);
     }
-    if (!existsSync(collisionPath) || sha256File(collisionPath) !== expectedDigest) {
-      fail("selftest-preserve: failure cleanup deleted or altered the deterministic preexisting tarball");
-    }
-    if (createdBySelftest && Buffer.compare(readFileSync(collisionPath), Buffer.from(expectedBytes)) !== 0) {
-      fail("selftest-preserve: sentinel bytes changed after failure cleanup");
-    }
+    assertPreservedCollision(
+      collisionPath,
+      expectedDigest,
+      expectedBytes,
+      symlinkSnapshot,
+      "early-failure",
+      undefined,
+      undefined,
+    );
 
     console.log(
-      `release-pack-smoke: selftest-preserve-preexisting PASS — preserved ${deterministicName} sha256=${expectedDigest}`,
+      `release-pack-smoke: selftest-preserve-preexisting PASS — preserved ${deterministicName} sha256=${expectedDigest} across success/post-pack/early failure`,
     );
   } finally {
     if (createdBySelftest) {
