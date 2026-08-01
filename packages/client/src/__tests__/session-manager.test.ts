@@ -3745,3 +3745,80 @@ describe("InboxDeliveryCoordinator fence-settled tombstones at high water", () =
     );
   });
 });
+
+describe("SessionManager pre-ledger settlement race", () => {
+  it("suppresses a frame parked before receive() while its fence is cleared by the probe", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sm-pre-ledger-"));
+    try {
+      const fencePath = join(root, "fence.json");
+      const probeFencedSettlement = vi.fn(async (_chatId: string, _ids: readonly string[]) => ["msg-1"]);
+      const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+      const handler = createMockHandler();
+      const ackEntry = mockAckEntry();
+      let capturedFence: ReplayFenceStore | undefined;
+      const sm = createSessionManager({
+        handler,
+        ackEntry,
+        replayFencePath: fencePath,
+        probeFencedSettlement,
+        recoverChat,
+        handlerFactory: (config) => {
+          capturedFence = config.replayFence as ReplayFenceStore;
+          return handler;
+        },
+      });
+
+      // A live session exists so its `suspending` promise can park dispatch.
+      await sm.dispatch(mockEntry({ id: 60, chatId: "chat-race", messageId: "msg-0" }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      // msg-1 was fenced mid-turn (the replay-risk delivery).
+      capturedFence?.fence({
+        chatId: "chat-race",
+        messageId: "msg-1",
+        provider: "kimi-code",
+        toolName: "Write",
+        toolUseId: "w1",
+        fencedAt: new Date().toISOString(),
+      });
+      let releaseSuspension: () => void = () => {};
+      const suspending = new Promise<void>((resolvePromise) => {
+        releaseSuspension = resolvePromise;
+      });
+      const internals = sm as unknown as {
+        sessions: Map<string, { suspending: Promise<void> | null }>;
+      };
+      const entry = internals.sessions.get("chat-race");
+      if (!entry) throw new Error("session entry missing");
+      entry.suspending = suspending;
+
+      // The frame arrives but dispatch is parked BEFORE receive() — the
+      // entry is not in the coordinator ledger yet.
+      const parked = sm.dispatch(mockEntry({ id: 61, chatId: "chat-race", messageId: "msg-1" }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // The probe proves msg-1 settled while it is still pre-ledger, and
+      // the fence clears.
+      await sm.reconcileReplayFencesWithServer();
+      const reloaded = new ReplayFenceStore(fencePath);
+      reloaded.load();
+      expect(reloaded.hasFenceForChat("chat-race")).toBe(false);
+
+      // Release the suspension: the stale frame must be tombstoned at
+      // receive() — no route, no inject, no ACK, no second provider entry.
+      releaseSuspension();
+      await parked;
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      expect(handler.inject).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+
+      // A genuinely unacked later message still flows through the now
+      // unfenced chat.
+      await sm.dispatch(mockEntry({ id: 62, chatId: "chat-race", messageId: "msg-2" }));
+      expect(handler.inject).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

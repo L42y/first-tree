@@ -33,10 +33,12 @@ export type WorkSnapshot = {
 
 type DeliveryPhase = "open" | "owned" | "terminal";
 
-/** Tombstone retention for fence-probe-settled deliveries (stale frames are short-lived socket duplicates). */
-const FENCE_SETTLED_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
-/** Per-chat tombstone cap — safely above the supported max-in-flight high water (1024). */
-const FENCE_SETTLED_TOMBSTONE_MAX_PER_CHAT = 4096;
+/**
+ * Defensive per-chat bound for fence-settled markers. Practically
+ * unreachable — markers only exist for unsafe-interrupted deliveries —
+ * and eviction would be a safety hole, so overflow only logs loudly.
+ */
+const FENCE_SETTLED_MARKER_WARN_PER_CHAT = 16384;
 type RecoveryDebt = "none" | "required" | "running";
 
 type TrackedDelivery = {
@@ -95,19 +97,19 @@ export class InboxDeliveryCoordinator {
   private readonly deduplicator = new Deduplicator(1000);
   private readonly recentlySettled = new Deduplicator(1000);
   /**
-   * Tombstones for fence-probe-settled deliveries. Distinct from
+   * Settlement markers for fence-probe-settled deliveries, keyed by
+   * (chatId, messageId) — the delivery's ackable identity. Registered
+   * UNCONDITIONALLY at settlement proof, independent of ledger membership:
+   * a frame parked before receive() (e.g. behind a suspending session)
+   * must be just as suppressed as a tracked one. Distinct from
    * recentlySettled: committed entries deliberately allow one post-commit
    * reprocess (ack-lost recovery), while a probe-settled unsafe delivery
    * must never re-enter the provider from a stray frame.
    *
-   * Safety-critical capacity: keyed PER CHAT so unrelated chats cannot
-   * evict each other, and capped per chat well above the supported
-   * max-in-flight high water (1024) — a shared FIFO dedup below that mark
-   * would silently drop the oldest tombstone exactly when it is needed.
-   * Entries expire after one day; stale frames for an ACKed row are only
-   * ever socket duplicates shortly after settlement.
+   * No wall-clock expiry: a clock jump must never authorize an unsafe
+   * re-entry. Fences are exceptional, so the set stays tiny in practice.
    */
-  private readonly fenceSettledTombstones = new Map<string, Map<string, number>>();
+  private readonly fenceSettledMessages = new Map<string, Set<string>>();
   private readonly ledgers = new Map<string, ChatInboxLedger>();
   private readonly recoveringChats = new Map<string, Promise<void>>();
 
@@ -146,9 +148,9 @@ export class InboxDeliveryCoordinator {
       return { kind: "duplicate-in-flight" };
     }
 
-    // Tombstone: this exact delivery was proven settled by a fence probe —
-    // suppress stray duplicate frames instead of reprocessing.
-    if (this.hasFenceSettledTombstone(chatId, entry.id, messageId)) {
+    // Settlement marker: this delivery was proven settled by a fence probe —
+    // suppress stray frames instead of reprocessing them into the provider.
+    if (this.fenceSettledMessages.get(chatId)?.has(messageId)) {
       this.config.log.debug({ chatId, messageId, entryId: entry.id }, "suppressing frame for already-settled delivery");
       return { kind: "duplicate-in-flight" };
     }
@@ -283,14 +285,26 @@ export class InboxDeliveryCoordinator {
    * already-settled unsafe delivery into the provider.
    */
   settleReplayFencedEntries(chatId: string, messageIds: readonly string[]): void {
+    // Register the settlement fact for EVERY proven id first — independent
+    // of whether a ledger entry exists yet (a frame may still be parked
+    // before receive()).
+    let markers = this.fenceSettledMessages.get(chatId);
+    if (!markers) {
+      markers = new Set();
+      this.fenceSettledMessages.set(chatId, markers);
+    }
+    for (const messageId of messageIds) {
+      markers.add(messageId);
+    }
+    if (markers.size > FENCE_SETTLED_MARKER_WARN_PER_CHAT) {
+      this.config.log.error(
+        { chatId, count: markers.size },
+        "fence-settled marker set exceeds the defensive bound; refusing to evict safety markers",
+      );
+    }
     const ledger = this.ledgers.get(chatId);
     if (!ledger) return;
     const ids = new Set(messageIds);
-    for (const tracked of ledger.entries) {
-      if (ids.has(tracked.messageId)) {
-        this.addFenceSettledTombstone(chatId, tracked.entryId, tracked.messageId);
-      }
-    }
     ledger.entries = ledger.entries.filter((tracked) => !ids.has(tracked.messageId));
     this.cleanupLedger(chatId);
     this.emitWorkChanged(chatId);
@@ -777,42 +791,6 @@ export class InboxDeliveryCoordinator {
 
   private dedupKey(chatId: string, messageId: string): string {
     return `${chatId}:${messageId}`;
-  }
-
-  private addFenceSettledTombstone(chatId: string, entryId: number, messageId: string): void {
-    let tombstones = this.fenceSettledTombstones.get(chatId);
-    if (!tombstones) {
-      tombstones = new Map();
-      this.fenceSettledTombstones.set(chatId, tombstones);
-    }
-    this.pruneFenceSettledTombstones(tombstones);
-    tombstones.set(this.settledKey({ chatId, entryId, messageId }), Date.now() + FENCE_SETTLED_TOMBSTONE_TTL_MS);
-  }
-
-  private hasFenceSettledTombstone(chatId: string, entryId: number, messageId: string): boolean {
-    const tombstones = this.fenceSettledTombstones.get(chatId);
-    if (!tombstones) return false;
-    const key = this.settledKey({ chatId, entryId, messageId });
-    const expiresAt = tombstones.get(key);
-    if (expiresAt === undefined) return false;
-    if (expiresAt <= Date.now()) {
-      tombstones.delete(key);
-      return false;
-    }
-    return true;
-  }
-
-  /** Drop expired entries, then bound the per-chat size beyond the supported high water. */
-  private pruneFenceSettledTombstones(tombstones: Map<string, number>): void {
-    const now = Date.now();
-    for (const [key, expiresAt] of tombstones) {
-      if (expiresAt <= now) tombstones.delete(key);
-    }
-    while (tombstones.size >= FENCE_SETTLED_TOMBSTONE_MAX_PER_CHAT) {
-      const oldest = tombstones.keys().next().value;
-      if (oldest === undefined) break;
-      tombstones.delete(oldest);
-    }
   }
 
   private settledKey(work: DeliveryWork): string {
