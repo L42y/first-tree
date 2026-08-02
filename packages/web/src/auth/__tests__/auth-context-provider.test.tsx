@@ -443,15 +443,14 @@ describe("AuthProvider", () => {
     // The post-switch /me is a transport failure: the switch must reject and
     // every optimistic write must roll back to org-1.
     apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
-    // Attach the rejection handler BEFORE entering act so the assertion
-    // observes the fully-settled switch (including its rollback), not an
-    // early act rethrow.
+    // The rejection handler is attached inside act and swallows the error, so
+    // act observes the FULLY settled switch (rollback included) instead of
+    // rethrowing early, and every state update stays inside the act boundary.
     let switchError: unknown = null;
-    const switchPromise = latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
-      switchError = error;
-    });
     await act(async () => {
-      await switchPromise;
+      await latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+        switchError = error;
+      });
     });
     expect(switchError).toBeInstanceOf(Error);
     expect((switchError as Error).message).toBe("offline");
@@ -478,5 +477,37 @@ describe("AuthProvider", () => {
     await renderAuth();
     expect(latestAuth?.meLoaded).toBe(true);
     expect(latestAuth?.currentMembership).toBeNull();
+  });
+
+  it("does not resurrect the old org when the switch fails through a 401 logout", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    // Mirror request()'s final-401: tokens cleared + auth:logout dispatched
+    // BEFORE the rejection reaches selectOrganization's rollback path.
+    apiMocks.apiGet.mockImplementationOnce(async () => {
+      apiMocks.getStoredTokens.mockReturnValue(null);
+      window.dispatchEvent(new CustomEvent("auth:logout"));
+      throw new Error("unauthorized");
+    });
+    let switchError: unknown = null;
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+        switchError = error;
+      });
+    });
+    expect(switchError).toBeInstanceOf(Error);
+
+    // Logout owns the final state: authenticated false, no membership/org,
+    // and the API override was cleared by logout — the rollback must NOT
+    // have written the old org back afterwards.
+    expect(latestAuth?.isAuthenticated).toBe(false);
+    expect(latestAuth?.currentMembership).toBeNull();
+    expect(latestAuth?.organizationId).toBeNull();
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith(null);
   });
 });

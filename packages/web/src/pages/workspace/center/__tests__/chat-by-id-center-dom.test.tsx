@@ -585,4 +585,62 @@ describe("ChatByIdView and CenterPanel", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("does not loop the auto-switch after a rejected switch, and still tries a new target", async () => {
+    authMock.value.organizationId = "org-1";
+    authMock.value.memberships = [
+      { organizationId: "org-1" },
+      { organizationId: "org-2" },
+      { organizationId: "org-3" },
+    ];
+    authMock.value.selectOrganization = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    // Refetches keep resolving so repeated effect passes stay possible.
+    chatMocks.getChat.mockImplementation(async (chatId: string) =>
+      chatDetail({ organizationId: chatId === "chat-other" ? "org-3" : "org-2" }),
+    );
+    const { ChatByIdView } = await import("../chat-by-id.js");
+    const queryClient = createClient();
+    const { container, root } = await renderDom(
+      <ChatByIdView chatId="chat-reject" narrow={false} onShowConversations={null} />,
+      queryClient,
+    );
+
+    await waitForText(container, "ChatView agent-1 chat-reject");
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-2");
+
+    // Rejection fallout: the rollback leaves the org on org-1 and the cache
+    // clear refetches this chat's detail — the same target must NOT re-fire,
+    // no matter how many renders/effect passes follow.
+    await act(async () => {
+      queryClient.clear();
+    });
+    await flush();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ChatByIdView chatId="chat-reject" narrow={false} onShowConversations={null} />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
+
+    // A genuinely different chat target is still attempted.
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ChatByIdView chatId="chat-other" narrow={false} onShowConversations={null} />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForText(container, "ChatView agent-1 chat-other");
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(2);
+    expect(authMock.value.selectOrganization).toHaveBeenLastCalledWith("org-3");
+
+    await act(async () => root.unmount());
+  });
 });

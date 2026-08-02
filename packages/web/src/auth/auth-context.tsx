@@ -238,13 +238,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [onboardingStep, setOnboardingStep] = useState<"connect" | "create_agent" | "completed" | null>(null);
   const [onboardingDismissedAt, setOnboardingDismissedAt] = useState<string | null>(null);
   const [onboardingCompletedAt, setOnboardingCompletedAt] = useState<string | null>(null);
-  // Mirror of the selected org for selectOrganization's rollback: a switch
-  // must restore the last CONFIRMED org when the post-switch /me fails, and
-  // event handlers can't read fresh React state from a closure.
+  // Selection mirrors for event handlers (closures can't read fresh React
+  // state). `selectedOrgIdRef` tracks the CURRENT selection, including an
+  // optimistic switch target. `confirmedOrgIdRef` advances ONLY when a /me
+  // has authoritatively settled the selection — it is the rollback baseline,
+  // so an unconfirmed optimistic target can never become one.
   const selectedOrgIdRef = useRef<string | null>(selectedOrgId);
-  useEffect(() => {
-    selectedOrgIdRef.current = selectedOrgId;
-  }, [selectedOrgId]);
+  const confirmedOrgIdRef = useRef<string | null>(null);
   // Stays false until the first fetchMe settles. Unauthenticated visitors
   // never need /me, so the gate also flips for them via the unauth branch
   // below — RequireAuth only blocks the loading frame when the user IS
@@ -274,6 +274,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setMemberships([]);
     setSelectedOrgId(null);
+    selectedOrgIdRef.current = null;
+    confirmedOrgIdRef.current = null;
     setOnboardingStep(null);
     setOnboardingDismissedAt(null);
     setOnboardingCompletedAt(null);
@@ -309,24 +311,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // membership: (1) the in-memory selection, (2) this user's persisted
       // last-used org — survives logout so a returning user lands back in the
       // org they left — then (3) /me's `defaultOrganizationId` (most-recent),
-      // (4) the first active membership.
+      // (4) the first active membership. A successful /me is the ONLY place
+      // the confirmed-org baseline advances.
       const userId = data.user?.id ?? null;
-      setSelectedOrgId((prev) => {
-        const isMember = (id: string | null): id is string => !!id && ms.some((m) => m.organizationId === id);
-        const prevValid = isMember(prev) ? prev : null;
-        const stored = readSelectedOrgId(userId);
-        const storedValid = isMember(stored) ? stored : null;
-        const candidate = prevValid ?? storedValid;
-        if (candidate) {
-          writeSelectedOrgId(userId, candidate);
-          setApiSelectedOrganizationId(candidate);
-          return candidate;
-        }
-        const fallback = data.defaultOrganizationId ?? ms[0]?.organizationId ?? null;
-        writeSelectedOrgId(userId, fallback);
-        setApiSelectedOrganizationId(fallback);
-        return fallback;
-      });
+      const prev = selectedOrgIdRef.current;
+      const isMember = (id: string | null): id is string => !!id && ms.some((m) => m.organizationId === id);
+      const prevValid = isMember(prev) ? prev : null;
+      const stored = readSelectedOrgId(userId);
+      const storedValid = isMember(stored) ? stored : null;
+      const settled = prevValid ?? storedValid ?? data.defaultOrganizationId ?? ms[0]?.organizationId ?? null;
+      selectedOrgIdRef.current = settled;
+      confirmedOrgIdRef.current = settled;
+      writeSelectedOrgId(userId, settled);
+      setApiSelectedOrganizationId(settled);
+      setSelectedOrgId(settled);
     } finally {
       // Always flip the gate — even on error — so RequireAuth doesn't hang
       // the dashboard forever if /me is briefly unreachable.
@@ -365,10 +363,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const selectOrganization = useCallback(
     async (organizationId: string) => {
-      // The post-switch /me confirms the switch. Capture the last confirmed
-      // org first so a transport failure can roll every optimistic write
-      // back to it.
-      const previousOrgId = selectedOrgIdRef.current;
+      // The post-switch /me confirms the switch. Capture the session marker
+      // and the last CONFIRMED org (never the optimistic target) up front.
+      const sessionMarker = userIdFromToken();
+      const previousOrgId = confirmedOrgIdRef.current;
       // Persist under the current user's key (token `sub`) so the selection
       // is restored only for this account.
       writeSelectedOrgId(userIdFromToken(), organizationId);
@@ -381,15 +379,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // the next render refetches with the new prefix so a non-default org
       // never reuses the previous selection's data.
       queryClient.clear();
+      selectedOrgIdRef.current = organizationId;
       setSelectedOrgId(organizationId);
       try {
         await loadMe();
       } catch (error) {
-        // /me never confirmed the target: roll back the React selection, the
-        // per-user persisted org, the API override, and the admin WS target,
-        // and drop anything cached against the unconfirmed target during the
-        // optimistic window. The rejection lets the caller surface a
-        // recoverable error instead of acting on an unconfirmed Team.
+        // A final-401 response clears the tokens and dispatches auth:logout
+        // BEFORE throwing. If the session that started this switch is gone
+        // (logout) or the identity changed, logout / the new session owns the
+        // final state — reject without resurrecting the old org. The marker
+        // is the token subject, not the raw access token, so an ordinary
+        // token refresh mid-switch does not masquerade as an identity change.
+        if (userIdFromToken() !== sessionMarker) throw error;
+        // Ordinary transport failure: /me never confirmed the target, so roll
+        // back the React selection, the per-user persisted org, the API
+        // override, and the admin WS target, and drop anything cached against
+        // the unconfirmed target during the optimistic window. The rejection
+        // lets the caller surface a recoverable error.
+        selectedOrgIdRef.current = previousOrgId;
         writeSelectedOrgId(userIdFromToken(), previousOrgId);
         setApiSelectedOrganizationId(previousOrgId);
         window.dispatchEvent(new CustomEvent(ADMIN_WS_ORG_CHANGED_EVENT));
