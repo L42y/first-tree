@@ -142,6 +142,41 @@ describe("OnboardingFlowProvider template intent cleanup", () => {
     expect(readOnboardingTemplateIntent("org-1")).toBeNull();
     expect(readOnboardingTemplateIntent("org-2")).toBe("docs-writer");
     expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_template_create_success", { template_count: 1 });
+    // The server-side event is attributed to the submit target, not the
+    // drifted current org.
+    expect(eventMocks.reportOnboardingEvent).toHaveBeenCalledWith(
+      "agent_created",
+      expect.objectContaining({ organizationId: "org-1" }),
+    );
+  });
+
+  it("clears nothing when the submit-time org is missing (fail closed)", async () => {
+    writeOnboardingTemplateIntent("org-2", "docs-writer");
+    await renderFlow();
+
+    const onCreated = creationMock.options?.onCreated;
+    if (!onCreated) throw new Error("useAgentCreation options not captured");
+    await act(async () => {
+      await onCreated({
+        agentUuid: "agent-1",
+        args: {
+          displayName: "Bot",
+          clientId: "client-1",
+          runtimeProvider: "claude-code",
+          visibility: "organization",
+          organizationId: null,
+        },
+      });
+    });
+    await flush();
+
+    // No submit-time org → no handoff is cleared anywhere (the drifting
+    // closure must not be used as a guess), and the event carries null org.
+    expect(readOnboardingTemplateIntent("org-2")).toBe("docs-writer");
+    expect(eventMocks.reportOnboardingEvent).toHaveBeenCalledWith(
+      "agent_created",
+      expect.objectContaining({ organizationId: null }),
+    );
   });
 
   it("fires no template success event for a plain creation", async () => {

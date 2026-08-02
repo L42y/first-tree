@@ -306,4 +306,114 @@ describe("TemplateUseIntent", () => {
     expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_create_draft_open", { template_count: 1 });
     expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new-1");
   });
+
+  it("ignores a double-click while the switch is in flight", async () => {
+    let resolveSwitch!: () => void;
+    authMock.value.selectOrganization = vi.fn(
+      (_orgId: string) =>
+        new Promise<undefined>((resolve) => {
+          resolveSwitch = () => resolve(undefined);
+        }),
+    );
+    await renderIntent();
+
+    const button = buttonByText("Continue");
+    await click(button);
+    // In-flight: the button reads Confirming and is disabled; a second
+    // dispatch must not start a concurrent switch.
+    expect(document.body.textContent).toContain("Confirming team…");
+    await click(buttonByText("Confirming team…"));
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSwitch();
+    });
+    await rerender();
+    expect(dialogOpenCount()).toBeGreaterThan(0);
+  });
+
+  it("suppresses the generic handoff while auth shows the unconfirmed target mid-flight", async () => {
+    authMock.value.memberships = [membership("m-1", "org-1", "Acme Team"), membership("m-2", "org-2", "Side Team")];
+    let resolveSwitch!: () => void;
+    authMock.value.selectOrganization = vi.fn(
+      (_orgId: string) =>
+        new Promise<undefined>((resolve) => {
+          resolveSwitch = () => resolve(undefined);
+        }),
+    );
+    await renderIntent();
+
+    await click(optionCardByText("Side Team"));
+    await click(buttonByText("Continue"));
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
+
+    // Mid-flight, auth ALREADY shows org-2 with needs-onboarding facts (the
+    // real selectOrganization writes the selected org before /me confirms).
+    // The generic gate must not hand off or navigate for this unconfirmed Team.
+    authMock.value.organizationId = "org-2";
+    authMock.value.currentOrgHasPersonalAgent = false;
+    authMock.value.onboardingCompletedAt = null;
+    await rerender();
+    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("onboarding-stub");
+    expect(document.body.textContent).toContain("Confirming team…");
+    expect(dialogOpenCount()).toBe(0);
+
+    // The promise resolves with auth on the exact target: only NOW the gate
+    // is evaluated for org-2 and the handoff is written explicitly.
+    await act(async () => {
+      resolveSwitch();
+    });
+    await rerender();
+    expect(flagsMocks.writeOnboardingTemplateIntent).toHaveBeenCalledTimes(1);
+    expect(flagsMocks.writeOnboardingTemplateIntent).toHaveBeenCalledWith("org-2", "pr-engineer");
+    expect(document.body.textContent).toContain("onboarding-stub");
+    expect(dialogOpenCount()).toBe(0);
+  });
+
+  it("never hands off to a fallback Team that needs onboarding after a failed confirmation", async () => {
+    authMock.value.memberships = [
+      membership("m-1", "org-1", "Acme Team"),
+      membership("m-2", "org-2", "Side Team"),
+      membership("m-3", "org-3", "Fresh Team", {
+        hasPersonalAgent: false,
+        hasUsableAgent: false,
+        onboardingCompletedAt: null,
+      }),
+    ];
+    let resolveSwitch!: () => void;
+    authMock.value.selectOrganization = vi.fn(
+      (_orgId: string) =>
+        new Promise<undefined>((resolve) => {
+          resolveSwitch = () => resolve(undefined);
+        }),
+    );
+    await renderIntent();
+
+    await click(optionCardByText("Side Team"));
+    await click(buttonByText("Continue"));
+
+    // /me comes back: the org-2 membership vanished and auth reconciled to
+    // org-3, which happens to need onboarding. The user never confirmed it.
+    authMock.value.organizationId = "org-3";
+    authMock.value.currentOrgHasPersonalAgent = false;
+    authMock.value.onboardingCompletedAt = null;
+    authMock.value.memberships = [
+      membership("m-1", "org-1", "Acme Team"),
+      membership("m-3", "org-3", "Fresh Team", {
+        hasPersonalAgent: false,
+        hasUsableAgent: false,
+        onboardingCompletedAt: null,
+      }),
+    ];
+    await act(async () => {
+      resolveSwitch();
+    });
+    await rerender();
+
+    expect(document.body.textContent).toContain("couldn't confirm that team");
+    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("onboarding-stub");
+    expect(dialogOpenCount()).toBe(0);
+  });
 });

@@ -53,9 +53,13 @@ export function writeOnboardingTemplateIntent(orgId: string, slug: string | null
     window.sessionStorage.removeItem(TEMPLATE_INTENT_KEY(orgId));
     return;
   }
-  // Refuse invalid slugs at the write boundary instead of relying on the
-  // reader's self-heal — a bad handoff must never be stored at all.
-  if (!agentTemplateSlugSchema.safeParse(slug).success) return;
+  // Refuse invalid slugs at the write boundary — and fail CLOSED: remove any
+  // previously stored value so a stale legal slug can never survive an
+  // invalid write and be read back as a real intent later.
+  if (!agentTemplateSlugSchema.safeParse(slug).success) {
+    window.sessionStorage.removeItem(TEMPLATE_INTENT_KEY(orgId));
+    return;
+  }
   window.sessionStorage.setItem(TEMPLATE_INTENT_KEY(orgId), slug);
 }
 

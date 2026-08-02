@@ -51,6 +51,14 @@ describe("onboarding template intent handoff", () => {
     expect(readOnboardingTemplateIntent("org-1")).toBe("pr-engineer");
   });
 
+  it("clears a previously stored valid slug on an invalid write (fail closed)", () => {
+    writeOnboardingTemplateIntent("org-1", "pr-engineer");
+    expect(readOnboardingTemplateIntent("org-1")).toBe("pr-engineer");
+    writeOnboardingTemplateIntent("org-1", "Not A Slug!");
+    expect(readOnboardingTemplateIntent("org-1")).toBeNull();
+    expect(window.sessionStorage.getItem("onboarding:templateIntent:org-1")).toBeNull();
+  });
+
   it("is covered by the logout session-flag wipe", () => {
     writeOnboardingTemplateIntent("org-1", "pr-engineer");
     window.sessionStorage.setItem("unrelated:key", "keep");

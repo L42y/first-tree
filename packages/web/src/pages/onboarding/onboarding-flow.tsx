@@ -328,7 +328,9 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       // off the org the agent was actually submitted to (the create args),
       // never the drifting closure: if the member switched Teams while the
       // POST was in flight, we must clear THAT org's key, not the new one.
-      const createdOrgId = info.args.organizationId ?? organizationId;
+      // Fail CLOSED: without a submit-time org we clear nothing rather than
+      // guess from the current selection.
+      const createdOrgId = info.args.organizationId ?? null;
       if (createdOrgId) writeOnboardingTemplateIntent(createdOrgId, null);
       // Mirror the New Agent dialog's success event for the onboarding path;
       // count comes from the submitted args, and it is a creation signal,
@@ -339,10 +341,11 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       void reportOnboardingEvent("agent_created", {
         runtimeProvider: info.args.runtimeProvider,
         path,
-        organizationId: organizationId ?? null,
+        // Attributed to the actual submit target, not the drifting closure.
+        organizationId: createdOrgId,
       });
     },
-    [organizationId, path],
+    [path],
   );
   const {
     phase: agentPhase,

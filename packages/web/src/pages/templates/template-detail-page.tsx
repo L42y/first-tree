@@ -107,19 +107,29 @@ export function TemplateDetailPage() {
   // `template` goes null for one refetch window. Without this capture the
   // intent subtree (including an open NewAgentDialog) would unmount mid-flow
   // and lose its state; the sticky copy keeps the resolution mounted with the
-  // last confirmed ACTIVE template for THIS slug. Navigation to a different
-  // slug replaces it (the effect keys on slug).
+  // last confirmed ACTIVE template for THIS slug.
+  //
+  // The snapshot carries its slug identity and is validated SYNCHRONOUSLY at
+  // render: React Router reuses this component instance across
+  // `/templates/:slug` param changes, so a stale snapshot for slug A must
+  // never render while the route already points at slug B — not even for one
+  // pending window.
   const [stickyIntentTemplate, setStickyIntentTemplate] = useState<AgentTemplatePublicTemplate | null>(null);
   useEffect(() => {
     if (!intent || template?.status !== "active") return;
     setStickyIntentTemplate((prev) => (prev?.slug === template.slug ? prev : template));
   }, [intent, template]);
+  const activeStickyIntentTemplate =
+    stickyIntentTemplate && stickyIntentTemplate.slug === slug ? stickyIntentTemplate : null;
 
-  // One deduped detail view per mount, only once a real detail rendered.
-  const viewTrackedRef = useRef(false);
+  // Detail view dedupe is keyed by slug TRANSITION, not by mount: the same
+  // component instance can render A → B (and back), and each distinct slug
+  // that actually renders a detail earns exactly one event.
+  const viewTrackedForRef = useRef<string | null>(null);
   useEffect(() => {
-    if (viewTrackedRef.current || !template) return;
-    viewTrackedRef.current = true;
+    if (!template) return;
+    if (viewTrackedForRef.current === template.slug) return;
+    viewTrackedForRef.current = template.slug;
     trackEvent("agent_template_detail_view", {
       slug: template.slug,
       status: template.status,
@@ -150,8 +160,10 @@ export function TemplateDetailPage() {
         </div>
       );
     }
-    if (stickyIntentTemplate) {
-      return <TemplateUseIntent template={stickyIntentTemplate} />;
+    if (activeStickyIntentTemplate) {
+      // Keyed by slug so every piece of intent state (chooser, dialog,
+      // handoff) belongs to ONE Template and resets on a slug transition.
+      return <TemplateUseIntent key={activeStickyIntentTemplate.slug} template={activeStickyIntentTemplate} />;
     }
     // A retired/unavailable Template cannot start a new agent — fall through
     // to the ordinary detail rendering, which explains the state.

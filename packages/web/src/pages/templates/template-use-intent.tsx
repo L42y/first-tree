@@ -25,18 +25,20 @@ import { shouldEnterOnboarding } from "../onboarding/steps.js";
  *     confirms the destination Team; a multi-Team member is never silently
  *     written into the wrong one.
  *
- * Team confirmation is a two-phase state machine, because `selectOrganization`
- * clears the whole React Query cache and re-fetches `/me` — and its resolved
- * promise alone is NOT proof the target Team is active (a lost membership
- * reconciles to a fallback org with a resolved promise):
+ * Team confirmation is a state machine with an explicit in-flight phase,
+ * because `selectOrganization` clears the whole React Query cache, re-fetches
+ * `/me`, and writes the target selected-org BEFORE `/me` confirms it:
  *
- *   1. `handleConfirm` awaits `selectOrganization(exactOrgId)` and records a
- *      settle marker (the chosen org + the pre-switch memberships identity).
- *   2. The confirmation effect waits until Auth state has actually landed
- *      (the org already matches, or a post-switch memberships array arrived),
- *      then judges: EXACT org match → re-check the onboarding gate against
- *      the NEW org and either hand off to onboarding or open the shared
- *      NewAgentDialog; anything else → recoverable error, nothing is created.
+ *   1. `handleConfirm` SYNCHRONOUSLY enters the `switching` phase (exact
+ *      target + pre-switch memberships identity) — the UI disables instantly,
+ *      double-clicks can't start concurrent switches, and the generic
+ *      onboarding gate is suppressed while ANY confirmation is in flight.
+ *   2. Only after the switch promise resolved AND the post-switch auth
+ *      snapshot landed does the confirmation effect judge: EXACT org match →
+ *      re-check the onboarding gate against THAT Team and explicitly choose
+ *      handoff + onboarding or the shared NewAgentDialog; anything else
+ *      (reject, fallback) → recoverable error, no handoff for any Team the
+ *      user never confirmed, nothing is created.
  */
 export function TemplateUseIntent({ template }: { template: AgentTemplatePublicTemplate }) {
   const navigate = useNavigate();
@@ -60,20 +62,33 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
     onboardingCompletedAt,
   });
 
-  // Onboarding handoff: write the per-org slug, then enter the ordinary flow.
-  // This also covers a confirmed switch that LANDED on a Team still needing
-  // onboarding — the gate above is re-evaluated against the new org's auth
-  // state, so Team A's completed gate is never reused for Team B.
-  //
-  // Deliberately runs after EVERY commit with a ref guard instead of a deps
-  // array: the write is keyed by the org it was performed for, so repeats are
-  // idempotent (StrictMode double-effects, refreshes), and the effect can
-  // never be skipped by a passive-effect scheduling edge while the gate is
-  // already showing the onboarding destination.
+  // Team switch in-flight phase. Established SYNCHRONOUSLY on click — a real
+  // `selectOrganization` writes the target selected-org before `/me` confirms
+  // it, so without this phase the generic onboarding gate could hand off or
+  // navigate for a Team whose membership was never confirmed (or for a
+  // fallback the user never picked).
+  type TeamSwitch = { targetOrgId: string; preMemberships: MeMembership[]; promiseResolved: boolean };
+  const [teamSwitch, setTeamSwitch] = useState<TeamSwitch | null>(null);
+  // Explicit, post-confirmation onboarding destination. Set ONLY by the
+  // confirmation effect after the exact target is proven — never by the
+  // generic gate during a switch.
+  const [handoffTarget, setHandoffTarget] = useState<string | null>(null);
+  // The org this page mounted with — the ONLY Team the generic (no explicit
+  // choice) onboarding handoff may ever fire for. After any switch attempt, a
+  // fallback Team that happens to need onboarding must NOT receive a handoff.
+  const mountOrgRef = useRef<string | null>(organizationId);
+
+  // Generic onboarding handoff (no explicit Team choice): the member landed
+  // here while their CURRENT Team still needs onboarding. Runs after EVERY
+  // commit with a ref guard instead of a deps array so a passive-effect
+  // scheduling edge can never skip it while the gate is already showing the
+  // onboarding destination; the write is keyed by the org it was performed
+  // for, so repeats are idempotent (StrictMode double-effects, refreshes).
   const handoffWrittenForRef = useRef<string | null>(null);
   const [handoffWritten, setHandoffWritten] = useState(false);
   useEffect(() => {
-    if (!needsOnboarding || !organizationId) {
+    if (teamSwitch) return; // confirmation in flight: no generic handoff
+    if (!needsOnboarding || !organizationId || organizationId !== mountOrgRef.current) {
       handoffWrittenForRef.current = null;
       return;
     }
@@ -86,32 +101,42 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(organizationId);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  // Settle marker for an in-flight confirmation (also the "Confirming team…"
-  // UI state): the chosen org plus the pre-switch memberships identity. It is
-  // STATE, not a ref — setting it must schedule the render that lets the
-  // confirmation effect judge. Auth "has landed" once the selected org
-  // already matches or a new memberships array arrives from the post-switch
-  // /me — only then is the org comparison trustworthy.
-  const [confirmSettle, setConfirmSettle] = useState<{ orgId: string; memberships: MeMembership[] } | null>(null);
 
+  // Confirmation judgement — only after the switch promise resolved AND the
+  // post-switch auth snapshot landed (the org already matches, or a fresh
+  // memberships array arrived from the post-switch /me).
   useEffect(() => {
-    if (!confirmSettle) return;
-    const landed = organizationId === confirmSettle.orgId || memberships !== confirmSettle.memberships;
+    if (!teamSwitch?.promiseResolved) return;
+    const landed = organizationId === teamSwitch.targetOrgId || memberships !== teamSwitch.preMemberships;
     if (!landed) return;
-    setConfirmSettle(null);
-    if (organizationId !== confirmSettle.orgId) {
+    const target = teamSwitch.targetOrgId;
+    setTeamSwitch(null);
+    if (organizationId !== target) {
       // The target membership was lost and Auth reconciled to a fallback
-      // Team — never create against a Team the user did not confirm.
+      // Team — never create against a Team the user did not confirm, and
+      // never hand off to that fallback either.
       setSwitchError("We couldn't confirm that team — nothing was created. Pick a team and try again.");
       return;
     }
-    // Exact Team confirmed. If THIS Team still needs onboarding, the handoff
-    // effect above owns the next step — do not open the creation dialog.
-    if (needsOnboarding) return;
+    // Exact Team confirmed. If THIS Team still needs onboarding, hand off
+    // explicitly for it — do not open the creation dialog.
+    if (needsOnboarding) {
+      writeOnboardingTemplateIntent(target, template.slug);
+      setHandoffTarget(target);
+      return;
+    }
     setDialogOpen(true);
-  }, [confirmSettle, organizationId, memberships, needsOnboarding]);
+  }, [teamSwitch, organizationId, memberships, needsOnboarding, template.slug]);
 
-  if (needsOnboarding && organizationId) {
+  // Explicit confirmed onboarding destination (post-confirmation only).
+  if (handoffTarget) {
+    return <Navigate to="/onboarding" replace />;
+  }
+
+  // Generic onboarding destination — initial landing on a Team that still
+  // needs onboarding. Never while a confirmation is in flight, and never for
+  // a Team other than the one this page mounted with.
+  if (!teamSwitch && needsOnboarding && organizationId && organizationId === mountOrgRef.current) {
     if (!handoffWritten) {
       return (
         <div className="landing-marketing flex min-h-screen items-center justify-center bg-background text-body text-fg-3">
@@ -123,16 +148,24 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   }
 
   async function handleConfirm(): Promise<void> {
-    if (!selectedOrgId || confirmSettle) return;
+    if (!selectedOrgId || teamSwitch) return;
     setSwitchError(null);
+    // Enter the switching phase IMMEDIATELY — before any async work — so the
+    // UI disables, concurrent clicks are ignored, and the generic onboarding
+    // gate stays suppressed for the whole flight.
+    const request: TeamSwitch = { targetOrgId: selectedOrgId, preMemberships: memberships, promiseResolved: false };
+    setTeamSwitch(request);
     try {
       await selectOrganization(selectedOrgId);
     } catch {
       // Never open the creation dialog against an unconfirmed Team.
+      setTeamSwitch(null);
       setSwitchError("We couldn't switch to that team. Try again.");
       return;
     }
-    setConfirmSettle({ orgId: selectedOrgId, memberships });
+    setTeamSwitch((prev) =>
+      prev && prev.targetOrgId === request.targetOrgId ? { ...prev, promiseResolved: true } : prev,
+    );
   }
 
   return (
@@ -178,12 +211,8 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
         )}
 
         <div className="mt-6">
-          <Button
-            variant="cta"
-            onClick={() => void handleConfirm()}
-            disabled={!selectedOrgId || confirmSettle !== null}
-          >
-            {confirmSettle !== null ? "Confirming team…" : "Continue"}
+          <Button variant="cta" onClick={() => void handleConfirm()} disabled={!selectedOrgId || teamSwitch !== null}>
+            {teamSwitch !== null ? "Confirming team…" : "Continue"}
           </Button>
         </div>
       </main>
