@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,7 +143,119 @@ describe("trusted-publishing npm toolchain contract", () => {
   it("runs a real release-pack smoke under the pinned client on CLI-affecting PRs", () => {
     const ci = readText(CI_WORKFLOW);
     expect(ci).toContain("npm install -g npm@11.5.1");
-    expect(ci).toContain("node scripts/release-pack-smoke.mjs");
+    // Heavy turbo cache + real pack smoke stays a shell step outside Vitest
+    // (same class of failure as building dist inside beforeAll).
+    expect(ci).toContain("node scripts/release-pack-smoke.mjs selftest-turbo-context-integration-cache");
+    expect(ci).toContain("Release pack smoke (bundled Kimi SDK + turbo context-integration cache)");
+    // Do not also run the default smoke in the same job — the selftest already
+    // ends in runSmoke() (pack → consumer → bundled SDK).
+    expect(ci).not.toMatch(/^\s*run:\s*node scripts\/release-pack-smoke\.mjs\s*$/m);
     expect(existsSync(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"))).toBe(true);
+
+    const smoke = readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"));
+    // Prove the CI-selected selftest does not bypass the real release smoke.
+    const cacheFnStart = smoke.indexOf("function selftestTurboContextIntegrationCache()");
+    const mainFnStart = smoke.indexOf("\nfunction main()");
+    expect(cacheFnStart).toBeGreaterThanOrEqual(0);
+    expect(mainFnStart).toBeGreaterThan(cacheFnStart);
+    const cacheSelftest = smoke.slice(cacheFnStart, mainFnStart);
+    expect(cacheSelftest).toContain("runSmoke()");
+    expect(cacheSelftest).toContain('turbo.json build.outputs must include "context-integration/**"');
+    // This file must not spawn the heavy selftest inside Vitest workers.
+    const thisFile = readText(join(HERE, "package-metadata.test.ts"));
+    expect(thisFile).not.toMatch(/spawnSync\([\s\S]{0,400}selftest-turbo-context-integration-cache/);
+  });
+
+  it("materializes bundled deps around pack so pnpm symlink targets cannot escape the tarball", () => {
+    const pkg = readJson(join(CLI_ROOT, "package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    const materialize = join(CLI_ROOT, "scripts", "materialize-bundled-deps.mjs");
+    const safety = join(REPO_ROOT, "scripts", "npm-tarball-safety.mjs");
+    expect(existsSync(materialize)).toBe(true);
+    expect(existsSync(safety)).toBe(true);
+    expect(pkg.scripts?.prepack ?? "").toContain("materialize-bundled-deps.mjs prepare");
+    expect(pkg.scripts?.postpack ?? "").toContain("materialize-bundled-deps.mjs restore");
+    // Restore must run before skill cleanup so a failed restore still leaves the
+    // workspace symlink graph recoverable by a subsequent prepare/restore.
+    const postpack = pkg.scripts?.postpack ?? "";
+    expect(postpack.indexOf("materialize-bundled-deps.mjs restore")).toBeLessThan(postpack.indexOf("rm -rf skills"));
+    const smoke = readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"));
+    expect(smoke).toContain("assertNpmTarballRegistrySafe");
+    // Pack into a run-owned destination so the deterministic name/version
+    // filename cannot overwrite a pre-existing apps/cli artifact.
+    expect(smoke).toContain("--pack-destination");
+    // Incomplete Turbo cache restores (dist-only) must not PASS smoke.
+    expect(smoke).toContain("assertSourceContextIntegrationPresent");
+    expect(smoke).toContain("assertConsumerContextIntegration");
+    expect(smoke).toContain("package/context-integration/release-manifest.json");
+    // Helpers must throw so finally/cleanup always runs; only the outermost
+    // main() may set process.exitCode.
+    const failFn = smoke.match(/function fail\([^)]*\) \{[^}]*\}/)?.[0] ?? "";
+    expect(failFn).toContain("throw new SmokeFailure");
+    expect(failFn).not.toContain("process.exit");
+  });
+
+  it("declares context-integration as a turbo build output so cache hits restore the release payload", () => {
+    const turbo = readJson(join(CLI_ROOT, "turbo.json")) as {
+      tasks?: { build?: { outputs?: string[] } };
+    };
+    const outputs = turbo.tasks?.build?.outputs ?? [];
+    expect(outputs).toContain("dist/**");
+    expect(outputs).toContain("context-integration/**");
+  });
+
+  it("restores every original symlink after a mid-prepare failure", () => {
+    const materialize = join(CLI_ROOT, "scripts", "materialize-bundled-deps.mjs");
+    const result = spawnSync(process.execPath, [materialize, "selftest-recovery"], {
+      cwd: CLI_ROOT,
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      throw new Error(`materialize selftest-recovery failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest-recovery PASS");
+  });
+
+  it("cleans tarballs, temp consumers, and symlinks after a release-pack smoke failure", () => {
+    const result = spawnSync(
+      process.execPath,
+      [join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"), "selftest-cleanup"],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      },
+    );
+    if (result.status !== 0) {
+      throw new Error(`release-pack-smoke selftest-cleanup failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest-cleanup PASS");
+  });
+
+  it("preserves a same-name pre-existing first-tree-dev tarball across smoke success and failure cleanup", () => {
+    const result = spawnSync(
+      process.execPath,
+      [join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"), "selftest-preserve-preexisting"],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      },
+    );
+    if (result.status !== 0) {
+      throw new Error(`release-pack-smoke selftest-preserve-preexisting failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest-preserve-preexisting PASS");
+  });
+});
+
+describe("npm tarball registry-safety helper", () => {
+  it("accepts canonical package-root paths and rejects traversal, rootless, and escaping layouts", () => {
+    const result = spawnSync(process.execPath, [join(REPO_ROOT, "scripts", "npm-tarball-safety.mjs")], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      throw new Error(`npm-tarball-safety selftest failed:\n${result.stderr || result.stdout}`);
+    }
+    expect(result.stdout).toContain("selftest PASS");
   });
 });
