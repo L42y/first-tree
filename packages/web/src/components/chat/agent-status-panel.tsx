@@ -1,12 +1,21 @@
 import { type AgentChatStatus, type ChatParticipantDetail, compareMainStatus } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Pause, Play } from "lucide-react";
+import { useState } from "react";
 import { chatAgentStatusQueryKey, fetchChatAgentStatuses } from "../../api/agent-status.js";
-import { resumeSession, suspendSession } from "../../api/sessions.js";
+import {
+  chatSessionEventsQueryKey,
+  resumeSession,
+  sessionQueryKey,
+  suspendSession,
+  terminateSession,
+} from "../../api/sessions.js";
 import { viewOf } from "../../lib/agent-status-view.js";
 import { toneOf } from "../../lib/tones.js";
+import { AgentSessionResetConfirmDialog } from "../agent-lifecycle-confirm-dialog.js";
 import { Avatar } from "../avatar.js";
 import { StatusGlyph } from "../ui/status-glyph.js";
+import { useToast } from "../ui/toast.js";
 import { AgentHovercard } from "./agent-hovercard.js";
 
 /**
@@ -76,18 +85,33 @@ export function AgentStatusPanel({
 }
 
 /**
- * Pause is offered only when the agent is BOTH actively producing output
- * (`main === "working"`) and on a live session (`engagement === "active"`).
- * That's the only state with a meaningful Pause — and the only transition the
- * server accepts (anything else 409s). ready / failed / offline,
- * or a working-but-already-suspended row, get no Pause. Exported for tests.
+ * Pause is offered for any live session on a reachable agent
+ * (`engagement === "active"`) — working or idle. That is the only session
+ * state Pause can suspend (anything else 409s), and the active-idle case
+ * matters: it is the only path to Reset, since Reset is offered only for
+ * stopped sessions. Offline rows get no Pause. Exported for tests.
  */
 export function canPauseStatus(status: AgentChatStatus | null): boolean {
-  return status?.main === "working" && status.engagement === "active";
+  return status?.reachable === true && status.engagement === "active";
 }
 
 export function canResumeStatus(status: AgentChatStatus | null): boolean {
   return status?.engagement === "suspended";
+}
+
+/**
+ * Reset (clear the chat session) is offered only for a STOPPED session —
+ * `suspended`, or failed (session state `errored` projects as engagement
+ * `none` with the errored axis set) — on a reachable agent whose live client
+ * declares the terminate apply-ack capability (`sessionResetSupported`).
+ * Active sessions never offer Reset, even when idle: a running agent must be
+ * paused first, so Reset never tears down an in-flight turn. Offline agents
+ * and old clients are excluded because the apply-ack is the only proof the
+ * old provider-session mapping is gone. Exported for tests.
+ */
+export function canResetSessionStatus(status: AgentChatStatus | null): boolean {
+  if (!status || !status.reachable || status.sessionResetSupported !== true) return false;
+  return status.engagement === "suspended" || (status.engagement === "none" && status.errored);
 }
 
 function AgentStatusRow({
@@ -104,6 +128,8 @@ function AgentStatusRow({
   compact: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
+  const [resetOpen, setResetOpen] = useState(false);
   const suspendMut = useMutation({
     mutationFn: () => suspendSession(agent.agentId, chatId),
     onSuccess: () => {
@@ -120,72 +146,129 @@ function AgentStatusRow({
       queryClient.invalidateQueries({ queryKey: ["activity"] });
     },
   });
+  // Reset is offered only for stopped sessions (suspended / errored) on a
+  // capable online client, so a single terminate in apply-ack mode is the
+  // whole operation: the server holds the request until the client confirms
+  // it dropped the local provider-session mapping, then atomically evicts and
+  // clears traces. A 200 + evicted response IS the fresh-session proof; every
+  // failure arrives as an HTTP error and leaves the stopped row untouched,
+  // so the action stays retryable (even after a reload).
+  const resetMut = useMutation({
+    mutationFn: async () => {
+      const result = await terminateSession(agent.agentId, chatId, { waitForApply: true });
+      if (result.state !== "evicted") {
+        // Defensive: the apply-ack route only returns 200 for evicted rows —
+        // anything else must surface as a retryable failure, never success.
+        throw new Error("The session could not be cleared. Try again.");
+      }
+    },
+    onSuccess: () => {
+      setResetOpen(false);
+      queryClient.invalidateQueries({ queryKey: chatAgentStatusQueryKey(chatId) });
+      queryClient.invalidateQueries({ queryKey: sessionQueryKey(agent.agentId, chatId) });
+      queryClient.invalidateQueries({ queryKey: chatSessionEventsQueryKey(chatId) });
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["activity"] });
+      addToast({
+        title: "Session reset",
+        description: `Send @${agent.name} a new message in this chat to start fresh.`,
+      });
+    },
+    onError: (error) => {
+      // Fail honestly: the dialog stays open so the user can retry, and no
+      // success toast appears for a half-completed suspend → terminate pair.
+      // Refresh the row so the retry acts on the real session state.
+      queryClient.invalidateQueries({ queryKey: chatAgentStatusQueryKey(chatId) });
+      addToast({
+        title: "Reset failed",
+        description: error instanceof Error ? error.message : "The session could not be reset. Try again.",
+      });
+    },
+  });
 
   const view = status ? viewOf(status.main) : null;
   const showPause = canManage && canPauseStatus(status);
   const showResume = canManage && canResumeStatus(status);
+  const sessionReset = canManage && canResetSessionStatus(status) ? { onRequest: () => setResetOpen(true) } : undefined;
 
   return (
-    <div
-      className="flex items-center transition-colors hover:bg-[var(--bg-hover)]"
-      style={{
-        gap: "var(--sp-2_5)",
-        padding: compact ? "var(--sp-1_25) var(--sp-2)" : "var(--sp-1_75) var(--sp-2)",
-        borderRadius: "var(--radius-input)",
-      }}
-    >
-      <AgentHovercard
-        agentId={agent.agentId}
-        chatId={chatId}
-        name={agent.displayName}
-        placement="left"
-        triggerClassName="block shrink-0 cursor-pointer rounded-full"
+    <>
+      <div
+        className="flex items-center transition-colors hover:bg-[var(--bg-hover)]"
+        style={{
+          gap: "var(--sp-2_5)",
+          padding: compact ? "var(--sp-1_25) var(--sp-2)" : "var(--sp-1_75) var(--sp-2)",
+          borderRadius: "var(--radius-input)",
+        }}
       >
-        <span className="relative block" style={{ width: 28, height: 28 }}>
-          <Avatar
-            src={agent.avatarImageUrl}
-            name={agent.displayName}
-            seed={agent.agentId}
-            colorToken={agent.avatarColorToken}
-            size={28}
-          />
-          {view ? (
-            <span
-              className="absolute"
-              style={{
-                right: -2,
-                bottom: -3,
-              }}
-            >
-              <StatusGlyph
-                colorVar={view.colorVar}
-                shape={view.shape}
-                pulse={view.pulse}
-                size={9}
-                ariaLabel={view.label}
-                separator
-              />
-            </span>
-          ) : null}
-        </span>
-      </AgentHovercard>
-
-      <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
         <AgentHovercard
           agentId={agent.agentId}
           chatId={chatId}
           name={agent.displayName}
           placement="left"
-          triggerClassName="block max-w-full cursor-pointer truncate text-left text-subtitle hover:underline"
+          triggerClassName="block shrink-0 cursor-pointer rounded-full"
+          sessionReset={sessionReset}
         >
-          {agent.displayName}
+          <span className="relative block" style={{ width: 28, height: 28 }}>
+            <Avatar
+              src={agent.avatarImageUrl}
+              name={agent.displayName}
+              seed={agent.agentId}
+              colorToken={agent.avatarColorToken}
+              size={28}
+            />
+            {view ? (
+              <span
+                className="absolute"
+                style={{
+                  right: -2,
+                  bottom: -3,
+                }}
+              >
+                <StatusGlyph
+                  colorVar={view.colorVar}
+                  shape={view.shape}
+                  pulse={view.pulse}
+                  size={9}
+                  ariaLabel={view.label}
+                  separator
+                />
+              </span>
+            ) : null}
+          </span>
         </AgentHovercard>
-        <SecondLine status={status} />
-      </div>
 
-      {showPause ? <PauseButton onClick={() => suspendMut.mutate()} isPending={suspendMut.isPending} /> : null}
-      {showResume ? <ResumeButton onClick={() => resumeMut.mutate()} isPending={resumeMut.isPending} /> : null}
-    </div>
+        <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
+          <AgentHovercard
+            agentId={agent.agentId}
+            chatId={chatId}
+            name={agent.displayName}
+            placement="left"
+            triggerClassName="block max-w-full cursor-pointer truncate text-left text-subtitle hover:underline"
+            sessionReset={sessionReset}
+          >
+            {agent.displayName}
+          </AgentHovercard>
+          <SecondLine status={status} />
+        </div>
+
+        {showPause ? <PauseButton onClick={() => suspendMut.mutate()} isPending={suspendMut.isPending} /> : null}
+        {showResume ? <ResumeButton onClick={() => resumeMut.mutate()} isPending={resumeMut.isPending} /> : null}
+      </div>
+      {sessionReset || resetOpen ? (
+        // Mounted on `resetOpen` too: after a failed reset the server may
+        // already report the session evicted (command undelivered / cleanup
+        // raced), which hides the card action — the open dialog must remain
+        // the user's retry affordance instead of unmounting mid-recovery.
+        <AgentSessionResetConfirmDialog
+          open={resetOpen}
+          onOpenChange={setResetOpen}
+          label={agent.displayName}
+          onConfirm={() => resetMut.mutate()}
+          pending={resetMut.isPending}
+        />
+      ) : null}
+    </>
   );
 }
 

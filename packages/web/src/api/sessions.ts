@@ -183,6 +183,21 @@ export type SessionMutationResponse = {
   chatId: string;
   state: SessionState;
   transitioned: boolean;
+  /**
+   * Whether the WS command implied by the resulting state (`session:suspend`
+   * for suspended, `session:terminate` for evicted) actually reached the
+   * agent's client. `true` when no command was required. Callers promising a
+   * client-side effect (e.g. session Reset) must treat `false` as a
+   * retryable failure — the DB state moved but the client may still hold the
+   * old provider session.
+   */
+  delivered: boolean;
+  /**
+   * `waitForApply` mode only: the client confirmed it applied the terminate
+   * (local provider-session mapping dropped) via the apply-ack frame. On a
+   * 200 response in that mode this is always true; failures are HTTP errors.
+   */
+  applied?: boolean;
 };
 
 export function suspendSession(agentId: string, chatId: string): Promise<SessionMutationResponse> {
@@ -193,6 +208,11 @@ export function resumeSession(agentId: string, chatId: string): Promise<SessionM
   return api.post<SessionMutationResponse>(`/agents/${agentId}/sessions/${chatId}/resume`);
 }
 
-export function terminateSession(agentId: string, chatId: string): Promise<SessionMutationResponse> {
-  return api.post<SessionMutationResponse>(`/agents/${agentId}/sessions/${chatId}/terminate`);
+export function terminateSession(
+  agentId: string,
+  chatId: string,
+  options?: { waitForApply?: boolean },
+): Promise<SessionMutationResponse> {
+  const query = options?.waitForApply ? "?waitForApply=true" : "";
+  return api.post<SessionMutationResponse>(`/agents/${agentId}/sessions/${chatId}/terminate${query}`);
 }

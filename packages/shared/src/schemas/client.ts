@@ -70,6 +70,14 @@ export const clientWireCapabilitiesSchema = z
      * middle-version installs are no longer in the field.
      */
     wsInboxDeliver: z.boolean().default(false),
+    /**
+     * The client answers a ref'd `session:terminate` command with a
+     * `session:command:applied` frame after `handleCommand` has fully
+     * resolved (local provider-session mapping dropped). The server gates
+     * the Web chat-session Reset on this capability — without the apply-ack
+     * a queued WS frame cannot prove the old mapping is gone.
+     */
+    wsSessionTerminateApplyAck: z.boolean().default(false),
   })
   .partial();
 export type ClientWireCapabilities = z.infer<typeof clientWireCapabilitiesSchema>;

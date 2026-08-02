@@ -180,6 +180,13 @@ export type SessionCommand = {
   type: "session:suspend" | "session:resume" | "session:terminate";
   agentId: string;
   chatId: string;
+  /**
+   * Present only when the server waits for an apply-acknowledgement (the
+   * chat-session Reset path). The handler must answer with a
+   * `session:command:applied` frame once the command has fully taken local
+   * effect — never earlier.
+   */
+  ref?: string;
 };
 
 export type SessionReconcileResult = {
@@ -1160,6 +1167,33 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     this.ws.send(JSON.stringify({ type: "session:state", agentId, chatId, state }));
   }
 
+  /**
+   * Answer a ref'd `session:terminate` command. Callers (the agent slot's
+   * command handler) invoke this ONLY after `handleCommand` has fully
+   * resolved — the server treats `applied: true` as proof that the local
+   * provider-session mapping is gone, so acking early would fake a fresh
+   * session guarantee.
+   */
+  reportSessionCommandApplied(input: {
+    ref: string;
+    agentId: string;
+    chatId: string;
+    command: "session:terminate";
+    applied: boolean;
+  }): void {
+    if (!this.canSendAgentFrame(input.agentId) || !this.ws) return;
+    this.ws.send(
+      JSON.stringify({
+        type: "session:command:applied",
+        ref: input.ref,
+        agentId: input.agentId,
+        chatId: input.chatId,
+        command: input.command,
+        applied: input.applied,
+      }),
+    );
+  }
+
   reportRuntimeState(agentId: string, runtimeState: RuntimeState): void {
     if (!this.canSendAgentFrame(agentId) || !this.ws) return;
     this.ws.send(JSON.stringify({ type: "runtime:state", agentId, runtimeState }));
@@ -1468,6 +1502,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           hostname: getHostname(),
           os: platform(),
           sdkVersion: this.sdkVersion,
+          // Static capability declaration: this client answers a ref'd
+          // session:terminate with a session:command:applied apply-ack once
+          // the local mapping is dropped. Old servers ignore unknown
+          // wireCapabilities fields, so this is safe on every server build.
+          wireCapabilities: { wsSessionTerminateApplyAck: true },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),
         }),
       );
@@ -1724,8 +1763,14 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     if (type === "session:suspend" || type === "session:resume" || type === "session:terminate") {
       const agentId = msg.agentId as string;
       const chatId = msg.chatId as string;
+      const ref = typeof msg.ref === "string" && msg.ref.length > 0 ? msg.ref : undefined;
       if (agentId && chatId) {
-        this.emit("session:command", { type: type as SessionCommand["type"], agentId, chatId });
+        this.emit("session:command", {
+          type: type as SessionCommand["type"],
+          agentId,
+          chatId,
+          ...(ref ? { ref } : {}),
+        });
       }
       return;
     }

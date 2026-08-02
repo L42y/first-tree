@@ -21,6 +21,8 @@ import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
+import { clients } from "../db/schema/clients.js";
+import { isConsistentAgentRoute, metadataHasApplyAckCapability } from "./session-command-rpc.js";
 
 /**
  * Single source of truth for per-(agent,chat) composite status.
@@ -468,11 +470,43 @@ export async function resolveAgentChatStatuses(
     .select({
       agentId: agentPresence.agentId,
       clientId: agentPresence.clientId,
+      instanceId: agentPresence.instanceId,
       runtimeState: agentPresence.runtimeState,
     })
     .from(agentPresence)
     .where(inArray(agentPresence.agentId, allAgentIds));
   const presenceById = new Map(presenceRows.map((p) => [p.agentId, p]));
+
+  // -- Reset capability: derived from the DB via the SAME authoritative
+  //    route predicate as the Reset preflight / fan-out / ack store
+  //    (see session-command-rpc): durable agent binding + online presence +
+  //    connected client must agree on client/instance, and the client must
+  //    have registered `wsSessionTerminateApplyAck`. Never derived from this
+  //    process's socket ownership, so every replica projects the same answer.
+  const routeRows =
+    allAgentIds.length > 0
+      ? await db
+          .select({
+            agentId: agents.uuid,
+            agentClientId: agents.clientId,
+            agentStatus: agents.status,
+            presenceStatus: agentPresence.status,
+            presenceClientId: agentPresence.clientId,
+            presenceInstanceId: agentPresence.instanceId,
+            clientStatus: clients.status,
+            clientInstanceId: clients.instanceId,
+            clientMetadata: clients.metadata,
+          })
+          .from(agents)
+          .innerJoin(agentPresence, eq(agentPresence.agentId, agents.uuid))
+          .innerJoin(clients, eq(clients.id, agentPresence.clientId))
+          .where(inArray(agents.uuid, allAgentIds))
+      : [];
+  const applyAckCapableAgents = new Set(
+    routeRows
+      .filter((r) => isConsistentAgentRoute(r) && metadataHasApplyAckCapability(r.clientMetadata))
+      .map((r) => r.agentId),
+  );
 
   // -- Activity (D): per-(agent,chat) live activity (+ turnText when asked).
   //    Pure description: 60s drop here means "5-min-old tool_call is not the
@@ -542,6 +576,10 @@ export async function resolveAgentChatStatuses(
           // runtime frame self-heals.
           activity: working ? activity : null,
           statusReason,
+          // Live-connection capability gate for the Web chat-session
+          // Reset: only a client that answers session:terminate with an
+          // apply-ack can prove the old provider mapping is gone.
+          sessionResetSupported: applyAckCapableAgents.has(agentId),
         }),
       );
     }

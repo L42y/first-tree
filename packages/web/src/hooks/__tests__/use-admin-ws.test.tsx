@@ -175,6 +175,30 @@ describe("useAdminWs", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-right-sidebar", "cron-jobs", "chat-1"] });
   });
 
+  it("invalidates the chat's event cache when a session:state frame reports evicted", async () => {
+    // Reset finalize deletes session_events server-side; every other open
+    // viewer only learns about it through this frame — `chat-session-events`
+    // has no polling floor, so the evicted state must actively clear the
+    // cached trace.
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    queryClient = new QueryClient();
+    await renderHook();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("socket missing");
+    invalidateSpy.mockClear();
+
+    await act(async () => {
+      socket.emit({ type: "session:state", agentId: "agent-1", chatId: "chat-1", state: "suspended" });
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["chat-session-events", "chat-1"] });
+
+    await act(async () => {
+      socket.emit({ type: "session:state", agentId: "agent-1", chatId: "chat-1", state: "evicted" });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-session-events", "chat-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["session-events", "agent-1", "chat-1"] });
+  });
+
   it("invalidates the chat's cron-jobs query on chat:updated and on reconnect catch-up", async () => {
     const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
     await renderHook();

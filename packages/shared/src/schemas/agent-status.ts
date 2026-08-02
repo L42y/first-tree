@@ -144,6 +144,13 @@ export const agentChatStatusSchema = z
      * consumers must not infer busy state from it.
      */
     statusReason: agentStatusReasonSchema.optional(),
+    /**
+     * The agent's live client connection declares `wsSessionTerminateApplyAck`
+     * — i.e. a chat-session Reset can wait for the client's terminate
+     * apply-ack before reporting success. Absent/false for old clients and
+     * offline agents; Web shows Reset only when this is `=== true`.
+     */
+    sessionResetSupported: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
     const expected = deriveMainStatus(val);
@@ -163,6 +170,7 @@ export type AgentChatStatusInput = DeriveMainStatusInput & {
   agentId: string;
   activity?: LiveActivity | null;
   statusReason?: AgentStatusReason;
+  sessionResetSupported?: boolean;
 };
 
 /**
@@ -180,5 +188,6 @@ export function buildAgentChatStatus(input: AgentChatStatusInput): AgentChatStat
     main: deriveMainStatus(input),
     activity: input.activity ?? null,
     ...(input.statusReason ? { statusReason: input.statusReason } : {}),
+    ...(input.sessionResetSupported !== undefined ? { sessionResetSupported: input.sessionResetSupported } : {}),
   };
 }
