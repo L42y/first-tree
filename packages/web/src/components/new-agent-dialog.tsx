@@ -1,6 +1,7 @@
 import {
   AGENT_NAME_MAX_LENGTH,
   AGENT_NAME_REGEX,
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
   type Agent,
   type AgentTemplatePublicTemplate,
   type AgentVisibility,
@@ -35,13 +36,13 @@ const DISPLAY_NAME_MAX = 200;
 // pathological "team has 25 `dev-assistant`s" case.
 const HANDLE_DEDUP_LIMIT = 25;
 
-type FieldKey = "name" | "displayName" | "clientId";
+type FieldKey = "name" | "displayName" | "clientId" | "templates";
 type FieldErrors = Partial<Record<FieldKey | "_root", string>>;
 
 function issuesToFieldErrors(issues: ValidationIssue[] | undefined): FieldErrors {
   if (!issues || issues.length === 0) return {};
   const out: FieldErrors = {};
-  const known: readonly FieldKey[] = ["name", "displayName", "clientId"];
+  const known: readonly FieldKey[] = ["name", "displayName", "clientId", "templates"];
   for (const issue of issues) {
     const head = issue.path[0];
     if (typeof head === "string" && (known as readonly string[]).includes(head)) {
@@ -622,13 +623,28 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
       const fromIssues = issuesToFieldErrors(err.issues);
       if (Object.keys(fromIssues).length > 0) return fromIssues;
       if (err.status === 409) {
-        return { name: "That agent name is already in use in this organization. Pick a different one." };
+        // Branch only on stable wire codes — never guess name from a bare 409.
+        if (err.code === AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.NAME_CONFLICT) {
+          return { name: "That agent name is already in use in this organization. Pick a different one." };
+        }
+        if (err.code === AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT) {
+          // Bind feedback to the submit-time snapshot. A late rejection after
+          // the user changed the draft during pending must not paint the old
+          // adoption error onto a different (or empty) selection.
+          const submitted = [...(createMut.variables?.templateIds ?? [])].sort();
+          const current = [...selectedTemplateIds].sort();
+          const matchesSnapshot =
+            submitted.length === current.length && submitted.every((id, index) => id === current[index]);
+          if (!matchesSnapshot) return {};
+          return { templates: err.message };
+        }
+        return { _root: err.message };
       }
       return { _root: err.message };
     }
     if (err instanceof Error) return { _root: err.message };
     return {};
-  }, [createMut.error]);
+  }, [createMut.error, createMut.variables, selectedTemplateIds]);
 
   const manualError =
     handleState.status === "manual" && manualAvailability.status === "bad"
@@ -902,6 +918,11 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
                     </OptionCard>
                   ))}
                 </div>
+              )}
+              {fieldErrors.templates && (
+                <p className="text-caption text-destructive" role="alert">
+                  {fieldErrors.templates}
+                </p>
               )}
             </div>
           )}

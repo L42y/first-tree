@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 
-import type { Agent, AgentTemplatePublicTemplate } from "@first-tree/shared";
+import { AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES, type Agent, type AgentTemplatePublicTemplate } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient } from "../../api/activity.js";
+import { ApiError } from "../../api/client.js";
 import { NewAgentDialog } from "../new-agent-dialog.js";
 import { ToastProvider } from "../ui/toast.js";
 
@@ -379,5 +380,76 @@ describe("NewAgentDialog template responsibilities", () => {
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length === 1, "create not called");
     const body = agentMocks.createAgent.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(body.templateIds).toEqual([TEMPLATE_A.id, TEMPLATE_B.id, TEMPLATE_C.id]);
+  });
+
+  it("surfaces a non-CAS adoption 409 on the Responsibilities section, not as a name conflict", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [TEMPLATE_A, TEMPLATE_B] });
+    agentMocks.createAgent.mockRejectedValueOnce(
+      new ApiError(
+        409,
+        'A Team Skill named "adopt-skill" already exists',
+        undefined,
+        AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT,
+      ),
+    );
+    await renderDialog();
+    await fillNameAndOpenPicker("Build Bot");
+    await waitForText("PR Engineer");
+    await click(optionCardByText("PR Engineer"));
+    await click(buttonByText("Create"));
+    await waitForText('A Team Skill named "adopt-skill" already exists');
+    expect(document.body.textContent).not.toMatch(/already in use/i);
+
+    // Changing the Template selection away from the submit snapshot hides the feedback.
+    await click(buttonByText("Remove"));
+    await flush();
+    expect(document.body.textContent).not.toContain('A Team Skill named "adopt-skill" already exists');
+  });
+
+  it("ignores a late adoption 409 after the draft selection changed during pending", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [TEMPLATE_A, TEMPLATE_B] });
+    let rejectCreate!: (reason: unknown) => void;
+    agentMocks.createAgent.mockImplementation(
+      () =>
+        new Promise<Agent>((_resolve, reject) => {
+          rejectCreate = reject;
+        }),
+    );
+    const onCreated = vi.fn();
+    await renderDialog(onCreated);
+    await fillNameAndOpenPicker("Build Bot");
+    await waitForText("PR Engineer");
+    await click(optionCardByText("PR Engineer"));
+
+    await click(buttonByText("Create"));
+    await waitForCondition(() => agentMocks.createAgent.mock.calls.length === 1, "create not called");
+    // Pending window: clear the selection (draft is now 0 Templates).
+    await click(buttonByText("Remove"));
+    expect(document.body.textContent).toContain("Choose a template");
+
+    await act(async () => {
+      rejectCreate(
+        new ApiError(
+          409,
+          'A Team Skill named "adopt-skill" already exists',
+          undefined,
+          AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT,
+        ),
+      );
+    });
+    await flush();
+
+    // Late rejection must not paint onto the changed draft.
+    expect(document.body.textContent).not.toContain('A Team Skill named "adopt-skill" already exists');
+    expect(document.body.textContent).not.toMatch(/already in use/i);
+    expect(document.body.textContent).toContain("Choose a template");
+    expect(onCreated).not.toHaveBeenCalled();
+
+    // Next submit uses the current (empty) snapshot.
+    agentMocks.createAgent.mockResolvedValueOnce(createdAgent());
+    await click(buttonByText("Create"));
+    await waitForCondition(() => agentMocks.createAgent.mock.calls.length === 2, "second create not called");
+    const body = agentMocks.createAgent.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(body.templateIds).toBeUndefined();
   });
 });

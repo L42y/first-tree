@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
   AGENT_TEMPLATE_MCP_STRING_MAX,
   AGENT_TEMPLATE_STATUSES,
   AGENT_TEMPLATE_WRITE_BODY_LIMIT,
@@ -915,5 +916,16 @@ describe("adopted-template projection schemas", () => {
         ],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("Agent Template lifecycle wire error codes", () => {
+  it("pins the stable create / adoption conflict codes", () => {
+    expect(AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES).toEqual({
+      NAME_CONFLICT: "agent_name_conflict",
+      VERSION_CONFLICT: "agent_templates_version_conflict",
+      ADOPTION_CONFLICT: "agent_template_adoption_conflict",
+      AGENT_INACTIVE: "agent_templates_agent_inactive",
+    });
   });
 });

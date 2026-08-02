@@ -1,6 +1,10 @@
 // @vitest-environment happy-dom
 
-import type { AgentTemplateAdoptionSummary, AgentTemplatePublicTemplate } from "@first-tree/shared";
+import {
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
+  type AgentTemplateAdoptionSummary,
+  type AgentTemplatePublicTemplate,
+} from "@first-tree/shared";
 import { QueryClient, QueryClientProvider, QueryClient as VanillaQueryClient } from "@tanstack/react-query";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -363,7 +367,12 @@ describe("ResponsibilitiesSection", () => {
 
   it("refreshes the draft and version through a real query subscription after a 409", async () => {
     templateMocks.updateAgentTemplates.mockRejectedValue(
-      new ApiError(409, "Agent Template was modified concurrently; reload it and retry."),
+      new ApiError(
+        409,
+        "Agent templates version mismatch",
+        undefined,
+        AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.VERSION_CONFLICT,
+      ),
     );
     resourceMocks.getAgentResources
       .mockResolvedValueOnce({
@@ -502,9 +511,14 @@ describe("ResponsibilitiesSection", () => {
     expect(queryClient.getQueryData(["agent-resources", "agent-1"])).toBe(response);
   });
 
-  it("refreshes and asks for a retry on a 409 conflict", async () => {
+  it("refreshes and asks for a retry on a version-CAS 409", async () => {
     templateMocks.updateAgentTemplates.mockRejectedValue(
-      new ApiError(409, "Agent Template was modified concurrently; reload it and retry."),
+      new ApiError(
+        409,
+        "Agent templates version mismatch",
+        undefined,
+        AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.VERSION_CONFLICT,
+      ),
     );
     await renderSection({ templateIds: [TEMPLATE_A_ID], adoptedTemplates: [summary({ id: TEMPLATE_A_ID })] });
     await click(buttonByText("Edit responsibilities"));
@@ -513,5 +527,59 @@ describe("ResponsibilitiesSection", () => {
     await click(buttonByText("Save"));
     await waitForText("refreshed — review and save again.");
     expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_template_replace_set", { result: "failure" });
+  });
+
+  it("keeps the draft and shows the server message on a non-CAS adoption 409", async () => {
+    templateMocks.updateAgentTemplates.mockRejectedValue(
+      new ApiError(
+        409,
+        'A Team Skill named "docs-writer" already exists',
+        undefined,
+        AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT,
+      ),
+    );
+    resourceMocks.getAgentResources.mockResolvedValue({
+      version: 7,
+      templateIds: [TEMPLATE_A_ID],
+      adoptedTemplates: [summary({ id: TEMPLATE_A_ID })],
+      effective: { version: 7, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+      bindings: [],
+      availableTeamResources: [],
+    });
+
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+    function Harness() {
+      const resources = useAgentResources("agent-1", { enabled: true });
+      if (!resources.data) return null;
+      return (
+        <ResponsibilitiesSection
+          agentUuid="agent-1"
+          agentStatus="active"
+          canManage
+          templateIds={resources.data.templateIds}
+          adoptedTemplates={resources.data.adoptedTemplates}
+          version={resources.data.version}
+        />
+      );
+    }
+    await render(<Harness />);
+    await waitForText("PR Engineer");
+    invalidateSpy.mockClear();
+    const getsBefore = resourceMocks.getAgentResources.mock.calls.length;
+
+    await click(buttonByText("Edit responsibilities"));
+    await waitForText("Edit responsibilities");
+    await click(buttonByText("Remove"));
+    await waitForText("No responsibilities selected.");
+    await click(buttonByText("Save"));
+    await waitForText('A Team Skill named "docs-writer" already exists');
+    expect(document.body.textContent).not.toContain("refreshed — review and save again.");
+    // Draft selection is preserved (empty after Remove).
+    expect(document.body.textContent).toContain("No responsibilities selected.");
+    // Adoption 409 must not invalidate or refetch through the live subscription.
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(resourceMocks.getAgentResources.mock.calls.length).toBe(getsBefore);
+    invalidateSpy.mockRestore();
   });
 });

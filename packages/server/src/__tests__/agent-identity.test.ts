@@ -1,5 +1,15 @@
+import { AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES } from "@first-tree/shared";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createAgent, deleteAgent, getAgent, getAgentByName, listAgents, suspendAgent } from "../services/agent.js";
+import { ConflictError } from "../errors.js";
+import {
+  createAgent,
+  deleteAgent,
+  getAgent,
+  getAgentByName,
+  isAgentOrgNameUniqueViolation,
+  listAgents,
+  suspendAgent,
+} from "../services/agent.js";
 import { createMember } from "../services/member.js";
 import { createOrganization } from "../services/organization.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
@@ -232,12 +242,51 @@ describe("Agent Identity (UUID + Name)", () => {
   // ── Name uniqueness ─────────────────────────────────────────────
 
   describe("name uniqueness", () => {
-    it("rejects duplicate name within the same org", async () => {
+    it("rejects duplicate name within the same org with the name wire code", async () => {
       const app = getApp();
 
       await createAgent(app.db, { name: "unique-name", type: "human" });
 
-      await expect(createAgent(app.db, { name: "unique-name", type: "human" })).rejects.toThrow(/already exists/i);
+      try {
+        await createAgent(app.db, { name: "unique-name", type: "human" });
+        expect.unreachable("duplicate create should reject");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConflictError);
+        expect(error).toMatchObject({
+          statusCode: 409,
+          attrs: { code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.NAME_CONFLICT },
+        });
+        expect((error as Error).message).toMatch(/already exists/i);
+      }
+    });
+
+    it("maps only uq_agents_org_name unique violations to the name wire code", () => {
+      expect(
+        isAgentOrgNameUniqueViolation({
+          code: "23505",
+          constraint: "uq_agents_org_name",
+        }),
+      ).toBe(true);
+      expect(
+        isAgentOrgNameUniqueViolation({
+          cause: { code: "23505", constraint_name: "uq_agents_org_name" },
+        }),
+      ).toBe(true);
+      // Resource / attachment uniqueness in the same create+adoption transaction
+      // must not be mislabeled as an Agent name conflict.
+      expect(
+        isAgentOrgNameUniqueViolation({
+          code: "23505",
+          constraint: "resources_organization_id_type_name_unique",
+        }),
+      ).toBe(false);
+      expect(
+        isAgentOrgNameUniqueViolation({
+          code: "23505",
+          constraint_name: "attachments_pkey",
+        }),
+      ).toBe(false);
+      expect(isAgentOrgNameUniqueViolation({ code: "23503", constraint: "uq_agents_org_name" })).toBe(false);
     });
 
     it("allows same name in different orgs", async () => {

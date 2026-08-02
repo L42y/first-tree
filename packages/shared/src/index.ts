@@ -191,6 +191,7 @@ export {
 } from "./schemas/agent-status.js";
 export {
   AGENT_TEMPLATE_COMPONENT_KEY_REGEX,
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
   AGENT_TEMPLATE_MCP_STRING_MAX,
   AGENT_TEMPLATE_SLUG_REGEX,
   AGENT_TEMPLATE_STATUSES,
@@ -204,6 +205,7 @@ export {
   type AgentTemplateDetailList,
   type AgentTemplateId,
   type AgentTemplateIds,
+  type AgentTemplateLifecycleErrorCode,
   type AgentTemplateMcpComponent,
   type AgentTemplateMcpServer,
   type AgentTemplateName,

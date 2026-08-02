@@ -1,4 +1,5 @@
 import {
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
   type AgentTemplateAdoptionSummary,
   type AgentTemplatePublicTemplate,
   MAX_AGENT_TEMPLATE_IDS,
@@ -120,6 +121,9 @@ function TemplateStatusBadge({ status }: { status: AgentTemplateAdoptionSummary[
   return <DenseBadge>Unavailable</DenseBadge>;
 }
 
+const VERSION_CAS_FEEDBACK =
+  "This agent changed elsewhere. Its responsibilities were refreshed — review and save again.";
+
 function ResponsibilitiesEditor({
   open,
   onOpenChange,
@@ -182,9 +186,15 @@ function ResponsibilitiesEditor({
     }),
     onError: (error) => {
       trackEvent("agent_template_replace_set", { result: "failure" });
-      if (error instanceof ApiError && error.status === 409) {
+      // Only a real version-CAS conflict refreshes the draft. Adoption /
+      // inactive 409s keep the user's selection and surface the server message.
+      if (
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.code === AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.VERSION_CONFLICT
+      ) {
         queryClient.invalidateQueries({ queryKey: ["agent-resources", agentUuid] });
-        setFeedback("This agent changed elsewhere. Its responsibilities were refreshed — review and save again.");
+        setFeedback(VERSION_CAS_FEEDBACK);
         return;
       }
       setFeedback(error instanceof Error ? error.message : "Failed to save responsibilities");
@@ -192,6 +202,11 @@ function ResponsibilitiesEditor({
   });
 
   function toggleId(template: { id: string; slug?: string | null }): void {
+    // Changing the draft clears a prior non-CAS conflict so the user can
+    // correct the set and retry without a stale actionable message.
+    if (feedback && feedback !== VERSION_CAS_FEEDBACK) {
+      setFeedback(null);
+    }
     if (selected.includes(template.id)) {
       setSelected((prev) => prev.filter((id) => id !== template.id));
       trackEvent("agent_template_select", {

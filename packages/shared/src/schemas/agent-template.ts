@@ -24,6 +24,21 @@ import {
  * authority and V1 never syncs later Template changes into existing Teams.
  */
 
+/**
+ * Stable HTTP error codes for Agent create / Template adoption conflicts.
+ * Routes return `{ error, code }` so Web can branch without sniffing message
+ * text — name collisions, version-CAS, adoption conflicts, and inactive
+ * Agents must not share a single 409 recovery path.
+ */
+export const AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES = {
+  NAME_CONFLICT: "agent_name_conflict",
+  VERSION_CONFLICT: "agent_templates_version_conflict",
+  ADOPTION_CONFLICT: "agent_template_adoption_conflict",
+  AGENT_INACTIVE: "agent_templates_agent_inactive",
+} as const;
+export type AgentTemplateLifecycleErrorCode =
+  (typeof AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES)[keyof typeof AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES];
+
 export const AGENT_TEMPLATE_STATUSES = {
   DRAFT: "draft",
   ACTIVE: "active",
