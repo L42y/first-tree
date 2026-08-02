@@ -15,8 +15,46 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
     expected: {
       disposition: "no-change",
       planShouldExist: false,
+      status: "PASS",
+      taskShouldRun: false,
+      tier: "test-only",
+    },
+    fixture: { mode: "test-only" },
+    id: "first-tree-qa-test-only",
+    prompt: "Use first-tree-qa to run Northstar's requested deterministic integration tests.",
+    provider: "codex",
+    skill: "first-tree-qa",
+    status: "implemented",
+    tags: ["test-only", "tier-selection", "deterministic-tests", "scope-limit"],
+    tier: "gate",
+  },
+  {
+    briefingMode: "generated-fixture",
+    expected: {
+      disposition: "no-change",
+      planShouldExist: true,
+      status: "PASS",
+      taskShouldRun: true,
+      tier: "focused-local",
+    },
+    fixture: { mode: "focused-local" },
+    id: "first-tree-qa-focused-local",
+    prompt:
+      "Use first-tree-qa to validate Northstar CLI status as ordinary local feature validation, not release qualification.",
+    provider: "codex",
+    skill: "first-tree-qa",
+    status: "implemented",
+    tags: ["focused-local", "tier-selection", "shared-state-safety", "scope-limit"],
+    tier: "gate",
+  },
+  {
+    briefingMode: "generated-fixture",
+    expected: {
+      disposition: "no-change",
+      planShouldExist: false,
       status: "BLOCKED",
       taskShouldRun: false,
+      tier: "full-isolated",
     },
     fixture: { mode: "readiness-blocked" },
     id: "first-tree-qa-readiness-blocked",
@@ -35,6 +73,7 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
       planShouldExist: true,
       status: "PASS",
       taskShouldRun: true,
+      tier: "full-isolated",
     },
     fixture: { mode: "ready" },
     id: "first-tree-qa-ready-then-scope",
@@ -81,9 +120,14 @@ export function validateFirstTreeQaFloor(cases: readonly SkillEvalCase[]): reado
   if (floor === undefined) errors.push("missing first-tree-qa floor case");
 
   const gateIds = cases.filter((evalCase) => evalCase.tier === "gate").map((evalCase) => evalCase.id);
-  const expectedGateIds = FIRST_TREE_QA_LIVE_GATE_CASES.map((evalCase) => evalCase.id);
+  const expectedGateIds = [
+    "first-tree-qa-test-only",
+    "first-tree-qa-focused-local",
+    "first-tree-qa-readiness-blocked",
+    "first-tree-qa-ready-then-scope",
+  ];
   if (JSON.stringify(gateIds) !== JSON.stringify(expectedGateIds)) {
-    errors.push("gate coverage must declare the readiness-blocked and ready-then-scope cases");
+    errors.push("gate coverage must declare lower-tier selection and full-isolated readiness cases");
   }
 
   const skill = readRepoFile("skills/first-tree-qa/SKILL.md");
@@ -155,7 +199,8 @@ export const FIRST_TREE_QA_SUITE: SkillEvalSuiteDefinition = {
       },
       {
         caseIds: FIRST_TREE_QA_LIVE_GATE_CASES.map((evalCase) => evalCase.id),
-        description: "Full-isolated release readiness failure and QA READY before task scoping.",
+        description:
+          "Behavioral tier selection for deterministic and focused-local requests plus full-isolated release readiness.",
         status: "implemented",
         tier: "gate",
       },

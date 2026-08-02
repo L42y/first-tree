@@ -15,10 +15,13 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
     "",
     `- passed: ${String(summary.passed)}`,
     `- expectedStatus: ${summary.expectedAction}`,
+    `- expectedTier: ${summary.expectedTier}`,
+    `- expectedTierObserved: ${String(summary.metrics.expectedTierObserved)}`,
     `- skillFileReadObserved: ${String(summary.metrics.skillFileReadObserved)}`,
     `- attemptedCapabilities: ${String(summary.metrics.attemptedCapabilities.length)}`,
     `- readinessComplete: ${String(summary.metrics.readinessComplete)}`,
-    `- planAfterReadiness: ${String(summary.metrics.planAfterReadiness)}`,
+    `- planAfterTierReadiness: ${String(summary.metrics.planAfterTierReadiness)}`,
+    `- sharedInspectionBeforeUse: ${String(summary.metrics.sharedInspectionBeforeUse)}`,
     `- taskAfterPlan: ${String(summary.metrics.taskAfterPlan)}`,
     `- sourceRepoChanged: ${String(summary.metrics.sourceRepoChanged)}`,
     `- runnerExitCode: ${String(summary.metrics.runnerExitCode)}`,
@@ -59,13 +62,23 @@ function pad(value: string, width: number): string {
 }
 
 export function formatSummaryTable(batch: BatchSummary): string {
-  const header = ["case_id", "status", "attempted", "ready", "plan_after_ready", "task_after_plan", "passed"];
+  const header = [
+    "case_id",
+    "tier",
+    "status",
+    "attempted",
+    "tier_ready",
+    "plan_after_ready",
+    "task_after_plan",
+    "passed",
+  ];
   const rows = batch.cases.map((summary) => [
     summary.caseId,
+    summary.expectedTier,
     summary.expectedAction,
     String(summary.metrics.attemptedCapabilities.length),
-    String(summary.metrics.readinessComplete),
-    String(summary.metrics.planAfterReadiness),
+    String(summary.metrics.tierCapabilitiesComplete),
+    String(summary.metrics.planAfterTierReadiness),
     String(summary.metrics.taskAfterPlan),
     String(summary.passed),
   ]);

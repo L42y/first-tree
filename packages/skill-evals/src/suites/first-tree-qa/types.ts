@@ -3,10 +3,12 @@ import type { SkillCaseGrading } from "../../core/result-schema.js";
 
 export const QA_SURFACES = ["cli", "web"] as const;
 export const QA_CAPABILITIES = ["build", "run", "drive", "observe", "measure", "reset"] as const;
+export const QA_TIERS = ["test-only", "focused-local", "full-isolated"] as const;
 
 export type QaSurface = (typeof QA_SURFACES)[number];
 export type QaCapability = (typeof QA_CAPABILITIES)[number];
-export type QaFixtureMode = "readiness-blocked" | "ready";
+export type QaTier = (typeof QA_TIERS)[number];
+export type QaFixtureMode = "focused-local" | "readiness-blocked" | "ready" | "test-only";
 export type QaExpectedStatus = "BLOCKED" | "PASS";
 
 export type FirstTreeQaEvalCase = {
@@ -16,6 +18,7 @@ export type FirstTreeQaEvalCase = {
     planShouldExist: boolean;
     status: QaExpectedStatus;
     taskShouldRun: boolean;
+    tier: QaTier;
   };
   fixture: {
     mode: QaFixtureMode;
@@ -48,8 +51,9 @@ export type FixtureValidation = {
 export type ProductEvent = {
   at: number;
   capability?: QaCapability;
-  kind: "capability_failed" | "capability_ok" | "task_ok";
-  surface: QaSurface;
+  durationMs?: number;
+  kind: "capability_failed" | "capability_ok" | "shared_inspected" | "shared_mutated" | "task_ok" | "test_ok";
+  surface?: QaSurface;
   task?: string;
 };
 
@@ -57,12 +61,15 @@ export type EvalMetrics = {
   attemptedCapabilities: readonly string[];
   dispositionObserved: boolean;
   evidenceObserved: boolean;
+  expectedTierObserved: boolean;
   expectedStatusObserved: boolean;
   failedCapabilities: readonly string[];
   finalResponse: string;
   fixtureValidationOk: boolean;
+  fullIsolationCommandObserved: boolean;
   performanceObserved: boolean;
   planAfterReadiness: boolean;
+  planAfterTierReadiness: boolean;
   planExists: boolean;
   productEvidenceObserved: boolean;
   readinessComplete: boolean;
@@ -70,17 +77,26 @@ export type EvalMetrics = {
   reportText: string;
   runContextExists: boolean;
   runnerExitCode: number | null;
+  scopeLimitObserved: boolean;
+  sharedInspectionBeforeUse: boolean;
+  sharedStateInspected: boolean;
+  sharedStateMutated: boolean;
   skillFileReadObserved: boolean;
   sourceRepoChanged: boolean;
   successfulCapabilities: readonly string[];
   taskAfterPlan: boolean;
   taskRan: boolean;
+  testRan: boolean;
+  tierCapabilitiesComplete: boolean;
+  tierRationaleObserved: boolean;
+  unexpectedCapabilities: readonly string[];
 };
 
 export type CaseRunSummary = {
   caseId: string;
   driftNote: string | null;
   expectedAction: QaExpectedStatus;
+  expectedTier: QaTier;
   firstResponseLatencyMs: number | null;
   fixtureValidation: FixtureValidation;
   grading: SkillCaseGrading;

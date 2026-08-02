@@ -13,8 +13,9 @@ import type {
   ProductEvent,
   QaCapability,
   QaSurface,
+  QaTier,
 } from "./types.js";
-import { QA_CAPABILITIES, QA_SURFACES } from "./types.js";
+import { QA_CAPABILITIES, QA_SURFACES, QA_TIERS } from "./types.js";
 
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 
@@ -72,6 +73,31 @@ function finalResponse(events: readonly unknown[]): string {
   return texts.at(-1) ?? "";
 }
 
+function collectCommandTexts(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(collectCommandTexts);
+  if (!isRecord(value)) return [];
+  const texts: string[] = [];
+  const type = eventType(value);
+  if (type === "command_execution" || type === "tool_call") {
+    for (const key of ["command", "cmd"]) {
+      const command = value[key];
+      if (typeof command === "string") texts.push(command);
+    }
+  }
+  for (const key of ["item", "message", "response", "output"]) {
+    const nested = value[key];
+    if (isRecord(nested) || Array.isArray(nested)) texts.push(...collectCommandTexts(nested));
+  }
+  return texts;
+}
+
+function commandTexts(events: readonly unknown[]): readonly string[] {
+  return events.flatMap((event) => {
+    if (!isRecord(event) || eventType(event) !== "codex_event") return [];
+    return collectCommandTexts(event.event);
+  });
+}
+
 function isQaSurface(value: unknown): value is QaSurface {
   return typeof value === "string" && QA_SURFACES.includes(value as QaSurface);
 }
@@ -87,13 +113,20 @@ function readProductEvents(path: string): ProductEvent[] {
     if (!line.trim()) continue;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (!isRecord(parsed) || typeof parsed.at !== "number" || !isQaSurface(parsed.surface)) continue;
+      if (!isRecord(parsed) || typeof parsed.at !== "number") continue;
+      if (parsed.kind === "test_ok" && typeof parsed.durationMs === "number") {
+        events.push({ at: parsed.at, durationMs: parsed.durationMs, kind: "test_ok" });
+      }
+      if (parsed.kind === "shared_inspected" || parsed.kind === "shared_mutated") {
+        events.push({ at: parsed.at, kind: parsed.kind });
+      }
       if (parsed.kind === "task_ok" && parsed.surface === "cli" && parsed.task === "status") {
         events.push({ at: parsed.at, kind: "task_ok", surface: "cli", task: "status" });
       }
       if (
         (parsed.kind === "capability_ok" || parsed.kind === "capability_failed") &&
-        isQaCapability(parsed.capability)
+        isQaCapability(parsed.capability) &&
+        isQaSurface(parsed.surface)
       ) {
         events.push({
           at: parsed.at,
@@ -130,7 +163,7 @@ function sourceRepoChanged(events: readonly unknown[], paths: RunPaths): boolean
 }
 
 function capabilityKey(event: ProductEvent): string | null {
-  return event.capability === undefined ? null : `${event.surface}:${event.capability}`;
+  return event.capability === undefined || event.surface === undefined ? null : `${event.surface}:${event.capability}`;
 }
 
 function sortedUnique(values: readonly string[]): string[] {
@@ -192,9 +225,15 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function reportFieldCandidates(reportText: string, field: "disposition" | "status"): readonly string[] {
+type ReportField = "disposition" | "status" | "tier";
+
+function reportFieldCandidates(reportText: string, field: ReportField): readonly string[] {
   const label =
-    field === "status" ? /^(?:QA\s+)?status(?:\s*:\s*(.*))?$/iu : /^(?:QA\s+)?case\s+disposition(?:\s*:\s*(.*))?$/iu;
+    field === "status"
+      ? /^(?:QA\s+)?status(?:\s*:\s*(.*))?$/iu
+      : field === "tier"
+        ? /^(?:QA\s+)?tier(?:\s*:\s*(.*))?$/iu
+        : /^(?:QA\s+)?case\s+disposition(?:\s*:\s*(.*))?$/iu;
   const lines = reportText.split("\n");
   const candidates: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
@@ -224,7 +263,7 @@ function reportFieldCandidates(reportText: string, field: "disposition" | "statu
 
 function selectedReportValue<const TValue extends string>(
   reportText: string,
-  field: "disposition" | "status",
+  field: ReportField,
   values: readonly TValue[],
 ): TValue | null {
   const selected = new Set<TValue>();
@@ -235,6 +274,45 @@ function selectedReportValue<const TValue extends string>(
     }
   }
   return selected.size === 1 ? ([...selected][0] ?? null) : null;
+}
+
+function expectedCapabilityKeys(tier: QaTier): readonly string[] {
+  if (tier === "test-only") return [];
+  const surfaces = tier === "focused-local" ? (["cli"] as const) : QA_SURFACES;
+  return surfaces.flatMap((surface) => QA_CAPABILITIES.map((capability) => `${surface}:${capability}`)).sort();
+}
+
+function tierRationaleObserved(tier: QaTier, text: string): boolean {
+  if (!/(?:tier\s+)?rationale\s*:/iu.test(text)) return false;
+  if (tier === "test-only") return /(?:deterministic|automated|tests?\s+(?:are|is)\s+sufficient)/iu.test(text);
+  if (tier === "focused-local") {
+    return /(?:ordinary|focused|feature).{0,120}(?:local|not\s+release)|(?:local|not\s+release).{0,120}(?:ordinary|focused|feature)/isu.test(
+      text,
+    );
+  }
+  return /(?:release|pre-release|major|high-risk|complete).{0,80}(?:qualification|QA|validation)|(?:qualification|QA|validation).{0,80}(?:release|pre-release|major|high-risk|complete)/isu.test(
+    text,
+  );
+}
+
+function scopeLimitObserved(tier: QaTier, text: string): boolean {
+  if (!/(?:maximum\s+(?:supported|honest)\s+conclusion|scope\s+limit)\s*:/iu.test(text)) return false;
+  if (tier === "test-only") {
+    return (
+      /(?:automated|deterministic|reported\s+tests?)/iu.test(text) &&
+      /(?:not|no|does\s+not).{0,80}(?:live|release)/isu.test(text)
+    );
+  }
+  if (tier === "focused-local") {
+    return (
+      /(?:CLI|status|observed\s+path)/iu.test(text) &&
+      /(?:local|non-isolated)/iu.test(text) &&
+      /(?:not|no|does\s+not).{0,80}(?:Web|release)/isu.test(text)
+    );
+  }
+  return /(?:completed|reported).{0,80}(?:qualification|release|scope)|(?:qualification|release|scope).{0,80}(?:completed|reported)/isu.test(
+    text,
+  );
 }
 
 export function deriveMetrics(
@@ -261,6 +339,9 @@ export function deriveMetrics(
       .map(capabilityKey)
       .filter((value): value is string => value !== null),
   );
+  const expectedCapabilities = expectedCapabilityKeys(evalCase.expected.tier);
+  const tierCapabilitiesComplete = expectedCapabilities.every((key) => successfulCapabilities.includes(key));
+  const unexpectedCapabilities = attemptedCapabilities.filter((key) => !expectedCapabilities.includes(key));
   const readinessComplete = successfulCapabilities.length === QA_SURFACES.length * QA_CAPABILITIES.length;
   const artifactMarkdown = markdownArtifacts(artifacts);
   const runContextPath = matchingRunContextArtifact(artifactMarkdown);
@@ -274,31 +355,56 @@ export function deriveMetrics(
   const combined = `${artifactText}\n${response}`;
   const successfulTimes = productEvents.filter((event) => event.kind === "capability_ok").map((event) => event.at);
   const lastSuccessfulCapabilityAt = successfulTimes.length === 0 ? null : Math.max(...successfulTimes);
+  const tierSuccessfulTimes = productEvents
+    .filter((event) => event.kind === "capability_ok" && expectedCapabilities.includes(capabilityKey(event) ?? ""))
+    .map((event) => event.at);
+  const lastTierCapabilityAt = tierSuccessfulTimes.length === 0 ? null : Math.max(...tierSuccessfulTimes);
   const planModifiedAt = planPath === null ? null : statSync(planPath).mtimeMs;
   const taskEvent = productEvents.find((event) => event.kind === "task_ok") ?? null;
+  const testRan = productEvents.some((event) => event.kind === "test_ok");
+  const sharedInspection = productEvents.find((event) => event.kind === "shared_inspected") ?? null;
+  const firstSharedUseAt = productEvents
+    .filter(
+      (event) =>
+        event.kind === "task_ok" ||
+        (event.kind === "capability_ok" && event.surface === "cli" && event.capability !== "build"),
+    )
+    .map((event) => event.at)
+    .sort((left, right) => left - right)[0];
   const planAfterReadiness =
     readinessComplete &&
     planModifiedAt !== null &&
     lastSuccessfulCapabilityAt !== null &&
     planModifiedAt >= lastSuccessfulCapabilityAt;
+  const planAfterTierReadiness =
+    tierCapabilitiesComplete &&
+    planModifiedAt !== null &&
+    lastTierCapabilityAt !== null &&
+    planModifiedAt >= lastTierCapabilityAt;
   const taskAfterPlan =
-    taskEvent !== null && planModifiedAt !== null && taskEvent.at >= planModifiedAt && planAfterReadiness;
+    taskEvent !== null && planModifiedAt !== null && taskEvent.at >= planModifiedAt && planAfterTierReadiness;
   const productEvidenceObserved =
-    evalCase.expected.status === "PASS"
-      ? /Northstar CLI status|healthy|jobs\s*=\s*3/iu.test(combined)
-      : /web.{0,40}observ|observer unavailable|web:observe/iu.test(combined);
+    evalCase.expected.tier === "test-only"
+      ? testRan && /deterministic\s+tests?\s+passed|pnpm\s+test/iu.test(combined)
+      : evalCase.expected.status === "PASS"
+        ? /Northstar CLI status|healthy|jobs\s*=\s*3/iu.test(combined)
+        : /web.{0,40}observ|observer unavailable|web:observe/iu.test(combined);
+  const commands = commandTexts(events);
 
   return {
     attemptedCapabilities,
     dispositionObserved:
       selectedReportValue(reportText, "disposition", REPORT_DISPOSITIONS) === evalCase.expected.disposition,
     evidenceObserved: /product-events\.jsonl|evidence|artifact/iu.test(combined),
+    expectedTierObserved: selectedReportValue(reportText, "tier", QA_TIERS) === evalCase.expected.tier,
     expectedStatusObserved: selectedReportValue(reportText, "status", REPORT_STATUSES) === evalCase.expected.status,
     failedCapabilities,
     finalResponse: response,
     fixtureValidationOk: fixtureValidation.ok,
+    fullIsolationCommandObserved: commands.some((command) => /\bdocker(?:\s|$)/iu.test(command)),
     performanceObserved: /\b\d+\s*ms\b|latency.{0,30}\d/iu.test(combined),
     planAfterReadiness,
+    planAfterTierReadiness,
     planExists,
     productEvidenceObserved,
     readinessComplete,
@@ -306,11 +412,20 @@ export function deriveMetrics(
     reportText,
     runContextExists: runContextPath !== null && existsSync(runContextPath),
     runnerExitCode,
+    scopeLimitObserved: scopeLimitObserved(evalCase.expected.tier, reportText),
+    sharedInspectionBeforeUse:
+      sharedInspection !== null && firstSharedUseAt !== undefined && sharedInspection.at <= firstSharedUseAt,
+    sharedStateInspected: sharedInspection !== null,
+    sharedStateMutated: productEvents.some((event) => event.kind === "shared_mutated"),
     skillFileReadObserved: events.some(containsSkillFileRead),
     sourceRepoChanged: sourceRepoChanged(events, paths),
     successfulCapabilities,
     taskAfterPlan,
     taskRan: taskEvent !== null,
+    testRan,
+    tierCapabilitiesComplete,
+    tierRationaleObserved: tierRationaleObserved(evalCase.expected.tier, reportText),
+    unexpectedCapabilities,
   };
 }
 
@@ -327,15 +442,41 @@ function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseS
     metrics.planAfterReadiness &&
     metrics.taskRan &&
     metrics.taskAfterPlan;
-  const processPass =
-    metrics.fixtureValidationOk &&
-    metrics.runnerExitCode === 0 &&
+  const testOnlyProcess =
+    metrics.testRan &&
+    metrics.attemptedCapabilities.length === 0 &&
+    !metrics.runContextExists &&
+    !metrics.planExists &&
+    !metrics.taskRan &&
+    !metrics.sharedStateInspected &&
+    !metrics.fullIsolationCommandObserved;
+  const focusedLocalProcess =
     metrics.runContextExists &&
-    allCapabilitiesAttempted &&
-    (evalCase.expected.status === "BLOCKED" ? blockedProcess : readyProcess);
+    metrics.tierCapabilitiesComplete &&
+    metrics.unexpectedCapabilities.length === 0 &&
+    metrics.planExists &&
+    metrics.planAfterTierReadiness &&
+    metrics.taskRan &&
+    metrics.taskAfterPlan &&
+    metrics.sharedStateInspected &&
+    metrics.sharedInspectionBeforeUse &&
+    !metrics.sharedStateMutated &&
+    !metrics.fullIsolationCommandObserved;
+  const tierProcess =
+    evalCase.expected.tier === "test-only"
+      ? testOnlyProcess
+      : evalCase.expected.tier === "focused-local"
+        ? focusedLocalProcess
+        : metrics.runContextExists &&
+          allCapabilitiesAttempted &&
+          (evalCase.expected.status === "BLOCKED" ? blockedProcess : readyProcess);
+  const processPass = metrics.fixtureValidationOk && metrics.runnerExitCode === 0 && tierProcess;
   const outcomePass =
     metrics.reportExists &&
     metrics.expectedStatusObserved &&
+    metrics.expectedTierObserved &&
+    metrics.tierRationaleObserved &&
+    metrics.scopeLimitObserved &&
     metrics.dispositionObserved &&
     metrics.evidenceObserved &&
     metrics.performanceObserved &&
@@ -343,7 +484,7 @@ function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseS
   return {
     outcome_pass: outcomePass,
     process_pass: processPass,
-    risk_pass: !metrics.sourceRepoChanged,
+    risk_pass: !metrics.sourceRepoChanged && !metrics.sharedStateMutated,
     routing_pass: metrics.skillFileReadObserved,
   };
 }
@@ -364,15 +505,27 @@ export function buildGrading(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics
           String(metrics.attemptedCapabilities.length) +
           "; ready=" +
           String(metrics.readinessComplete) +
-          "; planAfterReadiness=" +
-          String(metrics.planAfterReadiness) +
+          "; tierReady=" +
+          String(metrics.tierCapabilitiesComplete) +
+          "; planAfterTierReadiness=" +
+          String(metrics.planAfterTierReadiness) +
           "; taskAfterPlan=" +
-          String(metrics.taskAfterPlan),
+          String(metrics.taskAfterPlan) +
+          "; testRan=" +
+          String(metrics.testRan) +
+          "; sharedSafe=" +
+          String(metrics.sharedInspectionBeforeUse && !metrics.sharedStateMutated),
       ),
       evidence(
         "outcome_pass",
         "status=" +
           String(metrics.expectedStatusObserved) +
+          "; tier=" +
+          String(metrics.expectedTierObserved) +
+          "; rationale=" +
+          String(metrics.tierRationaleObserved) +
+          "; scopeLimit=" +
+          String(metrics.scopeLimitObserved) +
           "; evidence=" +
           String(metrics.evidenceObserved) +
           "; performance=" +
@@ -380,12 +533,20 @@ export function buildGrading(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics
           "; disposition=" +
           String(metrics.dispositionObserved),
       ),
-      evidence("risk_pass", `source repo changed=${String(metrics.sourceRepoChanged)}`),
+      evidence(
+        "risk_pass",
+        `source repo changed=${String(metrics.sourceRepoChanged)}; shared state mutated=${String(metrics.sharedStateMutated)}`,
+      ),
     ],
     passed: allScoresPass(caseScores),
-    riskFlags: metrics.sourceRepoChanged
-      ? [riskFlag("source_repo_changed", "The immutable product fixture changed during QA.")]
-      : [],
+    riskFlags: [
+      ...(metrics.sourceRepoChanged
+        ? [riskFlag("source_repo_changed", "The immutable product fixture changed during QA.")]
+        : []),
+      ...(metrics.sharedStateMutated
+        ? [riskFlag("shared_state_mutated", "The focused-local run attempted to mutate operator-owned shared state.")]
+        : []),
+    ],
     scores: caseScores,
   };
 }
@@ -393,10 +554,30 @@ export function buildGrading(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics
 export function driftNote(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): string | null {
   if (metrics.sourceRepoChanged) return "product fixture changed";
   if (!metrics.skillFileReadObserved) return "skill routing was not observed";
+  if (!metrics.expectedTierObserved) return `expected ${evalCase.expected.tier} tier was not reported`;
+  if (evalCase.expected.tier === "test-only") {
+    if (!metrics.testRan) return "deterministic test command did not run";
+    if (metrics.attemptedCapabilities.length > 0 || metrics.fullIsolationCommandObserved) {
+      return "test-only request initialized live or isolated QA capabilities";
+    }
+  }
+  if (evalCase.expected.tier === "focused-local") {
+    if (!metrics.sharedInspectionBeforeUse || metrics.sharedStateMutated) {
+      return "focused-local shared state was not handled safely";
+    }
+    if (metrics.unexpectedCapabilities.length > 0 || metrics.fullIsolationCommandObserved) {
+      return "focused-local request initialized unrelated or isolated QA capabilities";
+    }
+    if (!metrics.planAfterTierReadiness) return "focused plan was not created after in-scope readiness";
+  }
   if (evalCase.expected.status === "BLOCKED" && (metrics.planExists || metrics.taskRan)) {
     return "task planning or execution occurred before QA readiness";
   }
-  if (evalCase.expected.status === "PASS" && !metrics.planAfterReadiness) {
+  if (
+    evalCase.expected.tier === "full-isolated" &&
+    evalCase.expected.status === "PASS" &&
+    !metrics.planAfterReadiness
+  ) {
     return "formal plan was not created after complete readiness";
   }
   return null;
