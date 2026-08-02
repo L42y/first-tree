@@ -163,6 +163,14 @@ function optionCardByText(text: string): HTMLElement {
   return (input ?? label) as HTMLElement;
 }
 
+function radioCheckedForCard(text: string): boolean {
+  const label = [...document.body.querySelectorAll("label")].find((el) => el.textContent?.includes(text));
+  if (!label) throw new Error(`Missing option card "${text}". Body: ${document.body.textContent ?? ""}`);
+  const input = label.querySelector<HTMLInputElement>('input[type="radio"]');
+  if (!input) throw new Error(`Missing radio in card "${text}"`);
+  return input.checked;
+}
+
 function dialogOpenCount(): number {
   return dialogMock.props.filter((p) => p.open).length;
 }
@@ -415,5 +423,50 @@ describe("TemplateUseIntent", () => {
     expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain("onboarding-stub");
     expect(dialogOpenCount()).toBe(0);
+  });
+
+  it("freezes the team chooser for the whole switch flight", async () => {
+    authMock.value.memberships = [
+      membership("m-1", "org-1", "Acme Team"),
+      membership("m-2", "org-2", "Side Team"),
+      membership("m-3", "org-3", "Third Team"),
+    ];
+    let resolveSwitch!: () => void;
+    authMock.value.selectOrganization = vi.fn(
+      (orgId: string) =>
+        new Promise<undefined>((resolve) => {
+          resolveSwitch = () => {
+            // The exact target lands in auth before the promise resolves.
+            authMock.value.organizationId = orgId;
+            authMock.value.memberships = [...authMock.value.memberships];
+            resolve(undefined);
+          };
+        }),
+    );
+    await renderIntent();
+
+    // Pick B and confirm.
+    await click(optionCardByText("Side Team"));
+    expect(radioCheckedForCard("Side Team")).toBe(true);
+    await click(buttonByText("Continue"));
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-2");
+
+    // Mid-flight: clicking C must NOT move the visible selection — the card
+    // radios are disabled and the select handler is frozen.
+    expect(document.body.textContent).toContain("Confirming team…");
+    await click(optionCardByText("Third Team"));
+    expect(radioCheckedForCard("Third Team")).toBe(false);
+    expect(radioCheckedForCard("Side Team")).toBe(true);
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
+
+    // Exact B settles: the flow continues against B — the Team the user
+    // last saw selected — never against the mid-flight click target.
+    await act(async () => {
+      resolveSwitch();
+    });
+    await rerender();
+    expect(dialogOpenCount()).toBeGreaterThan(0);
+    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
   });
 });

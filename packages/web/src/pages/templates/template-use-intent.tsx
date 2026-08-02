@@ -192,7 +192,14 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
               key={membership.id}
               name="template-intent-team"
               checked={selectedOrgId === membership.organizationId}
-              onSelect={() => setSelectedOrgId(membership.organizationId)}
+              // Frozen for the whole switch flight: the visible choice must
+              // stay the exact Team being confirmed — a mid-flight re-pick
+              // would desync the UI from the in-flight targetOrgId.
+              disabled={teamSwitch !== null}
+              onSelect={() => {
+                if (teamSwitch) return;
+                setSelectedOrgId(membership.organizationId);
+              }}
             >
               <div className="min-w-0">
                 <div className="text-body font-medium">{membership.organizationName}</div>
