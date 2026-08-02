@@ -216,6 +216,15 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (agent: Agent, runtimeProvider: RuntimeProvider, templateCount: number) => void;
+  /**
+   * Optional public Template slug to preselect (e.g. from the canonical
+   * `/templates/:slug?use=1` intent). Applied ONCE per dialog open, after the
+   * catalog resolves — later manual add/remove is never overwritten, and an
+   * ordinary open without the prop starts clean. A slug that is no longer an
+   * active Template degrades to an explanatory notice; no stale id is ever
+   * submitted.
+   */
+  initialTemplateSlug?: string;
 };
 
 type AvailabilityState =
@@ -228,7 +237,7 @@ type AvailabilityState =
 // derive a usable handle and the fallback input is shown.
 type HandleState = { status: "idle" } | { status: "checking" } | { status: "ok" } | { status: "manual" };
 
-export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
+export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateSlug }: Props) {
   const queryClient = useQueryClient();
   const { refreshMe, organizationId } = useAuth();
   const [displayName, setDisplayName] = useState("");
@@ -280,6 +289,12 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
   const [templateCatalogLoaded, setTemplateCatalogLoaded] = useState(false);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  // The caller-supplied initial Template is applied exactly once per open
+  // (this ref), after the async catalog resolves. `true` on the notice means
+  // the slug was not an active Template anymore — the user can still pick
+  // another responsibility or create from scratch; nothing stale is submitted.
+  const initialTemplateAppliedRef = useRef(false);
+  const [initialTemplateUnavailable, setInitialTemplateUnavailable] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -323,8 +338,27 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
       setTemplateCatalogLoaded(false);
       setSelectedTemplateIds([]);
       setTemplatePickerOpen(false);
+      initialTemplateAppliedRef.current = false;
+      setInitialTemplateUnavailable(false);
     }
   }, [open, resetTokenCopy]);
+
+  // Resolve the caller-supplied initial Template slug against the catalog
+  // exactly once per open. The catalog only carries ACTIVE Templates, so a
+  // retired/vanished slug simply has no match — degrade to a notice instead
+  // of submitting a stale id. After this one application the selection is
+  // the user's: later manual add/remove is never overwritten.
+  useEffect(() => {
+    if (!open || !templateCatalogLoaded || !initialTemplateSlug) return;
+    if (initialTemplateAppliedRef.current) return;
+    initialTemplateAppliedRef.current = true;
+    const match = templateCatalog.find((template) => template.slug === initialTemplateSlug);
+    if (match) {
+      setSelectedTemplateIds([match.id]);
+    } else {
+      setInitialTemplateUnavailable(true);
+    }
+  }, [open, templateCatalogLoaded, templateCatalog, initialTemplateSlug]);
 
   const baseSlug = useMemo(() => slugify(displayName), [displayName]);
   const hasDisplay = displayName.trim().length > 0;
@@ -854,6 +888,13 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
           {/* Optional official Template responsibilities. Hidden entirely when
               the catalog is empty or failed to load — the plain create path
               stays byte-identical in those cases. */}
+          {initialTemplateUnavailable && (
+            <p className="text-caption text-muted-foreground" role="status">
+              {templateCatalog.length > 0
+                ? "The template you started from is no longer available — pick another responsibility below, or create from scratch."
+                : "The template you started from is no longer available — you can still create your agent from scratch."}
+            </p>
+          )}
           {templateCatalogLoaded && templateCatalog.length > 0 && (
             <div className="space-y-2">
               <Label>Responsibilities (optional)</Label>

@@ -1,4 +1,8 @@
-import { isKnownLandingCampaignSlug, type KnownLandingCampaignSlug } from "@first-tree/shared";
+import {
+  AGENT_TEMPLATE_SLUG_REGEX,
+  isKnownLandingCampaignSlug,
+  type KnownLandingCampaignSlug,
+} from "@first-tree/shared";
 
 /**
  * Onboarding-related browser-side flags (sessionStorage).
@@ -17,6 +21,41 @@ const JOIN_PATH_KEY = "onboarding:joinPath";
 const ONBOARDING_AGENT_UUID_KEY = "onboarding:agentUuid";
 
 const SELECTED_REPOS_KEY = (orgId: string) => `onboarding:selectedRepos:${orgId}`;
+
+const TEMPLATE_INTENT_KEY = (orgId: string) => `onboarding:templateIntent:${orgId}`;
+
+/**
+ * Per-org handoff carrying one official Template slug from the public
+ * `/templates/:slug?use=1` intent into the onboarding create-agent step.
+ *
+ * Written by the signed-in intent resolution when the member still needs
+ * onboarding; consumed there so the step can show the public-safe Template
+ * responsibility (default-selected, removable) and pass its id into the
+ * ordinary create-agent POST. Per-tab (sessionStorage) and per-org, matching
+ * the selected-repos draft: a refresh or "finish later" keeps it, logout
+ * clears it via the shared `onboarding:` prefix wipe, and it is cleared once
+ * an agent has actually been created from the flow. An unreadable or invalid
+ * value self-heals to `null` and is removed, so a corrupt/stale handoff can
+ * never block plain onboarding.
+ */
+export function readOnboardingTemplateIntent(orgId: string): string | null {
+  if (typeof window === "undefined" || !orgId) return null;
+  const raw = window.sessionStorage.getItem(TEMPLATE_INTENT_KEY(orgId));
+  if (raw === null) return null;
+  // Stored as a bare slug string; validate strictly against the shared slug
+  // contract so a tampered/legacy value degrades to "no intent".
+  if (raw.length > 100 || !AGENT_TEMPLATE_SLUG_REGEX.test(raw)) {
+    window.sessionStorage.removeItem(TEMPLATE_INTENT_KEY(orgId));
+    return null;
+  }
+  return raw;
+}
+
+export function writeOnboardingTemplateIntent(orgId: string, slug: string | null): void {
+  if (typeof window === "undefined" || !orgId) return;
+  if (slug === null) window.sessionStorage.removeItem(TEMPLATE_INTENT_KEY(orgId));
+  else window.sessionStorage.setItem(TEMPLATE_INTENT_KEY(orgId), slug);
+}
 
 /**
  * Per-org draft of the repos the admin picked on the connect-code step.

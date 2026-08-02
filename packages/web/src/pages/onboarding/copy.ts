@@ -255,6 +255,11 @@ export const COPY = {
       link: "reconnect it",
       post: ".",
     },
+    /** Template intent handoff degraded (retired Template, failed detail
+        fetch, or a stale handoff). Recoverable: plain create stays fully
+        available, so the line states the loss and the path forward. */
+    templateIntentUnavailable:
+      "The template you started from is no longer available — you can still create your agent from scratch.",
   },
   /** start-chat — one unified "launch" finale across every path. Titles/bodies are
       rendered per-state by the step; the shell leaves STEP_COPY["start-chat"] empty

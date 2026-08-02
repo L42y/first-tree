@@ -1,10 +1,12 @@
-import type { AgentVisibility } from "@first-tree/shared";
+import type { AgentTemplatePublicTemplate, AgentVisibility } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { getAgentTemplate } from "../../../api/agent-templates.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { OptionCard } from "../../../components/ui/option-card.js";
+import { readOnboardingTemplateIntent } from "../../../utils/onboarding-flags.js";
 import { asRuntimeProvider, PROVIDER_LABEL } from "../../clients/cards/shared/providers.js";
 import { COPY } from "../copy.js";
 import { FlowHint, WorkingState } from "../flow-ui.js";
@@ -54,6 +56,35 @@ export function StepCreateAgent() {
     sequence,
   } = useOnboardingFlow();
   const { currentOrgHasPersonalAgent } = useAuth();
+
+  // Template intent handoff from the public `/templates/:slug?use=1` entry.
+  // Read once per mount (per-org, sessionStorage); the public-safe detail is
+  // fetched so the step can show the responsibility the member picked. Any
+  // failure — fetch error, retired Template, invalid/stale handoff — degrades
+  // to a recoverable hint and leaves plain create fully available.
+  const [intentSlug] = useState<string | null>(() =>
+    organizationId ? readOnboardingTemplateIntent(organizationId) : null,
+  );
+  const [intentTemplate, setIntentTemplate] = useState<AgentTemplatePublicTemplate | null>(null);
+  const [intentUnavailable, setIntentUnavailable] = useState(false);
+  const [intentRemoved, setIntentRemoved] = useState(false);
+  useEffect(() => {
+    if (!intentSlug) return;
+    let cancelled = false;
+    getAgentTemplate(intentSlug)
+      .then((template) => {
+        if (cancelled) return;
+        if (template.status === "active") setIntentTemplate(template);
+        else setIntentUnavailable(true);
+      })
+      .catch(() => {
+        if (!cancelled) setIntentUnavailable(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [intentSlug]);
+  const activeIntentTemplate = intentTemplate && !intentRemoved ? intentTemplate : null;
 
   // Fresh onboarding entry always lands on the opening step and walks forward
   // (inferInitialStepIndex ignores server readiness), so a member who already
@@ -141,6 +172,7 @@ export function StepCreateAgent() {
       runtimeProvider: computer.selectedRuntime,
       visibility,
       organizationId,
+      ...(activeIntentTemplate ? { templateIds: [activeIntentTemplate.id] } : {}),
     });
   };
 
@@ -151,6 +183,23 @@ export function StepCreateAgent() {
       <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
         {COPY.createAgent.subtitle}
       </p>
+
+      {/* Template intent handoff. Default-selected and removable; with no
+          intent this block renders nothing and the step is byte-identical to
+          the ordinary create path. */}
+      {activeIntentTemplate && (
+        <div className="rounded-[var(--radius-panel)] border border-border px-3 py-2 space-y-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="text-body font-medium">{activeIntentTemplate.name}</div>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setIntentRemoved(true)}>
+              Remove
+            </Button>
+          </div>
+          <div className="text-caption text-muted-foreground">{activeIntentTemplate.public.tagline}</div>
+          <div className="text-caption text-muted-foreground">{activeIntentTemplate.public.purpose}</div>
+        </div>
+      )}
+      {intentUnavailable && !activeIntentTemplate && <FlowHint>{COPY.createAgent.templateIntentUnavailable}</FlowHint>}
 
       {/* Coding agent — always a list (even for one), default Claude Code.
           Stays visible (disabled) when the computer drops, so the field never

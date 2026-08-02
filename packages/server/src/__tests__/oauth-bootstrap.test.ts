@@ -8,7 +8,7 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { findOrCreateUserFromExternalAccount } from "../services/auth-identity.js";
-import { completeExternalAccountBootstrap } from "../services/oauth-bootstrap.js";
+import { completeExternalAccountBootstrap, shouldPreserveSoloSignupNext } from "../services/oauth-bootstrap.js";
 import { uuidv7 } from "../uuid.js";
 import { useTestApp } from "./helpers.js";
 
@@ -103,6 +103,24 @@ describe("provider-neutral OAuth bootstrap", () => {
     });
 
     expect(result).toMatchObject({ joinPath: "solo", next: "/", teamCreated: true });
+  });
+
+  it("preserves a strict Agent Template intent across solo signup", async () => {
+    const app = getApp();
+    const account = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({ sub: "google-template-intent-subject", name: "Template Intent User" }),
+    );
+    const next = "/templates/pr-engineer?use=1";
+
+    const result = await completeExternalAccountBootstrap(app.db, account, {
+      next,
+      allowedOrganizationId: null,
+      ip: null,
+      userAgent: null,
+    });
+
+    expect(result).toMatchObject({ joinPath: "solo", next, teamCreated: true });
   });
 
   it("serializes concurrent first sign-ins into one personal team graph", async () => {
@@ -222,5 +240,30 @@ describe("provider-neutral OAuth bootstrap", () => {
       await blocker.end();
       await observer.end();
     }
+  });
+});
+
+describe("shouldPreserveSoloSignupNext", () => {
+  it("keeps the known-campaign quickstart next", () => {
+    expect(
+      shouldPreserveSoloSignupNext("/quickstart?campaign=production-scan&repo=https%3A%2F%2Fexample.com%2Fr"),
+    ).toBe(true);
+  });
+
+  it("preserves only the strict Template intent URL", () => {
+    expect(shouldPreserveSoloSignupNext("/templates/pr-engineer?use=1")).toBe(true);
+    // Invalid slug.
+    expect(shouldPreserveSoloSignupNext("/templates/PR_Engineer?use=1")).toBe(false);
+    // Extra query parameters.
+    expect(shouldPreserveSoloSignupNext("/templates/pr-engineer?use=1&campaign=production-scan")).toBe(false);
+    // Missing / wrong intent flag.
+    expect(shouldPreserveSoloSignupNext("/templates/pr-engineer")).toBe(false);
+    expect(shouldPreserveSoloSignupNext("/templates/pr-engineer?use=0")).toBe(false);
+    // Fragment.
+    expect(shouldPreserveSoloSignupNext("/templates/pr-engineer?use=1#details")).toBe(false);
+    // Anything else, including ordinary deep links.
+    expect(shouldPreserveSoloSignupNext("/settings/github")).toBe(false);
+    expect(shouldPreserveSoloSignupNext("/")).toBe(false);
+    expect(shouldPreserveSoloSignupNext("/templates")).toBe(false);
   });
 });

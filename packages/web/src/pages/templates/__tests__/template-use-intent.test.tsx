@@ -1,0 +1,238 @@
+// @vitest-environment happy-dom
+
+import type { AgentTemplatePublicTemplate, MeMembership } from "@first-tree/shared";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter, Route, Routes } from "react-router";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TemplateUseIntent } from "../template-use-intent.js";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const flagsMocks = vi.hoisted(() => ({
+  writeOnboardingTemplateIntent: vi.fn(),
+}));
+
+const dialogMock = vi.hoisted(() => ({
+  props: [] as Array<{ open: boolean; initialTemplateSlug?: string }>,
+  latestOnCreated: null as null | ((agent: { uuid: string }, runtime: string, templateCount: number) => void),
+}));
+
+const navigateMock = vi.hoisted(() => vi.fn());
+
+const analyticsMocks = vi.hoisted(() => ({
+  trackEvent: vi.fn(),
+}));
+
+const authMock = vi.hoisted(() => ({
+  value: {
+    meLoaded: true,
+    onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
+    currentOrgHasPersonalAgent: true,
+    onboardingDismissedAt: null as string | null,
+    onboardingCompletedAt: "2026-07-01T00:00:00.000Z" as string | null,
+    organizationId: "org-1" as string | null,
+    memberships: [] as MeMembership[],
+    selectOrganization: vi.fn(async (_orgId: string) => undefined),
+  },
+}));
+
+vi.mock("../../../utils/onboarding-flags.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../utils/onboarding-flags.js")>()),
+  ...flagsMocks,
+}));
+vi.mock("../../../components/new-agent-dialog.js", () => ({
+  NewAgentDialog: (props: {
+    open: boolean;
+    initialTemplateSlug?: string;
+    onCreated: (agent: { uuid: string }, runtime: string, templateCount: number) => void;
+  }) => {
+    dialogMock.props.push({ open: props.open, initialTemplateSlug: props.initialTemplateSlug });
+    dialogMock.latestOnCreated = props.onCreated;
+    return props.open ? <div>new-agent-dialog-stub</div> : null;
+  },
+}));
+vi.mock("../../../analytics.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../analytics.js")>()),
+  ...analyticsMocks,
+}));
+vi.mock("../../../auth/auth-context.js", () => ({
+  AuthProvider: ({ children }: { children: ReactNode }) => children,
+  useAuth: () => authMock.value,
+}));
+vi.mock("react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>();
+  return { ...actual, useNavigate: () => navigateMock };
+});
+
+const NOW = "2026-07-30T12:00:00.000Z";
+
+const TEMPLATE: AgentTemplatePublicTemplate = {
+  id: "0190f000-0000-7000-8000-000000000001",
+  slug: "pr-engineer",
+  name: "PR Engineer",
+  status: "active",
+  public: {
+    tagline: "Reviews your pull requests",
+    purpose: "Purpose text",
+    targetUsers: "Indie hackers",
+    userValue: "Value text",
+    instructionsSummary: "Instructions summary",
+    toolsAndSkillsSummary: "Tools summary",
+  },
+  updatedAt: NOW,
+  replacement: null,
+};
+
+function membership(id: string, orgId: string, orgName: string): MeMembership {
+  return {
+    id,
+    organizationId: orgId,
+    organizationName: orgName,
+    role: "admin",
+    agentId: `agent-${orgId}`,
+    orgHasOtherMembers: false,
+    hasUsableAgent: true,
+    hasPersonalAgent: true,
+    onboardingSuppressedAt: null,
+    onboardingSuppressedReason: null,
+    onboardingCompletedAt: NOW,
+  };
+}
+
+let root: Root | null = null;
+
+async function flush(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function renderIntent(): Promise<void> {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () => {
+    root?.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/templates/pr-engineer?use=1"]}>
+          <Routes>
+            <Route path="/templates/:slug" element={<TemplateUseIntent template={TEMPLATE} />} />
+            <Route path="/onboarding" element={<div>onboarding-stub</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  });
+  await flush();
+}
+
+async function click(element: Element | null): Promise<void> {
+  if (!element) throw new Error("Expected element to click");
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  await flush();
+}
+
+function buttonByText(text: string): HTMLButtonElement {
+  const button = [...document.body.querySelectorAll("button")].find((el) => el.textContent?.trim() === text);
+  if (!button) throw new Error(`Missing button "${text}". Body: ${document.body.textContent ?? ""}`);
+  return button;
+}
+
+function optionCardByText(text: string): HTMLElement {
+  const label = [...document.body.querySelectorAll("label")].find((el) => el.textContent?.includes(text));
+  if (!label) throw new Error(`Missing option card "${text}". Body: ${document.body.textContent ?? ""}`);
+  const input = label.querySelector("input");
+  return (input ?? label) as HTMLElement;
+}
+
+describe("TemplateUseIntent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dialogMock.props.length = 0;
+    dialogMock.latestOnCreated = null;
+    authMock.value.meLoaded = true;
+    authMock.value.onboardingStep = "completed";
+    authMock.value.currentOrgHasPersonalAgent = true;
+    authMock.value.onboardingDismissedAt = null;
+    authMock.value.onboardingCompletedAt = NOW;
+    authMock.value.organizationId = "org-1";
+    authMock.value.memberships = [membership("m-1", "org-1", "Acme Team")];
+    authMock.value.selectOrganization = vi.fn(async () => undefined);
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    root = null;
+    document.body.innerHTML = "";
+  });
+
+  it("hands a fresh-onboarding member a per-org handoff and enters /onboarding", async () => {
+    authMock.value.onboardingStep = "connect";
+    authMock.value.currentOrgHasPersonalAgent = false;
+    authMock.value.onboardingCompletedAt = null;
+    await renderIntent();
+
+    expect(flagsMocks.writeOnboardingTemplateIntent).toHaveBeenCalledWith("org-1", "pr-engineer");
+    expect(document.body.textContent).toContain("onboarding-stub");
+    // The chooser / dialog path never ran.
+    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
+    expect(dialogMock.props.every((p) => !p.open)).toBe(true);
+  });
+
+  it("shows an explicit chooser even for a single team, then opens the dialog against the confirmed org", async () => {
+    await renderIntent();
+
+    expect(document.body.textContent).toContain("Start with PR Engineer");
+    expect(document.body.textContent).toContain("Acme Team");
+    expect(document.body.textContent).toContain("Current team");
+    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+
+    await click(buttonByText("Continue"));
+    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-1");
+    const opened = dialogMock.props.filter((p) => p.open);
+    expect(opened.length).toBeGreaterThan(0);
+    expect(opened.at(-1)?.initialTemplateSlug).toBe("pr-engineer");
+  });
+
+  it("lets a multi-team member pick the exact target team", async () => {
+    authMock.value.memberships = [membership("m-1", "org-1", "Acme Team"), membership("m-2", "org-2", "Side Team")];
+    await renderIntent();
+
+    await click(optionCardByText("Side Team"));
+    await click(buttonByText("Continue"));
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-2");
+  });
+
+  it("never opens the dialog when the team switch fails", async () => {
+    authMock.value.selectOrganization = vi.fn(async () => {
+      throw new Error("switch failed");
+    });
+    await renderIntent();
+
+    await click(buttonByText("Continue"));
+    expect(document.body.textContent).toContain("couldn't switch to that team");
+    expect(dialogMock.props.every((p) => !p.open)).toBe(true);
+  });
+
+  it("navigates to the first workspace draft after creation", async () => {
+    await renderIntent();
+    await click(buttonByText("Continue"));
+    const onCreated = dialogMock.latestOnCreated;
+    if (!onCreated) throw new Error("dialog onCreated not captured");
+    await act(async () => {
+      onCreated({ uuid: "agent-new-1" }, "claude-code", 1);
+    });
+    await flush();
+
+    expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_create_draft_open", { template_count: 1 });
+    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new-1");
+  });
+});
