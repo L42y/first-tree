@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link2, Plus, Search } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { trackEvent } from "../../analytics.js";
 import { listClients } from "../../api/activity.js";
 import {
   deleteAgent,
@@ -367,10 +368,13 @@ export function TeamPage() {
       <NewAgentDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={(_agent: Agent, _runtime: RuntimeProvider) => {
+        onCreated={(agent: Agent, _runtime: RuntimeProvider, templateCount: number) => {
           setCreateOpen(false);
           queryClient.invalidateQueries({ queryKey: ["agents"] });
           queryClient.invalidateQueries({ queryKey: ["activity"] });
+          // The draft-open event only fires on this real navigate path.
+          trackEvent("agent_create_draft_open", { template_count: templateCount });
+          navigate(`/?c=draft&with=${encodeURIComponent(agent.uuid)}`);
         }}
       />
 

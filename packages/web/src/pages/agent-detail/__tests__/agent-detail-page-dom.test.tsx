@@ -120,6 +120,7 @@ function effectivePrompt(overrides: Partial<EffectivePromptRow> = {}): Effective
     repo: null,
     promptBody: "Always explain tradeoffs.",
     unavailableReason: null,
+    originTemplateId: null,
     order: 1,
   };
   return { ...base, ...overrides };
@@ -178,6 +179,7 @@ function agentResources(overrides: Partial<AgentResourcesOutput> = {}): AgentRes
   return {
     version: overrides.version ?? 7,
     templateIds: overrides.templateIds ?? [],
+    adoptedTemplates: [],
     effective: overrides.effective ?? {
       version: overrides.version ?? 7,
       repos: [],

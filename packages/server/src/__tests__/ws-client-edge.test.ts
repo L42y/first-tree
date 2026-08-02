@@ -4,12 +4,14 @@ import type { FastifyInstance } from "fastify";
 import { SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { users } from "../db/schema/users.js";
 import * as activityService from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
 import * as agentRuntimeSessionService from "../services/agent-runtime-session.js";
+import { createChat } from "../services/chat.js";
 import * as clientService from "../services/client.js";
 import * as connectionManager from "../services/connection-manager.js";
 import * as inboxService from "../services/inbox.js";
@@ -1225,7 +1227,7 @@ describe("Agent client WS edge protocol coverage", () => {
       ).resolves.toMatchObject({ type: "error", message: "Agent not bound" });
 
       const eventSpy = vi
-        .spyOn(sessionEventService, "appendEvent")
+        .spyOn(sessionEventService, "appendLiveEvent")
         .mockRejectedValueOnce(new Error("event persist failed"));
       ws.send(
         JSON.stringify({
@@ -1251,7 +1253,7 @@ describe("Agent client WS edge protocol coverage", () => {
       expect(eventSpy).toHaveBeenCalled();
 
       const eventNoRefSpy = vi
-        .spyOn(sessionEventService, "appendEvent")
+        .spyOn(sessionEventService, "appendLiveEvent")
         .mockRejectedValueOnce(new Error("event persist failed without ref"));
       ws.send(
         JSON.stringify({
@@ -1392,4 +1394,222 @@ describe("Agent client WS edge protocol coverage", () => {
       await closeSocket(ws);
     }
   }, 30000);
+
+  it("rejects a late session:event for an evicted session and never persists it", async () => {
+    // Reset/terminate window: the old turn can emit a frame after the awaited
+    // clearEvents but before the client processes session:terminate. The
+    // evicted gate must drop it — otherwise the cleared live trace reappears.
+    const seed = await createAdminContext(app, { username: `ws-evicted-event-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "evicted-event" });
+    const ws = await openRegisteredSocket(seed);
+
+    try {
+      await expect(bindAgent(ws, agent.uuid, "bind-evicted-event")).resolves.toMatchObject({ type: "agent:bound" });
+
+      const chat = await createChat(app.db, seed.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
+      const chatId = chat.id;
+      await app.db.insert(agentChatSessions).values({ agentId: agent.uuid, chatId, state: "evicted" });
+
+      ws.send(
+        JSON.stringify({
+          type: "session:event",
+          ref: "event-after-evict",
+          agentId: agent.uuid,
+          chatId,
+          event: { kind: "error", payload: { source: "runtime", message: "late frame" } },
+        }),
+      );
+      await expect(
+        waitForFrame(
+          ws,
+          (message) =>
+            (message as { type?: string; ref?: string }).type === "session:event:rejected" &&
+            (message as { ref?: string }).ref === "event-after-evict",
+        ),
+      ).resolves.toMatchObject({
+        type: "session:event:rejected",
+        ref: "event-after-evict",
+        agentId: agent.uuid,
+        chatId,
+        // Deliberately the pre-existing reason — old clients strict-parse the
+        // rejection frame and would drop an unknown enum value.
+        reason: "persist_failed",
+      });
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chatId, { limit: 10 })).items).toEqual([]);
+
+      // The same producer on a live session still persists.
+      ws.send(
+        JSON.stringify({
+          type: "session:event",
+          ref: "event-live",
+          agentId: agent.uuid,
+          chatId: "chat-live-event",
+          event: { kind: "error", payload: { source: "runtime", message: "live frame" } },
+        }),
+      );
+      await expect(
+        waitForFrame(
+          ws,
+          (message) =>
+            (message as { type?: string; ref?: string }).type === "session:event:accepted" &&
+            (message as { ref?: string }).ref === "event-live",
+        ),
+      ).resolves.toMatchObject({ type: "session:event:accepted", ref: "event-live" });
+    } finally {
+      await closeSocket(ws);
+    }
+  });
+
+  it("registers wire capabilities and resolves apply-ack waiters from session:command:applied frames", async () => {
+    const seed = await createAdminContext(app, { username: `ws-apply-ack-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "apply-ack" });
+
+    const ws = await openAuthenticatedSocket(await signAccess(seed.userId, seed.memberId, seed.organizationId));
+    ws.send(
+      JSON.stringify({
+        type: "client:register",
+        clientId: seed.clientId,
+        hostname: "edge-host",
+        os: "linux",
+        wireCapabilities: { wsSessionTerminateApplyAck: true },
+      }),
+    );
+    await waitForFrame(ws, (message) => (message as { type?: string }).type === "client:registered");
+
+    try {
+      await expect(bindAgent(ws, agent.uuid, "bind-apply-ack")).resolves.toMatchObject({ type: "agent:bound" });
+
+      // The capability advertised at register is visible on the live connection.
+      expect(connectionManager.agentSupportsTerminateApplyAck(agent.uuid)).toBe(true);
+      expect(connectionManager.getAgentLiveClientId(agent.uuid)).toBe(seed.clientId);
+
+      // A well-formed ack resolves the HTTP route's waiter with its payload.
+      const waiter = connectionManager.waitForClientReply(seed.clientId, "550e8400-e29b-41d4-a716-446655440020");
+      ws.send(
+        JSON.stringify({
+          type: "session:command:applied",
+          ref: "550e8400-e29b-41d4-a716-446655440020",
+          agentId: agent.uuid,
+          chatId: "chat-ack",
+          command: "session:terminate",
+          applied: true,
+        }),
+      );
+      await expect(waiter).resolves.toMatchObject({
+        ref: "550e8400-e29b-41d4-a716-446655440020",
+        agentId: agent.uuid,
+        chatId: "chat-ack",
+        command: "session:terminate",
+        applied: true,
+      });
+
+      // A malformed ack is dropped without disturbing the socket.
+      ws.send(JSON.stringify({ type: "session:command:applied", ref: "x" }));
+      ws.send(JSON.stringify({ type: "heartbeat" }));
+      await expect(
+        waitForFrame(ws, (message) => (message as { type?: string }).type === "heartbeat:ack"),
+      ).resolves.toMatchObject({ type: "heartbeat:ack" });
+    } finally {
+      await closeSocket(ws);
+    }
+  });
+
+  it("forwards a fanned-out session:terminate to the owning socket only when the binding is current", async () => {
+    // Cross-replica command delivery: the daemon_client_commands handler on
+    // the socket-owning replica re-checks the live agent→client binding
+    // before forwarding the ref'd terminate.
+    const seed = await createAdminContext(app, { username: `ws-fanout-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "fanout" });
+    const ws = await openRegisteredSocket(seed);
+
+    try {
+      await expect(bindAgent(ws, agent.uuid, "bind-fanout")).resolves.toMatchObject({ type: "agent:bound" });
+
+      await app.notifier.notifyDaemonClientCommand({
+        type: "session:terminate",
+        clientId: seed.clientId,
+        agentId: agent.uuid,
+        chatId: "chat-fanout",
+        ref: "550e8400-e29b-41d4-a716-446655440000",
+        targetInstanceId: "test-instance",
+      });
+      await expect(
+        waitForFrame(ws, (message) => (message as { type?: string }).type === "session:terminate"),
+      ).resolves.toMatchObject({
+        type: "session:terminate",
+        agentId: agent.uuid,
+        chatId: "chat-fanout",
+        ref: "550e8400-e29b-41d4-a716-446655440000",
+      });
+
+      // A fan-out naming an agent NOT routed to this client is dropped.
+      await app.notifier.notifyDaemonClientCommand({
+        type: "session:terminate",
+        clientId: seed.clientId,
+        agentId: uuidv7(),
+        chatId: "chat-fanout",
+        ref: "550e8400-e29b-41d4-a716-446655440001",
+        targetInstanceId: "test-instance",
+      });
+
+      // A fan-out after a REAL takeover is dropped even though the old
+      // presence route and the process-local binding still linger: only
+      // `clients.instance_id` moved to another replica.
+      const { clients } = await import("../db/schema/clients.js");
+      const { eq } = await import("drizzle-orm");
+      await app.db.update(clients).set({ instanceId: "taken-over-elsewhere" }).where(eq(clients.id, seed.clientId));
+      await app.notifier.notifyDaemonClientCommand({
+        type: "session:terminate",
+        clientId: seed.clientId,
+        agentId: agent.uuid,
+        chatId: "chat-fanout-2",
+        ref: "550e8400-e29b-41d4-a716-446655440002",
+        targetInstanceId: "test-instance",
+      });
+
+      // The socket stays healthy and receives no further terminate frame.
+      ws.send(JSON.stringify({ type: "heartbeat" }));
+      const frames: unknown[] = [];
+      const collector = (raw: WebSocket.RawData) => frames.push(JSON.parse(String(raw)));
+      ws.on("message", collector);
+      await expect(
+        waitForFrame(ws, (message) => (message as { type?: string }).type === "heartbeat:ack"),
+      ).resolves.toMatchObject({ type: "heartbeat:ack" });
+      await new Promise((r) => setTimeout(r, 300));
+      ws.off("message", collector);
+      expect(frames.filter((f) => (f as { type?: string }).type === "session:terminate")).toEqual([]);
+    } finally {
+      await closeSocket(ws);
+    }
+  });
+
+  it("ignores an apply-ack for an agent not routed to this client — no waiter, no durable result", async () => {
+    const seed = await createAdminContext(app, { username: `ws-stale-ack-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "stale-ack" });
+    const ws = await openRegisteredSocket(seed);
+
+    try {
+      await expect(bindAgent(ws, agent.uuid, "bind-stale-ack")).resolves.toMatchObject({ type: "agent:bound" });
+
+      const ref = "550e8400-e29b-41d4-a716-446655440010";
+      const waiter = connectionManager.waitForClientReply(seed.clientId, ref, 500);
+      waiter.catch(() => undefined);
+      ws.send(
+        JSON.stringify({
+          type: "session:command:applied",
+          ref,
+          agentId: uuidv7(), // not bound to this client
+          chatId: "chat-stale",
+          command: "session:terminate",
+          applied: true,
+        }),
+      );
+      // The waiter times out unresolved and nothing was persisted.
+      await expect(waiter).rejects.toThrow();
+      const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+      expect(await readSessionCommandRpcResult(app.db, seed.clientId, ref)).toBeNull();
+    } finally {
+      await closeSocket(ws);
+    }
+  });
 });

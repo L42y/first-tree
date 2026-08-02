@@ -18,7 +18,7 @@ import { Textarea } from "../../components/ui/textarea.js";
 import { agentResourcesMutationHandlers, resourceTypeIcon, statusMarker } from "./capability-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 import { ResourceRowView, type RowMenu, type RowStatusMarker, type RowToggle } from "./resource-row.js";
-import { sourceLabel } from "./resource-source.js";
+import { sourceLabel, templateSourceLabel } from "./resource-source.js";
 import { titleWithSemantics, useJustSaved } from "./save-semantics.js";
 
 type AvailablePrompt = { id: string; name: string };
@@ -415,6 +415,7 @@ function PromptResourceBlocks(props: {
     });
   };
   const rows = enabledPromptRows(props.data);
+  const templateNameById = new Map(props.data.adoptedTemplates.map((summary) => [summary.id, summary.name]));
   // Disabled / overridden prompts are hidden from the active list, but the user
   // must still be able to re-enable or revert them — render them below.
   const inactiveRows = props.data.effective.prompts.filter((row) => row.mode === "disabled" || row.mode === "replaced");
@@ -455,6 +456,7 @@ function PromptResourceBlocks(props: {
         key={row.id}
         name={promptBlockName(row)}
         source={row.source}
+        templateName={row.originTemplateId ? (templateNameById.get(row.originTemplateId) ?? null) : undefined}
         marker={statusMarker(row.mode)}
         toggle={controls.toggle}
         menu={controls.menu}
@@ -520,6 +522,7 @@ function PromptResourceBlocks(props: {
         key={row.id}
         name={promptBlockName(row)}
         source={row.source}
+        templateName={row.originTemplateId ? (templateNameById.get(row.originTemplateId) ?? null) : undefined}
         marker={statusMarker(row.mode)}
         toggle={toggle}
         menu={menu}
@@ -674,6 +677,8 @@ function PromptPanel(props: { children: ReactNode; minHeight?: string; sunken?: 
 function PromptResourceBlock(props: {
   name: string | null;
   source: EffectivePromptRow["source"];
+  /** Resolved Template name when the row was imported from one; undefined otherwise. */
+  templateName?: string | null;
   marker?: RowStatusMarker;
   toggle?: RowToggle;
   menu?: RowMenu;
@@ -691,7 +696,7 @@ function PromptResourceBlock(props: {
   return (
     <ResourceRowView
       name={props.name}
-      source={sourceLabel(props.source)}
+      source={props.templateName !== undefined ? templateSourceLabel(props.templateName) : sourceLabel(props.source)}
       status={props.marker}
       toggle={props.toggle}
       menu={props.menu}

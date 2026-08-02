@@ -11,11 +11,13 @@ import {
   type InboxEntryWithMessage,
   inboxAckFrameSchema,
   inboxDeliverFrameSchema,
+  inboxFenceProbeFrameSchema,
   inboxRecoverFrameSchema,
   PROVIDER_MODELS_LIST_TYPE,
   PROVIDER_MODELS_RESULT_TYPE,
   providerModelsResultFrameSchema,
   runtimeStateMessageSchema,
+  sessionCommandAppliedFrameSchema,
   sessionEventMessageSchema,
   sessionEventRejectedReasonSchema,
   sessionReconcileRequestSchema,
@@ -59,6 +61,11 @@ import type { InboxPushHandler, Notifier } from "../../services/notifier.js";
 import * as presenceService from "../../services/presence.js";
 import { readModelCatalogRpcResult, storeModelCatalogRpcResult } from "../../services/provider-models-rpc.js";
 import * as runtimeLivenessService from "../../services/runtime-liveness.js";
+import {
+  agentRoutedTo,
+  readSessionCommandRpcResult,
+  storeSessionCommandRpcResult,
+} from "../../services/session-command-rpc.js";
 import * as sessionEventService from "../../services/session-event.js";
 
 /**
@@ -308,24 +315,51 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
     // deliver. A stale open socket on a previous replica must not receive the
     // same ref after reconnect/takeover.
     notifier.onDaemonClientCommand((payload) => {
-      if (payload.type !== PROVIDER_MODELS_LIST_TYPE) return;
       if (payload.targetInstanceId !== instanceId) return;
-      connectionManager.sendToClient(payload.clientId, {
-        type: PROVIDER_MODELS_LIST_TYPE,
-        provider: payload.provider,
-        ref: payload.ref,
+      if (payload.type === PROVIDER_MODELS_LIST_TYPE) {
+        connectionManager.sendToClient(payload.clientId, {
+          type: PROVIDER_MODELS_LIST_TYPE,
+          provider: payload.provider,
+          ref: payload.ref,
+        });
+        return;
+      }
+      // Chat-session Reset (payload.type === "session:terminate"). The
+      // process-local binding check is not enough: a takeover between the
+      // HTTP preflight and delivery could otherwise deliver a destructive
+      // terminate to a stale socket. Re-verify the full DB route (durable
+      // binding + online presence + this instance) before forwarding.
+      void (async () => {
+        const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId);
+        if (!routed) return;
+        if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
+        connectionManager.sendToClient(payload.clientId, {
+          type: "session:terminate",
+          agentId: payload.agentId,
+          chatId: payload.chatId,
+          ref: payload.ref,
+        });
+      })().catch((err) => {
+        app.log.warn({ err, clientId: payload.clientId, ref: payload.ref }, "session terminate fan-out failed");
       });
     });
 
-    // Cross-replica result wake: catalog is in clients.metadata; resolve any
-    // local HTTP waiter that registered waitForClientReply for this ref.
+    // Cross-replica result wake: the ack/result is durable in
+    // clients.metadata; resolve any local HTTP waiter that registered
+    // waitForClientReply for this ref. Session-command acks are checked
+    // first, then the provider-model catalog.
     notifier.onDaemonClientCommandResult((payload) => {
       void (async () => {
+        const ack = await readSessionCommandRpcResult(app.db, payload.clientId, payload.ref);
+        if (ack) {
+          connectionManager.resolveClientReply(payload.clientId, payload.ref, ack);
+          return;
+        }
         const catalog = await readModelCatalogRpcResult(app.db, payload.clientId, payload.ref);
         if (!catalog) return;
         connectionManager.resolveClientReply(payload.clientId, payload.ref, catalog);
       })().catch((err) => {
-        app.log.debug({ err, clientId: payload.clientId, ref: payload.ref }, "provider-models result wake failed");
+        app.log.debug({ err, clientId: payload.clientId, ref: payload.ref }, "daemon command result wake failed");
       });
     });
 
@@ -1078,6 +1112,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   os: data.os,
                   sdkVersion: data.sdkVersion,
                   lastUpdateAttempt: data.lastUpdateAttempt,
+                  wireCapabilities: data.wireCapabilities,
                 });
               } catch (err) {
                 const message = err instanceof Error ? err.message : "client register failed";
@@ -1108,7 +1143,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
 
               clientId = data.clientId;
               setWsConnectionAttrs(socket, { "client.id": data.clientId });
-              connectionManager.setClientConnection(data.clientId, socket);
+              connectionManager.setClientConnection(data.clientId, socket, data.wireCapabilities);
               socket.send(JSON.stringify({ type: "client:registered", clientId: data.clientId }));
 
               // Backfill `agent:pinned` for any agent already bound to this
@@ -1574,12 +1609,39 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               const boundInfo = boundAgents.get(agentId);
               chainSessionOp(agentId, payload.chatId, async () => {
                 try {
-                  const persistedEvent = await sessionEventService.appendEvent(
+                  const persistedEvent = await sessionEventService.appendLiveEvent(
                     app.db,
                     agentId,
                     payload.chatId,
                     payload.event,
                   );
+                  if (!persistedEvent) {
+                    // The session is evicted: a late frame from the old turn
+                    // (emitted before the client processed session:terminate)
+                    // or a producer racing the operator's reset. Dropped at
+                    // persistence so it can never recreate cleared traces;
+                    // reject the ref honestly so the client's pending event
+                    // resolves instead of hanging while it tears the session
+                    // down.
+                    if (payload.ref) {
+                      socket.send(
+                        JSON.stringify({
+                          type: "session:event:rejected",
+                          ref: payload.ref,
+                          agentId,
+                          chatId: payload.chatId,
+                          // Deliberately the pre-existing reason: old clients
+                          // strict-parse the rejection frame, and an unknown
+                          // enum value would make them drop it and hang the
+                          // pending event until timeout. The session is being
+                          // torn down anyway; the client only needs the
+                          // pending ref resolved.
+                          reason: sessionEventRejectedReasonSchema.enum.persist_failed,
+                        }),
+                      );
+                    }
+                    return;
+                  }
                   if (
                     payload.ref &&
                     payload.event.kind === "turn_end" &&
@@ -1652,6 +1714,61 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   }
                 }
               });
+            } else if (type === "session:command:applied") {
+              // Apply-ack for a ref'd session command (the Web Reset flow).
+              // The HTTP waiter may live on ANOTHER replica, so the ack is
+              // made durable (clients.metadata, instance-guarded) and a
+              // result wake is fanned out; the local waiter resolves too.
+              const parsedAck = sessionCommandAppliedFrameSchema.safeParse(msg);
+              if (!parsedAck.success) {
+                app.log.warn(
+                  { clientId, issues: parsedAck.error.issues.map((i) => i.message) },
+                  "malformed session:command:applied frame — dropping",
+                );
+                return;
+              }
+              if (!clientId) return;
+              // Reject a locally replaced socket before touching durable state.
+              if (!connectionManager.isActiveClientConnection(clientId, socket)) {
+                app.log.debug(
+                  { clientId, ref: parsedAck.data.ref },
+                  "ignoring session:command:applied from replaced local socket",
+                );
+                return;
+              }
+              // The ack must come from the agent's CURRENT route: this client
+              // owns the agent binding on this socket right now.
+              if (
+                !boundAgents.has(parsedAck.data.agentId) ||
+                connectionManager.getAgentClientId(parsedAck.data.agentId) !== clientId
+              ) {
+                app.log.debug(
+                  { clientId, agentId: parsedAck.data.agentId, ref: parsedAck.data.ref },
+                  "ignoring session:command:applied from an agent not routed to this client",
+                );
+                return;
+              }
+              const stored = await storeSessionCommandRpcResult(
+                app.db,
+                clientId,
+                parsedAck.data.ref,
+                {
+                  command: "session:terminate",
+                  agentId: parsedAck.data.agentId,
+                  chatId: parsedAck.data.chatId,
+                  applied: parsedAck.data.applied,
+                },
+                instanceId,
+              );
+              if (!stored) {
+                app.log.debug(
+                  { clientId, ref: parsedAck.data.ref, instanceId },
+                  "ignoring session:command:applied; client ownership moved before durable write",
+                );
+                return;
+              }
+              connectionManager.resolveClientReply(clientId, parsedAck.data.ref, parsedAck.data);
+              await notifier.notifyDaemonClientCommandResult({ clientId, ref: parsedAck.data.ref });
             } else if (type === "inbox:ack") {
               const payloadResult = inboxAckFrameSchema.safeParse(msg);
               if (!payloadResult.success) {
@@ -1857,6 +1974,13 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   } else {
                     inboxRecoverProgress.delete(progressKey);
                   }
+                  // Counted inside the same serialized chain as the reset:
+                  // unacked rows may already be `pending` (bind reset), so
+                  // only pending+delivered = 0 proves the chat settled.
+                  const unackedOutstanding = await inboxService.countUnackedForScope(app.db, {
+                    inboxId: info.inboxId,
+                    chatId,
+                  });
                   socket.send(
                     JSON.stringify({
                       type: "inbox:recover:accepted",
@@ -1864,6 +1988,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                       agentId,
                       chatId,
                       resetCount: recovered.resetEntryIds.length,
+                      unackedOutstanding,
                     }),
                   );
                   await drainBacklogForAgent(agentId, info.inboxId, { source: "recover", chatId });
@@ -1872,6 +1997,69 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                   socket.send(
                     JSON.stringify({
                       type: "inbox:recover:rejected",
+                      ref,
+                      agentId,
+                      chatId,
+                      reason: "recover_failed",
+                    }),
+                  );
+                }
+              });
+            } else if (type === "inbox:fence-probe") {
+              const payloadResult = inboxFenceProbeFrameSchema.safeParse(msg);
+              if (!payloadResult.success) {
+                app.log.warn(
+                  {
+                    clientId,
+                    issues: payloadResult.error.issues.map((i) => ({
+                      path: i.path.join("."),
+                      code: i.code,
+                      message: i.message,
+                    })),
+                  },
+                  "malformed inbox:fence-probe frame — replying error",
+                );
+                socket.send(JSON.stringify({ type: "error", message: "Malformed inbox:fence-probe frame" }));
+                return;
+              }
+              const { agentId, chatId, ref, messageIds } = payloadResult.data;
+              // Read-only settlement probe, but serialized through the same
+              // boundary as recovery so the answer is consistent with any
+              // concurrent reset/drain.
+              await chainInboxDelivery("__socket", async () => {
+                const info = boundAgents.get(agentId);
+                if (!info || !(await ensureAgentStillRoutedHere(agentId))) {
+                  socket.send(
+                    JSON.stringify({
+                      type: "inbox:fence-probe:rejected",
+                      ref,
+                      agentId,
+                      chatId,
+                      reason: "agent_not_bound",
+                    }),
+                  );
+                  return;
+                }
+                try {
+                  const settledMessageIds = await inboxService.listSettledMessageIdsForScope(app.db, {
+                    inboxId: info.inboxId,
+                    chatId,
+                    messageIds,
+                  });
+                  socket.send(
+                    JSON.stringify({
+                      type: "inbox:fence-probe:accepted",
+                      ref,
+                      agentId,
+                      chatId,
+                      settledMessageIds,
+                    }),
+                  );
+                } catch (err) {
+                  app.log.error({ err, agentId, chatId }, "inbox:fence-probe handling failed");
+                  socket.send(
+                    JSON.stringify({
+                      type: "inbox:fence-probe:rejected",
                       ref,
                       agentId,
                       chatId,

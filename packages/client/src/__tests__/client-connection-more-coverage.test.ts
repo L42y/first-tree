@@ -294,7 +294,7 @@ describe("ClientConnection — additional branch coverage", () => {
 
     await expect(eventPromise).resolves.toBeUndefined();
     await expect(ackPromise).resolves.toBeUndefined();
-    await expect(recoverPromise).resolves.toBeUndefined();
+    await expect(recoverPromise).resolves.toEqual({ resetCount: 2, unackedOutstanding: undefined });
   });
 
   it("times out confirmed session events and keeps later rejection frames from double-settling", async () => {
@@ -730,6 +730,27 @@ describe("ClientConnection — additional branch coverage", () => {
     expect(commands).toContainEqual({ type: "session:resume", agentId: "agent-1", chatId: "chat-1" });
     expect(runtimeAuthStarts).toContainEqual({ provider: "codex", method: "browser", ref: "auth-ref" });
     expect(reconciles).toContainEqual({ agentId: "agent-1", staleChatIds: ["chat-1"] });
+
+    priv(connection).clearTimers();
+  });
+
+  it("declares the terminate apply-ack capability and forwards command refs", async () => {
+    const connection = await makeConnection();
+    const socket = await openRegisteredConnection(connection);
+
+    const registerFrame = socket.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .find((message) => message.type === "client:register");
+    expect(registerFrame?.wireCapabilities).toEqual({ wsSessionTerminateApplyAck: true });
+
+    const commands: unknown[] = [];
+    connection.on("session:command", (command) => commands.push(command));
+    socket.emitMessage({ type: "session:terminate", agentId: "agent-1", chatId: "chat-9", ref: "reset-1" });
+    socket.emitMessage({ type: "session:terminate", agentId: "agent-1", chatId: "chat-9" });
+    expect(commands).toEqual([
+      { type: "session:terminate", agentId: "agent-1", chatId: "chat-9", ref: "reset-1" },
+      { type: "session:terminate", agentId: "agent-1", chatId: "chat-9" },
+    ]);
 
     priv(connection).clearTimers();
   });

@@ -1,10 +1,12 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { ServiceUnavailableError } from "../errors.js";
+import { ConflictError, ServiceUnavailableError } from "../errors.js";
 import { requireAgentAccess, requireChatAccess } from "../scope/require-resource.js";
 import * as agentService from "../services/agent.js";
+import * as connectionManager from "../services/connection-manager.js";
 import { sendToAgent } from "../services/connection-manager.js";
 import * as sessionService from "../services/session.js";
+import { readSessionCommandRpcResult, resolveAgentApplyAckRoute } from "../services/session-command-rpc.js";
 import * as sessionEventService from "../services/session-event.js";
 
 const sessionFilterSchema = z.object({
@@ -58,12 +60,21 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
       scope.organizationId,
       app.notifier,
     );
-    if (result.transitioned) sendToAgent(agent.uuid, { type: "session:suspend", chatId: request.params.chatId });
+    // Send on the already-suspended path too, not only on a fresh transition:
+    // a client that was disconnected when the first command fired must be
+    // able to converge through an idempotent retry of the same endpoint.
+    // `delivered` lets callers (e.g. the Web Reset flow) fail honestly when
+    // the DB moved but the command never reached the client.
+    const delivered =
+      result.state === "suspended"
+        ? sendToAgent(agent.uuid, { type: "session:suspend", chatId: request.params.chatId })
+        : true;
     return reply.status(200).send({
       agentId: agent.uuid,
       chatId: request.params.chatId,
       state: result.state,
       transitioned: result.transitioned,
+      delivered,
     });
   });
 
@@ -84,10 +95,13 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.post<{ Params: { uuid: string; chatId: string } }>(
+  app.post<{ Params: { uuid: string; chatId: string }; Querystring: { waitForApply?: string } }>(
     "/:uuid/sessions/:chatId/terminate",
     async (request, reply) => {
       const { agent, scope } = await requireAgentAccess(request, app.db, "manage");
+      if (request.query.waitForApply === "true") {
+        return terminateWithApplyAck(app, request, reply, agent.uuid, scope.organizationId);
+      }
       const result = await sessionService.archiveSession(
         app.db,
         agent.uuid,
@@ -95,15 +109,28 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
         scope.organizationId,
         app.notifier,
       );
-      if (result.transitioned) {
-        sessionEventService.clearEvents(app.db, agent.uuid, request.params.chatId).catch(() => {});
-        sendToAgent(agent.uuid, { type: "session:terminate", chatId: request.params.chatId });
+      if (result.state === "evicted") {
+        // Awaited, not fire-and-forget: the Web Reset flow refetches session
+        // events as soon as this response arrives, so a success response must
+        // not race the trace cleanup. Runs on the idempotent already-evicted
+        // path too, so a retry after a cleanup failure still completes it. A
+        // cleanup failure rejects the request instead of pretending success.
+        await sessionEventService.clearEvents(app.db, agent.uuid, request.params.chatId);
       }
+      // Same idempotent-retry contract as suspend: an already-evicted row
+      // still re-sends `session:terminate` so a client that missed the first
+      // command converges. The active no-op sends nothing. `delivered`
+      // exposes whether the command actually reached the client.
+      const delivered =
+        result.state === "evicted"
+          ? sendToAgent(agent.uuid, { type: "session:terminate", chatId: request.params.chatId })
+          : true;
       return reply.status(200).send({
         agentId: agent.uuid,
         chatId: request.params.chatId,
         state: result.state,
         transitioned: result.transitioned,
+        delivered,
       });
     },
   );
@@ -111,4 +138,117 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
   // Service helper to keep the orgs/sessions.ts list endpoint flexible:
   // unused here but keeps a friendly export for the agent service module.
   void agentService;
+}
+
+/**
+ * `POST .../terminate?waitForApply=true` — the Web chat-session Reset path.
+ *
+ * Success requires the client to APPLY the terminate, not just receive the
+ * frame: preflight the stopped-session state and the DB-authoritative client
+ * route (connected + owning instance + apply-ack capability), send a ref'd
+ * `session:terminate` (direct when this replica owns the daemon socket, PG
+ * NOTIFY fan-out otherwise), wait for the matching `session:command:applied`
+ * ack, and only then atomically evict + clear traces
+ * (`finalizeTerminatedSession`). The ack is also persisted by the
+ * socket-owning replica, so a lost result wake falls back to one durable
+ * read. Every failure — offline/incapable client, send failure,
+ * disconnect/timeout while waiting, `applied:false`, or a state change
+ * during the wait — rejects the request WITHOUT touching the session row, so
+ * the session stays stopped and Reset remains retryable after a reconnect or
+ * page reload. An already-`evicted` row still re-runs the acknowledged
+ * terminate: an earlier legacy eviction is not proof the current client
+ * dropped its provider-session mapping. There is deliberately no fallback to
+ * the legacy fire-and-forget path inside this mode.
+ */
+async function terminateWithApplyAck(
+  app: FastifyInstance,
+  request: FastifyRequest<{ Params: { uuid: string; chatId: string } }>,
+  reply: FastifyReply,
+  agentId: string,
+  organizationId: string,
+): Promise<FastifyReply> {
+  const chatId = request.params.chatId;
+  const session = await sessionService.getSession(app.db, agentId, chatId);
+
+  if (session.state === "active") {
+    // Active sessions are never reset: the operator must pause the agent
+    // first, so a running turn is never torn down through Reset.
+    throw new ConflictError("Session must be suspended or errored before it can be reset");
+  }
+
+  // DB-authoritative route (shared predicate): durable agent binding +
+  // online presence + connected client must all agree on client/instance,
+  // and the client must have registered the apply-ack capability. Any
+  // replica reaches the same verdict, independent of socket ownership.
+  const route = await resolveAgentApplyAckRoute(app.db, agentId);
+  if (!route) {
+    throw new ServiceUnavailableError("The agent's client is disconnected");
+  }
+  if (!route.capable) {
+    throw new ServiceUnavailableError("The agent's client does not support terminate apply-ack; Reset is unavailable");
+  }
+  const clientId = route.clientId;
+  const targetInstanceId = route.instanceId;
+
+  // Register the waiter BEFORE the command can be delivered so a fast ack
+  // can never be missed.
+  const ref = crypto.randomUUID();
+  const waiter = connectionManager.waitForClientReply(clientId, ref);
+  if (targetInstanceId === app.config.instanceId) {
+    // Same-replica path — the command semantics are identical to the remote
+    // fan-out, including the current-binding check.
+    if (
+      connectionManager.getAgentClientId(agentId) !== clientId ||
+      !sendToAgent(agentId, { type: "session:terminate", chatId, ref })
+    ) {
+      connectionManager.cancelClientReply(clientId, ref, new Error("send failed"));
+      throw new ServiceUnavailableError("The terminate command could not be delivered to the agent's client");
+    }
+  } else {
+    await app.notifier.notifyDaemonClientCommand({
+      type: "session:terminate",
+      clientId,
+      agentId,
+      chatId,
+      ref,
+      targetInstanceId,
+    });
+  }
+
+  let ack: unknown;
+  try {
+    ack = await waiter;
+  } catch (err) {
+    // Race-safe fallback: the ack may already be durable while the wake was lost.
+    const stored = await readSessionCommandRpcResult(app.db, clientId, ref).catch(() => null);
+    if (stored) {
+      ack = stored;
+    } else {
+      throw new ServiceUnavailableError(
+        `The agent's client did not confirm the terminate: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  const ackFrame = ack as { command?: string; agentId?: string; chatId?: string; applied?: boolean };
+  if (
+    ackFrame.command !== "session:terminate" ||
+    ackFrame.agentId !== agentId ||
+    ackFrame.chatId !== chatId ||
+    ackFrame.applied !== true
+  ) {
+    throw new ServiceUnavailableError("The agent's client failed to apply the terminate");
+  }
+
+  const result = await sessionService.finalizeTerminatedSession(app.db, agentId, chatId, organizationId, app.notifier, {
+    clientId,
+    instanceId: targetInstanceId,
+  });
+  if (result.state !== "evicted") {
+    // A new message re-activated the session while the ack was in flight —
+    // do not evict or clear the fresh session.
+    throw new ConflictError("The session became active again while waiting for the client; nothing was reset");
+  }
+  return reply
+    .status(200)
+    .send({ agentId, chatId, state: "evicted", transitioned: result.transitioned, delivered: true, applied: true });
 }

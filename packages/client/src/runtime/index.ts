@@ -18,6 +18,8 @@ export type {
 export { getHandlerFactory, hasHandler, registerHandler } from "./handler.js";
 export { InputController } from "./input-controller.js";
 export { registerShutdownHook, runShutdown } from "./lifecycle.js";
+export type { ReplayFenceEntry, ReplayFenceWriter } from "./replay-fence.js";
+export { ReplayFenceError, ReplayFenceStore } from "./replay-fence.js";
 export type { AgentRuntimeOptions } from "./runtime.js";
 export { AgentRuntime } from "./runtime.js";
 export { SessionManager } from "./session-manager.js";

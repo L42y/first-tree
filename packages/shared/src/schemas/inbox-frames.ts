@@ -81,8 +81,56 @@ export const inboxRecoverAcceptedFrameSchema = z.object({
   ref: z.string().min(1),
   agentId: z.string().min(1),
   chatId: z.string().min(1),
+  /** Rows the recovery reset from delivered back to pending. */
   resetCount: z.number().int().nonnegative(),
+  /**
+   * Authoritative unacked backlog for the chat scope: rows in EITHER
+   * `pending` or `delivered`, counted inside the same serialized recovery
+   * boundary. Only `0` proves every delivery in the chat settled — a plain
+   * `resetCount` of 0 cannot, since unacked rows may already be `pending`
+   * (e.g. after a bind reset). Optional so older servers stay compatible;
+   * consumers must treat its absence as "unknown", never as zero.
+   */
+  unackedOutstanding: z.number().int().nonnegative().optional(),
 });
+
+/**
+ * client → server: read-only settlement probe for concrete fenced
+ * deliveries. The server answers, inside the same serialized recovery
+ * boundary, which of the probed message ids have no unsettled
+ * (pending/delivered) notify row in the chat scope — the only truth that
+ * may clear a replay fence. Bounded per request; unrelated backlog size
+ * must never dilute the answer.
+ */
+export const INBOX_FENCE_PROBE_MAX_IDS = 50;
+
+export const inboxFenceProbeFrameSchema = z.object({
+  type: z.literal("inbox:fence-probe"),
+  ref: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1),
+  messageIds: z.array(z.string().min(1)).min(1).max(INBOX_FENCE_PROBE_MAX_IDS),
+});
+export type InboxFenceProbeFrame = z.infer<typeof inboxFenceProbeFrameSchema>;
+
+export const inboxFenceProbeAcceptedFrameSchema = z.object({
+  type: z.literal("inbox:fence-probe:accepted"),
+  ref: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1),
+  /** Probed ids proven settled (no unsettled notify row for that delivery). */
+  settledMessageIds: z.array(z.string().min(1)),
+});
+export type InboxFenceProbeAcceptedFrame = z.infer<typeof inboxFenceProbeAcceptedFrameSchema>;
+
+export const inboxFenceProbeRejectedFrameSchema = z.object({
+  type: z.literal("inbox:fence-probe:rejected"),
+  ref: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1).optional(),
+  reason: inboxRecoverRejectedReasonSchema,
+});
+export type InboxFenceProbeRejectedFrame = z.infer<typeof inboxFenceProbeRejectedFrameSchema>;
 export type InboxRecoverAcceptedFrame = z.infer<typeof inboxRecoverAcceptedFrameSchema>;
 
 export const inboxRecoverRejectedFrameSchema = z.object({

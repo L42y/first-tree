@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
   AGENT_TEMPLATE_MCP_STRING_MAX,
   AGENT_TEMPLATE_STATUSES,
   AGENT_TEMPLATE_WRITE_BODY_LIMIT,
+  agentResourcesOutputSchema,
+  agentTemplateAdoptionSummarySchema,
   agentTemplateComponentSchema,
   agentTemplateDetailSchema,
   agentTemplateIdsSchema,
@@ -18,7 +21,7 @@ import {
   updateAgentTemplateSchema,
   updateAgentTemplatesSchema,
 } from "../schemas/agent-template.js";
-import { PROMPT_RESOURCE_BODY_MAX_CHARS } from "../schemas/resource.js";
+import { effectiveResourceRowSchema, PROMPT_RESOURCE_BODY_MAX_CHARS, resourceRowSchema } from "../schemas/resource.js";
 
 const TEMPLATE_ID_A = "0190f000-0000-7000-8000-00000000000a";
 const TEMPLATE_ID_B = "0190f000-0000-7000-8000-00000000000b";
@@ -727,5 +730,202 @@ describe("createAgentSchema templateIds", () => {
       }).success,
     ).toBe(false);
     expect(createAgentSchema.safeParse(base).success).toBe(true);
+  });
+});
+
+describe("adopted-template projection schemas", () => {
+  it("requires originTemplateId (nullable) on resource and effective rows", () => {
+    const base = {
+      id: "r1",
+      organizationId: "org-1",
+      type: "prompt",
+      scope: "team",
+      ownerAgentId: null,
+      name: "P",
+      repoCanonicalKey: null,
+      bundleAttachmentId: null,
+      defaultEnabled: "available",
+      status: "active",
+      payload: { body: "x" },
+      createdBy: "u",
+      updatedBy: "u",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(resourceRowSchema.safeParse(base).success).toBe(false);
+    expect(resourceRowSchema.safeParse({ ...base, originTemplateId: null }).success).toBe(true);
+    expect(resourceRowSchema.safeParse({ ...base, originTemplateId: TEMPLATE_ID_A }).success).toBe(true);
+
+    const effective = {
+      id: "e1",
+      bindingId: null,
+      resourceId: "r1",
+      replacesResourceId: null,
+      type: "prompt",
+      name: "P",
+      scope: "team",
+      source: "team_available",
+      mode: "enabled",
+      defaultEnabled: "available",
+      payload: { body: "x" },
+      repo: null,
+      promptBody: "x",
+      unavailableReason: null,
+      order: 1,
+    };
+    expect(effectiveResourceRowSchema.safeParse(effective).success).toBe(false);
+    expect(effectiveResourceRowSchema.safeParse({ ...effective, originTemplateId: null }).success).toBe(true);
+    expect(effectiveResourceRowSchema.safeParse({ ...effective, originTemplateId: TEMPLATE_ID_A }).success).toBe(true);
+  });
+
+  it("validates adopted summaries for active, retired, and missing without leaks", () => {
+    const active = {
+      id: TEMPLATE_ID_A,
+      status: "active",
+      slug: "pr-engineer",
+      name: "PR Engineer",
+      public: VALID_PUBLIC_PROFILE,
+      replacement: null,
+    };
+    expect(agentTemplateAdoptionSummarySchema.safeParse(active).success).toBe(true);
+    expect(
+      agentTemplateAdoptionSummarySchema.safeParse({
+        ...active,
+        status: "retired",
+        replacement: { slug: "next-one", name: "Next One" },
+      }).success,
+    ).toBe(true);
+    expect(
+      agentTemplateAdoptionSummarySchema.safeParse({
+        id: TEMPLATE_ID_A,
+        status: "missing",
+        slug: null,
+        name: null,
+        public: null,
+        replacement: null,
+      }).success,
+    ).toBe(true);
+
+    // Leaked private fields are rejected, never stripped into the contract.
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...active, components: [] }).success).toBe(false);
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...active, payload: {} }).success).toBe(false);
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...active, bundleAttachmentId: TEMPLATE_ID_B }).success).toBe(
+      false,
+    );
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...active, status: "draft" }).success).toBe(false);
+  });
+
+  it("rejects impossible status/field combinations", () => {
+    const active = {
+      id: TEMPLATE_ID_A,
+      status: "active",
+      slug: "pr-engineer",
+      name: "PR Engineer",
+      public: VALID_PUBLIC_PROFILE,
+      replacement: null,
+    };
+    // active must be fully populated with no replacement.
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...active, slug: null }).success).toBe(false);
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...active, public: null }).success).toBe(false);
+    expect(
+      agentTemplateAdoptionSummarySchema.safeParse({ ...active, replacement: { slug: "x", name: "X" } }).success,
+    ).toBe(false);
+    // retired may carry a replacement but must stay populated.
+    const retired = { ...active, status: "retired" };
+    expect(
+      agentTemplateAdoptionSummarySchema.safeParse({ ...retired, replacement: { slug: "x", name: "X" } }).success,
+    ).toBe(true);
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...retired, name: null }).success).toBe(false);
+    // missing must be entirely empty.
+    const missing = { id: TEMPLATE_ID_A, status: "missing", slug: null, name: null, public: null, replacement: null };
+    expect(agentTemplateAdoptionSummarySchema.safeParse(missing).success).toBe(true);
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...missing, name: "Ghost" }).success).toBe(false);
+    expect(agentTemplateAdoptionSummarySchema.safeParse({ ...missing, public: VALID_PUBLIC_PROFILE }).success).toBe(
+      false,
+    );
+    expect(
+      agentTemplateAdoptionSummarySchema.safeParse({ ...missing, replacement: { slug: "x", name: "X" } }).success,
+    ).toBe(false);
+  });
+
+  it("enforces summary count and same-order ids on the output", () => {
+    const base = {
+      version: 2,
+      templateIds: [TEMPLATE_ID_A, TEMPLATE_ID_B],
+      effective: { version: 2, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+      bindings: [],
+      availableTeamResources: [],
+    };
+    const summaryFor = (id: string) => ({
+      id,
+      status: "missing",
+      slug: null,
+      name: null,
+      public: null,
+      replacement: null,
+    });
+    expect(
+      agentResourcesOutputSchema.safeParse({ ...base, adoptedTemplates: [summaryFor(TEMPLATE_ID_A)] }).success,
+    ).toBe(false);
+    expect(
+      agentResourcesOutputSchema.safeParse({
+        ...base,
+        adoptedTemplates: [summaryFor(TEMPLATE_ID_B), summaryFor(TEMPLATE_ID_A)],
+      }).success,
+    ).toBe(false);
+    expect(
+      agentResourcesOutputSchema.safeParse({
+        ...base,
+        adoptedTemplates: [summaryFor(TEMPLATE_ID_A), summaryFor(TEMPLATE_ID_B)],
+      }).success,
+    ).toBe(true);
+    expect(
+      agentResourcesOutputSchema.safeParse({
+        ...base,
+        adoptedTemplates: [summaryFor(TEMPLATE_ID_A), summaryFor(TEMPLATE_ID_B)],
+        extra: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps AgentResourcesOutput same-order summaries strict", () => {
+    const output = {
+      version: 2,
+      templateIds: [TEMPLATE_ID_A],
+      adoptedTemplates: [
+        { id: TEMPLATE_ID_A, status: "missing", slug: null, name: null, public: null, replacement: null },
+      ],
+      effective: { version: 2, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+      bindings: [],
+      availableTeamResources: [],
+    };
+    expect(agentResourcesOutputSchema.safeParse(output).success).toBe(true);
+    expect(
+      agentResourcesOutputSchema.safeParse({
+        ...output,
+        adoptedTemplates: [
+          {
+            id: TEMPLATE_ID_A,
+            status: "missing",
+            slug: null,
+            name: null,
+            public: null,
+            replacement: null,
+            digest: "x",
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("Agent Template lifecycle wire error codes", () => {
+  it("pins the stable create / adoption conflict codes", () => {
+    expect(AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES).toEqual({
+      NAME_CONFLICT: "agent_name_conflict",
+      VERSION_CONFLICT: "agent_templates_version_conflict",
+      ADOPTION_CONFLICT: "agent_template_adoption_conflict",
+      AGENT_INACTIVE: "agent_templates_agent_inactive",
+    });
   });
 });

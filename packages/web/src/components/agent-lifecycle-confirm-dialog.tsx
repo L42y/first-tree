@@ -44,6 +44,54 @@ export function AgentSuspendConfirmDialog({
   );
 }
 
+/**
+ * Chat-session Reset — the Participants-roster recovery action. Offered only
+ * for a stopped (suspended/failed) session, so the copy describes clearing a
+ * saved session, never interrupting a run. Irreversible for the session
+ * (unlike Pause), so it gets a confirm step, but the scope stays narrow:
+ * only this agent's session in this chat.
+ */
+export function AgentSessionResetConfirmDialog({
+  open,
+  onOpenChange,
+  label,
+  onConfirm,
+  pending,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  label: string;
+  onConfirm: () => void;
+  pending: boolean;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Reset session for "{label}"?</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <DialogDescription style={{ color: "var(--fg-2)" }}>
+            This clears the agent's stopped session in this chat.
+          </DialogDescription>
+          <p className="text-body" style={{ color: "var(--fg-2)" }}>
+            Chat history is kept. Actions the agent already took outside this chat cannot be undone. Send a new message
+            to start a fresh session.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={onConfirm} disabled={pending}>
+            {pending ? "Resetting…" : "Reset"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function AgentDeleteConfirmDialog({
   open,
   onOpenChange,

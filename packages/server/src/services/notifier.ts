@@ -1,3 +1,4 @@
+import { PROVIDER_MODELS_LIST_TYPE } from "@first-tree/shared";
 import type postgres from "postgres";
 import type { WebSocket } from "ws";
 
@@ -111,14 +112,24 @@ export type AgentRouteChangePayload = {
 export type AgentRouteChangeHandler = (payload: AgentRouteChangePayload) => void;
 
 /** Small reverse-command frame fan-out for host-local daemon RPCs. */
-export type DaemonClientCommandPayload = {
-  type: string;
-  clientId: string;
-  provider: string;
-  ref: string;
-  /** DB-authoritative `clients.instance_id` — only that replica may deliver. */
-  targetInstanceId: string;
-};
+export type DaemonClientCommandPayload =
+  | {
+      type: typeof PROVIDER_MODELS_LIST_TYPE;
+      clientId: string;
+      provider: string;
+      ref: string;
+      /** DB-authoritative `clients.instance_id` — only that replica may deliver. */
+      targetInstanceId: string;
+    }
+  | {
+      /** Chat-session Reset: forward the ref'd terminate to the owning replica. */
+      type: "session:terminate";
+      clientId: string;
+      agentId: string;
+      chatId: string;
+      ref: string;
+      targetInstanceId: string;
+    };
 export type DaemonClientCommandHandler = (payload: DaemonClientCommandPayload) => void;
 
 /** Wake waiters that a correlated daemon RPC result is stored in client metadata. */
@@ -688,10 +699,20 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
           if (
             typeof parsed.type !== "string" ||
             typeof parsed.clientId !== "string" ||
-            typeof parsed.provider !== "string" ||
             typeof parsed.ref !== "string" ||
             typeof parsed.targetInstanceId !== "string"
           ) {
+            return;
+          }
+          // Discriminated union: each command type carries its own required
+          // fields; anything else (unknown type, missing discriminator
+          // fields) is malformed and must not reach handlers.
+          if (parsed.type === "session:terminate") {
+            const sessionPayload = parsed as { agentId?: unknown; chatId?: unknown };
+            if (typeof sessionPayload.agentId !== "string" || typeof sessionPayload.chatId !== "string") return;
+          } else if (parsed.type === PROVIDER_MODELS_LIST_TYPE) {
+            if (typeof (parsed as { provider?: unknown }).provider !== "string") return;
+          } else {
             return;
           }
           for (const handler of daemonClientCommandHandlers) {

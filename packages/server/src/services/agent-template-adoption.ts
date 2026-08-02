@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   AGENT_STATUSES,
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
   AGENT_TYPES,
   type AgentTemplateComponent,
   type AgentTemplatePayload,
@@ -14,7 +15,7 @@ import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
 import { agentTemplates } from "../db/schema/agent-templates.js";
 import { agents } from "../db/schema/agents.js";
 import { resources } from "../db/schema/resources.js";
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
+import { type AppErrorAttrs, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
 import { assertNoRuntimeSwitchInProgress } from "./agent-runtime-switch.js";
 import { assertSkillComponentMatchesBundle } from "./agent-templates.js";
@@ -23,6 +24,40 @@ import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 import { assertMutableAgentIsNotLandingCampaignTrial } from "./landing-campaigns/guards.js";
 import type { Notifier } from "./notifier.js";
 import { assertTeamSkillNameAvailable, lockTeamSkillNames } from "./resources.js";
+
+/** Conflict that belongs to Template adoption (not name / version CAS). */
+function adoptionConflict(message: string, attrs?: AppErrorAttrs): ConflictError {
+  return new ConflictError(message, {
+    ...(attrs ?? {}),
+    code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT,
+  });
+}
+
+/**
+ * Downstream helpers (Skill name check, Skill bundle verify, attachment
+ * quota) may throw ConflictError with no code or an unrelated helper code.
+ * This wrapper only wraps adoption helpers, so always keep message/attrs and
+ * force the adoption wire code — otherwise New Agent would drop the error
+ * into `_root` instead of the Responsibilities section.
+ */
+function rethrowAsAdoptionConflict(err: unknown): never {
+  if (err instanceof ConflictError) {
+    if (err.attrs?.code === AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT) throw err;
+    throw new ConflictError(err.message, {
+      ...(err.attrs ?? {}),
+      code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT,
+    });
+  }
+  throw err;
+}
+
+async function withAdoptionConflictCode<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    rethrowAsAdoptionConflict(err);
+  }
+}
 
 /**
  * Agent Template adoption: turn an Agent's adopted Template set into
@@ -82,18 +117,18 @@ async function lockAndVerifyTemplate(
     .limit(1);
   if (!row) throw new NotFoundError(`Agent Template "${templateId}" not found`);
   if (row.status !== "active") {
-    throw new ConflictError(`Agent Template "${templateId}" is not active and cannot be adopted`);
+    throw adoptionConflict(`Agent Template "${templateId}" is not active and cannot be adopted`);
   }
   const parsed = agentTemplatePayloadSchema.safeParse(row.payload);
   if (!parsed.success) {
-    throw new ConflictError(`Agent Template "${templateId}" is not valid and cannot be adopted`);
+    throw adoptionConflict(`Agent Template "${templateId}" is not valid and cannot be adopted`);
   }
   if (parsed.data.components.length === 0) {
-    throw new ConflictError(`Agent Template "${templateId}" has no components and cannot be adopted`);
+    throw adoptionConflict(`Agent Template "${templateId}" has no components and cannot be adopted`);
   }
   for (const component of parsed.data.components) {
     if (component.type !== "skill") continue;
-    await assertSkillComponentMatchesBundle(db, blobStore, publisherOrgId, component);
+    await withAdoptionConflictCode(() => assertSkillComponentMatchesBundle(db, blobStore, publisherOrgId, component));
   }
   return { id: row.id, payload: parsed.data };
 }
@@ -180,7 +215,7 @@ async function bindAdoptedResources(
     // A disable, or a replace in either direction, is a deliberate manual
     // choice the adoption must not silently override.
     if (existing.some((binding) => binding.mode === "disable" || binding.mode === "replace")) {
-      throw new ConflictError(
+      throw adoptionConflict(
         `Agent "${agent.uuid}" already has a manual choice for Resource "${row.name}"; resolve it before adopting this Template`,
       );
     }
@@ -219,7 +254,7 @@ async function assertNewMcpNamesAvailable(
   );
   if (newNames.length === 0) return;
   if (new Set(newNames).size !== newNames.length) {
-    throw new ConflictError("The adopted Templates provide duplicate MCP server names");
+    throw adoptionConflict("The adopted Templates provide duplicate MCP server names");
   }
   const newResourceIds = new Set(newRows.map((row) => row.id));
   const bindings = await db
@@ -262,7 +297,7 @@ async function assertNewMcpNamesAvailable(
         ? (row.payload as { name: string }).name.toLowerCase()
         : null;
     if (name && newNames.includes(name)) {
-      throw new ConflictError(`MCP server name "${name}" is already in use by Agent "${agent.uuid}"`);
+      throw adoptionConflict(`MCP server name "${name}" is already in use by Agent "${agent.uuid}"`);
     }
   }
 }
@@ -327,10 +362,10 @@ async function adoptTemplatesInTransaction(
     for (const name of firstImportSkillNames) {
       const identity = name.toLowerCase();
       if (seen.has(identity)) {
-        throw new ConflictError(`The adopted Templates provide duplicate Skill names ("${name}")`);
+        throw adoptionConflict(`The adopted Templates provide duplicate Skill names ("${name}")`);
       }
       seen.add(identity);
-      await assertTeamSkillNameAvailable(db, agent.organizationId, name);
+      await withAdoptionConflictCode(() => assertTeamSkillNameAvailable(db, agent.organizationId, name));
     }
   }
 
@@ -346,12 +381,8 @@ async function adoptTemplatesInTransaction(
   const bundleTargetBySourceId = new Map<string, string>();
   const digestByComponentKey = new Map<string, string>();
   for (const sourceId of sourceBundleIds) {
-    const attachment = await copyAttachmentForOrganization(
-      db,
-      blobStore,
-      sourceId,
-      agent.organizationId,
-      attachmentUploader,
+    const attachment = await withAdoptionConflictCode(() =>
+      copyAttachmentForOrganization(db, blobStore, sourceId, agent.organizationId, attachmentUploader),
     );
     if (!attachment.data) throw new Error("Attachment copy has no PostgreSQL bytes");
     bundleTargetBySourceId.set(sourceId, attachment.id);
@@ -444,6 +475,13 @@ export async function adoptAgentTemplates(
     if (lockedAgent.type === AGENT_TYPES.HUMAN) {
       throw new BadRequestError("Human Agents cannot adopt Agent Templates");
     }
+    // Suspended Agents are read-only for responsibility changes — including
+    // same-set / idempotent replaces. Existing imported Team Resources stay.
+    if (lockedAgent.status !== AGENT_STATUSES.ACTIVE) {
+      throw new ConflictError(`Agent "${agent.uuid}" is not active and cannot change Template responsibilities`, {
+        code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.AGENT_INACTIVE,
+      });
+    }
     assertMutableAgentIsNotLandingCampaignTrial(lockedAgent);
     assertNoRuntimeSwitchInProgress(lockedAgent);
     const effectiveAgent: AgentRow = {
@@ -472,6 +510,7 @@ export async function adoptAgentTemplates(
     if (config.version !== input.expectedVersion) {
       throw new ConflictError(
         `Agent templates "${effectiveAgent.uuid}" version mismatch: expected ${input.expectedVersion}, got ${config.version}`,
+        { code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.VERSION_CONFLICT },
       );
     }
     const current = [...config.templateIds].sort();

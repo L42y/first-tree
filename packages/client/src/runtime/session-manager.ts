@@ -14,6 +14,7 @@ import {
   attachmentRefsFromMetadata,
   deriveRepoLocalPath,
   encodeProviderRetryEventMessage,
+  INBOX_FENCE_PROBE_MAX_IDS,
   imageAttachmentRefsFromMetadata,
   isImageBatchRefContent,
   isImageRefContent,
@@ -63,6 +64,7 @@ import {
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
+import { ReplayFenceStore } from "./replay-fence.js";
 import { createResultSink, type Trigger } from "./result-sink.js";
 import {
   isRuntimeSessionProofFailure,
@@ -81,6 +83,38 @@ type SessionEntry = {
   lastActivity: number;
   /** In-flight suspend promise; awaited before resume to avoid race conditions. */
   suspending: Promise<void> | null;
+  /**
+   * Failure of the last in-flight suspend, recorded because `suspending`
+   * swallows rejections by contract. A terminate joining that suspend reads
+   * this to fail the Reset apply instead of acking over a handler that was
+   * never confirmed suspended. Cleared when a new suspend begins.
+   */
+  /**
+   * Failure of the last in-flight suspend, recorded because `suspending`
+   * swallows rejections by contract. A terminate joining that suspend reads
+   * this to fail the Reset apply instead of acking over a handler that was
+   * never confirmed suspended. Boxed (`{ error }`) because a Promise can
+   * reject with a falsey value — truthiness of the raw error is not a
+   * failure signal. Cleared when a new suspend begins.
+   */
+  suspendError: { error: unknown } | null;
+  /**
+   * The handler the suspend boundary already shut down successfully
+   * (canceled-transition / retired-handler path), bound to the handler
+   * IDENTITY rather than a boolean: later flows (e.g.
+   * `handlerForRouteTransition`) may replace `entry.handler`, and a stale
+   * boolean would then suppress teardown of the live replacement. Only
+   * `handlerStoppedBySuspend === entry.handler` means the CURRENT handler is
+   * confirmed stopped (`suspendError` records the failure case).
+   */
+  handlerStoppedBySuspend: AgentHandler | null;
+  /**
+   * Failure of the last terminate-driven strict teardown (boxed like
+   * `suspendError`). Recorded because the slot is already released by then,
+   * so without it a retry terminate would skip every teardown branch and
+   * ack over a possibly-live handler.
+   */
+  teardownError: { error: unknown } | null;
   /**
    * Transient-retry bookkeeping (Bug 1 fix). When handler.start / handler.resume
    * throws a classified-transient error we schedule a retry instead of
@@ -342,6 +376,15 @@ type SessionManagerConfig = {
   sdk: FirstTreeHubSDK;
   log: pino.Logger;
   registryPath?: string;
+  /**
+   * Durable replay-fence store path. When set, the manager loads safety
+   * facts about provider-entered deliveries that already produced unsafe
+   * tool effects, refuses to start/resume a provider turn for a fenced
+   * (chatId, messageId) redelivery (leaving it as unacknowledged recovery
+   * debt), and hands the store to handlers via `handlerConfig.replayFence`.
+   * A store that fails to load fails closed: every dispatch is withheld.
+   */
+  replayFencePath?: string;
   /** Step 4: optional config cache for refresh-before-dispatch on configVersion bump. */
   agentConfigCache?: AgentConfigCache;
   /** Stable file path updated on every runtime-session rebind for long-lived child CLI calls. */
@@ -357,6 +400,13 @@ type SessionManagerConfig = {
    * chat back to pending and redeliver them on this connection.
    */
   recoverChat?: (chatId: string) => Promise<void>;
+  /**
+   * Read-only settlement probe for concrete fenced deliveries: resolves
+   * with the probed message ids the server proves settled (no unsettled
+   * notify row), computed inside the server's serialized recovery
+   * boundary. Without it the reconciliation keeps every fence.
+   */
+  probeFencedSettlement?: (chatId: string, messageIds: readonly string[]) => Promise<readonly string[]>;
   /**
    * Re-bind the owning agent after a bind-scoped HTTP proof failure. The
    * callback is agent-wide and must coalesce concurrent chat failures.
@@ -402,6 +452,15 @@ type SessionManagerConfig = {
  */
 /** Maximum number of evicted session mappings to retain for resume recovery. */
 const MAX_EVICTED_MAPPINGS = 500;
+
+/**
+ * Minimum spacing between gate-triggered replay-fence reconciliations for
+ * one chat. Withheld dispatches retry the server-truth readback so a
+ * transient readback/clear failure converges without a process restart,
+ * without turning every redelivery burst into an inbox-recovery storm.
+ */
+const REPLAY_FENCE_RECONCILE_INTERVAL_MS = 30_000;
+
 const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
 
 /**
@@ -443,6 +502,15 @@ function resumableProviderSessionId(...candidates: Array<string | null | undefin
     if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
   }
   return null;
+}
+
+/**
+ * Normalize a recorded suspend/teardown failure for the terminate reject
+ * boundary. Recorded errors can be falsey (a Promise may reject(null)), and
+ * throwing a falsey value would make the rejection uninspectable downstream.
+ */
+function asTerminateError(kind: "suspend" | "teardown", error: unknown): Error {
+  return error instanceof Error ? error : new Error(`session ${kind} failed: ${String(error)}`);
 }
 
 function previousAvailable(entry: SessionEntry): boolean {
@@ -501,9 +569,53 @@ export class SessionManager {
    */
   private readonly currentTrigger = new Map<string, Trigger>();
   private readonly registry: SessionRegistry | null;
+  private readonly replayFence: ReplayFenceStore | null;
+  /**
+   * Set when the replay-fence store could not be loaded. Fail-closed: every
+   * dispatch is withheld as recovery debt until an operator repairs the
+   * store, because we can no longer tell safe redeliveries from unsafe ones.
+   */
+  private replayFenceUnavailable: string | null = null;
   private readonly pendingQueue: PendingMessage[] = [];
-  /** Chats whose terminate command has closed admission but is still draining cleanup. */
-  private readonly terminatingChats = new Set<string>();
+  /** Chats whose terminate command has closed admission but is still draining cleanup.
+   *  The value is the in-flight termination promise: a duplicate terminate for
+   *  the same chat joins it instead of returning early, so every ref'd caller
+   *  acks only after the shared cleanup settles (applied:false on rejection). */
+  private readonly terminatingChats = new Map<string, Promise<void>>();
+  /**
+   * Chats whose terminate cleanup finished in memory but whose final
+   * synchronous registry flush failed. Counted as "work to do" by the
+   * terminate admission guard so a retry re-executes the full termination
+   * (and re-attempts the flush) instead of early-returning a false
+   * applied:true while the stale mapping is still on disk.
+   */
+  private readonly terminatePersistFailures = new Set<string>();
+  /**
+   * Per-chat teardown debt: handlers detached from their SessionEntry (LRU
+   * eviction, failSessionForRecovery, abortUnownedRoute, terminal cleanup,
+   * canceled fresh-start, resume/retry handler replacement) without a
+   * CONFIRMED stop. A ref'd terminate joins/strictly tears down every
+   * pending handler of the chat before it may ack; confirmed stops drop out
+   * of the set. Entries are registered at the detach point (see
+   * `detachHandlerWithPendingTeardown` / `registerPendingTeardown`).
+   */
+  private readonly pendingTeardowns = new Map<string, Set<AgentHandler>>();
+  /**
+   * In-flight route producers (start/resume/retry provider calls), per chat.
+   * Tracked from `beginRouteTransition` until the route settles: a canceled
+   * transition can still MATERIALIZE late (the provider call returns after
+   * its pre-materialization shutdown ran as a no-op), and only the
+   * producer's settle funnels that materialization into
+   * `discardStaleRouteTransition` → teardown debt. Terminate and manager
+   * shutdown join these before they may ack/return.
+   */
+  private readonly routeProducers = new Map<string, Set<Promise<void>>>();
+  /**
+   * Per-chat single-flight registry for `runRetry` executions. An
+   * overlapping trigger (timer fire + immediate delivery trigger) joins the
+   * in-flight execution instead of running a second one — see runRetry.
+   */
+  private readonly retryFlights = new Map<string, Promise<void>>();
   /** Monotonic fence for delivery work that is still inside the async admission pipeline. */
   private readonly admissionGenerations = new Map<string, number>();
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
@@ -514,8 +626,15 @@ export class SessionManager {
   private readonly runtimeProofRecoveryChats = new Set<string>();
   /** Handlers invalidated while start/resume was unresolved must never be reused. */
   private readonly retiredHandlers = new WeakSet<AgentHandler>();
-  /** Coalesces concurrent cleanup; a stale settlement may enqueue a later cleanup pass. */
-  private readonly handlerShutdowns = new WeakMap<AgentHandler, Promise<void>>();
+  /**
+   * Coalesces concurrent cleanup; a stale settlement may enqueue a later
+   * cleanup pass. Each entry keeps both faces of the shutdown: `raw`
+   * (rejects on failure) for `observeFailure` callers such as the Reset
+   * terminate, and `observed` (swallow-and-warn, always resolves) for
+   * fire-and-forget callers — so a strict caller joining an in-flight
+   * shutdown that a lenient caller started still sees the failure.
+   */
+  private readonly handlerShutdowns = new WeakMap<AgentHandler, { raw: Promise<void>; observed: Promise<void> }>();
   /** Cache of chatId → organizationId, resolved via `getChatDetail`. A chat's
    *  org is immutable, so this is a cheap permanent memo that keeps doc-capture
    *  uploads off the hot path after the first lookup. */
@@ -530,13 +649,25 @@ export class SessionManager {
     this.inboxDelivery = new InboxDeliveryCoordinator({
       ackEntry: config.ackEntry,
       recoverChat: config.recoverChat,
-      postRuntimeFailureNotice: async (chatId, payload) => {
-        await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
-      },
       onWorkChanged: (chatId) => this.projectSessionRuntime(chatId),
+      onDeliveriesCommitted: (chatId, messageIds) => this.reconcileReplayFences(chatId, messageIds),
       log: config.log,
     });
     this.registry = config.registryPath ? new SessionRegistry(config.registryPath) : null;
+    if (config.replayFencePath) {
+      this.replayFence = new ReplayFenceStore(config.replayFencePath);
+      try {
+        this.replayFence.load();
+      } catch (err) {
+        this.replayFenceUnavailable = err instanceof Error ? err.message : String(err);
+        this.config.log.error(
+          { err, path: config.replayFencePath },
+          "replay fence store failed to load; withholding all provider dispatch fail-closed",
+        );
+      }
+    } else {
+      this.replayFence = null;
+    }
     this.idleTimer = setInterval(() => this.evictIdle(), 10_000);
     // Independent of `evictIdle` (which early-continues on freshly-active
     // sessions): re-affirm working / error sessions so the
@@ -796,7 +927,15 @@ export class SessionManager {
 
   /** Handle a server-issued session command. Terminate drops all local state without reporting back. */
   async handleCommand(chatId: string, command: SessionCommandType): Promise<void> {
-    if (this.terminatingChats.has(chatId)) return;
+    const inFlightTermination = this.terminatingChats.get(chatId);
+    if (inFlightTermination) {
+      // A duplicate terminate joins the in-flight cleanup instead of
+      // returning early: a ref'd caller (Reset apply-ack) must only resolve
+      // after the shared work settles, and must reject if it rejects.
+      // Suspend/resume keep the early-return admission fence.
+      if (command === "session:terminate") return inFlightTermination;
+      return;
+    }
 
     if (command === "session:suspend") {
       const session = this.sessions.get(chatId);
@@ -841,24 +980,93 @@ export class SessionManager {
 
     if (command === "session:terminate") {
       const session = this.sessions.get(chatId);
-      const hadMapping = this.evictedMappings.has(chatId);
-      const hasPendingQueue = this.pendingQueue.some((queued) => queued.chatId === chatId);
-      const hasInboxCustody = this.inboxDelivery.hasUnsettledWork(chatId);
-      if (!session && !hadMapping && !hasPendingQueue && !hasInboxCustody) return;
-
-      this.terminatingChats.add(chatId);
+      // NOTE: there is deliberately NO no-work early return. Empty memory
+      // (no session, mapping, queue, custody, failure marker, debt, or
+      // producer) proves nothing about the DISK registry — a mapping
+      // persisted earlier (e.g. at suspend time) may still be on disk and
+      // would be reloaded as an evicted mapping after a crash, reviving the
+      // old provider thread. Every apply-acked terminate therefore runs the
+      // full body below, whose final step durably flushes the authoritative
+      // registry snapshot (see flushTerminateRegistry).
       this.invalidateDeliveryAdmission(chatId);
       this.config.log.info({ chatId }, "terminate command received");
-      try {
+      const termination = (async () => {
         if (session?.retryTimer) {
           clearTimeout(session.retryTimer);
           session.retryTimer = null;
         }
         if (session) this.invalidateRouteTransition(session, "session_terminated");
+        // Join an in-flight suspend before any state deletion: handler.suspend()
+        // may still be running, and the slot was already released so the
+        // activeSlotHeld teardown below would never fire. `suspending` never
+        // rejects (legacy resolve-always contract for dispatch/resume), so the
+        // outcome recorded on the entry is what lets a failed suspend fail the
+        // apply instead of acking over a possibly-live handler.
+        const joinedSuspend = session?.suspending != null;
+        if (session?.suspending) await session.suspending;
+        if (joinedSuspend && session?.suspendError) throw asTerminateError("suspend", session.suspendError.error);
         const activeSlotHeld = session?.activeSlotHeld === true;
         if (session) this.releaseActiveSlot(session);
-        if (activeSlotHeld && session) {
-          await this.shutdownHandler(session.handler, "session_terminated");
+        // The teardown boundary — strict in every case, because a
+        // handler.shutdown rejection must fail the apply (applied:false),
+        // never resolve into an ack over a possibly-live handler. Beyond the
+        // slot-held ordinary case, teardown is also required when a joined
+        // suspend left the handler live, or when a recorded
+        // suspendError/teardownError says the old run was never confirmed
+        // stopped (retry path: `suspending` is null again and the slot is
+        // already released, so without the recorded errors no teardown branch
+        // would fire). `handlerStoppedBySuspend` marks the case where the
+        // suspend boundary already completed the shutdown of the CURRENT
+        // handler — tearing down again would double-shutdown. It is bound to
+        // the handler identity, so a replacement handler (installed e.g. by
+        // `handlerForRouteTransition` after the old one was retired) never
+        // inherits the exemption and is always torn down. A teardown failure
+        // is recorded on the
+        // entry (boxed: rejections can be falsey) so a genuine retry
+        // re-attempts it instead of turning into a false success; on success
+        // the entry is deleted below, retiring the recorded errors with it.
+        const needsTeardown =
+          session != null &&
+          session.handlerStoppedBySuspend !== session.handler &&
+          (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
+        if (session && needsTeardown) {
+          try {
+            await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
+          } catch (err) {
+            session.teardownError = { error: err };
+            throw asTerminateError("teardown", err);
+          }
+        }
+
+        // Join the chat's in-flight route producers BEFORE draining debt: a
+        // canceled start/resume can still materialize late, and only its
+        // settle funnels that materialization into
+        // `discardStaleRouteTransition` → fresh teardown debt. The drain
+        // below must see that complete debt, so this quiesce runs first.
+        await this.quiesceRouteProducers(chatId);
+
+        // Settle every pending teardown debt for this chat: handlers detached
+        // from their entry (eviction / recovery / abort / terminal cleanup /
+        // canceled fresh-start / replacement) without a confirmed stop must
+        // be confirmed stopped before the apply may ack. A failure keeps the
+        // debt registered and rejects — the retry re-attempts it (coalescing
+        // joins any still in-flight shutdown's raw face), so the loop
+        // converges instead of acking over a live old run.
+        // Drain to a STABLE empty: awaiting one shutdown can let another
+        // lifecycle path register fresh debt for this chat mid-drain (e.g. a
+        // concurrent max-session eviction of the still-present session), so
+        // loop until a full scan finds nothing left.
+        for (;;) {
+          const pendingTeardown = this.pendingTeardowns.get(chatId);
+          if (!pendingTeardown || pendingTeardown.size === 0) break;
+          for (const pendingHandler of [...pendingTeardown]) {
+            try {
+              await this.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
+              this.dropPendingTeardown(chatId, pendingHandler);
+            } catch (err) {
+              throw asTerminateError("teardown", err);
+            }
+          }
         }
 
         this.sessions.delete(chatId);
@@ -876,11 +1084,42 @@ export class SessionManager {
         await this.inboxDelivery.drainForTerminate(chatId);
 
         this.recomputeRuntimeState();
-        this.persistRegistry();
+        this.flushTerminateRegistry(chatId);
         this.drainPendingQueue();
+      })();
+      this.terminatingChats.set(chatId, termination);
+      try {
+        await termination;
       } finally {
-        this.terminatingChats.delete(chatId);
+        // Release the admission fence only if this run is still the current
+        // one — a failure leaves room for a genuine later retry without
+        // clobbering a newer in-flight termination.
+        if (this.terminatingChats.get(chatId) === termination) {
+          this.terminatingChats.delete(chatId);
+        }
       }
+    }
+  }
+
+  /**
+   * Durably flush the authoritative registry snapshot for a Reset
+   * terminate. The Reset apply-ack is only truthful once the mapping
+   * deletion is durable: a crash between ack and a debounced write would
+   * reload the stale mapping on restart and revive the old provider
+   * session. The flush is the CURRENT authoritative snapshot (all chats,
+   * not just this one), so other chats' mappings are preserved, and it
+   * cancels any older pending debounced snapshot so a stale write cannot
+   * resurrect the deletion later. A failure is recorded in
+   * terminatePersistFailures so a retry terminate re-runs the full body
+   * (and re-attempts the flush) instead of a false applied:true.
+   */
+  private flushTerminateRegistry(chatId: string): void {
+    try {
+      this.persistRegistry({ throwOnFailure: true });
+      this.terminatePersistFailures.delete(chatId);
+    } catch (err) {
+      this.terminatePersistFailures.add(chatId);
+      throw err;
     }
   }
 
@@ -893,6 +1132,19 @@ export class SessionManager {
     for (const id of this.evictedMappings.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
+    // Unresolved teardown debt keeps the chat held: the handler is not
+    // confirmed stopped, so the server must keep this chat in the sync set —
+    // dropping it would lose the reconcile retry channel for the debt.
+    for (const id of this.pendingTeardowns.keys()) {
+      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+    }
+    // In-flight route producers hold the chat the same way: a canceled
+    // start/resume can still materialize late, so the server must keep the
+    // chat in the sync set until the producer settles and its
+    // materialization is confirmed stopped.
+    for (const id of this.routeProducers.keys()) {
+      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+    }
     return [...ids];
   }
 
@@ -902,7 +1154,14 @@ export class SessionManager {
    */
   applyStaleChatIds(staleChatIds: string[]): void {
     for (const id of staleChatIds) {
-      void this.handleCommand(id, "session:terminate");
+      // Terminate is strict now (teardown/persist failures reject): observe
+      // the rejection so a failed stale cleanup is logged instead of crashing
+      // the client as an unhandled rejection. The strict boundary keeps the
+      // entry/mapping intact on failure, so the next reconcile still finds
+      // the chat locally held, declares it stale again, and retries.
+      void this.handleCommand(id, "session:terminate").catch((err) => {
+        this.config.log.warn({ chatId: id, err }, "stale session terminate failed; will retry on next reconcile");
+      });
     }
   }
 
@@ -927,19 +1186,96 @@ export class SessionManager {
         session.retryTimer = null;
       }
     }
+    for (const timer of this.replayFenceRetryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.replayFenceRetryTimers.clear();
+    for (const timer of this.postFenceRecoveryTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.postFenceRecoveryTimers.clear();
 
-    // Admission/adoption is fenced via `shuttingDown`. Delivery-settlement leases
-    // stay valid until after handlers drain so provider-entered turns can post a
-    // durable notice and ACK. Invalidating first would ignore late token.complete.
-    const shutdownReason = reason ?? "manager_shutdown";
-    const shutdowns = [...this.sessions.values()].map((session) =>
-      session.activeSlotHeld
-        ? this.shutdownHandler(session.handler, shutdownReason, { settleProviderEntered: true })
-        : Promise.resolve(),
-    );
+    const attemptedHandlers = new Set<AgentHandler>();
+    const shutdowns = [...this.sessions.values()].map((session) => {
+      this.invalidateRouteTransition(session, reason ?? "manager_shutdown");
+      // Stop every session handler whose stop is unconfirmed: the
+      // active-slot case, plus a suspend boundary still in flight — its
+      // handler may be mid-shutdown (joined via coalescing) or not started
+      // at all. A suspended session whose boundary already settled keeps
+      // its handler for resume, as before.
+      if (!session.activeSlotHeld && session.suspending === null) return Promise.resolve();
+      attemptedHandlers.add(session.handler);
+      // Active-slot handlers may still hold provider-entered custody that needs
+      // durable notice-before-ACK during manager shutdown settlement.
+      return this.shutdownHandler(session.handler, reason ?? "manager_shutdown", {
+        ...(session.activeSlotHeld ? { settleProviderEntered: true } : {}),
+      });
+    });
+    // Detached handlers recorded as teardown debt have no entry left to reach
+    // them — manager shutdown is their last owner. Best-effort stop for each
+    // unique one (deduped across chats and against session handlers;
+    // coalescing joins any still in-flight shutdown), with the same
+    // allSettled semantics as the session loop above. The raw face clears
+    // the debt under EVERY chat that registered the handler on a confirmed
+    // stop, so the bounded pass below only ever sees handlers whose stop is
+    // genuinely unconfirmed.
+    const debtChatsByHandler = new Map<AgentHandler, string[]>();
+    for (const [chatId, pending] of this.pendingTeardowns) {
+      for (const pendingHandler of pending) {
+        const chatIds = debtChatsByHandler.get(pendingHandler) ?? [];
+        chatIds.push(chatId);
+        debtChatsByHandler.set(pendingHandler, chatIds);
+      }
+    }
+    for (const [pendingHandler, chatIds] of debtChatsByHandler) {
+      if (attemptedHandlers.has(pendingHandler)) continue;
+      attemptedHandlers.add(pendingHandler);
+      shutdowns.push(
+        this.shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true }).then(
+          () => {
+            for (const chatId of chatIds) this.dropPendingTeardown(chatId, pendingHandler);
+          },
+          () => {},
+        ),
+      );
+    }
     await Promise.allSettled(shutdowns);
-    for (const session of this.sessions.values()) {
-      this.invalidateRouteTransition(session, shutdownReason);
+
+    // Suspend boundaries AND route producers settling DURING the sweep can
+    // register fresh teardown debt (a canceled fresh-start whose stop just
+    // failed; a late-materializing canceled route whose discard fires now).
+    // Wait for any still in flight — awaiting `suspending` / a producer
+    // covers the finally/discard where the debt lands — then give every
+    // handler still in debt one bounded best-effort (re)try: remaining debt
+    // after the quiesce means the stop is unconfirmed (failed sweep attempt,
+    // failed detach, or a late afterPrior stop that just failed), and
+    // manager shutdown is the last owner able to retry. Exactly one pass,
+    // observed face: shutdown stays best-effort and never blocks on a
+    // handler that will not die.
+    await Promise.allSettled([
+      ...[...this.sessions.values()]
+        .map((session) => session.suspending)
+        .filter((pending): pending is Promise<void> => pending !== null),
+      ...[...this.routeProducers.values()].flatMap((producers) => [...producers]),
+    ]);
+    const retriedHandlers = new Set<AgentHandler>();
+    for (const pending of this.pendingTeardowns.values()) {
+      for (const pendingHandler of [...pending]) {
+        if (retriedHandlers.has(pendingHandler)) continue;
+        retriedHandlers.add(pendingHandler);
+        // Each attempt joins a still in-flight shutdown when one exists; a
+        // failure earns exactly ONE fresh retry — bounded, so manager
+        // shutdown never blocks on a handler that will not die.
+        const stopOnce = (): Promise<boolean> =>
+          this.shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true }).then(
+            () => true,
+            () => false,
+          );
+        if (!(await stopOnce()) && !(await stopOnce())) continue;
+        for (const [id, set] of this.pendingTeardowns) {
+          if (set.delete(pendingHandler) && set.size === 0) this.pendingTeardowns.delete(id);
+        }
+      }
     }
 
     const reportSuspendedSessions = opts.reportSuspendedSessions ?? true;
@@ -1058,6 +1394,14 @@ export class SessionManager {
   }
 
   private hasRuntimeSyncForceKeep(chatId: string): boolean {
+    // Unresolved teardown debt force-keeps the chat: its handler is not
+    // confirmed stopped, so dropping the chat from the held report would
+    // lose the reconcile retry channel for the debt.
+    if (this.pendingTeardowns.has(chatId)) return true;
+    // An in-flight route producer force-keeps the chat too: the canceled
+    // start/resume can still materialize late, and the reconcile channel is
+    // what retries its teardown if the stop fails.
+    if ((this.routeProducers.get(chatId)?.size ?? 0) > 0) return true;
     if (this.pendingQueue.some((queued) => queued.chatId === chatId)) return true;
     if (this.hasPendingTransientRetry(chatId)) return true;
     return this.inboxDelivery.hasUnsettledWork(chatId);
@@ -1084,17 +1428,297 @@ export class SessionManager {
     entry.deferredMessages = [];
   }
 
+  /**
+   * Crash-safe fence reconciliation driven by per-delivery server
+   * settlement truth. After a crash the local fence file can lag the
+   * server: an entry ACKed just before the crash leaves a stale chat-wide
+   * fence with no automatic cleanup. A read-only probe proves, inside the
+   * server's serialized recovery boundary, exactly which fenced message
+   * ids are settled; only those fences clear. Anything less (older server,
+   * missing probe, readback failure) keeps the fences fail-closed.
+   * Idempotent and replayable: runs on startup/rebind and on the per-chat
+   * retry loop.
+   */
+  async reconcileReplayFencesWithServer(): Promise<void> {
+    if (!this.replayFence || this.replayFenceUnavailable) return;
+    const chatIds = [...new Set(this.replayFence.snapshot().map((entry) => entry.chatId))];
+    for (const chatId of chatIds) {
+      await this.reconcileReplayFenceForChat(chatId);
+      this.ensureReplayFenceReconcileLoop(chatId, { immediate: false });
+    }
+  }
+
+  /**
+   * Fence keys the server has authoritatively proven settled. Once a key
+   * lands here its settlement fact cannot be revoked by later tail traffic;
+   * the retry loop only needs to redo the LOCAL clear, not the readback.
+   */
+  private readonly provenSettledFences = new Map<string, Set<string>>();
+  /** Per-chat retry timers for the reconciliation/clear loop. */
+  private readonly replayFenceRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private async reconcileReplayFenceForChat(chatId: string): Promise<void> {
+    if (!this.replayFence || this.replayFenceUnavailable || !this.config.probeFencedSettlement) return;
+    const probe = this.config.probeFencedSettlement;
+    const fencedMessageIds = [
+      ...new Set(
+        this.replayFence
+          .snapshot()
+          .filter((entry) => entry.chatId === chatId)
+          .map((entry) => entry.messageId),
+      ),
+    ];
+    if (fencedMessageIds.length === 0) return;
+    // Probe in wire-sized chunks: oversized frames are rejected outright
+    // and would fail-closed forever. Settlement proof is merged ONLY when
+    // every chunk succeeds — a rejected/timed-out chunk discards the whole
+    // round and keeps every fence (fail-closed).
+    const settled = new Set<string>();
+    for (let offset = 0; offset < fencedMessageIds.length; offset += INBOX_FENCE_PROBE_MAX_IDS) {
+      const chunk = fencedMessageIds.slice(offset, offset + INBOX_FENCE_PROBE_MAX_IDS);
+      let settledIds: readonly string[];
+      try {
+        settledIds = await probe(chatId, chunk);
+      } catch (err) {
+        this.config.log.warn(
+          { err, chatId, chunkOffset: offset },
+          "replay fence settlement probe failed; discarding this round and keeping every fence (fail-closed)",
+        );
+        return;
+      }
+      // Only ids from THIS chunk may prove settlement; anything else is a
+      // protocol violation and must not clear anything.
+      const requested = new Set(chunk);
+      for (const id of settledIds) {
+        if (requested.has(id)) settled.add(id);
+        else {
+          this.config.log.warn({ chatId, id }, "fence probe returned an id outside the request chunk; ignoring it");
+        }
+      }
+    }
+    const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
+    for (const messageId of fencedMessageIds) {
+      if (settled.has(messageId)) proven.add(messageId);
+    }
+    if (proven.size > 0) {
+      this.provenSettledFences.set(chatId, proven);
+      await this.clearProvenSettledFences(chatId);
+    }
+  }
+
+  /**
+   * Clear every server-proven-settled fence for the chat, retrying local
+   * I/O failures through the loop. When the last fence goes, withheld
+   * deliveries re-enter routing and the chat's runtime projection recovers.
+   */
+  private async clearProvenSettledFences(chatId: string): Promise<void> {
+    if (!this.replayFence) return;
+    const proven = this.provenSettledFences.get(chatId);
+    if (!proven) return;
+    const clearedMessageIds: string[] = [];
+    for (const messageId of [...proven]) {
+      try {
+        this.replayFence.clear(chatId, messageId);
+        proven.delete(messageId);
+        clearedMessageIds.push(messageId);
+        this.config.log.info(
+          { chatId, messageId },
+          "cleared stale replay fence: delivery confirmed settled server-side",
+        );
+      } catch (err) {
+        this.config.log.error(
+          { err, chatId, messageId },
+          "stale replay fence could not be cleared; the retry loop will redo the local clear",
+        );
+        this.config.onSessionRuntimeChange?.(chatId, "error");
+      }
+    }
+    if (proven.size === 0) this.provenSettledFences.delete(chatId);
+    if (clearedMessageIds.length > 0) this.inboxDelivery.settleReplayFencedEntries(chatId, clearedMessageIds);
+    if (this.replayFence.hasFenceForChat(chatId)) return;
+    await this.onChatFencesCleared(chatId);
+  }
+
+  /**
+   * The single convergence point for "the last replay fence of a chat is
+   * gone" — reached from the probe loop, the committed-ACK callback, and
+   * local clear retries. Stops the retry loop and fires ONE destructive
+   * recovery so the server resets and redelivers only the still-unacked
+   * tail; the coordinator re-admits fence-withheld entries instead of
+   * deduplicating them. Already-settled heads are never re-driven.
+   */
+  private async onChatFencesCleared(chatId: string): Promise<void> {
+    this.stopReplayFenceReconcileLoop(chatId);
+    if (this.config.recoverChat && this.inboxDelivery.hasUnsettledWork(chatId)) {
+      this.beginPostFenceRecovery(chatId);
+      return;
+    }
+    this.projectSessionRuntime(chatId);
+  }
+
+  /** Chats whose post-fence-clear recovery has not yet succeeded. */
+  private readonly postFenceRecoveryDebt = new Set<string>();
+  private readonly postFenceRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly postFenceRecoveryInFlight = new Map<string, Promise<void>>();
+
+  /**
+   * Fire the ONE successful destructive recovery that redelivers the
+   * withheld tail after a fence clear, coalescing concurrent convergences
+   * and retrying failures on a timer (failures hold new admissions via the
+   * post-fence debt gate; retries are not duplicate successes).
+   */
+  private beginPostFenceRecovery(chatId: string): void {
+    if (this.shuttingDown || !this.config.recoverChat) return;
+    if (this.postFenceRecoveryInFlight.has(chatId) || this.postFenceRecoveryTimers.has(chatId)) return;
+    this.postFenceRecoveryDebt.add(chatId);
+    const recoverChat = this.config.recoverChat;
+    const inFlight = (async () => {
+      try {
+        await recoverChat(chatId);
+        this.postFenceRecoveryDebt.delete(chatId);
+        this.config.log.info({ chatId }, "post-fence-clear recovery accepted; redelivery may proceed");
+      } catch (err) {
+        this.config.log.warn({ err, chatId }, "post-fence-clear recovery failed; retrying on a timer");
+        this.armPostFenceRecoveryTimer(chatId);
+      } finally {
+        this.postFenceRecoveryInFlight.delete(chatId);
+        this.projectSessionRuntime(chatId);
+      }
+    })();
+    this.postFenceRecoveryInFlight.set(chatId, inFlight);
+    void inFlight.catch(() => {});
+  }
+
+  private armPostFenceRecoveryTimer(chatId: string): void {
+    if (this.shuttingDown) return;
+    const timer = setTimeout(() => {
+      this.postFenceRecoveryTimers.delete(chatId);
+      this.beginPostFenceRecovery(chatId);
+    }, REPLAY_FENCE_RECONCILE_INTERVAL_MS);
+    this.postFenceRecoveryTimers.set(chatId, timer);
+  }
+
+  /**
+   * Start (or keep) the per-chat retry loop. The timer fires on its own —
+   * no dependence on another dispatch — and alternates between retrying
+   * local clears of server-proven fences and re-reading server truth.
+   */
+  private ensureReplayFenceReconcileLoop(chatId: string, opts: { immediate?: boolean } = {}): void {
+    if (this.shuttingDown) return;
+    if (this.replayFenceRetryTimers.has(chatId)) return;
+    if (opts.immediate !== false) {
+      void this.reconcileReplayFenceForChat(chatId).catch((err) => {
+        this.config.log.warn({ err, chatId }, "replay fence reconciliation attempt failed");
+      });
+    }
+    this.armReplayFenceRetryTimer(chatId);
+  }
+
+  private armReplayFenceRetryTimer(chatId: string): void {
+    const timer = setTimeout(() => {
+      this.replayFenceRetryTimers.delete(chatId);
+      void this.runReplayFenceReconcileLoop(chatId);
+    }, REPLAY_FENCE_RECONCILE_INTERVAL_MS);
+    this.replayFenceRetryTimers.set(chatId, timer);
+  }
+
+  private async runReplayFenceReconcileLoop(chatId: string): Promise<void> {
+    if (this.shuttingDown || !this.replayFence) return;
+    try {
+      if ((this.provenSettledFences.get(chatId)?.size ?? 0) > 0) {
+        await this.clearProvenSettledFences(chatId);
+      } else {
+        await this.reconcileReplayFenceForChat(chatId);
+      }
+    } catch (err) {
+      this.config.log.warn({ err, chatId }, "replay fence reconciliation loop iteration failed");
+    }
+    if (!this.shuttingDown && this.replayFence.hasFenceForChat(chatId)) {
+      this.armReplayFenceRetryTimer(chatId);
+    }
+  }
+
+  private stopReplayFenceReconcileLoop(chatId: string): void {
+    const timer = this.replayFenceRetryTimers.get(chatId);
+    if (timer) clearTimeout(timer);
+    this.replayFenceRetryTimers.delete(chatId);
+    this.provenSettledFences.delete(chatId);
+  }
+
+  private isChatReplayFenced(chatId: string): boolean {
+    if (this.replayFenceUnavailable) return true;
+    if (!this.replayFence) return false;
+    return this.replayFence.hasFenceForChat(chatId);
+  }
+
+  /**
+   * Clear replay fences for deliveries whose ACK committed — including the
+   * recovery/redelivery retry path, which never passes through the handler's
+   * own completion cleanup. A clear that fails to persist leaves the chat
+   * fenced; make that loudly operator-visible instead of a silent stall.
+   */
+  private reconcileReplayFences(chatId: string, messageIds: readonly string[]): void {
+    if (!this.replayFence) return;
+    const replayFence = this.replayFence;
+    // Converge only on a real fence transition: an ordinary never-fenced
+    // turn must never fire a post-fence recovery.
+    let transitioned = false;
+    const fencedMessageIds = messageIds.filter((messageId) => replayFence.isFenced(chatId, messageId));
+    if (fencedMessageIds.length > 0) {
+      // Invariant: authoritative settlement marker BEFORE any local fence
+      // clear. The ACK is already server-confirmed, so the marker must
+      // survive even if the clear below fails on I/O.
+      this.inboxDelivery.markFenceSettled(chatId, fencedMessageIds);
+    }
+    for (const messageId of messageIds) {
+      if (!this.replayFence.isFenced(chatId, messageId)) continue;
+      transitioned = true;
+      try {
+        this.replayFence.clear(chatId, messageId);
+      } catch (err) {
+        // The ACK is already confirmed server-side, so this key is proven
+        // settled; the retry loop redoes only the local clear.
+        const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
+        proven.add(messageId);
+        this.provenSettledFences.set(chatId, proven);
+        this.ensureReplayFenceReconcileLoop(chatId, { immediate: false });
+        this.config.log.error(
+          { err, chatId, messageId },
+          "replay fence could not be cleared after confirmed ACK; the retry loop will redo the local clear",
+        );
+        this.config.onSessionRuntimeChange?.(chatId, "error");
+      }
+    }
+    if (transitioned && !this.replayFence.hasFenceForChat(chatId)) {
+      void this.onChatFencesCleared(chatId).catch((err) => {
+        this.config.log.warn({ err, chatId }, "post-fence-clear convergence failed");
+      });
+    }
+  }
+
   private createHandler(): AgentHandler {
-    const handlerCfg = this.config.agentConfigCache
-      ? { ...this.config.handlerConfig, agentConfigCache: this.config.agentConfigCache }
-      : this.config.handlerConfig;
+    const handlerCfg = {
+      ...this.config.handlerConfig,
+      ...(this.config.agentConfigCache ? { agentConfigCache: this.config.agentConfigCache } : {}),
+      ...(this.replayFence ? { replayFence: this.replayFence } : {}),
+    };
     return this.config.handlerFactory(handlerCfg);
   }
 
   private handlerForRouteTransition(entry: SessionEntry): AgentHandler {
     if (!this.retiredHandlers.has(entry.handler)) return entry.handler;
+    const previous = entry.handler;
     const handler = this.createHandler();
     entry.handler = handler;
+    // The retired handler's shutdown was fire-and-forget — never confirmed.
+    // Record the debt so a ref'd terminate strictly confirms the stop before
+    // it may ack (the join resolves immediately when the stop already
+    // confirmed, dropping the debt right away). Skip entirely when the stop
+    // was already confirmed by the suspend boundary — a confirmed-stopped
+    // handler is not debt.
+    if (entry.handlerStoppedBySuspend !== previous) {
+      this.detachHandlerWithPendingTeardown(entry.chatId, previous, "handler_replaced_after_retire");
+    }
     return handler;
   }
 
@@ -1160,24 +1784,140 @@ export class SessionManager {
   private shutdownHandler(
     handler: AgentHandler,
     reason: string,
-    opts: { afterPrior?: boolean; settleProviderEntered?: boolean } = {},
+    opts: { afterPrior?: boolean; observeFailure?: boolean; settleProviderEntered?: boolean } = {},
   ): Promise<void> {
     const prior = this.handlerShutdowns.get(handler);
-    if (prior && opts.afterPrior !== true) return prior;
-    const shutdown = (prior ?? Promise.resolve())
-      .then(() =>
-        handler.shutdown(reason, {
-          ...(opts.settleProviderEntered === true ? { settleProviderEntered: true } : {}),
-        }),
-      )
-      .catch((err) => {
-        this.config.log.warn({ reason, err }, "handler shutdown failed");
-      });
-    this.handlerShutdowns.set(handler, shutdown);
-    void shutdown.finally(() => {
-      if (this.handlerShutdowns.get(handler) === shutdown) this.handlerShutdowns.delete(handler);
+    // Joining a prior shutdown must not hide its failure from a strict
+    // caller: `observeFailure` joins `raw`, lenient callers join `observed`.
+    if (prior && opts.afterPrior !== true) return opts.observeFailure ? prior.raw : prior.observed;
+    const raw = (prior?.observed ?? Promise.resolve()).then(() =>
+      handler.shutdown(reason, {
+        ...(opts.settleProviderEntered === true ? { settleProviderEntered: true } : {}),
+      }),
+    );
+    // `observed` keeps the legacy swallow-and-warn semantics for
+    // fire-and-forget callers; an `observeFailure` caller gets `raw` so a
+    // teardown failure can fail its operation (Reset terminate apply-ack).
+    // `raw`'s rejection is always handled by `observed`.
+    const observed = raw.catch((err) => {
+      this.config.log.warn({ reason, err }, "handler shutdown failed");
     });
-    return shutdown;
+    const record = { raw, observed };
+    this.handlerShutdowns.set(handler, record);
+    void observed.finally(() => {
+      if (this.handlerShutdowns.get(handler) === record) this.handlerShutdowns.delete(handler);
+    });
+    return opts.observeFailure ? raw : observed;
+  }
+
+  /** Record a detached, unconfirmed-stop handler as teardown debt for the chat. */
+  private registerPendingTeardown(chatId: string, handler: AgentHandler): void {
+    let set = this.pendingTeardowns.get(chatId);
+    if (!set) {
+      set = new Set();
+      this.pendingTeardowns.set(chatId, set);
+    }
+    set.add(handler);
+  }
+
+  private dropPendingTeardown(chatId: string, handler: AgentHandler): void {
+    const set = this.pendingTeardowns.get(chatId);
+    if (!set) return;
+    set.delete(handler);
+    if (set.size === 0) this.pendingTeardowns.delete(chatId);
+  }
+
+  /**
+   * Register an in-flight route producer (the provider start/resume call of
+   * a route transition). Returns the settle callback; the tracked promise
+   * never rejects, so joining it is always safe.
+   */
+  private registerRouteProducer(chatId: string): () => void {
+    let resolvePromise!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      resolvePromise = resolve;
+    });
+    let set = this.routeProducers.get(chatId);
+    if (!set) {
+      set = new Set();
+      this.routeProducers.set(chatId, set);
+    }
+    set.add(promise);
+    return () => {
+      resolvePromise();
+      const current = this.routeProducers.get(chatId);
+      if (!current) return;
+      current.delete(promise);
+      if (current.size === 0) this.routeProducers.delete(chatId);
+    };
+  }
+
+  /**
+   * Join every in-flight route producer for the chat, draining to a stable
+   * quiet point. A producer's settle can reveal late materialization debt
+   * (via `discardStaleRouteTransition`), so callers must run the debt drain
+   * AFTER this returns.
+   */
+  private async quiesceRouteProducers(chatId: string): Promise<void> {
+    for (;;) {
+      const producers = this.routeProducers.get(chatId);
+      if (!producers || producers.size === 0) return;
+      await Promise.allSettled([...producers]);
+    }
+  }
+
+  /**
+   * Route admission fence: before a chat may create a new provider route,
+   * its teardown authority must be clean — otherwise the chat could run
+   * "old handler never confirmed stopped + new provider route started".
+   * Settles every pending handler strictly (coalescing joins in-flight
+   * shutdowns). Returns false when a stop fails: the debt stays registered
+   * and the caller must keep the delivery's recovery/retry custody instead
+   * of routing.
+   */
+  private async settleTeardownDebtBeforeRoute(chatId: string): Promise<boolean> {
+    // Quiesce in-flight route producers FIRST: a canceled start/resume can
+    // still materialize late, and its discard registers teardown debt only
+    // when the producer settles — debt drained before this point would be
+    // incomplete, and a fresh route started over an unquiesced producer
+    // could race the late materialization. (Guarded so the common no-
+    // producer case adds no extra awaits to the route hot path.)
+    if ((this.routeProducers.get(chatId)?.size ?? 0) > 0) {
+      await this.quiesceRouteProducers(chatId);
+    }
+    for (;;) {
+      const pending = this.pendingTeardowns.get(chatId);
+      if (!pending || pending.size === 0) return true;
+      let settled = true;
+      for (const pendingHandler of [...pending]) {
+        try {
+          await this.shutdownHandler(pendingHandler, "route_admission_teardown", { observeFailure: true });
+          this.dropPendingTeardown(chatId, pendingHandler);
+        } catch (err) {
+          this.config.log.warn({ chatId, err }, "route admission teardown failed; keeping recovery custody");
+          settled = false;
+        }
+      }
+      if (!settled) return false;
+    }
+  }
+
+  /**
+   * Detach a handler whose stop is not yet confirmed. Keeps the calling
+   * path's existing fire-and-forget shutdown semantics (lenient observed
+   * face still logs failures), but records the debt so a later ref'd
+   * terminate strictly confirms the stop. The raw face drives
+   * deregistration — a failed shutdown keeps the debt, so the terminate
+   * retry loop converges instead of acking over a live old run.
+   */
+  private detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void {
+    this.registerPendingTeardown(chatId, handler);
+    void this.shutdownHandler(handler, reason, { observeFailure: true }).then(
+      () => this.dropPendingTeardown(chatId, handler),
+      () => {
+        // Failure keeps the debt — a later ref'd terminate strictly retries.
+      },
+    );
   }
 
   private retireTransitionHandler(transition: RouteTransitionToken, reason: string): void {
@@ -1185,23 +1925,30 @@ export class SessionManager {
     void this.shutdownHandler(transition.handler, reason);
   }
 
-  private clearRouteTransition(entry: SessionEntry): RouteTransitionToken | null {
+  private invalidateRouteTransition(entry: SessionEntry, reason: string): RouteTransitionToken | null {
+    this.invalidateDeliveryAdmission(entry.chatId);
     const transition = entry.routeTransition;
     entry.routeTransitionGeneration++;
     entry.routeTransition = null;
-    return transition;
-  }
-
-  private invalidateRouteTransition(entry: SessionEntry, reason: string): RouteTransitionToken | null {
-    this.invalidateDeliveryAdmission(entry.chatId);
-    const transition = this.clearRouteTransition(entry);
     if (transition) this.retireTransitionHandler(transition, reason);
     return transition;
   }
 
-  private discardStaleRouteTransition(transition: RouteTransitionToken, reason: string): Promise<void> {
+  private discardStaleRouteTransition(chatId: string, transition: RouteTransitionToken, reason: string): void {
     this.retiredHandlers.add(transition.handler);
-    return this.shutdownHandler(transition.handler, reason, { afterPrior: true });
+    // A stale route completion MATERIALIZES the handler (the canceled
+    // start/resume returned late), so it needs a NEW shutdown chained after
+    // any prior (a pre-materialization shutdown was a no-op). That stop's
+    // outcome enters the pending-teardown authority: on failure the
+    // possibly-live stale handler stays joinable for a ref'd terminate /
+    // reconcile retry / manager shutdown instead of becoming ownerless.
+    this.registerPendingTeardown(chatId, transition.handler);
+    void this.shutdownHandler(transition.handler, reason, { afterPrior: true, observeFailure: true }).then(
+      () => this.dropPendingTeardown(chatId, transition.handler),
+      () => {
+        // Failure keeps the debt — a later terminate / reconcile retries it.
+      },
+    );
   }
 
   private claimActiveSlot(entry: SessionEntry): void {
@@ -1259,15 +2006,6 @@ export class SessionManager {
     messages: SessionMessage | readonly SessionMessage[],
     reason: string,
   ): void {
-    // Preserve the captured terminal notice on the inbox ledger before clearing
-    // session-scoped pending state. Recovery/redelivery must retry that notice
-    // before any ACK — never treat a notice-failure marker as ACK-eligible.
-    if (reason === "runtime_failure_notice_delivery_failed") {
-      const pending = this.sessions.get(chatId)?.pendingRuntimeFailureNotice;
-      if (pending && shouldPostProviderFailureRuntimeNotice(pending)) {
-        this.inboxDelivery.markNoticeRequired(chatId, messages, pending);
-      }
-    }
     this.clearPendingRuntimeFailureNotice(chatId);
     this.inboxDelivery.retryTurn(chatId, messages, reason);
   }
@@ -1444,7 +2182,7 @@ export class SessionManager {
       });
     }
     this.releaseActiveSlot(entry);
-    void this.shutdownHandler(entry.handler, reason);
+    this.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
 
     this.inboxDelivery.prepareEvict(chatId, reason);
     this.sessions.delete(chatId);
@@ -1463,7 +2201,7 @@ export class SessionManager {
     this.config.log.warn({ chatId, reason }, "handler route completed after inbox custody was cleared");
     this.invalidateRouteTransition(entry, reason);
     this.releaseActiveSlot(entry);
-    void this.shutdownHandler(entry.handler, reason);
+    this.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
@@ -1542,9 +2280,12 @@ export class SessionManager {
       }
     }
     if (deliveryLeaseValid && !deliveryLeaseValid()) return "retry";
-    await this.inboxDelivery.finishTurn(chatId, messages, outcome);
+    // The coordinator reports "settled" only once the concrete entries left
+    // the ledger through a confirmed ACK; recovery debt, prefix gaps, and
+    // ACK rejections keep custody and surface as "retry".
+    const disposition = await this.inboxDelivery.finishTurn(chatId, messages, outcome);
     this.projectSessionRuntime(chatId);
-    return "settled";
+    return disposition;
   }
 
   private createDeliveryToken(
@@ -1699,6 +2440,37 @@ export class SessionManager {
       this.config.log.info({ chatId, messageId: message.id }, "delivery held while session termination is pending");
       return;
     }
+    if (this.isChatReplayFenced(chatId)) {
+      // A previous provider turn in this chat produced a non-read-only tool
+      // effect before an interruption and never settled. Re-entering the
+      // provider for the fenced head would replay that effect, and inbox ACK
+      // is prefix-based, so the chat's entire FIFO tail must hold behind it:
+      // every delivery stays unacknowledged recovery debt until an operator
+      // resolves the fenced head. The ledger entry is marked fence-withheld
+      // (no custody taken) so a later post-clear server redelivery is
+      // re-admitted instead of deduplicated.
+      this.config.log.error(
+        { chatId, messageId: message.id },
+        "withholding provider re-entry for replay-fenced chat; unsafe tool effect fenced before interruption",
+      );
+      this.config.onSessionRuntimeChange?.(chatId, "error");
+      this.inboxDelivery.markReplayFenceWithheld(chatId, [message.id]);
+      this.ensureReplayFenceReconcileLoop(chatId);
+      return;
+    }
+    if (this.postFenceRecoveryDebt.has(chatId)) {
+      // A post-fence-clear recovery is in flight or being retried: hold
+      // EVERY admission until one recovery is durably accepted. A
+      // re-admitted duplicate only proves local withholding, never recovery
+      // success, so it must not bypass the debt either — it is simply
+      // re-marked and redelivered by the eventual accepted recovery.
+      this.config.log.info(
+        { chatId, messageId: message.id },
+        "holding delivery while post-fence-clear recovery is pending",
+      );
+      this.inboxDelivery.markReplayFenceWithheld(chatId, [message.id]);
+      return;
+    }
     const existing = this.sessions.get(chatId);
 
     // A terminal decision closes route admission before its durable event is
@@ -1725,8 +2497,6 @@ export class SessionManager {
             generation: existing.routeTransitionGeneration,
             handler: existing.handler,
           };
-          // Match start/resume: adoption/mutation stay active-slot gated;
-          // already-issued token settlement uses the suspend/drain window.
           const mutationValid = () => this.isRouteAdoptionValid(existing, routeLease);
           const settlementValid = () => this.isDeliverySettlementLeaseValid(existing, routeLease);
           if (!mutationValid()) {
@@ -1819,6 +2589,32 @@ export class SessionManager {
       this.retryDeliveryTurn(chatId, message, "manager_shutdown");
       return;
     }
+    // Route admission fence: settle this chat's teardown authority before a
+    // new provider route may be created — otherwise the chat could run "old
+    // handler never confirmed stopped + new route started". On failure the
+    // throw routes into the caller's existing retryDeliveryTurn path, so the
+    // delivery keeps its recovery custody.
+    if (!(await this.settleTeardownDebtBeforeRoute(chatId))) {
+      throw new Error("route admission: teardown debt settle failed");
+    }
+    // The settle awaited: re-validate the fences — a terminate or manager
+    // shutdown may have started meanwhile. A terminate owns the chat's
+    // delivery state now (hold silently); a shutdown keeps the delivery in
+    // retry custody.
+    if (this.shuttingDown) {
+      this.retryDeliveryTurn(chatId, message, "manager_shutdown");
+      return;
+    }
+    // The settle awaited: a terminate may have started meanwhile — it owns
+    // the chat's delivery state now, so hold instead of installing a route.
+    if (this.terminatingChats.has(chatId)) return;
+    // The settle also made the route selection stale: another path may have
+    // created the session meanwhile. Re-dispatch through routeMessage's
+    // selection instead of creating a duplicate entry (or overwriting one).
+    if (this.sessions.has(chatId)) {
+      await this.routeMessage(chatId, message, deliveryKind);
+      return;
+    }
     // Enforce max_sessions before active-slot preemption so a full pool of
     // working sessions queues instead of first suspending a working victim.
     if (!this.evictIfNeeded(chatId, message, deliveryKind)) return;
@@ -1845,6 +2641,9 @@ export class SessionManager {
       activeSlotHeld: false,
       lastActivity: Date.now(),
       suspending: null,
+      suspendError: null,
+      handlerStoppedBySuspend: null,
+      teardownError: null,
       retryAttempt: 0,
       retryNextAt: null,
       retryTimer: null,
@@ -1863,8 +2662,6 @@ export class SessionManager {
     this.sessions.set(chatId, entry);
     this.claimActiveSlot(entry);
     const transition = this.beginRouteTransition(entry, handler, evicted ? "resume" : "start");
-    // Adoption/mutations stay fenced by `shuttingDown`; settlement lease ignores
-    // it so an in-flight entered turn can still emit the durable notice + ACK.
     const mutationValid = () => this.isRouteAdoptionValid(entry, transition);
     const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
     const routeLeases = { mutationValid, settlementValid };
@@ -1876,13 +2673,22 @@ export class SessionManager {
     // delivery projects this chat to working.
     this.notifySessionState(chatId, "active");
     this.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
+    // Settle callback for the route producer, assigned as the FIRST
+    // statement inside the try below: a throw before registration leaves no
+    // producer behind, and everything after registration is covered by the
+    // finally — so no throw can leave a producer that never settles.
+    let settleRouteProducer: () => void = () => {};
     try {
+      // Track the route producer from here until it settles: a canceled
+      // start can still materialize late, and terminate / manager shutdown
+      // join this before they may ack/return (see routeProducers).
+      settleRouteProducer = this.registerRouteProducer(chatId);
       this.setCurrentTrigger(chatId, message);
       const token = this.createDeliveryToken(chatId, routeLeases);
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          await this.discardStaleRouteTransition(transition, "session_eviction_resume_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_eviction_resume_stale_completion");
           return;
         }
         if (!this.adoptResumeReceipt(entry, message, receipt, "session_eviction_resume_unowned_delivery")) return;
@@ -1890,7 +2696,7 @@ export class SessionManager {
       } else {
         const receipt = normalizeStartReceipt(await handler.start(message, ctx, token));
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          await this.discardStaleRouteTransition(transition, "session_start_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -1901,14 +2707,14 @@ export class SessionManager {
         this.config.log.info({ chatId, sessionId: entry.claudeSessionId }, "session created");
       }
       if (!this.completeRouteTransition(entry, transition)) {
-        await this.discardStaleRouteTransition(transition, "session_start_stale_adoption");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        await this.discardStaleRouteTransition(transition, "session_start_stale_failure");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_start_failed");
@@ -1927,6 +2733,8 @@ export class SessionManager {
       });
       if (this.sessions.get(chatId) !== entry) return;
       if (handling.kind === "terminal") await this.teardownTerminalSessionFailure(entry, message, handling);
+    } finally {
+      settleRouteProducer();
     }
   }
 
@@ -1958,6 +2766,60 @@ export class SessionManager {
       return;
     }
 
+    // A failed suspend left the current handler never confirmed stopped.
+    // Stop it strictly (joining any in-flight shutdown's raw face) BEFORE
+    // the route below reuses or replaces the reference — reusing or
+    // overwriting an unconfirmed-stop handler loses the teardown authority
+    // while the old run may still be alive. A teardown failure propagates
+    // into resume's existing error semantics (routeMessage retries the
+    // delivery / operator resume logs the command error); it must not
+    // silently continue. On success the handler is retired so the route
+    // installs a fresh one, and the recorded suspend failure is cleared.
+    if (entry.suspendError && entry.handlerStoppedBySuspend !== entry.handler) {
+      await this.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
+      entry.handlerStoppedBySuspend = entry.handler;
+      entry.suspendError = null;
+      this.retiredHandlers.add(entry.handler);
+    }
+
+    // Route admission fence: settle this chat's teardown authority before
+    // installing or reusing a handler — on failure the throw routes into the
+    // caller's existing retryDeliveryTurn path, keeping recovery custody.
+    if (!(await this.settleTeardownDebtBeforeRoute(entry.chatId))) {
+      throw new Error("route admission: teardown debt settle failed");
+    }
+    // The settle awaited: re-validate the entry, then the terminate fence —
+    // a terminate in flight for this chat may share the very shutdown this
+    // resume just joined, and installing a fresh handler now would let that
+    // terminate drain the OLD debt and ack while the NEW handler is still
+    // running. Abort instead; the route callers treat the failure with
+    // resume's existing error semantics (the terminate clears admission and
+    // pending delivery state on its own).
+    if (this.sessions.get(entry.chatId) !== entry) {
+      // The entry was replaced while this resume waited — the new owner
+      // routes the chat; keep the delivery in recovery custody.
+      if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_entry_replaced");
+      return;
+    }
+    if (this.terminatingChats.has(entry.chatId)) {
+      throw new Error("session resume fenced: terminate in flight for chat");
+    }
+    // Full route-selection re-validation, acting as the CAS against
+    // concurrent waiters: another dispatch may have won the route while
+    // this resume awaited the settle. Its in-flight transition owns the
+    // chat now — defer onto it (the winner drains deferredMessages) instead
+    // of calling handler.resume twice. The checks below and the
+    // beginRouteTransition install are synchronous, so exactly one waiter
+    // can win.
+    if (entry.routeTransition !== null) {
+      if (message) entry.deferredMessages.push(message);
+      return;
+    }
+    if (entry.activeSlotHeld || (entry.status !== "suspended" && entry.status !== "evicted")) {
+      if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_selection_stale");
+      return;
+    }
+
     // Admin-triggered resume has no provider input. It may use idle capacity,
     // but it must not preempt unrelated working turns.
     const slotKind: SlotDeliveryKind = message ? deliveryKind : "control";
@@ -1976,7 +2838,15 @@ export class SessionManager {
 
     this.notifySessionState(entry.chatId, "active");
     this.projectSessionRuntime(entry.chatId, { drainPendingOnIdle: false });
+    // Settle callback for the route producer, assigned as the FIRST
+    // statement inside the try below: a throw before registration leaves no
+    // producer behind, and everything after registration is covered by the
+    // finally — so no throw can leave a producer that never settles.
+    let settleRouteProducer: () => void = () => {};
     try {
+      // Track the route producer: a canceled resume can still materialize
+      // late, and terminate / manager shutdown join this before ack/return.
+      settleRouteProducer = this.registerRouteProducer(entry.chatId);
       if (message) this.setCurrentTrigger(entry.chatId, message);
       // Mirror the pattern in `startNewSession` (line 449): the handler may
       // return a DIFFERENT sessionId than the one passed in — e.g. when the
@@ -1992,13 +2862,13 @@ export class SessionManager {
         ? await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx, token)
         : await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx);
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        await this.discardStaleRouteTransition(transition, "session_resume_stale_completion");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_completion");
         return;
       }
       const receipt = normalizeResumeReceipt(resumeResult);
       if (!this.adoptResumeReceipt(entry, message, receipt, "session_resume_unowned_delivery")) return;
       if (!this.completeRouteTransition(entry, transition)) {
-        await this.discardStaleRouteTransition(transition, "session_resume_stale_adoption");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
@@ -2006,7 +2876,7 @@ export class SessionManager {
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        await this.discardStaleRouteTransition(transition, "session_resume_stale_failure");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_resume_failed");
@@ -2024,6 +2894,8 @@ export class SessionManager {
       });
       if (this.sessions.get(entry.chatId) !== entry) return;
       if (handling.kind === "terminal") await this.teardownTerminalSessionFailure(entry, message ?? null, handling);
+    } finally {
+      settleRouteProducer();
     }
   }
 
@@ -2249,11 +3121,21 @@ export class SessionManager {
     }
 
     if (this.sessions.get(chatId) !== entry) return;
+    // Terminal cleanup previously left the handler's stop unconfirmed
+    // (register-only debt that lingered until a terminate). Register-then-
+    // shutdown instead: the debt mirrors the real shutdown timeline — a
+    // confirmed stop drops it immediately, a failure keeps it retryable.
+    this.detachHandlerWithPendingTeardown(chatId, entry.handler, "session_terminal_failure");
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
     this.recomputeRuntimeState();
     this.releaseActiveSlot(entry);
+    // Converge the registry like every other sessions.delete path: the
+    // resumable mapping for this chat must not linger on disk. This
+    // debounced write is hygiene only — a Reset terminate still carries its
+    // own synchronous crash boundary (flushTerminateRegistry).
+    this.persistRegistry();
     this.drainPendingQueue();
   }
 
@@ -2263,7 +3145,68 @@ export class SessionManager {
    * `triggerImmediateRetry`). Re-builds the handler — the old one may have
    * had its SDK transport torn down.
    */
-  private async runRetry(chatId: string): Promise<void> {
+  /**
+   * Re-arm a chat's transient-retry timer with the standard short delay.
+   * Shared by every executeRetry exit that keeps retry custody (debt-settle
+   * failure, replacement-stop failure, slot contention) — single-flight
+   * guarantees only one such path can run per chat at a time, so this is
+   * the only re-arm handle.
+   *
+   * Fail closed: a re-arm only makes sense while this exact entry still
+   * owns the chat's retry lifecycle. A manager shutdown clears retry timers
+   * exactly once — a re-arm after that sweep would survive it and fire
+   * after AgentSlot.stopOnce() returned. A terminate explicitly cancels the
+   * retry timer — re-arming while one is in flight would resurrect a route
+   * the operator just stopped (the failed apply is retried by the operator,
+   * not by a stray timer).
+   */
+  private rearmRetryTimer(chatId: string, entry: SessionEntry, delayMs = 5_000): void {
+    if (this.shuttingDown) return;
+    if (this.terminatingChats.has(chatId)) return;
+    if (this.sessions.get(chatId) !== entry) return;
+    if (
+      entry.status !== "suspended" ||
+      entry.activeSlotHeld ||
+      entry.routeTransition !== null ||
+      entry.retryAttempt === 0
+    ) {
+      return;
+    }
+    // Defensive: never overwrite a live handle with a duplicate timer.
+    if (entry.retryTimer !== null) return;
+    entry.retryNextAt = Date.now() + delayMs;
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = null;
+      this.runRetry(chatId).catch((err) => {
+        this.config.log.warn({ chatId, err }, "session retry rearm failed");
+      });
+    }, delayMs);
+  }
+
+  private runRetry(chatId: string): Promise<void> {
+    // Single-flight per chat: the whole execution — including a failing
+    // replacement shutdown and the re-arm timer it creates — must have
+    // exactly one concurrent owner. Without this, two overlapping callers
+    // (retry timer + immediate trigger) would both run the failure path
+    // and each arm its own re-arm timer, the second handle overwriting the
+    // first in `entry.retryTimer` and leaving an untracked timer that
+    // manager shutdown cannot clear.
+    const inFlight = this.retryFlights.get(chatId);
+    if (inFlight) return inFlight;
+    const flight = this.executeRetry(chatId);
+    this.retryFlights.set(chatId, flight);
+    void flight.then(
+      () => {
+        if (this.retryFlights.get(chatId) === flight) this.retryFlights.delete(chatId);
+      },
+      () => {
+        if (this.retryFlights.get(chatId) === flight) this.retryFlights.delete(chatId);
+      },
+    );
+    return flight;
+  }
+
+  private async executeRetry(chatId: string): Promise<void> {
     if (this.shuttingDown) return;
     const entry = this.sessions.get(chatId);
     if (!entry) return;
@@ -2350,23 +3293,85 @@ export class SessionManager {
       this.config.log.warn({ chatId, emitErr }, "resilience retry_started emit failed");
     }
 
-    // Enforce concurrency limit before claiming the slot. If we cannot, the
-    // entry stays in transient-retry state and a future retry / message will
-    // try again.
-    if (!this.acquireActiveSlot(chatId, retryRoute.message, "recovery", { queueOnFailure: false })) {
-      // Couldn't get a slot — re-arm the timer with a short delay.
-      const nextDelay = 5_000;
-      entry.retryNextAt = Date.now() + nextDelay;
-      entry.retryTimer = setTimeout(() => {
-        entry.retryTimer = null;
-        this.runRetry(chatId).catch((err) => {
-          this.config.log.warn({ chatId, err }, "session retry rearm failed");
-        });
-      }, nextDelay);
+    // Route admission fence: settle this chat's teardown debt before the
+    // retry builds a fresh handler. On failure keep retry custody — re-arm
+    // with the same short-delay pass as slot contention below.
+    if (!(await this.settleTeardownDebtBeforeRoute(chatId))) {
+      this.rearmRetryTimer(chatId, entry);
       return;
     }
 
-    // Fresh handler — the old one may have closed its SDK transport.
+    // The settle awaited: re-validate before installing anything. A
+    // terminate may have started while this retry waited on the debt — it
+    // snapshots and drains the SAME debt and its producer quiesce has
+    // already passed, so installing now would ack over a live fresh route.
+    // Same for a manager shutdown. Abandon the install per the entry-guard
+    // semantics at the top of this function: no new handler is installed,
+    // and the retry choreography is left to whoever now owns the chat
+    // (terminate clears the entry; shutdown clears the timers).
+    if (this.shuttingDown) return;
+    if (this.terminatingChats.has(chatId)) return;
+    if (
+      this.sessions.get(chatId) !== entry ||
+      entry.status !== "suspended" ||
+      entry.activeSlotHeld ||
+      entry.routeTransition !== null ||
+      entry.retryAttempt === 0
+    ) {
+      return;
+    }
+
+    // Fresh handler — the old one may have closed its SDK transport. But the
+    // replaced handler must be CONFIRMED stopped before the fresh one is
+    // installed, or the chat runs two live handlers. The debt is registered
+    // BEFORE the stop starts: while the stop is in flight the entry is
+    // slot-free, so an untracked stop would let a terminate ack (or a
+    // manager shutdown return) over a handler whose stop has not settled.
+    // The raw face clears the debt on a confirmed stop; a failure keeps it
+    // (joinable for terminate/reconcile) and the retry keeps its custody
+    // via the same re-arm as slot contention, instead of silently
+    // continuing.
+    this.registerPendingTeardown(chatId, entry.handler);
+    try {
+      await this.shutdownHandler(entry.handler, "session_retry_replace", { observeFailure: true });
+      this.dropPendingTeardown(chatId, entry.handler);
+    } catch (err) {
+      this.config.log.warn({ chatId, err }, "session retry replace-stop failed; keeping retry custody");
+      this.rearmRetryTimer(chatId, entry);
+      return;
+    }
+    // The stop awaited: re-run the FULL retry-eligibility CAS — a terminate
+    // or manager shutdown may have started meanwhile, the entry may have
+    // been replaced, and an overlapping runRetry (timer + immediate) may
+    // already have installed the replacement route. Abandon the install
+    // instead of opening a second provider route for the same retry head;
+    // the winner's route owns the head's custody.
+    if (
+      this.shuttingDown ||
+      this.terminatingChats.has(chatId) ||
+      this.sessions.get(chatId) !== entry ||
+      entry.status !== "suspended" ||
+      entry.activeSlotHeld ||
+      entry.routeTransition !== null ||
+      entry.retryAttempt === 0
+    ) {
+      return;
+    }
+
+    // Capacity decision LAST, immediately before the synchronous install.
+    // Acquiring earlier would be a check-then-act race across chats: two
+    // retries could both pass the check while each awaits its own
+    // replacement stop (or while another route consumes the freed slot),
+    // then both claim — exceeding the configured concurrency. With the
+    // acquire directly adjacent to the claim (no await in between), the
+    // invariant `activeCount <= concurrency` holds under any interleaving.
+    // On failure the entry stays in transient-retry state and a future
+    // retry / message will try again.
+    if (!this.acquireActiveSlot(chatId, retryRoute.message, "recovery", { queueOnFailure: false })) {
+      this.rearmRetryTimer(chatId, entry);
+      return;
+    }
+
     const newHandler = this.createHandler();
     entry.handler = newHandler;
     entry.status = "active";
@@ -2380,7 +3385,16 @@ export class SessionManager {
 
     this.notifySessionState(chatId, "active");
     this.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
+    // Settle callback for the route producer, assigned as the FIRST
+    // statement inside the try below: a throw before registration leaves no
+    // producer behind, and everything after registration is covered by the
+    // finally — so no throw can leave a producer that never settles.
+    let settleRouteProducer: () => void = () => {};
     try {
+      // Track the route producer: a canceled retry route can still
+      // materialize late, and terminate / manager shutdown join this before
+      // ack/return.
+      settleRouteProducer = this.registerRouteProducer(chatId);
       if (retryHeadMessage) this.setCurrentTrigger(chatId, retryHeadMessage);
       const token = retryHeadMessage ? this.createDeliveryToken(chatId, routeLeases) : undefined;
       if (retryRoute.kind === "resume") {
@@ -2388,7 +3402,7 @@ export class SessionManager {
           ? await newHandler.resume(retryHeadMessage ?? undefined, retryRoute.previousSessionId, ctx, token)
           : await newHandler.resume(undefined, retryRoute.previousSessionId, ctx);
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          await this.discardStaleRouteTransition(transition, "session_retry_resume_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_resume_stale_completion");
           return;
         }
         const receipt = normalizeResumeReceipt(resumeResult);
@@ -2400,7 +3414,7 @@ export class SessionManager {
           await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, routeLeases)),
         );
         if (!this.isCurrentRouteTransition(entry, transition)) {
-          await this.discardStaleRouteTransition(transition, "session_retry_start_stale_completion");
+          this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -2413,7 +3427,7 @@ export class SessionManager {
       const succeededScope = entry.lastRetryScope ?? (previousAvailable(entry) ? "session_resume" : "session_start");
       const succeededClassification = this.retryClassificationForEntry(entry);
       if (!this.completeRouteTransition(entry, transition)) {
-        await this.discardStaleRouteTransition(transition, "session_retry_stale_adoption");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_adoption");
         return;
       }
       this.clearRetryAttemptState(entry);
@@ -2448,7 +3462,7 @@ export class SessionManager {
       this.persistRegistry();
     } catch (err) {
       if (!this.isCurrentRouteTransition(entry, transition)) {
-        await this.discardStaleRouteTransition(transition, "session_retry_stale_failure");
+        this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_failure");
         return;
       }
       this.invalidateRouteTransition(entry, "session_retry_failed");
@@ -2467,6 +3481,8 @@ export class SessionManager {
       });
       if (this.sessions.get(chatId) !== entry) return;
       if (handling.kind === "terminal") await this.teardownTerminalSessionFailure(entry, retryHeadMessage, handling);
+    } finally {
+      settleRouteProducer();
     }
   }
 
@@ -2499,8 +3515,6 @@ export class SessionManager {
       generation: entry.routeTransitionGeneration,
       handler: entry.handler,
     };
-    // Deferred injects share the active-inject custody split: admission uses
-    // adoption validity; settlement keeps the narrow suspend/drain window.
     const mutationValid = () => this.isRouteAdoptionValid(entry, routeLease);
     const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, routeLease);
     for (let index = 0; index < queued.length; index++) {
@@ -2683,90 +3697,148 @@ export class SessionManager {
       drainQueue: true,
     },
   ): void {
-    // Capture before any invalidate: a canceled fresh start has never established
-    // a provider-neutral resume handle. Drop only the local SessionEntry after
-    // preparation; coordinator recovery retains the head.
-    const unestablishedStart = entry.routeTransition?.phase === "start";
-    if (unestablishedStart) {
-      entry.deferredMessages = [];
-      this.clearRetryState(entry);
-    } else if (entry.routeTransition) {
-      entry.deferredMessages = [];
+    // A new suspend supersedes any earlier suspend outcome.
+    entry.suspendError = null;
+    entry.handlerStoppedBySuspend = null;
+
+    if (opts.operatorResolution) {
+      // Manual operator suspend is a resolution boundary for the contiguous
+      // provider-entered prefix. Fence in-flight start/resume *adoption*
+      // immediately by clearing the route pointer, but keep
+      // routeTransitionGeneration stable through settle so already-issued
+      // DeliveryTokens can still post notice+ACK. Bump + retire only after.
+      // Do not re-bump delivery admission here — handleCommand already did.
+      const inFlightTransition = entry.routeTransition;
+      const unestablishedStart = inFlightTransition?.phase === "start";
+      if (unestablishedStart) {
+        entry.deferredMessages = [];
+        this.clearRetryState(entry);
+      } else if (inFlightTransition) {
+        entry.deferredMessages = [];
+      }
+      entry.routeTransition = null;
+      entry.status = "suspended";
+      this.releaseActiveSlot(entry);
+      this.sessionRuntimeStates.delete(entry.chatId);
+      this.recomputeRuntimeState();
+      entry.suspending = (async () => {
+        try {
+          // settleProviderEntered keeps already-issued DeliveryTokens on the
+          // settlement lease (including active/deferred inject) so they can
+          // post durable notice+ACK before prepareOperatorSuspend runs.
+          await entry.handler.suspend(opts.reason, { settleProviderEntered: true });
+          // If settle captured a terminal notice but could not persist it (or
+          // could not claim token settlement), transfer the obligation onto
+          // the inbox ledger so prepareOperatorSuspend / recovery cannot ACK
+          // without durable notice evidence.
+          if (entry.pendingRuntimeFailureNotice) {
+            this.inboxDelivery.markNoticeRequiredForProcessingPrefix(entry.chatId, entry.pendingRuntimeFailureNotice);
+          }
+          await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
+        } catch (err) {
+          entry.suspendError = { error: err };
+          this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend settlement error");
+        } finally {
+          entry.routeTransitionGeneration++;
+          try {
+            if (inFlightTransition) {
+              this.retiredHandlers.add(inFlightTransition.handler);
+              await this.shutdownHandler(inFlightTransition.handler, opts.reason, { observeFailure: true });
+              if (inFlightTransition.handler === entry.handler) {
+                entry.handlerStoppedBySuspend = entry.handler;
+              }
+            } else if (!this.retiredHandlers.has(entry.handler)) {
+              await this.shutdownHandler(entry.handler, opts.reason, { observeFailure: true });
+              entry.handlerStoppedBySuspend = entry.handler;
+            }
+          } catch (err) {
+            entry.suspendError = { error: err };
+            this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend teardown error");
+          }
+          entry.suspending = null;
+          if (unestablishedStart) {
+            if (entry.handlerStoppedBySuspend !== entry.handler) {
+              this.registerPendingTeardown(entry.chatId, entry.handler);
+            }
+            if (this.sessions.get(entry.chatId) === entry) {
+              this.sessions.delete(entry.chatId);
+              this.currentTrigger.delete(entry.chatId);
+            }
+          }
+        }
+      })();
+      this.persistRegistry();
+      this.notifySessionState(entry.chatId, "suspended");
+      if (opts.drainQueue !== false) this.drainPendingQueue();
+      return;
     }
 
+    const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
+    // A canceled fresh start has never established a provider-neutral resume
+    // handle. Keeping that entry as "suspended" would make redelivery call
+    // resume(undefined/empty-id) instead of starting a replacement route.
+    // Drop only the local SessionEntry; coordinator recovery retains the head.
+    const canceledUnestablishedStart = canceledTransition?.phase === "start";
+    if (canceledTransition) entry.deferredMessages = [];
+    if (canceledUnestablishedStart) this.clearRetryState(entry);
+    const prepare = opts.ackConsumedPrefix
+      ? this.inboxDelivery.prepareSuspend(entry.chatId, opts.reason)
+      : Promise.resolve(this.inboxDelivery.prepareEvict(entry.chatId, opts.reason));
     entry.status = "suspended";
     this.releaseActiveSlot(entry);
     // Clear per-session runtime state on suspend
     this.sessionRuntimeStates.delete(entry.chatId);
     this.recomputeRuntimeState();
-
-    entry.suspending = (async () => {
-      try {
-        if (opts.operatorResolution) {
-          // Manual operator suspend is a resolution boundary for the contiguous
-          // provider-entered prefix. Fence in-flight start/resume *adoption*
-          // immediately by clearing the route pointer, but keep
-          // routeTransitionGeneration stable through settle so already-issued
-          // DeliveryTokens can still post notice+ACK. Bump + retire only after.
-          // Do not re-bump delivery admission here — handleCommand already did.
-          const inFlightTransition = entry.routeTransition;
-          entry.routeTransition = null;
-          try {
-            // settleProviderEntered keeps already-issued DeliveryTokens on the
-            // settlement lease (including active/deferred inject) so they can
-            // post durable notice+ACK before prepareOperatorSuspend runs.
-            await entry.handler.suspend(opts.reason, { settleProviderEntered: true });
-            // If settle captured a terminal notice but could not persist it (or
-            // could not claim token settlement), transfer the obligation onto
-            // the inbox ledger so prepareOperatorSuspend / recovery cannot ACK
-            // without durable notice evidence.
-            if (entry.pendingRuntimeFailureNotice) {
-              this.inboxDelivery.markNoticeRequiredForProcessingPrefix(entry.chatId, entry.pendingRuntimeFailureNotice);
-            }
-            await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
-          } finally {
-            entry.routeTransitionGeneration++;
-            if (inFlightTransition) {
-              this.retiredHandlers.add(inFlightTransition.handler);
-              await this.shutdownHandler(inFlightTransition.handler, opts.reason);
-            } else if (!this.retiredHandlers.has(entry.handler)) {
-              await this.shutdownHandler(entry.handler, opts.reason);
-            }
-          }
-          return;
-        }
-
-        const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
-        if (opts.ackConsumedPrefix) {
-          await this.inboxDelivery.prepareSuspend(entry.chatId, opts.reason);
-        } else {
-          this.inboxDelivery.prepareEvict(entry.chatId, opts.reason);
-        }
+    entry.suspending = prepare
+      .then(async () => {
         if (canceledTransition || this.retiredHandlers.has(entry.handler)) {
-          await this.shutdownHandler(canceledTransition?.handler ?? entry.handler, opts.reason);
+          // The suspend boundary must cover this teardown end-to-end:
+          // returning (not void-ing) the shutdown keeps `entry.suspending`
+          // in flight until the handler is confirmed stopped, and the
+          // observeFailure face routes a shutdown rejection into the catch
+          // below (recorded as suspendError) where a Reset terminate can see
+          // it. Only a CONFIRMED stop arms the no-double-teardown marker,
+          // bound to the handler identity so a later handler replacement
+          // cannot inherit it.
+          const target = canceledTransition?.handler ?? entry.handler;
+          await this.shutdownHandler(target, opts.reason, { observeFailure: true });
+          if (target === entry.handler) entry.handlerStoppedBySuspend = entry.handler;
           return;
         }
-        await entry.handler.suspend(opts.reason);
-      } catch (err) {
-        try {
-          this.config.log.warn({ chatId: entry.chatId, err }, "suspend error");
-        } catch (logErr) {
-          // Second-stage warn must not reject the suspending promise if the
-          // logger transport itself throws.
-          this.config.log.warn({ chatId: entry.chatId, err: logErr }, "suspend error");
-        }
-      } finally {
+        return entry.handler.suspend(opts.reason);
+      })
+      .catch((err) => {
+        // `suspending` keeps its legacy resolve-always contract for
+        // dispatch/resume awaiters, but a terminate joining this suspend
+        // must still observe the failure — record it (boxed: rejections can
+        // be falsey) on the entry so the Reset apply can reject instead of
+        // acking over a handler that was never confirmed suspended/stopped.
+        entry.suspendError = { error: err };
+        this.config.log.warn({ chatId: entry.chatId, err }, "suspend preparation error");
+      })
+      .then(() => undefined)
+      .catch((err) => {
+        this.config.log.warn({ chatId: entry.chatId, err }, "suspend error");
+      })
+      .finally(() => {
         entry.suspending = null;
         // Keep the unestablished entry addressable until preparation settles:
         // dispatch() uses its suspending promise as the same-chat admission
         // fence while operator ACK/recovery decisions are still in flight.
-        if (unestablishedStart && this.sessions.get(entry.chatId) === entry) {
-          this.sessions.delete(entry.chatId);
-          this.currentTrigger.delete(entry.chatId);
+        if (canceledUnestablishedStart) {
+          // Debt registration must NOT depend on the entry still being
+          // installed: even if another path already removed it (its own
+          // detach registers too — Set semantics make a duplicate a no-op),
+          // an unconfirmed-stop handler must stay joinable.
+          if (entry.handlerStoppedBySuspend !== entry.handler) {
+            this.registerPendingTeardown(entry.chatId, entry.handler);
+          }
+          if (this.sessions.get(entry.chatId) === entry) {
+            this.sessions.delete(entry.chatId);
+            this.currentTrigger.delete(entry.chatId);
+          }
         }
-      }
-    })();
-
+      });
     this.persistRegistry();
     this.notifySessionState(entry.chatId, "suspended");
 
@@ -2856,6 +3928,10 @@ export class SessionManager {
     let idleActiveCandidate: { key: string; session: SessionEntry } | null = null;
     let idleActiveSubprocessCandidate: { key: string; session: SessionEntry } | null = null;
     for (const [key, session] of this.sessions) {
+      // A chat with unresolved teardown debt is not a burden-free victim:
+      // its detached handlers are still being confirmed stopped, so keep it
+      // out of the candidate set (force-keep).
+      if (this.pendingTeardowns.has(key)) continue;
       if (session.status !== "active") {
         if (!nonActiveCandidate || session.lastActivity < nonActiveCandidate.session.lastActivity) {
           nonActiveCandidate = { key, session };
@@ -2908,7 +3984,11 @@ export class SessionManager {
       const activeSlotHeld = candidate.session.activeSlotHeld;
       this.releaseActiveSlot(candidate.session);
       if (activeSlotHeld) {
-        void this.shutdownHandler(candidate.session.handler, "session_evicted");
+        this.detachHandlerWithPendingTeardown(candidate.key, candidate.session.handler, "session_evicted");
+      } else {
+        // A non-active handler is not shut down on eviction (existing
+        // semantics), but its stop is unconfirmed — record the debt.
+        this.registerPendingTeardown(candidate.key, candidate.session.handler);
       }
       // LRU eviction is local memory-management, not operator intent — do
       // NOT emit a wire state here. The chat now lives in `evictedMappings`
@@ -3391,7 +4471,7 @@ export class SessionManager {
     }
   }
 
-  private persistRegistry(opts: { immediate?: boolean } = {}): void {
+  private persistRegistry(opts: { immediate?: boolean; throwOnFailure?: boolean } = {}): void {
     if (!this.registry) return;
 
     const entries = new Map<string, { claudeSessionId: string; lastActivity: number; status: string }>();
@@ -3420,7 +4500,10 @@ export class SessionManager {
     // On shutdown we MUST write synchronously: the alternative is
     // `save()` (debounced 1s) followed by `dispose()`, which races the
     // process exit and silently drops the last mapping batch.
-    if (opts.immediate) this.registry.flush(entries);
+    // `throwOnFailure` (Reset terminate) additionally surfaces write failure
+    // to the caller instead of swallowing it.
+    if (opts.throwOnFailure) this.registry.flushOrThrow(entries);
+    else if (opts.immediate) this.registry.flush(entries);
     else this.registry.save(entries);
   }
 }

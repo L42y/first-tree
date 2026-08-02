@@ -40,6 +40,7 @@ const UUID = "agent-preview";
 const RESOURCES: AgentResourcesOutput = {
   version: 7,
   templateIds: [],
+  adoptedTemplates: [],
   effective: {
     version: 7,
     repos: [
@@ -58,6 +59,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: { url: "https://github.com/agent-team-foundation/first-tree.git", localPath: "first-tree" },
         promptBody: null,
         unavailableReason: null,
+        originTemplateId: null,
         order: 0,
       },
       {
@@ -75,6 +77,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: { url: "https://github.com/me/my-scratch-repo.git", localPath: "my-scratch-repo" },
         promptBody: null,
         unavailableReason: null,
+        originTemplateId: null,
         order: 1,
       },
       {
@@ -92,6 +95,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: null,
         promptBody: null,
         unavailableReason: "Repository not found",
+        originTemplateId: null,
         order: 2,
       },
     ],
@@ -112,6 +116,7 @@ const RESOURCES: AgentResourcesOutput = {
         promptBody:
           "Follow the team house style when reviewing diffs.\n\n- Prefer small, focused changes.\n- Call out missing tests and error handling.\n- Flag any public-API change for a second reviewer.\n- Keep comments about the code, not the author.",
         unavailableReason: null,
+        originTemplateId: null,
         order: 0,
       },
       {
@@ -129,6 +134,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: null,
         promptBody: "Always summarize tradeoffs before recommending.",
         unavailableReason: null,
+        originTemplateId: null,
         order: 1,
       },
       {
@@ -146,6 +152,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: null,
         promptBody: "Keep a formal tone in all replies.",
         unavailableReason: null,
+        originTemplateId: null,
         order: 2,
       },
       {
@@ -165,6 +172,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: null,
         promptBody: "Use the team's standard review checklist.",
         unavailableReason: null,
+        originTemplateId: null,
         order: 3,
       },
     ],
@@ -189,6 +197,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: null,
         promptBody: null,
         unavailableReason: null,
+        originTemplateId: null,
         order: 0,
       },
       {
@@ -208,6 +217,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: null,
         promptBody: null,
         unavailableReason: null,
+        originTemplateId: null,
         order: 1,
       },
     ],
@@ -227,6 +237,7 @@ const RESOURCES: AgentResourcesOutput = {
         repo: null,
         promptBody: null,
         unavailableReason: null,
+        originTemplateId: null,
         order: 0,
       },
     ],
@@ -293,6 +304,7 @@ const RESOURCES: AgentResourcesOutput = {
       defaultEnabled: "available",
       status: "active",
       payload: { name: "changelog", description: "Maintain a CHANGELOG.", body: "", metadata: {} },
+      originTemplateId: null,
       createdBy: "preview",
       updatedBy: "preview",
       createdAt: NOW,
@@ -310,6 +322,7 @@ const RESOURCES: AgentResourcesOutput = {
       defaultEnabled: "available",
       status: "active",
       payload: { description: "Checklist to run before approving security-sensitive diffs." },
+      originTemplateId: null,
       createdBy: "preview",
       updatedBy: "preview",
       createdAt: NOW,

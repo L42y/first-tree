@@ -551,6 +551,8 @@ function createClient(): QueryClient {
   queryClient.setQueryData(["agent-config", "agent-1"], AGENT_CONFIG);
   queryClient.setQueryData(["agent-resources", "agent-1"], {
     version: 7,
+    templateIds: [],
+    adoptedTemplates: [],
     effective: {
       version: 7,
       repos: [

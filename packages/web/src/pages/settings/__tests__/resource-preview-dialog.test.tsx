@@ -18,6 +18,7 @@ function resource(overrides: Partial<ResourceRow> = {}): ResourceRow {
     name: "Review prompt",
     repoCanonicalKey: null,
     defaultEnabled: "recommended",
+    originTemplateId: null,
     status: "active",
     payload: {},
     createdBy: "user-1",

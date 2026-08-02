@@ -13,7 +13,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 type MockNewAgentDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: (agent: Agent, runtime: RuntimeProvider) => void;
+  onCreated: (agent: Agent, runtime: RuntimeProvider, templateCount: number) => void;
 };
 
 type MockSuspendDialogProps = {
@@ -123,7 +123,7 @@ vi.mock("../../../components/new-agent-dialog.js", async () => {
         React.createElement("span", null, "Mock New Agent"),
         React.createElement(
           "button",
-          { type: "button", onClick: () => onCreated(created, "claude-code") },
+          { type: "button", onClick: () => onCreated(created, "claude-code", 2) },
           "Create mock agent",
         ),
         React.createElement("button", { type: "button", onClick: () => onOpenChange(false) }, "Cancel new agent"),
@@ -164,6 +164,15 @@ vi.mock("../../invite-link-panel.js", async () => {
     InviteLinkPanel: () => React.createElement("div", null, "Mock invite link panel"),
   };
 });
+
+const analyticsMocks = vi.hoisted(() => ({
+  trackEvent: vi.fn(),
+}));
+
+vi.mock("../../../analytics.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../analytics.js")>()),
+  ...analyticsMocks,
+}));
 
 vi.mock("react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router")>()),
@@ -531,6 +540,10 @@ describe("TeamPage", () => {
       () => !document.body.textContent?.includes("Mock New Agent"),
       "Expected create dialog close",
     );
+    // The create flow navigates straight to the first Workspace draft, and
+    // the draft-open event only fires on this path.
+    expect(routerMocks.navigate).toHaveBeenCalledWith("/?c=draft&with=created-agent");
+    expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_create_draft_open", { template_count: 2 });
 
     await click(exactButton(container, "Invite link"));
     await waitForText(document.body, "Mock invite link panel");

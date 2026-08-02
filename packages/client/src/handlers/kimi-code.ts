@@ -49,6 +49,7 @@ import { deliveryTokenFromSessionContext } from "../runtime/handler.js";
 import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
 import { ProviderAttempt, type ProviderAttemptSettlement } from "../runtime/provider-attempt.js";
 import { maxProviderTurnRetryAttempts } from "../runtime/provider-retry-policy.js";
+import type { ReplayFenceWriter } from "../runtime/replay-fence.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../runtime/source-repos.js";
 import { teamSkillBundleResolverFromSdk } from "../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../runtime/workspace.js";
@@ -70,8 +71,23 @@ type KimiManagedMcpSessionOptions = {
   readonly mcpServers?: Readonly<Record<string, KimiManagedMcpServer>>;
 };
 
-type KimiCreateSessionOptions = CreateSessionOptions & KimiManagedMcpSessionOptions;
-type KimiResumeSessionInput = ResumeSessionInput & KimiManagedMcpSessionOptions;
+// The pinned SDK applies `drainAgentTasksOnStop` on the create path only; a
+// pnpm patch (`patches/@botiverse__kimi-code-sdk@*.patch`) threads the same
+// flag through resume. Its declaration file predates the additive resume
+// field, so First Tree expresses it through a local intersection type.
+type KimiDrainSessionOption = { drainAgentTasksOnStop?: boolean };
+type KimiCreateSessionOptions = CreateSessionOptions & KimiManagedMcpSessionOptions & KimiDrainSessionOption;
+type KimiResumeSessionInput = ResumeSessionInput & KimiManagedMcpSessionOptions & KimiDrainSessionOption;
+
+// Hold the provider turn open until background subagents (`kind === "agent"`)
+// settle and the main agent has consumed their completions, so First Tree only
+// ACKs a delivery after the whole background workload is done.
+const KIMI_DRAIN_AGENT_TASKS_ON_STOP = true;
+
+// Only the main agent drives the logical parent turn: its text is chat output
+// and only its `turn.ended` may settle a delivery. Subagent events share the
+// same event stream while the drain flag keeps the turn open.
+const KIMI_MAIN_AGENT_ID = "main";
 
 export function mapKimiMcpServers(payload: AgentRuntimeConfigPayload): Record<string, KimiManagedMcpServer> {
   const servers: Record<string, KimiManagedMcpServer> = {};
@@ -104,8 +120,16 @@ type TurnObservation = {
   assistantText: string;
   ended: Extract<KimiEvent, { type: "turn.ended" }> | null;
   error: Error | null;
+  /**
+   * Set when the first unsafe tool effect could not be fenced durably. The
+   * turn must then settle as a terminal consumed error: continuing without a
+   * persisted fence would leave a crash-window where redelivery replays the
+   * effect.
+   */
+  fenceError: Error | null;
   thinkingEmitted: boolean;
   unsafeToolEffectStarted: boolean;
+  unsafeFenced: boolean;
 };
 
 type PreparedSession = {
@@ -136,6 +160,37 @@ function kimiEventError(event: { code: string; message: string; retryable?: bool
   error.reason = event.code;
   error.retryable = event.retryable;
   return error;
+}
+
+/**
+ * Host pre-effect hook the patched SDK invokes at its awaited
+ * `authorizeToolExecution` boundary — before any runnable tool task is
+ * created. Registered globally because the SDK bundle and this handler share
+ * one process, while the SDK's public RPC bridge cannot carry function
+ * values. The SDK converts a hook throw into a blocked tool call, so a
+ * failed replay-fence write provably stops the unsafe effect (the SDK's
+ * live-event path cannot deliver this guarantee: listener errors are
+ * swallowed and the event bridge is async).
+ */
+type HostBeforeToolCallInfo = {
+  sessionId?: string;
+  agentId?: string;
+  toolName: string;
+  toolCallId: string;
+  args: unknown;
+};
+
+const beforeToolCallHooks = new Map<string, (info: HostBeforeToolCallInfo) => void>();
+
+function ensureGlobalBeforeToolCallHook(): void {
+  const globalScope = globalThis as {
+    __firstTreeBeforeToolCall?: (info: HostBeforeToolCallInfo) => Promise<void> | void;
+  };
+  if (globalScope.__firstTreeBeforeToolCall) return;
+  globalScope.__firstTreeBeforeToolCall = (info) => {
+    const hook = typeof info.sessionId === "string" ? beforeToolCallHooks.get(info.sessionId) : undefined;
+    hook?.(info);
+  };
 }
 
 export function formatKimiCodeError(error: Error): string {
@@ -200,6 +255,71 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
   const harnessFactory = (config.kimiHarnessFactory as KimiHarnessFactory | undefined) ?? createKimiHarness;
   const kaosFactory = (config.kimiKaosFactory as KimiKaosFactory | undefined) ?? (() => LocalKaos.create());
   const maxRetries = maxProviderTurnRetryAttempts();
+  const replayFence = (config.replayFence as ReplayFenceWriter | undefined) ?? null;
+
+  /**
+   * Durably fence every message of the current delivery the moment the first
+   * non-read-only tool call starts, so a crash after this point can never
+   * re-enter the provider for the same delivery. Returns the failure when the
+   * safety fact could not be persisted (or no store was wired) — callers must
+   * fail closed, never continue unfenced.
+   */
+  function fenceUnsafeDelivery(
+    chatId: string,
+    messages: readonly SessionMessage[],
+    toolName: string,
+    toolUseId: string,
+  ): Error | null {
+    if (!replayFence) return new Error("replay fence store is not configured");
+    const fencedMessageIds: string[] = [];
+    for (const msg of messages) {
+      try {
+        replayFence.fence({
+          chatId,
+          messageId: msg.id,
+          provider: runtimeProvider,
+          toolName,
+          toolUseId,
+          fencedAt: new Date().toISOString(),
+        });
+        fencedMessageIds.push(msg.id);
+      } catch (error) {
+        // Roll back the entries written by THIS call: the tool call is
+        // blocked, so no effect exists to protect, and a partial fence would
+        // wrongly mark the delivery as authorized (or strand the chat in
+        // permanent recovery debt once custody is retained).
+        for (const messageId of fencedMessageIds) {
+          try {
+            replayFence.clear(chatId, messageId);
+          } catch {
+            // A fence that cannot even be removed stays — conservative.
+          }
+        }
+        return error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    return null;
+  }
+
+  /** Clear fences once their delivery's terminal settlement is confirmed. */
+  function clearFencedDelivery(
+    sessionCtx: SessionContext,
+    messages: readonly SessionMessage[],
+    completion: unknown,
+  ): void {
+    if (!replayFence || completion === "retry") return;
+    for (const msg of messages) {
+      try {
+        replayFence.clear(sessionCtx.chatId, msg.id);
+      } catch (error) {
+        // The delivery is ACKed, so no redelivery can re-enter it; a stale
+        // fence is benign but must be visible.
+        sessionCtx.log(
+          `kimi replay fence clear failed for ${msg.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -343,43 +463,62 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     resolveEnded: () => void,
   ): void {
     sessionCtx.recordProviderActivity();
+    const isMainAgent = event.agentId === KIMI_MAIN_AGENT_ID;
     switch (event.type) {
       case "turn.started":
-        if (!observation.unsafeToolEffectStarted) attempt.setReplaySafety("pre_visible");
+        if (isMainAgent && !observation.unsafeToolEffectStarted) attempt.setReplaySafety("pre_visible");
         break;
       case "assistant.delta":
-        observation.assistantText += event.delta;
+        if (isMainAgent) observation.assistantText += event.delta;
         break;
       case "thinking.delta":
-        if (!observation.thinkingEmitted) {
+        if (isMainAgent && !observation.thinkingEmitted) {
           observation.thinkingEmitted = true;
           sessionCtx.emitEvent({ kind: "thinking", payload: {} });
         }
         break;
       case "tool.call.started": {
+        // Tool effects are real side effects regardless of which agent ran
+        // them, so keep every agent's calls observable. Namespace subagent ids
+        // so parallel child calls cannot collide with each other or the main
+        // agent's raw ids.
+        const toolUseId = isMainAgent ? event.toolCallId : `${event.agentId}:${event.toolCallId}`;
         const tool: ActiveTool = {
           name: event.name,
           args: event.args,
           startedAt: Date.now(),
           refs: cwd ? nativeToolRefs(event.name, event.args, cwd) : [],
         };
-        activeTools.set(event.toolCallId, tool);
-        if (!kimiToolIsReadOnly(event.name, event.args)) observation.unsafeToolEffectStarted = true;
+        activeTools.set(toolUseId, tool);
+        // The durable fence itself is written earlier, at the SDK's awaited
+        // authorize boundary (see the hook registered in observeOneAttempt),
+        // which also marks replay safety for calls it allows through. A call
+        // the hook just blocked (fenceError set) produced no effect, so it
+        // must not mark the turn unsafe.
+        if (!kimiToolIsReadOnly(event.name, event.args) && !observation.fenceError) {
+          observation.unsafeToolEffectStarted = true;
+        }
         attempt.setReplaySafety(observation.unsafeToolEffectStarted ? "unsafe" : "pre_visible");
-        emitToolCall(sessionCtx, event.toolCallId, tool, "pending");
+        emitToolCall(sessionCtx, toolUseId, tool, "pending");
         break;
       }
       case "tool.result": {
-        const tool = activeTools.get(event.toolCallId);
+        const toolUseId = isMainAgent ? event.toolCallId : `${event.agentId}:${event.toolCallId}`;
+        const tool = activeTools.get(toolUseId);
         if (!tool) break;
-        emitToolCall(sessionCtx, event.toolCallId, tool, event.isError ? "error" : "ok", event.output);
-        activeTools.delete(event.toolCallId);
+        emitToolCall(sessionCtx, toolUseId, tool, event.isError ? "error" : "ok", event.output);
+        activeTools.delete(toolUseId);
         break;
       }
       case "error":
-        observation.error = kimiEventError(event);
+        if (isMainAgent) {
+          observation.error = kimiEventError(event);
+        } else {
+          sessionCtx.log(`kimi subagent ${event.agentId} error: ${event.message}`);
+        }
         break;
       case "turn.ended":
+        if (!isMainAgent) break;
         observation.ended = event;
         if (event.error) observation.error = kimiEventError(event.error);
         resolveEnded();
@@ -394,13 +533,16 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     prompt: string,
     sessionCtx: SessionContext,
     attempt: ProviderAttempt,
+    messages: readonly SessionMessage[],
   ): Promise<TurnObservation> {
     const observation: TurnObservation = {
       assistantText: "",
       ended: null,
       error: null,
+      fenceError: null,
       thinkingEmitted: false,
       unsafeToolEffectStarted: false,
+      unsafeFenced: false,
     };
     let resolveEnded = (): void => {};
     const endedPromise = new Promise<void>((resolvePromise) => {
@@ -413,11 +555,51 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         sessionCtx.log(`kimi event translation failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
+    // Durably fence the delivery at the SDK's awaited authorize boundary —
+    // the only point where a persistence failure can still prevent the
+    // unsafe effect. The patched SDK converts a hook throw into a blocked
+    // tool call before the runnable task exists.
+    ensureGlobalBeforeToolCallHook();
+    beforeToolCallHooks.set(activeSession.id, beforeToolCallHook);
+    function beforeToolCallHook(info: HostBeforeToolCallInfo): void {
+      if (kimiToolIsReadOnly(info.toolName, info.args)) return;
+      if (observation.fenceError) {
+        // Fail-closed: a previous fence write failed in this attempt, so no
+        // later unsafe call may execute either — the SDK turns each throw
+        // into a blocked result and continues, and without this guard the
+        // next call would run unfenced.
+        throw new Error(`replay fence persistence failed: ${observation.fenceError.message}`);
+      }
+      if (observation.unsafeFenced) {
+        // A previous unsafe call was already fenced and allowed through.
+        observation.unsafeToolEffectStarted = true;
+        attempt.setReplaySafety("unsafe");
+        return;
+      }
+      const agentId = typeof info.agentId === "string" && info.agentId.length > 0 ? info.agentId : KIMI_MAIN_AGENT_ID;
+      const toolUseId = agentId === KIMI_MAIN_AGENT_ID ? info.toolCallId : `${agentId}:${info.toolCallId}`;
+      const fenceFailure = fenceUnsafeDelivery(sessionCtx.chatId, messages, info.toolName, toolUseId);
+      if (fenceFailure) {
+        // The throw makes the SDK block this call, so no unsafe effect has
+        // happened: deliberately do NOT mark replay safety unsafe here —
+        // settlement may safely retain custody for redelivery.
+        observation.fenceError = fenceFailure;
+        throw new Error(`replay fence persistence failed: ${fenceFailure.message}`);
+      }
+      // Only now is the delivery durably authorized: every message of the
+      // delivery is fenced, so this effect may execute and later unsafe
+      // calls in the attempt may take the fenced fast path.
+      observation.unsafeFenced = true;
+      observation.unsafeToolEffectStarted = true;
+      attempt.setReplaySafety("unsafe");
+    }
     try {
       await activeSession.prompt(prompt);
       if (!observation.ended) await endedPromise;
       return observation;
     } finally {
+      if (beforeToolCallHooks.get(activeSession.id) === beforeToolCallHook)
+        beforeToolCallHooks.delete(activeSession.id);
       unsubscribe();
     }
   }
@@ -494,13 +676,43 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       let observation: TurnObservation | null = null;
       let thrown: Error | null = null;
       try {
-        observation = await observeOneAttempt(activeSession, prompt, sessionCtx, attempt);
+        observation = await observeOneAttempt(activeSession, prompt, sessionCtx, attempt, messages);
       } catch (error) {
         thrown = error instanceof Error ? error : new Error(String(error));
       }
 
       if (!sessionActive) {
         token.retry(messages, "kimi_turn_cancelled");
+        return false;
+      }
+
+      const fenceFailure = observation?.fenceError ?? null;
+      if (fenceFailure) {
+        // Fail closed: the unsafe tool call was blocked at the SDK's awaited
+        // authorize boundary before its effect executed, so custody here is
+        // purely about durability. Route the failure through the
+        // provider-attempt pipeline so a terminal settlement emits the
+        // durable provider-failure notice boundary
+        // before any consumed ACK.
+        attempt.recordSignal({ kind: "local_error", error: fenceFailure });
+        const fenceSettlement = attempt.settle({ attempt: attemptNumber });
+        if (fenceSettlement && fenceSettlement.decision.action !== "retry") {
+          emitSettlement(sessionCtx, fenceSettlement);
+          const formatted = formatKimiCodeError(fenceFailure);
+          await emitUsage(sessionCtx, activeSession, usageBaseline);
+          sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
+          sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+          const completion = await token.complete(messages, {
+            status: "error",
+            completion: "consumed",
+            reason: "replay_fence_persist_failed",
+          });
+          clearFencedDelivery(sessionCtx, messages, completion);
+          return false;
+        }
+        // Retryable/unclassified: retain custody. No effect was executed,
+        // so redelivery is safe once the fence store is healthy again.
+        token.retry(messages, "replay_fence_persist_failed");
         return false;
       }
 
@@ -520,11 +732,17 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
             payload: { source: "runtime", message: `forward failed: ${message}` },
           });
           sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-          await token.complete(messages, { status: "error", completion: "consumed", reason: "forward_failed" });
+          const forwardCompletion = await token.complete(messages, {
+            status: "error",
+            completion: "consumed",
+            reason: "forward_failed",
+          });
+          clearFencedDelivery(sessionCtx, messages, forwardCompletion);
           return false;
         }
         sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
-        await token.complete(messages, { status: "success" });
+        const completion = await token.complete(messages, { status: "success" });
+        clearFencedDelivery(sessionCtx, messages, completion);
         return true;
       }
 
@@ -564,11 +782,12 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       await emitUsage(sessionCtx, activeSession, usageBaseline);
       sessionCtx.emitEvent({ kind: "error", payload: { source: "sdk", message: formatted.slice(0, 2000) } });
       sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-      await token.complete(messages, {
+      const failureCompletion = await token.complete(messages, {
         status: "error",
         completion: "consumed",
         reason: settlement.decision.reasonCode,
       });
+      clearFencedDelivery(sessionCtx, messages, failureCompletion);
       return false;
     }
 
@@ -772,6 +991,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         kaos: prepared.kaos,
         additionalDirs: prepared.additionalDirs,
         roleAdditional: prepared.roleAdditional,
+        drainAgentTasksOnStop: KIMI_DRAIN_AGENT_TASKS_ON_STOP,
         ...(prepared.payload.model ? { model: prepared.payload.model } : {}),
         ...(prepared.payload.mcpServers.length > 0 ? { mcpServers } : {}),
       };
@@ -806,6 +1026,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         kaos: prepared.kaos,
         additionalDirs: prepared.additionalDirs,
         roleAdditional: prepared.roleAdditional,
+        drainAgentTasksOnStop: KIMI_DRAIN_AGENT_TASKS_ON_STOP,
         ...(prepared.payload.mcpServers.length > 0 ? { mcpServers } : {}),
       };
       const kimiHome = prepared.payload.env.find((entry) => entry.key === "KIMI_CODE_HOME")?.value.trim() ?? null;

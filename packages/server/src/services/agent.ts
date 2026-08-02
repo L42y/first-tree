@@ -9,6 +9,7 @@ import type {
 import {
   AGENT_NAME_REGEX,
   AGENT_STATUSES,
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
   AGENT_TYPES,
   AGENT_VISIBILITY,
   DEFAULT_RUNTIME_PROVIDER,
@@ -714,9 +715,13 @@ export async function createAgent(
 
     return agent;
   } catch (err) {
-    const pgCode = (err as { code?: string })?.code ?? (err as { cause?: { code?: string } })?.cause?.code ?? "";
-    if (pgCode === "23505" && name) {
-      throw new ConflictError(`Agent name "${name}" already exists in organization "${orgId}"`);
+    // Template import may also hit 23505 on Resources/attachments/bindings in
+    // the same transaction — only the Agent org+name unique maps to the name
+    // wire code. Everything else rethrows unchanged.
+    if (name && isAgentOrgNameUniqueViolation(err)) {
+      throw new ConflictError(`Agent name "${name}" already exists in organization "${orgId}"`, {
+        code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.NAME_CONFLICT,
+      });
     }
     throw err;
   }
@@ -1423,6 +1428,32 @@ export async function getAgentSkills(db: Database, uuid: string): Promise<AgentS
   // expected to validate the payload with `agentSkillsSchema` on the way
   // in, so the stored shape is trusted on the way out.
   return row.skills as unknown as AgentSkills;
+}
+
+const PG_UNIQUE_VIOLATION = "23505";
+const AGENTS_ORG_NAME_UNIQUE = "uq_agents_org_name";
+
+function postgresErrorField(error: unknown, field: "code" | "constraint" | "constraint_name"): string | undefined {
+  const visited = new Set<object>();
+  let current: unknown = error;
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const value = Reflect.get(current, field);
+    if (typeof value === "string") return value;
+    current = Reflect.get(current, "cause");
+  }
+  return undefined;
+}
+
+/**
+ * True only for the Agent `(organization_id, name)` unique violation.
+ * Exported so regressions can prove other 23505s (Resources, attachments,
+ * bindings) are never mislabeled as `agent_name_conflict`.
+ */
+export function isAgentOrgNameUniqueViolation(error: unknown): boolean {
+  if (postgresErrorField(error, "code") !== PG_UNIQUE_VIOLATION) return false;
+  const constraint = postgresErrorField(error, "constraint_name") ?? postgresErrorField(error, "constraint");
+  return constraint === AGENTS_ORG_NAME_UNIQUE;
 }
 
 /**

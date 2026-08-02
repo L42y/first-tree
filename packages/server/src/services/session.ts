@@ -11,6 +11,8 @@ import { messages } from "../db/schema/messages.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import type { Notifier } from "./notifier.js";
+import { agentRouteGuardSql } from "./session-command-rpc.js";
+import * as sessionEventService from "./session-event.js";
 
 export const SUMMARY_MAX_LENGTH = 50;
 
@@ -403,7 +405,13 @@ export async function suspendSession(
   return transitionSessionState(db, agentId, chatId, "suspended", ["active"], organizationId, notifier);
 }
 
-/** Commit `suspended → evicted` (terminal — listings hide it, revival defense blocks resurrection). */
+/**
+ * Commit `suspended | errored → evicted` (terminal — listings hide it, revival
+ * defense blocks resurrection). `errored` is accepted so a failed chat session
+ * can be reset directly; `active` stays excluded on purpose — the terminate
+ * route is a no-op there and callers (e.g. the Web Reset flow) must suspend
+ * first, keeping a running turn's stop deliberate and sequenced.
+ */
 export async function archiveSession(
   db: Database,
   agentId: string,
@@ -411,7 +419,108 @@ export async function archiveSession(
   organizationId: string,
   notifier?: Notifier,
 ): Promise<StateTransitionResult> {
-  return transitionSessionState(db, agentId, chatId, "evicted", ["suspended"], organizationId, notifier);
+  return transitionSessionState(db, agentId, chatId, "evicted", ["suspended", "errored"], organizationId, notifier);
+}
+
+/**
+ * Atomically finalize an apply-acked terminate (the Web chat-session Reset
+ * path): under the session row lock, re-confirm the row is still stopped
+ * (`suspended` | `errored` | already `evicted`), transition it to `evicted`,
+ * delete its session events, and refresh presence counts — all in ONE
+ * transaction. A cleanup failure rolls the eviction back, so the row stays
+ * stopped and the Reset remains retryable after a reload; a row re-activated
+ * by a new message while the ack was in flight fails the transition
+ * (`state` stays `active`) instead of evicting the fresh session. An
+ * already-`evicted` row skips the state write (`transitioned: false`) but
+ * still re-clears events — a legacy-path eviction may have lost its cleanup.
+ */
+export async function finalizeTerminatedSession(
+  db: Database,
+  agentId: string,
+  chatId: string,
+  organizationId: string,
+  notifier?: Notifier,
+  expectedRoute?: { clientId: string; instanceId: string },
+): Promise<StateTransitionResult> {
+  const now = new Date();
+  let finalState: SessionState | null = null;
+  let transitioned = false;
+
+  await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({ state: agentChatSessions.state })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
+      .for("update");
+
+    if (!existing) return;
+    const current = existing.state as SessionState;
+    finalState = current;
+
+    // Last-in-transaction route revalidation: the ack was guarded at store
+    // time, but the agent may have been rebound while it travelled. Never
+    // evict or clear against a route that no longer matches the one the
+    // apply-ack was issued for.
+    if (expectedRoute) {
+      const [routeOk] = await tx
+        .select({ agentId: agents.uuid })
+        .from(agents)
+        .where(
+          and(eq(agents.uuid, agentId), agentRouteGuardSql(agentId, expectedRoute.clientId, expectedRoute.instanceId)),
+        )
+        .limit(1);
+      if (!routeOk) {
+        throw new ConflictError("The agent's client route changed while the reset was in flight; nothing was reset");
+      }
+    }
+
+    if (current === "evicted") {
+      await sessionEventService.clearEvents(tx as unknown as Database, agentId, chatId);
+      return;
+    }
+    if (current !== "suspended" && current !== "errored") return;
+
+    await tx
+      .update(agentChatSessions)
+      .set({ state: "evicted", updatedAt: now })
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)));
+
+    await sessionEventService.clearEvents(tx as unknown as Database, agentId, chatId);
+
+    const [counts] = await tx
+      .select({
+        active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
+        total: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} != 'evicted')::int`,
+      })
+      .from(agentChatSessions)
+      .where(eq(agentChatSessions.agentId, agentId));
+
+    await tx
+      .update(agentPresence)
+      .set({
+        activeSessions: counts?.active ?? 0,
+        totalSessions: counts?.total ?? 0,
+        lastSeenAt: now,
+      })
+      .where(eq(agentPresence.agentId, agentId));
+
+    finalState = "evicted";
+    transitioned = true;
+  });
+
+  if (finalState === null) {
+    throw new NotFoundError(`Session (${agentId}, ${chatId}) not found`);
+  }
+
+  // Notify on every evicted outcome — including the idempotent
+  // already-evicted path. The eviction is the terminal-cleanup signal other
+  // viewers rely on to drop the session's live trace from their event
+  // cache; the state itself changing is not the point.
+  if (finalState === "evicted" && notifier) {
+    notifier.notifySessionStateChange(agentId, chatId, "evicted", organizationId).catch(() => {});
+  }
+
+  return { state: finalState, transitioned };
 }
 
 export type ArchiveAgentSessionsResult = {

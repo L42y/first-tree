@@ -30,6 +30,7 @@ type FakeSessionState = {
   >;
   applyStaleChatIds: ReturnType<typeof vi.fn<(chatIds: string[]) => void>>;
   noteBindRecoveryComplete: ReturnType<typeof vi.fn<() => void>>;
+  reconcileReplayFencesWithServer: ReturnType<typeof vi.fn<() => Promise<void>>>;
   updateTransport: ReturnType<typeof vi.fn<(sdk: unknown, agentConfigCache?: unknown) => void>>;
   shutdown: ReturnType<typeof vi.fn<(reason?: string, opts?: unknown) => Promise<void>>>;
 };
@@ -74,6 +75,7 @@ class FakeClientConnection extends EventEmitter {
   reportSessionEvent = vi.fn();
   reportSessionEventConfirmed = vi.fn(async () => {});
   reportSessionRuntime = vi.fn();
+  reportSessionCommandApplied = vi.fn();
   sendSessionReconcile = vi.fn();
 
   constructor(private readonly sdk: unknown) {
@@ -244,6 +246,7 @@ function installMocks(
           handleCommand: vi.fn(async () => {}),
           applyStaleChatIds: vi.fn(),
           noteBindRecoveryComplete: vi.fn(),
+          reconcileReplayFencesWithServer: vi.fn(async () => {}),
           updateTransport: vi.fn(),
           shutdown: vi.fn(async () => {}),
         };
@@ -287,6 +290,10 @@ function installMocks(
 
       noteBindRecoveryComplete(): void {
         this.state.noteBindRecoveryComplete();
+      }
+
+      reconcileReplayFencesWithServer(): Promise<void> {
+        return this.state.reconcileReplayFencesWithServer();
       }
 
       updateTransport(sdk: unknown, agentConfigCache?: unknown): void {
@@ -658,6 +665,154 @@ describe("AgentSlot", () => {
     expect(session.dispatch).toHaveBeenCalledTimes(1);
   });
 
+  it("acks a ref'd session:terminate only after handleCommand has fully resolved", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    // No ref → legacy fire-and-forget path, never an ack.
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-1", type: "session:terminate" });
+    await Promise.resolve();
+    expect(session.handleCommand).toHaveBeenCalledWith("chat-1", "session:terminate");
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    // Ref'd terminate: the ack must NOT fire while the apply is in flight —
+    // the server treats it as proof the provider mapping is already gone.
+    const pending = deferred<void>();
+    session.handleCommand.mockReturnValueOnce(pending.promise);
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-2",
+      type: "session:terminate",
+      ref: "ref-1",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(session.handleCommand).toHaveBeenCalledWith("chat-2", "session:terminate");
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    pending.resolve();
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-1",
+        agentId: "agent-1",
+        chatId: "chat-2",
+        command: "session:terminate",
+        applied: true,
+      }),
+    );
+
+    // A failed apply reports applied:false — never a success ack.
+    session.handleCommand.mockRejectedValueOnce(new Error("boom"));
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-3",
+      type: "session:terminate",
+      ref: "ref-2",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-2",
+        agentId: "agent-1",
+        chatId: "chat-3",
+        command: "session:terminate",
+        applied: false,
+      }),
+    );
+
+    await slot.stop();
+  });
+
+  it("acks concurrent ref'd terminates for the same chat only after the shared apply settles", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    // SessionManager coalesces a duplicate terminate onto the in-flight
+    // apply; both refs must ack only after that shared work settles, and a
+    // legacy unref'd terminate overlapping them never acks at all.
+    const shared = deferred<void>();
+    session.handleCommand.mockReturnValue(shared.promise);
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-1", type: "session:terminate" });
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-1",
+    });
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-2",
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(session.handleCommand).toHaveBeenCalledTimes(3);
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    shared.resolve();
+    await vi.waitFor(() => expect(connection.reportSessionCommandApplied).toHaveBeenCalledTimes(2));
+    expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+      ref: "ref-1",
+      agentId: "agent-1",
+      chatId: "chat-1",
+      command: "session:terminate",
+      applied: true,
+    });
+    expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+      ref: "ref-2",
+      agentId: "agent-1",
+      chatId: "chat-1",
+      command: "session:terminate",
+      applied: true,
+    });
+
+    await slot.stop();
+  });
+
+  it("acks applied:false for every ref sharing a failed terminate apply", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const shared = deferred<void>();
+    session.handleCommand.mockReturnValue(shared.promise);
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-1",
+    });
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-1",
+      type: "session:terminate",
+      ref: "ref-2",
+    });
+    await Promise.resolve();
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
+
+    shared.reject(new Error("boom"));
+    await vi.waitFor(() => expect(connection.reportSessionCommandApplied).toHaveBeenCalledTimes(2));
+    // Neither ref may report success: the shared apply failed for both.
+    for (const ref of ["ref-1", "ref-2"]) {
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref,
+        agentId: "agent-1",
+        chatId: "chat-1",
+        command: "session:terminate",
+        applied: false,
+      });
+    }
+    expect(connection.reportSessionCommandApplied).not.toHaveBeenCalledWith(expect.objectContaining({ applied: true }));
+
+    await slot.stop();
+  });
+
   it("buffers bind-time inbox pushes until the SessionManager exists", async () => {
     const { slot, connection, sdk, state } = await makeSlot({
       dispatchRejectEntryId: 78,
@@ -742,6 +897,40 @@ describe("AgentSlot", () => {
     await slot.stop();
   });
 
+  it("reconciles a debt-only chat via the production active-set path and applies the stale retry", async () => {
+    const { slot, connection, state } = await makeSlot({ activeRuntimeChatIds: ["chat-1"] });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    // The real SessionManager force-keeps teardown-debt chats even when the
+    // active set excludes them (pinned in session-manager tests); spy the
+    // slot's manager to reproduce that contract and pin the wire path:
+    // reconcileNow must pass the active runtime set through and still send
+    // the debt chat.
+    const manager = Reflect.get(slot, "sessionManager") as {
+      getHeldChatIds(activeChatIds?: ReadonlySet<string> | null): string[];
+    };
+    const heldSpy = vi.spyOn(manager, "getHeldChatIds").mockReturnValue(["chat-debt-only"]);
+    const reconcile = Reflect.get(slot, "reconcileNow");
+    if (typeof reconcile !== "function") throw new Error("private method missing");
+
+    connection.sendSessionReconcile.mockClear();
+    reconcile.call(slot);
+    expect(heldSpy).toHaveBeenCalledWith(new Set(["chat-1"]));
+    expect(connection.sendSessionReconcile).toHaveBeenCalledWith("agent-1", ["chat-debt-only"]);
+
+    // Server judges the debt chat stale → the client applies the strict
+    // terminate retry.
+    connection.emit("session:reconcile:result", {
+      agentId: "agent-1",
+      staleChatIds: ["chat-debt-only"],
+    } satisfies SessionReconcileResult);
+    expect(session.applyStaleChatIds).toHaveBeenCalledWith(["chat-debt-only"]);
+
+    await slot.stop();
+  });
+
   it("adopts the latest runtime SDK after a reconnect rebind", async () => {
     const { slot, connection, sdk, state } = await makeSlot({ activeRuntimeChatIds: ["chat-1"] });
     await slot.start();
@@ -750,6 +939,7 @@ describe("AgentSlot", () => {
 
     const nextSdk = makeSdk({ activeRuntimeChatIds: ["chat-2"] });
     vi.mocked(sdk.listActiveRuntimeChatIds).mockClear();
+    session.reconcileReplayFencesWithServer.mockClear();
 
     connection.emit("agent:bound", {
       agentId: "agent-1",
@@ -766,6 +956,7 @@ describe("AgentSlot", () => {
     expect(vi.mocked(sdk.listActiveRuntimeChatIds)).not.toHaveBeenCalled();
     expect(session.updateTransport).toHaveBeenCalledWith(nextSdk, expect.anything());
     expect(session.noteBindRecoveryComplete).toHaveBeenCalled();
+    expect(session.reconcileReplayFencesWithServer).toHaveBeenCalledTimes(1);
 
     await slot.stop();
   });

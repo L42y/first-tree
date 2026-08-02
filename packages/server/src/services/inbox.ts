@@ -1,4 +1,5 @@
 import {
+  INBOX_FENCE_PROBE_MAX_IDS,
   type InboxEntryWithMessage,
   inboxEntryStatusSchema,
   messageSourceSchema,
@@ -678,6 +679,64 @@ export const ackEntryByIdForBoundAgents = ackThroughEntryIdForBoundAgents;
 export type RecoverUnackedForScopeResult = {
   resetEntryIds: number[];
 };
+
+/**
+ * Authoritative unacked backlog for one inbox scope: rows in EITHER
+ * `pending` or `delivered` (both unsettled per the wire contract; only
+ * `acked` is settlement). `recoverUnackedForScope`'s reset count alone can
+ * never prove settlement, because unacked rows may already be `pending`
+ * (e.g. after a bind reset). Callers must compute this inside the same
+ * serialized recovery boundary as the reset itself.
+ */
+export async function countUnackedForScope(db: Database, opts: { inboxId: string; chatId?: string }): Promise<number> {
+  const conditions = [
+    eq(inboxEntries.inboxId, opts.inboxId),
+    inArray(inboxEntries.status, ["pending", "delivered"]),
+    eq(inboxEntries.notify, true),
+  ];
+  if (opts.chatId !== undefined) conditions.push(eq(inboxEntries.chatId, opts.chatId));
+  const rows = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(inboxEntries)
+    .where(and(...conditions));
+  return rows[0]?.count ?? 0;
+}
+
+/** Cap for one fence-probe request — the shared wire constant; the client chunks larger fence sets. */
+export const FENCE_PROBE_MAX_IDS = INBOX_FENCE_PROBE_MAX_IDS;
+
+/**
+ * Per-delivery settlement truth for the replay-fence probe: of the probed
+ * message ids, which are durably settled — the delivery's notify row EXISTS
+ * in the chat scope and is no longer unsettled (pending/delivered). An id
+ * with no row at all is UNKNOWN, not settled, and must never clear a fence.
+ * Settlement is per concrete inbox delivery — unrelated backlog size must
+ * never dilute the answer. Must be called inside the same serialized
+ * recovery boundary as resets.
+ */
+export async function listSettledMessageIdsForScope(
+  db: Database,
+  opts: { inboxId: string; chatId: string; messageIds: string[] },
+): Promise<string[]> {
+  const uniqueIds = [...new Set(opts.messageIds)];
+  if (uniqueIds.length === 0) return [];
+  const rows = await db
+    .select({ messageId: inboxEntries.messageId, status: inboxEntries.status })
+    .from(inboxEntries)
+    .where(
+      and(
+        eq(inboxEntries.inboxId, opts.inboxId),
+        eq(inboxEntries.chatId, opts.chatId),
+        inArray(inboxEntries.messageId, uniqueIds),
+        eq(inboxEntries.notify, true),
+      ),
+    );
+  const known = new Set(rows.map((row) => row.messageId));
+  const unacked = new Set(
+    rows.filter((row) => row.status === "pending" || row.status === "delivered").map((row) => row.messageId),
+  );
+  return uniqueIds.filter((id) => known.has(id) && !unacked.has(id));
+}
 
 /**
  * Reset delivered-but-unacked notify rows for a single inbox, optionally

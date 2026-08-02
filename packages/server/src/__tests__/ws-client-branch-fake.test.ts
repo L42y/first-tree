@@ -354,6 +354,7 @@ describe("Agent client WS branch fakes", () => {
     vi.spyOn(inboxService, "claimBacklogForPushFair").mockResolvedValue([]);
     vi.spyOn(inboxService, "claimBacklogForPushForChat").mockResolvedValue([]);
     vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValue({ resetEntryIds: [] });
+    vi.spyOn(inboxService, "countUnackedForScope").mockResolvedValue(0);
     vi.spyOn(inboxService, "ackEntryByIdForBoundAgents").mockResolvedValue({
       ok: true,
       throughEntry: inboxDbRow(),
@@ -615,12 +616,63 @@ describe("Agent client WS branch fakes", () => {
       agentId: "agent_1",
       chatId: "chat_1",
       resetCount: 0,
+      unackedOutstanding: 0,
+    });
+  });
+
+  it("answers fence probes with per-delivery settlement truth and rejects unbound agents", async () => {
+    mockSuccessfulBindServices();
+    const settledSpy = vi.spyOn(inboxService, "listSettledMessageIdsForScope").mockResolvedValue(["msg-settled"]);
+    const { handler } = routeHarness(
+      queuedDb([
+        [{ id: "user_1", status: "active" }],
+        [{ userId: "user_1", retiredAt: null }],
+        ...Array.from({ length: 12 }, () => [activeAgentRow()]),
+      ]),
+    );
+    const socket = new FakeSocket();
+    await bindAgent(socket, handler);
+
+    await emitMessage(socket, {
+      type: "inbox:fence-probe",
+      ref: "probe-1",
+      agentId: "agent_1",
+      chatId: "chat_1",
+      messageIds: ["msg-settled", "msg-pending"],
+    });
+    expect(socket.sent).toContainEqual({
+      type: "inbox:fence-probe:accepted",
+      ref: "probe-1",
+      agentId: "agent_1",
+      chatId: "chat_1",
+      settledMessageIds: ["msg-settled"],
+    });
+    expect(settledSpy).toHaveBeenCalledWith(expect.anything(), {
+      inboxId: expect.any(String),
+      chatId: "chat_1",
+      messageIds: ["msg-settled", "msg-pending"],
+    });
+
+    await emitMessage(socket, {
+      type: "inbox:fence-probe",
+      ref: "probe-2",
+      agentId: "agent_unknown",
+      chatId: "chat_1",
+      messageIds: ["msg-1"],
+    });
+    expect(socket.sent).toContainEqual({
+      type: "inbox:fence-probe:rejected",
+      ref: "probe-2",
+      agentId: "agent_unknown",
+      chatId: "chat_1",
+      reason: "agent_not_bound",
     });
   });
 
   it("opens a same-socket recovery circuit after repeated identical debt without progress", async () => {
     mockSuccessfulBindServices();
     const recoverSpy = vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValue({ resetEntryIds: [101] });
+    vi.spyOn(inboxService, "countUnackedForScope").mockResolvedValue(1);
     const { handler } = routeHarness(
       queuedDb([
         [{ id: "user_1", status: "active" }],
@@ -644,6 +696,7 @@ describe("Agent client WS branch fakes", () => {
         agentId: "agent_1",
         chatId: "chat_no_progress",
         resetCount: 1,
+        unackedOutstanding: 1,
       });
     }
 
@@ -705,6 +758,7 @@ describe("Agent client WS branch fakes", () => {
       agentId: "agent_1",
       chatId: "chat_no_progress",
       resetCount: 1,
+      unackedOutstanding: 1,
     });
     expect(recoverSpy).toHaveBeenCalledTimes(4);
   });
