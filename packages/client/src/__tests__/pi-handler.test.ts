@@ -1238,6 +1238,55 @@ describe("Pi handler", () => {
     expect(readCount(steerCountFile)).toBe(1);
   });
 
+  it("queues inject after agent_settled instead of late steer during turn finalization", async () => {
+    process.env.FT_PI_TEST_MODE = "streaming";
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const events: SessionEvent[] = [];
+    let releaseForward: (() => void) | undefined;
+    const forwardHeld = new Promise<void>((resolve) => {
+      releaseForward = resolve;
+    });
+    const sessionCtx: SessionContext = {
+      ...makeContext(events),
+      forwardResult: async () => {
+        await forwardHeld;
+      },
+    };
+    const startToken = makeToken();
+    const lateToken = makeToken();
+    const startPromise = handler.start(message("m1", "first"), sessionCtx, startToken);
+    await vi.waitFor(() => expect(startToken.processingStarted).toHaveBeenCalled());
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "assistant_text")).toBe(true));
+    // streaming mode emits agent_settled ~120ms after the text delta; wait past
+    // that so waitForSettled has resolved and forwardResult is holding finalization.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(readCount(steerCountFile)).toBe(0);
+
+    const lateReceipt = handler.inject(message("m2", "after-settled"), lateToken);
+    expect(lateReceipt).toEqual({ kind: "owned", mode: "queued" });
+    expect(readCount(steerCountFile)).toBe(0);
+    expect(lateToken.processingStarted).not.toHaveBeenCalled();
+    expect(lateToken.completed).toEqual([]);
+
+    releaseForward?.();
+    await startPromise;
+    expect(startToken.completed).toEqual([expect.objectContaining({ status: "success" })]);
+    await vi.waitFor(() => expect(readCount(promptCountFile)).toBe(2));
+    expect(readCount(steerCountFile)).toBe(0);
+    await vi.waitFor(() => expect(lateToken.completed.length).toBe(1));
+    expect(lateToken.completed).toEqual([expect.objectContaining({ status: "success" })]);
+    expect(lateToken.retried).toEqual([]);
+    await handler.shutdown();
+  });
+
   it("consumes after-write steer loss without duplicating the steer", async () => {
     process.env.FT_PI_TEST_MODE = "steer_after_write_hang";
     const specs: ProviderProcessSpec[] = [];

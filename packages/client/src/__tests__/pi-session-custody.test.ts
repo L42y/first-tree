@@ -28,6 +28,7 @@ const steerCountFile = process.env.FT_PI_STEER_COUNT_FILE ?? "";
 const bashStartFile = process.env.FT_PI_BASH_START_FILE ?? "";
 const bashStartCountFile = process.env.FT_PI_BASH_START_COUNT_FILE ?? "";
 const promptGateFile = process.env.FT_PI_PROMPT_GATE_FILE ?? "";
+const getStateFailRemainFile = process.env.FT_PI_GET_STATE_FAIL_REMAINING_FILE ?? "";
 const modeFile = process.env.FT_PI_TEST_MODE_FILE ?? "";
 
 function currentMode() {
@@ -51,6 +52,14 @@ function write(obj) {
 function gateOpen() {
   if (!promptGateFile) return true;
   try { return fs.readFileSync(promptGateFile, "utf8").trim() === "1"; } catch { return false; }
+}
+function consumeGetStateFail() {
+  if (!getStateFailRemainFile) return false;
+  let remain = 0;
+  try { remain = Number(fs.readFileSync(getStateFailRemainFile, "utf8")) || 0; } catch {}
+  if (remain <= 0) return false;
+  fs.writeFileSync(getStateFailRemainFile, String(remain - 1));
+  return true;
 }
 function holdBashAfterAccept(id) {
   write({ type: "response", id, command: "prompt", success: true });
@@ -82,6 +91,21 @@ rl.on("line", (line) => {
       });
       return;
     }
+    if (
+      (mode === "transient_get_state_once_then_bash_hold" ||
+        mode === "transient_get_state_once_then_hold_gate") &&
+      consumeGetStateFail()
+    ) {
+      // Capacity-classified session failure (not pi_protocol_error): retryable.
+      write({
+        type: "response",
+        id,
+        command: "get_state",
+        success: false,
+        error: "provider overloaded",
+      });
+      return;
+    }
     const respondOk = () =>
       write({
         type: "response",
@@ -90,7 +114,7 @@ rl.on("line", (line) => {
         success: true,
         data: { sessionId: expectedSessionId, isStreaming: false, messageCount: 0 },
       });
-    if (mode === "hold_get_state_until_gate") {
+    if (mode === "hold_get_state_until_gate" || mode === "transient_get_state_once_then_hold_gate") {
       const tick = () => {
         if (!gateOpen()) {
           setTimeout(tick, 15);
@@ -134,7 +158,12 @@ rl.on("line", (line) => {
       write({ type: "agent_settled" });
       return;
     }
-    if (mode === "bash_hold_until_abort" || mode === "hold_get_state_until_gate") {
+    if (
+      mode === "bash_hold_until_abort" ||
+      mode === "hold_get_state_until_gate" ||
+      mode === "transient_get_state_once_then_bash_hold" ||
+      mode === "transient_get_state_once_then_hold_gate"
+    ) {
       holdBashAfterAccept(id);
       return;
     }
@@ -182,7 +211,9 @@ rl.on("line", (line) => {
     if (
       mode === "bash_hold_until_abort" ||
       mode === "prompt_write_tool_no_response" ||
-      mode === "hold_get_state_until_gate"
+      mode === "hold_get_state_until_gate" ||
+      mode === "transient_get_state_once_then_bash_hold" ||
+      mode === "transient_get_state_once_then_hold_gate"
     ) {
       write({ type: "tool_execution_end", toolCallId: "bash-hold-1", isError: true, result: "aborted" });
       write({ type: "agent_settled" });
@@ -211,6 +242,7 @@ let steerCountFile = "";
 let bashStartFile = "";
 let bashStartCountFile = "";
 let promptGateFile = "";
+let getStateFailRemainFile = "";
 let testModeFile = "";
 
 function setPiTestMode(mode: string): void {
@@ -275,6 +307,7 @@ function createSyntheticSupervisor(specs: ProviderProcessSpec[]): ProviderProces
           FT_PI_BASH_START_FILE: bashStartFile,
           FT_PI_BASH_START_COUNT_FILE: bashStartCountFile,
           FT_PI_PROMPT_GATE_FILE: promptGateFile,
+          FT_PI_GET_STATE_FAIL_REMAINING_FILE: getStateFailRemainFile,
         },
         detached: false,
       });
@@ -294,12 +327,14 @@ beforeEach(() => {
   bashStartFile = join(workspaceRoot, "bash-start.txt");
   bashStartCountFile = join(workspaceRoot, "bash-start-count.txt");
   promptGateFile = join(workspaceRoot, "prompt-gate.txt");
+  getStateFailRemainFile = join(workspaceRoot, "get-state-fail-remain.txt");
   testModeFile = join(workspaceRoot, "pi-test-mode.txt");
   writeFileSync(promptCountFile, "0");
   writeFileSync(steerCountFile, "0");
   writeFileSync(bashStartFile, "0");
   writeFileSync(bashStartCountFile, "0");
   writeFileSync(promptGateFile, "0");
+  writeFileSync(getStateFailRemainFile, "0");
   writeFileSync(testModeFile, "happy");
   delete process.env.FT_PI_TEST_MODE;
 });
@@ -1828,6 +1863,96 @@ describe("Pi handler → SessionManager custody", () => {
     // Gate opened after suspend invalidation — must not create a late prompt/steer.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(readCount(steerCountFile)).toBe(0);
+    await sm.shutdown();
+  });
+
+  it("provider-entered session retry live-injects steer before settlement", async () => {
+    setPiTestMode("transient_get_state_once_then_bash_hold");
+    writeFileSync(getStateFailRemainFile, "1");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-steer" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    // First dispatch returns after the transient failure schedules retry — it
+    // does not await the winning retry turn. Observe custody via wire counts/ACK.
+    void sm.dispatch(
+      mockEntry({
+        id: 241,
+        chatId: "chat-pi-retry-steer",
+        messageId: "msg-head-retry",
+        content: "run sleep 60",
+      }),
+    );
+    await vi.waitFor(() => expect(readCount(getStateFailRemainFile)).toBe(0), { timeout: 5000 });
+    void sm.dispatch(
+      mockEntry({
+        id: 242,
+        chatId: "chat-pi-retry-steer",
+        messageId: "msg-tail-retry",
+        content: "steer during retry turn",
+      }),
+    );
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1), { timeout: 10_000 });
+    await vi.waitFor(() => expect(readCount(steerCountFile)).toBe(1), { timeout: 5000 });
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.handleCommand("chat-pi-retry-steer", "session:suspend");
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(241));
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(242));
+
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(readCount(steerCountFile)).toBe(1);
+    expect(ackEntry).toHaveBeenCalledTimes(2);
+    const ack241 = ackEntry.mock.invocationCallOrder[ackEntry.mock.calls.findIndex((call) => call[0] === 241)];
+    const ack242 = ackEntry.mock.invocationCallOrder[ackEntry.mock.calls.findIndex((call) => call[0] === 242)];
+    expect(ack241 as number).toBeLessThan(ack242 as number);
+    await sm.shutdown();
+  });
+
+  it("retry transition defers tails before processingStarted then drains into live steer", async () => {
+    setPiTestMode("transient_get_state_once_then_hold_gate");
+    writeFileSync(getStateFailRemainFile, "1");
+    writeFileSync(promptGateFile, "0");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-fifo" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    void sm.dispatch(
+      mockEntry({
+        id: 251,
+        chatId: "chat-pi-retry-fifo",
+        messageId: "msg-head-retry-fifo",
+        content: "run sleep 60",
+      }),
+    );
+    await vi.waitFor(() => expect(readCount(getStateFailRemainFile)).toBe(0), { timeout: 5000 });
+    // Winning retry is held before get_state returns — membership not proven yet.
+    void sm.dispatch(
+      mockEntry({
+        id: 252,
+        chatId: "chat-pi-retry-fifo",
+        messageId: "msg-tail-retry-fifo",
+        content: "early during retry",
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(readCount(promptCountFile)).toBe(0);
+    expect(readCount(steerCountFile)).toBe(0);
+
+    writeFileSync(promptGateFile, "1");
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1), { timeout: 10_000 });
+    await vi.waitFor(() => expect(readCount(steerCountFile)).toBe(1), { timeout: 5000 });
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.handleCommand("chat-pi-retry-fifo", "session:suspend");
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(251));
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(252));
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(readCount(steerCountFile)).toBe(1);
     await sm.shutdown();
   });
 });

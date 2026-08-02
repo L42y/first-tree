@@ -2531,20 +2531,25 @@ export class SessionManager {
       return;
     }
 
-    // Transient start/resume retries keep the original attempted message at
-    // the head. Newer messages sit later in the inbox ACK prefix, so hold them
-    // until a winning handler is live again.
-    if (existing && existing.retryAttempt > 0) {
+    // Transient start/resume retries:
+    // - Waiting/backoff (no live transition): keep the original head first and
+    //   nudge the retry timer; do not open inject.
+    // - Provider-entered retry transition (routeInjectReady): live-inject the
+    //   same way as a first-attempt start/resume that still awaits settlement.
+    //   retryAttempt stays nonzero until start/resume returns, so readiness
+    //   must not be gated solely on that flag.
+    if (existing && existing.retryAttempt > 0 && existing.routeTransition === null) {
       existing.deferredMessages.push(message);
       this.triggerImmediateRetry(chatId);
       return;
     }
 
-    // An in-flight start/resume keeps routeTransition until the producer
-    // returns. Before the head proves provider membership (processingStarted),
-    // same-chat tails stay FIFO-deferred. After membership is proven, live
-    // inject is allowed even while the producer still awaits settlement —
-    // required for providers such as Pi whose start/resume await agent_settled.
+    // An in-flight start/resume (including a winning retry attempt) keeps
+    // routeTransition until the producer returns. Before the head proves
+    // provider membership (processingStarted), same-chat tails stay
+    // FIFO-deferred. After membership is proven, live inject is allowed even
+    // while the producer still awaits settlement — required for providers
+    // such as Pi whose start/resume await agent_settled.
     if (existing && existing.routeTransition !== null) {
       if (existing.routeInjectReady && existing.status === "active") {
         this.injectIntoActiveRoute(existing, message);
@@ -3548,7 +3553,9 @@ export class SessionManager {
   private markRouteInjectReady(chatId: string): void {
     const entry = this.sessions.get(chatId);
     if (!entry || entry.routeTransition === null) return;
-    if (entry.retryAttempt > 0) return;
+    // Waiting/backoff retries have no transition and never reach here. An
+    // in-flight retry transition that has proven membership may open live
+    // inject even while retryAttempt remains nonzero until start/resume returns.
     if (entry.status !== "active" || !entry.activeSlotHeld) return;
     entry.routeInjectReady = true;
     this.drainDeferredMessages(entry);
