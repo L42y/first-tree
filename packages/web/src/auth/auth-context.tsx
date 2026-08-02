@@ -143,12 +143,16 @@ type AuthContextValue = {
    */
   adoptTokens: (tokens: { accessToken: string; refreshToken: string }) => Promise<void>;
   /**
-   * Switch the active organization view. Pure client-side state — the
-   * /orgs/:orgId/* routes themselves probe membership in real time on
-   * every request, so a stale or unauthorized selection just yields a
-   * clean 403 from the next API call. Does NOT re-issue tokens; it does
-   * signal the org-scoped admin WebSocket to reconnect against the new
-   * org (`ADMIN_WS_ORG_CHANGED_EVENT`).
+   * Switch the active organization view. The org-scoped routes probe
+   * membership in real time on every request, and the post-switch `/me` is
+   * the switch's confirmation authority: this promise REJECTS when that
+   * `/me` cannot be fetched. On such a transport failure every optimistic
+   * write (React selection, per-user persisted org, API override, admin WS
+   * target, and any cache written during the optimistic window) is rolled
+   * back to the pre-switch confirmed org before the rejection propagates —
+   * callers must handle the rejection (inline error / retry affordance).
+   * Does NOT re-issue tokens; it does signal the org-scoped admin WebSocket
+   * to reconnect against the new org (`ADMIN_WS_ORG_CHANGED_EVENT`).
    */
   selectOrganization: (organizationId: string) => Promise<void>;
   /**
@@ -234,6 +238,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [onboardingStep, setOnboardingStep] = useState<"connect" | "create_agent" | "completed" | null>(null);
   const [onboardingDismissedAt, setOnboardingDismissedAt] = useState<string | null>(null);
   const [onboardingCompletedAt, setOnboardingCompletedAt] = useState<string | null>(null);
+  // Mirror of the selected org for selectOrganization's rollback: a switch
+  // must restore the last CONFIRMED org when the post-switch /me fails, and
+  // event handlers can't read fresh React state from a closure.
+  const selectedOrgIdRef = useRef<string | null>(selectedOrgId);
+  useEffect(() => {
+    selectedOrgIdRef.current = selectedOrgId;
+  }, [selectedOrgId]);
   // Stays false until the first fetchMe settles. Unauthenticated visitors
   // never need /me, so the gate also flips for them via the unauth branch
   // below — RequireAuth only blocks the loading frame when the user IS
@@ -271,7 +282,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSwitchingOrg(null);
   }, [queryClient]);
 
-  const fetchMe = useCallback(async () => {
+  const loadMe = useCallback(async () => {
+    // Throws on transport failure. `fetchMe` wraps this with the fail-soft
+    // catch for initial load / manual refresh; `selectOrganization` consumes
+    // the rejection directly because the post-switch /me is the switch's
+    // confirmation authority.
     try {
       const data = await api.get<MeResponse>("/me");
       setUser(data.user ?? null);
@@ -312,14 +327,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setApiSelectedOrganizationId(fallback);
         return fallback;
       });
-    } catch {
-      // If /me fails, the UI falls back to hiding admin features.
     } finally {
       // Always flip the gate — even on error — so RequireAuth doesn't hang
       // the dashboard forever if /me is briefly unreachable.
       setMeLoaded(true);
     }
   }, []);
+
+  const fetchMe = useCallback(async () => {
+    // Initial load and manual refreshes stay fail-soft: if /me fails, the UI
+    // falls back to hiding admin features.
+    try {
+      await loadMe();
+    } catch {
+      // Swallowed by design for non-switch reads.
+    }
+  }, [loadMe]);
 
   const login = useCallback(
     async (username: string, password: string) => {
@@ -342,9 +365,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const selectOrganization = useCallback(
     async (organizationId: string) => {
-      // Pure client-side switch — the /orgs/:orgId/* routes probe
-      // membership in real time on every request, so a stale or
-      // unauthorized selection just yields a clean 403 from the next call.
+      // The post-switch /me confirms the switch. Capture the last confirmed
+      // org first so a transport failure can roll every optimistic write
+      // back to it.
+      const previousOrgId = selectedOrgIdRef.current;
       // Persist under the current user's key (token `sub`) so the selection
       // is restored only for this account.
       writeSelectedOrgId(userIdFromToken(), organizationId);
@@ -358,9 +382,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // never reuses the previous selection's data.
       queryClient.clear();
       setSelectedOrgId(organizationId);
-      await fetchMe();
+      try {
+        await loadMe();
+      } catch (error) {
+        // /me never confirmed the target: roll back the React selection, the
+        // per-user persisted org, the API override, and the admin WS target,
+        // and drop anything cached against the unconfirmed target during the
+        // optimistic window. The rejection lets the caller surface a
+        // recoverable error instead of acting on an unconfirmed Team.
+        writeSelectedOrgId(userIdFromToken(), previousOrgId);
+        setApiSelectedOrganizationId(previousOrgId);
+        window.dispatchEvent(new CustomEvent(ADMIN_WS_ORG_CHANGED_EVENT));
+        queryClient.clear();
+        setSelectedOrgId(previousOrgId);
+        throw error;
+      }
     },
-    [fetchMe, queryClient],
+    [loadMe, queryClient],
   );
 
   const currentMembership = useMemo<MeMembership | null>(() => {

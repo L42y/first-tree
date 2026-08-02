@@ -16,7 +16,7 @@ import { Button } from "../../components/ui/button.js";
 import { TemplateUseIntent } from "./template-use-intent.js";
 
 function DetailSkeleton() {
-  return <p className="text-body text-fg-3">Loading template…</p>;
+  return <p className="text-body text-fg-2">Loading template…</p>;
 }
 
 function NotFound() {
@@ -155,7 +155,7 @@ export function TemplateDetailPage() {
     }
     if (!meLoaded) {
       return (
-        <div className="landing-marketing flex min-h-screen items-center justify-center bg-background text-body text-fg-3">
+        <div className="landing-marketing flex min-h-screen items-center justify-center bg-background text-body text-fg-2">
           Loading…
         </div>
       );
@@ -174,7 +174,7 @@ export function TemplateDetailPage() {
       <header className="px-4 py-3">
         <Link
           to="/templates"
-          className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-3 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <FirstTreeLogo width={20} height={24} />
           Agent templates
@@ -211,7 +211,7 @@ export function TemplateDetailPage() {
                 <Button variant="cta" onClick={() => handleUseStarted(template)}>
                   Use this template
                 </Button>
-                <p className="text-caption text-fg-3" style={{ marginTop: "var(--sp-2)" }}>
+                <p className="text-caption text-fg-2" style={{ marginTop: "var(--sp-2)" }}>
                   Creates a new agent in your team with this responsibility. You can adjust or remove it before anything
                   is created.
                 </p>

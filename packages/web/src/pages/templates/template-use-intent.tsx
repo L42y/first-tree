@@ -102,12 +102,14 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  // Confirmation judgement — only after the switch promise resolved AND the
-  // post-switch auth snapshot landed (the org already matches, or a fresh
-  // memberships array arrived from the post-switch /me).
+  // Confirmation judgement — only after the switch promise resolved AND a
+  // FRESH /me membership snapshot landed. `selectOrganization` resolves only
+  // after a successful post-switch /me and rejects (with rollback) on
+  // transport failure, so a new memberships array is the proof of authority;
+  // the optimistic `organizationId` write alone NEVER unlocks confirmation.
   useEffect(() => {
     if (!teamSwitch?.promiseResolved) return;
-    const landed = organizationId === teamSwitch.targetOrgId || memberships !== teamSwitch.preMemberships;
+    const landed = memberships !== teamSwitch.preMemberships;
     if (!landed) return;
     const target = teamSwitch.targetOrgId;
     setTeamSwitch(null);
@@ -139,7 +141,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   if (!teamSwitch && needsOnboarding && organizationId && organizationId === mountOrgRef.current) {
     if (!handoffWritten) {
       return (
-        <div className="landing-marketing flex min-h-screen items-center justify-center bg-background text-body text-fg-3">
+        <div className="landing-marketing flex min-h-screen items-center justify-center bg-background text-body text-fg-2">
           Loading…
         </div>
       );
@@ -173,7 +175,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
       <header className="px-4 py-3">
         <Link
           to={`/templates/${template.slug}`}
-          className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-3 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           ← {template.name}
         </Link>
@@ -204,7 +206,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
               <div className="min-w-0">
                 <div className="text-body font-medium">{membership.organizationName}</div>
                 {membership.organizationId === organizationId && (
-                  <div className="text-caption text-muted-foreground">Current team</div>
+                  <div className="text-caption text-fg-2">Current team</div>
                 )}
               </div>
             </OptionCard>

@@ -18,7 +18,7 @@ function TemplateCard({ template }: { template: AgentTemplatePublicTemplate }) {
       <p className="text-body text-fg-2" style={{ marginTop: "var(--sp-1)" }}>
         {template.public.tagline}
       </p>
-      <p className="text-caption text-fg-3" style={{ marginTop: "var(--sp-3)" }}>
+      <p className="text-caption text-fg-2" style={{ marginTop: "var(--sp-3)" }}>
         For {template.public.targetUsers}
       </p>
     </Link>
@@ -56,7 +56,7 @@ export function TemplateLibraryPage() {
       <header className="px-4 py-3">
         <Link
           to="/"
-          className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-3 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           <FirstTreeLogo width={20} height={24} />
           First Tree
@@ -72,7 +72,7 @@ export function TemplateLibraryPage() {
 
         <div className="mt-8">
           {catalogQuery.isPending ? (
-            <p className="text-body text-fg-3">Loading templates…</p>
+            <p className="text-body text-fg-2">Loading templates…</p>
           ) : catalogQuery.isError ? (
             <div className="rounded-[var(--radius-panel)] border border-border bg-card p-6 text-center">
               <p className="text-body text-fg-2">
@@ -83,7 +83,7 @@ export function TemplateLibraryPage() {
               </Button>
             </div>
           ) : catalogQuery.data.templates.length === 0 ? (
-            <p className="text-body text-fg-3">No templates are available yet. Check back soon.</p>
+            <p className="text-body text-fg-2">No templates are available yet. Check back soon.</p>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2">
               {catalogQuery.data.templates.map((template) => (

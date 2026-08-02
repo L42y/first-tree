@@ -160,7 +160,12 @@ export function ChatByIdView({
     if (switchedOrgRef.current === chatOrg) return;
     if (!memberships.some((m) => m.organizationId === chatOrg)) return;
     switchedOrgRef.current = chatOrg;
-    void selectOrganization(chatOrg);
+    // A rejected switch (post-switch /me failed) rolls back to the confirmed
+    // org; clear the per-target ref so a later effect pass may retry instead
+    // of pinning this chat's org as permanently attempted.
+    void Promise.resolve(selectOrganization(chatOrg)).catch(() => {
+      switchedOrgRef.current = null;
+    });
   }, [chatDetail?.organizationId, currentOrgId, memberships, selectOrganization, switchingOrg]);
 
   const primaryAgent = useMemo(() => {

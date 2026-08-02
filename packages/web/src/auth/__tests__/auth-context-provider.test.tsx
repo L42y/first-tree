@@ -430,4 +430,53 @@ describe("AuthProvider", () => {
     expect(latestAuth?.isAuthenticated).toBe(true);
     expect(latestAuth?.meLoaded).toBe(true);
   });
+
+  it("rejects and rolls back to the confirmed org when the post-switch /me fails, then allows retry", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    // Initial /me settled on the authoritative org-1.
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    // The post-switch /me is a transport failure: the switch must reject and
+    // every optimistic write must roll back to org-1.
+    apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+    // Attach the rejection handler BEFORE entering act so the assertion
+    // observes the fully-settled switch (including its rollback), not an
+    // early act rethrow.
+    let switchError: unknown = null;
+    const switchPromise = latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+      switchError = error;
+    });
+    await act(async () => {
+      await switchPromise;
+    });
+    expect(switchError).toBeInstanceOf(Error);
+    expect((switchError as Error).message).toBe("offline");
+
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+    expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-1");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-1");
+
+    // Retry with a healthy /me confirms the target.
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-2");
+    });
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-2");
+    expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-2");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-2");
+  });
+
+  it("keeps initial-load /me failures fail-soft", async () => {
+    apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+    apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
+
+    // renderAuth's initial effect fetch swallows the failure — no rejection,
+    // meLoaded still flips so the app shell never hangs.
+    await renderAuth();
+    expect(latestAuth?.meLoaded).toBe(true);
+    expect(latestAuth?.currentMembership).toBeNull();
+  });
 });

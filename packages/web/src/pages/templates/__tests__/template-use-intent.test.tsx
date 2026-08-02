@@ -320,7 +320,12 @@ describe("TemplateUseIntent", () => {
     authMock.value.selectOrganization = vi.fn(
       (_orgId: string) =>
         new Promise<undefined>((resolve) => {
-          resolveSwitch = () => resolve(undefined);
+          resolveSwitch = () => {
+            // A resolved switch always carries a FRESH /me snapshot (new
+            // memberships identity) — the confirmation unlock condition.
+            authMock.value.memberships = [...authMock.value.memberships];
+            resolve(undefined);
+          };
         }),
     );
     await renderIntent();
@@ -346,7 +351,12 @@ describe("TemplateUseIntent", () => {
     authMock.value.selectOrganization = vi.fn(
       (_orgId: string) =>
         new Promise<undefined>((resolve) => {
-          resolveSwitch = () => resolve(undefined);
+          resolveSwitch = () => {
+            // A resolved switch always carries a FRESH /me snapshot (new
+            // memberships identity) — the confirmation unlock condition.
+            authMock.value.memberships = [...authMock.value.memberships];
+            resolve(undefined);
+          };
         }),
     );
     await renderIntent();
@@ -393,7 +403,12 @@ describe("TemplateUseIntent", () => {
     authMock.value.selectOrganization = vi.fn(
       (_orgId: string) =>
         new Promise<undefined>((resolve) => {
-          resolveSwitch = () => resolve(undefined);
+          resolveSwitch = () => {
+            // A resolved switch always carries a FRESH /me snapshot (new
+            // memberships identity) — the confirmation unlock condition.
+            authMock.value.memberships = [...authMock.value.memberships];
+            resolve(undefined);
+          };
         }),
     );
     await renderIntent();
@@ -468,5 +483,56 @@ describe("TemplateUseIntent", () => {
     await rerender();
     expect(dialogOpenCount()).toBeGreaterThan(0);
     expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+  });
+
+  it("shows a recoverable error and never confirms when the switch rejects after an optimistic window", async () => {
+    authMock.value.memberships = [membership("m-1", "org-1", "Acme Team"), membership("m-2", "org-2", "Side Team")];
+    let rejectSwitch!: (reason: unknown) => void;
+    authMock.value.selectOrganization = vi.fn(
+      (_orgId: string) =>
+        new Promise<undefined>((_resolve, reject) => {
+          rejectSwitch = reject;
+        }),
+    );
+    await renderIntent();
+
+    await click(optionCardByText("Side Team"));
+    await click(buttonByText("Continue"));
+
+    // Optimistic window: auth already displays the unconfirmed target (the
+    // real selectOrganization writes it before /me answers). Nothing may
+    // confirm from this alone — the optimistic org is not authority.
+    authMock.value.organizationId = "org-2";
+    await rerender();
+    expect(dialogOpenCount()).toBe(0);
+    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Confirming team…");
+
+    // The post-switch /me fails: selectOrganization rejects (its rollback is
+    // covered by the AuthProvider tests) and the auth value settles back on
+    // the pre-switch Team. The chooser recovers with an error, unfrozen.
+    authMock.value.organizationId = "org-1";
+    await act(async () => {
+      rejectSwitch(new Error("network"));
+    });
+    await rerender();
+
+    expect(document.body.textContent).toContain("couldn't switch to that team");
+    expect(document.body.textContent).toContain("Continue");
+    expect(dialogOpenCount()).toBe(0);
+    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+
+    // Retry path: a fresh confirm against the same target works.
+    authMock.value.selectOrganization = vi.fn(async (orgId: string) => {
+      authMock.value.organizationId = orgId;
+      authMock.value.memberships = [...authMock.value.memberships];
+      return undefined;
+    });
+    // Re-render so the rendered handlers close over the new mock.
+    await rerender();
+    await click(optionCardByText("Side Team"));
+    await click(buttonByText("Continue"));
+    await rerender();
+    expect(dialogOpenCount()).toBeGreaterThan(0);
   });
 });
