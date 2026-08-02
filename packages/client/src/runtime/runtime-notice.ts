@@ -82,6 +82,9 @@ function noticeLead(payload: ProviderRetryEventPayload): string {
     case "runtime_transport":
       return `First Tree could not ${action}: the runtime session proof is stale. Rebinding the agent runtime.`;
     case "credential":
+      if (payload.provider === "pi") {
+        return `${provider} could not ${action}: credentials need attention. On this machine run \`pi\`, then enter \`/login\`, and retry.`;
+      }
       return `${provider} could not ${action}: credentials need attention. Please sign in again and retry.`;
     case "capability":
       return `${provider} could not ${action}: the runtime is unavailable on this machine. Install or repair the runtime, then retry.`;

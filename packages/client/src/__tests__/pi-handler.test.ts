@@ -1211,6 +1211,33 @@ describe("Pi handler", () => {
     await handler.shutdown();
   });
 
+  it("steers after prompt accept before the first stream event", async () => {
+    process.env.FT_PI_TEST_MODE = "prompt_accepted_no_events";
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+      piSettlementTimeoutMs: 400,
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    const startToken = makeToken();
+    const steerToken = makeToken();
+    const startPromise = handler.start(message("m1", "first"), sessionCtx, startToken);
+    await vi.waitFor(() => expect(startToken.processingStarted).toHaveBeenCalled());
+    expect(events.some((event) => event.kind === "assistant_text")).toBe(false);
+    const steerReceipt = handler.inject(message("m2", "steer-before-events"), steerToken);
+    expect(steerReceipt).toEqual({ kind: "owned", mode: "processing" });
+    await vi.waitFor(() => expect(readCount(steerCountFile)).toBe(1));
+    await handler.shutdown();
+    await startPromise;
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(readCount(steerCountFile)).toBe(1);
+  });
+
   it("consumes after-write steer loss without duplicating the steer", async () => {
     process.env.FT_PI_TEST_MODE = "steer_after_write_hang";
     const specs: ProviderProcessSpec[] = [];

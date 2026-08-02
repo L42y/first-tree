@@ -160,6 +160,13 @@ type SessionEntry = {
   /** The only start/resume attempt currently allowed to adopt provider state. */
   routeTransition: RouteTransitionToken | null;
   /**
+   * True once the in-flight start/resume head has proven provider membership
+   * via DeliveryToken.processingStarted. Same-chat tails may then cross
+   * handler.inject while the route producer is still awaiting settlement;
+   * until then they stay FIFO in deferredMessages.
+   */
+  routeInjectReady: boolean;
+  /**
    * Latest terminal, user-actionable provider failure observed on the session
    * event channel. Posting the durable chat notice at the delivery-settlement
    * boundary keeps the policy centralized: handlers classify and emit
@@ -1755,6 +1762,7 @@ export class SessionManager {
     phase: RouteTransitionToken["phase"],
   ): RouteTransitionToken {
     entry.routeTransitionGeneration++;
+    entry.routeInjectReady = false;
     const transition = { generation: entry.routeTransitionGeneration, handler, phase };
     entry.routeTransition = transition;
     return transition;
@@ -1805,6 +1813,7 @@ export class SessionManager {
   private completeRouteTransition(entry: SessionEntry, transition: RouteTransitionToken): boolean {
     if (!this.isCurrentRouteTransition(entry, transition)) return false;
     entry.routeTransition = null;
+    entry.routeInjectReady = false;
     return true;
   }
 
@@ -1957,6 +1966,7 @@ export class SessionManager {
     const transition = entry.routeTransition;
     entry.routeTransitionGeneration++;
     entry.routeTransition = null;
+    entry.routeInjectReady = false;
     if (transition) this.retireTransitionHandler(transition, reason);
     return transition;
   }
@@ -2355,6 +2365,10 @@ export class SessionManager {
         if (terminalReported || !mutationValid()) return;
         this.inboxDelivery.markProcessingStarted(chatId, messages);
         this.projectSessionRuntime(chatId);
+        // Head membership proof: open live inject for same-chat tails that
+        // arrived while start/resume still owns routeTransition (e.g. Pi
+        // awaiting agent_settled). Pre-proof FIFO stays deferred until here.
+        this.markRouteInjectReady(chatId);
       },
       complete: async (messages, outcome) => {
         if (!claimTerminal("complete")) return "retry";
@@ -2517,51 +2531,33 @@ export class SessionManager {
       return;
     }
 
-    // Start/resume transitions and their transient retries keep the original
-    // attempted message at the head. Newer messages sit later in the inbox ACK
-    // prefix, so SessionManager holds them until the winning handler is live.
-    if (existing && (existing.routeTransition !== null || existing.retryAttempt > 0)) {
+    // Transient start/resume retries keep the original attempted message at
+    // the head. Newer messages sit later in the inbox ACK prefix, so hold them
+    // until a winning handler is live again.
+    if (existing && existing.retryAttempt > 0) {
       existing.deferredMessages.push(message);
-      if (existing.retryAttempt > 0) this.triggerImmediateRetry(chatId);
+      this.triggerImmediateRetry(chatId);
+      return;
+    }
+
+    // An in-flight start/resume keeps routeTransition until the producer
+    // returns. Before the head proves provider membership (processingStarted),
+    // same-chat tails stay FIFO-deferred. After membership is proven, live
+    // inject is allowed even while the producer still awaits settlement —
+    // required for providers such as Pi whose start/resume await agent_settled.
+    if (existing && existing.routeTransition !== null) {
+      if (existing.routeInjectReady && existing.status === "active") {
+        this.injectIntoActiveRoute(existing, message);
+        return;
+      }
+      existing.deferredMessages.push(message);
       return;
     }
 
     if (existing) {
       switch (existing.status) {
         case "active": {
-          const routeLease = {
-            generation: existing.routeTransitionGeneration,
-            handler: existing.handler,
-          };
-          const mutationValid = () => this.isRouteAdoptionValid(existing, routeLease);
-          const settlementValid = () => this.isDeliverySettlementLeaseValid(existing, routeLease);
-          if (!mutationValid()) {
-            this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
-            return;
-          }
-          this.setCurrentTrigger(chatId, message);
-          const attempt = this.createDeliveryAttempt(chatId, { mutationValid, settlementValid });
-          let receipt: HandlerRouteReceipt;
-          try {
-            receipt = normalizeRouteReceipt(routeLease.handler.inject(message, attempt.token));
-          } catch (err) {
-            attempt.cancel();
-            throw err;
-          }
-          if (!mutationValid()) {
-            attempt.cancel();
-            this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
-            return;
-          }
-          if (receipt.kind === "rejected") attempt.cancel();
-          const ownership = this.markRouteOwned(chatId, message, receipt);
-          if (ownership !== "owned") attempt.cancel();
-          if (ownership === "lost") {
-            return;
-          }
-          existing.lastActivity = Date.now();
-          this.projectSessionRuntime(chatId);
-          this.config.log.debug({ chatId }, "message injected");
+          this.injectIntoActiveRoute(existing, message);
           return;
         }
 
@@ -2691,6 +2687,7 @@ export class SessionManager {
       deferredMessages: [],
       routeTransitionGeneration: 0,
       routeTransition: null,
+      routeInjectReady: false,
       pendingRuntimeFailureNotice: null,
       retryFromEvicted: evicted ?? null,
     };
@@ -3541,6 +3538,57 @@ export class SessionManager {
       entry.retryTimer = null;
     }
     void this.runRetry(chatId);
+  }
+
+  /**
+   * Open live inject for an in-flight start/resume once the head delivery
+   * token reports processingStarted. Drain any FIFO tail that arrived before
+   * this proof while the route producer may still be awaiting settlement.
+   */
+  private markRouteInjectReady(chatId: string): void {
+    const entry = this.sessions.get(chatId);
+    if (!entry || entry.routeTransition === null) return;
+    if (entry.retryAttempt > 0) return;
+    if (entry.status !== "active" || !entry.activeSlotHeld) return;
+    entry.routeInjectReady = true;
+    this.drainDeferredMessages(entry);
+  }
+
+  private injectIntoActiveRoute(entry: SessionEntry, message: SessionMessage): void {
+    const chatId = entry.chatId;
+    const routeLease = {
+      generation: entry.routeTransitionGeneration,
+      handler: entry.handler,
+    };
+    const mutationValid = () => this.isRouteAdoptionValid(entry, routeLease);
+    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, routeLease);
+    if (!mutationValid()) {
+      this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
+      return;
+    }
+    this.setCurrentTrigger(chatId, message);
+    const attempt = this.createDeliveryAttempt(chatId, { mutationValid, settlementValid });
+    let receipt: HandlerRouteReceipt;
+    try {
+      receipt = normalizeRouteReceipt(routeLease.handler.inject(message, attempt.token));
+    } catch (err) {
+      attempt.cancel();
+      throw err;
+    }
+    if (!mutationValid()) {
+      attempt.cancel();
+      this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
+      return;
+    }
+    if (receipt.kind === "rejected") attempt.cancel();
+    const ownership = this.markRouteOwned(chatId, message, receipt);
+    if (ownership !== "owned") attempt.cancel();
+    if (ownership === "lost") {
+      return;
+    }
+    entry.lastActivity = Date.now();
+    this.projectSessionRuntime(chatId);
+    this.config.log.debug({ chatId }, "message injected");
   }
 
   private drainDeferredMessages(entry: SessionEntry): void {

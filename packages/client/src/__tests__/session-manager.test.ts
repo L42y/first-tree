@@ -2136,6 +2136,8 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
     const notice = String(sendMessage.mock.calls[0]?.[1].content);
     expect(notice).toContain("Pi could not run this turn");
     expect(notice).toContain("credentials need attention");
+    expect(notice).toContain("run `pi`");
+    expect(notice).toContain("`/login`");
     expect(notice).toContain("missing credentials");
     expect(ackEntry).toHaveBeenCalledWith(31);
     const [noticeOrder] = sendMessage.mock.invocationCallOrder;

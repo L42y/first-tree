@@ -2062,7 +2062,14 @@ export const createPiHandler: HandlerFactory = (config) => {
     inject(message, token) {
       if (!ctx || !sessionActive) return { kind: "rejected", reason: "no_active_context", retryable: true };
       const deliveryToken = token ?? deliveryTokenFromSessionContext(ctx);
-      if (streaming && rpcClient && !rpcClient.isClosed) {
+      // Steer once the active turn has crossed the provider write/accept
+      // boundary — do not wait for the first stream event. success:false
+      // retains the settle-vs-steer queue fallback below.
+      const canAttemptSteer =
+        rpcClient !== null &&
+        !rpcClient.isClosed &&
+        (streaming || turnObservation?.promptAccepted === true || turnObservation?.promptWriteCommitted === true);
+      if (canAttemptSteer) {
         const steerWork = (async () => {
           try {
             const preparedPayload = activePayload ?? { ...DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD };

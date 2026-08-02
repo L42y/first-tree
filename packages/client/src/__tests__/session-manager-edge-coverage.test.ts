@@ -42,6 +42,7 @@ type SessionRecord = {
   deferredMessages: SessionMessage[];
   routeTransitionGeneration: number;
   routeTransition: { generation: number; handler: AgentHandler; phase: "start" | "resume" } | null;
+  routeInjectReady: boolean;
   pendingRuntimeFailureNotice: ProviderRetryEventPayload | null;
   retryFromEvicted: { claudeSessionId: string; lastActivity: number } | null;
 };
@@ -305,6 +306,7 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     deferredMessages: [],
     routeTransitionGeneration: 0,
     routeTransition: null,
+    routeInjectReady: false,
     pendingRuntimeFailureNotice: null,
     retryFromEvicted: null,
     ...overrides,

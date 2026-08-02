@@ -75,6 +75,23 @@ describe("runtime notice formatting", () => {
     }
   });
 
+  it("formats Pi credential notices with host-local pi /login recovery", () => {
+    const notice = formatProviderFailureRuntimeNotice(
+      payload({
+        provider: "pi",
+        scope: "provider_turn",
+        category: "credential",
+        messagePreview: "missing credentials",
+      }),
+    );
+    expect(notice).toContain("Pi could not run this turn");
+    expect(notice).toContain("credentials need attention");
+    expect(notice).toContain("run `pi`");
+    expect(notice).toContain("`/login`");
+    expect(notice).toContain("missing credentials");
+    expect(notice).not.toContain("Please sign in again");
+  });
+
   it("formats Claude provider-turn credential and capacity notices", () => {
     expect(
       formatProviderFailureRuntimeNotice(

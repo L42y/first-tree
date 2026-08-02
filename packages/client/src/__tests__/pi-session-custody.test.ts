@@ -24,8 +24,10 @@ const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
 const expectedSessionId = process.env.FT_PI_EXPECTED_SESSION_ID ?? "";
 const promptCountFile = process.env.FT_PI_PROMPT_COUNT_FILE ?? "";
+const steerCountFile = process.env.FT_PI_STEER_COUNT_FILE ?? "";
 const bashStartFile = process.env.FT_PI_BASH_START_FILE ?? "";
 const bashStartCountFile = process.env.FT_PI_BASH_START_COUNT_FILE ?? "";
+const promptGateFile = process.env.FT_PI_PROMPT_GATE_FILE ?? "";
 const modeFile = process.env.FT_PI_TEST_MODE_FILE ?? "";
 
 function currentMode() {
@@ -46,6 +48,23 @@ function bump(file) {
 function write(obj) {
   process.stdout.write(JSON.stringify(obj) + "\\n");
 }
+function gateOpen() {
+  if (!promptGateFile) return true;
+  try { return fs.readFileSync(promptGateFile, "utf8").trim() === "1"; } catch { return false; }
+}
+function holdBashAfterAccept(id) {
+  write({ type: "response", id, command: "prompt", success: true });
+  write({
+    type: "tool_execution_start",
+    toolCallId: "bash-hold-1",
+    toolName: "bash",
+    args: { command: "sleep 60" },
+  });
+  bump(bashStartCountFile);
+  if (bashStartFile) {
+    try { fs.writeFileSync(bashStartFile, "1"); } catch {}
+  }
+}
 
 rl.on("line", (line) => {
   const req = JSON.parse(line);
@@ -53,19 +72,52 @@ rl.on("line", (line) => {
   const command = req.type;
   const mode = currentMode();
   if (command === "get_state") {
-    write({
-      type: "response",
-      id,
-      command: "get_state",
-      success: true,
-      data: { sessionId: expectedSessionId, isStreaming: false, messageCount: 0 },
-    });
+    if (mode === "get_state_fail") {
+      write({
+        type: "response",
+        id,
+        command: "get_state",
+        success: false,
+        error: "missing credentials — run /login",
+      });
+      return;
+    }
+    const respondOk = () =>
+      write({
+        type: "response",
+        id,
+        command: "get_state",
+        success: true,
+        data: { sessionId: expectedSessionId, isStreaming: false, messageCount: 0 },
+      });
+    if (mode === "hold_get_state_until_gate") {
+      const tick = () => {
+        if (!gateOpen()) {
+          setTimeout(tick, 15);
+          return;
+        }
+        respondOk();
+      };
+      tick();
+      return;
+    }
+    respondOk();
     return;
   }
   if (command === "prompt") {
     bump(promptCountFile);
     if (mode === "preflight_capacity") {
       write({ type: "response", id, command: "prompt", success: false, error: "provider overloaded" });
+      return;
+    }
+    if (mode === "preflight_credential") {
+      write({
+        type: "response",
+        id,
+        command: "prompt",
+        success: false,
+        error: "missing credentials — run /login",
+      });
       return;
     }
     if (mode === "exhausted_retry") {
@@ -82,18 +134,8 @@ rl.on("line", (line) => {
       write({ type: "agent_settled" });
       return;
     }
-    if (mode === "bash_hold_until_abort") {
-      write({ type: "response", id, command: "prompt", success: true });
-      write({
-        type: "tool_execution_start",
-        toolCallId: "bash-hold-1",
-        toolName: "bash",
-        args: { command: "sleep 60" },
-      });
-      bump(bashStartCountFile);
-      if (bashStartFile) {
-        try { fs.writeFileSync(bashStartFile, "1"); } catch {}
-      }
+    if (mode === "bash_hold_until_abort" || mode === "hold_get_state_until_gate") {
+      holdBashAfterAccept(id);
       return;
     }
     // Prompt line written; response withheld; unsafe tool may still start.
@@ -127,8 +169,21 @@ rl.on("line", (line) => {
     write({ type: "agent_settled" });
     return;
   }
+  if (command === "steer") {
+    bump(steerCountFile);
+    if (mode === "steer_reject") {
+      write({ type: "response", id, command: "steer", success: false, error: "not streaming" });
+      return;
+    }
+    write({ type: "response", id, command: "steer", success: true });
+    return;
+  }
   if (command === "abort") {
-    if (mode === "bash_hold_until_abort" || mode === "prompt_write_tool_no_response") {
+    if (
+      mode === "bash_hold_until_abort" ||
+      mode === "prompt_write_tool_no_response" ||
+      mode === "hold_get_state_until_gate"
+    ) {
       write({ type: "tool_execution_end", toolCallId: "bash-hold-1", isError: true, result: "aborted" });
       write({ type: "agent_settled" });
       write({ type: "response", id, command: "abort", success: true });
@@ -152,13 +207,23 @@ const VERSION_SCRIPT = `process.stdout.write("pi 0.80.5\\n");`;
 const roots: string[] = [];
 let workspaceRoot = "";
 let promptCountFile = "";
+let steerCountFile = "";
 let bashStartFile = "";
 let bashStartCountFile = "";
+let promptGateFile = "";
 let testModeFile = "";
 
 function setPiTestMode(mode: string): void {
   process.env.FT_PI_TEST_MODE = mode;
   if (testModeFile) writeFileSync(testModeFile, mode);
+}
+
+function readCount(file: string): number {
+  try {
+    return Number(readFileSync(file, "utf8")) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function runtimeConfig(): AgentRuntimeConfig {
@@ -206,8 +271,10 @@ function createSyntheticSupervisor(specs: ProviderProcessSpec[]): ProviderProces
           FT_PI_TEST_MODE_FILE: testModeFile,
           FT_PI_EXPECTED_SESSION_ID: expectedSessionId,
           FT_PI_PROMPT_COUNT_FILE: promptCountFile,
+          FT_PI_STEER_COUNT_FILE: steerCountFile,
           FT_PI_BASH_START_FILE: bashStartFile,
           FT_PI_BASH_START_COUNT_FILE: bashStartCountFile,
+          FT_PI_PROMPT_GATE_FILE: promptGateFile,
         },
         detached: false,
       });
@@ -223,12 +290,16 @@ beforeEach(() => {
   workspaceRoot = mkdtempSync(join(tmpdir(), "pi-session-custody-"));
   roots.push(workspaceRoot);
   promptCountFile = join(workspaceRoot, "prompt-count.txt");
+  steerCountFile = join(workspaceRoot, "steer-count.txt");
   bashStartFile = join(workspaceRoot, "bash-start.txt");
   bashStartCountFile = join(workspaceRoot, "bash-start-count.txt");
+  promptGateFile = join(workspaceRoot, "prompt-gate.txt");
   testModeFile = join(workspaceRoot, "pi-test-mode.txt");
   writeFileSync(promptCountFile, "0");
+  writeFileSync(steerCountFile, "0");
   writeFileSync(bashStartFile, "0");
   writeFileSync(bashStartCountFile, "0");
+  writeFileSync(promptGateFile, "0");
   writeFileSync(testModeFile, "happy");
   delete process.env.FT_PI_TEST_MODE;
 });
@@ -1588,5 +1659,175 @@ describe("Pi handler → SessionManager custody", () => {
     expect(sendMessage).not.toHaveBeenCalled();
     expect(sm.totalCount).toBe(0);
     expect(sm.activeCount).toBe(0);
+  });
+
+  it("live SessionManager inject steers while start still awaits agent_settled", async () => {
+    setPiTestMode("bash_hold_until_abort");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-steer" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    const headPromise = sm.dispatch(
+      mockEntry({
+        id: 201,
+        chatId: "chat-pi-live-steer",
+        messageId: "msg-head",
+        content: "run sleep 60",
+      }),
+    );
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(readCount(steerCountFile)).toBe(0);
+
+    const tailPromise = sm.dispatch(
+      mockEntry({
+        id: 202,
+        chatId: "chat-pi-live-steer",
+        messageId: "msg-tail",
+        content: "steer correction",
+      }),
+    );
+    await vi.waitFor(() => expect(readCount(steerCountFile)).toBe(1));
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.handleCommand("chat-pi-live-steer", "session:suspend");
+    await Promise.all([headPromise, tailPromise]);
+
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(readCount(steerCountFile)).toBe(1);
+    expect(ackEntry).toHaveBeenCalledWith(201);
+    expect(ackEntry).toHaveBeenCalledWith(202);
+    expect(ackEntry).toHaveBeenCalledTimes(2);
+    const ack201 = ackEntry.mock.invocationCallOrder[ackEntry.mock.calls.findIndex((call) => call[0] === 201)];
+    const ack202 = ackEntry.mock.invocationCallOrder[ackEntry.mock.calls.findIndex((call) => call[0] === 202)];
+    expect(ack201 as number).toBeLessThan(ack202 as number);
+    await sm.shutdown();
+  });
+
+  it("FIFO defers tails before processingStarted then drains into live steer", async () => {
+    // Hold before get_state returns so the head has not written a prompt yet —
+    // processingStarted (membership proof) has not fired.
+    setPiTestMode("hold_get_state_until_gate");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-fifo" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    const headPromise = sm.dispatch(
+      mockEntry({
+        id: 211,
+        chatId: "chat-pi-fifo-steer",
+        messageId: "msg-head-fifo",
+        content: "run sleep 60",
+      }),
+    );
+    await vi.waitFor(() => expect(specs.some((spec) => spec.args.includes("--mode"))).toBe(true));
+    expect(readCount(promptCountFile)).toBe(0);
+
+    const tailPromise = sm.dispatch(
+      mockEntry({
+        id: 212,
+        chatId: "chat-pi-fifo-steer",
+        messageId: "msg-tail-fifo",
+        content: "early correction",
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(readCount(steerCountFile)).toBe(0);
+    expect(readCount(promptCountFile)).toBe(0);
+
+    writeFileSync(promptGateFile, "1");
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1));
+    await vi.waitFor(() => expect(readCount(steerCountFile)).toBe(1));
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.handleCommand("chat-pi-fifo-steer", "session:suspend");
+    await Promise.all([headPromise, tailPromise]);
+    expect(ackEntry).toHaveBeenCalledWith(211);
+    expect(ackEntry).toHaveBeenCalledWith(212);
+    expect(readCount(promptCountFile)).toBe(1);
+    expect(readCount(steerCountFile)).toBe(1);
+    await sm.shutdown();
+  });
+
+  it("start failure before readiness keeps the deferred tail out of the provider", async () => {
+    setPiTestMode("get_state_fail");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-prereadiness" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    const headPromise = sm.dispatch(
+      mockEntry({
+        id: 221,
+        chatId: "chat-pi-prereadiness-fail",
+        messageId: "msg-head-fail",
+        content: "start me",
+      }),
+    );
+    // Arrive while start is still failing before any prompt write / membership proof.
+    await vi.waitFor(() => expect(specs.some((spec) => spec.args.includes("--mode"))).toBe(true));
+    const tailPromise = sm.dispatch(
+      mockEntry({
+        id: 222,
+        chatId: "chat-pi-prereadiness-fail",
+        messageId: "msg-tail-fail",
+        content: "should stay deferred",
+      }),
+    );
+    await Promise.allSettled([headPromise, tailPromise]);
+    // Session start may enter transient retry without a durable notice yet —
+    // the invariant under test is that the tail never crosses the provider.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(readCount(promptCountFile)).toBe(0);
+    expect(readCount(steerCountFile)).toBe(0);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 222)).toHaveLength(0);
+
+    await sm.shutdown();
+    expect(readCount(promptCountFile)).toBe(0);
+    expect(readCount(steerCountFile)).toBe(0);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 222)).toHaveLength(0);
+  });
+
+  it("suspend before readiness clears deferred inject and never steers", async () => {
+    setPiTestMode("hold_get_state_until_gate");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-suspend-defer" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    const headPromise = sm.dispatch(
+      mockEntry({
+        id: 231,
+        chatId: "chat-pi-suspend-defer",
+        messageId: "msg-head-suspend",
+        content: "blocked by gate",
+      }),
+    );
+    await vi.waitFor(() => expect(specs.some((spec) => spec.args.includes("--mode"))).toBe(true));
+    const tailPromise = sm.dispatch(
+      mockEntry({
+        id: 232,
+        chatId: "chat-pi-suspend-defer",
+        messageId: "msg-tail-suspend",
+        content: "deferred then canceled",
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(readCount(promptCountFile)).toBe(0);
+    expect(readCount(steerCountFile)).toBe(0);
+
+    await sm.handleCommand("chat-pi-suspend-defer", "session:suspend");
+    writeFileSync(promptGateFile, "1");
+    await Promise.allSettled([headPromise, tailPromise]);
+
+    expect(readCount(steerCountFile)).toBe(0);
+    // Gate opened after suspend invalidation — must not create a late prompt/steer.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(readCount(steerCountFile)).toBe(0);
+    await sm.shutdown();
   });
 });
