@@ -220,6 +220,29 @@ describe("TemplateDetailPage", () => {
     expect(loginStateProbe).toMatchObject({ pathname: "/templates/pr-engineer", search: "?use=1" });
   });
 
+  it("treats non-canonical intent spellings as ordinary detail, with no login bounce", async () => {
+    for (const entry of [
+      "/templates/pr-engineer?use=1&campaign=x",
+      "/templates/pr-engineer?use=1&use=1",
+      "/templates/pr-engineer?use=1#details",
+      "/templates/pr-engineer?use=1&",
+    ]) {
+      act(() => root?.unmount());
+      root = null;
+      document.body.innerHTML = "";
+      vi.clearAllMocks();
+      loginStateProbe = null;
+      templateMocks.getAgentTemplate.mockResolvedValue(template());
+      await renderPage(entry);
+
+      // Logged-out, but NOT bounced to /login: the shared strict parser
+      // rejected the URL as an intent, so this is just the public detail.
+      expect(document.body.textContent).not.toContain("login-stub");
+      expect(loginStateProbe).toBeNull();
+      expect(document.body.textContent).toContain("PR Engineer");
+    }
+  });
+
   it("hands a signed-in active intent to the intent resolution", async () => {
     authMock.value.isAuthenticated = true;
     authMock.value.meLoaded = true;

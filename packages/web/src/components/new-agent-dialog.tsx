@@ -289,25 +289,44 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   const [templateCatalogLoaded, setTemplateCatalogLoaded] = useState(false);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
-  // The caller-supplied initial Template is applied exactly once per open
-  // (this ref), after the async catalog resolves. `true` on the notice means
+  // The caller-supplied initial Template is applied exactly once per open,
+  // bound to the CURRENT open generation's CURRENT catalog response. A reopen
+  // bumps `openGenRef` before the apply effect can read the previous open's
+  // catalog state, so a Template retired between two opens can never be
+  // preselected (or submitted) from stale state. `true` on the notice means
   // the slug was not an active Template anymore — the user can still pick
   // another responsibility or create from scratch; nothing stale is submitted.
-  const initialTemplateAppliedRef = useRef(false);
+  const openGenRef = useRef(0);
+  const wasOpenRef = useRef(false);
+  const [catalogGen, setCatalogGen] = useState(0);
+  const initialAppliedForGenRef = useRef(0);
   const [initialTemplateUnavailable, setInitialTemplateUnavailable] = useState(false);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    // One generation per closed→open transition. This effect is declared
+    // before the reset and apply effects, so the bump is visible to them in
+    // the same commit.
+    if (!wasOpenRef.current) {
+      wasOpenRef.current = true;
+      openGenRef.current += 1;
+    }
+    const gen = openGenRef.current;
     let cancelled = false;
     void listAgentTemplates()
       .then((res) => {
         if (cancelled) return;
         setTemplateCatalog(res.templates.filter((template) => template.status === "active"));
+        setCatalogGen(gen);
         setTemplateCatalogLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
         setTemplateCatalog([]);
+        setCatalogGen(gen);
         setTemplateCatalogLoaded(true);
       });
     return () => {
@@ -336,29 +355,32 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
       setClientErrors({});
       setTemplateCatalog([]);
       setTemplateCatalogLoaded(false);
+      setCatalogGen(0);
       setSelectedTemplateIds([]);
       setTemplatePickerOpen(false);
-      initialTemplateAppliedRef.current = false;
       setInitialTemplateUnavailable(false);
     }
   }, [open, resetTokenCopy]);
 
   // Resolve the caller-supplied initial Template slug against the catalog
-  // exactly once per open. The catalog only carries ACTIVE Templates, so a
-  // retired/vanished slug simply has no match — degrade to a notice instead
-  // of submitting a stale id. After this one application the selection is
-  // the user's: later manual add/remove is never overwritten.
+  // exactly once per open generation. The catalog only carries ACTIVE
+  // Templates, so a retired/vanished slug simply has no match — degrade to a
+  // notice instead of submitting a stale id. The generation guard means a
+  // reopen never applies the previous open's catalog, and the applied guard
+  // means a late or repeated response never overwrites the user's later
+  // manual add/remove.
   useEffect(() => {
     if (!open || !templateCatalogLoaded || !initialTemplateSlug) return;
-    if (initialTemplateAppliedRef.current) return;
-    initialTemplateAppliedRef.current = true;
+    if (catalogGen === 0 || catalogGen !== openGenRef.current) return;
+    if (initialAppliedForGenRef.current === catalogGen) return;
+    initialAppliedForGenRef.current = catalogGen;
     const match = templateCatalog.find((template) => template.slug === initialTemplateSlug);
     if (match) {
       setSelectedTemplateIds([match.id]);
     } else {
       setInitialTemplateUnavailable(true);
     }
-  }, [open, templateCatalogLoaded, templateCatalog, initialTemplateSlug]);
+  }, [open, templateCatalogLoaded, templateCatalog, catalogGen, initialTemplateSlug]);
 
   const baseSlug = useMemo(() => slugify(displayName), [displayName]);
   const hasDisplay = displayName.trim().length > 0;

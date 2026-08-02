@@ -72,7 +72,15 @@ const TEMPLATE: AgentTemplatePublicTemplate = {
   replacement: null,
 };
 
+const TEMPLATE_B: AgentTemplatePublicTemplate = {
+  ...TEMPLATE,
+  id: "0190f000-0000-7000-8000-000000000002",
+  slug: "docs-writer",
+  name: "Docs Writer",
+};
+
 let root: Root | null = null;
+let stepQueryClient: QueryClient | null = null;
 
 async function flush(): Promise<void> {
   await act(async () => {
@@ -82,17 +90,29 @@ async function flush(): Promise<void> {
   });
 }
 
+function stepTree(): ReactNode {
+  return (
+    <QueryClientProvider client={stepQueryClient as QueryClient}>
+      <StepCreateAgent />
+    </QueryClientProvider>
+  );
+}
+
 async function renderStep(): Promise<void> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  stepQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root?.render(
-      <QueryClientProvider client={queryClient}>
-        <StepCreateAgent />
-      </QueryClientProvider>,
-    );
+    root?.render(stepTree());
+  });
+  await flush();
+}
+
+/** Re-render after mutating flow/auth mocks (e.g. a Team switch). */
+async function rerenderStep(): Promise<void> {
+  await act(async () => {
+    root?.render(stepTree());
   });
   await flush();
 }
@@ -208,5 +228,92 @@ describe("StepCreateAgent template intent", () => {
     await click(buttonByText("Create agent"));
     const args = flowMock.createAgent.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(args.templateIds).toBeUndefined();
+  });
+
+  it("drops the intent entirely when the team changes under a mounted step", async () => {
+    writeOnboardingTemplateIntent("org-1", "pr-engineer");
+    templateMocks.getAgentTemplate.mockResolvedValue(TEMPLATE);
+    await renderStep();
+    await flush();
+    expect(document.body.textContent).toContain("PR Engineer");
+
+    // Team switch (org-2 has NO handoff): the card and any template id must
+    // disappear, and the create goes to org-2 with no templateIds.
+    flowMock.organizationId = "org-2";
+    await rerenderStep();
+    await flush();
+    expect(document.body.textContent).not.toContain("PR Engineer");
+
+    await click(buttonByText("Create agent"));
+    const args = flowMock.createAgent.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.organizationId).toBe("org-2");
+    expect(args.templateIds).toBeUndefined();
+  });
+
+  it("loads the new team's own intent after a switch", async () => {
+    writeOnboardingTemplateIntent("org-1", "pr-engineer");
+    writeOnboardingTemplateIntent("org-2", "docs-writer");
+    templateMocks.getAgentTemplate.mockImplementation(async (slug: string) =>
+      slug === "pr-engineer" ? TEMPLATE : TEMPLATE_B,
+    );
+    await renderStep();
+    await flush();
+    expect(document.body.textContent).toContain("PR Engineer");
+
+    flowMock.organizationId = "org-2";
+    await rerenderStep();
+    await flush();
+    expect(document.body.textContent).toContain("Docs Writer");
+    expect(document.body.textContent).not.toContain("PR Engineer");
+
+    await click(buttonByText("Create agent"));
+    const args = flowMock.createAgent.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.organizationId).toBe("org-2");
+    expect(args.templateIds).toEqual([TEMPLATE_B.id]);
+  });
+
+  it("ignores a late fetch for the previous team's slug", async () => {
+    writeOnboardingTemplateIntent("org-1", "pr-engineer");
+    let resolveA!: (value: AgentTemplatePublicTemplate) => void;
+    templateMocks.getAgentTemplate.mockImplementation(
+      () =>
+        new Promise<AgentTemplatePublicTemplate>((resolve) => {
+          resolveA = resolve;
+        }),
+    );
+    await renderStep();
+    await flush();
+
+    flowMock.organizationId = "org-2";
+    await rerenderStep();
+    // The old fetch resolves AFTER the switch — it must not paint org-1's
+    // template onto org-2.
+    await act(async () => {
+      resolveA(TEMPLATE);
+    });
+    await flush();
+    expect(document.body.textContent).not.toContain("PR Engineer");
+
+    await click(buttonByText("Create agent"));
+    const args = flowMock.createAgent.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.templateIds).toBeUndefined();
+  });
+
+  it("does not carry a removal decision across teams", async () => {
+    writeOnboardingTemplateIntent("org-1", "pr-engineer");
+    writeOnboardingTemplateIntent("org-2", "docs-writer");
+    templateMocks.getAgentTemplate.mockImplementation(async (slug: string) =>
+      slug === "pr-engineer" ? TEMPLATE : TEMPLATE_B,
+    );
+    await renderStep();
+    await flush();
+    await click(buttonByText("Remove"));
+    expect(document.body.textContent).not.toContain("PR Engineer");
+
+    flowMock.organizationId = "org-2";
+    await rerenderStep();
+    await flush();
+    // Team B's intent starts selected again — A's Remove never applied to B.
+    expect(document.body.textContent).toContain("Docs Writer");
   });
 });

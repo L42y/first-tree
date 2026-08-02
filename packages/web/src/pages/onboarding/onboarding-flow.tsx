@@ -324,8 +324,12 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       writeOnboardingAgentUuid(info.agentUuid);
       // The Template intent handoff is consumed by a successful creation —
       // whether or not the Template was still selected at submit time — so a
-      // later same-tab onboarding in this org starts clean.
-      if (organizationId) writeOnboardingTemplateIntent(organizationId, null);
+      // later same-tab onboarding in this org starts clean. Key the cleanup
+      // off the org the agent was actually submitted to (the create args),
+      // never the drifting closure: if the member switched Teams while the
+      // POST was in flight, we must clear THAT org's key, not the new one.
+      const createdOrgId = info.args.organizationId ?? organizationId;
+      if (createdOrgId) writeOnboardingTemplateIntent(createdOrgId, null);
       // Mirror the New Agent dialog's success event for the onboarding path;
       // count comes from the submitted args, and it is a creation signal,
       // never an activation claim.

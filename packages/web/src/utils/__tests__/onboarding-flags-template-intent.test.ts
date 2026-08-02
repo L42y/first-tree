@@ -42,6 +42,15 @@ describe("onboarding template intent handoff", () => {
     expect(window.sessionStorage.getItem("onboarding:templateIntent:org-1")).toBeNull();
   });
 
+  it("refuses to store an invalid slug at the write boundary", () => {
+    writeOnboardingTemplateIntent("org-1", "Not A Slug!");
+    expect(window.sessionStorage.getItem("onboarding:templateIntent:org-1")).toBeNull();
+    expect(readOnboardingTemplateIntent("org-1")).toBeNull();
+    // A valid write still works after a refused one.
+    writeOnboardingTemplateIntent("org-1", "pr-engineer");
+    expect(readOnboardingTemplateIntent("org-1")).toBe("pr-engineer");
+  });
+
   it("is covered by the logout session-flag wipe", () => {
     writeOnboardingTemplateIntent("org-1", "pr-engineer");
     window.sessionStorage.setItem("unrelated:key", "keep");

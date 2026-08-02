@@ -328,4 +328,52 @@ describe("NewAgentDialog initial Template", () => {
     expect(document.body.textContent).toContain("Choose a template");
     expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
   });
+
+  it("never preselects from the previous open's catalog when the template retired between opens", async () => {
+    // First open: the slug is active and preselected.
+    templateMocks.listAgentTemplates.mockResolvedValueOnce({ templates: [TEMPLATE_A, TEMPLATE_B] });
+    await renderHarness("pr-engineer");
+    await waitForText("Tagline of PR Engineer");
+
+    // Close, then reopen with the SAME intent slug — but the Template has
+    // since retired, so the fresh catalog no longer carries it.
+    templateMocks.listAgentTemplates.mockResolvedValueOnce({ templates: [TEMPLATE_B] });
+    await click(buttonByText("harness-close"));
+    await click(buttonByText("harness-open"));
+    await waitForText("no longer available");
+    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+
+    // Submission must not contain the stale id.
+    await fillNameAndSubmit("Build Bot");
+    await waitForCondition(() => agentMocks.createAgent.mock.calls.length === 1, "create not called");
+    const body = agentMocks.createAgent.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(body.templateIds).toBeUndefined();
+  });
+
+  it("ignores a late catalog response from a previous open", async () => {
+    // First open's fetch hangs; the user closes and reopens. The second
+    // fetch resolves fast with a catalog WITHOUT the slug; the first fetch
+    // then resolves late WITH it — it must not pollute the new open.
+    let resolveFirst!: (value: { templates: AgentTemplatePublicTemplate[] }) => void;
+    templateMocks.listAgentTemplates.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    await renderHarness("pr-engineer");
+    await click(buttonByText("harness-close"));
+    templateMocks.listAgentTemplates.mockResolvedValueOnce({ templates: [TEMPLATE_B] });
+    await click(buttonByText("harness-open"));
+    await waitForText("no longer available");
+
+    await act(async () => {
+      resolveFirst({ templates: [TEMPLATE_A, TEMPLATE_B] });
+    });
+    await flush();
+    await flush();
+    // Still the second open's catalog: no PR Engineer preselect, notice kept.
+    expect(document.body.textContent).toContain("no longer available");
+    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+  });
 });

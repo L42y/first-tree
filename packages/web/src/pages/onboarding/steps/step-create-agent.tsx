@@ -58,31 +58,49 @@ export function StepCreateAgent() {
   const { currentOrgHasPersonalAgent } = useAuth();
 
   // Template intent handoff from the public `/templates/:slug?use=1` entry.
-  // Read once per mount (per-org, sessionStorage); the public-safe detail is
-  // fetched so the step can show the responsibility the member picked. Any
-  // failure — fetch error, retired Template, invalid/stale handoff — degrades
-  // to a recoverable hint and leaves plain create fully available.
-  const [intentSlug] = useState<string | null>(() =>
+  // Per-org (sessionStorage); the public-safe detail is fetched so the step
+  // can show the responsibility the member picked. Any failure — fetch error,
+  // retired Template, invalid/stale handoff — degrades to a recoverable hint
+  // and leaves plain create fully available.
+  //
+  // The onboarding shell lets the member switch Teams while this step stays
+  // mounted, so the intent is re-read whenever the selected org changes:
+  // every piece of intent state (slug, resolved template, unavailable flag,
+  // and the user's Remove decision) belongs to ONE org and is dropped on
+  // switch — Team A's Template id or removal must never leak into Team B.
+  const [intentOrg, setIntentOrg] = useState<string | null>(organizationId);
+  const [intentSlug, setIntentSlug] = useState<string | null>(() =>
     organizationId ? readOnboardingTemplateIntent(organizationId) : null,
   );
   const [intentTemplate, setIntentTemplate] = useState<AgentTemplatePublicTemplate | null>(null);
   const [intentUnavailable, setIntentUnavailable] = useState(false);
   const [intentRemoved, setIntentRemoved] = useState(false);
+  if (organizationId !== intentOrg) {
+    // Render-time reset (React's recommended derived-state pattern, matching
+    // the flow provider's own org-change handling) so the stale intent never
+    // paints or submits for the new org.
+    setIntentOrg(organizationId);
+    setIntentSlug(organizationId ? readOnboardingTemplateIntent(organizationId) : null);
+    setIntentTemplate(null);
+    setIntentUnavailable(false);
+    setIntentRemoved(false);
+  }
+  const intentFetchSeqRef = useRef(0);
   useEffect(() => {
+    // Sequence-guarded so a late response for the PREVIOUS org's slug can
+    // never overwrite the new org's state.
+    const seq = ++intentFetchSeqRef.current;
     if (!intentSlug) return;
-    let cancelled = false;
     getAgentTemplate(intentSlug)
       .then((template) => {
-        if (cancelled) return;
+        if (seq !== intentFetchSeqRef.current) return;
         if (template.status === "active") setIntentTemplate(template);
         else setIntentUnavailable(true);
       })
       .catch(() => {
-        if (!cancelled) setIntentUnavailable(true);
+        if (seq !== intentFetchSeqRef.current) return;
+        setIntentUnavailable(true);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [intentSlug]);
   const activeIntentTemplate = intentTemplate && !intentRemoved ? intentTemplate : null;
 

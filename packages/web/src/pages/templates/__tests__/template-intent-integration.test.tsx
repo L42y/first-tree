@@ -2,24 +2,36 @@
 
 import type { AgentTemplatePublicTemplate, MeMembership } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type ReactNode } from "react";
+import { act, type ReactNode, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TemplateUseIntent } from "../template-use-intent.js";
+import { TemplateDetailPage } from "../template-detail-page.js";
+
+/**
+ * Integration coverage for the Team-confirmation state machine: the REAL
+ * React Query client is cleared inside selectOrganization (mirroring
+ * auth-context), so the detail query re-pends and refetches mid-flow. The
+ * intent subtree — including an open NewAgentDialog — must survive that
+ * window, and the dialog may only open against the exact confirmed Team.
+ */
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const templateMocks = vi.hoisted(() => ({
+  listAgentTemplates: vi.fn(),
+  getAgentTemplate: vi.fn(),
+  updateAgentTemplates: vi.fn(),
+}));
 
 const flagsMocks = vi.hoisted(() => ({
   writeOnboardingTemplateIntent: vi.fn(),
 }));
 
 const dialogMock = vi.hoisted(() => ({
-  props: [] as Array<{ open: boolean; initialTemplateSlug?: string }>,
-  latestOnCreated: null as null | ((agent: { uuid: string }, runtime: string, templateCount: number) => void),
+  mounts: 0,
+  openProps: [] as Array<{ open: boolean; initialTemplateSlug?: string }>,
 }));
-
-const navigateMock = vi.hoisted(() => vi.fn());
 
 const analyticsMocks = vi.hoisted(() => ({
   trackEvent: vi.fn(),
@@ -27,6 +39,7 @@ const analyticsMocks = vi.hoisted(() => ({
 
 const authMock = vi.hoisted(() => ({
   value: {
+    isAuthenticated: true,
     meLoaded: true,
     onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
     currentOrgHasPersonalAgent: true,
@@ -38,19 +51,15 @@ const authMock = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("../../../api/agent-templates.js", () => templateMocks);
 vi.mock("../../../utils/onboarding-flags.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../utils/onboarding-flags.js")>()),
   ...flagsMocks,
 }));
 vi.mock("../../../components/new-agent-dialog.js", () => ({
-  NewAgentDialog: (props: {
-    open: boolean;
-    initialTemplateSlug?: string;
-    onCreated: (agent: { uuid: string }, runtime: string, templateCount: number) => void;
-  }) => {
-    dialogMock.props.push({ open: props.open, initialTemplateSlug: props.initialTemplateSlug });
-    dialogMock.latestOnCreated = props.onCreated;
-    return props.open ? <div>new-agent-dialog-stub</div> : null;
+  NewAgentDialog: (props: { open: boolean; initialTemplateSlug?: string }) => {
+    dialogMock.openProps.push({ open: props.open, initialTemplateSlug: props.initialTemplateSlug });
+    return <DialogStub open={props.open} />;
   },
 }));
 vi.mock("../../../analytics.js", async (importOriginal) => ({
@@ -61,10 +70,13 @@ vi.mock("../../../auth/auth-context.js", () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
   useAuth: () => authMock.value,
 }));
-vi.mock("react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react-router")>();
-  return { ...actual, useNavigate: () => navigateMock };
-});
+
+function DialogStub({ open }: { open: boolean }) {
+  useEffect(() => {
+    dialogMock.mounts += 1;
+  }, []);
+  return open ? <div>new-agent-dialog-stub</div> : null;
+}
 
 const NOW = "2026-07-30T12:00:00.000Z";
 
@@ -103,7 +115,7 @@ function membership(id: string, orgId: string, orgName: string, overrides: Parti
 }
 
 let root: Root | null = null;
-let container: HTMLElement | null = null;
+let testQueryClient: QueryClient | null = null;
 
 async function flush(): Promise<void> {
   await act(async () => {
@@ -113,31 +125,39 @@ async function flush(): Promise<void> {
   });
 }
 
-function tree(): ReactNode {
+function pageTree(): ReactNode {
   return (
-    <MemoryRouter initialEntries={["/templates/pr-engineer?use=1"]}>
-      <Routes>
-        <Route path="/templates/:slug" element={<TemplateUseIntent template={TEMPLATE} />} />
-        <Route path="/onboarding" element={<div>onboarding-stub</div>} />
-      </Routes>
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient()}>
+      <MemoryRouter initialEntries={["/templates/pr-engineer?use=1"]}>
+        <Routes>
+          <Route path="/templates/:slug" element={<TemplateDetailPage />} />
+          <Route path="/onboarding" element={<div>onboarding-stub</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 
-async function renderIntent(): Promise<void> {
-  container = document.createElement("div");
+async function renderPage(): Promise<void> {
+  const container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  testQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root?.render(<QueryClientProvider client={queryClient}>{tree()}</QueryClientProvider>);
+    root?.render(pageTree());
   });
   await flush();
 }
 
-async function rerender(): Promise<void> {
+/**
+ * Force a full re-render after auth mutations. In production this is exactly
+ * what AuthProvider's setSelectedOrgId/fetchMe state writes do after
+ * `selectOrganization`; our auth mock is a plain object, so the test drives
+ * the same propagation explicitly.
+ */
+async function rerenderPage(): Promise<void> {
   await act(async () => {
-    root?.render(<QueryClientProvider client={new QueryClient()}>{tree()}</QueryClientProvider>);
+    root?.render(pageTree());
   });
   await flush();
 }
@@ -163,15 +183,18 @@ function optionCardByText(text: string): HTMLElement {
   return (input ?? label) as HTMLElement;
 }
 
-function dialogOpenCount(): number {
-  return dialogMock.props.filter((p) => p.open).length;
+function queryClient(): QueryClient {
+  if (!testQueryClient) throw new Error("page not rendered");
+  return testQueryClient;
 }
 
-describe("TemplateUseIntent", () => {
+describe("Template intent × real queryClient.clear() integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    dialogMock.props.length = 0;
-    dialogMock.latestOnCreated = null;
+    dialogMock.mounts = 0;
+    dialogMock.openProps.length = 0;
+    templateMocks.getAgentTemplate.mockResolvedValue(TEMPLATE);
+    authMock.value.isAuthenticated = true;
     authMock.value.meLoaded = true;
     authMock.value.onboardingStep = "completed";
     authMock.value.currentOrgHasPersonalAgent = true;
@@ -179,94 +202,68 @@ describe("TemplateUseIntent", () => {
     authMock.value.onboardingCompletedAt = NOW;
     authMock.value.organizationId = "org-1";
     authMock.value.memberships = [membership("m-1", "org-1", "Acme Team")];
-    // Default: the switch lands on the exact target with a fresh memberships
-    // array (the real post-switch /me) — matching selectOrganization's
-    // client-side semantics.
-    authMock.value.selectOrganization = vi.fn(async (orgId: string) => {
-      authMock.value.organizationId = orgId;
-      authMock.value.memberships = [...authMock.value.memberships];
-    });
   });
 
   afterEach(() => {
     act(() => root?.unmount());
     root = null;
-    container = null;
+    testQueryClient = null;
     document.body.innerHTML = "";
   });
 
-  it("hands a fresh-onboarding member a per-org handoff and enters /onboarding", async () => {
-    authMock.value.onboardingStep = "connect";
-    authMock.value.currentOrgHasPersonalAgent = false;
-    authMock.value.onboardingCompletedAt = null;
-    await renderIntent();
-
-    expect(flagsMocks.writeOnboardingTemplateIntent).toHaveBeenCalledWith("org-1", "pr-engineer");
-    expect(document.body.textContent).toContain("onboarding-stub");
-    // The chooser / dialog path never ran.
-    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
-    expect(dialogOpenCount()).toBe(0);
-  });
-
-  it("shows an explicit chooser even for a single team, then opens the dialog against the confirmed org", async () => {
-    await renderIntent();
-
-    expect(document.body.textContent).toContain("Start with PR Engineer");
-    expect(document.body.textContent).toContain("Acme Team");
-    expect(document.body.textContent).toContain("Current team");
-    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
-
-    await click(buttonByText("Continue"));
-    await rerender();
-    expect(authMock.value.selectOrganization).toHaveBeenCalledTimes(1);
-    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-1");
-    expect(dialogOpenCount()).toBeGreaterThan(0);
-    expect(dialogMock.props.filter((p) => p.open).at(-1)?.initialTemplateSlug).toBe("pr-engineer");
-  });
-
-  it("lets a multi-team member pick the exact target team", async () => {
-    authMock.value.memberships = [membership("m-1", "org-1", "Acme Team"), membership("m-2", "org-2", "Side Team")];
-    await renderIntent();
-
-    await click(optionCardByText("Side Team"));
-    await click(buttonByText("Continue"));
-    await rerender();
-    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-2");
-    expect(dialogOpenCount()).toBeGreaterThan(0);
-  });
-
-  it("never opens the dialog when the team switch rejects", async () => {
-    authMock.value.selectOrganization = vi.fn(async () => {
-      throw new Error("switch failed");
+  it("keeps the intent subtree mounted through cache clear + refetch and opens the dialog on the confirmed team", async () => {
+    authMock.value.selectOrganization = vi.fn(async (orgId: string) => {
+      // Mirror auth-context.selectOrganization: wipe every cached query,
+      // then settle on the target with a fresh memberships array.
+      queryClient().clear();
+      authMock.value.organizationId = orgId;
+      authMock.value.memberships = [...authMock.value.memberships];
     });
-    await renderIntent();
+    await renderPage();
+    // Detail loaded once; chooser visible.
+    expect(document.body.textContent).toContain("Start with PR Engineer");
+    const callsBefore = templateMocks.getAgentTemplate.mock.calls.length;
 
     await click(buttonByText("Continue"));
-    await rerender();
-    expect(document.body.textContent).toContain("couldn't switch to that team");
-    expect(dialogOpenCount()).toBe(0);
+    await flush();
+    // Production: AuthProvider's state writes re-render every useAuth
+    // consumer, which also revives the cleared detail query. Simulate the
+    // same propagation (the auth mock is a plain object).
+    await rerenderPage();
+    await flush();
+
+    // The clear + auth-driven re-render forced a real refetch of the detail
+    // query…
+    expect(templateMocks.getAgentTemplate.mock.calls.length).toBeGreaterThan(callsBefore);
+    // …yet the dialog subtree was never unmounted…
+    expect(dialogMock.mounts).toBe(1);
+    // …and it ended open against the confirmed team with the intent slug.
+    expect(document.body.textContent).toContain("new-agent-dialog-stub");
+    expect(dialogMock.openProps.filter((p) => p.open).at(-1)?.initialTemplateSlug).toBe("pr-engineer");
   });
 
-  it("never opens the dialog when auth reconciles to a fallback team", async () => {
+  it("surfaces a recoverable error and never opens the dialog when auth reconciles to a fallback", async () => {
     authMock.value.memberships = [membership("m-1", "org-1", "Acme Team"), membership("m-2", "org-2", "Side Team")];
-    // The target membership vanished mid-switch: selectOrganization resolves,
-    // but auth settles back on the ORIGINAL org with a fresh memberships
-    // array that no longer contains the target.
     authMock.value.selectOrganization = vi.fn(async (_orgId: string) => {
+      queryClient().clear();
+      // Target membership vanished mid-switch: auth settles on the fallback.
       authMock.value.organizationId = "org-1";
       authMock.value.memberships = [membership("m-1", "org-1", "Acme Team")];
     });
-    await renderIntent();
+    await renderPage();
 
     await click(optionCardByText("Side Team"));
     await click(buttonByText("Continue"));
-    await rerender();
+    await flush();
+    await flush();
+
     expect(document.body.textContent).toContain("couldn't confirm that team");
-    expect(dialogOpenCount()).toBe(0);
+    expect(document.body.textContent).not.toContain("new-agent-dialog-stub");
+    expect(dialogMock.openProps.every((p) => !p.open)).toBe(true);
     expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
   });
 
-  it("hands off to onboarding when the confirmed team still needs it", async () => {
+  it("writes the handoff for the confirmed team and enters onboarding when that team still needs it", async () => {
     authMock.value.memberships = [
       membership("m-1", "org-1", "Acme Team"),
       membership("m-2", "org-2", "Fresh Team", {
@@ -276,34 +273,22 @@ describe("TemplateUseIntent", () => {
       }),
     ];
     authMock.value.selectOrganization = vi.fn(async (orgId: string) => {
+      queryClient().clear();
       authMock.value.organizationId = orgId;
       authMock.value.currentOrgHasPersonalAgent = false;
       authMock.value.onboardingCompletedAt = null;
       authMock.value.memberships = [...authMock.value.memberships];
     });
-    await renderIntent();
+    await renderPage();
 
     await click(optionCardByText("Fresh Team"));
     await click(buttonByText("Continue"));
-    await rerender();
-    // Handoff written for the CONFIRMED team (never Team A's gate reused).
-    expect(flagsMocks.writeOnboardingTemplateIntent).toHaveBeenCalledWith("org-2", "pr-engineer");
-    expect(document.body.textContent).toContain("onboarding-stub");
-    expect(dialogOpenCount()).toBe(0);
-  });
-
-  it("navigates to the first workspace draft after creation", async () => {
-    await renderIntent();
-    await click(buttonByText("Continue"));
-    await rerender();
-    const onCreated = dialogMock.latestOnCreated;
-    if (!onCreated) throw new Error("dialog onCreated not captured");
-    await act(async () => {
-      onCreated({ uuid: "agent-new-1" }, "claude-code", 1);
-    });
+    await flush();
     await flush();
 
-    expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_create_draft_open", { template_count: 1 });
-    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new-1");
+    expect(flagsMocks.writeOnboardingTemplateIntent).toHaveBeenCalledWith("org-2", "pr-engineer");
+    expect(document.body.textContent).toContain("onboarding-stub");
+    expect(document.body.textContent).not.toContain("new-agent-dialog-stub");
+    expect(dialogMock.openProps.every((p) => !p.open)).toBe(true);
   });
 });

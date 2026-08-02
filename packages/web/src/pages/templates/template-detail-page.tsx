@@ -1,6 +1,11 @@
-import { type AgentTemplatePublicTemplate, agentTemplateIntentPath, agentTemplateSlugSchema } from "@first-tree/shared";
+import {
+  type AgentTemplatePublicTemplate,
+  agentTemplateIntentPath,
+  agentTemplateSlugSchema,
+  parseAgentTemplateIntentPath,
+} from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router";
 import { trackEvent } from "../../analytics.js";
 import { getAgentTemplate } from "../../api/agent-templates.js";
@@ -81,7 +86,13 @@ export function TemplateDetailPage() {
   const { isAuthenticated, meLoaded, memberships } = useAuth();
   const slugResult = agentTemplateSlugSchema.safeParse(rawSlug ?? "");
   const slug = slugResult.success ? slugResult.data : null;
-  const intent = new URLSearchParams(location.search).get("use") === "1";
+  // The intent flag is judged by the SAME strict shared parser the server
+  // uses for OAuth `next` preservation — no looser local reading. A
+  // non-canonical query (extra params, duplicate `use`, fragment, normalized
+  // spellings) renders the ordinary public detail instead of entering intent
+  // resolution or bouncing anyone through login.
+  const intentSlug = parseAgentTemplateIntentPath(`${location.pathname}${location.search}${location.hash}`);
+  const intent = intentSlug !== null && slug !== null && intentSlug === slug;
 
   const detailQuery = useQuery({
     queryKey: ["agent-template", slug],
@@ -90,6 +101,19 @@ export function TemplateDetailPage() {
     retry: false,
   });
   const template = detailQuery.data ?? null;
+
+  // Sticky intent template. Team confirmation calls selectOrganization, which
+  // clears the whole React Query cache — the detail query then re-pends and
+  // `template` goes null for one refetch window. Without this capture the
+  // intent subtree (including an open NewAgentDialog) would unmount mid-flow
+  // and lose its state; the sticky copy keeps the resolution mounted with the
+  // last confirmed ACTIVE template for THIS slug. Navigation to a different
+  // slug replaces it (the effect keys on slug).
+  const [stickyIntentTemplate, setStickyIntentTemplate] = useState<AgentTemplatePublicTemplate | null>(null);
+  useEffect(() => {
+    if (!intent || template?.status !== "active") return;
+    setStickyIntentTemplate((prev) => (prev?.slug === template.slug ? prev : template));
+  }, [intent, template]);
 
   // One deduped detail view per mount, only once a real detail rendered.
   const viewTrackedRef = useRef(false);
@@ -126,8 +150,8 @@ export function TemplateDetailPage() {
         </div>
       );
     }
-    if (template?.status === "active") {
-      return <TemplateUseIntent template={template} />;
+    if (stickyIntentTemplate) {
+      return <TemplateUseIntent template={stickyIntentTemplate} />;
     }
     // A retired/unavailable Template cannot start a new agent — fall through
     // to the ordinary detail rendering, which explains the state.

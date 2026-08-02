@@ -41,9 +41,25 @@ describe("parseAgentTemplateIntentPath", () => {
     expect(parseAgentTemplateIntentPath("/")).toBeNull();
   });
 
-  it("rejects absolute and protocol-relative URLs", () => {
+  it("rejects absolute and protocol-relative URLs, including same-origin spellings", () => {
     expect(parseAgentTemplateIntentPath("https://evil.example/templates/pr-engineer?use=1")).toBeNull();
     expect(parseAgentTemplateIntentPath("//evil.example/templates/pr-engineer?use=1")).toBeNull();
+    // Same-origin absolute / protocol-relative forms are valid URLs but not
+    // the canonical relative intent.
+    expect(parseAgentTemplateIntentPath("http://first-tree.local/templates/pr-engineer?use=1")).toBeNull();
+    expect(parseAgentTemplateIntentPath("//first-tree.local/templates/pr-engineer?use=1")).toBeNull();
+  });
+
+  it("rejects URL-normalized but non-canonical spellings", () => {
+    // Trailing separator the URL parser would drop.
+    expect(parseAgentTemplateIntentPath("/templates/pr-engineer?use=1&")).toBeNull();
+    // Percent-encoded characters that decode to the same params.
+    expect(parseAgentTemplateIntentPath("/templates/pr-engineer?%75se=1")).toBeNull();
+    expect(parseAgentTemplateIntentPath("/templates/%70r-engineer?use=1")).toBeNull();
+    // Backslash the WHATWG parser would fold into a slash.
+    expect(parseAgentTemplateIntentPath("/templates\\pr-engineer?use=1")).toBeNull();
+    // Trailing slash on the path.
+    expect(parseAgentTemplateIntentPath("/templates/pr-engineer/?use=1")).toBeNull();
   });
 
   it("rejects path traversal and encoded separators", () => {

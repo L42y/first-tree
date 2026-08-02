@@ -1,8 +1,4 @@
-import {
-  AGENT_TEMPLATE_SLUG_REGEX,
-  isKnownLandingCampaignSlug,
-  type KnownLandingCampaignSlug,
-} from "@first-tree/shared";
+import { agentTemplateSlugSchema, isKnownLandingCampaignSlug, type KnownLandingCampaignSlug } from "@first-tree/shared";
 
 /**
  * Onboarding-related browser-side flags (sessionStorage).
@@ -44,7 +40,7 @@ export function readOnboardingTemplateIntent(orgId: string): string | null {
   if (raw === null) return null;
   // Stored as a bare slug string; validate strictly against the shared slug
   // contract so a tampered/legacy value degrades to "no intent".
-  if (raw.length > 100 || !AGENT_TEMPLATE_SLUG_REGEX.test(raw)) {
+  if (!agentTemplateSlugSchema.safeParse(raw).success) {
     window.sessionStorage.removeItem(TEMPLATE_INTENT_KEY(orgId));
     return null;
   }
@@ -53,8 +49,14 @@ export function readOnboardingTemplateIntent(orgId: string): string | null {
 
 export function writeOnboardingTemplateIntent(orgId: string, slug: string | null): void {
   if (typeof window === "undefined" || !orgId) return;
-  if (slug === null) window.sessionStorage.removeItem(TEMPLATE_INTENT_KEY(orgId));
-  else window.sessionStorage.setItem(TEMPLATE_INTENT_KEY(orgId), slug);
+  if (slug === null) {
+    window.sessionStorage.removeItem(TEMPLATE_INTENT_KEY(orgId));
+    return;
+  }
+  // Refuse invalid slugs at the write boundary instead of relying on the
+  // reader's self-heal — a bad handoff must never be stored at all.
+  if (!agentTemplateSlugSchema.safeParse(slug).success) return;
+  window.sessionStorage.setItem(TEMPLATE_INTENT_KEY(orgId), slug);
 }
 
 /**

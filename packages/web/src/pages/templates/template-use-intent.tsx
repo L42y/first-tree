@@ -1,6 +1,6 @@
-import type { AgentTemplatePublicTemplate } from "@first-tree/shared";
+import type { AgentTemplatePublicTemplate, MeMembership } from "@first-tree/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router";
 import { trackEvent } from "../../analytics.js";
 import { useAuth } from "../../auth/auth-context.js";
@@ -23,9 +23,20 @@ import { shouldEnterOnboarding } from "../onboarding/steps.js";
  *     create-agent step picks the intent up.
  *   - Everyone else — an explicit Team chooser. Even a single-Team member
  *     confirms the destination Team; a multi-Team member is never silently
- *     written into the wrong one. Only after `selectOrganization` succeeds for
- *     the exact chosen org do we open the shared NewAgentDialog with the
- *     Template preselected.
+ *     written into the wrong one.
+ *
+ * Team confirmation is a two-phase state machine, because `selectOrganization`
+ * clears the whole React Query cache and re-fetches `/me` — and its resolved
+ * promise alone is NOT proof the target Team is active (a lost membership
+ * reconciles to a fallback org with a resolved promise):
+ *
+ *   1. `handleConfirm` awaits `selectOrganization(exactOrgId)` and records a
+ *      settle marker (the chosen org + the pre-switch memberships identity).
+ *   2. The confirmation effect waits until Auth state has actually landed
+ *      (the org already matches, or a post-switch memberships array arrived),
+ *      then judges: EXACT org match → re-check the onboarding gate against
+ *      the NEW org and either hand off to onboarding or open the shared
+ *      NewAgentDialog; anything else → recoverable error, nothing is created.
  */
 export function TemplateUseIntent({ template }: { template: AgentTemplatePublicTemplate }) {
   const navigate = useNavigate();
@@ -50,18 +61,55 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   });
 
   // Onboarding handoff: write the per-org slug, then enter the ordinary flow.
-  // Idempotent, so a StrictMode double-effect or a refresh is harmless.
+  // This also covers a confirmed switch that LANDED on a Team still needing
+  // onboarding — the gate above is re-evaluated against the new org's auth
+  // state, so Team A's completed gate is never reused for Team B.
+  //
+  // Deliberately runs after EVERY commit with a ref guard instead of a deps
+  // array: the write is keyed by the org it was performed for, so repeats are
+  // idempotent (StrictMode double-effects, refreshes), and the effect can
+  // never be skipped by a passive-effect scheduling edge while the gate is
+  // already showing the onboarding destination.
+  const handoffWrittenForRef = useRef<string | null>(null);
   const [handoffWritten, setHandoffWritten] = useState(false);
   useEffect(() => {
-    if (!needsOnboarding || !organizationId) return;
+    if (!needsOnboarding || !organizationId) {
+      handoffWrittenForRef.current = null;
+      return;
+    }
+    if (handoffWrittenForRef.current === organizationId) return;
+    handoffWrittenForRef.current = organizationId;
     writeOnboardingTemplateIntent(organizationId, template.slug);
     setHandoffWritten(true);
-  }, [needsOnboarding, organizationId, template.slug]);
+  });
 
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(organizationId);
-  const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Settle marker for an in-flight confirmation (also the "Confirming team…"
+  // UI state): the chosen org plus the pre-switch memberships identity. It is
+  // STATE, not a ref — setting it must schedule the render that lets the
+  // confirmation effect judge. Auth "has landed" once the selected org
+  // already matches or a new memberships array arrives from the post-switch
+  // /me — only then is the org comparison trustworthy.
+  const [confirmSettle, setConfirmSettle] = useState<{ orgId: string; memberships: MeMembership[] } | null>(null);
+
+  useEffect(() => {
+    if (!confirmSettle) return;
+    const landed = organizationId === confirmSettle.orgId || memberships !== confirmSettle.memberships;
+    if (!landed) return;
+    setConfirmSettle(null);
+    if (organizationId !== confirmSettle.orgId) {
+      // The target membership was lost and Auth reconciled to a fallback
+      // Team — never create against a Team the user did not confirm.
+      setSwitchError("We couldn't confirm that team — nothing was created. Pick a team and try again.");
+      return;
+    }
+    // Exact Team confirmed. If THIS Team still needs onboarding, the handoff
+    // effect above owns the next step — do not open the creation dialog.
+    if (needsOnboarding) return;
+    setDialogOpen(true);
+  }, [confirmSettle, organizationId, memberships, needsOnboarding]);
 
   if (needsOnboarding && organizationId) {
     if (!handoffWritten) {
@@ -75,19 +123,16 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   }
 
   async function handleConfirm(): Promise<void> {
-    if (!selectedOrgId || switching) return;
-    setSwitching(true);
+    if (!selectedOrgId || confirmSettle) return;
     setSwitchError(null);
     try {
       await selectOrganization(selectedOrgId);
     } catch {
       // Never open the creation dialog against an unconfirmed Team.
-      setSwitching(false);
       setSwitchError("We couldn't switch to that team. Try again.");
       return;
     }
-    setSwitching(false);
-    setDialogOpen(true);
+    setConfirmSettle({ orgId: selectedOrgId, memberships });
   }
 
   return (
@@ -133,8 +178,12 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
         )}
 
         <div className="mt-6">
-          <Button variant="cta" onClick={() => void handleConfirm()} disabled={!selectedOrgId || switching}>
-            {switching ? "Switching team…" : "Continue"}
+          <Button
+            variant="cta"
+            onClick={() => void handleConfirm()}
+            disabled={!selectedOrgId || confirmSettle !== null}
+          >
+            {confirmSettle !== null ? "Confirming team…" : "Continue"}
           </Button>
         </div>
       </main>
