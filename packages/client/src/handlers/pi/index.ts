@@ -457,6 +457,8 @@ export const createPiHandler: HandlerFactory = (config) => {
    */
   let settleProviderEnteredMode: "graceful_drain" | "operator_suspend" | null = null;
   let lifecycleGeneration = 0;
+  /** Waiters woken when endLifecycle bumps generation so gated host I/O can fail closed. */
+  const lifecycleAbortWaiters = new Set<() => void>();
   let currentRetryAbort: AbortController | null = null;
   const queuedMessages: QueuedDelivery[] = [];
   const activeTools = new Map<string, ActiveTool>();
@@ -1438,13 +1440,15 @@ export const createPiHandler: HandlerFactory = (config) => {
 
   async function refreshPreparedSession(sessionCtx: SessionContext): Promise<PreparedSession> {
     if (!cwd || !sessionId) throw new Error("pi session is not prepared");
+    const generation = lifecycleGeneration;
     let runtimeConfig: AgentRuntimeConfig | null = null;
     let payload: AgentRuntimeConfigPayload | null = activePayload;
     let payloadResolved = false;
     if (agentConfigCache) {
-      runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+      runtimeConfig = await refreshConfigOrAbort(generation, sessionCtx, "prepared_refresh");
       payload = runtimeConfig.payload;
       payloadResolved = true;
+      assertLifecycleGeneration(generation, "prepared_refresh");
     }
     payload ??= { ...DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD };
     if (payload.kind !== "pi") {
@@ -1654,6 +1658,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     drainCancellationReason = recoveryReason;
     settleProviderEnteredMode = opts.settleMode ?? (opts.settleProviderEntered === true ? "graceful_drain" : null);
     lifecycleGeneration += 1;
+    notifyLifecycleAbort();
     currentRetryAbort?.abort();
     // Abort whenever a prompt may have entered Pi — do not wait for first stream event.
     const mayNeedAbort =
@@ -1713,6 +1718,39 @@ export const createPiHandler: HandlerFactory = (config) => {
     }
   }
 
+  function notifyLifecycleAbort(): void {
+    for (const wake of lifecycleAbortWaiters) wake();
+    lifecycleAbortWaiters.clear();
+  }
+
+  function waitForLifecycleAbort(generation: number, phase: string): Promise<never> {
+    return new Promise((_, reject) => {
+      const wake = () => {
+        lifecycleAbortWaiters.delete(wake);
+        reject(new PiLifecycleCancelledError(phase));
+      };
+      if (generation !== lifecycleGeneration) {
+        reject(new PiLifecycleCancelledError(phase));
+        return;
+      }
+      lifecycleAbortWaiters.add(wake);
+    });
+  }
+
+  async function refreshConfigOrAbort(
+    generation: number,
+    sessionCtx: SessionContext,
+    phase: string,
+  ): Promise<AgentRuntimeConfig> {
+    if (!agentConfigCache) {
+      throw new Error("pi agent config cache is required for refresh");
+    }
+    return await Promise.race([
+      agentConfigCache.refresh(sessionCtx.agent.agentId),
+      waitForLifecycleAbort(generation, phase),
+    ]);
+  }
+
   async function prepareSession(sessionCtx: SessionContext): Promise<PreparedSession> {
     const generation = lifecycleGeneration;
     if (isLandingCampaignTrialAgentMetadata(sessionCtx.agent.metadata)) {
@@ -1732,7 +1770,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     let runtimeConfig: AgentRuntimeConfig | null = null;
     let payload: AgentRuntimeConfigPayload | null = null;
     if (agentConfigCache) {
-      runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
+      runtimeConfig = await refreshConfigOrAbort(generation, sessionCtx, "prepare_refresh");
       payload = runtimeConfig.payload;
     }
     assertLifecycleGeneration(generation, "prepare_refresh");

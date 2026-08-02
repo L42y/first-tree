@@ -649,6 +649,9 @@ export class SessionManager {
     this.inboxDelivery = new InboxDeliveryCoordinator({
       ackEntry: config.ackEntry,
       recoverChat: config.recoverChat,
+      postRuntimeFailureNotice: async (chatId, payload) => {
+        await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
+      },
       onWorkChanged: (chatId) => this.projectSessionRuntime(chatId),
       onDeliveriesCommitted: (chatId, messageIds) => this.reconcileReplayFences(chatId, messageIds),
       log: config.log,
@@ -1197,7 +1200,11 @@ export class SessionManager {
 
     const attemptedHandlers = new Set<AgentHandler>();
     const shutdowns = [...this.sessions.values()].map((session) => {
-      this.invalidateRouteTransition(session, reason ?? "manager_shutdown");
+      // Fence new delivery admissions, but do NOT bump routeTransitionGeneration
+      // or retire the handler yet: already-issued DeliveryTokens need a stable
+      // settlement lease through settleProviderEntered notice-before-ACK.
+      // `shuttingDown` already fails closed for adoption/mutation leases.
+      this.invalidateDeliveryAdmission(session.chatId);
       // Stop every session handler whose stop is unconfirmed: the
       // active-slot case, plus a suspend boundary still in flight — its
       // handler may be mid-shutdown (joined via coalescing) or not started
@@ -1240,6 +1247,15 @@ export class SessionManager {
       );
     }
     await Promise.allSettled(shutdowns);
+
+    // Settlement leases are closed. Invalidate in-flight start/resume adoption
+    // now (Pi HEAD order: settle first, then invalidate) so a producer stuck on
+    // pre-provider work (e.g. config refresh) can finish and the wait below
+    // cannot hang manager shutdown.
+    const shutdownReason = reason ?? "manager_shutdown";
+    for (const session of this.sessions.values()) {
+      this.invalidateRouteTransition(session, shutdownReason);
+    }
 
     // Suspend boundaries AND route producers settling DURING the sweep can
     // register fresh teardown debt (a canceled fresh-start whose stop just
@@ -2006,6 +2022,15 @@ export class SessionManager {
     messages: SessionMessage | readonly SessionMessage[],
     reason: string,
   ): void {
+    // Preserve the captured terminal notice on the inbox ledger before clearing
+    // session-scoped pending state. Recovery/redelivery must retry that notice
+    // before any ACK — never treat a notice-failure marker as ACK-eligible.
+    if (reason === "runtime_failure_notice_delivery_failed") {
+      const pending = this.sessions.get(chatId)?.pendingRuntimeFailureNotice;
+      if (pending && shouldPostProviderFailureRuntimeNotice(pending)) {
+        this.inboxDelivery.markNoticeRequired(chatId, messages, pending);
+      }
+    }
     this.clearPendingRuntimeFailureNotice(chatId);
     this.inboxDelivery.retryTurn(chatId, messages, reason);
   }
@@ -3722,6 +3747,7 @@ export class SessionManager {
       this.sessionRuntimeStates.delete(entry.chatId);
       this.recomputeRuntimeState();
       entry.suspending = (async () => {
+        let settled = false;
         try {
           // settleProviderEntered keeps already-issued DeliveryTokens on the
           // settlement lease (including active/deferred inject) so they can
@@ -3734,27 +3760,29 @@ export class SessionManager {
           if (entry.pendingRuntimeFailureNotice) {
             this.inboxDelivery.markNoticeRequiredForProcessingPrefix(entry.chatId, entry.pendingRuntimeFailureNotice);
           }
-          await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
+          settled = true;
         } catch (err) {
+          // Settle failure leaves the handler joinable for a strict terminate /
+          // resume stop — do not start teardown here or suspend will hang on a
+          // gated shutdown the terminate owns.
           entry.suspendError = { error: err };
-          this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend settlement error");
-        } finally {
-          entry.routeTransitionGeneration++;
           try {
-            if (inFlightTransition) {
-              this.retiredHandlers.add(inFlightTransition.handler);
-              await this.shutdownHandler(inFlightTransition.handler, opts.reason, { observeFailure: true });
-              if (inFlightTransition.handler === entry.handler) {
-                entry.handlerStoppedBySuspend = entry.handler;
-              }
-            } else if (!this.retiredHandlers.has(entry.handler)) {
-              await this.shutdownHandler(entry.handler, opts.reason, { observeFailure: true });
-              entry.handlerStoppedBySuspend = entry.handler;
-            }
-          } catch (err) {
-            entry.suspendError = { error: err };
-            this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend teardown error");
+            this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend settlement error");
+          } catch (logErr) {
+            this.config.log.warn({ chatId: entry.chatId, err: logErr }, "operator suspend settlement error");
           }
+        }
+
+        // Bump adoption generation only after settle. Kick observeFailure
+        // teardown before awaiting prepare so a gated prepare still leaves an
+        // in-flight shutdown that strict terminate can join (main #2125).
+        entry.routeTransitionGeneration++;
+        const target = inFlightTransition?.handler ?? entry.handler;
+        if (inFlightTransition) {
+          this.retiredHandlers.add(inFlightTransition.handler);
+        }
+
+        if (!settled) {
           entry.suspending = null;
           if (unestablishedStart) {
             if (entry.handlerStoppedBySuspend !== entry.handler) {
@@ -3764,6 +3792,43 @@ export class SessionManager {
               this.sessions.delete(entry.chatId);
               this.currentTrigger.delete(entry.chatId);
             }
+          }
+          return;
+        }
+
+        const stopPromise =
+          inFlightTransition || !this.retiredHandlers.has(entry.handler)
+            ? this.shutdownHandler(target, opts.reason, { observeFailure: true })
+            : Promise.resolve();
+
+        try {
+          // Yield once so an already-scheduled teardown can enter (and, for
+          // instantaneous mocks, finish) before prepare publishes recovery
+          // debt. Late route materialization then afterPrior-chains a second
+          // stop instead of racing the first (main invalidate-at-entry timing).
+          await Promise.resolve();
+          await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
+          await stopPromise;
+          if (target === entry.handler) {
+            entry.handlerStoppedBySuspend = entry.handler;
+          }
+        } catch (err) {
+          entry.suspendError = { error: err };
+          try {
+            this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend teardown error");
+          } catch (logErr) {
+            this.config.log.warn({ chatId: entry.chatId, err: logErr }, "operator suspend teardown error");
+          }
+        }
+
+        entry.suspending = null;
+        if (unestablishedStart) {
+          if (entry.handlerStoppedBySuspend !== entry.handler) {
+            this.registerPendingTeardown(entry.chatId, entry.handler);
+          }
+          if (this.sessions.get(entry.chatId) === entry) {
+            this.sessions.delete(entry.chatId);
+            this.currentTrigger.delete(entry.chatId);
           }
         }
       })();
@@ -3814,11 +3879,21 @@ export class SessionManager {
         // be falsey) on the entry so the Reset apply can reject instead of
         // acking over a handler that was never confirmed suspended/stopped.
         entry.suspendError = { error: err };
-        this.config.log.warn({ chatId: entry.chatId, err }, "suspend preparation error");
+        try {
+          this.config.log.warn({ chatId: entry.chatId, err }, "suspend preparation error");
+        } catch (logErr) {
+          // Second-stage warn must not reject the suspending promise if the
+          // logger transport itself throws.
+          this.config.log.warn({ chatId: entry.chatId, err: logErr }, "suspend error");
+        }
       })
       .then(() => undefined)
       .catch((err) => {
-        this.config.log.warn({ chatId: entry.chatId, err }, "suspend error");
+        try {
+          this.config.log.warn({ chatId: entry.chatId, err }, "suspend error");
+        } catch (logErr) {
+          this.config.log.warn({ chatId: entry.chatId, err: logErr }, "suspend error");
+        }
       })
       .finally(() => {
         entry.suspending = null;
