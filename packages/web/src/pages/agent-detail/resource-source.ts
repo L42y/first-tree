@@ -16,3 +16,13 @@ export function sourceLabel(source: EffectiveResourceRow["source"]): string {
   if (source === "team_available") return "From your team · optional";
   return "From your team";
 }
+
+/**
+ * Historical-origin label for a Resource that was imported from an official
+ * Agent Template. The Template is only the one-time starting point — the Team
+ * copy is the maintained authority afterwards. `templateName` may be unknown
+ * (Template deleted or summary unavailable); fall back to non-leaking copy.
+ */
+export function templateSourceLabel(templateName: string | null): string {
+  return `Imported from ${templateName ?? "a template"} · maintained by your team`;
+}

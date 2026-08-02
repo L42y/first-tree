@@ -299,7 +299,7 @@ describe("NewAgentDialog extra branches", () => {
       }),
     );
     expect(authMock.value.refreshMe).toHaveBeenCalled();
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "codex");
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "codex", 0);
   });
 
   // Dropped "offers in-product Connect when the picked computer has an
@@ -355,9 +355,17 @@ describe("NewAgentDialog extra branches", () => {
     await click(buttonByText(document.body, "Create"));
     await waitForText(serverErrors, "Computer is offline");
 
-    agentMocks.createAgent.mockRejectedValueOnce(new ApiError(409, "duplicate"));
+    agentMocks.createAgent.mockRejectedValueOnce(
+      new ApiError(409, "Agent name already exists", undefined, "agent_name_conflict"),
+    );
     await click(buttonByText(document.body, "Create"));
     await waitForText(serverErrors, "already in use");
+
+    // A bare 409 without a wire code must not be guessed as a name collision.
+    agentMocks.createAgent.mockRejectedValueOnce(new ApiError(409, "Something else conflicted"));
+    await click(buttonByText(document.body, "Create"));
+    await waitForText(serverErrors, "Something else conflicted");
+    expect(serverErrors.textContent).not.toMatch(/already in use/i);
 
     await act(async () => root?.unmount());
     root = null;

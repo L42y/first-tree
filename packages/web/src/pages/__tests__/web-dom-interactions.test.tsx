@@ -886,7 +886,7 @@ describe("web DOM interaction coverage", () => {
         organizationId: "org-1",
       }),
     );
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "claude-code");
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "claude-code", 0);
 
     await unmountRoot(root);
   });

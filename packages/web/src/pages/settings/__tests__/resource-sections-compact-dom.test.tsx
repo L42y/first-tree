@@ -35,6 +35,7 @@ function repo(id: string): ResourceRow {
     repoCanonicalKey: `git.example.com/acme/${id}`,
     bundleAttachmentId: null,
     defaultEnabled: "recommended",
+    originTemplateId: null,
     status: "active",
     payload: { url: `https://git.example.com/acme/${id}.git` },
     createdBy: "member-1",

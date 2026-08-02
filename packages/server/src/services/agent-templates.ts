@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import {
+  type AgentTemplateAdoptionSummary,
   type AgentTemplateComponent,
   type AgentTemplateComponentInput,
   type AgentTemplateDetail,
@@ -8,6 +9,7 @@ import {
   type AgentTemplatePublicList,
   type AgentTemplatePublicTemplate,
   type AgentTemplateReplacementSummary,
+  agentTemplateAdoptionSummarySchema,
   agentTemplateDetailSchema,
   agentTemplateMcpComponentSchema,
   agentTemplatePayloadSchema,
@@ -599,4 +601,73 @@ async function resolvePublicReplacement(
   if (!(await templateBundlesAvailable(db, parsed.data, publisherOrgId))) return null;
   const summary = agentTemplateReplacementSummarySchema.safeParse({ slug: replacement.slug, name: replacement.name });
   return summary.success ? summary.data : null;
+}
+
+/**
+ * Same-order public-safe summaries for an Agent's adopted Templates, for the
+ * Agent Detail control plane. Deleted/draft/projection-invalid rows degrade
+ * to `missing`; the read never reaches into the runtime config path.
+ */
+export async function buildAdoptedTemplateSummaries(
+  db: Database,
+  publisherOrgId: string | undefined,
+  templateIds: readonly string[],
+): Promise<AgentTemplateAdoptionSummary[]> {
+  if (templateIds.length === 0) return [];
+  // Without a configured Publisher Team the summaries cannot be proven
+  // public-safe; degrade every entry to `missing` (same order) while the
+  // resources/runtime read itself keeps working.
+  if (!publisherOrgId) {
+    return templateIds.map((id) => ({
+      id,
+      status: "missing",
+      slug: null,
+      name: null,
+      public: null,
+      replacement: null,
+    }));
+  }
+  const rows = await db
+    .select({
+      id: agentTemplates.id,
+      slug: agentTemplates.slug,
+      name: agentTemplates.name,
+      status: agentTemplates.status,
+      payload: agentTemplates.payload,
+      replacementTemplateId: agentTemplates.replacementTemplateId,
+    })
+    .from(agentTemplates)
+    .where(inArray(agentTemplates.id, [...templateIds]));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const summaries: AgentTemplateAdoptionSummary[] = [];
+  for (const id of templateIds) {
+    const row = byId.get(id);
+    if (!row || row.status === "draft") {
+      summaries.push({ id, status: "missing", slug: null, name: null, public: null, replacement: null });
+      continue;
+    }
+    const parsed = agentTemplatePayloadSchema.safeParse(row.payload);
+    if (!parsed.success) {
+      summaries.push({ id, status: "missing", slug: null, name: null, public: null, replacement: null });
+      continue;
+    }
+    const replacement =
+      row.status === "retired" && row.replacementTemplateId
+        ? await resolvePublicReplacement(db, row.replacementTemplateId, publisherOrgId)
+        : null;
+    // The whole public-safe projection must validate — a damaged outer
+    // slug/name degrades to `missing` instead of leaking an off-contract
+    // summary into Agent Detail.
+    const candidate: AgentTemplateAdoptionSummary =
+      row.status === "retired"
+        ? { id, status: "retired", slug: row.slug, name: row.name, public: parsed.data.public, replacement }
+        : { id, status: "active", slug: row.slug, name: row.name, public: parsed.data.public, replacement: null };
+    const checked = agentTemplateAdoptionSummarySchema.safeParse(candidate);
+    if (!checked.success) {
+      summaries.push({ id, status: "missing", slug: null, name: null, public: null, replacement: null });
+      continue;
+    }
+    summaries.push(checked.data);
+  }
+  return summaries;
 }

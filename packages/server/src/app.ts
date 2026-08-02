@@ -364,7 +364,12 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     encryptionKey: config.secrets.encryptionKey,
   });
   app.decorate("configService", configService);
-  const resourcesService = createResourcesService({ db, notifier, attachmentBlobStore });
+  const resourcesService = createResourcesService({
+    db,
+    notifier,
+    attachmentBlobStore,
+    agentTemplatePublisherOrgId: config.agentTemplates?.publisherOrgId,
+  });
   app.decorate("resourcesService", resourcesService);
 
   // WebSocket plugin. `maxPayload` caps a single inbound frame so a hostile

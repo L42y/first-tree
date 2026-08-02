@@ -1,5 +1,10 @@
-import { ATTACHMENT_FILENAME_HEADER, ATTACHMENT_MIME_HEADER } from "@first-tree/shared";
-import { and, eq } from "drizzle-orm";
+import {
+  AGENT_STATUSES,
+  AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES,
+  ATTACHMENT_FILENAME_HEADER,
+  ATTACHMENT_MIME_HEADER,
+} from "@first-tree/shared";
+import { and, asc, eq } from "drizzle-orm";
 import { strToU8, zipSync } from "fflate";
 import postgres from "postgres";
 import { describe, expect, it } from "vitest";
@@ -220,6 +225,57 @@ describe("Agent Template adoption", () => {
       const asAdmin = await adopt(app, orgAdmin, agent.uuid, config?.version ?? 1, [template.id]);
       expect(asAdmin.statusCode).toBe(200);
       expect(asAdmin.json<{ version: number }>().version).toBe((config?.version ?? 1) + 1);
+    });
+
+    it("rejects Template PATCH on a suspended Agent without mutating state", async () => {
+      const app = getApp();
+      const publisher = await createPublisherAdmin(app);
+      const template = await publishTemplate(app, publisher, `sus-${crypto.randomUUID().slice(0, 6)}`, [
+        promptComponent(),
+      ]);
+      const createAgentRow = await seedAgentFactory(app);
+      const agent = await createAgentRow({ name: `sus-${crypto.randomUUID().slice(0, 6)}` });
+      const admin = await createTestAdmin(app, { username: `sus-${crypto.randomUUID().slice(0, 8)}` });
+      const [configBefore] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      expect(configBefore).toBeDefined();
+
+      // Adopt once while active so provenance Resources exist, then suspend.
+      // There is no route fast path: this PATCH enters the locked service
+      // transaction and is rejected by the held-row active guard.
+      expect((await adopt(app, admin, agent.uuid, configBefore?.version ?? 1, [template.id])).statusCode).toBe(200);
+      const before = await getResources(app, admin, agent.uuid);
+      const [configSnapshot] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      const bindingsBefore = await app.db
+        .select()
+        .from(agentResourceBindings)
+        .where(eq(agentResourceBindings.agentId, agent.uuid))
+        .orderBy(asc(agentResourceBindings.id));
+      const provenanceBefore = (await provenanceResources(app, template.id)).sort((a, b) => a.id.localeCompare(b.id));
+
+      await app.db.update(agents).set({ status: AGENT_STATUSES.SUSPENDED }).where(eq(agents.uuid, agent.uuid));
+
+      // Same-set / idempotent request must also be rejected by the locked guard.
+      const sameSet = await adopt(app, admin, agent.uuid, before.version, before.templateIds);
+      expect(sameSet.statusCode).toBe(409);
+      expect(sameSet.json<{ code?: string }>().code).toBe(AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.AGENT_INACTIVE);
+
+      const cleared = await adopt(app, admin, agent.uuid, before.version, []);
+      expect(cleared.statusCode).toBe(409);
+      expect(cleared.json<{ code?: string }>().code).toBe(AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.AGENT_INACTIVE);
+
+      const after = await getResources(app, admin, agent.uuid);
+      expect(after.version).toBe(before.version);
+      expect(after.templateIds).toEqual(before.templateIds);
+      const [configAfter] = await app.db.select().from(agentConfigs).where(eq(agentConfigs.agentId, agent.uuid));
+      expect(configAfter).toEqual(configSnapshot);
+      const bindingsAfter = await app.db
+        .select()
+        .from(agentResourceBindings)
+        .where(eq(agentResourceBindings.agentId, agent.uuid))
+        .orderBy(asc(agentResourceBindings.id));
+      expect(bindingsAfter).toEqual(bindingsBefore);
+      const provenanceAfter = (await provenanceResources(app, template.id)).sort((a, b) => a.id.localeCompare(b.id));
+      expect(provenanceAfter).toEqual(provenanceBefore);
     });
 
     it("rejects cross-org callers with 404", async () => {
@@ -478,6 +534,7 @@ describe("Agent Template adoption", () => {
 
       const stale = await adopt(app, admin, agent.uuid, (config?.version ?? 1) + 99, [template.id]);
       expect(stale.statusCode).toBe(409);
+      expect(stale.json<{ code?: string }>().code).toBe(AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.VERSION_CONFLICT);
     });
 
     it("removes only auto bindings on removal and keeps manual ones", async () => {
@@ -830,6 +887,10 @@ describe("Agent Template adoption", () => {
 
       const reply = await adopt(app, admin, agent.uuid, config?.version ?? 1, [template.id]);
       expect(reply.statusCode).toBe(409);
+      expect(reply.json<{ code?: string; error?: string }>().code).toBe(
+        AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.ADOPTION_CONFLICT,
+      );
+      expect(reply.json<{ error?: string }>().error).toMatch(/already exists/i);
       // The name check runs before Phase 3: nothing was copied.
       expect(await copiesOf(app, admin)).toBe(copiesBefore);
       expect(await provenanceResources(app, template.id)).toHaveLength(0);

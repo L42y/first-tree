@@ -23,6 +23,8 @@ export async function agentResourcesRoutes(app: FastifyInstance): Promise<void> 
   /**
    * Full replace-set write of the Agent's adopted official Templates. The
    * read side lives in `GET /:uuid/resources` (`templateIds` + `version`).
+   * Active-status is enforced inside the locked adoption transaction — not
+   * as a route fast path — so suspended Agents always hit the service guard.
    */
   app.patch<{ Params: { uuid: string } }>("/:uuid/templates", async (request) => {
     const { agent, scope } = await requireAgentAccess(request, app.db, "manage");

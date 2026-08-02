@@ -187,6 +187,7 @@ function promptRow(overrides: Partial<EffectivePromptRow> = {}): EffectivePrompt
     repo: null,
     promptBody: "Use the team playbook.",
     unavailableReason: null,
+    originTemplateId: null,
     order: 0,
   };
   return { ...base, ...overrides };
@@ -196,6 +197,7 @@ function agentResources(overrides: Partial<AgentResourcesOutput> = {}): AgentRes
   return {
     version: overrides.version ?? 9,
     templateIds: overrides.templateIds ?? [],
+    adoptedTemplates: [],
     effective: overrides.effective ?? {
       version: overrides.version ?? 9,
       repos: [],
@@ -222,6 +224,7 @@ function availablePrompt(): AgentResourcesOutput["availableTeamResources"][numbe
     defaultEnabled: "available",
     status: "active",
     payload: { body: "Check safety constraints." },
+    originTemplateId: null,
     createdBy: "member-self",
     updatedBy: "member-self",
     createdAt: NOW,
@@ -242,6 +245,7 @@ function availableSkill(): AgentResourcesOutput["availableTeamResources"][number
     defaultEnabled: "available",
     status: "active",
     payload: { name: "Optional skill", description: "Optional helper.", body: "Do work.", metadata: {} },
+    originTemplateId: null,
     createdBy: "member-self",
     updatedBy: "member-self",
     createdAt: NOW,

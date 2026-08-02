@@ -37,6 +37,7 @@ function row(over: Partial<ResourceRow> & Pick<ResourceRow, "id" | "type" | "nam
     ownerAgentId: null,
     repoCanonicalKey: null,
     defaultEnabled: "available",
+    originTemplateId: null,
     status: "active",
     createdBy: "u",
     updatedBy: "u",
