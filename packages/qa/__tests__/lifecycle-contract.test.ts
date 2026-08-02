@@ -21,19 +21,19 @@ const dispositions = [
 ] as const;
 
 describe("first-tree-qa lifecycle contract", () => {
-  it("keeps the universal lifecycle in the skill and the First Tree extension in the package", () => {
+  it("keeps the core lifecycle in the skill and First Tree details in the package", () => {
     const skill = readRepoFile("skills/first-tree-qa/SKILL.md");
     const packageInstructions = readRepoFile("packages/qa/AGENTS.md");
 
-    expect(packageInstructions).toContain("The skill owns the QA lifecycle");
-    expect(packageInstructions).toContain("repository-specific requirements");
-    expect(skill).toMatch(/`packages\/qa`\s+supplies\s+stricter run-cell rules/u);
-    expect(skill).toContain("it extends this lifecycle instead of replacing it");
+    expect(packageInstructions).toContain("The skill owns");
+    expect(packageInstructions).toContain("repository-specific authority");
+    expect(skill).toContain("repository-local QA instructions and assets");
+    expect(skill).toMatch(/repository-specific tier\s+selection details/u);
 
     const phases = [
-      "### 1. Understand the product",
-      "### 2. Reach `QA READY`",
-      "### 3. Scope the task",
+      "### 1. Understand and classify",
+      "### 2. Prepare the selected tier",
+      "### 3. Scope and record",
       "### 4. Execute and adapt",
       "### 5. Report and improve the quality system",
     ];
@@ -45,12 +45,22 @@ describe("first-tree-qa lifecycle contract", () => {
     }
   });
 
-  it("blocks formal planning before the complete harness reaches QA READY", () => {
+  it("selects the lowest sufficient tier and reserves complete readiness for full QA", () => {
+    const skill = readRepoFile("skills/first-tree-qa/SKILL.md");
     const packageInstructions = readRepoFile("packages/qa/AGENTS.md");
     const planTemplate = readRepoFile("packages/qa/templates/qa-plan.md");
+    const combined = [skill, packageInstructions].join("\n");
 
-    expect(packageInstructions).toContain("Do not select cases or write the formal task QA plan before");
-    expect(planTemplate).toContain("Create only after the complete harness is `QA READY`.");
+    for (const tier of ["test-only", "focused-local", "full-isolated"]) {
+      expect(combined).toContain(`\`${tier}\``);
+    }
+    expect(combined).toContain("Start with the lowest tier");
+    expect(packageInstructions).toContain("Run `pnpm test` for repository-wide deterministic validation");
+    expect(packageInstructions).toContain("Local non-isolated startup is allowed");
+    expect(packageInstructions).toContain("Release preflight/qualification");
+    expect(planTemplate).toContain("Create for `focused-local` only after its in-scope capabilities are ready.");
+    expect(planTemplate).toContain("Create for `full-isolated` only after the");
+    expect(planTemplate).toContain("Do not create for `test-only`.");
   });
 
   it("keeps every case disposition aligned in the skill and report template", () => {
@@ -63,19 +73,18 @@ describe("first-tree-qa lifecycle contract", () => {
     }
   });
 
-  it("rejects the superseded task-first harness language", () => {
+  it("rejects the superseded universal complete-harness contract", () => {
     const files = [
       "skills/first-tree-qa/SKILL.md",
       "packages/qa/AGENTS.md",
       "packages/qa/README.md",
       "packages/qa/briefings/setup.md",
       "packages/qa/briefings/plan.md",
-      "packages/qa/environment/README.md",
     ];
     const combined = files.map(readRepoFile).join("\n");
 
-    expect(combined).not.toMatch(/smallest isolated run cell/iu);
-    expect(combined).not.toMatch(/run only the services needed/iu);
-    expect(combined).not.toMatch(/decide run cell shape/iu);
+    expect(combined).not.toMatch(/First make the whole product testable/iu);
+    expect(combined).not.toMatch(/A narrow request changes execution scope after readiness/iu);
+    expect(combined).not.toMatch(/complete harness before scoping execution/iu);
   });
 });

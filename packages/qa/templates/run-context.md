@@ -1,43 +1,40 @@
-# Run Context And Harness Readiness
+# QA Run Context
 
-## Target
+## Target And Tier
 
-- Object:
-- Ref:
-- Source worktree:
+- Object/ref:
 - Artifact identities:
+- Tier: `test-only` | `focused-local` | `full-isolated`
+- Tier rationale:
+- Maximum supported conclusion:
 
-## Run Cell
+## Environment
 
-- Run root:
-- Docker project/images:
-- Native/device/provider bridges:
-- Mounted paths and isolated homes:
+- Source worktree:
+- Run/artifact root:
+- Started or reused services and ownership:
+- Docker project/images, if any:
+- Native/device/provider bridges, if any:
+- Data, identities, credentials, and isolation limits:
 - Cleanup owner:
 
-## Product Surface Capability Matrix
+## Capability Matrix
+
+Required only for the surfaces selected by `focused-local` or every formal surface in `full-isolated`.
 
 | Surface | Build | Run | Drive | Observe | Measure | Reset | Evidence / gap |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | | | | | | | | |
 
-## Services And Data
+## Commands Or Services
 
+- Test commands:
 - Started services/endpoints:
-- Health evidence:
-- Fixtures/seed state:
-- Identities/auth/provider readiness:
+- Health and precondition evidence:
 
-## Readiness Performance
+## Readiness Outcome
 
-- Install/build duration and artifact size:
-- Startup/readiness duration:
-- Idle resources:
-- Driver/observer/reset probe:
-
-## `QA READY` Outcome
-
-- Status: `READY` | `FAIL` | `BLOCKED` | `INCONCLUSIVE`
-- Evidence:
-- Capability gaps and limitations:
-- Reset/cleanup path:
+- `test-only`: `NOT_APPLICABLE`
+- `focused-local`: `IN_SCOPE_READY` | `FAIL` | `BLOCKED` | `INCONCLUSIVE`
+- `full-isolated`: `QA_READY` | `FAIL` | `BLOCKED` | `INCONCLUSIVE`
+- Evidence, gaps, reset, and cleanup path:

@@ -47,6 +47,7 @@ export async function runFirstTreeQaCase(
     caseId: evalCase.id,
     driftNote: driftNote(evalCase, metrics),
     expectedAction: evalCase.expected.status,
+    expectedTier: evalCase.expected.tier,
     firstResponseLatencyMs: observability.firstResponseLatencyMs,
     fixtureValidation,
     grading,

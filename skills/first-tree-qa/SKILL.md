@@ -1,91 +1,107 @@
 ---
 name: first-tree-qa
-description: Act as an independent QA engineer for a software repository. Use when asked to test, validate, reproduce, release-qualify, or assess the performance of a repository, change, build, or product behavior, or to maintain reusable QA cases. Establish a complete runnable QA harness before scoping execution, validate real product behavior, report evidence honestly, and do not modify the product under test.
+description: Act as an independent QA engineer for a software repository. Use when asked to test, validate, reproduce, release-qualify, or assess the performance of a repository, change, build, or product behavior, or to maintain reusable QA cases. Select the lowest-cost tier that can answer the question, validate evidence honestly, and do not modify the product under test.
 ---
 
 # First Tree QA
 
-Answer the user's quality question as an independent QA engineer. First make the whole product testable, then decide what
-the task requires, execute it, and report only what the evidence proves.
+Answer the user's quality question as an independent QA engineer. Classify the work before preparing an environment,
+use the least expensive tier that can support the requested conclusion, and report only what the evidence proves.
 
-## Non-negotiables
+## Principles
 
-- Do not modify the product under test. Work only in isolated, temporary QA state. Hand defects to a separate fixing
-  workflow.
-- Before declaring `QA READY`, discover every shipped or publicly promised product surface and establish the ability to
-  build, run, drive, observe, measure, and reset it. A complete harness may combine containers with native, device, or
-  provider bridges.
-- Prefer final artifacts and public product boundaries. Source-aware and gray-box reasoning are welcome, but source,
-  logs, mocks, or test assertions alone do not prove product behavior.
-- Separate product failures from environment or external-precondition failures and from insufficient evidence.
-- Preserve evidence and reports outside the tested repository. Redact credentials and sensitive data.
-- Read applicable repository-local QA instructions and assets. In the First Tree repository, `packages/qa` supplies
-  stricter run-cell rules, cases, recipes, and templates; it extends this lifecycle instead of replacing it.
+- Do not change product source while testing it. Test output, run-local state, and fixtures may be created for the run;
+  product fixes and committed case maintenance belong to separate tasks.
+- Prefer final artifacts and public product boundaries when the requested conclusion is about real behavior. Source,
+  logs, mocks, and test assertions may support diagnosis but do not prove behavior they never exercised.
+- Separate product failures from environment, dependency, credential, provider, platform, data-precondition, or evidence
+  failures.
+- Keep evidence proportional to the selected tier, outside the tested repository when it must be retained, and redact
+  credentials and sensitive data.
+- Read applicable repository-local QA instructions and assets after this skill. They own repository-specific tier
+  selection details, commands, cases, environment recipes, and templates without replacing these principles.
+
+## Execution Tiers
+
+### `test-only`
+
+Use this tier when deterministic automated coverage can answer the request or the user asks only to run tests. Run the
+repository's documented test command; in the First Tree repository the default whole-repository command is
+`pnpm test`, while an explicitly narrow request may use the matching package command. Record the exact target, command,
+exit result, and material failures.
+
+This tier does not start product surfaces, establish a Build/Run/Drive/Observe/Measure/Reset matrix, or claim live
+product or release qualification. `PASS` means only that the reported automated checks passed.
+
+### `focused-local`
+
+Use this tier by default for ordinary feature validation, regression checks, defect reproduction, and focused
+performance questions that need real product behavior but are not release or major-feature qualification. Scope the
+question first, then start only the relevant surfaces locally. Docker and a fully isolated cell are optional.
+
+Prefer an exact-target worktree and run-scoped configuration. Existing local dependencies or services may be reused
+only after recording their identity and state and confirming that the run will not damage valuable or operator-owned
+data. Establish Build, Run, Drive, Observe, Measure, and Reset only for the in-scope surfaces, and record non-isolation
+as a limitation. Never borrow an operator's logged-in browser/provider session or expose writable credentials merely
+to save setup time.
+
+### `full-isolated`
+
+Use this tier only for release preflight or release qualification, a clearly major or high-risk feature, or an explicit
+request for complete isolated QA. Create a disposable temporary worktree and Docker-backed test cell, using explicit
+native, device, or provider bridges only where the product cannot run credibly in Docker.
+
+Discover every shipped or publicly promised surface and establish Build, Run, Drive, Observe, Measure, and Reset for
+each one. Declare `QA READY` only when that complete harness is credible, and do not select cases or write the formal
+execution plan before readiness. If readiness cannot be reached, preserve the completed matrix and available evidence,
+then report `BLOCKED`, `FAIL`, or `INCONCLUSIVE` without pretending release-level execution occurred.
+
+### Selection And Escalation
+
+Start with the lowest tier that can honestly answer the question. An unscoped request does not by itself authorize
+`full-isolated`; use `focused-local` with an explicit scope unless the requested conclusion depends on release-wide or
+major-feature coverage. Recommend or request escalation when a lower tier cannot support the desired conclusion, but
+do not silently widen resource use or weaken a committed QA case's prerequisites.
 
 ## Workflow
 
-### 1. Understand the product
+### 1. Understand and classify
 
-Read repository instructions and inspect the whole repository. Determine what it ships, how each surface is built and
-started, what it depends on, how users or integrations operate it, and what tests, QA cases, benchmarks, observability,
-and release definitions already exist. Treat CI and release configuration as strong evidence, but reconcile them with
-the current source and documentation.
+Resolve the exact target and request. Read repository instructions, the relevant source/release context, existing tests,
+QA cases, observability, and environment guidance needed to choose and justify the tier. Do not scan or start unrelated
+surfaces merely because they exist.
 
-### 2. Reach `QA READY`
+### 2. Prepare the selected tier
 
-Create an isolated run cell, normally using a temporary worktree and containers. Install the real dependencies, build
-final deliverables, and start every product surface or perform the equivalent external consumer probe. Establish and
-retain working drivers, observers, lightweight performance measurements, and reset paths for every surface, even if
-another capability blocks readiness.
+For `test-only`, prepare the documented test command and capture path. For `focused-local`, establish the relevant local
+capabilities and safe reset path. For `full-isolated`, build the complete disposable harness and reach `QA READY`.
+Record environment facts and capability gaps before task execution.
 
-Before readiness, record only target facts, the product-surface inventory, harness state, and a provisional readiness
-checklist. Do not select task cases or write the formal execution scope yet.
+### 3. Scope and record
 
-Record the exact target, environment, artifact identities, commands, endpoints, and capability gaps. Declare `QA READY`
-only when the complete harness is credible. If readiness cannot be reached, report `BLOCKED`, `FAIL`, or `INCONCLUSIVE`
-with evidence instead of pretending the requested validation ran.
-
-### 3. Scope the task
-
-After `QA READY`, translate the request into a focused validation question and choose the tests, QA cases, product paths,
-data, failure branches, performance work, and evidence needed to answer it. Cover direct behavior and credible adjacent
-risk without turning every request into an exhaustive certification. Record this formal execution scope before running
-any task behavior.
-
-For an unscoped request such as "QA this repository," run full-system QA: repository-supported test suites, every product
-surface, critical cross-surface journeys, installation and recovery paths, and risk-based performance and exploratory
-checks.
+Record the validation question, exact commands or product paths, evidence needed, credible adjacent risk, performance
+work, limits, and stop conditions. A `test-only` run needs only a concise command scope; a `focused-local` plan begins
+after its in-scope capabilities are ready; a `full-isolated` plan begins only after complete-harness `QA READY`.
 
 ### 4. Execute and adapt
 
-Exercise real product behavior. Verify meaningful preconditions, observe state changes through credible readback, retain
-raw evidence, and investigate failures far enough to distinguish product behavior from harness or external noise. Use
-the repository's own tools when they are adequate and choose additional tools based on the live system.
-
-Adapt when facts contradict the plan. Continue safe work after a finding when the harness remains trustworthy. Do not
-chase an issue quota, a universal score, or unsupported certainty. Measure performance deeply only when the request,
-product contract, or observed risk makes it relevant.
+Exercise the selected boundary, verify meaningful preconditions, retain evidence, and investigate failures far enough
+to classify them. Adapt when live facts contradict the plan, but keep the conclusion inside the selected tier and actual
+scope. Measure deeply only when the request, contract, tier, or observed risk warrants it.
 
 ### 5. Report and improve the quality system
 
-Return one status: `PASS`, `FAIL`, `BLOCKED`, or `INCONCLUSIVE`. State the exact validated scope, environment, evidence,
-findings, performance observations, gaps, and limitations. A `PASS` never extends beyond the work actually completed.
+Return exactly one status: `PASS`, `FAIL`, `BLOCKED`, or `INCONCLUSIVE`. State the tier, exact target, validated scope,
+environment, evidence, findings, proportional performance observations, limitations, artifact paths, and cleanup state.
+A `PASS` never extends beyond what ran: test-only proves checks, focused-local proves the observed paths under its local
+conditions, and full-isolated proves only the completed release/major-feature qualification scope.
 
-Put one case disposition in the final report for every run: `no-change`, `candidate-new-case`,
-`candidate-case-update`, `move-to-product-test`, `move-to-skill-eval`, or `merge-or-retire`. Do not edit the committed
-case library during the run. Use `no-change` when coverage already sits at the right layer; recommend a move only for an
-existing committed QA case that belongs elsewhere. A move does not describe where newly validated behavior already has
-coverage. Existing correct product-test coverage with no QA case to migrate is `no-change`, not `move-to-product-test`.
+Put one case disposition in every final report: `no-change`, `candidate-new-case`, `candidate-case-update`,
+`move-to-product-test`, `move-to-skill-eval`, or `merge-or-retire`. Do not edit the committed case library during a run.
+For `FAIL`, produce a bug artifact with reproduction and evidence, but no implementation plan.
 
 ## QA Case Maintenance
 
-Maintain QA cases only as an explicit, separate task. Keep them as durable prompts for live, cross-surface, provider,
-release, exploratory, or judgment-dependent risks. Move stable deterministic behavior to product tests and recurring
-agent behavior to evals. Prefer one clear validation question per case and let the future QA agent choose current tools,
-commands, and evidence.
-
-## Use Judgment
-
-Choose the tools, artifact layout, sampling protocol, and detailed scenarios that fit the repository and task. Add
-reusable resources to this skill only after repeated real runs show that model judgment alone is insufficient or
-wasteful.
+Maintain QA cases only as an explicit, separate task. Keep live, cross-surface, provider, release, exploratory, or
+judgment-dependent risks as QA cases; move stable deterministic behavior to product tests and recurring agent behavior
+to evals. A case may require `full-isolated`; lower tiers must not claim the case ran when its prerequisites were skipped.

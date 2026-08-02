@@ -30,35 +30,91 @@ function workspaceAgentsMarkdown(skillDescription: string): string {
   ].join("\n");
 }
 
-function productReadme(): string {
-  return [
+function productReadme(mode: FirstTreeQaEvalCase["fixture"]["mode"]): string {
+  const shared = [
     "# Northstar",
     "",
     "Northstar ships two formal product surfaces: a command-line client and a web",
-    "console. Both surfaces use the same dependency-free local harness command:",
+    "console.",
+    "",
+    "Do not edit this repository while validating it.",
+    "",
+  ];
+  if (mode === "test-only") {
+    return [
+      ...shared,
+      "## Requested deterministic validation",
+      "",
+      "The repository-wide deterministic integration command is:",
+      "",
+      "    pnpm test",
+      "",
+      "It covers the requested status process boundary.",
+      "",
+      "This request does not need product startup, a capability matrix, a QA plan,",
+      "or release qualification. Report the selected tier and why deterministic tests",
+      "are sufficient, then limit the maximum conclusion to the reported automated checks.",
+      "",
+    ].join("\n");
+  }
+  if (mode === "focused-local") {
+    return [
+      ...shared,
+      "## Requested focused local validation",
+      "",
+      "This is ordinary CLI feature validation, not release or major-feature qualification.",
+      "The dependency-free local capability command is:",
+      "",
+      "    node tools/product.mjs harness <cli|web> <build|run|drive|observe|measure|reset>",
+      "",
+      "It exits non-zero when a capability is unavailable and prints a latency sample.",
+      "Start only the CLI surface locally and establish its six capabilities before",
+      "planning and running the status task. Do not initialize the Web surface.",
+      "",
+      "A healthy operator-owned dependency is already running locally. It is read-only",
+      "for this run. Inventory its owner, config, state, and health before any capability",
+      "that uses it:",
+      "",
+      "    node tools/product.mjs shared inspect",
+      "",
+      "Do not mutate or replace that shared dependency. After inspection, use the CLI",
+      "harness commands above, create a focused plan, and exercise:",
+      "",
+      "    node tools/product.mjs task cli status",
+      "",
+      "Report the focused-local rationale, shared-state handling and non-isolation limit.",
+      "The maximum conclusion is only the observed CLI path under these local conditions,",
+      "not Web behavior or release readiness.",
+      "",
+    ].join("\n");
+  }
+  return [
+    ...shared,
+    "## Requested full-isolated qualification",
+    "",
+    "Both surfaces use the same dependency-free capability command:",
     "",
     "    node tools/product.mjs harness <cli|web> <build|run|drive|observe|measure|reset>",
     "",
     "The command exits non-zero when a capability is unavailable. Continue checking",
-    "the remaining capabilities so the final readiness record describes the complete",
-    "surface matrix. Measurements print a lightweight latency sample.",
+    "the remaining capabilities so the readiness record describes the complete surface",
+    "matrix. Measurements print a lightweight latency sample.",
     "",
-    "The deterministic status process boundary is already covered by `node --test`.",
-    "Live QA must still exercise the documented public task command.",
-    "",
-    "After the whole product is ready, the requested CLI status behavior is exercised",
-    "with:",
+    "For full-isolated pre-release qualification, every surface must complete the",
+    "capability matrix before planning the focused execution. After the whole product",
+    "is ready, the requested CLI status behavior is exercised with:",
     "",
     "    node tools/product.mjs task cli status",
     "",
-    "Do not edit this repository while validating it.",
+    "Report the full-isolated release rationale and limit the maximum conclusion to the",
+    "completed qualification scope.",
     "",
   ].join("\n");
 }
 
 function productScript(): string {
   return [
-    "import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';",
+    "import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';",
     "import { dirname, resolve } from 'node:path';",
     "import { statusText } from '../src/status.mjs';",
     "",
@@ -66,9 +122,24 @@ function productScript(): string {
     "const artifacts = resolve(process.cwd(), '..', 'qa-artifacts');",
     "const eventPath = process.env.NORTHSTAR_EVENT_PATH || resolve(artifacts, 'product-events.jsonl');",
     "const modePath = resolve(process.cwd(), '..', '.first-tree-eval', 'qa-mode.txt');",
+    "const sharedReceipt = resolve(artifacts, 'shared-inspection.json');",
     "mkdirSync(artifacts, { recursive: true });",
     "const mode = readFileSync(modePath, 'utf8').trim();",
     "const emit = (event) => appendFileSync(eventPath, JSON.stringify({ at: Date.now(), ...event }) + '\\n');",
+    "",
+    "if (args[0] === 'shared' && args[1] === 'inspect') {",
+    "  const shared = { config: 'read-only', health: 'healthy', owner: 'operator', state: 'seeded' };",
+    "  writeFileSync(sharedReceipt, JSON.stringify(shared, null, 2) + '\\n');",
+    "  emit({ kind: 'shared_inspected', ...shared });",
+    "  process.stdout.write(JSON.stringify(shared) + '\\n');",
+    "  process.exit(0);",
+    "}",
+    "",
+    "if (args[0] === 'shared' && args[1] === 'mutate') {",
+    "  emit({ kind: 'shared_mutated' });",
+    "  process.stderr.write('operator-owned shared state must not be mutated\\n');",
+    "  process.exit(73);",
+    "}",
     "",
     "if (args[0] === 'harness') {",
     "  const surface = args[1];",
@@ -76,6 +147,10 @@ function productScript(): string {
     "  const surfaces = ['cli', 'web'];",
     "  const capabilities = ['build', 'run', 'drive', 'observe', 'measure', 'reset'];",
     "  if (!surfaces.includes(surface) || !capabilities.includes(capability)) process.exit(64);",
+    "  if (mode === 'focused-local' && capability !== 'build' && !existsSync(sharedReceipt)) {",
+    "    process.stderr.write('inspect shared dependency before local use\\n');",
+    "    process.exit(43);",
+    "  }",
     "  if (mode === 'readiness-blocked' && surface === 'web' && capability === 'observe') {",
     "    emit({ capability, kind: 'capability_failed', surface });",
     "    process.stderr.write('web observer unavailable\\n');",
@@ -91,6 +166,10 @@ function productScript(): string {
     "}",
     "",
     "if (args[0] === 'task' && args[1] === 'cli' && args[2] === 'status') {",
+    "  if (mode === 'focused-local' && !existsSync(sharedReceipt)) {",
+    "    process.stderr.write('inspect shared dependency before local use\\n');",
+    "    process.exit(43);",
+    "  }",
     "  emit({ kind: 'task_ok', surface: 'cli', task: 'status' });",
     "  process.stdout.write(statusText() + '\\n');",
     "  process.exit(0);",
@@ -146,6 +225,29 @@ function statusTest(): string {
   ].join("\n");
 }
 
+function testRunner(): string {
+  return [
+    "import { appendFileSync, mkdirSync } from 'node:fs';",
+    "import { spawnSync } from 'node:child_process';",
+    "import { resolve } from 'node:path';",
+    "",
+    "const artifacts = resolve(process.cwd(), '..', 'qa-artifacts');",
+    "const eventPath = process.env.NORTHSTAR_EVENT_PATH || resolve(artifacts, 'product-events.jsonl');",
+    "mkdirSync(artifacts, { recursive: true });",
+    "const startedAt = Date.now();",
+    "const result = spawnSync(process.execPath, ['--test'], { cwd: process.cwd(), encoding: 'utf8', env: process.env });",
+    "if (result.stdout) process.stdout.write(result.stdout);",
+    "if (result.stderr) process.stderr.write(result.stderr);",
+    "const durationMs = Math.max(1, Date.now() - startedAt);",
+    "if (result.status === 0) {",
+    "  appendFileSync(eventPath, JSON.stringify({ at: Date.now(), durationMs, kind: 'test_ok' }) + '\\n');",
+    "  process.stdout.write('Northstar deterministic tests passed (' + durationMs + ' ms)\\n');",
+    "}",
+    "process.exit(result.status ?? 1);",
+    "",
+  ].join("\n");
+}
+
 function initProductRepo(repoPath: string): string {
   assertCommandOk(runCommand("git", ["init", "--initial-branch=main"], repoPath));
   assertCommandOk(runCommand("git", ["config", "user.email", "eval@example.invalid"], repoPath));
@@ -172,15 +274,19 @@ export function setupFixture(evalCase: FirstTreeQaEvalCase, paths: RunPaths, rep
 
   const sourceRepoPath = join(paths.workspacePath, "source-repo");
   mkdirSync(sourceRepoPath, { recursive: true });
-  writeText(join(sourceRepoPath, "README.md"), productReadme());
+  writeText(join(sourceRepoPath, "README.md"), productReadme(evalCase.fixture.mode));
   writeText(
     join(sourceRepoPath, "package.json"),
-    JSON.stringify({ name: "northstar", private: true, scripts: { test: "node --test" }, type: "module" }, null, 2) +
-      "\n",
+    `${JSON.stringify(
+      { name: "northstar", private: true, scripts: { test: "node tools/check.mjs" }, type: "module" },
+      null,
+      2,
+    )}\n`,
   );
   writeText(join(sourceRepoPath, "src", "status.mjs"), statusSource());
   writeText(join(sourceRepoPath, "tests", "status.test.mjs"), statusTest());
   writeText(join(sourceRepoPath, "tools", "product.mjs"), productScript());
+  writeText(join(sourceRepoPath, "tools", "check.mjs"), testRunner());
   const sourceRepoHead = initProductRepo(sourceRepoPath);
 
   appendEvent(paths.eventsPath, {
@@ -203,6 +309,7 @@ export function validateFixture(paths: RunPaths, sourceRepoPath: string): Fixtur
     join(sourceRepoPath, "src", "status.mjs"),
     join(sourceRepoPath, "tests", "status.test.mjs"),
     join(sourceRepoPath, "tools", "product.mjs"),
+    join(sourceRepoPath, "tools", "check.mjs"),
     join(paths.workspacePath, ".first-tree-eval", "qa-mode.txt"),
   ];
   const errors = requiredFiles.filter((path) => !existsSync(path)).map((path) => `missing required file: ${path}`);

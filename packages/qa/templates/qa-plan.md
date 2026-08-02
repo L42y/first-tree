@@ -1,12 +1,15 @@
 # QA Plan
 
-Create only after the complete harness is `QA READY`.
+Create for `focused-local` only after its in-scope capabilities are ready. Create for `full-isolated` only after the
+complete harness is `QA READY`. Do not create for `test-only`.
 
-## Target
+## Target And Tier
 
 - Object/ref:
 - Request:
-- Ready run context:
+- Tier:
+- Run context:
+- Maximum supported conclusion:
 
 ## Validation Question
 
@@ -23,10 +26,11 @@ State the single question this run must answer.
 ## Evidence And Performance
 
 - Evidence needed:
-- Deep performance protocol, if required:
+- Performance protocol, if required:
 
-## Limits And Stop Conditions
+## Limits, Escalation, And Stop Conditions
 
-- Resource/time limits:
+- Non-isolation and resource/time limits:
+- Escalate tier if:
 - `BLOCKED` if:
 - `INCONCLUSIVE` if:
