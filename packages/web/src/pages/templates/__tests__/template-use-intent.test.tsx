@@ -223,6 +223,10 @@ describe("TemplateUseIntent", () => {
     expect(document.body.textContent).toContain("Acme Team");
     expect(document.body.textContent).toContain("Current team");
     expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+    // The chooser's primary action shares the AA brand-foreground contract.
+    const continueButton = buttonByText("Continue");
+    expect(continueButton.className).toContain("bg-brand");
+    expect(continueButton.className).toContain("text-brand-foreground");
 
     await click(buttonByText("Continue"));
     await rerender();

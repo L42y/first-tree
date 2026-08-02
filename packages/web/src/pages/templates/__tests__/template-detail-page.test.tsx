@@ -159,6 +159,12 @@ describe("TemplateDetailPage", () => {
     const viewCalls = analyticsMocks.trackEvent.mock.calls.filter(([name]) => name === "agent_template_detail_view");
     expect(viewCalls).toHaveLength(1);
     expect(viewCalls[0]?.[1]).toEqual({ slug: "pr-engineer", status: "active", authenticated: false });
+    // The primary CTA uses the shared brand variant with the AA on-brand
+    // foreground (near-white on brand green fails WCAG AA).
+    const cta = buttonByText("Use this template");
+    expect(cta.className).toContain("bg-brand");
+    expect(cta.className).toContain("text-brand-foreground");
+    expect(cta.className).not.toContain("--fg-on-vivid");
   });
 
   it("starts the use intent from the CTA with safe analytics", async () => {

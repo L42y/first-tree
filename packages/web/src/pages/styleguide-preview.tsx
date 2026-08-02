@@ -61,7 +61,8 @@ const TEXT_COLORS: SwatchDef[] = [
   { name: "--fg-2", token: "var(--fg-2)", note: "secondary" },
   { name: "--fg-3", token: "var(--fg-3)", note: "tertiary / hints" },
   { name: "--fg-4", token: "var(--fg-4)", note: "disabled" },
-  { name: "--fg-on-vivid", token: "var(--fg-on-vivid)", note: "on color (no invert)" },
+  { name: "--fg-on-vivid", token: "var(--fg-on-vivid)", note: "on vivid hues (avatars/badges)" },
+  { name: "--fg-on-brand", token: "var(--fg-on-brand)", note: "on brand green (AA, no invert)" },
 ];
 
 const SURFACE_COLORS: SwatchDef[] = [
