@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findPiExecutableOnPath,
   formatPiBinaryMissingMessage,
+  isPiBinaryMissingError,
   isSupportedPiVersion,
   parsePiVersionOutput,
   resolvePiRuntimeBinary,
@@ -84,6 +85,25 @@ describe("Pi binary resolution", () => {
     );
     expect(formatPiBinaryMissingMessage("not found")).toContain("/login");
     expect(formatPiBinaryMissingMessage("not found")).not.toContain("export");
+  });
+
+  it("classifies legitimate missing-binary messages without regex backtracking", () => {
+    expect(isPiBinaryMissingError("Pi CLI is missing on this machine")).toBe(true);
+    expect(isPiBinaryMissingError("pi: command not found")).toBe(true);
+    expect(isPiBinaryMissingError("pi is not installed")).toBe(true);
+    expect(isPiBinaryMissingError(new Error("ENOENT: pi binary not found"))).toBe(true);
+    expect(isPiBinaryMissingError("python: command not found")).toBe(false);
+    expect(isPiBinaryMissingError("network timeout")).toBe(false);
+  });
+
+  it("rejects adversarial repeated-pi strings in linear time (no catastrophic backtracking)", () => {
+    // Previously `/pi.*not (?:found|installed)/i` could explode on long
+    // "pi" prefixes. The classifier must stay linear: complete this case as
+    // an ordinary assertion rather than a wall-clock threshold.
+    const adversarial = `${"pi".repeat(50_000)}x`;
+    expect(isPiBinaryMissingError(adversarial)).toBe(false);
+    expect(isPiBinaryMissingError(`${adversarial} not found`)).toBe(true);
+    expect(isPiBinaryMissingError(`${adversarial} not installed`)).toBe(true);
   });
 
   it("parses a stable semver without accepting prerelease or partial versions", () => {

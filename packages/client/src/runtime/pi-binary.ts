@@ -25,8 +25,15 @@ export function formatPiBinaryMissingMessage(input: unknown): string {
 }
 
 export function isPiBinaryMissingError(input: unknown): boolean {
-  const text = errorText(input);
-  return /pi cli is missing|pi.*not (?:found|installed)/i.test(text);
+  const text = errorText(input).toLowerCase();
+  if (text.includes("pi cli is missing")) return true;
+  // Linear-time classification: any "pi" followed later by "not found" /
+  // "not installed". Avoid `pi.*not ...` regex backtracking on adversarial
+  // strings that repeat "pi" many times without a terminal phrase.
+  const piIdx = text.indexOf("pi");
+  if (piIdx < 0) return false;
+  const afterPi = text.slice(piIdx + 2);
+  return afterPi.includes("not found") || afterPi.includes("not installed");
 }
 
 export type FindPiExecutableDeps = {
