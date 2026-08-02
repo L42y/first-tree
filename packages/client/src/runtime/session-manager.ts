@@ -3807,7 +3807,12 @@ export class SessionManager {
       } else if (inFlightTransition) {
         entry.deferredMessages = [];
       }
+      // Clear the transition pointer and its inject-readiness latch together.
+      // Status fencing already blocks immediate inject, and beginRouteTransition
+      // resets readiness later, but leaving routeInjectReady true with a null
+      // transition is contradictory state a future branch must not reuse.
       entry.routeTransition = null;
+      entry.routeInjectReady = false;
       entry.status = "suspended";
       this.releaseActiveSlot(entry);
       this.sessionRuntimeStates.delete(entry.chatId);

@@ -342,6 +342,45 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("operator suspend clears routeInjectReady with the routeTransition pointer", async () => {
+    const activeHandler = handler();
+    const sm = makeManager({ handlers: [activeHandler] });
+    const i = internals(sm);
+    const chatId = "chat-inject-ready-suspend";
+    const generation = 3;
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        status: "active",
+        activeSlotHeld: true,
+        handler: activeHandler,
+        routeTransitionGeneration: generation,
+        routeTransition: { generation, handler: activeHandler, phase: "start" },
+        routeInjectReady: true,
+        deferredMessages: [makeMessage(chatId)],
+      }),
+    );
+    i._activeCount = 1;
+
+    // Operator suspend clears the transition pointer immediately while keeping
+    // generation stable through settle. Probe the entry before awaiting the
+    // suspending promise so we observe that latch-clear window.
+    const suspendPromise = sm.handleCommand(chatId, "session:suspend");
+    const duringSettle = i.sessions.get(chatId);
+    expect(duringSettle).toBeDefined();
+    expect(duringSettle?.routeTransition).toBeNull();
+    expect(duringSettle?.routeInjectReady).toBe(false);
+    expect(duringSettle?.status).toBe("suspended");
+    expect(duringSettle?.routeTransitionGeneration).toBe(generation);
+
+    await suspendPromise;
+    const afterSettle = i.sessions.get(chatId);
+    expect(afterSettle?.routeTransition).toBeNull();
+    expect(afterSettle?.routeInjectReady).toBe(false);
+
+    await sm.shutdown();
+  });
+
   it("refreshes newer config before dispatch and logs refresh failures without blocking delivery", async () => {
     const okCache = makeCache();
     const okHandler = handler();
