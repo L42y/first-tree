@@ -3117,6 +3117,58 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("manager shutdown stops a handler left unconfirmed after a completed failed operator suspend", async () => {
+    const suspendBoom = new Error("suspend settle failed");
+    const targetHandler = handler({
+      suspend: vi.fn().mockRejectedValue(suspendBoom),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-shutdown-after-failed-suspend";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(i.sessions.get(chatId)?.suspendError).toEqual({ error: suspendBoom });
+    expect(i.sessions.get(chatId)?.handlerStoppedBySuspend).toBe(null);
+    // Failed settle intentionally skipped teardown — stop is still unconfirmed.
+    expect(targetHandler.shutdown).not.toHaveBeenCalled();
+
+    await sm.shutdown("operator stop");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(targetHandler.shutdown).toHaveBeenCalledWith(
+      "operator stop",
+      expect.not.objectContaining({
+        settleProviderEntered: true,
+      }),
+    );
+    expect(i.sessions.has(chatId)).toBe(false);
+  });
+
+  it("manager shutdown stops a handler after a completed failed suspend with a falsey rejection", async () => {
+    const targetHandler = handler({
+      suspend: vi.fn().mockRejectedValue(undefined),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-shutdown-after-falsey-suspend-error";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    // Boxed error: falsey rejections are still failures.
+    expect(i.sessions.get(chatId)?.suspendError).toEqual({ error: undefined });
+    expect(targetHandler.shutdown).not.toHaveBeenCalled();
+
+    await sm.shutdown("manager_shutdown");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(false);
+  });
+
   it("strictly stops a failed-suspend handler before resume installs a fresh one", async () => {
     const suspendBoom = new Error("suspend failed");
     const stopBoom = new Error("stop failed");

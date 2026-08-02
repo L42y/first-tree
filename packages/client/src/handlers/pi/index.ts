@@ -224,6 +224,12 @@ export class PiLifecycleCancelledError extends Error {
   }
 }
 
+/**
+ * Narrow test seam: returns the number of live lifecycle-abort waiters for a
+ * handler created by `createPiHandler`. Production callers must not use this.
+ */
+export const piLifecycleAbortWaiterCountForTests = new WeakMap<object, () => number>();
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
@@ -1723,18 +1729,36 @@ export const createPiHandler: HandlerFactory = (config) => {
     lifecycleAbortWaiters.clear();
   }
 
-  function waitForLifecycleAbort(generation: number, phase: string): Promise<never> {
-    return new Promise((_, reject) => {
-      const wake = () => {
-        lifecycleAbortWaiters.delete(wake);
+  /**
+   * Disposable abort waiter for racing host I/O against lifecycle end.
+   * Callers must `dispose()` in `finally` so a winning refresh does not leave
+   * the losing closure registered until suspend/shutdown.
+   */
+  function waitForLifecycleAbort(generation: number, phase: string): { promise: Promise<never>; dispose: () => void } {
+    let disposed = false;
+    let wake: (() => void) | null = null;
+    const promise = new Promise<never>((_, reject) => {
+      wake = () => {
+        if (disposed) return;
+        disposed = true;
+        if (wake) lifecycleAbortWaiters.delete(wake);
         reject(new PiLifecycleCancelledError(phase));
       };
       if (generation !== lifecycleGeneration) {
+        disposed = true;
         reject(new PiLifecycleCancelledError(phase));
         return;
       }
       lifecycleAbortWaiters.add(wake);
     });
+    return {
+      promise,
+      dispose: () => {
+        if (disposed || !wake) return;
+        disposed = true;
+        lifecycleAbortWaiters.delete(wake);
+      },
+    };
   }
 
   async function refreshConfigOrAbort(
@@ -1745,10 +1769,12 @@ export const createPiHandler: HandlerFactory = (config) => {
     if (!agentConfigCache) {
       throw new Error("pi agent config cache is required for refresh");
     }
-    return await Promise.race([
-      agentConfigCache.refresh(sessionCtx.agent.agentId),
-      waitForLifecycleAbort(generation, phase),
-    ]);
+    const abort = waitForLifecycleAbort(generation, phase);
+    try {
+      return await Promise.race([agentConfigCache.refresh(sessionCtx.agent.agentId), abort.promise]);
+    } finally {
+      abort.dispose();
+    }
   }
 
   async function prepareSession(sessionCtx: SessionContext): Promise<PreparedSession> {
@@ -1879,7 +1905,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     }
   }
 
-  return {
+  const handler = {
     async start(message, sessionCtx, token) {
       const explicitToken = token !== undefined;
       const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
@@ -2101,4 +2127,6 @@ export const createPiHandler: HandlerFactory = (config) => {
       });
     },
   } satisfies AgentHandler;
+  piLifecycleAbortWaiterCountForTests.set(handler, () => lifecycleAbortWaiters.size);
+  return handler;
 };

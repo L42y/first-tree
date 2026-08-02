@@ -1205,17 +1205,28 @@ export class SessionManager {
       // settlement lease through settleProviderEntered notice-before-ACK.
       // `shuttingDown` already fails closed for adoption/mutation leases.
       this.invalidateDeliveryAdmission(session.chatId);
-      // Stop every session handler whose stop is unconfirmed: the
-      // active-slot case, plus a suspend boundary still in flight — its
-      // handler may be mid-shutdown (joined via coalescing) or not started
-      // at all. A suspended session whose boundary already settled keeps
-      // its handler for resume, as before.
-      if (!session.activeSlotHeld && session.suspending === null) return Promise.resolve();
+      // Stop every session handler whose stop is unconfirmed:
+      // - active-slot (may need settleProviderEntered notice-before-ACK);
+      // - suspend boundary still in flight (join coalesced teardown);
+      // - completed failed suspend/teardown markers (`suspendError` /
+      //   `teardownError`) where the boundary left the handler live and
+      //   `suspending` is already null — otherwise clearing `sessions`
+      //   orphans the last owner with no shutdown attempt.
+      // A successfully suspended, resource-closed handler
+      // (`handlerStoppedBySuspend === handler`, no error markers) is kept
+      // for resume and is not redundantly shut down here.
+      const stopUnconfirmedAfterFailedBoundary =
+        session.handlerStoppedBySuspend !== session.handler &&
+        (session.suspendError != null || session.teardownError != null);
+      if (!session.activeSlotHeld && session.suspending === null && !stopUnconfirmedAfterFailedBoundary) {
+        return Promise.resolve();
+      }
       attemptedHandlers.add(session.handler);
-      // Active-slot handlers may still hold provider-entered custody that needs
-      // durable notice-before-ACK during manager shutdown settlement.
       return this.shutdownHandler(session.handler, reason ?? "manager_shutdown", {
         ...(session.activeSlotHeld ? { settleProviderEntered: true } : {}),
+        // Failed-boundary / in-flight-suspend stops are best-effort on the
+        // manager face — do not reject the whole client shutdown.
+        ...(!session.activeSlotHeld ? { observeFailure: true } : {}),
       });
     });
     // Detached handlers recorded as teardown debt have no entry left to reach

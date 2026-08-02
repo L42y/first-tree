@@ -9,6 +9,7 @@ import {
   createPiHandler,
   type PiRetrySleep,
   parsePiModelSelector,
+  piLifecycleAbortWaiterCountForTests,
   resolvePiNativeToolRefs,
   sanitizePiProviderDetail,
   stablePiSessionId,
@@ -703,6 +704,70 @@ describe("Pi handler", () => {
     expect(events).toContainEqual({ kind: "turn_end", payload: { status: "success" } });
     expect(readCount(promptCountFile)).toBe(1);
     await handler.shutdown();
+  });
+
+  it("disposes lifecycle-abort waiters after successful refreshes and still cancels a pending refresh", async () => {
+    let releaseRefresh: (() => void) | undefined;
+    let signalRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefresh = resolve;
+    });
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let refreshCalls = 0;
+    const config = runtimeConfig();
+    const gatedCache: AgentConfigCache = {
+      get: () => config,
+      refresh: async () => {
+        refreshCalls += 1;
+        if (refreshCalls === 1) {
+          // First start: complete immediately so the abort waiter must be disposed.
+          return config;
+        }
+        signalRefresh?.();
+        await refreshGate;
+        return config;
+      },
+      refreshIfNewer: async () => config,
+      updateSdk: () => {},
+      updateUrls: () => {},
+      allReferencedUrls: () => new Set(),
+      forget: () => {},
+    };
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: gatedCache,
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const waiterCount = () => piLifecycleAbortWaiterCountForTests.get(handler)?.() ?? -1;
+
+    await handler.start(message("m1", "work"), makeContext([]), makeToken());
+    expect(waiterCount()).toBe(0);
+
+    // Idle skill-hot path uses refreshPreparedSession; keep the session active
+    // and force another prepare via a second start after shutdown of the RPC
+    // is not needed — instead start a fresh turn after shutting down once
+    // would clear lifecycle. Use inject queue drain after a second start on a
+    // new handler lifecycle: shut down and start again with gated refresh.
+    await handler.shutdown();
+    expect(waiterCount()).toBe(0);
+
+    const startPromise = handler.start(message("m2", "work-2"), makeContext([]), makeToken());
+    await refreshStarted;
+    expect(waiterCount()).toBe(1);
+    await handler.shutdown();
+    await expect(startPromise).resolves.toMatchObject({
+      sessionId: stablePiSessionId("agent-pi", "chat-pi"),
+    });
+    expect(waiterCount()).toBe(0);
+    // Unblock the orphaned refresh so it cannot leak as an unhandled rejection.
+    releaseRefresh?.();
+    await Promise.resolve();
+    expect(waiterCount()).toBe(0);
   });
 
   it("preserves operator PI_OFFLINE while still forcing version-check/telemetry controls", async () => {
