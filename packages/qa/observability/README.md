@@ -1,31 +1,36 @@
 # Evidence And Performance Guidance
 
-Every formal conclusion must point to evidence that supports it. Choose the least evidence that makes the claim credible;
-no single evidence type applies to every surface.
+Every conclusion must point to evidence from the boundary it claims. Evidence volume and performance work should match
+the selected tier.
 
-## Evidence Menu
+## Evidence By Tier
 
-- CLI output, exit status, installed files, and independent state readback.
-- Service logs, HTTP/API/WS observations, database state, and restart/reconnect behavior.
-- Browser-visible state, screenshots, console/network output, accessibility state, and downloads.
-- SDK consumer, daemon/worker, provider/runtime, installer, migration, and portable-artifact observations.
+- `test-only`: exact target, command, exit status, duration when available, and material failure output. This is
+  automated-check evidence only.
+- `focused-local`: relevant CLI/API/Web/SDK/runtime output plus credible state readback, recorded local environment and
+  shared-state limits, and targeted performance samples when the question needs them.
+- `full-isolated`: final-artifact and public-boundary evidence across the complete ready harness, reset/recovery evidence,
+  and release-risk performance characterization.
 
-Source, logs, mocks, test assertions, and direct database setup help diagnosis or establish preconditions but rarely
-prove public product behavior alone.
+Possible evidence includes CLI output and installed files; HTTP/API/WS observations; database state and restart
+behavior; browser-visible state, screenshots, console/network/a11y output; SDK consumer, daemon/worker, provider,
+installer, migration, and portable-artifact observations.
 
-## Readiness Performance
+Source, logs, mocks, test assertions, and direct database setup help diagnosis or establish preconditions but do not
+prove public behavior they never exercised.
 
-During harness initialization, record a lightweight characterization for every formal surface when applicable:
+## Performance
 
-- dependency/install and build duration;
-- final artifact, package, image, or bundle size;
-- start-to-ready or first-consumer duration;
-- idle CPU, memory, process/container, and disk state;
-- driver/observer response and reset/reprobe duration.
+- `test-only`: record command duration when useful; do not infer runtime performance.
+- `focused-local`: measure only the in-scope startup, latency, resource, or reset signals needed by the request or an
+  observed risk, and label the local/non-isolated environment.
+- `full-isolated`: during harness initialization, capture dependency/build duration, final artifact size,
+  start-to-ready/first-consumer duration, idle resources, driver/observer response, and reset/reprobe duration for every
+  formal surface when applicable.
 
-One readiness sample proves measurement capability, not a statistical regression. Run deeper sampling only when the task,
-an SLO, a case, a change risk, or an observed issue requires it. State workload, environment, sample count, cold/warm
-state, raw errors, and baseline/SLO before claiming a regression.
+One sample proves measurement capability, not a statistical regression. Run deeper sampling only when the task, SLO,
+case, change risk, or observed issue requires it. State workload, environment, sample count, cold/warm state, raw errors,
+and baseline/SLO before claiming a regression.
 
 ## Redaction
 

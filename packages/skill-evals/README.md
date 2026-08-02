@@ -108,11 +108,10 @@ guards for common external side-effect commands such as `git`, `gh`,
 `first-tree`, `curl`, and `wget`. This is a guardrail for the text judge; it is
 not a substitute for a future direct no-tools judge API.
 
-`eval:gate -- --suite first-tree-qa` runs two complete-harness cases. One
-blocks readiness when the Web observer is unavailable; the other proves that
-both CLI and Web reach QA readiness before the requested CLI behavior is
-planned and executed. Both grade source immutability, evidence, performance,
-and final case disposition.
+`eval:gate -- --suite first-tree-qa` runs two `full-isolated` release-qualification cases. One blocks readiness when the
+Web observer is unavailable; the other proves that both CLI and Web reach QA readiness before the requested CLI behavior
+is planned and executed. The deterministic floor also locks the lower-cost `test-only` and `focused-local` contract.
+Both live cases grade source immutability, evidence, performance, and final case disposition.
 
 `eval:gate -- --suite first-tree-read` runs the live tested-agent gate for
 `first-tree-read`. It covers the existing read cases through the shared gate

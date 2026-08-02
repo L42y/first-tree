@@ -6,15 +6,17 @@
 
 One-sentence scoped conclusion.
 
-## Target And Harness
+## Target, Tier, And Environment
 
 - Target/artifact identities:
-- `QA READY` outcome:
-- Environment and capability limits:
+- Tier: `test-only` | `focused-local` | `full-isolated`
+- Tier rationale and maximum supported conclusion:
+- Readiness or command outcome:
+- Environment, capability, and non-isolation limits:
 
 ## Scope Covered
 
-Summarize what actually ran and any justified plan changes.
+Summarize commands or product behavior that actually ran and any justified changes.
 
 ## Evidence And Findings
 
@@ -26,11 +28,12 @@ List reproducible product issues and bug artifact paths, if any.
 
 ## Performance
 
-Summarize readiness characterization and task-specific performance evidence without overstating sample resolution.
+Summarize command duration or live performance evidence proportional to the tier without overstating sample resolution.
 
 ## Limitations And Cleanup
 
-Record skipped, blocked, partial, unstable, or out-of-scope areas plus remaining resources and cleanup ownership.
+Record skipped, blocked, partial, unstable, escalated, or out-of-scope areas plus remaining resources and cleanup
+ownership.
 
 ## Case Disposition
 

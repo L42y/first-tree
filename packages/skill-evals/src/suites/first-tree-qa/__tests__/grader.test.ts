@@ -35,7 +35,7 @@ function setup(id: string) {
     [
       "---",
       "name: first-tree-qa",
-      "description: Test a complete product harness before task execution.",
+      "description: Select a QA tier and use a complete harness for release qualification.",
       "---",
       "",
       "# First Tree QA",
