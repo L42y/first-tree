@@ -619,9 +619,21 @@ export class InboxDeliveryCoordinator {
 
   private async markRecoveryDebt(chatId: string, reason: string, opts: { requestNow?: boolean } = {}): Promise<void> {
     const ledger = this.ledger(chatId);
+    // A recovered multi-frame burst keeps recoveryWindowOpen while redeliveries
+    // settle. If that burst creates *new* debt (e.g. repeated notice failure),
+    // retire the window so the next dispatch reaches shouldRecoverBeforeDispatch
+    // and can request recovery again — otherwise receive() returns "recovering"
+    // forever without ever calling recoverChat.
+    const retireRecoveryWindow = ledger.recoveryWindowOpen || ledger.recoveryActivationReady;
     if (ledger.recoveryDebt !== "required") {
       ledger.recoveryDebt = "required";
       this.emitWorkChanged(chatId);
+    }
+    if (retireRecoveryWindow) {
+      ledger.recoveryWindowOpen = false;
+      ledger.recoveryActivationReady = false;
+      this.emitWorkChanged(chatId);
+      this.config.log.info({ chatId, reason }, "retired recovery activation window after new recovery debt");
     }
     this.config.log.warn(
       { chatId, reason, entryIds: ledger.entries.map((entry) => entry.entryId) },
