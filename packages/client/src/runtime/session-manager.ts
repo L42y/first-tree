@@ -530,6 +530,9 @@ export class SessionManager {
     this.inboxDelivery = new InboxDeliveryCoordinator({
       ackEntry: config.ackEntry,
       recoverChat: config.recoverChat,
+      postRuntimeFailureNotice: async (chatId, payload) => {
+        await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
+      },
       onWorkChanged: (chatId) => this.projectSessionRuntime(chatId),
       log: config.log,
     });
@@ -1256,6 +1259,15 @@ export class SessionManager {
     messages: SessionMessage | readonly SessionMessage[],
     reason: string,
   ): void {
+    // Preserve the captured terminal notice on the inbox ledger before clearing
+    // session-scoped pending state. Recovery/redelivery must retry that notice
+    // before any ACK — never treat a notice-failure marker as ACK-eligible.
+    if (reason === "runtime_failure_notice_delivery_failed") {
+      const pending = this.sessions.get(chatId)?.pendingRuntimeFailureNotice;
+      if (pending && shouldPostProviderFailureRuntimeNotice(pending)) {
+        this.inboxDelivery.markNoticeRequired(chatId, messages, pending);
+      }
+    }
     this.clearPendingRuntimeFailureNotice(chatId);
     this.inboxDelivery.retryTurn(chatId, messages, reason);
   }
@@ -2704,6 +2716,13 @@ export class SessionManager {
             // settlement lease (including active/deferred inject) so they can
             // post durable notice+ACK before prepareOperatorSuspend runs.
             await entry.handler.suspend(opts.reason, { settleProviderEntered: true });
+            // If settle captured a terminal notice but could not persist it (or
+            // could not claim token settlement), transfer the obligation onto
+            // the inbox ledger so prepareOperatorSuspend / recovery cannot ACK
+            // without durable notice evidence.
+            if (entry.pendingRuntimeFailureNotice) {
+              this.inboxDelivery.markNoticeRequiredForProcessingPrefix(entry.chatId, entry.pendingRuntimeFailureNotice);
+            }
             await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
           } finally {
             entry.routeTransitionGeneration++;

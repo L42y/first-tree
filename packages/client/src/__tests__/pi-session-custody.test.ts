@@ -1123,15 +1123,29 @@ describe("Pi handler → SessionManager custody", () => {
     await sm.shutdown();
   });
 
-  it("active inject + operator suspend: notice persistence failure retains debt (no ACK)", async () => {
+  it("active inject + operator suspend: notice failure then recovery posts notice before only ACK", async () => {
     setPiTestMode("happy");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockRejectedValue(new Error("runtime notice store offline"));
-    // Omit recoverChat so notice-failure debt remains locally observable and
-    // prepareOperatorSuspend cannot hide a failed notice behind a cleared ledger.
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
-    const chatId = "chat-pi-active-inject-notice-fail";
+    let releaseRecover: (() => void) | undefined;
+    const recoverGate = new Promise<void>((resolve) => {
+      releaseRecover = resolve;
+    });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
+      await recoverGate;
+    });
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("runtime notice store offline"))
+      .mockResolvedValue({ id: "runtime-notice-after-recovery" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, recoverChat });
+    const chatId = "chat-pi-active-inject-notice-recover";
+    const injectEntry = mockEntry({
+      id: 113,
+      chatId,
+      messageId: "msg-pi-active-inject-notice-fail",
+      content: "run sleep",
+    });
 
     await sm.dispatch(
       mockEntry({
@@ -1145,14 +1159,9 @@ describe("Pi handler → SessionManager custody", () => {
 
     setPiTestMode("prompt_write_tool_no_response");
     writeFileSync(bashStartFile, "0");
-    const injectPromise = sm.dispatch(
-      mockEntry({
-        id: 113,
-        chatId,
-        messageId: "msg-pi-active-inject-notice-fail",
-        content: "run sleep",
-      }),
-    );
+    writeFileSync(bashStartCountFile, "0");
+    const promptsBeforeInject = Number(readFileSync(promptCountFile, "utf8")) || 0;
+    const injectPromise = sm.dispatch(injectEntry);
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -1161,13 +1170,98 @@ describe("Pi handler → SessionManager custody", () => {
     )?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
-    expect(sendMessage).toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 113)).toHaveLength(0);
+    expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(
       (sm as unknown as { inboxDelivery: { hasRecoveryDebt(chatId: string): boolean } }).inboxDelivery.hasRecoveryDebt(
         chatId,
       ),
     ).toBe(true);
+
+    releaseRecover?.();
+    await vi.waitFor(() =>
+      expect(
+        (
+          sm as unknown as { inboxDelivery: { hasRecoveryDebt(chatId: string): boolean } }
+        ).inboxDelivery.hasRecoveryDebt(chatId),
+      ).toBe(false),
+    );
+
+    // Server-faithful redelivery of the same entry — must retry notice, not Pi.
+    await sm.dispatch(injectEntry);
+    await vi.waitFor(() => expect(ackEntry.mock.calls.filter((call) => call[0] === 113)).toHaveLength(1));
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.invocationCallOrder[1] as number).toBeLessThan(
+      ackEntry.mock.invocationCallOrder[ackEntry.mock.calls.findIndex((call) => call[0] === 113)] as number,
+    );
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+
+    await sm.shutdown();
+  });
+
+  it("active inject + operator suspend: notice failure through recovery never silent-ACKs", async () => {
+    setPiTestMode("happy");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    let releaseRecover: (() => void) | undefined;
+    const recoverGate = new Promise<void>((resolve) => {
+      releaseRecover = resolve;
+    });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
+      await recoverGate;
+    });
+    const sendMessage = vi.fn().mockRejectedValue(new Error("runtime notice store offline"));
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, recoverChat });
+    const chatId = "chat-pi-active-inject-notice-fail-persist";
+    const injectEntry = mockEntry({
+      id: 119,
+      chatId,
+      messageId: "msg-pi-active-inject-notice-fail-persist",
+      content: "run sleep",
+    });
+
+    await sm.dispatch(
+      mockEntry({
+        id: 118,
+        chatId,
+        messageId: "msg-pi-active-inject-notice-fail-establish",
+        content: "establish",
+      }),
+    );
+
+    setPiTestMode("prompt_write_tool_no_response");
+    writeFileSync(bashStartFile, "0");
+    const promptsBeforeInject = Number(readFileSync(promptCountFile, "utf8")) || 0;
+    const injectPromise = sm.dispatch(injectEntry);
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+      chatId,
+    )?.suspending;
+    await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
+
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 119)).toHaveLength(0);
+    releaseRecover?.();
+    await vi.waitFor(() =>
+      expect(
+        (
+          sm as unknown as { inboxDelivery: { hasRecoveryDebt(chatId: string): boolean } }
+        ).inboxDelivery.hasRecoveryDebt(chatId),
+      ).toBe(false),
+    );
+
+    await sm.dispatch(injectEntry);
+    await vi.waitFor(() => expect(sendMessage.mock.calls.length).toBeGreaterThanOrEqual(2));
+    // Give settleNoticeRequiredRedelivery a turn to finish without ACK.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 119)).toHaveLength(0);
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
 
     await sm.shutdown();
   });

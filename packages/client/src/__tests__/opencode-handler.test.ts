@@ -1218,7 +1218,7 @@ describe("OpenCode V1 handler", () => {
     expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
   });
 
-  it("redelivers one-shot context through SessionManager when the durable failure notice post fails", async () => {
+  it("retries durable failure notice through SessionManager recovery without re-entering the provider", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-opencode-session-manager-notice-"));
     roots.push(root);
     const inputs: string[] = [];
@@ -1289,13 +1289,20 @@ describe("OpenCode V1 handler", () => {
     expect(ackEntry).not.toHaveBeenCalled();
     expect(existsSync(join(root, ".first-tree-workspace", "session-briefings"))).toBe(false);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-sm-notice"));
+    // Recovery/redelivery must retry the durable notice and ACK without
+    // re-entering the provider (no second prompt / one-shot context write).
     await manager.dispatch(entry);
     await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(802));
 
-    expect(inputs).toHaveLength(2);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.invocationCallOrder[1] as number).toBeLessThan(
+      ackEntry.mock.invocationCallOrder[0] as number,
+    );
+    expect(inputs).toHaveLength(1);
     expect(inputs[0]).toContain("<first-tree-current-chat-context");
-    expect(inputs[1]).toContain("<first-tree-current-chat-context");
-    expect(readSessionBriefingFingerprint(root, "ses_new")).not.toBeNull();
+    // Credential failure never advanced briefing custody; notice-only recovery
+    // must not invent a successful provider turn to do so.
+    expect(readSessionBriefingFingerprint(root, "ses_new")).toBeNull();
     await manager.shutdown();
   });
 
