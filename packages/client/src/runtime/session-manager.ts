@@ -1148,11 +1148,6 @@ export class SessionManager {
     return this.isDeliveryRouteIdentityValid(entry, transition) && leaseHolder;
   }
 
-  /** Adoption-gated lease for inject / non-settlement route checks. */
-  private isRouteLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
-    return this.isRouteAdoptionValid(entry, transition);
-  }
-
   private completeRouteTransition(entry: SessionEntry, transition: RouteTransitionToken): boolean {
     if (!this.isCurrentRouteTransition(entry, transition)) return false;
     entry.routeTransition = null;
@@ -1616,15 +1611,24 @@ export class SessionManager {
 
   private createDeliveryAttempt(
     chatId: string,
-    routeLeaseValid: () => boolean,
+    leases: {
+      mutationValid: () => boolean;
+      settlementValid: () => boolean;
+    },
   ): {
     token: DeliveryToken;
     cancel(): void;
   } {
     let active = true;
-    const attemptLeaseValid = () => active && routeLeaseValid();
+    // Attempt cancellation revokes both leases. Mutation stays adoption-gated;
+    // settlement keeps the narrow operator-suspend / full-drain window so an
+    // already-issued inject token can still post notice+ACK after the active
+    // slot is released.
     return {
-      token: this.createDeliveryToken(chatId, attemptLeaseValid),
+      token: this.createDeliveryToken(chatId, {
+        mutationValid: () => active && leases.mutationValid(),
+        settlementValid: () => active && leases.settlementValid(),
+      }),
       cancel: () => {
         active = false;
       },
@@ -1709,13 +1713,16 @@ export class SessionManager {
             generation: existing.routeTransitionGeneration,
             handler: existing.handler,
           };
-          const routeLeaseValid = () => this.isRouteLeaseValid(existing, routeLease);
-          if (!routeLeaseValid()) {
+          // Match start/resume: adoption/mutation stay active-slot gated;
+          // already-issued token settlement uses the suspend/drain window.
+          const mutationValid = () => this.isRouteAdoptionValid(existing, routeLease);
+          const settlementValid = () => this.isDeliverySettlementLeaseValid(existing, routeLease);
+          if (!mutationValid()) {
             this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
             return;
           }
           this.setCurrentTrigger(chatId, message);
-          const attempt = this.createDeliveryAttempt(chatId, routeLeaseValid);
+          const attempt = this.createDeliveryAttempt(chatId, { mutationValid, settlementValid });
           let receipt: HandlerRouteReceipt;
           try {
             receipt = normalizeRouteReceipt(routeLease.handler.inject(message, attempt.token));
@@ -1723,7 +1730,7 @@ export class SessionManager {
             attempt.cancel();
             throw err;
           }
-          if (!routeLeaseValid()) {
+          if (!mutationValid()) {
             attempt.cancel();
             this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
             return;
@@ -2480,19 +2487,22 @@ export class SessionManager {
       generation: entry.routeTransitionGeneration,
       handler: entry.handler,
     };
-    const routeLeaseValid = () => this.isRouteLeaseValid(entry, routeLease);
+    // Deferred injects share the active-inject custody split: admission uses
+    // adoption validity; settlement keeps the narrow suspend/drain window.
+    const mutationValid = () => this.isRouteAdoptionValid(entry, routeLease);
+    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, routeLease);
     for (let index = 0; index < queued.length; index++) {
       const message = queued[index];
       if (!message) continue;
-      if (!routeLeaseValid() || this.inboxDelivery.hasRecoveryDebt(entry.chatId)) {
+      if (!mutationValid() || this.inboxDelivery.hasRecoveryDebt(entry.chatId)) {
         this.retryDeliveryTurn(entry.chatId, queued.slice(index), "deferred_inject_recovery_pending");
         break;
       }
       this.setCurrentTrigger(entry.chatId, message);
-      const attempt = this.createDeliveryAttempt(entry.chatId, routeLeaseValid);
+      const attempt = this.createDeliveryAttempt(entry.chatId, { mutationValid, settlementValid });
       try {
         const receipt = normalizeRouteReceipt(routeLease.handler.inject(message, attempt.token));
-        if (!routeLeaseValid()) {
+        if (!mutationValid()) {
           attempt.cancel();
           this.retryDeliveryTurn(entry.chatId, queued.slice(index), "deferred_inject_route_invalidated");
           break;
@@ -2690,6 +2700,9 @@ export class SessionManager {
           const inFlightTransition = entry.routeTransition;
           entry.routeTransition = null;
           try {
+            // settleProviderEntered keeps already-issued DeliveryTokens on the
+            // settlement lease (including active/deferred inject) so they can
+            // post durable notice+ACK before prepareOperatorSuspend runs.
             await entry.handler.suspend(opts.reason, { settleProviderEntered: true });
             await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
           } finally {

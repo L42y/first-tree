@@ -351,6 +351,12 @@ export class InboxDeliveryCoordinator {
     const ledger = this.ledgers.get(chatId);
     if (!ledger || ledger.entries.length === 0) return;
 
+    // Resolve the contiguous provider-entered prefix. DeliveryToken.complete is
+    // the preferred notice+ACK path (including active-inject settlement leases).
+    // When that already settled rows to terminal, ACK them here. Remaining
+    // owned+processingStarted rows are still operator-resolved, but ackThrough
+    // stays fail-closed: if notice failure already marked recovery debt, ACK is
+    // deferred and the entered work is not silently consumed.
     let resolvablePrefixCount = 0;
     let changed = false;
     const handledAt = Date.now();

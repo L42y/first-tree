@@ -22,12 +22,21 @@ const RPC_CHILD_SCRIPT = `
 const fs = require("node:fs");
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
-const mode = process.env.FT_PI_TEST_MODE ?? "happy";
 const expectedSessionId = process.env.FT_PI_EXPECTED_SESSION_ID ?? "";
 const promptCountFile = process.env.FT_PI_PROMPT_COUNT_FILE ?? "";
 const bashStartFile = process.env.FT_PI_BASH_START_FILE ?? "";
 const bashStartCountFile = process.env.FT_PI_BASH_START_COUNT_FILE ?? "";
+const modeFile = process.env.FT_PI_TEST_MODE_FILE ?? "";
 
+function currentMode() {
+  if (modeFile) {
+    try {
+      const fromFile = fs.readFileSync(modeFile, "utf8").trim();
+      if (fromFile) return fromFile;
+    } catch {}
+  }
+  return process.env.FT_PI_TEST_MODE ?? "happy";
+}
 function bump(file) {
   if (!file) return;
   let n = 0;
@@ -42,6 +51,7 @@ rl.on("line", (line) => {
   const req = JSON.parse(line);
   const id = req.id;
   const command = req.type;
+  const mode = currentMode();
   if (command === "get_state") {
     write({
       type: "response",
@@ -144,6 +154,12 @@ let workspaceRoot = "";
 let promptCountFile = "";
 let bashStartFile = "";
 let bashStartCountFile = "";
+let testModeFile = "";
+
+function setPiTestMode(mode: string): void {
+  process.env.FT_PI_TEST_MODE = mode;
+  if (testModeFile) writeFileSync(testModeFile, mode);
+}
 
 function runtimeConfig(): AgentRuntimeConfig {
   return {
@@ -187,6 +203,7 @@ function createSyntheticSupervisor(specs: ProviderProcessSpec[]): ProviderProces
         env: {
           ...spec.options.env,
           FT_PI_TEST_MODE: process.env.FT_PI_TEST_MODE ?? "happy",
+          FT_PI_TEST_MODE_FILE: testModeFile,
           FT_PI_EXPECTED_SESSION_ID: expectedSessionId,
           FT_PI_PROMPT_COUNT_FILE: promptCountFile,
           FT_PI_BASH_START_FILE: bashStartFile,
@@ -208,9 +225,11 @@ beforeEach(() => {
   promptCountFile = join(workspaceRoot, "prompt-count.txt");
   bashStartFile = join(workspaceRoot, "bash-start.txt");
   bashStartCountFile = join(workspaceRoot, "bash-start-count.txt");
+  testModeFile = join(workspaceRoot, "pi-test-mode.txt");
   writeFileSync(promptCountFile, "0");
   writeFileSync(bashStartFile, "0");
   writeFileSync(bashStartCountFile, "0");
+  writeFileSync(testModeFile, "happy");
   delete process.env.FT_PI_TEST_MODE;
 });
 
@@ -221,7 +240,7 @@ afterEach(() => {
 
 describe("Pi handler → SessionManager custody", () => {
   it("posts durable exhausted-retry notice before ACK with a single prompt write", async () => {
-    process.env.FT_PI_TEST_MODE = "exhausted_retry";
+    setPiTestMode("exhausted_retry");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi" });
@@ -349,7 +368,7 @@ describe("Pi handler → SessionManager custody", () => {
     ["runtime switched by server"],
     ["operator stop"],
   ] as const)("graceful manager shutdown reason %s settles accepted bash once without start adoption", async (shutdownReason) => {
-    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
+    setPiTestMode("bash_hold_until_abort");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-shutdown" });
@@ -411,7 +430,7 @@ describe("Pi handler → SessionManager custody", () => {
     expect(ackEntry).toHaveBeenCalledWith(70);
     await sm.handleCommand("chat-pi-resume-race", "session:suspend");
 
-    process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
+    setPiTestMode("bash_hold_until_abort");
     writeFileSync(bashStartFile, "0");
     writeFileSync(bashStartCountFile, "0");
     const promptsBeforeResume = Number(readFileSync(promptCountFile, "utf8")) || 0;
@@ -438,7 +457,7 @@ describe("Pi handler → SessionManager custody", () => {
   });
 
   it("graceful manager shutdown during pre-provider prompt rejection leaves zero ACK and no prompt write", async () => {
-    process.env.FT_PI_TEST_MODE = "preflight_capacity";
+    setPiTestMode("preflight_capacity");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
@@ -668,7 +687,7 @@ describe("Pi handler → SessionManager custody", () => {
   });
 
   it("prompt write withheld + unsafe tool start: manager shutdown settles once without late mutation", async () => {
-    process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
+    setPiTestMode("prompt_write_tool_no_response");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-write-gap" });
@@ -701,7 +720,7 @@ describe("Pi handler → SessionManager custody", () => {
   });
 
   it("prompt accepted with no first event: manager shutdown aborts and settles without replay", async () => {
-    process.env.FT_PI_TEST_MODE = "prompt_accepted_no_events";
+    setPiTestMode("prompt_accepted_no_events");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-no-events" });
@@ -891,7 +910,7 @@ describe("Pi handler → SessionManager custody", () => {
   });
 
   it("operator suspend after prompt write + unsafe tool settles once; resume cannot replay", async () => {
-    process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
+    setPiTestMode("prompt_write_tool_no_response");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-suspend" });
@@ -1035,6 +1054,229 @@ describe("Pi handler → SessionManager custody", () => {
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(0);
     expect(ackEntry).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
+  it("active inject + operator suspend: notice before ACK; resume cannot replay", async () => {
+    // QA BUG-pi-active-inject-suspend-acks-without-durable-notice: later inject
+    // must settle through DeliveryToken (settlement lease), not prepareOperatorSuspend
+    // force-ACK without a chat-visible runtime notice.
+    setPiTestMode("happy");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-active-inject" });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, recoverChat });
+    const chatId = "chat-pi-active-inject-suspend";
+
+    await sm.dispatch(
+      mockEntry({
+        id: 110,
+        chatId,
+        messageId: "msg-pi-active-inject-establish",
+        content: "establish",
+      }),
+    );
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
+    expect(ackEntry).toHaveBeenCalledWith(110);
+
+    setPiTestMode("prompt_write_tool_no_response");
+    writeFileSync(bashStartFile, "0");
+    writeFileSync(bashStartCountFile, "0");
+    const promptsBeforeInject = Number(readFileSync(promptCountFile, "utf8")) || 0;
+
+    const injectPromise = sm.dispatch(
+      mockEntry({
+        id: 111,
+        chatId,
+        messageId: "msg-pi-active-inject-unsafe",
+        content: "run sleep",
+      }),
+    );
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+      chatId,
+    )?.suspending;
+    await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 111)).toHaveLength(1);
+    const injectAckIndex = ackEntry.mock.calls.findIndex((call) => call[0] === 111);
+    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+      ackEntry.mock.invocationCallOrder[injectAckIndex] as number,
+    );
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+    expect(recoverChat).not.toHaveBeenCalled();
+
+    await sm.handleCommand(chatId, "session:resume");
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
+    expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 111)).toHaveLength(1);
+    expect(recoverChat).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
+  it("active inject + operator suspend: notice persistence failure retains debt (no ACK)", async () => {
+    setPiTestMode("happy");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockRejectedValue(new Error("runtime notice store offline"));
+    // Omit recoverChat so notice-failure debt remains locally observable and
+    // prepareOperatorSuspend cannot hide a failed notice behind a cleared ledger.
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const chatId = "chat-pi-active-inject-notice-fail";
+
+    await sm.dispatch(
+      mockEntry({
+        id: 112,
+        chatId,
+        messageId: "msg-pi-active-inject-notice-establish",
+        content: "establish",
+      }),
+    );
+    expect(ackEntry).toHaveBeenCalledWith(112);
+
+    setPiTestMode("prompt_write_tool_no_response");
+    writeFileSync(bashStartFile, "0");
+    const injectPromise = sm.dispatch(
+      mockEntry({
+        id: 113,
+        chatId,
+        messageId: "msg-pi-active-inject-notice-fail",
+        content: "run sleep",
+      }),
+    );
+    await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+      chatId,
+    )?.suspending;
+    await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
+
+    expect(sendMessage).toHaveBeenCalled();
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 113)).toHaveLength(0);
+    expect(
+      (sm as unknown as { inboxDelivery: { hasRecoveryDebt(chatId: string): boolean } }).inboxDelivery.hasRecoveryDebt(
+        chatId,
+      ),
+    ).toBe(true);
+
+    await sm.shutdown();
+  });
+
+  it("active inject before prompt write: operator suspend leaves recoverable debt (no notice/ACK)", async () => {
+    setPiTestMode("happy");
+    let refreshCount = 0;
+    let releaseRefresh: (() => void) | undefined;
+    let signalRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefresh = resolve;
+    });
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const config = runtimeConfig();
+    const gatedCache: AgentConfigCache = {
+      get: () => config,
+      refresh: async () => {
+        refreshCount++;
+        if (refreshCount >= 2) {
+          signalRefresh?.();
+          await refreshGate;
+        }
+        return config;
+      },
+      refreshIfNewer: async () => config,
+      updateSdk: () => {},
+      updateUrls: () => {},
+      allReferencedUrls: () => new Set(),
+      forget: () => {},
+    };
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = new SessionManager({
+      session: {
+        idle_timeout: 300,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 300,
+      },
+      concurrency: 5,
+      handlerFactory: () =>
+        createPiHandler({
+          workspaceRoot,
+          runtimeProvider: "pi",
+          agentConfigCache: gatedCache,
+          piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+          providerProcessSupervisor: createSyntheticSupervisor(specs),
+        }),
+      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      resolveContextTreeBinding: async () => null,
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: {
+        register: vi.fn(),
+        sendMessage,
+        sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
+        getChatContext: vi.fn().mockResolvedValue(null),
+      } as unknown as FirstTreeHubSDK,
+      log: silentLogger(),
+      ackEntry,
+      recoverChat,
+      agentConfigCache: gatedCache,
+    });
+    const chatId = "chat-pi-active-inject-before-write";
+
+    await sm.dispatch(
+      mockEntry({
+        id: 114,
+        chatId,
+        messageId: "msg-pi-active-inject-before-establish",
+        content: "establish",
+      }),
+    );
+    expect(ackEntry).toHaveBeenCalledWith(114);
+    const promptsAfterEstablish = Number(readFileSync(promptCountFile, "utf8")) || 0;
+
+    const injectPromise = sm.dispatch(
+      mockEntry({
+        id: 115,
+        chatId,
+        messageId: "msg-pi-active-inject-before-write",
+        content: "blocked before write",
+      }),
+    );
+    await refreshStarted;
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish);
+
+    const suspendPromise = sm.handleCommand(chatId, "session:suspend");
+    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+      chatId,
+    )?.suspending;
+    releaseRefresh?.();
+    await Promise.all([suspendPromise, suspending ?? Promise.resolve(), injectPromise]);
+
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 115)).toHaveLength(0);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(recoverChat).toHaveBeenCalledWith(chatId);
 
     await sm.shutdown();
   });

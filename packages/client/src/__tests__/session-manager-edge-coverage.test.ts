@@ -1650,6 +1650,116 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("operator suspend does not sweep an unentered queued active-inject tail into the resolved prefix", async () => {
+    let initialCtx: SessionContext | undefined;
+    let initialHead: SessionMessage | undefined;
+    let enteredToken: Parameters<AgentHandler["inject"]>[1];
+    let enteredMessage: SessionMessage | undefined;
+    let injectCount = 0;
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-inject-tail" });
+    const activeHandler = handler({
+      start: vi.fn().mockImplementation(async (message, ctx) => {
+        initialCtx = ctx;
+        initialHead = message;
+        return "active-inject-tail-session";
+      }),
+      inject: vi.fn().mockImplementation((message, token) => {
+        injectCount++;
+        if (injectCount === 1) {
+          enteredToken = token;
+          enteredMessage = message;
+          token?.processingStarted([message]);
+          return { kind: "owned", mode: "processing" } as const;
+        }
+        // Unentered queued-mode tail: owned locally but not provider-entered.
+        return { kind: "owned", mode: "queued" } as const;
+      }),
+      suspend: vi.fn().mockImplementation(async (_reason, opts) => {
+        if (opts?.settleProviderEntered === true && enteredToken && enteredMessage && initialCtx) {
+          // Capture notice while the inject settlement lease is still open, then
+          // complete the entered prefix. The queued tail must stay recovery debt.
+          initialCtx.emitEvent({
+            kind: "error",
+            payload: {
+              source: "runtime",
+              message: encodeProviderRetryEventMessage({
+                event: "provider_failure_terminal",
+                provider: "pi",
+                scope: "provider_turn",
+                category: "unknown",
+                reasonCode: "unsafe_replay",
+                replaySafety: "unsafe",
+                userSeverity: "error",
+                messagePreview: "active inject suspend settle",
+              }),
+            },
+          });
+          await enteredToken.complete([enteredMessage], {
+            status: "error",
+            completion: "consumed",
+            reason: "unsafe_replay",
+          });
+        }
+      }),
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sdk = mockSdk();
+    vi.mocked(sdk.sendMessage).mockImplementation(sendMessage);
+    const sm = makeManager({
+      handlers: [activeHandler],
+      ackEntry,
+      sdk,
+    });
+    const i = internals(sm);
+    const chatId = "chat-active-inject-queued-tail";
+
+    await sm.dispatch(mockEntry({ id: 1, chatId, messageId: "msg-tail-establish" }));
+    if (!initialCtx || !initialHead) throw new Error("initial route was not captured");
+    await initialCtx.finishTurn(initialHead, { status: "success", terminal: true });
+
+    await sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-tail-entered" }));
+    await sm.dispatch(mockEntry({ id: 3, chatId, messageId: "msg-tail-queued" }));
+    expect(injectCount).toBe(2);
+
+    // Prove the inject DeliveryToken can settle with notice+ACK (split lease).
+    if (!enteredToken || !enteredMessage || !initialCtx) throw new Error("entered inject was not captured");
+    initialCtx.emitEvent({
+      kind: "error",
+      payload: {
+        source: "runtime",
+        message: encodeProviderRetryEventMessage({
+          event: "provider_failure_terminal",
+          provider: "pi",
+          scope: "provider_turn",
+          category: "unknown",
+          reasonCode: "unsafe_replay",
+          replaySafety: "unsafe",
+          userSeverity: "error",
+          messagePreview: "entered inject consumed",
+        }),
+      },
+    });
+    const disposition = await enteredToken.complete([enteredMessage], {
+      status: "error",
+      completion: "consumed",
+      reason: "unsafe_replay",
+    });
+    expect(disposition).toBe("settled");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 2)).toHaveLength(1);
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspending = i.sessions.get(chatId)?.suspending;
+    await suspending;
+
+    // Queued tail must not be force-resolved by prepareOperatorSuspend.
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 3)).toHaveLength(0);
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+    expect(i.inboxDelivery.snapshot(chatId).entries.some((entry) => entry.entryId === 3)).toBe(true);
+
+    await sm.shutdown();
+  });
+
   it.each([
     "rejected",
     "throw",
