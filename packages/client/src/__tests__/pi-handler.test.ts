@@ -689,10 +689,41 @@ describe("Pi handler", () => {
         "read,bash,edit,write,grep,find,ls",
       ]),
     );
+    expect(rpcSpec?.args).not.toContain("--offline");
     expect(rpcSpec?.args.filter((part) => part === "--tools")).toHaveLength(1);
+    expect(rpcSpec?.options.env?.PI_SKIP_VERSION_CHECK).toBe("1");
+    expect(rpcSpec?.options.env?.PI_TELEMETRY).toBe("0");
+    // Default First Tree config does not inject PI_OFFLINE; host inheritance is preserved.
+    if (process.env.PI_OFFLINE !== undefined) {
+      expect(rpcSpec?.options.env?.PI_OFFLINE).toBe(process.env.PI_OFFLINE);
+    } else {
+      expect(rpcSpec?.options.env?.PI_OFFLINE).toBeUndefined();
+    }
     expect(token.processingStarted).toHaveBeenCalled();
     expect(events).toContainEqual({ kind: "turn_end", payload: { status: "success" } });
     expect(readCount(promptCountFile)).toBe(1);
+    await handler.shutdown();
+  });
+
+  it("preserves operator PI_OFFLINE while still forcing version-check/telemetry controls", async () => {
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(
+        runtimeConfig({
+          env: [{ key: "PI_OFFLINE", value: "1", sensitive: false }],
+        }),
+      ),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    await handler.start(message("m1", "work"), makeContext([]), makeToken());
+    const rpcSpec = specs.find((spec) => spec.args.includes("--mode"));
+    expect(rpcSpec?.args).not.toContain("--offline");
+    expect(rpcSpec?.options.env?.PI_OFFLINE).toBe("1");
+    expect(rpcSpec?.options.env?.PI_SKIP_VERSION_CHECK).toBe("1");
+    expect(rpcSpec?.options.env?.PI_TELEMETRY).toBe("0");
     await handler.shutdown();
   });
 

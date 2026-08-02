@@ -43,9 +43,14 @@ surface, skills projection, or provider supervisor changes.
   release in `>=0.80.5 <1.0.0`; older, `>=1.0.0`, prerelease, and unparseable output fail closed. Transient launch
   timeouts remain retryable.
 - Spawn contract: observe one long-lived
-  `pi --mode rpc --offline --no-extensions --no-skills --skill <cwd>/.agents/skills --no-prompt-templates --no-approve
-  --session-id <stable-id> --session-dir <cwd>/.first-tree-workspace/pi-sessions` process per active `(agent, chat)`,
-  plus `--model` only when configured. Prompt text rides JSONL stdin as a command object
+  `pi --mode rpc --no-extensions --no-skills --skill <cwd>/.agents/skills --no-prompt-templates --no-approve
+  --tools read,bash,edit,write,grep,find,ls --session-id <stable-id>
+  --session-dir <cwd>/.first-tree-workspace/pi-sessions` process per active `(agent, chat)`,
+  plus `--model` only when configured. Do **not** pass `--offline`: native `find` relies on Pi's
+  provider-owned `fd` helper acquisition, which offline mode blocks on a clean supported install.
+  Child env must force `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` (overriding host/payload); First Tree
+  must not inject `PI_OFFLINE` by default, but an operator-provided truthy `PI_OFFLINE` is preserved as an
+  advanced override that requires helpers already available. Prompt text rides JSONL stdin as a command object
   (`{"id","type":"prompt","message"}`), never as a wrapped `{type:"request",command,params}` envelope and never as argv.
 - Active config: while a chat is live, change model/env/Skills (and attempt a newly non-empty MCP set). The next idle
   turn must read the latest immutable config snapshot, reconcile managed Skills, restart the supervised RPC process for
@@ -87,10 +92,12 @@ evidence (including accepted-steer token settlement), a deterministic tool effec
 `.agents/skills`, correct delivery and failure custody, normalized events, Context Tree I/O, and platform-accepted
 process-drain proof.
 
-`FAIL` includes prompt text in argv, the rejected `{type:"request"}` envelope, credentials retained by First Tree, an
-unadmitted runtime process, silent model fallback, treating `agent_end` as settlement, hanging on credential preflight
-or corrupted JSONL, silent non-empty MCP acceptance, unsafe side-effect replay, auto-resending a timed-out prompt as
-pre-provider, terminal failure consumed before its durable notice, or a client switch authorized by child registry alone.
+`FAIL` includes prompt text in argv, an unconditional `--offline` spawn that blocks native `find` helper acquisition on a
+clean supported install, missing forced `PI_SKIP_VERSION_CHECK=1` / `PI_TELEMETRY=0` child env, the rejected
+`{type:"request"}` envelope, credentials retained by First Tree, an unadmitted runtime process, silent model fallback,
+treating `agent_end` as settlement, hanging on credential preflight or corrupted JSONL, silent non-empty MCP acceptance,
+unsafe side-effect replay, auto-resending a timed-out prompt as pre-provider, terminal failure consumed before its
+durable notice, or a client switch authorized by child registry alone.
 
 `BLOCKED` means a compatible CLI, provider login/entitlement/network, isolated platform bridge, owner-reviewed Windows
 drain authority, or product Job supervisor is absent. Unit tests and a raw Pi CLI probe alone do not turn a blocked

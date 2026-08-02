@@ -58,7 +58,13 @@ import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../ru
 import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
 import { formatAuthHint, isPiAuthError } from "../auth-error-hint.js";
-import { buildPiRpcArgs, isPiRpcBeforeWriteError, PiRpcClient, PiRpcProtocolError } from "./rpc-client.js";
+import {
+  applyPiChildEnvControls,
+  buildPiRpcArgs,
+  isPiRpcBeforeWriteError,
+  PiRpcClient,
+  PiRpcProtocolError,
+} from "./rpc-client.js";
 
 const RESULT_PREVIEW_LIMIT = 400;
 const VERSION_GATE_TIMEOUT_MS = 30_000;
@@ -100,7 +106,13 @@ export function stablePiSessionId(agentId: string, chatId: string): string {
   return createHash("sha256").update(`first-tree:${agentId}:${chatId}`).digest("hex").slice(0, 32);
 }
 
-export { buildPiRpcArgs, PI_V1_NATIVE_TOOLS, piV1NativeToolsArg } from "./rpc-client.js";
+export {
+  applyPiChildEnvControls,
+  buildPiRpcArgs,
+  PI_FORCED_CHILD_ENV,
+  PI_V1_NATIVE_TOOLS,
+  piV1NativeToolsArg,
+} from "./rpc-client.js";
 
 type ActiveTool = {
   name: string;
@@ -572,7 +584,9 @@ export const createPiHandler: HandlerFactory = (config) => {
     for (const [key, value] of Object.entries(merged)) {
       if (typeof value === "string") out[key] = value;
     }
-    return out;
+    // Forced after host/payload/identity merge so agent env cannot re-enable
+    // version checks or install telemetry. Does not inject or clear PI_OFFLINE.
+    return applyPiChildEnvControls(out);
   }
 
   function buildBriefing(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload, workspaceCwd: string): string {

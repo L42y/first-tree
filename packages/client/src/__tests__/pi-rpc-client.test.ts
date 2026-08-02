@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  applyPiChildEnvControls,
   buildPiRpcArgs,
+  PI_FORCED_CHILD_ENV,
   PiRpcClient,
   PiRpcProtocolError,
   PiRpcTransportError,
@@ -156,7 +158,7 @@ describe("splitPiJsonlBuffer", () => {
 });
 
 describe("buildPiRpcArgs", () => {
-  it("builds the rpc offline session contract with the V1 native tools allowlist", () => {
+  it("builds the rpc session contract with the V1 native tools allowlist (no --offline)", () => {
     const args = buildPiRpcArgs({
       sessionId: "abc",
       sessionDir: "/tmp/sessions",
@@ -166,7 +168,6 @@ describe("buildPiRpcArgs", () => {
     expect(args).toEqual([
       "--mode",
       "rpc",
-      "--offline",
       "--no-extensions",
       "--no-skills",
       "--skill",
@@ -182,10 +183,34 @@ describe("buildPiRpcArgs", () => {
       "--model",
       "gpt-test",
     ]);
+    expect(args).not.toContain("--offline");
     expect(args.filter((part) => part === "--tools")).toHaveLength(1);
     expect(args[args.indexOf("--tools") + 1]).toBe(piV1NativeToolsArg());
     // Privacy: argv carries only path/session selectors — never user prompt text.
     expect(args.some((part) => part.includes("user said") || part.includes("SECRET"))).toBe(false);
+  });
+});
+
+describe("applyPiChildEnvControls", () => {
+  it("forces version-check skip and telemetry off after payload merge", () => {
+    const env = applyPiChildEnvControls({
+      PATH: "/usr/bin",
+      PI_SKIP_VERSION_CHECK: "0",
+      PI_TELEMETRY: "1",
+      CUSTOM: "keep",
+    });
+    expect(env).toMatchObject({
+      PATH: "/usr/bin",
+      CUSTOM: "keep",
+      PI_SKIP_VERSION_CHECK: PI_FORCED_CHILD_ENV.PI_SKIP_VERSION_CHECK,
+      PI_TELEMETRY: PI_FORCED_CHILD_ENV.PI_TELEMETRY,
+    });
+    expect(env).not.toHaveProperty("PI_OFFLINE");
+  });
+
+  it("preserves an operator-provided PI_OFFLINE without injecting one by default", () => {
+    expect(applyPiChildEnvControls({ PI_OFFLINE: "1" }).PI_OFFLINE).toBe("1");
+    expect(applyPiChildEnvControls({}).PI_OFFLINE).toBeUndefined();
   });
 });
 

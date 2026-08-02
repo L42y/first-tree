@@ -102,8 +102,36 @@ export function splitPiJsonlBuffer(buffer: string): { frames: string[]; rest: st
  * `read,bash,edit,write`; `grep`/`find`/`ls` exist as built-ins but stay off
  * unless `--tools` explicitly enables them. Keep this list as the single
  * source of truth for spawn argv and contract tests.
+ *
+ * Native `find` acquires the `fd` helper through Pi's own `ensureTool` path.
+ * Do not pass `--offline` here: that sets `PI_OFFLINE=1` and blocks helper
+ * download on a clean supported install. Version checks and install telemetry
+ * are suppressed via {@link applyPiChildEnvControls} instead.
  */
 export const PI_V1_NATIVE_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+
+/** Forced child-env controls applied after host/payload merge. */
+export const PI_FORCED_CHILD_ENV = {
+  PI_SKIP_VERSION_CHECK: "1",
+  PI_TELEMETRY: "0",
+} as const;
+
+/**
+ * Apply First Tree's Pi child-env contract after host + agent payload merge.
+ *
+ * - Force `PI_SKIP_VERSION_CHECK=1` and `PI_TELEMETRY=0` so First Tree launches
+ *   do not trigger Pi version checks or install/update telemetry.
+ * - Do **not** inject `PI_OFFLINE`. An operator-provided truthy `PI_OFFLINE`
+ *   is preserved (advanced offline override); that path requires helpers such
+ *   as `fd` to already be available, otherwise Pi's native `find` errors.
+ */
+export function applyPiChildEnvControls(env: Record<string, string>): Record<string, string> {
+  return {
+    ...env,
+    PI_SKIP_VERSION_CHECK: PI_FORCED_CHILD_ENV.PI_SKIP_VERSION_CHECK,
+    PI_TELEMETRY: PI_FORCED_CHILD_ENV.PI_TELEMETRY,
+  };
+}
 
 export function piV1NativeToolsArg(): string {
   return PI_V1_NATIVE_TOOLS.join(",");
@@ -118,7 +146,6 @@ export function buildPiRpcArgs(input: {
   const args = [
     "--mode",
     "rpc",
-    "--offline",
     "--no-extensions",
     "--no-skills",
     "--skill",
