@@ -28,9 +28,11 @@ import {
   type RuntimeState,
   runtimeAuthStartCommandSchema,
   type ServerWelcomeFrame,
+  type SessionCommandFinalizedFrame,
   type SessionEvent,
   type SessionState,
   serverWelcomeFrameSchema,
+  sessionCommandFinalizedFrameSchema,
   sessionEventAcceptedFrameSchema,
   sessionEventRejectedFrameSchema,
   type UpdateAttempt,
@@ -246,6 +248,12 @@ type ClientConnectionEvents = {
    */
   "agent:pinned": [message: AgentPinnedMessage];
   "session:command": [command: SessionCommand];
+  /**
+   * Server confirmed Reset finalization after `session:command:applied` —
+   * `finalizeTerminatedSession` has committed `evicted`. Parked Reset-fence
+   * recovery may release only after this frame.
+   */
+  "session:command:finalized": [frame: SessionCommandFinalizedFrame];
   "runtime-auth:start": [command: RuntimeAuthCommand];
   "provider-models:list": [command: ProviderModelsListCommand];
   "session:reconcile:result": [result: SessionReconcileResult];
@@ -1772,6 +1780,19 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           ...(ref ? { ref } : {}),
         });
       }
+      return;
+    }
+
+    if (type === "session:command:finalized") {
+      const parsed = sessionCommandFinalizedFrameSchema.safeParse(msg);
+      if (!parsed.success) {
+        this.wsLogger.warn(
+          { issues: parsed.error.issues.map((i) => i.message) },
+          "ignoring malformed session:command:finalized frame",
+        );
+        return;
+      }
+      this.emit("session:command:finalized", parsed.data);
       return;
     }
 

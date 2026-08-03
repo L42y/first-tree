@@ -30,6 +30,7 @@ type FakeSessionState = {
   >;
   applyStaleChatIds: ReturnType<typeof vi.fn<(chatIds: string[]) => void>>;
   noteBindRecoveryComplete: ReturnType<typeof vi.fn<() => void>>;
+  releaseParkedResetFenceRecovery: ReturnType<typeof vi.fn<(chatId: string) => void>>;
   reconcileReplayFencesWithServer: ReturnType<typeof vi.fn<() => Promise<void>>>;
   updateTransport: ReturnType<typeof vi.fn<(sdk: unknown, agentConfigCache?: unknown) => void>>;
   shutdown: ReturnType<typeof vi.fn<(reason?: string, opts?: unknown) => Promise<void>>>;
@@ -246,6 +247,7 @@ function installMocks(
           handleCommand: vi.fn(async () => {}),
           applyStaleChatIds: vi.fn(),
           noteBindRecoveryComplete: vi.fn(),
+          releaseParkedResetFenceRecovery: vi.fn(),
           reconcileReplayFencesWithServer: vi.fn(async () => {}),
           updateTransport: vi.fn(),
           shutdown: vi.fn(async () => {}),
@@ -290,6 +292,10 @@ function installMocks(
 
       noteBindRecoveryComplete(): void {
         this.state.noteBindRecoveryComplete();
+      }
+
+      releaseParkedResetFenceRecovery(chatId: string): void {
+        this.state.releaseParkedResetFenceRecovery(chatId);
       }
 
       reconcileReplayFencesWithServer(): Promise<void> {
@@ -720,6 +726,44 @@ describe("AgentSlot", () => {
         applied: false,
       }),
     );
+
+    await slot.stop();
+  });
+
+  it("releases parked Reset-fence recovery only after session:command:finalized", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    session.handleCommand.mockResolvedValueOnce(undefined);
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-finalize",
+      type: "session:terminate",
+      ref: "ref-finalize-1",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-finalize-1",
+        agentId: "agent-1",
+        chatId: "chat-finalize",
+        command: "session:terminate",
+        applied: true,
+      }),
+    );
+    expect(session.releaseParkedResetFenceRecovery).not.toHaveBeenCalled();
+
+    connection.emit("session:command:finalized", {
+      type: "session:command:finalized",
+      ref: "ref-finalize-1",
+      agentId: "agent-1",
+      chatId: "chat-finalize",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-finalize");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(1);
 
     await slot.stop();
   });

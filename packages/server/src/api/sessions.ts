@@ -248,6 +248,29 @@ async function terminateWithApplyAck(
     // do not evict or clear the fresh session.
     throw new ConflictError("The session became active again while waiting for the client; nothing was reset");
   }
+
+  // Tell the daemon client Reset finalization is durable so it may release
+  // parked Reset-fence inbox recovery. Same-replica send first; otherwise fan
+  // out to the socket-owning replica (mirrors ref'd terminate delivery).
+  const finalizedFrame = {
+    type: "session:command:finalized" as const,
+    ref,
+    agentId,
+    chatId,
+    command: "session:terminate" as const,
+    state: "evicted" as const,
+  };
+  if (!sendToAgent(agentId, finalizedFrame)) {
+    await app.notifier.notifyDaemonClientCommand({
+      type: "session:command:finalized",
+      clientId,
+      agentId,
+      chatId,
+      ref,
+      targetInstanceId,
+    });
+  }
+
   return reply
     .status(200)
     .send({ agentId, chatId, state: "evicted", transitioned: result.transitioned, delivered: true, applied: true });

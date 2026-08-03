@@ -222,6 +222,22 @@ export const sessionCommandAppliedFrameSchema = z.object({
 });
 export type SessionCommandAppliedFrame = z.infer<typeof sessionCommandAppliedFrameSchema>;
 
+/**
+ * Server→Client confirmation that a ref'd Reset terminate has finished
+ * `finalizeTerminatedSession` (session row is `evicted`). The client must not
+ * release parked Reset-fence inbox recovery until this frame arrives — otherwise
+ * `inbox:recover` can race the HTTP finalize path.
+ */
+export const sessionCommandFinalizedFrameSchema = z.object({
+  type: z.literal("session:command:finalized"),
+  ref: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1),
+  command: z.literal("session:terminate"),
+  state: z.literal("evicted"),
+});
+export type SessionCommandFinalizedFrame = z.infer<typeof sessionCommandFinalizedFrameSchema>;
+
 export const sessionEventAcceptedFrameSchema = z.object({
   type: z.literal("session:event:accepted"),
   ref: z.string().min(1),

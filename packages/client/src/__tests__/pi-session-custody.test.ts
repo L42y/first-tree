@@ -2252,7 +2252,9 @@ describe("Pi handler → SessionManager custody", () => {
     expect(persisted.entries).toEqual({});
     expect(persisted.freshStartNonces[chatId]).toBe(pendingNonce);
     expect(new Set(rotateSpy.mock.results.map((r) => r.value))).toEqual(new Set([pendingNonce]));
-    // Successful retry releases parked work with exactly one same-socket recovery.
+    // Successful retry arms parked work; release after simulated server finalize.
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm1.releaseParkedResetFenceRecovery(chatId);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(noProgressCircuitOpen).toBe(false);

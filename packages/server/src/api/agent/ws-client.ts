@@ -324,6 +324,27 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         });
         return;
       }
+      if (payload.type === "session:command:finalized") {
+        void (async () => {
+          const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId);
+          if (!routed) return;
+          if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
+          connectionManager.sendToClient(payload.clientId, {
+            type: "session:command:finalized",
+            ref: payload.ref,
+            agentId: payload.agentId,
+            chatId: payload.chatId,
+            command: "session:terminate",
+            state: "evicted",
+          });
+        })().catch((err) => {
+          app.log.warn(
+            { err, clientId: payload.clientId, ref: payload.ref },
+            "session command finalized fan-out failed",
+          );
+        });
+        return;
+      }
       // Chat-session Reset (payload.type === "session:terminate"). The
       // process-local binding check is not enough: a takeover between the
       // HTTP preflight and delivery could otherwise deliver a destructive

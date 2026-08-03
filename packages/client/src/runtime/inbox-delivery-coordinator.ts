@@ -424,12 +424,12 @@ export class InboxDeliveryCoordinator {
   }
 
   /**
-   * Retain custody without asking the current socket to redeliver. Runtime
-   * proof failures cannot make progress on that socket: both the failed turn
-   * and its durable HTTP notice use the same stale proof. A successful
-   * `agent:bound` is the only boundary that may release this hold.
+   * Retain custody without asking the current socket to redeliver.
+   * Callers keep distinct release boundaries: runtime-proof faults release on
+   * `agent:bound` via {@link completeBindRecovery}; Reset-fence parks release
+   * only after server-confirmed Reset finalization.
    */
-  async holdTurnForBindRecovery(
+  async parkTurnForDeferredRecovery(
     chatId: string,
     messages: SessionMessage | readonly SessionMessage[],
     reason: string,

@@ -129,6 +129,15 @@ export type DaemonClientCommandPayload =
       chatId: string;
       ref: string;
       targetInstanceId: string;
+    }
+  | {
+      /** Post-finalize signal: forward Reset finalization to the owning replica. */
+      type: "session:command:finalized";
+      clientId: string;
+      agentId: string;
+      chatId: string;
+      ref: string;
+      targetInstanceId: string;
     };
 export type DaemonClientCommandHandler = (payload: DaemonClientCommandPayload) => void;
 
@@ -707,7 +716,7 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
           // Discriminated union: each command type carries its own required
           // fields; anything else (unknown type, missing discriminator
           // fields) is malformed and must not reach handlers.
-          if (parsed.type === "session:terminate") {
+          if (parsed.type === "session:terminate" || parsed.type === "session:command:finalized") {
             const sessionPayload = parsed as { agentId?: unknown; chatId?: unknown };
             if (typeof sessionPayload.agentId !== "string" || typeof sessionPayload.chatId !== "string") return;
           } else if (parsed.type === PROVIDER_MODELS_LIST_TYPE) {

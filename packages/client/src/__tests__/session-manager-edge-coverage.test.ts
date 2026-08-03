@@ -52,6 +52,7 @@ type SessionManagerInternals = {
   evictedMappings: Map<string, { claudeSessionId: string; lastActivity: number }>;
   terminatingChats: Map<string, Promise<void>>;
   terminatePersistFailures: Set<string>;
+  awaitingResetFenceRelease: Set<string>;
   pendingTeardowns: Map<string, Set<AgentHandler>>;
   routeProducers: Map<string, Set<Promise<void>>>;
   registry: SessionRegistry | null;
@@ -2432,6 +2433,10 @@ describe("SessionManager edge coverage", () => {
     resolveShutdown?.();
     await terminate;
 
+    // Local success arms parked debt but must not recover until server-confirmed
+    // Reset finalization (simulated here via the public release API).
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
     expect(recoverChat).toHaveBeenCalledTimes(1);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
@@ -5390,6 +5395,8 @@ describe("SessionManager edge coverage", () => {
     // Genuine terminate retry clears the fence after a successful flush.
     await sm.handleCommand(chatId, "session:terminate");
     expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     await vi.waitFor(() => expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(false));
@@ -5470,17 +5477,185 @@ describe("SessionManager edge coverage", () => {
     expect(noProgressCircuitOpen).toBe(false);
     expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
 
-    // Same-socket Pause + successful Reset retry clears the fence and requests
-    // exactly one recoverChat without reconnect.
+    // Same-socket Pause + successful Reset retry clears the fence and arms
+    // parked debt; recovery waits for server-confirmed finalization.
     await sm.handleCommand(chatId, "session:suspend");
     await sm.handleCommand(chatId, "session:terminate");
     expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
     expect(noProgressCircuitOpen).toBe(false);
     expect(consecutiveNoProgressResets).toBe(1);
 
     // Server redelivers the exact intervening row on the same socket after the
     // accepted recovery; it must enter one fresh post-Reset session and settle.
+    await sm.dispatch(intervening);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(intervening.id));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(start).mock.calls[0]?.[0]).toMatchObject({ id: intervening.message.id });
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+    expect(noProgressCircuitOpen).toBe(false);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps late parked deliveries parked after non-persistence terminate failure until genuine retry + release", async () => {
+    let signalShutdownStarted: (() => void) | undefined;
+    let rejectShutdown: ((err: Error) => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((_resolve, reject) => {
+      rejectShutdown = reject;
+    });
+    const boom = new Error("handler shutdown failed");
+    const terminatingHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalShutdownStarted?.();
+        await shutdownGate;
+      }),
+    });
+    const start = vi.fn().mockResolvedValue("should-not-start");
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({
+      handlers: [terminatingHandler, handler({ start })],
+      recoverChat,
+      ackEntry,
+    });
+    const i = internals(sm);
+    const chatId = "chat-terminate-teardown-park";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: terminatingHandler,
+        status: "active",
+      }),
+    );
+    i._activeCount = 1;
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    await shutdownStarted;
+
+    const lateEntry = mockEntry({ id: 91, chatId, messageId: "msg-late-parked-teardown" });
+    await sm.dispatch(lateEntry);
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    rejectShutdown?.(boom);
+    await expect(terminate).rejects.toThrow("handler shutdown failed");
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    // Non-persistence failure must leave parked debt parked — no recover/provider/ACK.
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    // Repeated delivery while still awaiting a successful Reset stays parked.
+    await sm.dispatch(lateEntry);
+    await sm.dispatch(lateEntry);
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
+
+    // Genuine retry succeeds; release after simulated server finalization.
+    vi.mocked(terminatingHandler.shutdown).mockImplementation(async () => undefined);
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(recoverChat).toHaveBeenCalledWith(chatId);
+
+    await sm.shutdown();
+  });
+
+  it("ref'd terminate + same-socket finalize releases exactly once after applied/finalized ordering", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-terminate-finalize-order-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-terminate-finalize-order";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const intervening = mockEntry({ id: 92, chatId, messageId: "msg-finalize-order" });
+    let consecutiveNoProgressResets = 0;
+    let lastResetSignature: string | null = null;
+    let noProgressCircuitOpen = false;
+    const NO_PROGRESS_LIMIT = 2;
+    const order: string[] = [];
+
+    const start = vi.fn().mockImplementation(async (message: SessionMessage, ctx: SessionContext, token) => {
+      token?.processingStarted(message);
+      await token?.complete(message, { status: "success", terminal: true });
+      await ctx.finishTurn(message, { status: "success", terminal: true });
+      return `fresh-${message.id}`;
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(id: string) => Promise<void>>().mockImplementation(async () => {
+      order.push("recover");
+      const resetSignature = String(intervening.id);
+      consecutiveNoProgressResets = lastResetSignature === resetSignature ? consecutiveNoProgressResets + 1 : 1;
+      lastResetSignature = resetSignature;
+      if (consecutiveNoProgressResets > NO_PROGRESS_LIMIT) {
+        noProgressCircuitOpen = true;
+        throw new Error("recover_failed: no-progress circuit open");
+      }
+    });
+
+    const sm = makeManager({
+      registryPath,
+      handlers: [handler({ start })],
+      recoverChat,
+      ackEntry,
+    });
+    const i = internals(sm);
+
+    // Failed flush + repeated delivery: no recovery/provider/ACK/circuit.
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    await sm.dispatch(intervening);
+    await sm.dispatch(intervening);
+    await sm.dispatch(intervening);
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(intervening.id);
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(noProgressCircuitOpen).toBe(false);
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    // Successful Pause/Reset retry arms debt; simulated applied→finalized then
+    // exactly one same-socket recovery (no reconnect / no circuit).
+    await sm.handleCommand(chatId, "session:suspend");
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(recoverChat).not.toHaveBeenCalled();
+    order.push("applied");
+    order.push("finalized");
+    sm.releaseParkedResetFenceRecovery(chatId);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(["applied", "finalized", "recover"]);
+    expect(noProgressCircuitOpen).toBe(false);
+    expect(consecutiveNoProgressResets).toBe(1);
+
     await sm.dispatch(intervening);
     await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(intervening.id));
     expect(start).toHaveBeenCalledTimes(1);
@@ -5517,6 +5692,8 @@ describe("SessionManager edge coverage", () => {
     expect(i.inboxDelivery.snapshot(chatId).admissionPending).toBe(true);
 
     await sm.handleCommand(chatId, "session:terminate");
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(pendingHandler.start).not.toHaveBeenCalled();
     expect(sm.activeCount).toBe(0);

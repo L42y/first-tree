@@ -97,6 +97,17 @@ type ConnectionListener =
         agentId: string;
         chatId: string;
         type: "session:suspend" | "session:resume" | "session:terminate";
+        ref?: string;
+      }) => void;
+    }
+  | {
+      event: "session:command:finalized";
+      fn: (frame: {
+        ref: string;
+        agentId: string;
+        chatId: string;
+        command: "session:terminate";
+        state: "evicted";
       }) => void;
     }
   | { event: "session:reconcile:result"; fn: (result: SessionReconcileResult) => void };
@@ -390,6 +401,8 @@ export class AgentSlot {
           // after handleCommand has fully resolved — handler stopped,
           // provider-session mapping dropped. A failed apply reports
           // applied:false so the operator can retry; never ack early.
+          // Parked Reset-fence recovery must wait for session:command:finalized
+          // (server post-finalize), not local success or the applied send alone.
           const ref = cmd.ref;
           this.sessionManager
             .handleCommand(cmd.chatId, cmd.type)
@@ -414,12 +427,39 @@ export class AgentSlot {
             });
           return;
         }
+        if (cmd.type === "session:terminate") {
+          // Legacy unref'd terminate: server already archived/finalized before
+          // sending the command, so release parked Reset-fence debt after a
+          // successful local apply.
+          this.sessionManager
+            .handleCommand(cmd.chatId, cmd.type)
+            .then(() => {
+              this.sessionManager?.releaseParkedResetFenceRecovery(cmd.chatId);
+            })
+            .catch((err) => {
+              this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
+            });
+          return;
+        }
         this.sessionManager.handleCommand(cmd.chatId, cmd.type).catch((err) => {
           this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
         });
       };
       this.clientConnection.on("session:command", onCommand);
       this.listeners.push({ event: "session:command", fn: onCommand });
+
+      const onCommandFinalized = (frame: {
+        ref: string;
+        agentId: string;
+        chatId: string;
+        command: "session:terminate";
+        state: "evicted";
+      }) => {
+        if (frame.agentId !== this.config.agentId || !this.sessionManager) return;
+        this.sessionManager.releaseParkedResetFenceRecovery(frame.chatId);
+      };
+      this.clientConnection.on("session:command:finalized", onCommandFinalized);
+      this.listeners.push({ event: "session:command:finalized", fn: onCommandFinalized });
 
       // Flush any `inbox:deliver` frames the early listener captured
       // during init. With the bind-time reset+drain path (see design §4)

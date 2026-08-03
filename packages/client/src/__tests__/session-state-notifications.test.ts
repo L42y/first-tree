@@ -416,6 +416,8 @@ describe("SessionManager: terminate + reconcile", () => {
     stateChanges.length = 0;
 
     await sm.handleCommand("chat-a", "session:terminate");
+    // Direct SessionManager callers simulate server-confirmed Reset finalization.
+    sm.releaseParkedResetFenceRecovery("chat-a");
 
     expect(stateChanges).toHaveLength(0); // server is authoritative
     expect(sm.getSessionStates()).toEqual([]);

@@ -601,9 +601,16 @@ export class SessionManager {
    */
   private readonly terminatePersistFailures = new Set<string>();
   /**
-   * Coalesce one post-Reset-fence recovery per chat after the combined
-   * admission fence clears. Parked intervening deliveries must not open
-   * repeated same-socket recoverChat calls while the fence is set.
+   * Chats with Reset-fence parked debt that must not admit a provider route
+   * or same-socket recoverChat until {@link releaseParkedResetFenceRecovery}
+   * runs after server-confirmed Reset finalization. Survives a failed
+   * terminate attempt (teardown / quiesce / flush) so parked rows stay
+   * parked — clearing only `terminatingChats` must not release them.
+   */
+  private readonly awaitingResetFenceRelease = new Set<string>();
+  /**
+   * Coalesce one post-finalization recovery per chat so duplicate finalized
+   * signals cannot open repeated same-socket recoverChat calls.
    */
   private readonly postResetFenceRecoveryScheduled = new Set<string>();
   /**
@@ -1119,16 +1126,18 @@ export class SessionManager {
       this.terminatingChats.set(chatId, termination);
       try {
         await termination;
+        // Local terminate succeeded (flush included). Keep provider admission
+        // fenced while parked Reset debt awaits server-confirmed finalization
+        // — do NOT recover here (that races session:command:applied / finalize).
+        this.armParkedResetFenceRelease(chatId);
       } finally {
-        // Release the admission fence only if this run is still the current
-        // one — a failure leaves room for a genuine later retry without
-        // clobbering a newer in-flight termination.
+        // Drop the in-flight fence only if this run is still the current one —
+        // a failure leaves room for a genuine later retry without clobbering a
+        // newer in-flight termination. Parked Reset debt stays armed via
+        // awaitingResetFenceRelease until releaseParkedResetFenceRecovery.
         if (this.terminatingChats.get(chatId) === termination) {
           this.terminatingChats.delete(chatId);
         }
-        // After the in-flight fence lifts, release any parked Reset-fence
-        // work once — but only when persist failure is also clear.
-        this.schedulePostResetFenceRecovery(chatId);
       }
     }
   }
@@ -1183,13 +1192,18 @@ export class SessionManager {
     for (const id of this.routeProducers.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
-    // Unresolved Reset retirement (in-flight terminate OR failed durable
-    // flush) force-keeps the chat: the server must retain reconcile authority
-    // until mapping deletion + Reset nonce are durably written.
+    // Unresolved Reset retirement (in-flight terminate, failed durable flush,
+    // or parked Reset-fence debt awaiting server-confirmed finalization)
+    // force-keeps the chat: the server must retain reconcile authority until
+    // mapping deletion + Reset nonce are durably written and parked debt is
+    // released.
     for (const id of this.terminatingChats.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     for (const id of this.terminatePersistFailures) {
+      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+    }
+    for (const id of this.awaitingResetFenceRelease) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     return [...ids];
@@ -1206,9 +1220,15 @@ export class SessionManager {
       // the client as an unhandled rejection. The strict boundary keeps the
       // entry/mapping intact on failure, so the next reconcile still finds
       // the chat locally held, declares it stale again, and retries.
-      void this.handleCommand(id, "session:terminate").catch((err) => {
-        this.config.log.warn({ chatId: id, err }, "stale session terminate failed; will retry on next reconcile");
-      });
+      // Server already declared these chats stale, so release parked Reset-fence
+      // debt after a successful local apply (no apply-ack finalize wait).
+      void this.handleCommand(id, "session:terminate")
+        .then(() => {
+          this.releaseParkedResetFenceRecovery(id);
+        })
+        .catch((err) => {
+          this.config.log.warn({ chatId: id, err }, "stale session terminate failed; will retry on next reconcile");
+        });
     }
   }
 
@@ -1373,6 +1393,8 @@ export class SessionManager {
     this.sessions.clear();
     this.evictedMappings.clear();
     this.runtimeProofRecoveryChats.clear();
+    this.awaitingResetFenceRelease.clear();
+    this.postResetFenceRecoveryScheduled.clear();
     this.lastReportedStates.clear();
     this.sessionRuntimeStates.clear();
     this.lastReportedRuntimeState = null;
@@ -1486,14 +1508,20 @@ export class SessionManager {
   }
 
   /**
-   * Combined provider-route admission fence for Reset: either an in-flight
-   * `session:terminate` drain (`terminatingChats`) or a prior Reset whose
-   * durable registry flush failed (`terminatePersistFailures`). Must NOT be
-   * used for the duplicate-terminate join lookup — a genuine retry terminate
-   * must still execute and clear the persistence failure.
+   * Combined provider-route admission fence for Reset: an in-flight
+   * `session:terminate` drain (`terminatingChats`), a prior Reset whose
+   * durable registry flush failed (`terminatePersistFailures`), or parked
+   * Reset-fence debt still awaiting server-confirmed finalization
+   * (`awaitingResetFenceRelease`). Must NOT be used for the duplicate-terminate
+   * join lookup — a genuine retry terminate must still execute and clear the
+   * persistence failure.
    */
   private isProviderRouteAdmissionFenced(chatId: string): boolean {
-    return this.terminatingChats.has(chatId) || this.terminatePersistFailures.has(chatId);
+    return (
+      this.terminatingChats.has(chatId) ||
+      this.terminatePersistFailures.has(chatId) ||
+      this.awaitingResetFenceRelease.has(chatId)
+    );
   }
 
   /**
@@ -1501,8 +1529,8 @@ export class SessionManager {
    * fence without requesting same-socket recoverChat. Generic
    * `retryDeliveryTurn` would immediately recover, redeliver into the same
    * fence, and open the server's no-progress circuit after repeated identical
-   * resets. Parked debt is released once by `schedulePostResetFenceRecovery`
-   * after a successful terminate flush clears the fence.
+   * resets. Parked debt is released once by {@link releaseParkedResetFenceRecovery}
+   * after server-confirmed Reset finalization.
    */
   private async parkDeliveryBehindResetAdmissionFence(
     chatId: string,
@@ -1513,26 +1541,51 @@ export class SessionManager {
       { chatId, messageIds },
       "parking delivery behind Reset admission fence without same-socket recovery",
     );
-    await this.inboxDelivery.holdTurnForBindRecovery(chatId, messages, "reset_admission_fence");
+    this.awaitingResetFenceRelease.add(chatId);
+    await this.inboxDelivery.parkTurnForDeferredRecovery(chatId, messages, "reset_admission_fence");
   }
 
   /**
-   * Coalesce one recoverChat after the combined Reset admission fence clears.
-   * Invoked from terminate's `finally` so both the in-flight and persist-failure
-   * fences are evaluated after the current termination attempt settles.
+   * After a successful local terminate flush, keep parked Reset debt armed
+   * until {@link releaseParkedResetFenceRecovery}. No-op when there is nothing
+   * to recover.
    */
-  private schedulePostResetFenceRecovery(chatId: string): void {
-    if (this.isProviderRouteAdmissionFenced(chatId)) return;
-    if (this.postResetFenceRecoveryScheduled.has(chatId)) return;
+  private armParkedResetFenceRelease(chatId: string): void {
+    if (this.terminatePersistFailures.has(chatId)) return;
     if (!this.inboxDelivery.hasRecoveryDebt(chatId) && !this.inboxDelivery.hasUnsettledWork(chatId)) {
+      this.awaitingResetFenceRelease.delete(chatId);
       return;
     }
+    this.awaitingResetFenceRelease.add(chatId);
+  }
+
+  /**
+   * Release parked Reset-fence debt after the truthful server-confirmed Reset
+   * finalization boundary (post-`finalizeTerminatedSession` / evicted). Safe to
+   * call more than once per chat — coalesces to one recoverChat. Must not run
+   * from terminate's `finally` or from local flush success alone.
+   */
+  releaseParkedResetFenceRecovery(chatId: string): void {
+    if (this.terminatingChats.has(chatId) || this.terminatePersistFailures.has(chatId)) return;
+    if (!this.awaitingResetFenceRelease.has(chatId)) {
+      // Unref'd / direct callers may release after success without a prior park
+      // arm when drain left deferred debt mid-flight.
+      if (!this.inboxDelivery.hasRecoveryDebt(chatId) && !this.inboxDelivery.hasUnsettledWork(chatId)) {
+        return;
+      }
+    }
+    if (this.postResetFenceRecoveryScheduled.has(chatId)) return;
     this.postResetFenceRecoveryScheduled.add(chatId);
-    queueMicrotask(() => {
-      this.postResetFenceRecoveryScheduled.delete(chatId);
-      if (this.isProviderRouteAdmissionFenced(chatId)) return;
+    this.awaitingResetFenceRelease.delete(chatId);
+    try {
+      if (this.terminatingChats.has(chatId) || this.terminatePersistFailures.has(chatId)) return;
+      if (!this.inboxDelivery.hasRecoveryDebt(chatId) && !this.inboxDelivery.hasUnsettledWork(chatId)) {
+        return;
+      }
       void this.inboxDelivery.recoverIfNeeded(chatId, "reset_admission_fence_cleared");
-    });
+    } finally {
+      this.postResetFenceRecoveryScheduled.delete(chatId);
+    }
   }
 
   private clearRetryAttemptState(entry: SessionEntry): void {
@@ -2172,7 +2225,7 @@ export class SessionManager {
     if (!proofReason) return false;
     if (mutationLeaseValid && !mutationLeaseValid()) return false;
 
-    const held = await this.inboxDelivery.holdTurnForBindRecovery(
+    const held = await this.inboxDelivery.parkTurnForDeferredRecovery(
       chatId,
       messages,
       `runtime_session_proof:${proofReason}`,
