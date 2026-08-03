@@ -307,14 +307,23 @@ function retireLegacyConfig(
   legacy: LegacyContextIntegrationConfig | LegacyV2ContextIntegrationConfig,
   originalBytes: string,
 ): ContextIntegrationConfig {
+  preserveLegacyContextIntegrationBackup(legacy, paths, originalBytes);
+  const retired = emptyConfig();
+  writeContextIntegrationConfig(retired, paths);
+  return retired;
+}
+
+/** Preserve retired authorization without silently converting it into a v3 grant. */
+export function preserveLegacyContextIntegrationBackup(
+  legacy: LegacyContextIntegrationConfig | LegacyV2ContextIntegrationConfig,
+  paths: ContextGrantStorePaths = defaultContextGrantStorePaths(),
+  originalBytes = stringify(legacy),
+): void {
   const backupPath =
     legacy.schemaVersion === 2
       ? (paths.legacyV2BackupPath ?? `${paths.configPath}.v2.bak`)
       : (paths.legacyV1BackupPath ?? `${paths.configPath}.v1.bak`);
   preserveBackup(backupPath, legacy, originalBytes);
-  const retired = emptyConfig();
-  writeContextIntegrationConfig(retired, paths);
-  return retired;
 }
 
 function preserveBackup(

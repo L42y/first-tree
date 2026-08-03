@@ -37,7 +37,13 @@ describe("Context/client-switch account-state interlock", () => {
         provider: "codex",
         operation: "disable",
         phase: "binding_changed",
-        previousBindings: [],
+        previousBindings: [
+          {
+            provider: "codex",
+            project: { kind: "path", root: "/work/legacy" },
+            organizationId: "org-legacy",
+          },
+        ],
         previousInstallManifest: null,
         providerInstalled: false,
         providerEnabled: false,

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +65,12 @@ function seedRollbackPlugin(): void {
   const root = join(contextIntegrationMarketplaceSourcePath("codex"), "plugins", "first-tree-context");
   mkdirSync(join(root, "bin"), { recursive: true });
   writeFileSync(join(root, "bin", "context-session-start"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+}
+
+function seedCurrentGrantAndStableSource(): void {
+  const target = grant();
+  enableContextIntegrationOperation(driver, unchangedPlan, target, storeFence(target), "client_1234abcd");
+  seedRollbackPlugin();
 }
 
 const driver: ContextIntegrationProviderDriver = {
@@ -301,6 +307,227 @@ describe("v3 grant operation", () => {
     expect(recoverContextIntegrationOperation(driver)).toBe(true);
     expect(readContextIntegrationConfig().grants).toEqual([grant()]);
     expect(existsSync(recoveryRoot)).toBe(false);
+  });
+
+  it("retires and backs up a published schema-v1 journal with v2 bindings during recovery", () => {
+    const home = setup();
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
+    mkdirSync(recoveryRoot, { recursive: true });
+    mkdirSync(join(home, "state", "context"), { recursive: true });
+    const legacyBinding = {
+      provider: "codex",
+      project: { kind: "path", root: "/work/legacy" },
+      organizationId: "org-legacy",
+    };
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "binding_changed",
+        previousBindings: [legacyBinding],
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-08-03T00:00:00.000Z",
+      })}\n`,
+    );
+    const uninstall = vi.fn();
+    expect(recoverContextIntegrationOperation({ ...driver, uninstall })).toBe(true);
+    expect(uninstall).toHaveBeenCalledTimes(1);
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 3, grants: [] });
+    expect(readFileSync(join(home, "config", "context.yaml.v2.bak"), "utf8")).toContain("org-legacy");
+    expect(existsSync(recoveryRoot)).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "installed provider without its manifest and recovery source",
+      state: {
+        previousInstallManifest: null,
+        providerInstalled: true,
+        providerEnabled: true,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+      },
+    },
+    {
+      name: "marketplace recovery path outside the operation root",
+      state: {
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: true,
+        recoveryMarketplaceRoot: "/tmp/escaped-marketplace",
+      },
+    },
+  ])("rejects $name before any recovery mutation", ({ state }) => {
+    const home = setup();
+    seedCurrentGrantAndStableSource();
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    mkdirSync(join(home, "state", "context", "operation-recovery", operationId), { recursive: true });
+    mkdirSync(join(home, "state", "context"), { recursive: true });
+    writeFileSync(
+      join(home, "state", "context", "operation-journal.json"),
+      `${JSON.stringify({
+        schemaVersion: 2,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "rollback_failed",
+        previousConfig: { schemaVersion: 3, grants: [] },
+        startedAt: "2026-08-03T00:00:00.000Z",
+        ...state,
+      })}\n`,
+    );
+    const uninstall = vi.fn();
+    expect(() => recoverContextIntegrationOperation({ ...driver, uninstall })).toThrow(
+      "Invalid First Tree Context operation journal",
+    );
+    expect(uninstall).not.toHaveBeenCalled();
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 3, grants: [grant()] });
+    expect(existsSync(contextIntegrationMarketplaceSourcePath("codex"))).toBe(true);
+    expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "schema-v1 previousBindings",
+      journal: {
+        schemaVersion: 1,
+        phase: "binding_changed",
+      },
+    },
+    {
+      name: "schema-v2 previousConfig.grants",
+      journal: {
+        schemaVersion: 2,
+        phase: "grant_changed",
+        previousConfig: { schemaVersion: 3 },
+      },
+    },
+  ])("rejects a journal missing required $name before any recovery mutation", ({ journal }) => {
+    const home = setup();
+    seedCurrentGrantAndStableSource();
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    mkdirSync(join(home, "state", "context", "operation-recovery", operationId), { recursive: true });
+    const journalPath = join(home, "state", "context", "operation-journal.json");
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-08-03T00:00:00.000Z",
+        ...journal,
+      })}\n`,
+    );
+    const uninstall = vi.fn();
+    expect(() => recoverContextIntegrationOperation({ ...driver, uninstall })).toThrow(
+      "Invalid First Tree Context operation journal",
+    );
+    expect(uninstall).not.toHaveBeenCalled();
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 3, grants: [grant()] });
+    expect(existsSync(contextIntegrationMarketplaceSourcePath("codex"))).toBe(true);
+    expect(existsSync(journalPath)).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "missing exact marketplace recovery directory",
+      prepare: (_home: string, _recoveryRoot: string) => undefined,
+      previousInstallManifest: installManifest(),
+    },
+    {
+      name: "manifest for another provider",
+      prepare: (_home: string, recoveryRoot: string) => mkdirSync(join(recoveryRoot, "marketplace")),
+      previousInstallManifest: { ...installManifest(), provider: "claude-code" as const },
+    },
+  ])("rejects $name before uninstalling the current provider", ({ prepare, previousInstallManifest }) => {
+    const home = setup();
+    seedCurrentGrantAndStableSource();
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
+    mkdirSync(recoveryRoot, { recursive: true });
+    prepare(home, recoveryRoot);
+    const journalPath = join(home, "state", "context", "operation-journal.json");
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 2,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "rollback_failed",
+        previousConfig: { schemaVersion: 3, grants: [] },
+        previousInstallManifest,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: true,
+        recoveryMarketplaceRoot: join(recoveryRoot, "marketplace"),
+        startedAt: "2026-08-03T00:00:00.000Z",
+      })}\n`,
+    );
+    const uninstall = vi.fn();
+    expect(() => recoverContextIntegrationOperation({ ...driver, uninstall })).toThrow(
+      "Invalid First Tree Context operation journal",
+    );
+    expect(uninstall).not.toHaveBeenCalled();
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 3, grants: [grant()] });
+    expect(existsSync(contextIntegrationMarketplaceSourcePath("codex"))).toBe(true);
+    expect(existsSync(journalPath)).toBe(true);
+  });
+
+  it.runIf(process.platform !== "win32")("rejects a symlink marketplace recovery source before mutation", () => {
+    const home = setup();
+    seedCurrentGrantAndStableSource();
+    const operationId = "12345678-1234-4123-8123-123456789abc";
+    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
+    const escaped = join(home, "escaped-marketplace");
+    mkdirSync(recoveryRoot, { recursive: true });
+    mkdirSync(escaped, { recursive: true });
+    symlinkSync(escaped, join(recoveryRoot, "marketplace"), "dir");
+    const journalPath = join(home, "state", "context", "operation-journal.json");
+    writeFileSync(
+      journalPath,
+      `${JSON.stringify({
+        schemaVersion: 2,
+        operationId,
+        accountClientId: "client_1234abcd",
+        provider: "codex",
+        operation: "enable",
+        phase: "rollback_failed",
+        previousConfig: { schemaVersion: 3, grants: [] },
+        previousInstallManifest: installManifest(),
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: true,
+        recoveryMarketplaceRoot: join(recoveryRoot, "marketplace"),
+        startedAt: "2026-08-03T00:00:00.000Z",
+      })}\n`,
+    );
+    const uninstall = vi.fn();
+    expect(() => recoverContextIntegrationOperation({ ...driver, uninstall })).toThrow(
+      "Invalid First Tree Context operation journal",
+    );
+    expect(uninstall).not.toHaveBeenCalled();
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 3, grants: [grant()] });
+    expect(existsSync(contextIntegrationMarketplaceSourcePath("codex"))).toBe(true);
+    expect(existsSync(journalPath)).toBe(true);
   });
 
   it("rejects account changes before any operation mutation", () => {

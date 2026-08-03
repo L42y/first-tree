@@ -6,6 +6,7 @@ import {
   contextIntegrationInstallManifestSchema,
   contextIntegrationProviderSchema,
   legacyContextIntegrationConfigSchema,
+  legacyV2ContextIntegrationConfigSchema,
 } from "@first-tree/shared";
 import { defaultHome, readConfigFile } from "@first-tree/shared/config";
 import { contextRepairCommand } from "./repair-guidance.js";
@@ -120,9 +121,23 @@ function readBlockingJournalProvider(path: string) {
     const operationIdValid =
       typeof journal.operationId === "string" &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(journal.operationId);
+    const previousConfig = journal.previousConfig;
+    const currentConfigShapeValid =
+      typeof previousConfig === "object" &&
+      previousConfig !== null &&
+      Reflect.get(previousConfig, "schemaVersion") === 3 &&
+      Array.isArray(Reflect.get(previousConfig, "grants"));
+    const legacyBindingsShapeValid = Array.isArray(journal.previousBindings);
     const configValid =
-      contextIntegrationConfigSchema.safeParse(journal.previousConfig).success ||
-      legacyContextIntegrationConfigSchema.safeParse({ schemaVersion: 1, bindings: journal.previousBindings }).success;
+      (journal.schemaVersion === 2 &&
+        currentConfigShapeValid &&
+        contextIntegrationConfigSchema.safeParse(previousConfig).success) ||
+      (journal.schemaVersion === 1 &&
+        legacyBindingsShapeValid &&
+        (legacyV2ContextIntegrationConfigSchema.safeParse({ schemaVersion: 2, bindings: journal.previousBindings })
+          .success ||
+          legacyContextIntegrationConfigSchema.safeParse({ schemaVersion: 1, bindings: journal.previousBindings })
+            .success));
     const manifestValid =
       journal.previousInstallManifest === null ||
       contextIntegrationInstallManifestSchema.safeParse(journal.previousInstallManifest).success;
@@ -143,10 +158,13 @@ function readBlockingJournalProvider(path: string) {
       (journal.recoveryMarketplaceRoot !== null && typeof journal.recoveryMarketplaceRoot !== "string") ||
       typeof journal.startedAt !== "string" ||
       !Number.isFinite(Date.parse(journal.startedAt)) ||
+      journal.providerInstalled !== journal.providerEnabled ||
+      journal.marketplaceSourceExisted !== (typeof journal.recoveryMarketplaceRoot === "string") ||
       (journal.providerInstalled === true &&
-        (journal.previousInstallManifest === null ||
-          typeof journal.recoveryMarketplaceRoot !== "string" ||
-          journal.providerEnabled !== true))
+        (journal.previousInstallManifest === null || journal.marketplaceSourceExisted !== true)) ||
+      (typeof journal.recoveryMarketplaceRoot === "string" &&
+        journal.recoveryMarketplaceRoot !==
+          join(dirname(path), "operation-recovery", String(journal.operationId), "marketplace"))
     ) {
       throw new Error("invalid operation journal");
     }

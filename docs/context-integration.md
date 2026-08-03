@@ -161,17 +161,21 @@ root `SCOPE.md`. `tree verify` validates SCOPE when present; BYO readiness
 also requires its presence. New Trees propose a natural-language SCOPE in Seed
 Phase 1. Seed uses an explicit Team because an empty Tree cannot route itself.
 
-A Context Reviewer must be managed by an active admin of the same Team. This is
-checked when listing candidates, assigning/enabling the Reviewer, dispatching a
-webhook run, repairing/publishing a review, and merging. A manager who leaves
-or is demoted blocks the run; First Tree never silently chooses a replacement.
+A Context Reviewer must be managed by an active admin of the same Team when it
+is selected, assigned, or enabled. A later role change does not add a new Admin
+gate to ordinary webhook dispatch, repair, publication, notes, or merge; those
+paths retain their existing configured-Reviewer, trusted-run, binding,
+runtime/session, and provider authority checks.
 
 Any addition, edit, deletion or rename of root `SCOPE.md` pauses the Reviewer.
 The Reviewer sends a tracked ask to its current admin manager containing the
 Team, PR/MR, exact head, SCOPE digest, full proposed body and one approval
-question. Rejection stops the run. A changed head, changed digest or changed
-admin authority invalidates approval and requires a new ask. The Reviewer never
-repairs SCOPE itself.
+question. The manager's same-Team active-Admin authority is checked when the ask
+is created and again when its answer is consumed. Rejection stops the run. A
+changed head, changed digest or changed admin authority before answer
+consumption invalidates approval and requires a new ask. An already consumed
+exact-head approval is not revoked solely by a later manager role change. The
+Reviewer never repairs SCOPE itself or silently chooses a replacement approver.
 
 This admin gate is separate from the BYO writer's per-write confirmation: one
 protects task targeting, the other protects the routing definition used by all

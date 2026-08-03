@@ -1,6 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import {
   type ContextIntegrationConfig,
   type ContextIntegrationGrant,
@@ -9,6 +19,10 @@ import {
   type ContextPersistentActivationScope,
   contextIntegrationConfigSchema,
   contextIntegrationInstallManifestSchema,
+  type LegacyContextIntegrationConfig,
+  type LegacyV2ContextIntegrationConfig,
+  legacyContextIntegrationConfigSchema,
+  legacyV2ContextIntegrationConfigSchema,
 } from "@first-tree/shared";
 import { defaultHome } from "@first-tree/shared/config";
 import { channelConfig } from "../channel.js";
@@ -16,6 +30,7 @@ import { readActiveContextAccountClientId } from "./account-state-guard.js";
 import {
   assertContextIntegrationConfig,
   prepareContextGrantStoreForApply,
+  preserveLegacyContextIntegrationBackup,
   readContextIntegrationConfig,
   removeContextGrants,
   replaceContextIntegrationConfig,
@@ -62,6 +77,10 @@ type OperationJournal = {
   marketplaceSourceExisted: boolean;
   recoveryMarketplaceRoot: string | null;
   startedAt: string;
+};
+
+type ParsedOperationJournal = OperationJournal & {
+  legacyPreviousConfig: LegacyContextIntegrationConfig | LegacyV2ContextIntegrationConfig | null;
 };
 
 export function enableContextIntegrationOperation(
@@ -287,6 +306,10 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
       throw new Error(`The incomplete Context operation belongs to ${journal.provider}. Run repair for it first.`);
     }
     const recoveryRoot = join(defaultHome(), "state", "context", "operation-recovery", journal.operationId);
+    const expectedMarketplaceRoot = join(recoveryRoot, "marketplace");
+    if (journal.recoveryMarketplaceRoot !== null && journal.recoveryMarketplaceRoot !== expectedMarketplaceRoot) {
+      throw new Error("The incomplete Context operation recovery path is invalid.");
+    }
     const snapshot: OperationSnapshot = {
       accountClientId: journal.accountClientId,
       config: journal.previousConfig,
@@ -300,8 +323,21 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
     if (readActiveContextAccountClientId() !== snapshot.accountClientId) {
       throw new Error("The incomplete Context operation belongs to a different local Computer/account state.");
     }
-    replaceContextIntegrationConfig(snapshot.config);
-    restoreProviderSnapshot(driver, snapshot);
+    const errors: unknown[] = [];
+    try {
+      if (journal.legacyPreviousConfig) preserveLegacyContextIntegrationBackup(journal.legacyPreviousConfig);
+      replaceContextIntegrationConfig(snapshot.config);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      restoreProviderSnapshot(driver, snapshot);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "Could not recover the incomplete First Tree Context operation.");
+    }
     completeOperation(snapshot);
     return true;
   });
@@ -319,37 +355,130 @@ export function inspectContextIntegrationOperation(): Pick<
   return journal ? { provider: journal.provider, operation: journal.operation, phase: journal.phase } : null;
 }
 
-function readOperationJournal(): OperationJournal | null {
+function readOperationJournal(): ParsedOperationJournal | null {
   try {
     const parsed = JSON.parse(readFileSync(operationJournalPath(), "utf8")) as Record<string, unknown>;
+    const operationIdValid =
+      typeof parsed.operationId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(parsed.operationId);
     if (
-      parsed.schemaVersion !== 2 ||
-      typeof parsed.operationId !== "string" ||
-      !/^[0-9a-f-]{36}$/iu.test(parsed.operationId) ||
+      (parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) ||
+      !operationIdValid ||
       typeof parsed.accountClientId !== "string" ||
+      !/^client_[a-f0-9]{8}$/u.test(parsed.accountClientId) ||
       (parsed.provider !== "claude-code" && parsed.provider !== "codex") ||
       (parsed.operation !== "enable" && parsed.operation !== "disable" && parsed.operation !== "repair") ||
-      !["prepared", "provider_changed", "grant_changed", "rollback_failed"].includes(String(parsed.phase)) ||
       typeof parsed.providerInstalled !== "boolean" ||
       typeof parsed.providerEnabled !== "boolean" ||
       typeof parsed.marketplaceSourceExisted !== "boolean" ||
       (parsed.recoveryMarketplaceRoot !== null && typeof parsed.recoveryMarketplaceRoot !== "string") ||
-      typeof parsed.startedAt !== "string"
+      typeof parsed.startedAt !== "string" ||
+      !Number.isFinite(Date.parse(parsed.startedAt))
     ) {
       throw new Error("invalid operation journal");
     }
+    const phaseValid =
+      parsed.schemaVersion === 2
+        ? ["prepared", "provider_changed", "grant_changed", "rollback_failed"].includes(String(parsed.phase))
+        : ["prepared", "provider_changed", "binding_changed", "rollback_failed"].includes(String(parsed.phase));
+    if (!phaseValid) throw new Error("invalid operation journal phase");
+    const previousInstallManifest =
+      parsed.previousInstallManifest === null
+        ? null
+        : contextIntegrationInstallManifestSchema.parse(parsed.previousInstallManifest);
+    validateProviderRecoveryState(parsed, previousInstallManifest);
+    if (parsed.schemaVersion === 2) {
+      assertCurrentOperationConfigShape(parsed.previousConfig);
+      return {
+        ...(parsed as Omit<OperationJournal, "previousConfig" | "previousInstallManifest">),
+        schemaVersion: 2,
+        previousConfig: contextIntegrationConfigSchema.parse(parsed.previousConfig),
+        previousInstallManifest,
+        legacyPreviousConfig: null,
+      };
+    }
+    if (!Array.isArray(parsed.previousBindings)) throw new Error("operation journal previous bindings are missing");
+    const legacyPreviousConfig = parseLegacyOperationConfig(parsed.previousBindings);
     return {
-      ...(parsed as Omit<OperationJournal, "previousConfig" | "previousInstallManifest">),
-      previousConfig: contextIntegrationConfigSchema.parse(parsed.previousConfig),
-      previousInstallManifest:
-        parsed.previousInstallManifest === null
-          ? null
-          : contextIntegrationInstallManifestSchema.parse(parsed.previousInstallManifest),
+      schemaVersion: 2,
+      operationId: parsed.operationId as string,
+      accountClientId: parsed.accountClientId as string,
+      provider: parsed.provider as ContextIntegrationProvider,
+      operation: parsed.operation as OperationJournal["operation"],
+      phase: parsed.phase === "binding_changed" ? "grant_changed" : (parsed.phase as OperationJournal["phase"]),
+      previousConfig: { schemaVersion: 3, grants: [] },
+      previousInstallManifest,
+      providerInstalled: parsed.providerInstalled as boolean,
+      providerEnabled: parsed.providerEnabled as boolean,
+      marketplaceSourceExisted: parsed.marketplaceSourceExisted as boolean,
+      recoveryMarketplaceRoot: parsed.recoveryMarketplaceRoot as string | null,
+      startedAt: parsed.startedAt as string,
+      legacyPreviousConfig,
     };
   } catch (error) {
     if (isMissing(error)) return null;
     throw new Error(`Invalid First Tree Context operation journal at ${operationJournalPath()}.`, { cause: error });
   }
+}
+
+function parseLegacyOperationConfig(
+  previousBindings: unknown,
+): LegacyContextIntegrationConfig | LegacyV2ContextIntegrationConfig {
+  const v2 = legacyV2ContextIntegrationConfigSchema.safeParse({ schemaVersion: 2, bindings: previousBindings });
+  if (v2.success) return v2.data;
+  return legacyContextIntegrationConfigSchema.parse({ schemaVersion: 1, bindings: previousBindings });
+}
+
+function validateProviderRecoveryState(
+  journal: Record<string, unknown>,
+  previousInstallManifest: ContextIntegrationInstallManifest | null,
+): void {
+  const installed = journal.providerInstalled === true;
+  const enabled = journal.providerEnabled === true;
+  const sourceExisted = journal.marketplaceSourceExisted === true;
+  const hasRecoveryRoot = typeof journal.recoveryMarketplaceRoot === "string";
+  if (installed !== enabled) throw new Error("provider installed/enabled recovery state is inconsistent");
+  if (sourceExisted !== hasRecoveryRoot) throw new Error("marketplace recovery state is inconsistent");
+  if (installed && (!previousInstallManifest || !sourceExisted)) {
+    throw new Error("installed provider recovery state is incomplete");
+  }
+  if (previousInstallManifest && previousInstallManifest.provider !== journal.provider) {
+    throw new Error("operation journal manifest provider does not match the operation provider");
+  }
+  const recoveryRoot = join(defaultHome(), "state", "context", "operation-recovery", String(journal.operationId));
+  const expectedMarketplaceRoot = join(recoveryRoot, "marketplace");
+  if (hasRecoveryRoot && journal.recoveryMarketplaceRoot !== expectedMarketplaceRoot) {
+    throw new Error("operation recovery path is invalid");
+  }
+  assertRecoveryDirectory(recoveryRoot, "operation recovery root");
+  if (sourceExisted) {
+    assertRecoveryDirectory(expectedMarketplaceRoot, "operation marketplace recovery source");
+    const relativePath = relative(realpathSync(recoveryRoot), realpathSync(expectedMarketplaceRoot));
+    if (relativePath === "" || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+      throw new Error("operation marketplace recovery source escapes the operation recovery root");
+    }
+  }
+}
+
+function assertCurrentOperationConfigShape(value: unknown): void {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Reflect.get(value, "schemaVersion") !== 3 ||
+    !Array.isArray(Reflect.get(value, "grants"))
+  ) {
+    throw new Error("operation journal previous grant snapshot is incomplete");
+  }
+}
+
+function assertRecoveryDirectory(path: string, label: string): void {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    throw new Error(`${label} is missing or unreadable`, { cause: error });
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`${label} must be a non-symlink directory`);
 }
 
 function assertNoIncompleteOperation(): void {
