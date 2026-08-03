@@ -1,4 +1,4 @@
-import { isKnownLandingCampaignSlug } from "@first-tree/shared";
+import { isKnownLandingCampaignSlug, parseAgentTemplateIntentPath } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { users } from "../db/schema/users.js";
@@ -120,6 +120,11 @@ export async function completeExternalAccountBootstrap(
 }
 
 export function shouldPreserveSoloSignupNext(next: string): boolean {
+  // A canonical Agent Template "use" intent survives solo signup so the new
+  // member lands back on the Template they picked. Parsing is strict (exact
+  // pathname, schema slug, sole `use=1` query, no fragment) so this never
+  // widens into a general deep-link preservation.
+  if (parseAgentTemplateIntentPath(next) !== null) return true;
   const parsed = new URL(next, "http://first-tree.local");
   return parsed.pathname === "/quickstart" && isKnownLandingCampaignSlug(parsed.searchParams.get("campaign"));
 }

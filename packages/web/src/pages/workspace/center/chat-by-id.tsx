@@ -160,7 +160,13 @@ export function ChatByIdView({
     if (switchedOrgRef.current === chatOrg) return;
     if (!memberships.some((m) => m.organizationId === chatOrg)) return;
     switchedOrgRef.current = chatOrg;
-    void selectOrganization(chatOrg);
+    // A rejected switch (post-switch /me failed) rolls back to the confirmed
+    // org and clears the query caches, which refetches this chat's detail —
+    // so the rejection MUST stay swallowed with the target still marked as
+    // attempted. Resetting the ref here would re-fire selectOrganization on
+    // the very next effect pass and loop /me + chat-detail requests during a
+    // persistent outage. A retry needs an explicit new target or a remount.
+    void Promise.resolve(selectOrganization(chatOrg)).catch(() => undefined);
   }, [chatDetail?.organizationId, currentOrgId, memberships, selectOrganization, switchingOrg]);
 
   const primaryAgent = useMemo(() => {

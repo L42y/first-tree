@@ -1,6 +1,7 @@
 import type { AgentVisibility } from "@first-tree/shared";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { trackEvent } from "../../analytics.js";
 import { type OnboardingFailureReason, reportOnboardingEvent } from "../../api/onboarding-events.js";
 import { useAuth } from "../../auth/auth-context.js";
 import {
@@ -14,6 +15,7 @@ import {
   readOnboardingSelectedRepos,
   writeOnboardingAgentUuid,
   writeOnboardingSelectedRepos,
+  writeOnboardingTemplateIntent,
 } from "../../utils/onboarding-flags.js";
 import {
   canOfferTeamAgentStart,
@@ -320,13 +322,30 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
   const onAgentCreated = useCallback(
     (info: CreatedAgentInfo) => {
       writeOnboardingAgentUuid(info.agentUuid);
+      // The Template intent handoff is consumed by a successful creation —
+      // whether or not the Template was still selected at submit time — so a
+      // later same-tab onboarding in this org starts clean. Key the cleanup
+      // off the org the agent was actually submitted to (the create args),
+      // never the drifting closure: if the member switched Teams while the
+      // POST was in flight, we must clear THAT org's key, not the new one.
+      // Fail CLOSED: without a submit-time org we clear nothing rather than
+      // guess from the current selection.
+      const createdOrgId = info.args.organizationId ?? null;
+      if (createdOrgId) writeOnboardingTemplateIntent(createdOrgId, null);
+      // Mirror the New Agent dialog's success event for the onboarding path;
+      // count comes from the submitted args, and it is a creation signal,
+      // never an activation claim.
+      if (info.args.templateIds && info.args.templateIds.length > 0) {
+        trackEvent("agent_template_create_success", { template_count: info.args.templateIds.length });
+      }
       void reportOnboardingEvent("agent_created", {
         runtimeProvider: info.args.runtimeProvider,
         path,
-        organizationId: organizationId ?? null,
+        // Attributed to the actual submit target, not the drifting closure.
+        organizationId: createdOrgId,
       });
     },
-    [organizationId, path],
+    [path],
   );
   const {
     phase: agentPhase,

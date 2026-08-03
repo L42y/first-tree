@@ -23,6 +23,12 @@ export type CreateAgentArgs = {
   runtimeProvider: string;
   visibility: AgentVisibility;
   organizationId: string | null;
+  /**
+   * Optional official Template ids to adopt atomically with creation (0-3).
+   * The server imports their components into Team Resources inside the same
+   * transaction; omit for a plain create.
+   */
+  templateIds?: string[];
 };
 
 export type CreatedAgentInfo = {
@@ -119,6 +125,7 @@ export function useAgentCreation(options: UseAgentCreationOptions = {}) {
           runtimeProvider: args.runtimeProvider,
           visibility: args.visibility,
           ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+          ...(args.templateIds && args.templateIds.length > 0 ? { templateIds: [...args.templateIds] } : {}),
         });
         agentUuid = res.uuid;
         createdRef.current = agentUuid;
