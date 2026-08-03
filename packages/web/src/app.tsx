@@ -43,6 +43,8 @@ import { SettingsResourcesPage } from "./pages/settings/resources.js";
 import { SettingsSetupPage } from "./pages/settings/setup.js";
 import { SettingsLayout } from "./pages/settings.js";
 import { TeamPage } from "./pages/team/index.js";
+import { TemplateDetailPage } from "./pages/templates/template-detail-page.js";
+import { TemplateLibraryPage } from "./pages/templates/template-library-page.js";
 import { WorkspacePage } from "./pages/workspace/index.js";
 
 const queryClient = new QueryClient({
@@ -204,6 +206,12 @@ export function App() {
               {/* Public: the connect-code install popup lands here to auto-close. */}
               <Route path="/onboarding/connected" element={<GithubConnectedPage />} />
               <Route path="/invite/:token" element={<InviteAcceptPage />} />
+              {/* Public official Template Library + detail. `/templates/:slug?use=1`
+                  is the canonical use-intent URL; the detail page itself routes
+                  logged-out visitors through /login and signed-in members into
+                  onboarding or an explicit Team choice. */}
+              <Route path="/templates" element={<TemplateLibraryPage />} />
+              <Route path="/templates/:slug" element={<TemplateDetailPage />} />
               <Route path="/m/install" element={<MobileInstallRoute />} />
               <Route path="/preview/context-tree-setup" element={<ContextTreeSetupPreviewRoute />} />
               {ContextPreviewPage ? (

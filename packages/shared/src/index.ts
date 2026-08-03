@@ -6,6 +6,8 @@ export {
   type BriefingFingerprint,
   findAssembledBriefingFingerprint,
 } from "./agent-briefing-guard.js";
+// -- Canonical Agent Template "use" intent URL --
+export { agentTemplateIntentPath, parseAgentTemplateIntentPath } from "./agent-template-intent.js";
 export {
   type CanonicalGitRepoIdentity,
   CONTEXT_TREE_PROVIDERS,

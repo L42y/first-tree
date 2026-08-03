@@ -202,6 +202,8 @@
   /* Brand green — signature surfaces only (logo / tree nodes / mentions / success). */
   --color-brand: var(--brand);
   --color-brand-dim: var(--brand-dim);
+  /* AA foreground for brand-filled actions (see --fg-on-brand's contract). */
+  --color-brand-foreground: var(--fg-on-brand);
   --color-destructive: var(--state-error);
   --color-destructive-foreground: oklch(0.985 0 0);
   --color-border: var(--border);
@@ -348,6 +350,16 @@
      both themes — these surfaces don't track --fg, which inverts
      under .dark and would yield dark-on-color in dark mode. */
   --fg-on-vivid: oklch(0.985 0 0);
+
+  /* Foreground ON THE BRAND GREEN specifically. The near-white --fg-on-vivid
+     fails WCAG AA on --brand / --brand-dim (measured 2.2:1), so brand-filled
+     primary actions (Button variant="cta", and every bg-primary action inside
+     .landing-marketing where --primary is re-pointed at --brand) use this
+     near-black instead: AA ≥ 4.5:1 on both the normal and hover brand steps,
+     stable across light/dark because --brand does not invert. Distinct
+     contract from --fg-on-vivid, which keeps serving the other vivid hues
+     (avatars, error badges, overlays) — do not merge the two. */
+  --fg-on-brand: oklch(0.17 0 0);
 
   /* QR modules must stay absolute black-on-white in every theme so phone
      cameras get maximum contrast. These intentionally do not invert in .dark. */
@@ -585,10 +597,12 @@
   /* Marketing is a brand-forward surface (not the dashboard's neutral language):
      the primary CTA is the brand green, not near-black ink. The dashboard's
      --primary would resolve to the :root light value here (near-black on a
-     near-black canvas = invisible), so it is re-pointed at --brand for this scope. */
+     near-black canvas = invisible), so it is re-pointed at --brand for this
+     scope. --primary-on follows the brand-foreground contract (near-black on
+     green) — the near-white --fg-on-vivid fails WCAG AA on --brand. */
   --primary: var(--brand);
   --primary-hover: var(--brand-dim);
-  --primary-on: var(--fg-on-vivid);
+  --primary-on: var(--fg-on-brand);
   --ring: var(--brand-ring);
 
   /* Inline-callout pairs use the DARK variants here: .landing-marketing is a

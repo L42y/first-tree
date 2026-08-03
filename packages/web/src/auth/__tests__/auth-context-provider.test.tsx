@@ -150,6 +150,12 @@ beforeEach(() => {
   container = null;
   vi.clearAllMocks();
   apiMocks.getStoredTokens.mockReturnValue(null);
+  // Realistic token store: adopting/storing tokens makes them readable, so
+  // post-adoption requests capture the NEW session's subject — generation
+  // and subject guards are then both exercised for real.
+  apiMocks.setStoredTokens.mockImplementation((tokens: { accessToken: string; refreshToken: string }) => {
+    apiMocks.getStoredTokens.mockReturnValue(tokens);
+  });
   apiMocks.apiGet.mockResolvedValue({
     user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
     memberships: MEMBERSHIPS,
@@ -429,5 +435,410 @@ describe("AuthProvider", () => {
     });
     expect(latestAuth?.isAuthenticated).toBe(true);
     expect(latestAuth?.meLoaded).toBe(true);
+  });
+
+  it("rejects and rolls back to the confirmed org when the post-switch /me fails, then allows retry", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    // Initial /me settled on the authoritative org-1.
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    // The post-switch /me is a transport failure: the switch must reject and
+    // every optimistic write must roll back to org-1.
+    apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+    // The rejection handler is attached inside act and swallows the error, so
+    // act observes the FULLY settled switch (rollback included) instead of
+    // rethrowing early, and every state update stays inside the act boundary.
+    let switchError: unknown = null;
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+        switchError = error;
+      });
+    });
+    expect(switchError).toBeInstanceOf(Error);
+    expect((switchError as Error).message).toBe("offline");
+
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+    expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-1");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-1");
+
+    // Retry with a healthy /me confirms the target.
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-2");
+    });
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-2");
+    expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-2");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-2");
+  });
+
+  it("keeps initial-load /me failures fail-soft", async () => {
+    apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+    apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
+
+    // renderAuth's initial effect fetch swallows the failure — no rejection,
+    // meLoaded still flips so the app shell never hangs.
+    await renderAuth();
+    expect(latestAuth?.meLoaded).toBe(true);
+    expect(latestAuth?.currentMembership).toBeNull();
+  });
+
+  it("does not resurrect the old org when the switch fails through a 401 logout", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    // Mirror request()'s final-401: tokens cleared + auth:logout dispatched
+    // BEFORE the rejection reaches selectOrganization's rollback path.
+    apiMocks.apiGet.mockImplementationOnce(async () => {
+      apiMocks.getStoredTokens.mockReturnValue(null);
+      window.dispatchEvent(new CustomEvent("auth:logout"));
+      throw new Error("unauthorized");
+    });
+    let switchError: unknown = null;
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+        switchError = error;
+      });
+    });
+    expect(switchError).toBeInstanceOf(Error);
+
+    // Logout owns the final state: authenticated false, no membership/org,
+    // and the API override was cleared by logout — the rollback must NOT
+    // have written the old org back afterwards.
+    expect(latestAuth?.isAuthenticated).toBe(false);
+    expect(latestAuth?.currentMembership).toBeNull();
+    expect(latestAuth?.organizationId).toBeNull();
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith(null);
+  });
+
+  it("discards a successful /me that lands after logout", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    let resolveOldMe!: (value: unknown) => void;
+    apiMocks.apiGet.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldMe = resolve;
+        }),
+    );
+    await renderAuth(); // the initial session's /me stays in flight
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("auth:logout"));
+    });
+    expect(latestAuth?.isAuthenticated).toBe(false);
+
+    // The old request finally SUCCEEDS — it must mutate nothing: no user,
+    // no memberships, no org, no API override, and the loading gate stays
+    // with the logged-out session.
+    await act(async () => {
+      resolveOldMe({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: MEMBERSHIPS,
+        defaultOrganizationId: "org-1",
+        onboarding: { step: "completed" },
+      });
+    });
+    await flush();
+
+    expect(latestAuth?.isAuthenticated).toBe(false);
+    expect(latestAuth?.user).toBeNull();
+    expect(latestAuth?.currentMembership).toBeNull();
+    expect(latestAuth?.organizationId).toBeNull();
+    expect(latestAuth?.meLoaded).toBe(false);
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith(null);
+  });
+
+  it("keeps session B authoritative when an older session's /me lands later", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    let resolveOldMe!: (value: unknown) => void;
+    apiMocks.apiGet.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldMe = resolve;
+        }),
+    );
+    // Session B's /me payload for every later request.
+    apiMocks.apiGet.mockResolvedValue({
+      user: { id: "user-2", username: "other", displayName: "Other", avatarUrl: null },
+      memberships: MEMBERSHIPS,
+      defaultOrganizationId: "org-1",
+      onboarding: { step: "completed", dismissedAt: null, completedAt: "2026-05-01T00:00:00.000Z" },
+    });
+    await renderAuth(); // session A's /me stays in flight
+
+    await act(async () => {
+      await latestAuth?.adoptTokens({ accessToken: tokenWithPayload({ sub: "user-2" }), refreshToken: "refresh-2" });
+    });
+    expect(latestAuth?.user?.id).toBe("user-2");
+
+    await act(async () => {
+      resolveOldMe({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: [],
+        defaultOrganizationId: null,
+        onboarding: { step: "connect" },
+      });
+    });
+    await flush();
+
+    expect(latestAuth?.user?.id).toBe("user-2");
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+  });
+
+  it("rejects a switch whose /me succeeds only after logout, mutating nothing", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    let resolveSwitchMe!: (value: unknown) => void;
+    apiMocks.apiGet.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSwitchMe = resolve;
+        }),
+    );
+    let switchError: unknown = null;
+    await act(async () => {
+      const settled = latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+        switchError = error;
+      });
+      window.dispatchEvent(new CustomEvent("auth:logout"));
+      // A SUCCESS arrives, but for the pre-logout session — discarded, and
+      // the switch rejects without rolling anything into the logged-out state.
+      resolveSwitchMe({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: MEMBERSHIPS,
+        defaultOrganizationId: "org-1",
+        onboarding: { step: "completed" },
+      });
+      await settled;
+    });
+
+    expect(switchError).toBeInstanceOf(Error);
+    expect(latestAuth?.isAuthenticated).toBe(false);
+    expect(latestAuth?.currentMembership).toBeNull();
+    expect(latestAuth?.organizationId).toBeNull();
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith(null);
+  });
+
+  it("treats logout plus relogin as the same subject as a new session for stale responses", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    let resolveOldMe!: (value: unknown) => void;
+    apiMocks.apiGet.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldMe = resolve;
+        }),
+    );
+    await renderAuth(); // old session's /me stays in flight
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("auth:logout"));
+    });
+    // Relogin as the SAME subject — still a new generation; its /me applies.
+    await act(async () => {
+      await latestAuth?.adoptTokens({ accessToken: tokenWithPayload({ sub: "user-1" }), refreshToken: "refresh-new" });
+    });
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    const apiOrgCallsBefore = apiMocks.setApiSelectedOrganizationId.mock.calls.length;
+    // The pre-logout response finally lands with poisoned content — it must
+    // be discarded even though the subject matches the live session.
+    await act(async () => {
+      resolveOldMe({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: [],
+        defaultOrganizationId: null,
+        onboarding: { step: "connect" },
+      });
+    });
+    await flush();
+
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+    expect(latestAuth?.user?.id).toBe("user-1");
+    expect(apiMocks.setApiSelectedOrganizationId.mock.calls.length).toBe(apiOrgCallsBefore);
+  });
+
+  it("adoptTokens applies its own authoritative /me even when the auth effect starts a second one", async () => {
+    // Unauthenticated mount: no initial fetch. Every /me is deferred so we
+    // can settle the adopt's awaited request while the effect's same-session
+    // second request is still pending.
+    const deferred: Array<(value: unknown) => void> = [];
+    apiMocks.apiGet.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deferred.push(resolve);
+        }),
+    );
+    await renderAuth();
+
+    await act(async () => {
+      const adopt = latestAuth?.adoptTokens({
+        accessToken: tokenWithPayload({ sub: "user-2" }),
+        refreshToken: "refresh-2",
+      });
+      // Let the adopt's awaited /me start AND the isAuthenticated effect fire
+      // its second same-session /me, then settle the awaited one with B's
+      // authoritative payload.
+      await Promise.resolve();
+      deferred[0]?.({
+        user: { id: "user-2", username: "other", displayName: "Other", avatarUrl: null },
+        memberships: MEMBERSHIPS,
+        defaultOrganizationId: "org-1",
+        onboarding: { step: "completed" },
+      });
+      await adopt;
+    });
+
+    // The adopt promise returned only after REAL B authority was applied —
+    // no bootstrap gap, and the gate came from the live request.
+    expect(latestAuth?.user?.id).toBe("user-2");
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+    expect(latestAuth?.meLoaded).toBe(true);
+
+    // The effect's second request settles later in the same session — it
+    // applies cleanly instead of erroring or tearing B down.
+    await act(async () => {
+      deferred[1]?.({
+        user: { id: "user-2", username: "other", displayName: "Other", avatarUrl: null },
+        memberships: MEMBERSHIPS,
+        defaultOrganizationId: "org-1",
+        onboarding: { step: "completed" },
+      });
+    });
+    expect(latestAuth?.user?.id).toBe("user-2");
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+  });
+
+  it("never rolls back a switch that a concurrent same-session refresh already confirmed", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    const deferred: Array<{ resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = [];
+    apiMocks.apiGet.mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          deferred.push({ resolve, reject });
+        }),
+    );
+    const mePayload = {
+      user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+      memberships: MEMBERSHIPS,
+      defaultOrganizationId: "org-1",
+      onboarding: { step: "completed" },
+    };
+
+    let switchError: unknown = null;
+    let switchDone = false;
+    await act(async () => {
+      const settled = latestAuth?.selectOrganization("org-2").then(
+        () => {
+          switchDone = true;
+        },
+        (error: unknown) => {
+          switchError = error;
+        },
+      );
+      void latestAuth?.refreshMe();
+      // The unrelated refresh CONFIRMS org-2 first; the switch's own request
+      // then fails. The confirmed snapshot must win — no rollback, no false
+      // failure.
+      deferred[1]?.resolve(mePayload);
+      deferred[0]?.reject(new Error("offline"));
+      await settled;
+    });
+
+    expect(switchError).toBeNull();
+    expect(switchDone).toBe(true);
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-2");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-2");
+  });
+
+  it("keeps a switch confirmed by its own request when a concurrent refresh settles later", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    const deferred: Array<(value: unknown) => void> = [];
+    apiMocks.apiGet.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deferred.push(resolve);
+        }),
+    );
+    const mePayload = {
+      user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+      memberships: MEMBERSHIPS,
+      defaultOrganizationId: "org-1",
+      onboarding: { step: "completed" },
+    };
+
+    let switchDone = false;
+    await act(async () => {
+      const settled = latestAuth?.selectOrganization("org-2").then(() => {
+        switchDone = true;
+      });
+      void latestAuth?.refreshMe();
+      // The switch's own request confirms org-2 first; the refresh settles
+      // afterwards with the same authoritative snapshot.
+      deferred[0]?.(mePayload);
+      deferred[1]?.(mePayload);
+      await settled;
+    });
+
+    expect(switchDone).toBe(true);
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-2");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-2");
+  });
+
+  it("rejects a failed re-confirmation of the already-current org instead of faking success", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    // A is already the confirmed org — but a NEW failed /me must not borrow
+    // that old confirmation to succeed.
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+    let switchError: unknown = null;
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-1").catch((error: unknown) => {
+        switchError = error;
+      });
+    });
+
+    expect(switchError).toBeInstanceOf(Error);
+    expect((switchError as Error).message).toBe("offline");
+    // The ordinary rollback keeps every surface on the confirmed org A.
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+    expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-1");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-1");
   });
 });

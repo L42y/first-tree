@@ -47,8 +47,13 @@ describe("buttonVariants — filled variants keep their text color at every size
     }
   }
 
-  it("cta @ sm retains its on-vivid text color", () => {
-    const out = buttonVariants({ variant: "cta", size: "sm" });
-    expect(out).toContain("text-[color:var(--fg-on-vivid)]");
-  });
+  for (const size of ["sm", "xs", "default"] as const) {
+    it(`cta @ ${size} binds the brand-specific foreground, never --fg-on-vivid`, () => {
+      const out = buttonVariants({ variant: "cta", size });
+      // Near-white on the brand green fails WCAG AA (measured 2.2:1); the
+      // brand-foreground alias keeps the CTA dark-on-green in both themes.
+      expect(out).toContain("text-brand-foreground");
+      expect(out).not.toContain("--fg-on-vivid");
+    });
+  }
 });

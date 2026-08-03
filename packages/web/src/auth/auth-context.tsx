@@ -143,12 +143,16 @@ type AuthContextValue = {
    */
   adoptTokens: (tokens: { accessToken: string; refreshToken: string }) => Promise<void>;
   /**
-   * Switch the active organization view. Pure client-side state — the
-   * /orgs/:orgId/* routes themselves probe membership in real time on
-   * every request, so a stale or unauthorized selection just yields a
-   * clean 403 from the next API call. Does NOT re-issue tokens; it does
-   * signal the org-scoped admin WebSocket to reconnect against the new
-   * org (`ADMIN_WS_ORG_CHANGED_EVENT`).
+   * Switch the active organization view. The org-scoped routes probe
+   * membership in real time on every request, and the post-switch `/me` is
+   * the switch's confirmation authority: this promise REJECTS when that
+   * `/me` cannot be fetched. On such a transport failure every optimistic
+   * write (React selection, per-user persisted org, API override, admin WS
+   * target, and any cache written during the optimistic window) is rolled
+   * back to the pre-switch confirmed org before the rejection propagates —
+   * callers must handle the rejection (inline error / retry affordance).
+   * Does NOT re-issue tokens; it does signal the org-scoped admin WebSocket
+   * to reconnect against the new org (`ADMIN_WS_ORG_CHANGED_EVENT`).
    */
   selectOrganization: (organizationId: string) => Promise<void>;
   /**
@@ -217,6 +221,14 @@ function writeSelectedOrgId(userId: string | null, value: string | null): void {
   }
 }
 
+/** Marker for a /me response from a stale session or identity (discarded, zero mutation). */
+class StaleMeError extends Error {
+  constructor() {
+    super("stale /me response discarded");
+    this.name = "StaleMeError";
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [isAuthenticated, setIsAuthenticated] = useState(() => !!getStoredTokens());
@@ -234,6 +246,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [onboardingStep, setOnboardingStep] = useState<"connect" | "create_agent" | "completed" | null>(null);
   const [onboardingDismissedAt, setOnboardingDismissedAt] = useState<string | null>(null);
   const [onboardingCompletedAt, setOnboardingCompletedAt] = useState<string | null>(null);
+  // Selection mirrors for event handlers (closures can't read fresh React
+  // state). `selectedOrgIdRef` tracks the CURRENT selection, including an
+  // optimistic switch target. `confirmedOrgIdRef` advances ONLY when a /me
+  // has authoritatively settled the selection — it is the rollback baseline,
+  // so an unconfirmed optimistic target can never become one.
+  const selectedOrgIdRef = useRef<string | null>(selectedOrgId);
+  const confirmedOrgIdRef = useRef<string | null>(null);
+  // Auth session generation: advances on logout and whenever a new
+  // authenticated session starts (login/adoptTokens). A /me captured under an
+  // older generation is stale even when the SUBJECT matches — logout plus
+  // relogin as the same user is still a new session. Token refresh does not
+  // advance it (same session, only the raw token changed).
+  const sessionGenRef = useRef(0);
+  // Monotonic confirmation epoch: advances ONLY inside loadMe, after the
+  // live generation+subject guard passed and the authoritative snapshot was
+  // applied. selectOrganization captures it before an optimistic switch so a
+  // "concurrent /me already confirmed the target" shortcut can require a
+  // confirmation that happened AFTER this attempt began — a pre-existing
+  // confirmed org alone never turns a new failed request into success.
+  const meConfirmEpochRef = useRef(0);
   // Stays false until the first fetchMe settles. Unauthenticated visitors
   // never need /me, so the gate also flips for them via the unauth branch
   // below — RequireAuth only blocks the loading frame when the user IS
@@ -246,6 +278,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     clearStoredTokens();
+    // New generation FIRST: any in-flight /me from the old session becomes
+    // stale before its state is even considered.
+    sessionGenRef.current += 1;
     // Keep the persisted last-used org (no writeSelectedOrgId(null) here) so a
     // returning sign-in lands back in the org this user left rather than their
     // most-recently-joined one. It's stored per-user (keyed by the token's
@@ -263,6 +298,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setMemberships([]);
     setSelectedOrgId(null);
+    selectedOrgIdRef.current = null;
+    confirmedOrgIdRef.current = null;
     setOnboardingStep(null);
     setOnboardingDismissedAt(null);
     setOnboardingCompletedAt(null);
@@ -271,9 +308,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSwitchingOrg(null);
   }, [queryClient]);
 
-  const fetchMe = useCallback(async () => {
+  const loadMe = useCallback(async () => {
+    // Throws on transport failure. `fetchMe` wraps this with the fail-soft
+    // catch for initial load / manual refresh; `selectOrganization` consumes
+    // the rejection directly because the post-switch /me is the switch's
+    // confirmation authority.
+    const generation = sessionGenRef.current;
+    const subject = userIdFromToken();
     try {
       const data = await api.get<MeResponse>("/me");
+      // A stale SUCCESS must mutate nothing: the session moved on (logout,
+      // login/adoptTokens — even with the same subject) or the identity
+      // changed. Checked before ANY React state, ref, localStorage, API-org
+      // override, cache, or WS write. Concurrent same-session requests are
+      // deliberately NOT sequenced here — they carry the same session's
+      // authoritative snapshot, and a global /me scheduler is out of scope.
+      if (generation !== sessionGenRef.current || userIdFromToken() !== subject) {
+        throw new StaleMeError();
+      }
       setUser(data.user ?? null);
       const ms = data.memberships ?? [];
       setMemberships(ms);
@@ -294,36 +346,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // membership: (1) the in-memory selection, (2) this user's persisted
       // last-used org — survives logout so a returning user lands back in the
       // org they left — then (3) /me's `defaultOrganizationId` (most-recent),
-      // (4) the first active membership.
+      // (4) the first active membership. A successful /me is the ONLY place
+      // the confirmed-org baseline advances.
       const userId = data.user?.id ?? null;
-      setSelectedOrgId((prev) => {
-        const isMember = (id: string | null): id is string => !!id && ms.some((m) => m.organizationId === id);
-        const prevValid = isMember(prev) ? prev : null;
-        const stored = readSelectedOrgId(userId);
-        const storedValid = isMember(stored) ? stored : null;
-        const candidate = prevValid ?? storedValid;
-        if (candidate) {
-          writeSelectedOrgId(userId, candidate);
-          setApiSelectedOrganizationId(candidate);
-          return candidate;
-        }
-        const fallback = data.defaultOrganizationId ?? ms[0]?.organizationId ?? null;
-        writeSelectedOrgId(userId, fallback);
-        setApiSelectedOrganizationId(fallback);
-        return fallback;
-      });
-    } catch {
-      // If /me fails, the UI falls back to hiding admin features.
+      const prev = selectedOrgIdRef.current;
+      const isMember = (id: string | null): id is string => !!id && ms.some((m) => m.organizationId === id);
+      const prevValid = isMember(prev) ? prev : null;
+      const stored = readSelectedOrgId(userId);
+      const storedValid = isMember(stored) ? stored : null;
+      const settled = prevValid ?? storedValid ?? data.defaultOrganizationId ?? ms[0]?.organizationId ?? null;
+      selectedOrgIdRef.current = settled;
+      confirmedOrgIdRef.current = settled;
+      writeSelectedOrgId(userId, settled);
+      setApiSelectedOrganizationId(settled);
+      setSelectedOrgId(settled);
+      // The authoritative snapshot is fully applied — advance the
+      // confirmation epoch so a concurrent switch can tell THIS confirmation
+      // apart from anything settled before its attempt began.
+      meConfirmEpochRef.current += 1;
     } finally {
-      // Always flip the gate — even on error — so RequireAuth doesn't hang
-      // the dashboard forever if /me is briefly unreachable.
-      setMeLoaded(true);
+      // Flip the gate only for the LIVE session (generation + subject,
+      // matching the success guard) — a request discarded for identity
+      // mismatch must not re-open the dashboard after a logout/new-session
+      // takeover. The gate still flips on ordinary same-session errors so
+      // RequireAuth doesn't hang the dashboard forever if /me is briefly
+      // unreachable.
+      if (generation === sessionGenRef.current && userIdFromToken() === subject) setMeLoaded(true);
     }
   }, []);
+
+  const fetchMe = useCallback(async () => {
+    // Initial load and manual refreshes stay fail-soft: if /me fails, the UI
+    // falls back to hiding admin features.
+    try {
+      await loadMe();
+    } catch {
+      // Swallowed by design for non-switch reads.
+    }
+  }, [loadMe]);
 
   const login = useCallback(
     async (username: string, password: string) => {
       const tokens = await loginApi(username, password);
+      // A new authenticated session starts — even for the same subject.
+      sessionGenRef.current += 1;
       setStoredTokens({ accessToken: tokens.accessToken, refreshToken: tokens.refreshToken });
       setIsAuthenticated(true);
       await fetchMe();
@@ -333,6 +399,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const adoptTokens = useCallback(
     async (tokens: { accessToken: string; refreshToken: string }) => {
+      // A new authenticated session starts — even for the same subject.
+      sessionGenRef.current += 1;
       setStoredTokens(tokens);
       setIsAuthenticated(true);
       await fetchMe();
@@ -342,9 +410,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const selectOrganization = useCallback(
     async (organizationId: string) => {
-      // Pure client-side switch — the /orgs/:orgId/* routes probe
-      // membership in real time on every request, so a stale or
-      // unauthorized selection just yields a clean 403 from the next call.
+      // The post-switch /me confirms the switch. Capture the session
+      // generation, the subject marker, the last CONFIRMED org (never the
+      // optimistic target), and the confirmation epoch up front.
+      const sessionGeneration = sessionGenRef.current;
+      const sessionMarker = userIdFromToken();
+      const previousOrgId = confirmedOrgIdRef.current;
+      const attemptEpoch = meConfirmEpochRef.current;
       // Persist under the current user's key (token `sub`) so the selection
       // is restored only for this account.
       writeSelectedOrgId(userIdFromToken(), organizationId);
@@ -357,10 +429,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // the next render refetches with the new prefix so a non-default org
       // never reuses the previous selection's data.
       queryClient.clear();
+      selectedOrgIdRef.current = organizationId;
       setSelectedOrgId(organizationId);
-      await fetchMe();
+      try {
+        await loadMe();
+      } catch (error) {
+        // Session moved on mid-flight — logout (a final-401 clears tokens and
+        // dispatches auth:logout BEFORE throwing), a new login/adoptTokens,
+        // or an identity change. Logout / the new session owns the final
+        // state: reject WITHOUT rolling anything back into it. The marker
+        // pair (generation + subject) means an ordinary token refresh
+        // mid-switch does not masquerade as an identity change, while
+        // logout + relogin as the same subject still counts as a new session.
+        if (sessionGenRef.current !== sessionGeneration || userIdFromToken() !== sessionMarker) throw error;
+        // A concurrent same-session /me may have authoritatively confirmed
+        // the target AFTER this attempt began (e.g. a manual refresh settled
+        // first). Only that — never a pre-existing confirmed org — suppresses
+        // the rollback and counts as confirmation for THIS switch.
+        if (meConfirmEpochRef.current > attemptEpoch && confirmedOrgIdRef.current === organizationId) return;
+        // Ordinary transport failure within the SAME live session: /me never
+        // confirmed the target, so roll back the React selection, the
+        // per-user persisted org, the API override, and the admin WS target,
+        // and drop anything cached against the unconfirmed target during the
+        // optimistic window. The rejection lets the caller surface a
+        // recoverable error.
+        selectedOrgIdRef.current = previousOrgId;
+        writeSelectedOrgId(userIdFromToken(), previousOrgId);
+        setApiSelectedOrganizationId(previousOrgId);
+        window.dispatchEvent(new CustomEvent(ADMIN_WS_ORG_CHANGED_EVENT));
+        queryClient.clear();
+        setSelectedOrgId(previousOrgId);
+        throw error;
+      }
     },
-    [fetchMe, queryClient],
+    [loadMe, queryClient],
   );
 
   const currentMembership = useMemo<MeMembership | null>(() => {

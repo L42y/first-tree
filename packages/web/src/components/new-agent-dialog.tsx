@@ -216,6 +216,15 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (agent: Agent, runtimeProvider: RuntimeProvider, templateCount: number) => void;
+  /**
+   * Optional public Template slug to preselect (e.g. from the canonical
+   * `/templates/:slug?use=1` intent). Applied ONCE per dialog open, after the
+   * catalog resolves — later manual add/remove is never overwritten, and an
+   * ordinary open without the prop starts clean. A slug that is no longer an
+   * active Template degrades to an explanatory notice; no stale id is ever
+   * submitted.
+   */
+  initialTemplateSlug?: string;
 };
 
 type AvailabilityState =
@@ -228,7 +237,7 @@ type AvailabilityState =
 // derive a usable handle and the fallback input is shown.
 type HandleState = { status: "idle" } | { status: "checking" } | { status: "ok" } | { status: "manual" };
 
-export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
+export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateSlug }: Props) {
   const queryClient = useQueryClient();
   const { refreshMe, organizationId } = useAuth();
   const [displayName, setDisplayName] = useState("");
@@ -280,19 +289,51 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
   const [templateCatalogLoaded, setTemplateCatalogLoaded] = useState(false);
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  // The caller-supplied initial Template is applied exactly once per open,
+  // bound to the CURRENT open generation's CURRENT catalog response. A reopen
+  // bumps `openGenRef` before the apply effect can read the previous open's
+  // catalog state, so a Template retired between two opens can never be
+  // preselected (or submitted) from stale state.
+  //
+  // Explicit-intent state machine: while `pending` (the slug has not yet been
+  // resolved against this open's catalog), submission is BLOCKED with a
+  // visible resolving state — a slow/hung lookup must never silently convert
+  // an explicit adoption into a plain Agent. `removed` is the user's explicit
+  // escape: plain creation unlocks and a late response can never reapply.
+  // `unavailable` (retired/vanished/failed lookup) explains and also unlocks
+  // plain creation; nothing stale is submitted in any state.
+  type InitialTemplateState = "idle" | "pending" | "applied" | "unavailable" | "removed";
+  const openGenRef = useRef(0);
+  const wasOpenRef = useRef(false);
+  const [catalogGen, setCatalogGen] = useState(0);
+  const initialAppliedForGenRef = useRef(0);
+  const [initialTemplateState, setInitialTemplateState] = useState<InitialTemplateState>("idle");
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    // One generation per closed→open transition. This effect is declared
+    // before the reset and apply effects, so the bump is visible to them in
+    // the same commit.
+    if (!wasOpenRef.current) {
+      wasOpenRef.current = true;
+      openGenRef.current += 1;
+    }
+    const gen = openGenRef.current;
     let cancelled = false;
     void listAgentTemplates()
       .then((res) => {
         if (cancelled) return;
         setTemplateCatalog(res.templates.filter((template) => template.status === "active"));
+        setCatalogGen(gen);
         setTemplateCatalogLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
         setTemplateCatalog([]);
+        setCatalogGen(gen);
         setTemplateCatalogLoaded(true);
       });
     return () => {
@@ -321,10 +362,35 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
       setClientErrors({});
       setTemplateCatalog([]);
       setTemplateCatalogLoaded(false);
+      setCatalogGen(0);
       setSelectedTemplateIds([]);
       setTemplatePickerOpen(false);
+      setInitialTemplateState(initialTemplateSlug ? "pending" : "idle");
     }
-  }, [open, resetTokenCopy]);
+  }, [open, resetTokenCopy, initialTemplateSlug]);
+
+  // Resolve the caller-supplied initial Template slug against the catalog
+  // exactly once per open generation. The catalog only carries ACTIVE
+  // Templates, so a retired/vanished slug simply has no match — degrade to a
+  // notice instead of submitting a stale id. The generation guard means a
+  // reopen never applies the previous open's catalog, the applied guard means
+  // a late or repeated response never overwrites the user's later manual
+  // add/remove, and the removed guard means the user's explicit
+  // create-without-it choice can never be re-blocked by a late response.
+  useEffect(() => {
+    if (!open || !templateCatalogLoaded || !initialTemplateSlug) return;
+    if (catalogGen === 0 || catalogGen !== openGenRef.current) return;
+    if (initialAppliedForGenRef.current === catalogGen) return;
+    if (initialTemplateState === "removed") return;
+    initialAppliedForGenRef.current = catalogGen;
+    const match = templateCatalog.find((template) => template.slug === initialTemplateSlug);
+    if (match) {
+      setSelectedTemplateIds([match.id]);
+      setInitialTemplateState("applied");
+    } else {
+      setInitialTemplateState("unavailable");
+    }
+  }, [open, templateCatalogLoaded, templateCatalog, catalogGen, initialTemplateSlug, initialTemplateState]);
 
   const baseSlug = useMemo(() => slugify(displayName), [displayName]);
   const hasDisplay = displayName.trim().length > 0;
@@ -671,6 +737,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
     if (Object.keys(errs).length > 0) return;
     if (!handleReady) return;
     if (!pickedClientId) return;
+    // An explicit Template intent that has not resolved yet must not silently
+    // become a plain create — guard the handler itself, not just the button
+    // (Enter / programmatic submit bypasses the disabled attribute).
+    if (initialTemplateState === "pending") return;
     // Defense in depth: the Create button is disabled when the picked client
     // has no ok runtime or when the current selection isn't ok on it. Guard
     // here too so a button-disabled bypass (browser quirk, Enter while a
@@ -686,6 +756,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
     displayName.trim().length > 0 &&
     handleReady &&
     !createMut.isPending &&
+    initialTemplateState !== "pending" &&
     !!pickedClientId &&
     okRuntimes.length > 0 &&
     okRuntimes.includes(runtime);
@@ -854,6 +925,26 @@ export function NewAgentDialog({ open, onOpenChange, onCreated }: Props) {
           {/* Optional official Template responsibilities. Hidden entirely when
               the catalog is empty or failed to load — the plain create path
               stays byte-identical in those cases. */}
+          {initialTemplateState === "pending" && (
+            <div className="space-y-2">
+              <p className="text-caption text-muted-foreground" role="status">
+                Resolving your template…
+              </p>
+              {/* Explicit escape hatch: the user may always choose plain
+                  creation instead of waiting for the lookup. Once removed, a
+                  late response can never reapply or re-block the intent. */}
+              <Button type="button" variant="ghost" size="sm" onClick={() => setInitialTemplateState("removed")}>
+                Create without it
+              </Button>
+            </div>
+          )}
+          {initialTemplateState === "unavailable" && (
+            <p className="text-caption text-muted-foreground" role="status">
+              {templateCatalog.length > 0
+                ? "The template you started from is no longer available — pick another responsibility below, or create from scratch."
+                : "The template you started from is no longer available — you can still create your agent from scratch."}
+            </p>
+          )}
           {templateCatalogLoaded && templateCatalog.length > 0 && (
             <div className="space-y-2">
               <Label>Responsibilities (optional)</Label>

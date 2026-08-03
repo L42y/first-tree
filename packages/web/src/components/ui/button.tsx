@@ -13,7 +13,10 @@ const buttonVariants = cva(
         // (onboarding "Get started", "Create agent", marketing) — NOT for dense
         // or repeated actions, which stay neutral (`default`). Green-on-buttons
         // beyond hero moments slides back into the green-primary (E2) collision.
-        cta: "bg-brand text-[color:var(--fg-on-vivid)] hover:bg-brand-dim",
+        // The on-brand foreground is near-black (`--fg-on-brand`): near-white
+        // fails WCAG AA on the brand green, and the brand pair is stable across
+        // light/dark because --brand never inverts.
+        cta: "bg-brand text-brand-foreground hover:bg-brand-dim",
         destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         // Bordered variant: focus deepens its own border (no ringed second
         // frame), matching Input/OptionCard. `ring-0` cancels the base ring.

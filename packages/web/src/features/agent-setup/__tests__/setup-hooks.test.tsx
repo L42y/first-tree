@@ -405,4 +405,49 @@ describe("shared setup hooks", () => {
     expect(sessionStorage.getItem("onboarding:agentUuid")).toBeNull();
     expect(eventMocks.reportOnboardingEvent).not.toHaveBeenCalled();
   });
+
+  it("passes optional templateIds through to the create POST verbatim", async () => {
+    const latest = { current: null as ReturnType<typeof useAgentCreation> | null };
+    const queryClient = testQueryClient();
+    clientMocks.api.post.mockResolvedValueOnce({ uuid: "agent-created" });
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({ online: true });
+
+    function Probe() {
+      latest.current = useAgentCreation({});
+      return <div>{latest.current.phase}</div>;
+    }
+
+    await renderProbe(<Probe />, queryClient);
+    await act(async () => {
+      await expectHookValue(latest.current).create({
+        displayName: "Deploy Bot",
+        clientId: "client-1",
+        runtimeProvider: "claude-code",
+        visibility: "organization",
+        organizationId: "org-1",
+        templateIds: ["0190f000-0000-7000-8000-000000000001"],
+      });
+    });
+
+    expect(clientMocks.api.post).toHaveBeenCalledWith(
+      "/orgs/org-1/agents",
+      expect.objectContaining({ templateIds: ["0190f000-0000-7000-8000-000000000001"] }),
+    );
+
+    // An empty selection stays omitted — identical to a plain create.
+    clientMocks.api.post.mockResolvedValueOnce({ uuid: "agent-created-2" });
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({ online: true });
+    await act(async () => {
+      await expectHookValue(latest.current).create({
+        displayName: "Deploy Bot",
+        clientId: "client-1",
+        runtimeProvider: "claude-code",
+        visibility: "organization",
+        organizationId: "org-1",
+        templateIds: [],
+      });
+    });
+    const secondBody = clientMocks.api.post.mock.calls[1]?.[1] as Record<string, unknown>;
+    expect("templateIds" in secondBody).toBe(false);
+  });
 });
