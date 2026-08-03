@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { contextEnablementExecutable } from "../api/orgs/context-enablement.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("Context enablement handoff", () => {
   const getApp = useTestApp({ channel: "staging" });
+
+  it("uses the channel bin for dev and the shared portable executable for published channels", () => {
+    expect(contextEnablementExecutable({ channel: "dev", binName: "first-tree-dev" })).toBe("'first-tree-dev'");
+    expect(contextEnablementExecutable({ channel: "staging", binName: "first-tree-staging" })).toBe(
+      "~/.local/bin/first-tree-staging",
+    );
+    expect(contextEnablementExecutable({ channel: "prod", binName: "first-tree" })).toBe("~/.local/bin/first-tree");
+  });
 
   it("authors an exact Team, provider, and channel command for active members", async () => {
     const app = getApp();
@@ -21,7 +30,7 @@ describe("Context enablement handoff", () => {
       role: "admin",
     });
     expect(response.json().command).toBe(
-      `'first-tree-staging' --json context enable --provider 'codex' --team '${admin.organizationId}' --yes`,
+      `~/.local/bin/first-tree-staging --json context enable --provider 'codex' --team '${admin.organizationId}' --yes`,
     );
     expect(response.json().workingDirectoryInstruction).toContain("CLI centrally classifies");
     expect(response.json().workingDirectoryInstruction).not.toContain("shell cwd");
@@ -45,7 +54,7 @@ describe("Context enablement handoff", () => {
       intent: "onboarding",
     });
     expect(response.json().command).toBe(
-      `'first-tree-staging' --json context enable --provider 'claude-code' --team '${admin.organizationId}' --yes`,
+      `~/.local/bin/first-tree-staging --json context enable --provider 'claude-code' --team '${admin.organizationId}' --yes`,
     );
     expect(response.json().workingDirectoryInstruction).toContain("host-confirmed Claude Code selector");
     expect(response.json().workingDirectoryInstruction).toContain("--pathless");

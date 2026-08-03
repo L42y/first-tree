@@ -44,6 +44,10 @@ export function buildLoginCommand(options: {
   return `${prefix}${options.executable} login ${shellArg(options.tokenArg)}`;
 }
 
+export function portableCliExecutable(binName: string): string {
+  return `~/.local/bin/${binName}`;
+}
+
 export function buildPortableBootstrapCommand(options: {
   installerUrl: string;
   portableDownloadBaseUrl: string;
@@ -61,7 +65,7 @@ export function buildPortableBootstrapCommand(options: {
     ? `FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL=${shellQuote(options.portableDownloadBaseUrl)} `
     : "";
   const loginCommand = buildLoginCommand({
-    executable: `~/.local/bin/${options.binName}`,
+    executable: portableCliExecutable(options.binName),
     tokenArg: options.token,
     serverUrl: options.serverUrl,
     defaultServerUrl: options.defaultServerUrl,

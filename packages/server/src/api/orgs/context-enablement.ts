@@ -1,5 +1,9 @@
-import { contextEnablementHandoffQuerySchema, contextEnablementHandoffSchema } from "@first-tree/shared";
-import { getServerCliBinding } from "@first-tree/shared/channel";
+import {
+  contextEnablementHandoffQuerySchema,
+  contextEnablementHandoffSchema,
+  portableCliExecutable,
+} from "@first-tree/shared";
+import { type ChannelConfig, getServerCliBinding } from "@first-tree/shared/channel";
 import type { FastifyInstance } from "fastify";
 import { requireOrgMembership } from "../../scope/require-org.js";
 import { getOrganization } from "../../services/organization.js";
@@ -12,7 +16,7 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
     const scope = await requireOrgMembership(request, app.db);
     const query = contextEnablementHandoffQuerySchema.parse(request.query);
     const organization = await getOrganization(app.db, scope.organizationId);
-    const executable = shellQuote(getServerCliBinding().binName);
+    const executable = contextEnablementExecutable(getServerCliBinding());
     return contextEnablementHandoffSchema.parse({
       protocolVersion: 1,
       organizationId: scope.organizationId,
@@ -39,4 +43,11 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+export function contextEnablementExecutable(binding: Pick<ChannelConfig, "binName" | "channel">): string {
+  // The non-dev bootstrap installs and logs in through this exact portable
+  // path. Keep enable on the same binary so an older global npm install that
+  // appears earlier on PATH cannot satisfy a newer Web handoff contract.
+  return binding.channel === "dev" ? shellQuote(binding.binName) : portableCliExecutable(binding.binName);
 }
