@@ -284,6 +284,19 @@ describe("client switch drain markers", () => {
     expect(isSwitchDrainEnvRequired("/home/op/.local/bin/grok -p --output-format stream-json")).toBe(true);
     expect(isSwitchDrainEnvRequired("grok login")).toBe(true);
   });
+
+  it("recognizes Pi CLI processes only by executable basename, not argv words", () => {
+    // The drain must fail closed: a live Pi RPC turn spawned by the runtime
+    // must require the trusted env envelope check.
+    expect(isSwitchDrainEnvRequired("/home/op/.local/bin/pi --mode rpc")).toBe(true);
+    expect(isSwitchDrainEnvRequired("pi --mode rpc --session-id abc")).toBe(true);
+    // The known package entrypoint stays recognized.
+    expect(isSwitchDrainEnvRequired("node /app/node_modules/@earendil-works/pi-coding-agent/dist/main.js")).toBe(true);
+    // A process that merely mentions "pi" as an argument is not the Pi
+    // provider and must not force the fail-closed env check.
+    expect(isSwitchDrainEnvRequired("python worker.py --constant pi")).toBe(false);
+    expect(isSwitchDrainEnvRequired("/bin/bash run-pi-benchmarks")).toBe(false);
+  });
 });
 
 describe("client runtime markers", () => {
