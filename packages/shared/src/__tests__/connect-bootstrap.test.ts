@@ -4,9 +4,15 @@ import {
   buildPortableBootstrapCommand,
   CONNECT_BOOTSTRAP_CODE_PLACEHOLDER,
   materializeConnectBootstrapCommand,
+  portableCliExecutable,
 } from "../connect-bootstrap.js";
 
 describe("connect bootstrap commands", () => {
+  it("resolves channel binaries under the portable install directory", () => {
+    expect(portableCliExecutable("first-tree-staging")).toBe("~/.local/bin/first-tree-staging");
+    expect(portableCliExecutable("first-tree")).toBe("~/.local/bin/first-tree");
+  });
+
   it("builds the default hosted portable bootstrap", () => {
     expect(
       buildPortableBootstrapCommand({

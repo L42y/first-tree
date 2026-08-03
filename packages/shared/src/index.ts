@@ -28,6 +28,7 @@ export {
   CONNECT_BOOTSTRAP_CODE_PLACEHOLDER,
   type ConnectBootstrapCommandTemplate,
   materializeConnectBootstrapCommand,
+  portableCliExecutable,
 } from "./connect-bootstrap.js";
 // -- Document review (docloop) anchor building / locating --
 export {

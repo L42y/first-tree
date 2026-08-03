@@ -25,12 +25,17 @@ Plugin UI discovery as proof of current-session adoption.
   committed artifacts and redact login codes, Team ids, and private Tree data.
 - Begin Claude Code and Codex attached sessions with no First Tree Plugin.
   Also prepare Codex already-trusted and pathless variants.
+- Put an older same-channel global npm CLI earlier on `PATH` than
+  `~/.local/bin`, while allowing the Web bootstrap to install the current
+  portable CLI. Record both versions before setup.
 
 ## Operate
 
 1. Copy the provider-neutral setup prompt from Web and paste it into the
    already-running Claude Code conversation. Let the agent run bootstrap and
    the server-authored JSON enable command with its host-confirmed selector.
+   Confirm the enable command uses the same `~/.local/bin` portable executable
+   as bootstrap rather than the older global CLI resolved from `PATH`.
 2. Without restarting or running `/reload-plugins`, ask a task that triggers
    `first-tree-read`. Confirm the same agent reads the exact `skillPath`,
    uses the handoff's immutable provider/project receipt for the first Read,
@@ -60,7 +65,9 @@ Plugin UI discovery as proof of current-session adoption.
 ## Observe
 
 - The Server command places global `--json` before `context enable`, includes
-  the exact provider and Team, and includes `--yes`; Web adds no flags.
+  the exact provider and Team, and includes `--yes`; Web adds no flags. On
+  non-dev channels, the command uses bootstrap's `~/.local/bin` portable
+  executable even when an older same-channel global CLI shadows it on `PATH`.
 - Claude Code completes setup in one agent turn. Codex without consent returns
   `setup.complete: false` and `currentSessionHandoff: null`, asks only for
   `/hooks` consent plus return to the original conversation, and re-runs enable
