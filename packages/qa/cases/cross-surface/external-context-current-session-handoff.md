@@ -33,6 +33,7 @@ Plugin UI discovery as proof of current-session adoption.
    the server-authored JSON enable command with its host-confirmed selector.
 2. Without restarting or running `/reload-plugins`, ask a task that triggers
    `first-tree-read`. Confirm the same agent reads the exact `skillPath`,
+   uses the handoff's immutable provider/project receipt for the first Read,
    activates an exact Context Tree snapshot, and uses the unique Team decision.
 3. Paste a fresh prompt into the already-running Codex attached conversation.
    Capture the first enable result, run `/hooks`, Enable + Trust First Tree
@@ -42,10 +43,18 @@ Plugin UI discovery as proof of current-session adoption.
    conversation.
 5. Repeat Codex with an already-trusted Hook and with a pathless project; both
    must consume a complete handoff on the first enable.
-6. Tamper one installed Skill manifest, remove one Skill, make one manifest a
+6. After both a path-project and pathless handoff, change shell cwd to a
+   different bound project (and then to an unbound directory) before the first
+   Read. Confirm the path receipt still supplies its original `--project-root`
+   and the pathless receipt still supplies `--pathless`; neither may invoke the
+   current-cwd classifier or switch Team.
+7. Run a direct human-mode `context enable` and retain its output. Confirm a
+   Complete verdict includes the full usable handoff JSON with provider,
+   project, activation context, and all three Skill catalog entries.
+8. Tamper one installed Skill manifest, remove one Skill, make one manifest a
    symbolic link, and separately make live authority unavailable. Re-run enable
    for each state, restoring the fixture between attempts.
-7. Start one later attached session for each provider and confirm the existing
+9. Start one later attached session for each provider and confirm the existing
    SessionStart path still activates automatically.
 
 ## Observe
@@ -64,6 +73,12 @@ Plugin UI discovery as proof of current-session adoption.
 - The current agent adopts `activationContext` verbatim, treats the three
   entries as progressive-disclosure catalog entries, and reads the complete
   selected `SKILL.md` only when triggered.
+- The agent preserves the handoff's verified `{ provider, project }` as an
+  immutable current-session activation receipt. The first Read uses its exact
+  path root or pathless selector even after cwd changes, and the returned
+  `activationProject` receipt governs all later Read/Write routes.
+- Human-mode Complete output includes the same usable receipt and Skill catalog
+  rather than claiming a handoff is ready while printing only Team Context.
 - Tampered, missing, linked, unreadable, stale-payload, binding, activation, or
   authority failures never produce a handoff or Complete verdict. First Tree
   never writes Hook trust, uses a bypass flag, or replays SessionStart.

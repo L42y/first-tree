@@ -43,10 +43,14 @@ manifest also records both adapter digests and the canonical Policy digest.
   contains the canonical `activationContext` plus a progressive-disclosure
   catalog for the provider-installed `first-tree`, `first-tree-read`, and
   `first-tree-write` manifests. The current coding agent adopts that handoff
-  immediately; the Plugin and SessionStart Hook remain the persistent path for
-  future sessions. Handoff construction reads only the complete
-  payload-verified provider cache, rejects symbolic links and invalid Skill
-  frontmatter, and never copies a second workflow into Web or CLI code.
+  immediately and preserves its verified provider/project as the immutable
+  activation receipt: the first Read uses that exact path or pathless selector
+  even if shell cwd later changes, then preserves Read's returned
+  `activationProject` for subsequent operations. The Plugin and SessionStart
+  Hook remain the persistent path for future sessions. Handoff construction
+  reads only the complete payload-verified provider cache, rejects symbolic
+  links and invalid Skill frontmatter, and never copies a second workflow into
+  Web or CLI code.
 - `config/context.yaml` schema v2 stores only
   `provider + project(path|pathless) → organizationId`. It never stores source
   repository identity or a Context Tree remote/local snapshot path.

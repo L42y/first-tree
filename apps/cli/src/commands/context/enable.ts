@@ -193,9 +193,11 @@ export async function runContextEnable(context: CommandContext): Promise<void> {
     if (currentSessionHandoff) {
       print.line(
         preflight.project.kind === "path"
-          ? "\nAdopt the verified current-session handoff in this coding-agent session now; future sessions in this project activate automatically:\n\n"
-          : "\nAdopt the verified current-session handoff in this coding-agent session now. Pathless sessions activate manually:\n\n",
+          ? "\nAdopt this complete verified current-session handoff JSON in this coding-agent session now; future sessions in this project activate automatically:\n\n"
+          : "\nAdopt this complete verified current-session handoff JSON in this coding-agent session now. Pathless sessions activate manually:\n\n",
       );
+      print.line(`${JSON.stringify(currentSessionHandoff, null, 2)}\n`);
+      print.line("\nCanonical Team Context (also present byte-for-byte in the handoff):\n\n");
       print.line(`${currentSessionHandoff.activationContext}\n`);
     } else if (activationContext) {
       print.line(

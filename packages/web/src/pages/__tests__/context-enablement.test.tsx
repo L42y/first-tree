@@ -146,6 +146,12 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("`data.currentSessionHandoff`");
     expect(copiedPrompt).toContain("Adopt `activationContext` verbatim");
     expect(copiedPrompt).toContain("progressive-disclosure catalog");
+    expect(copiedPrompt).toContain("immutable activation receipt");
+    expect(copiedPrompt).toContain("even if cwd changes after setup");
+    expect(copiedPrompt).toContain("pass `--pathless` when it is `pathless`");
+    expect(copiedPrompt).toContain("receipt's exact root");
+    expect(copiedPrompt).toContain("Never derive that selector from the then-current cwd");
+    expect(copiedPrompt).toContain("activation context, immutable project receipt, and Skill catalog");
     expect(copiedPrompt).toContain("Do not require a restart, a new conversation");
     expect(copiedPrompt).not.toContain("Exit and start a new Codex session");
   });
@@ -347,6 +353,36 @@ describe("personal Context access", () => {
     expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
     expect(prompt).not.toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");
+  });
+
+  it("pins the first Read selector to the verified path/pathless receipt after cwd changes", () => {
+    const prompt = buildByoSetupPrompt({
+      organizationId: "org-1",
+      bootstrapCommand: "bootstrap-command",
+      handoffs: [
+        {
+          protocolVersion: 1,
+          organizationId: "org-1",
+          teamDisplayName: "Acme",
+          role: "member",
+          provider: "codex",
+          intent: "onboarding",
+          command: "codex-command",
+          workingDirectoryInstruction: "Run unchanged.",
+        },
+      ],
+      intent: "onboarding",
+    });
+
+    expect(prompt).toContain("`provider` exactly matches the selected host and enable command");
+    expect(prompt).toContain('{ kind: "path", root: <absolute path> }');
+    expect(prompt).toContain('{ kind: "pathless" }');
+    expect(prompt).toContain("immutable activation receipt");
+    expect(prompt).toContain("even if cwd changes after setup");
+    expect(prompt).toContain("first `first-tree-read`");
+    expect(prompt).toContain("pass `--project-root` with the receipt's exact root");
+    expect(prompt).toContain("pass `--pathless` when it is `pathless`");
+    expect(prompt).toContain("Never derive that selector from the then-current cwd");
   });
 
   it("lets the Admin retry prompt preparation after an API failure", async () => {

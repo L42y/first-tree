@@ -1199,9 +1199,13 @@ Context block for compatibility and also builds `currentSessionHandoff` from
 the payload-verified provider-installed Plugin. The handoff carries that exact
 `activationContext` plus the absolute paths and strict frontmatter metadata for
 `first-tree`, `first-tree-read`, and `first-tree-write`. The current coding
-agent adopts the context and uses the entries as its progressive-disclosure
-Skill catalog; future attached-path sessions still activate through
-SessionStart.
+agent adopts the context, preserves the verified provider/project as its
+immutable current-session activation receipt, and uses the entries as its
+progressive-disclosure Skill catalog. The first Read derives its exact
+`--project-root` or `--pathless` selector from that receipt rather than a later
+cwd; future attached-path sessions still activate through SessionStart. Human
+mode renders the complete handoff JSON before the readable canonical Team
+Context block.
 Pathless sessions use the bundled `first-tree` Skill for manual activation.
 In `--json` mode these facts appear as `setup`, `activationContext`, and
 `currentSessionHandoff`.

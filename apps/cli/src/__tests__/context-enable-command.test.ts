@@ -110,14 +110,39 @@ describe("context enable final handoff identity gate", () => {
     expect(result.activationContext).toBeNull();
     expect(mocks.buildHandoff).not.toHaveBeenCalled();
   });
+
+  it("renders the complete usable handoff in human mode", async () => {
+    const handoff = {
+      schemaVersion: 1,
+      provider: "codex",
+      project: { kind: "path", root: "/work/repo" },
+      activationContext: "verified activation context",
+      skills: [
+        { name: "first-tree", description: "Activate", skillPath: "/plugin/skills/first-tree/SKILL.md" },
+        { name: "first-tree-read", description: "Read", skillPath: "/plugin/skills/first-tree-read/SKILL.md" },
+        { name: "first-tree-write", description: "Write", skillPath: "/plugin/skills/first-tree-write/SKILL.md" },
+      ],
+    };
+    mocks.inspectStatus.mockResolvedValue(greenStatus({ team: requestedTeam, organizationId: "org-requested" }));
+    mocks.buildHandoff.mockReturnValue(handoff);
+
+    await runContextEnable(context(false));
+
+    const rendered = output.line.mock.calls.flat().join("\n");
+    expect(rendered).toContain("complete verified current-session handoff JSON");
+    expect(rendered).toContain('"provider": "codex"');
+    expect(rendered).toContain('"root": "/work/repo"');
+    expect(rendered).toContain('"skillPath": "/plugin/skills/first-tree-read/SKILL.md"');
+    expect(rendered).toContain("verified activation context");
+  });
 });
 
-function context(): CommandContext {
+function context(json = true): CommandContext {
   return {
     command: {
       opts: () => ({ provider: "codex", team: "org-requested", projectRoot: "/work/repo", yes: true }),
     } as unknown as Command,
-    options: { json: true, debug: false, quiet: false },
+    options: { json, debug: false, quiet: false },
   };
 }
 
