@@ -52,37 +52,110 @@ export const contextIntegrationProjectSchema = z.discriminatedUnion("kind", [
 ]);
 export type ContextIntegrationProject = z.infer<typeof contextIntegrationProjectSchema>;
 
-export const contextIntegrationBindingSchema = z
+export const contextSessionCandidateIssueRequestSchema = z
   .object({
+    schemaVersion: z.literal(1),
     provider: contextIntegrationProviderSchema,
     project: contextIntegrationProjectSchema,
     organizationId: z.string().min(1),
   })
   .strict();
-export type ContextIntegrationBinding = z.infer<typeof contextIntegrationBindingSchema>;
+export type ContextSessionCandidateIssueRequest = z.infer<typeof contextSessionCandidateIssueRequestSchema>;
+
+export const contextSessionCandidateIssueResponseSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    receipt: z.string().min(32).max(4096),
+  })
+  .strict();
+export type ContextSessionCandidateIssueResponse = z.infer<typeof contextSessionCandidateIssueResponseSchema>;
+
+export const contextSessionCandidateValidateRequestSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    provider: contextIntegrationProviderSchema,
+    project: contextIntegrationProjectSchema,
+    receipt: z.string().min(32).max(4096),
+  })
+  .strict();
+export type ContextSessionCandidateValidateRequest = z.infer<typeof contextSessionCandidateValidateRequestSchema>;
+
+export const CONTEXT_ACTIVATION_SCOPE_KINDS = ["global", "directory", "session"] as const;
+export const contextActivationScopeKindSchema = z.enum(CONTEXT_ACTIVATION_SCOPE_KINDS);
+export type ContextActivationScopeKind = z.infer<typeof contextActivationScopeKindSchema>;
+
+export const contextGlobalActivationScopeSchema = z.object({ kind: z.literal("global") }).strict();
+export const contextDirectoryActivationScopeSchema = z
+  .object({
+    kind: z.literal("directory"),
+    root: contextIntegrationPathProjectSchema.shape.root,
+  })
+  .strict();
+export const contextSessionActivationScopeSchema = z.object({ kind: z.literal("session") }).strict();
+export const contextActivationScopeSchema = z.discriminatedUnion("kind", [
+  contextGlobalActivationScopeSchema,
+  contextDirectoryActivationScopeSchema,
+  contextSessionActivationScopeSchema,
+]);
+export type ContextActivationScope = z.infer<typeof contextActivationScopeSchema>;
+
+export const contextPersistentActivationScopeSchema = z.discriminatedUnion("kind", [
+  contextGlobalActivationScopeSchema,
+  contextDirectoryActivationScopeSchema,
+]);
+export type ContextPersistentActivationScope = z.infer<typeof contextPersistentActivationScopeSchema>;
+
+export const contextIntegrationGrantSchema = z
+  .object({
+    provider: contextIntegrationProviderSchema,
+    organizationId: z.string().min(1),
+    activationScope: contextPersistentActivationScopeSchema,
+  })
+  .strict();
+export type ContextIntegrationGrant = z.infer<typeof contextIntegrationGrantSchema>;
 
 export const contextIntegrationConfigSchema = z
   .object({
-    schemaVersion: z.literal(2),
-    bindings: z.array(contextIntegrationBindingSchema).default([]),
+    schemaVersion: z.literal(3),
+    grants: z.array(contextIntegrationGrantSchema).default([]),
   })
   .strict()
   .superRefine((config, context) => {
     const seen = new Set<string>();
-    config.bindings.forEach((binding, index) => {
-      const projectIdentity = binding.project.kind === "path" ? `path:${binding.project.root}` : "pathless";
-      const identity = `${binding.provider}\0${projectIdentity}`;
+    config.grants.forEach((grant, index) => {
+      const scopeIdentity =
+        grant.activationScope.kind === "global" ? "global" : `directory:${grant.activationScope.root}`;
+      const identity = `${grant.provider}\0${grant.organizationId}\0${scopeIdentity}`;
       if (seen.has(identity)) {
         context.addIssue({
           code: "custom",
-          path: ["bindings", index],
-          message: "Each provider + project identity may have only one Team binding.",
+          path: ["grants", index],
+          message: "Each provider + Team + activation scope may have only one grant.",
         });
       }
       seen.add(identity);
     });
   });
 export type ContextIntegrationConfig = z.infer<typeof contextIntegrationConfigSchema>;
+
+/** Read only at the atomic v2 retirement boundary. */
+export const legacyV2ContextIntegrationBindingSchema = z
+  .object({
+    provider: contextIntegrationProviderSchema,
+    project: contextIntegrationProjectSchema,
+    organizationId: z.string().min(1),
+  })
+  .strict();
+export type LegacyV2ContextIntegrationBinding = z.infer<typeof legacyV2ContextIntegrationBindingSchema>;
+
+/** Read only at the atomic v2 retirement boundary. */
+export const legacyV2ContextIntegrationConfigSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    bindings: z.array(legacyV2ContextIntegrationBindingSchema).default([]),
+  })
+  .strict();
+export type LegacyV2ContextIntegrationConfig = z.infer<typeof legacyV2ContextIntegrationConfigSchema>;
 
 /** Read only at the atomic local migration boundary. */
 export const legacyContextIntegrationBindingSchema = z

@@ -1,93 +1,89 @@
+import type { ContextPersistentActivationScope } from "@first-tree/shared";
 import { confirm } from "@inquirer/prompts";
 import type { Command } from "commander";
-import { channelConfig } from "../../core/channel.js";
 import { readActiveContextAccountClientId } from "../../core/context-integration/account-state-guard.js";
-import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
-import {
-  findContextBinding,
-  readContextIntegrationConfig,
-} from "../../core/context-integration/context-binding-store.js";
+import { readContextIntegrationConfig } from "../../core/context-integration/context-binding-store.js";
 import { disableContextIntegrationOperation } from "../../core/context-integration/operation.js";
 import { print } from "../../core/output.js";
-import { quotePosixShellArg } from "../../core/posix-shell.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
 import { parseContextProvider } from "./shared.js";
 
 type DisableOptions = {
   provider?: string;
+  team?: string;
+  scope?: string;
+  directoryRoot?: string;
   yes?: boolean;
-  projectRoot?: string;
-  pathless?: boolean;
 };
 
 function configure(command: Command): void {
   command
     .requiredOption("--provider <provider>", "claude-code or codex")
-    .option("--project-root <directory>", "attached provider project root")
-    .option("--pathless", "remove the provider's pathless project binding")
-    .option("--yes", "accept the displayed cleanup plan");
+    .requiredOption("--team <team-id>", "exact Team grant to remove")
+    .requiredOption("--scope <scope>", "global or directory")
+    .option("--directory-root <directory>", "exact canonical directory grant root")
+    .option("--yes", "accept the displayed grant removal");
 }
 
 export async function runContextDisable(context: CommandContext): Promise<void> {
   const options = context.command.opts<DisableOptions>();
   const provider = parseContextProvider(options.provider ?? "");
-  const expectedAccountClientId = readActiveContextAccountClientId();
-  const project = inspectContextClientPreflight(provider, {
-    projectRoot: options.projectRoot,
-    pathless: options.pathless,
-  }).project;
+  const teamId = options.team?.trim() ?? "";
+  if (!teamId) print.fail("CONTEXT_TEAM_REQUIRED", "--team is required.", 2);
+  const activationScope = parsePersistentScope(options);
   const config = readContextIntegrationConfig();
-  const effectiveBinding = findContextBinding(provider, project);
-  if (!effectiveBinding) {
-    if (context.options.json) print.result({ provider, project, status: "already_disabled", removed: null });
-    else print.status("Context", "Already disabled");
+  const present = config.grants.some(
+    (grant) =>
+      grant.provider === provider &&
+      grant.organizationId === teamId &&
+      JSON.stringify(grant.activationScope) === JSON.stringify(activationScope),
+  );
+  if (!present) {
+    const result = { provider, organizationId: teamId, activationScope, status: "already_disabled" };
+    if (context.options.json) print.result(result);
+    else print.status("Context grant", "Already disabled");
     return;
   }
-  print.status("Project", effectiveBinding.project.kind === "path" ? effectiveBinding.project.root : "pathless");
-  print.status("Team", effectiveBinding.organizationId);
-  print.status("Plugin", "keep user-scope Plugin");
+  print.status("Provider", provider);
+  print.status("Team", teamId);
+  print.status("Scope", activationScope.kind === "directory" ? activationScope.root : "global");
+  print.status("Plugin", "Keep the shared user-scope Plugin");
   const accepted =
     options.yes === true ||
-    (!context.options.json && (await confirm({ message: "Disable Context for this Project?", default: false })));
+    (!context.options.json && (await confirm({ message: "Remove exactly this Team grant?", default: false })));
   if (!accepted) print.fail("CONTEXT_DISABLE_CANCELLED", "No changes were applied.", 2);
-
-  const result = disableContextIntegrationOperation(provider, {
-    project: effectiveBinding.project,
+  const removed = disableContextIntegrationOperation(provider, {
+    organizationId: teamId,
+    activationScope,
     expectedConfig: config,
-    expectedAccountClientId,
+    expectedAccountClientId: readActiveContextAccountClientId(),
   });
-  const fallback = findContextBinding(provider, project);
-  const output = {
-    provider,
-    project,
-    status: fallback ? "fallback_active" : "disabled",
-    removed: result.removed[0] ?? null,
-    fallback,
-  };
-  if (context.options.json) print.result(output);
-  else if (fallback) {
-    print.status(
-      "Context",
-      `Removed the deepest binding, but parent Project ${fallback.project.kind === "path" ? fallback.project.root : "pathless"} remains active for Team ${fallback.organizationId}`,
-    );
-    print.status(
-      "Next action",
-      `${channelConfig.binName} context disable --provider ${provider} ${
-        project.kind === "path" ? `--project-root ${quotePosixShellArg(project.root)}` : "--pathless"
-      }`,
-    );
-    print.status("Current session", "already injected Context cannot be removed");
-  } else {
-    print.status("Context", "Disabled for future sessions and activations");
-    print.status("Current session", "already injected Context cannot be removed");
+  const result = { provider, organizationId: teamId, activationScope, status: "disabled", removed: removed.removed };
+  if (context.options.json) print.result(result);
+  else {
+    print.status("Context", "Grant removed for future routing");
+    print.status("Current session", "Already-read Team content cannot be removed from model memory");
   }
+}
+
+function parsePersistentScope(options: DisableOptions): ContextPersistentActivationScope {
+  if (options.scope === "global") return { kind: "global" };
+  if (options.scope === "directory" && options.directoryRoot) {
+    return { kind: "directory", root: options.directoryRoot };
+  }
+  print.fail(
+    "CONTEXT_SCOPE_INVALID",
+    "--scope must be global or directory; directory also requires --directory-root with the exact displayed root.",
+    2,
+  );
+  throw new Error("unreachable");
 }
 
 export const contextDisableCommand: SubcommandModule = {
   name: "disable",
   alias: "",
   summary: "",
-  description: "Disable First Tree Context for the current project.",
+  description: "Remove one exact persistent BYO Team grant.",
   configure,
   action: runContextDisable,
 };

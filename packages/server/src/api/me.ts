@@ -1,5 +1,10 @@
 import {
   completeOnboardingSchema,
+  contextRouteCandidatesRequestSchema,
+  contextRouteCandidatesResponseSchema,
+  contextSessionCandidateIssueRequestSchema,
+  contextSessionCandidateIssueResponseSchema,
+  contextSessionCandidateValidateRequestSchema,
   createOrgFromMeSchema,
   joinByInvitationSchema,
   kickoffOnboardingSchema,
@@ -16,7 +21,7 @@ import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { NotFoundError } from "../errors.js";
+import { ForbiddenError, NotFoundError } from "../errors.js";
 import { requireUser } from "../scope/require-user.js";
 import {
   listAgentsManagedByUser,
@@ -27,6 +32,8 @@ import { resolveAvatarImageUrl } from "../services/agent.js";
 import * as authService from "../services/auth.js";
 import * as clientService from "../services/client.js";
 import { buildServerConnectBootstrapCommand } from "../services/connect-bootstrap-command.js";
+import { validateExternalContextActivation } from "../services/context-activation.js";
+import { issueContextSessionCandidate, verifyContextSessionCandidate } from "../services/context-session-candidate.js";
 import { GithubApiError, listUserRepos } from "../services/github-oauth.js";
 import { GithubUserTokenError, getFreshGithubUserToken } from "../services/github-user-token.js";
 import { buildInviteUrl, findActiveByToken, getActiveInvitation, recordRedemption } from "../services/invitation.js";
@@ -47,7 +54,7 @@ import {
   recordCampaignActionConversion,
   resolveCampaignActionContext,
 } from "../services/onboarding-kickoff.js";
-import { getOrgContextTreeWithMeta } from "../services/org-settings.js";
+import { getOrgContextTreeSettingState, getOrgContextTreeWithMeta } from "../services/org-settings.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
 import { serializeDate } from "../utils.js";
 import { clientCommandVersionHint } from "./client-command-version.js";
@@ -66,6 +73,100 @@ const onboardingTreeSetupStatusQuerySchema = z.object({
  * fallback when localStorage is wiped).
  */
 export async function meRoutes(app: FastifyInstance): Promise<void> {
+  app.post("/me/context-activation/session-candidate/issue", { config: { otelRecordBody: false } }, async (request) => {
+    const { userId } = requireUser(request);
+    const input = contextSessionCandidateIssueRequestSchema.parse(request.body);
+    const [membership] = await app.db
+      .select({ role: members.role })
+      .from(members)
+      .where(
+        and(eq(members.userId, userId), eq(members.organizationId, input.organizationId), eq(members.status, "active")),
+      )
+      .limit(1);
+    if (!membership) throw new ForbiddenError("The signed-in user is not an active member of this Team.");
+    const activation = await validateExternalContextActivation(
+      app.db,
+      { organizationId: input.organizationId, role: membership.role === "admin" ? "admin" : "member" },
+      { schemaVersion: 2 },
+    );
+    if (activation.outcome !== "connected") throw new ForbiddenError(activation.nextAction.message);
+    const receipt = await issueContextSessionCandidate(app.config.secrets.jwtSecret, userId, input);
+    return contextSessionCandidateIssueResponseSchema.parse({ schemaVersion: 1, receipt });
+  });
+
+  app.post(
+    "/me/context-activation/session-candidate/validate",
+    { config: { otelRecordBody: false } },
+    async (request) => {
+      const { userId } = requireUser(request);
+      const input = contextSessionCandidateValidateRequestSchema.parse(request.body);
+      const candidate = await verifyContextSessionCandidate(app.config.secrets.jwtSecret, userId, input.receipt);
+      if (
+        candidate.provider !== input.provider ||
+        JSON.stringify(candidate.project) !== JSON.stringify(input.project)
+      ) {
+        throw new ForbiddenError("The Context session candidate does not match this provider/project handoff.");
+      }
+      return validateRouteCandidates(app, userId, [candidate.organizationId]);
+    },
+  );
+
+  app.post("/me/context-activation/candidates/validate", { config: { otelRecordBody: false } }, async (request) => {
+    const { userId } = requireUser(request);
+    const input = contextRouteCandidatesRequestSchema.parse(request.body);
+    return validateRouteCandidates(app, userId, input.organizationIds);
+  });
+
+  async function validateRouteCandidates(scopedApp: FastifyInstance, userId: string, organizationIds: string[]) {
+    const memberships = await scopedApp.db
+      .select({ organizationId: members.organizationId, role: members.role })
+      .from(members)
+      .where(
+        and(eq(members.userId, userId), eq(members.status, "active"), inArray(members.organizationId, organizationIds)),
+      );
+    const byOrganization = new Map(memberships.map((membership) => [membership.organizationId, membership]));
+    const candidates = [];
+    for (const organizationId of organizationIds) {
+      const membership = byOrganization.get(organizationId);
+      if (!membership) {
+        candidates.push({
+          organizationId,
+          outcome: "unavailable" as const,
+          reasonCode: "not_member" as const,
+          message: "The signed-in user is not an active member of this Team.",
+        });
+        continue;
+      }
+      const activation = await validateExternalContextActivation(
+        scopedApp.db,
+        { organizationId, role: membership.role === "admin" ? "admin" : "member" },
+        { schemaVersion: 2 },
+      );
+      if (activation.outcome !== "connected") {
+        candidates.push({
+          organizationId,
+          outcome: "unavailable" as const,
+          reasonCode: activation.reasonCode,
+          message: activation.nextAction.message,
+        });
+        continue;
+      }
+      const tree = await getOrgContextTreeSettingState(scopedApp.db, organizationId);
+      if (tree.kind !== "bound") {
+        candidates.push({
+          organizationId,
+          outcome: "unavailable" as const,
+          reasonCode:
+            tree.kind === "unbound" ? ("context_tree_unbound" as const) : ("context_tree_binding_invalid" as const),
+          message: "The Team's Context Tree binding is unavailable.",
+        });
+        continue;
+      }
+      candidates.push({ organizationId, outcome: "connected" as const, team: activation.team, binding: tree.binding });
+    }
+    return contextRouteCandidatesResponseSchema.parse({ schemaVersion: 1, candidates });
+  }
+
   app.get("/me", async (request) => {
     const { userId } = requireUser(request);
 

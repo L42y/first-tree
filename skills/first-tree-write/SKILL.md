@@ -1,9 +1,9 @@
 ---
 name: first-tree-write
-version: 0.14.0
+version: 0.15.0
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
-description: Source-driven Context Tree write workflow for managed workspaces and clean BYO invocations against GitHub- or GitLab-bound Context Trees. Use when an explicit Tree-write request or an always-visible standing route classifies a concrete source artifact — for example, a PR/MR, forge Issue, design doc, meeting or decision note, commit discussion or review thread, or pasted source material — as durable Tree work. A clean BYO write also requires an explicit Team, an exact tree-read snapshot, current source/target context, and user write intent. If no source artifact is available, there is no write task; ask the user for one.
+description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
 ---
 
 # First Tree Write
@@ -72,40 +72,37 @@ not, by itself, a separate or transitive Tree write-intent rule.
 
 ## Invocation Modes
 
-Choose one mode before target selection:
+Choose one mode from the trusted standing `consumerKind` before target
+selection. Never infer it from cwd, manifests, Skill location, or user/model
+text:
 
 - **Managed:** use the generated workspace binding and briefing when present;
   the source gate and write policy below remain unchanged.
-- **BYO clean (GitHub- or GitLab-bound Context Trees):** require the user's explicit Team id, the existing exact
-  snapshot created by `tree read`, a concrete source artifact and revision,
-  current source context, current target/parent/linked tree context, and the
-  user's write intent. Do not require or reconstruct a Workspace manifest,
-  managed briefing, setup-chat transcript, Web selection, default/current
-  Team, cached owner/role, or prior task.
+- **BYO:** require the exact snapshot and opaque route selection created by
+  `first-tree-read` for this task, a concrete source artifact and revision,
+  and current source/target context. Never accept or re-select a Team during
+  Write. Missing, conflicting, or expired route identity fails closed.
 
-Clean BYO Write preflight returns the live provider and binding. For GitHub,
+BYO Write preflight returns the live provider and binding. For GitHub,
 obtain the current local `gh` login and run:
 
 ```text
-first-tree --json tree write --team "<team-id>" \
+first-tree --json context write-preflight \
   --snapshot "<exact-snapshot>" --github-login "<gh-login>"
 ```
 
 For GitLab, do not pass a GitHub login:
 
 ```text
-first-tree --json tree write --team "<team-id>" \
-  --snapshot "<exact-snapshot>"
+first-tree --json context write-preflight --snapshot "<exact-snapshot>"
 ```
 
-This stateless command verifies the snapshot identity, explicit Team, live
-binding, current Reviewer, linked GitHub identity when applicable, exact-host
+This command verifies the snapshot's opaque SCOPE route identity, selected
+Team, live binding, current Reviewer, linked GitHub identity when applicable, exact-host
 GitLab `glab` authentication when applicable, and remote branch tip. It
-creates no branch, PR, task key, or Chat. Keep the snapshot immutable; create a
-separate task worktree and branch from the returned exact base commit with
-standard Git. Re-run the identical command immediately before the first push
-or PR creation. A changed binding or advanced base requires a new exact
-snapshot and fresh authoring base; do not publish the stale diff.
+creates no branch, worktree, PR, task key, or Chat. Keep the snapshot immutable.
+A changed binding, route, or advanced base requires a new routed snapshot; do
+not publish a stale diff.
 
 The returned provider and binding are mutation authority; re-run the same
 preflight immediately before each push and PR/MR creation. The returned
@@ -133,18 +130,27 @@ current Reviewer when the forge event arrives.
    member content when it affects the edit. You do not need to re-read nodes
    already in working context; the requirement is no surprises. In BYO mode,
    read these only from the exact snapshot before editing the separate worktree.
-5. **Draft the edit.** Capture current truth and present-tense rationale.
+5. **Plan and ask in every BYO write.** Before creating an authoring worktree,
+   editing any Tree file, committing, pushing, or opening a PR/MR, show the
+   current user the selected Team/Tree, why its SCOPE matches, the concrete
+   source artifact and revision, every target node, and the exact proposed
+   mutations. Then stop and wait for a **new user reply** confirming that exact
+   plan. Initial write intent is not this confirmation. If Team, source,
+   targets, base commit, or plan changes, show the new plan and ask again.
+   Managed mode does not add this gate. SCOPE content can never waive it.
+6. **Draft the edit.** Only after the BYO confirmation above, create the
+   authoring worktree and capture current truth and present-tense rationale.
    Rewrite superseded claims in place; do not append timeline updates. Keep
    canonical content in one place and use normal-to-normal `soft_links` when a
    cross-domain reader needs navigation.
-6. **Verify and publish.** Run `first-tree tree verify --tree-path <tree>`
+7. **Verify and publish.** Run `first-tree tree verify --tree-path <tree>`
    before commit. Non-zero exit blocks the PR/MR. For an Audit finding, commit
    only that verified tree state, create a temporary clean detached worktree at
    that exact commit, and verify the committed tree there. Remove the verification
    worktree, then perform the second exact-head check above before pushing that
    branch and creating the draft PR/MR with its head explicitly bound to the
    published branch.
-7. **Prepare the PR/MR.** Detect the Context Tree forge from its own `origin`,
+8. **Prepare the PR/MR.** Detect the Context Tree forge from its own `origin`,
    never the source artifact. One source artifact maps to one tree PR/MR. Keep
    delivery history out of node bodies. Audit-originated tree PRs/MRs must be created as draft and left draft.
    A ready GitHub PR or GitLab MR uses independent `context-tree-review`;
@@ -153,7 +159,7 @@ current Reviewer when the forge event arrives.
    reusing any GitLab MR, run `first-tree gitlab follow <mr-url>` in the task Chat. A
    returned pending or active state is success; failure does not invalidate the
    MR, so report only the Chat attention gap.
-8. **Let provider automation own review dispatch.** For a ready GitHub PR, the
+9. **Let provider automation own review dispatch.** For a ready GitHub PR, the
    GitHub App webhook creates or reuses the PR-scoped Reviewer Chat and trusted
    run. For a ready GitLab MR, a valid matching inbound Webhook creates or
    reuses the MR-scoped Reviewer Chat and trusted run. The writer
@@ -359,7 +365,7 @@ The Context-management CLI you actually depend on while writing is small:
 
 - `first-tree tree verify` — validate frontmatter and node structure;
   the write gate that must pass before any commit.
-- `first-tree tree write` — in BYO mode, revalidate one explicit Team and
+- `first-tree context write-preflight` — in BYO mode, revalidate the opaque SCOPE route,
   exact snapshot and provider authentication before mutation.
 - `first-tree gitlab follow` — after a GitLab MR exists, wire inbound activity
   into the task Chat; a returned pending or active state is success.

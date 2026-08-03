@@ -1,28 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type {
-  ContextIntegrationBinding,
-  ContextIntegrationConfig,
-  ContextIntegrationInstallManifest,
-  LegacyContextIntegrationConfig,
-} from "@first-tree/shared";
 import {
+  type ContextIntegrationConfig,
+  type ContextIntegrationGrant,
+  type ContextIntegrationInstallManifest,
+  type ContextIntegrationProvider,
+  type ContextPersistentActivationScope,
   contextIntegrationConfigSchema,
   contextIntegrationInstallManifestSchema,
-  legacyContextIntegrationConfigSchema,
 } from "@first-tree/shared";
 import { defaultHome } from "@first-tree/shared/config";
 import { channelConfig } from "../channel.js";
 import { readActiveContextAccountClientId } from "./account-state-guard.js";
 import {
   assertContextIntegrationConfig,
-  preserveLegacyContextIntegrationBackup,
+  prepareContextGrantStoreForApply,
   readContextIntegrationConfig,
-  removeContextBindings,
+  removeContextGrants,
   replaceContextIntegrationConfig,
   withContextIntegrationLock,
-  writeContextBinding,
+  writeContextGrant,
 } from "./context-binding-store.js";
 import {
   type ContextIntegrationInstallPlan,
@@ -51,13 +49,13 @@ type OperationSnapshot = {
 };
 
 type OperationJournal = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   operationId: string;
   accountClientId: string;
-  provider: ContextIntegrationBinding["provider"];
+  provider: ContextIntegrationProvider;
   operation: "enable" | "disable" | "repair";
-  phase: "prepared" | "provider_changed" | "binding_changed" | "rollback_failed";
-  previousBindings: ContextIntegrationBinding[];
+  phase: "prepared" | "provider_changed" | "grant_changed" | "rollback_failed";
+  previousConfig: ContextIntegrationConfig;
   previousInstallManifest: ContextIntegrationInstallManifest | null;
   providerInstalled: boolean;
   providerEnabled: boolean;
@@ -66,76 +64,64 @@ type OperationJournal = {
   startedAt: string;
 };
 
-type ParsedOperationJournal = OperationJournal & {
-  legacyPreviousConfig: LegacyContextIntegrationConfig | null;
-};
-
 export function enableContextIntegrationOperation(
   driver: ContextIntegrationProviderDriver,
   plan: ContextIntegrationInstallPlan,
-  binding: ContextIntegrationBinding,
-  expectedConfig: ContextIntegrationConfig,
+  grant: ContextIntegrationGrant,
+  expectedStore: { beforeFingerprint: string; afterFingerprint: string },
   expectedAccountClientId: string,
   dependencies: {
     install?: typeof installContextIntegration;
-    writeBinding?: typeof writeContextBinding;
+    writeGrant?: typeof writeContextGrant;
   } = {},
 ): { pluginOperation: ContextIntegrationInstallPlan["operation"] } {
   return withContextIntegrationLock(() => {
     assertNoIncompleteOperation();
     assertExpectedAccount(expectedAccountClientId);
-    assertContextIntegrationConfig(expectedConfig);
+    const expectedConfig = prepareContextGrantStoreForApply(
+      expectedStore.beforeFingerprint,
+      expectedStore.afterFingerprint,
+      grant,
+    );
     const snapshot = captureOperationSnapshot(driver, expectedConfig);
     const journal = createOperationJournal("enable", driver, snapshot);
     let providerChanged = false;
-    let bindingChanged = false;
+    let grantChanged = false;
     try {
       if (plan.operation !== "unchanged") {
         providerChanged = true;
         (dependencies.install ?? installContextIntegration)(driver, plan);
         writeOperationJournal({ ...journal, phase: "provider_changed" });
       }
-      (dependencies.writeBinding ?? writeContextBinding)(binding, {
-        allowReplace: true,
-        expectedPrevious:
-          expectedConfig.bindings.find(
-            (candidate) =>
-              candidate.provider === binding.provider &&
-              JSON.stringify(candidate.project) === JSON.stringify(binding.project),
-          ) ?? null,
-      });
-      bindingChanged = true;
-      writeOperationJournal({ ...journal, phase: "binding_changed" });
+      const result = (dependencies.writeGrant ?? writeContextGrant)(grant, { expectedConfig });
+      grantChanged = result.created;
+      writeOperationJournal({ ...journal, phase: "grant_changed" });
       completeOperation(snapshot);
       return { pluginOperation: plan.operation };
     } catch (error) {
-      rollbackOperation(driver, snapshot, { providerChanged, bindingChanged }, journal, error);
+      rollbackOperation(driver, snapshot, { providerChanged, grantChanged }, journal, error);
     }
   });
 }
 
 export function disableContextIntegrationOperation(
-  provider: ContextIntegrationBinding["provider"],
+  provider: ContextIntegrationProvider,
   input: {
-    project: ContextIntegrationBinding["project"];
+    organizationId: string;
+    activationScope: ContextPersistentActivationScope;
     expectedConfig: ContextIntegrationConfig;
     expectedAccountClientId: string;
   },
-  dependencies: {
-    removeBindings?: typeof removeContextBindings;
-  } = {},
-): {
-  removed: ContextIntegrationBinding[];
-  remaining: ContextIntegrationBinding[];
-} {
+  dependencies: { removeGrants?: typeof removeContextGrants } = {},
+): { removed: ContextIntegrationGrant[]; remaining: ContextIntegrationGrant[] } {
   return withContextIntegrationLock(() => {
     assertNoIncompleteOperation();
     assertExpectedAccount(input.expectedAccountClientId);
     assertContextIntegrationConfig(input.expectedConfig);
-    const providerBindings = input.expectedConfig.bindings.filter((binding) => binding.provider === provider);
-    return (dependencies.removeBindings ?? removeContextBindings)(provider, {
-      project: input.project,
-      expectedProviderBindings: providerBindings,
+    return (dependencies.removeGrants ?? removeContextGrants)(provider, {
+      organizationId: input.organizationId,
+      activationScope: input.activationScope,
+      expectedConfig: input.expectedConfig,
     });
   });
 }
@@ -143,23 +129,18 @@ export function disableContextIntegrationOperation(
 export function repairContextIntegrationOperation(
   driver: ContextIntegrationProviderDriver,
   plan: ContextIntegrationInstallPlan,
-  dependencies: {
-    install?: typeof installContextIntegration;
-  } = {},
+  dependencies: { install?: typeof installContextIntegration } = {},
 ): void {
   withContextIntegrationLock(() => {
     assertNoIncompleteOperation();
-    const config = readContextIntegrationConfig();
-    const snapshot = captureOperationSnapshot(driver, config);
+    const snapshot = captureOperationSnapshot(driver, readContextIntegrationConfig());
     const journal = createOperationJournal("repair", driver, snapshot);
-    let providerChanged = false;
     try {
-      providerChanged = true;
       (dependencies.install ?? installContextIntegration)(driver, plan);
       writeOperationJournal({ ...journal, phase: "provider_changed" });
       completeOperation(snapshot);
     } catch (error) {
-      rollbackOperation(driver, snapshot, { providerChanged, bindingChanged: false }, journal, error);
+      rollbackOperation(driver, snapshot, { providerChanged: true, grantChanged: false }, journal, error);
     }
   });
 }
@@ -178,15 +159,14 @@ function captureOperationSnapshot(
   const recoveryMarketplaceRoot = join(recoveryRoot, "marketplace");
   const stableMarketplaceRoot = contextIntegrationMarketplaceSourcePath(driver.provider);
   const marketplaceSourceExisted = existsSync(stableMarketplaceRoot);
-
   if (probe.installed && (!installManifest || !marketplaceSourceExisted)) {
     throw new Error(
-      `The existing ${driver.provider} Context Plugin lacks a complete First Tree rollback source. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before changing bindings.`,
+      `The existing ${driver.provider} Context Plugin lacks a complete First Tree rollback source. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before changing grants.`,
     );
   }
   if (probe.installed && !probe.enabled) {
     throw new Error(
-      `The ${driver.provider} Context Plugin is installed but disabled. Enable it with the provider's native Plugin controls before changing bindings; no state was changed.`,
+      `The ${driver.provider} Context Plugin is installed but disabled. Enable it with the provider's native Plugin controls before changing grants; no state was changed.`,
     );
   }
   mkdirSync(recoveryRoot, { recursive: true, mode: 0o700 });
@@ -209,13 +189,13 @@ function createOperationJournal(
   snapshot: OperationSnapshot,
 ): OperationJournal {
   const journal: OperationJournal = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     operationId: basename(snapshot.recoveryRoot),
     accountClientId: snapshot.accountClientId,
     provider: driver.provider,
     operation,
     phase: "prepared",
-    previousBindings: snapshot.config.bindings,
+    previousConfig: snapshot.config,
     previousInstallManifest: snapshot.installManifest,
     providerInstalled: snapshot.providerInstalled,
     providerEnabled: snapshot.providerEnabled,
@@ -230,16 +210,12 @@ function createOperationJournal(
 function rollbackOperation(
   driver: ContextIntegrationProviderDriver,
   snapshot: OperationSnapshot,
-  changed: { providerChanged: boolean; bindingChanged: boolean },
+  changed: { providerChanged: boolean; grantChanged: boolean },
   journal: OperationJournal,
   originalError: unknown,
 ): never {
   const rollbackErrors: unknown[] = [];
-  let configMatches = false;
-  try {
-    configMatches = sameConfig(readContextIntegrationConfig(), snapshot.config);
-  } catch {}
-  if (changed.bindingChanged || !configMatches) {
+  if (changed.grantChanged || JSON.stringify(readContextIntegrationConfig()) !== JSON.stringify(snapshot.config)) {
     try {
       replaceContextIntegrationConfig(snapshot.config);
     } catch (error) {
@@ -257,7 +233,7 @@ function rollbackOperation(
     writeOperationJournal({ ...journal, phase: "rollback_failed" });
     throw new AggregateError(
       [originalError, ...rollbackErrors],
-      `First Tree Context operation failed and could not fully restore Plugin, manifest, and binding state. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before retrying.`,
+      `First Tree Context operation failed and could not fully restore Plugin, manifest, and grant state. Run \`${channelConfig.binName} context repair --provider ${driver.provider}\` before retrying.`,
     );
   }
   completeOperation(snapshot);
@@ -308,18 +284,12 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
     const journal = readOperationJournal();
     if (!journal) return false;
     if (journal.provider !== driver.provider) {
-      throw new Error(
-        `The incomplete Context operation belongs to ${journal.provider}. Run repair for that provider first.`,
-      );
+      throw new Error(`The incomplete Context operation belongs to ${journal.provider}. Run repair for it first.`);
     }
     const recoveryRoot = join(defaultHome(), "state", "context", "operation-recovery", journal.operationId);
-    const expectedMarketplace = join(recoveryRoot, "marketplace");
-    if (journal.recoveryMarketplaceRoot !== null && journal.recoveryMarketplaceRoot !== expectedMarketplace) {
-      throw new Error("The incomplete Context operation recovery path is invalid.");
-    }
     const snapshot: OperationSnapshot = {
       accountClientId: journal.accountClientId,
-      config: { schemaVersion: 2, bindings: journal.previousBindings },
+      config: journal.previousConfig,
       installManifest: journal.previousInstallManifest,
       providerInstalled: journal.providerInstalled,
       providerEnabled: journal.providerEnabled,
@@ -328,25 +298,10 @@ export function recoverContextIntegrationOperation(driver: ContextIntegrationPro
       recoveryMarketplaceRoot: journal.recoveryMarketplaceRoot,
     };
     if (readActiveContextAccountClientId() !== snapshot.accountClientId) {
-      throw new Error(
-        "The incomplete Context operation belongs to a different local First Tree Computer/account state. Switch back before recovery.",
-      );
+      throw new Error("The incomplete Context operation belongs to a different local Computer/account state.");
     }
-    const errors: unknown[] = [];
-    try {
-      if (journal.legacyPreviousConfig) preserveLegacyContextIntegrationBackup(journal.legacyPreviousConfig);
-      replaceContextIntegrationConfig(snapshot.config);
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      restoreProviderSnapshot(driver, snapshot);
-    } catch (error) {
-      errors.push(error);
-    }
-    if (errors.length > 0) {
-      throw new AggregateError(errors, "Could not recover the incomplete First Tree Context operation.");
-    }
+    replaceContextIntegrationConfig(snapshot.config);
+    restoreProviderSnapshot(driver, snapshot);
     completeOperation(snapshot);
     return true;
   });
@@ -356,61 +311,40 @@ function operationJournalPath(): string {
   return join(defaultHome(), "state", "context", "operation-journal.json");
 }
 
-export function inspectContextIntegrationOperation(): {
-  provider: ContextIntegrationBinding["provider"];
-  operation: OperationJournal["operation"];
-  phase: OperationJournal["phase"];
-} | null {
+export function inspectContextIntegrationOperation(): Pick<
+  OperationJournal,
+  "operation" | "phase" | "provider"
+> | null {
   const journal = readOperationJournal();
-  return journal
-    ? {
-        provider: journal.provider,
-        operation: journal.operation,
-        phase: journal.phase,
-      }
-    : null;
+  return journal ? { provider: journal.provider, operation: journal.operation, phase: journal.phase } : null;
 }
 
-function readOperationJournal(): ParsedOperationJournal | null {
+function readOperationJournal(): OperationJournal | null {
   try {
-    const parsed = JSON.parse(readFileSync(operationJournalPath(), "utf8")) as Partial<OperationJournal>;
-    const operationIdValid =
-      typeof parsed.operationId === "string" &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(parsed.operationId);
+    const parsed = JSON.parse(readFileSync(operationJournalPath(), "utf8")) as Record<string, unknown>;
     if (
-      parsed.schemaVersion !== 1 ||
-      !operationIdValid ||
+      parsed.schemaVersion !== 2 ||
+      typeof parsed.operationId !== "string" ||
+      !/^[0-9a-f-]{36}$/iu.test(parsed.operationId) ||
       typeof parsed.accountClientId !== "string" ||
-      !/^client_[a-f0-9]{8}$/u.test(parsed.accountClientId) ||
       (parsed.provider !== "claude-code" && parsed.provider !== "codex") ||
       (parsed.operation !== "enable" && parsed.operation !== "disable" && parsed.operation !== "repair") ||
-      !["prepared", "provider_changed", "binding_changed", "rollback_failed"].includes(parsed.phase ?? "") ||
-      !Array.isArray(parsed.previousBindings) ||
+      !["prepared", "provider_changed", "grant_changed", "rollback_failed"].includes(String(parsed.phase)) ||
       typeof parsed.providerInstalled !== "boolean" ||
       typeof parsed.providerEnabled !== "boolean" ||
       typeof parsed.marketplaceSourceExisted !== "boolean" ||
       (parsed.recoveryMarketplaceRoot !== null && typeof parsed.recoveryMarketplaceRoot !== "string") ||
-      typeof parsed.startedAt !== "string" ||
-      !Number.isFinite(Date.parse(parsed.startedAt))
+      typeof parsed.startedAt !== "string"
     ) {
       throw new Error("invalid operation journal");
     }
-    const previous = parseOperationJournalBindings(parsed.previousBindings);
-    const previousInstallManifest =
-      parsed.previousInstallManifest === null
-        ? null
-        : contextIntegrationInstallManifestSchema.parse(parsed.previousInstallManifest);
-    if (parsed.providerInstalled && (!previousInstallManifest || !parsed.recoveryMarketplaceRoot)) {
-      throw new Error("installed provider recovery state is incomplete");
-    }
-    if (parsed.providerInstalled && !parsed.providerEnabled) {
-      throw new Error("disabled provider recovery state cannot be restored exactly");
-    }
     return {
-      ...(parsed as OperationJournal),
-      previousBindings: previous.bindings,
-      previousInstallManifest,
-      legacyPreviousConfig: previous.legacyConfig,
+      ...(parsed as Omit<OperationJournal, "previousConfig" | "previousInstallManifest">),
+      previousConfig: contextIntegrationConfigSchema.parse(parsed.previousConfig),
+      previousInstallManifest:
+        parsed.previousInstallManifest === null
+          ? null
+          : contextIntegrationInstallManifestSchema.parse(parsed.previousInstallManifest),
     };
   } catch (error) {
     if (isMissing(error)) return null;
@@ -418,43 +352,18 @@ function readOperationJournal(): ParsedOperationJournal | null {
   }
 }
 
-function parseOperationJournalBindings(value: unknown): {
-  bindings: ContextIntegrationBinding[];
-  legacyConfig: LegacyContextIntegrationConfig | null;
-} {
-  const current = contextIntegrationConfigSchema.safeParse({
-    schemaVersion: 2,
-    bindings: value,
-  });
-  if (current.success) return { bindings: current.data.bindings, legacyConfig: null };
-  const legacy = legacyContextIntegrationConfigSchema.parse({ schemaVersion: 1, bindings: value });
-  return {
-    bindings: contextIntegrationConfigSchema.parse({
-      schemaVersion: 2,
-      bindings: legacy.bindings.map((binding) => ({
-        provider: binding.provider,
-        project: { kind: "path", root: binding.checkoutRoot },
-        organizationId: binding.organizationId,
-      })),
-    }).bindings,
-    legacyConfig: legacy,
-  };
-}
-
 function assertNoIncompleteOperation(): void {
   const incomplete = inspectContextIntegrationOperation();
   if (incomplete) {
     throw new Error(
-      `A First Tree Context Plugin/binding operation is incomplete. Run \`${channelConfig.binName} context repair --provider ${incomplete.provider}\` before retrying.`,
+      `A First Tree Context Plugin/grant operation is incomplete. Run \`${channelConfig.binName} context repair --provider ${incomplete.provider}\` before retrying.`,
     );
   }
 }
 
 function assertExpectedAccount(expectedAccountClientId: string): void {
   if (readActiveContextAccountClientId() !== expectedAccountClientId) {
-    throw new Error(
-      "The active First Tree Computer/account changed after the displayed Context plan. Re-run the command for the current account.",
-    );
+    throw new Error("The active First Tree Computer/account changed after the displayed Context plan. Re-run it.");
   }
 }
 
@@ -468,10 +377,6 @@ function writeOperationJournal(journal: OperationJournal): void {
   } finally {
     rmSync(temporary, { force: true });
   }
-}
-
-function sameConfig(left: ContextIntegrationConfig, right: ContextIntegrationConfig): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isMissing(error: unknown): boolean {

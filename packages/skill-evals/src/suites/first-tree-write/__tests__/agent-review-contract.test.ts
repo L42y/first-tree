@@ -26,15 +26,20 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).not.toContain("Reassigning A to B keeps the same PR task and Chat");
   });
 
-  it("keeps clean BYO Write bound to explicit Team and exact snapshot", () => {
-    expect(skill).toContain("BYO clean (GitHub- or GitLab-bound Context Trees)");
-    expect(skill).toContain('first-tree --json tree write --team "<team-id>"');
+  it("keeps BYO Write bound to the SCOPE route and a new user confirmation", () => {
+    expect(skill).toContain("exact snapshot and opaque route selection created by\n  `first-tree-read`");
+    expect(skill).toContain("first-tree --json context write-preflight");
     expect(skill).toContain('--snapshot "<exact-snapshot>" --github-login "<gh-login>"');
     expect(skill).toContain("For GitLab, do not pass a GitHub login");
     expect(skill).toContain("exact-host\nGitLab `glab` authentication");
-    expect(skill).toContain("Do not require or reconstruct a Workspace manifest");
-    expect(skill).toContain("separate task worktree and branch from the returned exact base commit");
-    expect(skill).toContain("immediately before the first push");
+    expect(skill).toContain("Never accept or re-select a Team during\n  Write");
+    expect(skill).toContain("Plan and ask in every BYO write");
+    expect(skill).toContain("Before creating an authoring worktree");
+    expect(skill).toContain("wait for a **new user reply** confirming that exact\n   plan");
+    expect(skill).toContain("Initial write intent is not this confirmation");
+    expect(skill).toContain("Managed mode does not add this gate");
+    expect(skill).toContain("Only after the BYO confirmation above, create the\n   authoring worktree");
+    expect(skill).toContain("re-run the same\npreflight immediately before each push and PR/MR creation");
     expect(skill).toContain("observability only, never local routing");
   });
 
@@ -50,7 +55,7 @@ describe("first-tree-write App review handoff floor", () => {
 
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.14.0");
+    expect(version).toBe("0.15.0");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });

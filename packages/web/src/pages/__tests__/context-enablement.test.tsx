@@ -40,7 +40,7 @@ describe("personal Context access", () => {
         role: "member",
         provider,
         intent,
-        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --plan`,
         workingDirectoryInstruction: "Run with an explicit project selector.",
       }),
     );
@@ -128,7 +128,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "member",
         provider,
-        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --plan`,
         workingDirectoryInstruction: "Run this once from the repository root.",
       }),
     );
@@ -142,15 +142,14 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("--provider 'claude-code'");
     expect(copiedPrompt).toContain("/hooks");
     expect(copiedPrompt).toContain("return to this original conversation and reply `continue`");
-    expect(copiedPrompt).toContain("re-run the exact same enable command yourself in this session");
+    expect(copiedPrompt).toContain("Re-run the exact same apply command");
     expect(copiedPrompt).toContain("`data.currentSessionHandoff`");
     expect(copiedPrompt).toContain("Adopt `activationContext` verbatim");
     expect(copiedPrompt).toContain("progressive-disclosure catalog");
     expect(copiedPrompt).toContain("immutable activation receipt");
     expect(copiedPrompt).toContain("even if cwd changes after setup");
-    expect(copiedPrompt).toContain("pass `--pathless` when it is `pathless`");
-    expect(copiedPrompt).toContain("receipt's exact root");
-    expect(copiedPrompt).toContain("Never derive that selector from the then-current cwd");
+    expect(copiedPrompt).toContain("run the SCOPE router");
+    expect(copiedPrompt).toContain("Read all returned SCOPE bodies");
     expect(copiedPrompt).toContain("activation context, immutable project receipt, and Skill catalog");
     expect(copiedPrompt).toContain("Do not require a restart, a new conversation");
     expect(copiedPrompt).not.toContain("Exit and start a new Codex session");
@@ -177,7 +176,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "member",
         provider: "claude-code",
-        command: "'first-tree-staging' --json context enable --provider 'claude-code' --team 'org-1' --yes",
+        command: "'first-tree-staging' --json context enable --provider 'claude-code' --team 'org-1' --plan",
         workingDirectoryInstruction: "Run this once from the repository root.",
       });
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -217,7 +216,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "member",
         provider,
-        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --plan`,
         workingDirectoryInstruction: "Run with an explicit project selector.",
       }),
     );
@@ -241,7 +240,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "admin",
         provider,
-        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --plan`,
         workingDirectoryInstruction: "Run this once from the repository root.",
       }),
     );
@@ -278,11 +277,11 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("If you are Codex:");
     expect(copiedPrompt).toContain("--provider 'codex' --team 'org-1'");
     expect(copiedPrompt).toContain("do not run both commands");
-    expect(copiedPrompt).toContain("Run this Codex handoff unchanged");
-    expect(copiedPrompt).toContain("--project-root '<host-confirmed-project-root>'");
-    expect(copiedPrompt).toContain("Do not derive the root from shell `pwd`/cwd");
+    expect(copiedPrompt).toContain("Run this plan command unchanged");
+    expect(copiedPrompt).toContain("three choices in plain language");
+    expect(copiedPrompt).toContain("exact displayed directory");
     expect(copiedPrompt).toContain("--json context enable");
-    expect(copiedPrompt).toContain("--yes");
+    expect(copiedPrompt).toContain("--scope global|directory|session");
     expect(copiedPrompt).toContain("`ok: true`");
     expect(copiedPrompt).toContain("Complete result with a missing or invalid handoff is a setup failure");
     expect(copiedPrompt).not.toContain("Determine whether this session has an attached local project");
@@ -347,15 +346,15 @@ describe("personal Context access", () => {
     expect(prompt).toContain("bootstrap-command");
     expect(prompt).toContain("claude-command");
     expect(prompt).toContain("claude-command");
-    expect(prompt).toContain("--project-root '<host-confirmed-project-root>'");
-    expect(prompt).toContain("if the host project identity is unavailable, stop");
+    expect(prompt).toContain("three choices in plain language");
+    expect(prompt).toContain("Do not choose for me");
     expect(prompt).not.toContain("Determine whether this session has an attached local project");
     expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
     expect(prompt).not.toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");
   });
 
-  it("pins the first Read selector to the verified path/pathless receipt after cwd changes", () => {
+  it("pins the SCOPE router to the verified provider/project receipt after cwd changes", () => {
     const prompt = buildByoSetupPrompt({
       organizationId: "org-1",
       bootstrapCommand: "bootstrap-command",
@@ -374,15 +373,13 @@ describe("personal Context access", () => {
       intent: "onboarding",
     });
 
-    expect(prompt).toContain("`provider` exactly matches the selected host and enable command");
-    expect(prompt).toContain('{ kind: "path", root: <absolute path> }');
-    expect(prompt).toContain('{ kind: "pathless" }');
+    expect(prompt).toContain('`schemaVersion: 2`, `consumerKind: "byo"`');
+    expect(prompt).toContain("valid immutable project receipt");
     expect(prompt).toContain("immutable activation receipt");
     expect(prompt).toContain("even if cwd changes after setup");
-    expect(prompt).toContain("first `first-tree-read`");
-    expect(prompt).toContain("pass `--project-root` with the receipt's exact root");
-    expect(prompt).toContain("pass `--pathless` when it is `pathless`");
-    expect(prompt).toContain("Never derive that selector from the then-current cwd");
+    expect(prompt).toContain("At every new task");
+    expect(prompt).toContain("run the SCOPE router with this immutable provider/project receipt");
+    expect(prompt).toContain("Never derive Team from cwd");
   });
 
   it("lets the Admin retry prompt preparation after an API failure", async () => {

@@ -11,31 +11,35 @@ const output = vi.hoisted(() => ({
   status: vi.fn(),
 }));
 const mocks = vi.hoisted(() => ({
-  buildActivationContext: vi.fn(() => "verified activation context"),
+  assertFingerprint: vi.fn(),
   buildHandoff: vi.fn(),
-  createDriver: vi.fn(() => ({ provider: "codex" })),
+  createDriver: vi.fn(),
   enableOperation: vi.fn(),
-  findBinding: vi.fn(() => null),
-  inspectPreflight: vi.fn(() => ({ provider: "codex", project: { kind: "path", root: "/work/repo" } })),
-  inspectStatus: vi.fn(),
-  planInstall: vi.fn(() => ({ operation: "install" })),
-  readAccountClientId: vi.fn(() => "client-1"),
-  readConfig: vi.fn(() => ({ schemaVersion: 2, bindings: [] })),
+  fingerprintAfter: vi.fn(() => "b".repeat(64)),
+  inspectHook: vi.fn(),
+  inspectLocation: vi.fn(),
+  inspectRuntime: vi.fn(),
+  inspectStore: vi.fn(),
+  issueSession: vi.fn(),
+  planInstall: vi.fn(),
+  readAccount: vi.fn(() => "client-1"),
+  readConfig: vi.fn(),
+  resolveRelease: vi.fn(),
   validateActivation: vi.fn(),
 }));
 
 vi.mock("../core/output.js", () => ({ print: output }));
 vi.mock("../core/context-integration/account-state-guard.js", () => ({
-  readActiveContextAccountClientId: mocks.readAccountClientId,
-}));
-vi.mock("../core/context-integration/activation.js", () => ({
-  buildConnectedContextAdditionalContext: mocks.buildActivationContext,
+  readActiveContextAccountClientId: mocks.readAccount,
+  withAccountStateMutationLockAsync: (action: () => Promise<unknown>) => action(),
 }));
 vi.mock("../core/context-integration/client-preflight.js", () => ({
-  inspectContextClientPreflight: mocks.inspectPreflight,
+  inspectContextSetupLocation: mocks.inspectLocation,
 }));
 vi.mock("../core/context-integration/context-binding-store.js", () => ({
-  findContextBinding: mocks.findBinding,
+  assertContextGrantStoreFingerprint: mocks.assertFingerprint,
+  contextGrantStoreFingerprintAfterGrant: mocks.fingerprintAfter,
+  inspectContextGrantStore: mocks.inspectStore,
   readContextIntegrationConfig: mocks.readConfig,
 }));
 vi.mock("../core/context-integration/current-session-handoff.js", () => ({
@@ -47,11 +51,18 @@ vi.mock("../core/context-integration/installer.js", () => ({
 vi.mock("../core/context-integration/operation.js", () => ({
   enableContextIntegrationOperation: mocks.enableOperation,
 }));
-vi.mock("../core/context-integration/status.js", () => ({
-  inspectContextIntegrationStatus: mocks.inspectStatus,
+vi.mock("../core/context-integration/release.js", () => ({
+  providerPluginRoot: () => "/release/providers/codex",
+  resolveContextIntegrationRelease: mocks.resolveRelease,
+}));
+vi.mock("../core/context-integration/runtime-health.js", () => ({
+  inspectContextIntegrationRuntime: mocks.inspectRuntime,
 }));
 vi.mock("../commands/_shared/member.js", () => ({
-  createMemberSdk: () => ({ validateMemberContextActivation: mocks.validateActivation }),
+  createMemberSdk: () => ({
+    validateMemberContextActivation: mocks.validateActivation,
+    issueMemberContextSessionCandidate: mocks.issueSession,
+  }),
 }));
 vi.mock("../commands/context/shared.js", () => ({
   createContextIntegrationDriver: mocks.createDriver,
@@ -60,117 +71,235 @@ vi.mock("../commands/context/shared.js", () => ({
 
 import { runContextEnable } from "../commands/context/enable.js";
 
-const requestedTeam = {
-  organizationId: "org-requested",
-  displayName: "Requested Team",
-  role: "member" as const,
-};
-const replacementTeam = {
-  organizationId: "org-replacement",
-  displayName: "Replacement Team",
-  role: "member" as const,
-};
+const team = { organizationId: "org-a", displayName: "Team A", role: "member" as const };
+const project = { kind: "path" as const, root: "/work/repo" };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.validateActivation.mockResolvedValue({ schemaVersion: 2, outcome: "connected", team: requestedTeam });
+  mocks.readAccount.mockReturnValue("client-1");
+  mocks.inspectLocation.mockReturnValue({
+    project,
+    directory: "/work/repo",
+    directoryAvailable: true,
+    temporaryDirectory: false,
+    warning: null,
+  });
+  mocks.inspectStore.mockReturnValue({
+    kind: "missing",
+    config: { schemaVersion: 3, grants: [] },
+    fingerprint: "a".repeat(64),
+  });
+  mocks.resolveRelease.mockReturnValue({ root: "/release" });
+  mocks.validateActivation.mockResolvedValue({ schemaVersion: 2, outcome: "connected", team });
+  mocks.issueSession.mockResolvedValue({ receipt: "signed-session" });
+  mocks.buildHandoff.mockReturnValue({ schemaVersion: 2, consumerKind: "byo", provider: "codex", project });
+  mocks.readConfig.mockReturnValue({
+    schemaVersion: 3,
+    grants: [{ provider: "codex", organizationId: "org-a", activationScope: { kind: "global" } }],
+  });
+  mocks.planInstall.mockReturnValue({ operation: "unchanged" });
+  mocks.inspectHook.mockResolvedValue({ trust: "trusted", enabled: true, source: "provider_api", issues: [] });
+  mocks.createDriver.mockReturnValue({ provider: "codex", inspectHook: mocks.inspectHook });
+  mocks.inspectRuntime.mockReturnValue({
+    healthy: true,
+    issues: [],
+    probe: { installed: true, enabled: true, installedPath: "/plugin" },
+    install: { marketplaceName: "first-tree", pluginName: "first-tree-context" },
+  });
 });
 
-describe("context enable final handoff identity gate", () => {
-  it("fails closed when a concurrent rebind or ancestor fallback resolves another Team", async () => {
-    mocks.inspectStatus.mockResolvedValue(greenStatus({ team: replacementTeam, organizationId: "org-replacement" }));
-
-    await runContextEnable(context());
-
-    const result = jsonResult();
-    expect(result.setup.complete).toBe(false);
-    expect(result.setup.missingLayers).toEqual([
-      "Requested Team binding: changed during verification",
-      "Requested Team activation: changed during verification",
-    ]);
-    expect(result.currentSessionHandoff).toBeNull();
-    expect(result.activationContext).toBeNull();
-    expect(result.team).toEqual(replacementTeam);
-    expect(result.requestedTeam).toEqual(requestedTeam);
-    expect(result.nextActions.join(" ")).toContain("no longer matches this server-authored project/Team handoff");
-    expect(mocks.buildHandoff).not.toHaveBeenCalled();
+describe("context enable v3 command", () => {
+  it("keeps plan read-only and fixes the grant-store fingerprint", async () => {
+    await runContextEnable(context({ plan: true }));
+    const result = output.result.mock.calls[0]?.[0] as { plan: { planId: string; grantStoreFingerprint: string } };
+    expect(result.plan.grantStoreFingerprint).toBe("a".repeat(64));
+    expect(result.plan.planId).toContain(`.${"a".repeat(64)}.`);
+    expect(mocks.enableOperation).not.toHaveBeenCalled();
+    expect(mocks.issueSession).not.toHaveBeenCalled();
+    expect(mocks.assertFingerprint).not.toHaveBeenCalled();
   });
 
-  it("fails closed when final verification resolves a different project", async () => {
-    mocks.inspectStatus.mockResolvedValue(
-      greenStatus({ team: requestedTeam, organizationId: "org-requested", projectRoot: "/work/other" }),
-    );
-
-    await runContextEnable(context());
-
-    const result = jsonResult();
-    expect(result.setup.complete).toBe(false);
-    expect(result.setup.missingLayers).toEqual(["Requested project: changed during verification"]);
-    expect(result.currentSessionHandoff).toBeNull();
-    expect(result.activationContext).toBeNull();
-    expect(mocks.buildHandoff).not.toHaveBeenCalled();
+  it("rejects a concurrent grant add/remove before persistent mutation", async () => {
+    const planId = await createPlanId();
+    mocks.inspectStore.mockReturnValue({
+      kind: "v3",
+      config: { schemaVersion: 3, grants: [] },
+      fingerprint: "c".repeat(64),
+    });
+    await expect(runContextEnable(context({ scope: "global", planId, yes: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_PLAN_CHANGED",
+    });
+    expect(mocks.enableOperation).not.toHaveBeenCalled();
   });
 
-  it("renders the complete usable handoff in human mode", async () => {
-    const handoff = {
-      schemaVersion: 1,
-      provider: "codex",
-      project: { kind: "path", root: "/work/repo" },
-      activationContext: "verified activation context",
-      skills: [
-        { name: "first-tree", description: "Activate", skillPath: "/plugin/skills/first-tree/SKILL.md" },
-        { name: "first-tree-read", description: "Read", skillPath: "/plugin/skills/first-tree-read/SKILL.md" },
-        { name: "first-tree-write", description: "Write", skillPath: "/plugin/skills/first-tree-write/SKILL.md" },
-      ],
+  it("applies session-only without touching Plugin, Hook, or persistent grants", async () => {
+    const planId = await createPlanId();
+    output.result.mockClear();
+    await runContextEnable(context({ scope: "session", planId, yes: true }));
+    const result = output.result.mock.calls[0]?.[0] as { setup: { complete: boolean }; plugin: string };
+    expect(result).toMatchObject({ setup: { complete: true }, plugin: "not_installed" });
+    expect(mocks.assertFingerprint).toHaveBeenCalledWith("a".repeat(64));
+    expect(mocks.issueSession).toHaveBeenCalledTimes(1);
+    expect(mocks.createDriver).not.toHaveBeenCalled();
+    expect(mocks.enableOperation).not.toHaveBeenCalled();
+  });
+
+  it("rejects an account switch while issuing a session-only receipt", async () => {
+    const planId = await createPlanId();
+    output.result.mockClear();
+    mocks.issueSession.mockImplementationOnce(async () => {
+      mocks.readAccount.mockReturnValue("client-2");
+      return { receipt: "wrong-account-receipt" };
+    });
+    await expect(runContextEnable(context({ scope: "session", planId, yes: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_PLAN_CHANGED",
+    });
+    expect(mocks.buildHandoff).not.toHaveBeenCalled();
+    expect(output.result).not.toHaveBeenCalled();
+  });
+
+  it("never reports Complete or builds a handoff while Codex Hook trust is missing", async () => {
+    const planId = await createPlanId();
+    output.result.mockClear();
+    mocks.inspectHook.mockResolvedValue({
+      trust: "review_required",
+      enabled: false,
+      source: "provider_api",
+      issues: [],
+    });
+    await runContextEnable(context({ scope: "global", planId, yes: true }));
+    const result = output.result.mock.calls[0]?.[0] as {
+      setup: { complete: boolean; missingLayers: string[] };
+      currentSessionHandoff: unknown;
     };
-    mocks.inspectStatus.mockResolvedValue(greenStatus({ team: requestedTeam, organizationId: "org-requested" }));
-    mocks.buildHandoff.mockReturnValue(handoff);
+    expect(result.setup.complete).toBe(false);
+    expect(result.setup.missingLayers).toEqual(expect.arrayContaining(["Codex Hook requires review or trust."]));
+    expect(result.currentSessionHandoff).toBeNull();
+    expect(result).toMatchObject({ nextActions: [expect.stringContaining("/hooks")] });
+    expect(mocks.buildHandoff).not.toHaveBeenCalled();
+  });
 
-    await runContextEnable(context(false));
+  it("does not send a Plugin failure into the Codex Hook recovery loop", async () => {
+    const planId = await createPlanId();
+    output.result.mockClear();
+    mocks.inspectRuntime.mockReturnValue({
+      healthy: false,
+      issues: ["payload digest mismatch"],
+      probe: { installed: true, enabled: true, installedPath: "/plugin" },
+      install: { marketplaceName: "first-tree", pluginName: "first-tree-context" },
+    });
+    mocks.inspectHook.mockResolvedValue({
+      trust: "unknown",
+      enabled: null,
+      source: "unavailable",
+      issues: ["Hook API unavailable"],
+    });
+    await runContextEnable(context({ scope: "global", planId, yes: true }));
+    const result = output.result.mock.calls[0]?.[0] as {
+      setup: { missingLayers: string[] };
+      nextActions: string[];
+    };
+    expect(result.nextActions).toEqual([expect.stringContaining("Plugin")]);
+    expect(result.nextActions.join("\n")).not.toContain("/hooks");
+    expect(result.setup.missingLayers.join("\n")).not.toMatch(/not trusted|not enabled/iu);
+  });
 
-    const rendered = output.line.mock.calls.flat().join("\n");
-    expect(rendered).toContain("complete verified current-session handoff JSON");
-    expect(rendered).toContain('"provider": "codex"');
-    expect(rendered).toContain('"root": "/work/repo"');
-    expect(rendered).toContain('"skillPath": "/plugin/skills/first-tree-read/SKILL.md"');
-    expect(rendered).toContain("verified activation context");
+  it("reports unavailable Hook inspection without pretending consent is missing", async () => {
+    const planId = await createPlanId();
+    output.result.mockClear();
+    mocks.inspectHook.mockResolvedValue({
+      trust: "unknown",
+      enabled: null,
+      source: "unavailable",
+      issues: ["Hook API timed out"],
+    });
+    await runContextEnable(context({ scope: "global", planId, yes: true }));
+    const result = output.result.mock.calls[0]?.[0] as {
+      setup: { complete: boolean; missingLayers: string[] };
+      currentSessionHandoff: unknown;
+      nextActions: string[];
+    };
+    expect(result.setup.complete).toBe(false);
+    expect(result.currentSessionHandoff).toBeNull();
+    expect(result.setup.missingLayers).toEqual(["Codex Hook inspection: Hook API timed out"]);
+    expect(result.nextActions).toEqual([expect.stringContaining("Hook inspection/provider API availability")]);
+    expect(result.nextActions.join("\n")).not.toContain("/hooks");
+    expect(result.setup.missingLayers.join("\n")).not.toMatch(/not trusted|not enabled/iu);
+  });
+
+  it("rejects an account switch while waiting for Codex Hook verification", async () => {
+    const planId = await createPlanId();
+    output.result.mockClear();
+    mocks.inspectHook.mockImplementationOnce(async () => {
+      mocks.readAccount.mockReturnValue("client-2");
+      return { trust: "trusted", enabled: true, source: "provider_api", issues: [] };
+    });
+    await expect(runContextEnable(context({ scope: "global", planId, yes: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_PLAN_CHANGED",
+    });
+    expect(mocks.buildHandoff).not.toHaveBeenCalled();
+    expect(output.result).not.toHaveBeenCalled();
+  });
+
+  it("accepts the same exact target grant after Codex Trust as an idempotent retry", async () => {
+    const planId = await createPlanId();
+    mocks.inspectStore.mockReturnValue({
+      kind: "v3",
+      config: {
+        schemaVersion: 3,
+        grants: [{ provider: "codex", organizationId: "org-a", activationScope: { kind: "global" } }],
+      },
+      fingerprint: "b".repeat(64),
+    });
+    output.result.mockClear();
+    await runContextEnable(context({ scope: "global", planId, yes: true }));
+    expect(mocks.enableOperation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ organizationId: "org-a", activationScope: { kind: "global" } }),
+      { beforeFingerprint: "a".repeat(64), afterFingerprint: "b".repeat(64) },
+      "client-1",
+    );
+    expect(output.result.mock.calls[0]?.[0]).toMatchObject({
+      setup: { complete: true },
+      currentSessionHandoff: expect.objectContaining({ consumerKind: "byo" }),
+    });
+  });
+
+  it("fails closed when final Team authority drifts after the displayed plan", async () => {
+    const planId = await createPlanId();
+    mocks.validateActivation
+      .mockResolvedValueOnce({ schemaVersion: 2, outcome: "connected", team })
+      .mockResolvedValueOnce({
+        schemaVersion: 2,
+        outcome: "connected",
+        team: { organizationId: "org-b", displayName: "Team B", role: "member" },
+      });
+    output.result.mockClear();
+    mocks.buildHandoff.mockClear();
+    await runContextEnable(context({ scope: "global", planId, yes: true }));
+    expect(output.result.mock.calls[0]?.[0]).toMatchObject({
+      team,
+      setup: { complete: false },
+      currentSessionHandoff: null,
+      nextActions: [expect.stringContaining("Team membership/binding authority")],
+    });
+    expect(JSON.stringify(output.result.mock.calls[0]?.[0])).not.toContain("/hooks");
+    expect(mocks.buildHandoff).not.toHaveBeenCalled();
   });
 });
 
-function context(json = true): CommandContext {
+async function createPlanId(): Promise<string> {
+  output.result.mockClear();
+  await runContextEnable(context({ plan: true }));
+  return (output.result.mock.calls[0]?.[0] as { plan: { planId: string } }).plan.planId;
+}
+
+function context(options: Record<string, unknown>): CommandContext {
   return {
     command: {
-      opts: () => ({ provider: "codex", team: "org-requested", projectRoot: "/work/repo", yes: true }),
+      opts: () => ({ provider: "codex", team: "org-a", projectRoot: "/work/repo", ...options }),
     } as unknown as Command,
-    options: { json, debug: false, quiet: false },
-  };
-}
-
-function greenStatus(input: { team: typeof requestedTeam; organizationId: string; projectRoot?: string }) {
-  return {
-    provider: {
-      name: "codex",
-      available: true,
-      version: "0.146.0",
-      minimumVersion: "0.144.0",
-      compatible: true,
-    },
-    plugin: { installed: true, enabled: true, installedPath: "/provider/cache/first-tree-context" },
-    hook: { trust: "trusted", enabled: true, source: "provider_api", issues: [] },
-    runtime: { healthy: true, issues: [] },
-    project: { state: "ready", project: { kind: "path", root: input.projectRoot ?? "/work/repo" } },
-    binding: { state: "exact", organizationId: input.organizationId },
-    activation: { state: "connected", team: input.team },
-  };
-}
-
-function jsonResult() {
-  return output.result.mock.calls[0]?.[0] as {
-    setup: { complete: boolean; missingLayers: string[] };
-    currentSessionHandoff: unknown;
-    activationContext: string | null;
-    team: typeof requestedTeam;
-    requestedTeam: typeof requestedTeam;
-    nextActions: string[];
+    options: { json: true, debug: false, quiet: false },
   };
 }

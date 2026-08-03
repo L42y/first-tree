@@ -1,33 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildExternalContextReadResult } from "../commands/context/read.js";
-import { buildConnectedContextAdditionalContext } from "../core/context-integration/activation.js";
+import { contextReadCommand } from "../commands/context/read.js";
+import { contextWriteCommand } from "../commands/context/write.js";
 
-describe("external Context read activation receipt", () => {
-  it.each([
-    ["codex", { kind: "pathless" }, ["--pathless"]],
-    ["claude-code", { kind: "path", root: "/work/project" }, ["--project-root", "/work/project"]],
-  ] as const)("returns the resolver-owned %s project identity for later write reuse", (provider, project, selectorArgs) => {
-    const team = {
-      organizationId: "org_acme",
-      displayName: "Acme",
-      role: "member" as const,
-    };
-    const activationContext = buildConnectedContextAdditionalContext(team);
-    expect(
-      buildExternalContextReadResult(
-        {
-          teamId: "org_acme",
-          snapshotPath: "/tmp/context-tree",
-          commit: "a".repeat(40),
-        },
-        provider,
-        project,
-        activationContext,
-      ),
-    ).toMatchObject({
-      activationProject: { provider, project, selectorArgs },
-      activationContext,
-      snapshotPath: "/tmp/context-tree",
-    });
+describe("external Context read route receipt", () => {
+  it("materializes only an opaque SCOPE-selected candidate", () => {
+    expect(contextReadCommand.description).toContain("SCOPE route receipt");
+    expect(contextReadCommand.name).toBe("snapshot");
+    expect(contextReadCommand.alias).toBe("");
+    expect(contextWriteCommand.name).toBe("write-preflight");
+    expect(contextWriteCommand.alias).toBe("");
   });
 });

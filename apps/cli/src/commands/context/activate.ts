@@ -69,13 +69,10 @@ export async function runContextActivate(context: CommandContext): Promise<void>
       { cwd: hookInput.cwd, sessionId: hookInput.session_id },
       process.env,
     );
-    if (resolution.kind !== "path") {
+    if (resolution.kind === "unknown") {
       print.hook({
         continue: true,
-        systemMessage:
-          resolution.kind === "pathless"
-            ? "First Tree Context is not auto-activated in this pathless session; use the first-tree Skill to activate it manually."
-            : `First Tree Context was not auto-activated: ${resolution.message}`,
+        systemMessage: `First Tree Context was not auto-activated: ${resolution.message}`,
       });
       return;
     }

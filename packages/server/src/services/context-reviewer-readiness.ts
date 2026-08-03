@@ -204,6 +204,7 @@ export async function listContextReviewerCandidates(
         eq(members.id, agents.managerId),
         eq(members.organizationId, input.organizationId),
         eq(members.status, "active"),
+        eq(members.role, "admin"),
       ),
     )
     .where(

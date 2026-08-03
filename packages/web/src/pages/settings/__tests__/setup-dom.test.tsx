@@ -311,7 +311,7 @@ beforeEach(() => {
     role: "admin",
     provider: "claude-code",
     intent: "settings",
-    command: "first-tree-dev --json context enable --provider claude-code --team org-1 --yes",
+    command: "first-tree-dev --json context enable --provider claude-code --team org-1 --plan",
     workingDirectoryInstruction: "Run this from the target repository.",
   });
   authMock.value = {
@@ -985,7 +985,7 @@ describe("Settings Setup overview", () => {
         teamDisplayName: "Acme",
         role: "admin",
         provider,
-        command: `first-tree-dev --json context enable --provider ${provider} --team org-1 --yes`,
+        command: `first-tree-dev --json context enable --provider ${provider} --team org-1 --plan`,
         workingDirectoryInstruction: "Run this from the target repository.",
       }),
     );
@@ -1039,7 +1039,7 @@ describe("Settings Setup overview", () => {
         teamDisplayName: "Acme",
         role: "member",
         provider,
-        command: `first-tree-dev --json context enable --provider ${provider} --team org-1 --yes`,
+        command: `first-tree-dev --json context enable --provider ${provider} --team org-1 --plan`,
         workingDirectoryInstruction: "Run this from the target repository.",
       }),
     );
@@ -1268,6 +1268,8 @@ describe("Settings Setup overview", () => {
             uuid: "reviewer-1",
             name: "context-reviewer",
             displayName: "Context Reviewer",
+            managerHumanAgentId: "human-admin",
+            managerActiveAdmin: true,
           },
         },
       });

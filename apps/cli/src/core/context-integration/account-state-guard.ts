@@ -120,20 +120,22 @@ function readBlockingJournalProvider(path: string) {
     const operationIdValid =
       typeof journal.operationId === "string" &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(journal.operationId);
-    const bindingsValid =
-      contextIntegrationConfigSchema.safeParse({ schemaVersion: 2, bindings: journal.previousBindings }).success ||
+    const configValid =
+      contextIntegrationConfigSchema.safeParse(journal.previousConfig).success ||
       legacyContextIntegrationConfigSchema.safeParse({ schemaVersion: 1, bindings: journal.previousBindings }).success;
     const manifestValid =
       journal.previousInstallManifest === null ||
       contextIntegrationInstallManifestSchema.safeParse(journal.previousInstallManifest).success;
     if (
-      journal.schemaVersion !== 1 ||
+      ![1, 2].includes(Number(journal.schemaVersion)) ||
       !operationIdValid ||
       typeof journal.accountClientId !== "string" ||
       !/^client_[a-f0-9]{8}$/u.test(journal.accountClientId) ||
       !["enable", "disable", "repair"].includes(String(journal.operation)) ||
-      !["prepared", "provider_changed", "binding_changed", "rollback_failed"].includes(String(journal.phase)) ||
-      !bindingsValid ||
+      !["prepared", "provider_changed", "binding_changed", "grant_changed", "rollback_failed"].includes(
+        String(journal.phase),
+      ) ||
+      !configValid ||
       !manifestValid ||
       typeof journal.providerInstalled !== "boolean" ||
       typeof journal.providerEnabled !== "boolean" ||

@@ -1,89 +1,48 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  contextGrantStoreFingerprintAfterGrant,
+  inspectContextGrantStore,
   readContextIntegrationConfig,
-  writeContextBinding,
 } from "../core/context-integration/context-binding-store.js";
 import { contextIntegrationMarketplaceSourcePath } from "../core/context-integration/installer.js";
-import {
-  readContextIntegrationInstallManifest,
-  writeContextIntegrationInstallManifest,
-} from "../core/context-integration/manifest.js";
+import { writeContextIntegrationInstallManifest } from "../core/context-integration/manifest.js";
 import {
   disableContextIntegrationOperation,
   enableContextIntegrationOperation,
   recoverContextIntegrationOperation,
-  repairContextIntegrationOperation,
 } from "../core/context-integration/operation.js";
-import type {
-  ContextIntegrationProviderDriver,
-  ProviderPluginProbe,
-} from "../core/context-integration/provider-driver.js";
+import type { ContextIntegrationProviderDriver } from "../core/context-integration/provider-driver.js";
 
-const originalFirstTreeHome = process.env.FIRST_TREE_HOME;
+const original = process.env.FIRST_TREE_HOME;
 const roots: string[] = [];
-
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  if (originalFirstTreeHome === undefined) delete process.env.FIRST_TREE_HOME;
-  else process.env.FIRST_TREE_HOME = originalFirstTreeHome;
+  if (original === undefined) delete process.env.FIRST_TREE_HOME;
+  else process.env.FIRST_TREE_HOME = original;
 });
 
-function setupHome(prefix: string): string {
-  const home = mkdtempSync(join(tmpdir(), prefix));
-  roots.push(home);
-  process.env.FIRST_TREE_HOME = home;
-  mkdirSync(join(home, "config"), { recursive: true });
-  writeFileSync(join(home, "config", "client.yaml"), "client:\n  id: client_1234abcd\n");
-  return home;
+function setup(): string {
+  const root = mkdtempSync(join(tmpdir(), "context-operation-v3-"));
+  roots.push(root);
+  process.env.FIRST_TREE_HOME = root;
+  mkdirSync(join(root, "config"), { recursive: true });
+  writeFileSync(join(root, "config", "client.yaml"), "client:\n  id: client_1234abcd\n");
+  return root;
 }
 
-function writeRollbackPlugin(marketplaceRoot: string): void {
-  const pluginRoot = join(marketplaceRoot, "plugins", "first-tree-context");
-  mkdirSync(join(pluginRoot, "bin"), { recursive: true });
-  writeFileSync(join(pluginRoot, "bin", "context-session-start"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-  writeFileSync(join(pluginRoot, "old.txt"), "old\n");
+function grant() {
+  return { provider: "codex" as const, organizationId: "org-a", activationScope: { kind: "global" as const } };
 }
 
-function probe(installed: boolean): ProviderPluginProbe {
+function storeFence(target = grant()) {
+  const store = inspectContextGrantStore();
   return {
-    provider: "codex",
-    binaryAvailable: true,
-    version: "0.145.0",
-    compatible: true,
-    installed,
-    enabled: installed,
-    installedPath: installed ? "/provider/cache/first-tree-context" : null,
-    issues: [],
+    beforeFingerprint: store.fingerprint,
+    afterFingerprint: contextGrantStoreFingerprintAfterGrant(store, target),
   };
-}
-
-function driver(installed: boolean) {
-  const install = vi.fn(({ marketplaceRoot }: { marketplaceRoot: string }) => {
-    const installedPath = join(process.env.FIRST_TREE_HOME ?? "", "provider-cache", "first-tree-context");
-    rmSync(installedPath, { recursive: true, force: true });
-    cpSync(join(marketplaceRoot, "plugins", "first-tree-context"), installedPath, { recursive: true });
-    return { ...probe(true), installedPath };
-  });
-  const uninstall = vi.fn();
-  const value: ContextIntegrationProviderDriver = {
-    provider: "codex",
-    executable: "codex",
-    minimumVersion: "0.144.0",
-    probe: () => probe(installed),
-    inspectHook: async () => ({
-      trust: installed ? "trusted" : "unknown",
-      enabled: installed ? true : null,
-      source: installed ? "provider_api" : "unavailable",
-      issues: [],
-    }),
-    validateMarketplace: () => undefined,
-    install,
-    uninstall,
-  };
-  return { value, install, uninstall };
 }
 
 function installManifest() {
@@ -91,493 +50,273 @@ function installManifest() {
     schemaVersion: 1 as const,
     channel: "dev" as const,
     provider: "codex" as const,
-    firstTreeVersion: "0.5.17",
-    bundleVersion: "0.5.17",
+    firstTreeVersion: "0.5.18",
+    bundleVersion: "0.5.18",
     bundleDigest: `sha256:${"1".repeat(64)}`,
     policyDigest: `sha256:${"2".repeat(64)}`,
     adapterDigest: `sha256:${"3".repeat(64)}`,
     marketplaceName: "first-tree-dev",
     pluginName: "first-tree-context",
-    installedAt: "2026-07-28T00:00:00.000Z",
+    installedAt: "2026-08-03T00:00:00.000Z",
   };
 }
 
-describe("Context integration cross-resource operation", () => {
-  it("fails enable closed before mutation when the provider Plugin is installed but disabled", () => {
-    setupHome("first-tree-context-operation-disabled-");
-    const manifest = installManifest();
-    writeContextIntegrationInstallManifest(manifest);
-    const stableMarketplace = contextIntegrationMarketplaceSourcePath("codex");
-    writeRollbackPlugin(stableMarketplace);
+function seedRollbackPlugin(): void {
+  const root = join(contextIntegrationMarketplaceSourcePath("codex"), "plugins", "first-tree-context");
+  mkdirSync(join(root, "bin"), { recursive: true });
+  writeFileSync(join(root, "bin", "context-session-start"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+}
+
+const driver: ContextIntegrationProviderDriver = {
+  provider: "codex",
+  executable: "codex",
+  minimumVersion: "0.144.0",
+  probe: () => ({
+    provider: "codex",
+    binaryAvailable: true,
+    version: "0.145.0",
+    compatible: true,
+    installed: false,
+    enabled: false,
+    installedPath: null,
+    issues: [],
+  }),
+  inspectHook: async () => ({ trust: "unknown", enabled: null, source: "unavailable", issues: [] }),
+  validateMarketplace: () => undefined,
+  install: () => {
+    throw new Error("not expected");
+  },
+  uninstall: () => undefined,
+};
+
+const unchangedPlan = {
+  provider: "codex" as const,
+  operation: "unchanged" as const,
+  previous: null,
+  release: {
+    root: "/unused",
+    manifest: {
+      schemaVersion: 1 as const,
+      version: "0.5.18",
+      channel: "dev" as const,
+      bundleDigest: `sha256:${"1".repeat(64)}`,
+      policyDigest: `sha256:${"2".repeat(64)}`,
+      providers: {
+        codex: { adapterDigest: `sha256:${"3".repeat(64)}`, minimumVersion: "0.144.0" },
+        "claude-code": { adapterDigest: `sha256:${"4".repeat(64)}`, minimumVersion: "2.1.121" },
+      },
+    },
+  },
+  probe: driver.probe("first-tree", "first-tree-context"),
+  marketplaceName: "first-tree-dev",
+};
+
+describe("v3 grant operation", () => {
+  it("atomically adds and removes one exact grant", () => {
+    setup();
+    const grant = { provider: "codex" as const, organizationId: "org-a", activationScope: { kind: "global" as const } };
+    const store = inspectContextGrantStore();
+    enableContextIntegrationOperation(
+      driver,
+      unchangedPlan,
+      grant,
+      {
+        beforeFingerprint: store.fingerprint,
+        afterFingerprint: contextGrantStoreFingerprintAfterGrant(store, grant),
+      },
+      "client_1234abcd",
+    );
+    expect(readContextIntegrationConfig().grants).toEqual([grant]);
+    disableContextIntegrationOperation("codex", {
+      organizationId: "org-a",
+      activationScope: { kind: "global" },
+      expectedConfig: readContextIntegrationConfig(),
+      expectedAccountClientId: "client_1234abcd",
+    });
+    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 3, grants: [] });
+  });
+
+  it("removes only the exact Team and scope while preserving peer grants", () => {
+    setup();
+    const first = grant();
+    const second = {
+      provider: "codex" as const,
+      organizationId: "org-b",
+      activationScope: { kind: "directory" as const, root: "/work/other" },
+    };
+    for (const target of [first, second]) {
+      const store = inspectContextGrantStore();
+      enableContextIntegrationOperation(
+        driver,
+        unchangedPlan,
+        target,
+        {
+          beforeFingerprint: store.fingerprint,
+          afterFingerprint: contextGrantStoreFingerprintAfterGrant(store, target),
+        },
+        "client_1234abcd",
+      );
+    }
+    const before = readContextIntegrationConfig();
+    const result = disableContextIntegrationOperation("codex", {
+      organizationId: first.organizationId,
+      activationScope: first.activationScope,
+      expectedConfig: before,
+      expectedAccountClientId: "client_1234abcd",
+    });
+    expect(result.removed).toEqual([first]);
+    expect(result.remaining).toEqual([second]);
+    expect(readContextIntegrationConfig().grants).toEqual([second]);
+  });
+
+  it("fails before mutation when the installed provider Plugin is disabled", () => {
+    setup();
+    writeContextIntegrationInstallManifest(installManifest());
+    seedRollbackPlugin();
     const install = vi.fn();
     const uninstall = vi.fn();
-    const disabledDriver: ContextIntegrationProviderDriver = {
-      provider: "codex",
-      executable: "codex",
-      minimumVersion: "0.144.0",
-      probe: () => ({ ...probe(true), enabled: false }),
-      inspectHook: async () => ({ trust: "trusted", enabled: false, source: "provider_api", issues: [] }),
-      validateMarketplace: () => undefined,
+    const disabled: ContextIntegrationProviderDriver = {
+      ...driver,
+      probe: () => ({
+        ...driver.probe("first-tree-dev", "first-tree-context"),
+        installed: true,
+        enabled: false,
+        installedPath: "/provider/plugin",
+      }),
       install,
       uninstall,
     };
-    const expectedConfig = readContextIntegrationConfig();
-    const binding = {
-      provider: "codex" as const,
-      project: { kind: "path" as const, root: "/work/payments" },
-      organizationId: "org-acme",
-    };
-    const plan = {
-      provider: "codex" as const,
-      operation: "repair" as const,
-      previous: manifest,
-      release: {
-        root: "/unused",
-        manifest: {
-          schemaVersion: 1 as const,
-          version: "0.5.17",
-          channel: "dev" as const,
-          bundleDigest: manifest.bundleDigest,
-          policyDigest: manifest.policyDigest,
-          providers: {
-            codex: { adapterDigest: manifest.adapterDigest, minimumVersion: "0.144.0" },
-            "claude-code": { adapterDigest: `sha256:${"4".repeat(64)}`, minimumVersion: "2.1.121" },
-          },
-        },
-      },
-      probe: { ...probe(true), enabled: false },
-      marketplaceName: "first-tree-dev",
-    };
-
     expect(() =>
-      enableContextIntegrationOperation(disabledDriver, plan, binding, expectedConfig, "client_1234abcd"),
+      enableContextIntegrationOperation(disabled, unchangedPlan, grant(), storeFence(), "client_1234abcd"),
     ).toThrow("installed but disabled");
     expect(install).not.toHaveBeenCalled();
     expect(uninstall).not.toHaveBeenCalled();
+    expect(readContextIntegrationConfig().grants).toEqual([]);
   });
 
-  it("rejects a stale binding plan before mutating the provider", () => {
-    setupHome("first-tree-context-operation-stale-");
-    const provider = driver(false);
-    const expectedConfig = readContextIntegrationConfig();
-    writeContextBinding({
-      provider: "codex",
-      project: { kind: "path", root: "/work/other" },
-      organizationId: "org-other",
-    });
-
-    expect(() =>
-      enableContextIntegrationOperation(
-        provider.value,
-        {
-          provider: "codex",
-          operation: "install",
-          previous: null,
-          release: {
-            root: "/unused",
-            manifest: {
-              schemaVersion: 1,
-              version: "0.5.17",
-              channel: "dev",
-              bundleDigest: `sha256:${"1".repeat(64)}`,
-              policyDigest: `sha256:${"2".repeat(64)}`,
-              providers: {
-                codex: { adapterDigest: `sha256:${"3".repeat(64)}`, minimumVersion: "0.144.0" },
-                "claude-code": { adapterDigest: `sha256:${"4".repeat(64)}`, minimumVersion: "2.1.121" },
-              },
-            },
-          },
-          probe: probe(false),
-          marketplaceName: "first-tree-dev",
-        },
-        {
-          provider: "codex",
-          project: { kind: "path", root: "/work/payments" },
-          organizationId: "org-acme",
-        },
-        expectedConfig,
-        "client_1234abcd",
-      ),
-    ).toThrow("changed after the displayed plan");
-
-    expect(provider.install).not.toHaveBeenCalled();
-    expect(provider.uninstall).not.toHaveBeenCalled();
-  });
-
-  it("rolls back a newly installed Plugin and manifest when binding persistence fails", () => {
-    const home = setupHome("first-tree-context-operation-enable-");
-    const provider = driver(false);
-    const expectedConfig = readContextIntegrationConfig();
-    const manifest = installManifest();
-    const binding = {
+  it("rejects a stale grant plan before provider mutation", () => {
+    setup();
+    const target = grant();
+    const fence = storeFence(target);
+    const concurrent = {
       provider: "codex" as const,
-      project: { kind: "path" as const, root: "/work/payments" },
-      organizationId: "org-acme",
+      organizationId: "org-b",
+      activationScope: { kind: "global" as const },
     };
-
-    expect(() =>
-      enableContextIntegrationOperation(
-        provider.value,
-        {
-          provider: "codex",
-          operation: "install",
-          previous: null,
-          release: {
-            root: "/unused",
-            manifest: {
-              schemaVersion: 1,
-              version: "0.5.17",
-              channel: "dev",
-              bundleDigest: manifest.bundleDigest,
-              policyDigest: manifest.policyDigest,
-              providers: {
-                codex: { adapterDigest: manifest.adapterDigest, minimumVersion: "0.144.0" },
-                "claude-code": { adapterDigest: `sha256:${"4".repeat(64)}`, minimumVersion: "2.1.121" },
-              },
-            },
-          },
-          probe: probe(false),
-          marketplaceName: "first-tree-dev",
-        },
-        binding,
-        expectedConfig,
-        "client_1234abcd",
-        {
-          install: () => {
-            writeContextIntegrationInstallManifest(manifest);
-            return { manifest, probe: probe(true) };
-          },
-          writeBinding: () => {
-            throw new Error("binding rename failed");
-          },
-        },
-      ),
-    ).toThrow("binding rename failed");
-
-    expect(readContextIntegrationConfig()).toEqual(expectedConfig);
-    expect(readContextIntegrationInstallManifest("codex")).toBeNull();
-    expect(provider.uninstall).toHaveBeenCalled();
-    expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
-  });
-
-  it("removes one binding without reading or changing user-scope Plugin state", () => {
-    const home = setupHome("first-tree-context-operation-disable-");
-    const provider = driver(true);
-    const manifest = installManifest();
-    writeContextIntegrationInstallManifest(manifest);
-    const stableMarketplace = contextIntegrationMarketplaceSourcePath("codex");
-    writeRollbackPlugin(stableMarketplace);
-    const binding = {
-      provider: "codex" as const,
-      project: { kind: "path" as const, root: "/work/payments" },
-      organizationId: "org-acme",
-    };
-    writeContextBinding(binding);
-    const otherBinding = {
-      provider: "codex" as const,
-      project: { kind: "pathless" as const },
-      organizationId: "org-other",
-    };
-    writeContextBinding(otherBinding);
-    const expectedConfig = readContextIntegrationConfig();
-
-    expect(
-      disableContextIntegrationOperation("codex", {
-        project: binding.project,
-        expectedConfig,
-        expectedAccountClientId: "client_1234abcd",
-      }),
-    ).toEqual({
-      removed: [binding],
-      remaining: [otherBinding],
-    });
-
-    expect(readContextIntegrationConfig()).toEqual({ schemaVersion: 2, bindings: [otherBinding] });
-    expect(readContextIntegrationInstallManifest("codex")).toEqual(manifest);
-    expect(readFileSync(join(home, "config", "client.yaml"), "utf8")).toBe("client:\n  id: client_1234abcd\n");
-    expect(existsSync(stableMarketplace)).toBe(true);
-    expect(provider.install).not.toHaveBeenCalled();
-    expect(provider.uninstall).not.toHaveBeenCalled();
-    expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
-  });
-
-  it("persists repair recovery state before the provider mutation starts", () => {
-    const home = setupHome("first-tree-context-operation-repair-");
-    const provider = driver(false);
-    const manifest = installManifest();
-    const plan = {
-      provider: "codex" as const,
-      operation: "install" as const,
-      previous: null,
-      release: {
-        root: "/unused",
-        manifest: {
-          schemaVersion: 1 as const,
-          version: "0.5.17",
-          channel: "dev" as const,
-          bundleDigest: manifest.bundleDigest,
-          policyDigest: manifest.policyDigest,
-          providers: {
-            codex: { adapterDigest: manifest.adapterDigest, minimumVersion: "0.144.0" },
-            "claude-code": { adapterDigest: `sha256:${"4".repeat(64)}`, minimumVersion: "2.1.121" },
-          },
-        },
+    const current = inspectContextGrantStore();
+    enableContextIntegrationOperation(
+      driver,
+      unchangedPlan,
+      concurrent,
+      {
+        beforeFingerprint: current.fingerprint,
+        afterFingerprint: contextGrantStoreFingerprintAfterGrant(current, concurrent),
       },
-      probe: probe(false),
-      marketplaceName: "first-tree-dev",
-    };
-    let journalDuringMutation: unknown;
-
+      "client_1234abcd",
+    );
+    const install = vi.fn();
     expect(() =>
-      repairContextIntegrationOperation(provider.value, plan, {
+      enableContextIntegrationOperation({ ...driver, install }, unchangedPlan, target, fence, "client_1234abcd"),
+    ).toThrow("changed after the displayed plan");
+    expect(install).not.toHaveBeenCalled();
+    expect(readContextIntegrationConfig().grants).toEqual([concurrent]);
+  });
+
+  it("rolls back Plugin, manifest, and grants when grant persistence fails", () => {
+    const home = setup();
+    const target = grant();
+    const uninstall = vi.fn();
+    const installing = { ...driver, uninstall };
+    const plan = { ...unchangedPlan, operation: "install" as const };
+    expect(() =>
+      enableContextIntegrationOperation(installing, plan, target, storeFence(target), "client_1234abcd", {
         install: () => {
-          journalDuringMutation = JSON.parse(
-            readFileSync(join(home, "state", "context", "operation-journal.json"), "utf8"),
-          );
-          throw new Error("provider process interrupted");
+          writeContextIntegrationInstallManifest(installManifest());
+          return { manifest: installManifest(), probe: driver.probe("first-tree-dev", "first-tree-context") };
+        },
+        writeGrant: () => {
+          throw new Error("grant rename failed");
         },
       }),
-    ).toThrow("provider process interrupted");
-
-    expect(journalDuringMutation).toMatchObject({
-      accountClientId: "client_1234abcd",
-      operation: "repair",
-      phase: "prepared",
-      providerInstalled: false,
-    });
-    expect(provider.uninstall).toHaveBeenCalled();
+    ).toThrow("grant rename failed");
+    expect(uninstall).toHaveBeenCalledTimes(1);
+    expect(readContextIntegrationConfig().grants).toEqual([]);
     expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
   });
 
-  it("recovers a crashed provider update from the durable operation snapshot", () => {
-    const home = setupHome("first-tree-context-operation-recovery-");
-    const provider = driver(false);
-    const manifest = installManifest();
-    const binding = {
-      provider: "codex" as const,
-      project: { kind: "path", root: "/work/payments" },
-      organizationId: "org-acme",
+  it("keeps a rollback_failed durable journal when restoration also fails", () => {
+    const home = setup();
+    const target = grant();
+    const failing = {
+      ...driver,
+      uninstall: vi.fn(() => {
+        throw new Error("provider rollback failed");
+      }),
     };
+    expect(() =>
+      enableContextIntegrationOperation(
+        failing,
+        { ...unchangedPlan, operation: "install" as const },
+        target,
+        storeFence(target),
+        "client_1234abcd",
+        {
+          install: () => ({ manifest: installManifest(), probe: driver.probe("first-tree-dev", "first-tree-context") }),
+          writeGrant: () => {
+            throw new Error("grant failed");
+          },
+        },
+      ),
+    ).toThrow(AggregateError);
+    expect(JSON.parse(readFileSync(join(home, "state", "context", "operation-journal.json"), "utf8"))).toMatchObject({
+      phase: "rollback_failed",
+      previousConfig: { schemaVersion: 3, grants: [] },
+    });
+  });
+
+  it("recovers the exact previous v3 grant set from a durable journal", () => {
+    const home = setup();
     const operationId = "12345678-1234-4123-8123-123456789abc";
     const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
-    const recoveryMarketplaceRoot = join(recoveryRoot, "marketplace");
-    writeRollbackPlugin(recoveryMarketplaceRoot);
+    mkdirSync(recoveryRoot, { recursive: true });
     mkdirSync(join(home, "state", "context"), { recursive: true });
     writeFileSync(
       join(home, "state", "context", "operation-journal.json"),
       `${JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         operationId,
         accountClientId: "client_1234abcd",
         provider: "codex",
-        operation: "repair",
-        phase: "provider_changed",
-        previousBindings: [binding],
-        previousInstallManifest: manifest,
-        providerInstalled: true,
-        providerEnabled: true,
-        marketplaceSourceExisted: true,
-        recoveryMarketplaceRoot,
-        startedAt: "2026-07-28T00:00:00.000Z",
+        operation: "enable",
+        phase: "grant_changed",
+        previousConfig: { schemaVersion: 3, grants: [grant()] },
+        previousInstallManifest: null,
+        providerInstalled: false,
+        providerEnabled: false,
+        marketplaceSourceExisted: false,
+        recoveryMarketplaceRoot: null,
+        startedAt: "2026-08-03T00:00:00.000Z",
       })}\n`,
     );
-
-    expect(recoverContextIntegrationOperation(provider.value)).toBe(true);
-    expect(readContextIntegrationConfig().bindings).toEqual([binding]);
-    expect(provider.install).toHaveBeenCalled();
-    expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
+    expect(recoverContextIntegrationOperation(driver)).toBe(true);
+    expect(readContextIntegrationConfig().grants).toEqual([grant()]);
     expect(existsSync(recoveryRoot)).toBe(false);
   });
 
-  it("migrates legacy v1 bindings while recovering an old release journal", () => {
-    const home = setupHome("first-tree-context-operation-v1-recovery-");
-    const provider = driver(false);
-    const operationId = "12345678-1234-4123-8123-123456789abc";
-    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
-    mkdirSync(recoveryRoot, { recursive: true });
-    mkdirSync(join(home, "state", "context"), { recursive: true });
-    writeFileSync(
-      join(home, "state", "context", "operation-journal.json"),
-      `${JSON.stringify({
-        schemaVersion: 1,
-        operationId,
-        accountClientId: "client_1234abcd",
-        provider: "codex",
-        operation: "enable",
-        phase: "binding_changed",
-        previousBindings: [
-          {
-            provider: "codex",
-            checkoutRoot: "/work/legacy-project",
-            repositoryKey: "github.com/acme/legacy",
-            organizationId: "org_acme",
-          },
-        ],
-        previousInstallManifest: null,
-        providerInstalled: false,
-        providerEnabled: false,
-        marketplaceSourceExisted: false,
-        recoveryMarketplaceRoot: null,
-        startedAt: "2026-07-28T00:00:00.000Z",
-      })}\n`,
-    );
-
-    expect(recoverContextIntegrationOperation(provider.value)).toBe(true);
-    expect(readContextIntegrationConfig()).toEqual({
-      schemaVersion: 2,
-      bindings: [
-        {
-          provider: "codex",
-          project: { kind: "path", root: "/work/legacy-project" },
-          organizationId: "org_acme",
-        },
-      ],
-    });
-    expect(provider.uninstall).toHaveBeenCalled();
-    const backupPath = join(home, "config", "context.yaml.v1.bak");
-    expect(readFileSync(backupPath, "utf8")).toContain("repositoryKey: github.com/acme/legacy");
-    expect(readFileSync(backupPath, "utf8")).toContain("checkoutRoot: /work/legacy-project");
-    expect(statSync(backupPath).mode & 0o777).toBe(0o600);
-    expect(existsSync(join(home, "state", "context", "operation-journal.json"))).toBe(false);
-
-    const secondOperationId = "22345678-1234-4123-8123-123456789abc";
-    mkdirSync(join(home, "state", "context", "operation-recovery", secondOperationId), { recursive: true });
-    writeFileSync(
-      join(home, "state", "context", "operation-journal.json"),
-      `${JSON.stringify({
-        schemaVersion: 1,
-        operationId: secondOperationId,
-        accountClientId: "client_1234abcd",
-        provider: "codex",
-        operation: "enable",
-        phase: "binding_changed",
-        previousBindings: [
-          {
-            provider: "codex",
-            checkoutRoot: "/work/later-project",
-            repositoryKey: "github.com/acme/later",
-            organizationId: "org_later",
-          },
-        ],
-        previousInstallManifest: null,
-        providerInstalled: false,
-        providerEnabled: false,
-        marketplaceSourceExisted: false,
-        recoveryMarketplaceRoot: null,
-        startedAt: "2026-07-28T00:00:00.000Z",
-      })}\n`,
-    );
-    expect(recoverContextIntegrationOperation(provider.value)).toBe(true);
-    expect(readFileSync(backupPath, "utf8")).toContain("repositoryKey: github.com/acme/legacy");
-    expect(readFileSync(backupPath, "utf8")).not.toContain("github.com/acme/later");
-  });
-
-  it("keeps the legacy recovery journal when its fixed backup cannot be preserved", () => {
-    const home = setupHome("first-tree-context-operation-v1-backup-failure-");
-    const provider = driver(false);
-    const operationId = "12345678-1234-4123-8123-123456789abc";
-    mkdirSync(join(home, "state", "context", "operation-recovery", operationId), { recursive: true });
-    mkdirSync(join(home, "config", "context.yaml.v1.bak"), { recursive: true });
-    const journalPath = join(home, "state", "context", "operation-journal.json");
-    writeFileSync(
-      journalPath,
-      `${JSON.stringify({
-        schemaVersion: 1,
-        operationId,
-        accountClientId: "client_1234abcd",
-        provider: "codex",
-        operation: "enable",
-        phase: "binding_changed",
-        previousBindings: [
-          {
-            provider: "codex",
-            checkoutRoot: "/work/legacy-project",
-            repositoryKey: "github.com/acme/legacy",
-            organizationId: "org_acme",
-          },
-        ],
-        previousInstallManifest: null,
-        providerInstalled: false,
-        providerEnabled: false,
-        marketplaceSourceExisted: false,
-        recoveryMarketplaceRoot: null,
-        startedAt: "2026-07-28T00:00:00.000Z",
-      })}\n`,
-    );
-
-    expect(() => recoverContextIntegrationOperation(provider.value)).toThrow(
-      "Could not recover the incomplete First Tree Context operation",
-    );
-    expect(existsSync(journalPath)).toBe(true);
-  });
-
-  it("keeps a durable recovery snapshot when retrying the old provider install fails", () => {
-    const home = setupHome("first-tree-context-operation-retry-");
-    const provider = driver(false);
-    provider.install.mockImplementation(() => {
-      throw new Error("provider still unavailable");
-    });
-    const manifest = installManifest();
-    const operationId = "12345678-1234-4123-8123-123456789abc";
-    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
-    const recoveryMarketplaceRoot = join(recoveryRoot, "marketplace");
-    writeRollbackPlugin(recoveryMarketplaceRoot);
-    mkdirSync(join(home, "state", "context"), { recursive: true });
-    const journalPath = join(home, "state", "context", "operation-journal.json");
-    writeFileSync(
-      journalPath,
-      `${JSON.stringify({
-        schemaVersion: 1,
-        operationId,
-        accountClientId: "client_1234abcd",
-        provider: "codex",
-        operation: "repair",
-        phase: "rollback_failed",
-        previousBindings: [],
-        previousInstallManifest: manifest,
-        providerInstalled: true,
-        providerEnabled: true,
-        marketplaceSourceExisted: true,
-        recoveryMarketplaceRoot,
-        startedAt: "2026-07-28T00:00:00.000Z",
-      })}\n`,
-    );
-
-    expect(() => recoverContextIntegrationOperation(provider.value)).toThrow(
-      "Could not recover the incomplete First Tree Context operation",
-    );
-    expect(existsSync(journalPath)).toBe(true);
-    expect(existsSync(recoveryMarketplaceRoot)).toBe(true);
-  });
-
-  it("rejects recovery after the active local account identity changes", () => {
-    const home = setupHome("first-tree-context-operation-account-");
-    const provider = driver(false);
-    const operationId = "12345678-1234-4123-8123-123456789abc";
-    const recoveryRoot = join(home, "state", "context", "operation-recovery", operationId);
-    mkdirSync(recoveryRoot, { recursive: true });
-    mkdirSync(join(home, "state", "context"), { recursive: true });
-    writeFileSync(
-      join(home, "state", "context", "operation-journal.json"),
-      `${JSON.stringify({
-        schemaVersion: 1,
-        operationId,
-        accountClientId: "client_deadbeef",
-        provider: "codex",
-        operation: "enable",
-        phase: "prepared",
-        previousBindings: [],
-        previousInstallManifest: null,
-        providerInstalled: false,
-        providerEnabled: false,
-        marketplaceSourceExisted: false,
-        recoveryMarketplaceRoot: null,
-        startedAt: "2026-07-28T00:00:00.000Z",
-      })}\n`,
-    );
-
-    expect(() => recoverContextIntegrationOperation(provider.value)).toThrow("different local First Tree Computer");
-    expect(provider.install).not.toHaveBeenCalled();
-    expect(provider.uninstall).not.toHaveBeenCalled();
+  it("rejects account changes before any operation mutation", () => {
+    setup();
+    const target = grant();
+    const install = vi.fn();
+    expect(() =>
+      enableContextIntegrationOperation(
+        { ...driver, install },
+        unchangedPlan,
+        target,
+        storeFence(target),
+        "client_other",
+      ),
+    ).toThrow("account changed");
+    expect(install).not.toHaveBeenCalled();
+    expect(readContextIntegrationConfig().grants).toEqual([]);
   });
 });

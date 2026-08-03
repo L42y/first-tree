@@ -31,8 +31,9 @@ project/Team activation.
 
 ## Operate
 
-- Run the Team-authored `context enable --provider codex` handoff with the
-  ordinary parent as `--project-root`.
+- Run the Team-authored `context enable --provider codex ... --plan` handoff
+  with the ordinary parent as `--project-root`, choose directory, and apply the
+  exact returned plan id.
 - Follow only the displayed consent steps: open Codex, run `/hooks`, find First
   Tree Context → SessionStart, enable it, trust it, return to the original
   conversation, and reply `continue` without starting a new session.
@@ -44,8 +45,8 @@ project/Team activation.
 - Disable the Hook while retaining trust, then change the installed Hook
   definition so Codex reports modified trust; inspect status after each state.
 - Repeat enable with the already trusted and enabled Hook.
-- Repeat with `--pathless`; confirm setup can complete without Hook consent and
-  the bundled `first-tree` Skill manually activates the current session.
+- Repeat in a projectless Codex scratch directory, choose session-only, and
+  confirm setup completes without Plugin installation or Hook consent.
 
 ## Observe
 
@@ -66,19 +67,18 @@ project/Team activation.
   to the original conversation and never asks for exit, restart, or a new
   session.
 - Provider compatibility, Plugin installed, Plugin enabled, Hook trusted, Hook
-  enabled, project, project binding, and live activation are separate fields in
+  enabled, project, applicable grants, and live activation are separate fields in
   human and JSON output.
 - Codex `trusted + enabled` renders Hook trusted/enabled as `Yes`; repeating
   enable does not incorrectly ask for another review.
 - Trusted but disabled, untrusted, and modified Hook states remain distinct and
   include the correct `/hooks` repair action.
-- The project binding remains visible when live activation is
-  temporarily unavailable; no cached Team authority is presented as
-  connected.
-- The ordinary non-Git parent and both nested repositories resolve the same
-  longest-ancestor project binding without Git remote inspection.
-- A known Codex scratch path is pathless/no-auto; an attached project session
-  auto-activates only its matching path binding.
+- Applicable grants remain visible when live activation is unavailable; no
+  cached Team authority is presented as connected.
+- The ordinary non-Git parent and both nested repositories resolve all Teams at
+  the same deepest directory root without Git remote inspection.
+- A Codex scratch path is shown as a real temporary directory with a warning;
+  session-only does not auto-activate a future session.
 
 ## Expected Result
 
@@ -87,7 +87,7 @@ consent remains provider-owned, trusted/enabled state is reported accurately,
 and every status layer and project-resolution failure stays distinct.
 
 `FAIL`: status claims review is required after Codex reports trusted, conflates
-Hook enablement with Plugin enablement, hides the project binding when the server
+Hook enablement with Plugin enablement, hides applicable grants when the server
 is unavailable, merges project-resolution failures, bypasses consent, or
 reports live activation for another project/Team.
 

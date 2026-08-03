@@ -1,269 +1,152 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
-  ContextBindingReplacementRequiredError,
-  type ContextBindingStorePaths,
-  ContextBindingsChangedError,
-  findContextBinding,
+  type ContextGrantStorePaths,
+  ContextGrantsChangedError,
+  contextGrantStoreFingerprintAfterGrant,
+  inspectContextGrantStore,
+  prepareContextGrantStoreForApply,
   readContextIntegrationConfig,
-  removeContextBindings,
-  writeContextBinding,
+  removeContextGrants,
+  resolveContextGrantCandidates,
+  writeContextGrant,
 } from "../core/context-integration/context-binding-store.js";
 
-function paths(root: string): ContextBindingStorePaths {
+const roots: string[] = [];
+afterEach(() => roots.splice(0));
+
+function paths(): ContextGrantStorePaths {
+  const root = mkdtempSync(join(tmpdir(), "context-grants-"));
+  roots.push(root);
   return {
-    configPath: join(root, "config", "context.yaml"),
+    configPath: join(root, "context.yaml"),
     lockPath: join(root, "state", "context", "install.lock"),
-    legacyBackupPath: join(root, "config", "context.yaml.v1.bak"),
+    legacyV1BackupPath: join(root, "context.yaml.v1.bak"),
+    legacyV2BackupPath: join(root, "context.yaml.v2.bak"),
   };
 }
 
-function temporaryPaths(prefix: string): ContextBindingStorePaths {
-  return paths(mkdtempSync(join(tmpdir(), prefix)));
-}
-
-describe("context binding store v2", () => {
-  it("stores one Team per provider and project and uses longest ancestor matching", () => {
-    const storePaths = temporaryPaths("context-binding-");
-    const parent = {
-      provider: "codex" as const,
-      project: { kind: "path" as const, root: "/work" },
-      organizationId: "org_parent",
-    };
-    const nested = {
-      provider: "codex" as const,
-      project: { kind: "path" as const, root: "/work/payments" },
-      organizationId: "org_nested",
-    };
-    writeContextBinding(parent, { paths: storePaths });
-    writeContextBinding(nested, { paths: storePaths });
-
-    expect(findContextBinding("codex", { kind: "path", root: "/work/payments/src" }, storePaths)).toEqual(nested);
-    expect(findContextBinding("codex", { kind: "path", root: "/workspace" }, storePaths)).toBeNull();
-    expect(statSync(storePaths.configPath).mode & 0o777).toBe(0o600);
-  });
-
-  it("keeps pathless exact and never uses it as a path fallback", () => {
-    const storePaths = temporaryPaths("context-binding-pathless-");
-    const binding = {
-      provider: "codex" as const,
-      project: { kind: "pathless" as const },
-      organizationId: "org_pathless",
-    };
-    writeContextBinding(binding, { paths: storePaths });
-
-    expect(findContextBinding("codex", { kind: "pathless" }, storePaths)).toEqual(binding);
-    expect(findContextBinding("codex", { kind: "path", root: "/work/project" }, storePaths)).toBeNull();
-  });
-
-  it("requires confirmation and compare-and-swap when replacing a project Team", () => {
-    const storePaths = temporaryPaths("context-binding-replace-");
-    const observed = {
-      provider: "claude-code" as const,
-      project: { kind: "path" as const, root: "/work/payments" },
-      organizationId: "org_old",
-    };
-    const intervening = { ...observed, organizationId: "org_intervening" };
-    writeContextBinding(observed, { paths: storePaths });
-    expect(() => writeContextBinding(intervening, { paths: storePaths })).toThrow(
-      ContextBindingReplacementRequiredError,
+describe("v3 Context grants", () => {
+  it("returns all Teams at the deepest directory and otherwise global Teams", () => {
+    const store = paths();
+    for (const grant of [
+      { provider: "codex" as const, organizationId: "global", activationScope: { kind: "global" as const } },
+      {
+        provider: "codex" as const,
+        organizationId: "a",
+        activationScope: { kind: "directory" as const, root: "/work" },
+      },
+      {
+        provider: "codex" as const,
+        organizationId: "b",
+        activationScope: { kind: "directory" as const, root: "/work/app" },
+      },
+      {
+        provider: "codex" as const,
+        organizationId: "c",
+        activationScope: { kind: "directory" as const, root: "/work/app" },
+      },
+    ])
+      writeContextGrant(grant, { paths: store });
+    expect(resolveContextGrantCandidates("codex", { kind: "path", root: "/work/app/src" }, store)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ grant: expect.objectContaining({ organizationId: "b" }), priority: "directory" }),
+        expect.objectContaining({ grant: expect.objectContaining({ organizationId: "c" }), priority: "directory" }),
+      ]),
     );
-    writeContextBinding(intervening, { paths: storePaths, allowReplace: true });
-    expect(() =>
-      writeContextBinding(
-        { ...observed, organizationId: "org_requested" },
-        { paths: storePaths, allowReplace: true, expectedPrevious: observed },
-      ),
-    ).toThrow(ContextBindingsChangedError);
-  });
-
-  it("removes only the effective deepest project binding", () => {
-    const storePaths = temporaryPaths("context-binding-remove-");
-    const parent = {
-      provider: "codex" as const,
-      project: { kind: "path" as const, root: "/work" },
-      organizationId: "org_parent",
-    };
-    const nested = {
-      provider: "codex" as const,
-      project: { kind: "path" as const, root: "/work/a" },
-      organizationId: "org_nested",
-    };
-    const pathless = {
-      provider: "codex" as const,
-      project: { kind: "pathless" as const },
-      organizationId: "org_pathless",
-    };
-    const otherProvider = {
-      provider: "claude-code" as const,
-      project: { kind: "path" as const, root: "/work/a" },
-      organizationId: "org_claude",
-    };
-    for (const binding of [parent, nested, pathless, otherProvider]) {
-      writeContextBinding(binding, { paths: storePaths });
-    }
-
-    const effective = findContextBinding("codex", { kind: "path", root: "/work/a/src" }, storePaths);
-    expect(effective).toEqual(nested);
     expect(
-      removeContextBindings("codex", {
-        project: effective?.project ?? { kind: "path", root: "/missing" },
-        paths: storePaths,
-      }).removed,
-    ).toEqual([nested]);
-    expect(readContextIntegrationConfig(storePaths).bindings).toEqual(
-      expect.arrayContaining([parent, pathless, otherProvider]),
+      resolveContextGrantCandidates("codex", { kind: "path", root: "/elsewhere" }, store)[0]?.grant.organizationId,
+    ).toBe("global");
+  });
+
+  it("removes only the exact Team + scope grant", () => {
+    const store = paths();
+    writeContextGrant(
+      { provider: "codex", organizationId: "a", activationScope: { kind: "global" } },
+      { paths: store },
     );
+    writeContextGrant(
+      { provider: "codex", organizationId: "b", activationScope: { kind: "global" } },
+      { paths: store },
+    );
+    removeContextGrants("codex", { organizationId: "a", activationScope: { kind: "global" }, paths: store });
+    expect(readContextIntegrationConfig(store).grants).toEqual([
+      { provider: "codex", organizationId: "b", activationScope: { kind: "global" } },
+    ]);
   });
 
-  it("keeps a valid v2 config after removing the final binding", () => {
-    const storePaths = temporaryPaths("context-binding-remove-final-");
-    const binding = {
+  it("atomically backs up v2 and starts empty v3 without widening old bindings", () => {
+    const store = paths();
+    writeFileSync(
+      store.configPath,
+      "schemaVersion: 2\nbindings:\n  - provider: codex\n    project:\n      kind: pathless\n    organizationId: old-team\n",
+      { mode: 0o600 },
+    );
+    expect(readContextIntegrationConfig(store)).toEqual({ schemaVersion: 3, grants: [] });
+    expect(store.legacyV2BackupPath).toBeDefined();
+    if (!store.legacyV2BackupPath) throw new Error("expected legacy v2 backup path");
+    expect(readFileSync(store.legacyV2BackupPath, "utf8")).toContain("old-team");
+    expect(statSync(store.legacyV2BackupPath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(store.configPath, "utf8")).toContain("schemaVersion: 3");
+  });
+
+  it("plans legacy retirement without mutation, then retires only under the exact apply fence", () => {
+    const store = paths();
+    writeFileSync(
+      store.configPath,
+      "schemaVersion: 2\nbindings:\n  - provider: codex\n    project:\n      kind: pathless\n    organizationId: old-team\n",
+      { mode: 0o600 },
+    );
+    const planned = inspectContextGrantStore(store);
+    const grant = {
       provider: "codex" as const,
-      project: { kind: "pathless" as const },
-      organizationId: "org_pathless",
+      organizationId: "new-team",
+      activationScope: { kind: "global" as const },
     };
-    writeContextBinding(binding, { paths: storePaths });
+    expect(planned.kind).toBe("v2");
+    expect(readFileSync(store.configPath, "utf8")).toContain("schemaVersion: 2");
+    if (!store.legacyV2BackupPath) throw new Error("expected legacy v2 backup path");
+    expect(existsSync(store.legacyV2BackupPath)).toBe(false);
 
-    expect(removeContextBindings("codex", { project: binding.project, paths: storePaths }).removed).toEqual([binding]);
-    expect(readContextIntegrationConfig(storePaths)).toEqual({ schemaVersion: 2, bindings: [] });
-    expect(readFileSync(storePaths.configPath, "utf8")).toContain("schemaVersion: 2");
-  });
-
-  it("atomically migrates v1, drops repository identity, and preserves a fixed backup", () => {
-    const storePaths = temporaryPaths("context-binding-migrate-");
-    mkdirSync(dirname(storePaths.configPath), { recursive: true });
-    const legacy = [
-      "schemaVersion: 1",
-      "bindings:",
-      "  - provider: codex",
-      "    checkoutRoot: /work/plain-project",
-      "    repositoryKey: github.com/acme/repo",
-      "    organizationId: org_acme",
-      "",
-    ].join("\n");
-    writeFileSync(storePaths.configPath, legacy);
-
-    expect(readContextIntegrationConfig(storePaths)).toEqual({
-      schemaVersion: 2,
-      bindings: [
-        {
-          provider: "codex",
-          project: { kind: "path", root: "/work/plain-project" },
-          organizationId: "org_acme",
-        },
-      ],
-    });
-    expect(readFileSync(storePaths.legacyBackupPath ?? "", "utf8")).toBe(legacy);
-    expect(statSync(storePaths.legacyBackupPath ?? "").mode & 0o777).toBe(0o600);
-    expect(readFileSync(storePaths.configPath, "utf8")).not.toContain("repositoryKey");
-  });
-
-  it.each([
-    "directory",
-    "malformed",
-    "wrong permissions",
-  ] as const)("fails closed when the fixed v1 backup is %s", (backupState) => {
-    const storePaths = temporaryPaths("context-binding-invalid-backup-");
-    mkdirSync(dirname(storePaths.configPath), { recursive: true });
-    const legacy = [
-      "schemaVersion: 1",
-      "bindings:",
-      "  - provider: codex",
-      "    checkoutRoot: /work/plain-project",
-      "    repositoryKey: github.com/acme/repo",
-      "    organizationId: org_acme",
-      "",
-    ].join("\n");
-    writeFileSync(storePaths.configPath, legacy);
-    const backupPath = storePaths.legacyBackupPath ?? "";
-    if (backupState === "directory") {
-      mkdirSync(backupPath);
-    } else if (backupState === "malformed") {
-      writeFileSync(backupPath, "not: a-valid-v1-config\n", { mode: 0o600 });
-    } else {
-      writeFileSync(backupPath, legacy, { mode: 0o600 });
-      chmodSync(backupPath, 0o644);
-    }
-
-    expect(() => readContextIntegrationConfig(storePaths)).toThrow();
-    expect(readFileSync(storePaths.configPath, "utf8")).toBe(legacy);
-  });
-
-  it("does not overwrite an existing valid fixed v1 backup during migration", () => {
-    const storePaths = temporaryPaths("context-binding-existing-backup-");
-    mkdirSync(dirname(storePaths.configPath), { recursive: true });
-    const currentLegacy = [
-      "schemaVersion: 1",
-      "bindings:",
-      "  - provider: codex",
-      "    checkoutRoot: /work/current",
-      "    repositoryKey: github.com/acme/current",
-      "    organizationId: org_current",
-      "",
-    ].join("\n");
-    const existingBackup = [
-      "schemaVersion: 1",
-      "bindings:",
-      "  - provider: codex",
-      "    checkoutRoot: /work/prior",
-      "    repositoryKey: github.com/acme/prior",
-      "    organizationId: org_prior",
-      "",
-    ].join("\n");
-    writeFileSync(storePaths.configPath, currentLegacy);
-    writeFileSync(storePaths.legacyBackupPath ?? "", existingBackup, { mode: 0o600 });
-
-    expect(readContextIntegrationConfig(storePaths).schemaVersion).toBe(2);
-    expect(readFileSync(storePaths.legacyBackupPath ?? "", "utf8")).toBe(existingBackup);
-  });
-
-  it("fails closed on malformed config without overwriting it", () => {
-    const storePaths = temporaryPaths("context-binding-invalid-");
-    mkdirSync(dirname(storePaths.configPath), { recursive: true });
-    writeFileSync(storePaths.configPath, "bindings: nope\n");
-    expect(() => readContextIntegrationConfig(storePaths)).toThrow(/Invalid First Tree Context binding config/);
-    expect(readFileSync(storePaths.configPath, "utf8")).toBe("bindings: nope\n");
-  });
-
-  it("fails closed on conflicting legacy bindings without creating a backup or overwriting config", () => {
-    const storePaths = temporaryPaths("context-binding-conflicting-legacy-");
-    mkdirSync(dirname(storePaths.configPath), { recursive: true });
-    const legacy = [
-      "schemaVersion: 1",
-      "bindings:",
-      "  - provider: codex",
-      "    checkoutRoot: /work/project",
-      "    repositoryKey: github.com/acme/one",
-      "    organizationId: org_one",
-      "  - provider: codex",
-      "    checkoutRoot: /work/project",
-      "    repositoryKey: github.com/acme/two",
-      "    organizationId: org_two",
-      "",
-    ].join("\n");
-    writeFileSync(storePaths.configPath, legacy);
-
-    expect(() => readContextIntegrationConfig(storePaths)).toThrow(/Invalid First Tree Context binding config/);
-    expect(readFileSync(storePaths.configPath, "utf8")).toBe(legacy);
-    expect(() => statSync(storePaths.legacyBackupPath ?? "")).toThrow();
-  });
-
-  it("does not steal a live integration operation lock", () => {
-    const storePaths = temporaryPaths("context-binding-lock-");
-    mkdirSync(dirname(storePaths.lockPath), { recursive: true });
-    writeFileSync(storePaths.lockPath, `${process.pid}\n`);
-    expect(() =>
-      writeContextBinding(
-        {
-          provider: "codex",
-          project: { kind: "path", root: "/work/payments" },
-          organizationId: "org_acme",
-        },
-        { paths: storePaths },
+    expect(
+      prepareContextGrantStoreForApply(
+        planned.fingerprint,
+        contextGrantStoreFingerprintAfterGrant(planned, grant),
+        grant,
+        store,
       ),
-    ).toThrow("Another First Tree Context integration change is already running.");
+    ).toEqual({ schemaVersion: 3, grants: [] });
+    expect(existsSync(store.legacyV2BackupPath)).toBe(true);
+  });
+
+  it("accepts only the exact target grant as an idempotent Trust retry", () => {
+    const store = paths();
+    const planned = inspectContextGrantStore(store);
+    const target = {
+      provider: "codex" as const,
+      organizationId: "target",
+      activationScope: { kind: "global" as const },
+    };
+    const after = contextGrantStoreFingerprintAfterGrant(planned, target);
+    writeContextGrant(target, { paths: store });
+    expect(prepareContextGrantStoreForApply(planned.fingerprint, after, target, store).grants).toEqual([target]);
+
+    writeContextGrant(
+      { provider: "codex", organizationId: "concurrent", activationScope: { kind: "global" } },
+      { paths: store },
+    );
+    expect(() => prepareContextGrantStoreForApply(planned.fingerprint, after, target, store)).toThrow(
+      ContextGrantsChangedError,
+    );
+    removeContextGrants("codex", {
+      organizationId: "target",
+      activationScope: { kind: "global" },
+      paths: store,
+    });
+    expect(() => prepareContextGrantStoreForApply(planned.fingerprint, after, target, store)).toThrow(
+      ContextGrantsChangedError,
+    );
   });
 });

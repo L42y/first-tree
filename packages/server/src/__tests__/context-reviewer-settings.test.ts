@@ -295,6 +295,52 @@ describe("Context Reviewer assignment/readiness contract", () => {
     });
   });
 
+  it("excludes and rejects a Reviewer whose active manager is not a Team Admin", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const organizationId = `org-reviewer-member-${randomUUID().slice(0, 8)}`;
+    const memberId = uuidv7();
+    await app.db.transaction(async (tx) => {
+      await tx.insert(organizations).values({
+        id: organizationId,
+        name: `reviewer-member-${randomUUID().slice(0, 8)}`,
+        displayName: "Reviewer Member Team",
+      });
+      const human = await createAgent(tx as unknown as typeof app.db, {
+        name: `reviewer-member-owner-${randomUUID().slice(0, 8)}`,
+        type: "human",
+        displayName: "Reviewer Member Owner",
+        managerId: memberId,
+        organizationId,
+      });
+      await tx.insert(members).values({
+        id: memberId,
+        userId: admin.userId,
+        organizationId,
+        agentId: human.uuid,
+        role: "member",
+      });
+    });
+    const reviewer = await createAgent(app.db, {
+      name: `member-managed-reviewer-${randomUUID().slice(0, 8)}`,
+      type: "agent",
+      displayName: "Member Managed Reviewer",
+      managerId: memberId,
+      organizationId,
+      visibility: "organization",
+      clientId: admin.clientId,
+    });
+    await seedHealthyAgentRuntime(app, { agentUuid: reviewer.uuid, clientId: admin.clientId, now: observedAt });
+    await expect(
+      listContextReviewerCandidates(app.db, { organizationId, now: observedAt, staleSeconds: 60 }),
+    ).resolves.toMatchObject({ items: [] });
+    await expect(
+      putContextReviewerAssignment(app.db, organizationId, reviewer.uuid, { updatedBy: admin.userId }),
+    ).rejects.toMatchObject({
+      blocker: { code: "context_review_agent_manager_inactive" },
+    });
+  });
+
   it("keeps an assignment visible while the independent Tree binding is unavailable", async () => {
     const app = getApp();
     const admin = await createAdminContext(app);

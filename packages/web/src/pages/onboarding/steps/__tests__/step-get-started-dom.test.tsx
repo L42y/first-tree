@@ -174,7 +174,7 @@ beforeEach(() => {
     role: "member",
     provider,
     intent: "onboarding",
-    command: `'first-tree' --json context enable --provider '${provider}' --team 'org-1' --yes`,
+    command: `'first-tree' --json context enable --provider '${provider}' --team 'org-1' --plan`,
     workingDirectoryInstruction: "Run this once from the root of the code repository.",
   }));
 });

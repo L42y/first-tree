@@ -1,13 +1,15 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
+  type ContextActivationScope,
   type ContextIntegrationProject,
   type ContextIntegrationProvider,
   parseStrictTeamSkillMarkdown,
 } from "@first-tree/shared";
-import { buildConnectedContextAdditionalContext } from "./activation.js";
+import { buildByoContextAdditionalContext } from "./activation.js";
 
-const CURRENT_SESSION_SKILL_NAMES = ["first-tree", "first-tree-read", "first-tree-write"] as const;
+const PERSISTENT_SKILL_NAMES = ["first-tree", "first-tree-read", "first-tree-write"] as const;
+const SESSION_SKILL_NAMES = ["first-tree-read", "first-tree-write"] as const;
 
 export type CurrentSessionSkill = {
   name: string;
@@ -16,14 +18,15 @@ export type CurrentSessionSkill = {
 };
 
 export type CurrentSessionHandoff = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   provider: ContextIntegrationProvider;
   project: ContextIntegrationProject;
+  consumerKind: "byo";
+  activationScope: ContextActivationScope;
+  sessionCandidate: { receipt: string } | null;
   activationContext: string;
   skills: CurrentSessionSkill[];
 };
-
-type ConnectedTeam = Parameters<typeof buildConnectedContextAdditionalContext>[0];
 
 /**
  * Builds the one-shot catalog used by the coding agent that installed the
@@ -34,12 +37,15 @@ type ConnectedTeam = Parameters<typeof buildConnectedContextAdditionalContext>[0
 export function buildCurrentSessionHandoff(input: {
   provider: ContextIntegrationProvider;
   project: ContextIntegrationProject;
-  team: ConnectedTeam;
-  installedPluginRoot: string;
+  activationScope: ContextActivationScope;
+  organizationId: string;
+  sessionCandidateReceipt?: string;
+  pluginRoot: string;
 }): CurrentSessionHandoff {
-  const pluginRoot = assertPluginRoot(input.installedPluginRoot);
+  const pluginRoot = assertPluginRoot(input.pluginRoot);
   const skillsRoot = assertDirectory(join(pluginRoot, "skills"), "Context Plugin skills directory");
-  const skills = CURRENT_SESSION_SKILL_NAMES.map((expectedName) => {
+  const expectedSkills = input.activationScope.kind === "session" ? SESSION_SKILL_NAMES : PERSISTENT_SKILL_NAMES;
+  const skills = expectedSkills.map((expectedName) => {
     const skillRoot = assertDirectory(join(skillsRoot, expectedName), `Context Skill ${expectedName} directory`);
     const skillPath = resolve(skillRoot, "SKILL.md");
     assertContained(pluginRoot, skillPath);
@@ -73,12 +79,25 @@ export function buildCurrentSessionHandoff(input: {
   });
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     provider: input.provider,
     project: input.project,
-    activationContext: buildConnectedContextAdditionalContext(input.team),
+    consumerKind: "byo",
+    activationScope: input.activationScope,
+    sessionCandidate:
+      input.activationScope.kind === "session"
+        ? { receipt: requireSessionCandidateReceipt(input.sessionCandidateReceipt) }
+        : null,
+    activationContext: buildByoContextAdditionalContext(),
     skills,
   };
+}
+
+function requireSessionCandidateReceipt(value: string | undefined): string {
+  if (!value || value.length > 4096 || !/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){1,3}$/u.test(value)) {
+    throw new Error("Session-only Context handoff requires an opaque session candidate receipt.");
+  }
+  return value;
 }
 
 function assertPluginRoot(input: string): string {

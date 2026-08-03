@@ -26,6 +26,8 @@ export type ContextReviewConfigResult = {
   enabled: boolean;
   assigned: boolean;
   agentUuid: string | null;
+  managerHumanAgentId: string | null;
+  managerActiveAdmin: boolean;
 };
 
 export function normalizeContextReviewConfig(
@@ -68,6 +70,16 @@ export function normalizeContextReviewConfig(
     throw new SyntaxError("The server returned an invalid Context Review configuration");
   }
   const config = features.data.contextReviewer;
+  const rawReviewer = value.contextReviewer as Record<string, unknown>;
+  const managerHumanAgentId = rawReviewer.managerHumanAgentId;
+  const managerActiveAdmin = rawReviewer.managerActiveAdmin;
+  if (
+    (managerHumanAgentId !== null && typeof managerHumanAgentId !== "string") ||
+    typeof managerActiveAdmin !== "boolean" ||
+    (managerActiveAdmin && (typeof managerHumanAgentId !== "string" || managerHumanAgentId.length === 0))
+  ) {
+    throw new SyntaxError("The server returned an invalid Context Reviewer manager authority");
+  }
   const resolvedProvider = resolveContextTreeProvider({
     repo: typeof repo === "string" ? repo : null,
     declaredProvider: provider,
@@ -87,6 +99,8 @@ export function normalizeContextReviewConfig(
     enabled: config.enabled,
     assigned: config.enabled && agentId !== undefined && config.agentUuid === agentId,
     agentUuid: config.agentUuid,
+    managerHumanAgentId,
+    managerActiveAdmin,
   };
 }
 
@@ -109,6 +123,8 @@ export async function readMemberContextReviewConfig(
     throw new SyntaxError("The server returned an invalid Context Review configuration");
   }
   const reviewer = features.data.contextReviewer;
+  const managerHumanAgentId = reviewer.reviewerAgent?.managerHumanAgentId ?? null;
+  const managerActiveAdmin = reviewer.reviewerAgent?.managerActiveAdmin === true;
   const provider = resolveContextTreeProvider({
     repo: binding.data.repo,
     declaredProvider: binding.data.provider,
@@ -122,5 +138,7 @@ export async function readMemberContextReviewConfig(
     enabled: reviewer.enabled,
     assigned: reviewer.enabled && reviewer.agentUuid !== null,
     agentUuid: reviewer.agentUuid,
+    managerHumanAgentId,
+    managerActiveAdmin,
   };
 }

@@ -402,6 +402,8 @@ const orgContextReviewerAgentSummarySchema = z.object({
   uuid: z.string().min(1),
   name: z.string().nullable(),
   displayName: z.string().min(1),
+  managerHumanAgentId: z.string().min(1).nullable(),
+  managerActiveAdmin: z.boolean(),
 });
 
 export const orgContextTreeFeaturesStorageSchema = z.object({

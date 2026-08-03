@@ -62,13 +62,7 @@ export function buildByoSetupPrompt({
     ...handoffs.flatMap((handoff, index) => [
       `If you are ${PROVIDER_LABELS[handoff.provider]}:`,
       handoff.command,
-      ...(handoff.provider === "claude-code"
-        ? [
-            "Append exactly one selector from the current Claude Code host identity: `--project-root '<host-confirmed-project-root>'` for an attached project, or `--pathless` for a truly pathless session. Do not derive the root from shell `pwd`/cwd; if the host project identity is unavailable, stop and report that gap.",
-          ]
-        : [
-            "Run this Codex handoff unchanged. Do not append a selector: the CLI owns the centralized canonical-path and scratch-path classifier.",
-          ]),
+      "Run this plan command unchanged. It is read-only and must not install a Plugin, Hook, or grant.",
       ...(index === handoffs.length - 1 ? [] : [""]),
     ]),
   ];
@@ -92,11 +86,13 @@ export function buildByoSetupPrompt({
     "",
     `Target Team ID: ${organizationId}`,
     "",
-    "The local project is only a routing boundary. Do not inspect Git remotes, require a repository root, or register source repositories with First Tree.",
+    "Read only the successful plan envelope. Show me the Team, the exact displayed directory (if any), any temporary-directory warning, and these three choices in plain language: global, this directory and descendants, or this session only. Do not choose for me. Wait for my new reply selecting one choice.",
+    "After I choose, preserve the exact planId and create the apply command only by replacing the final `--plan` with `--scope global|directory|session --plan-id '<exact-planId>' --yes`. Do not add a project selector, Team, or other flag. If the plan changes, show the new plan and ask again.",
+    "Global and directory choices may install the one shared provider Plugin and add this Team grant. Session-only must not install a Plugin or Hook and must not persist a grant. Installing another Team later is expected: it adds another grant while the physical Plugin remains one provider-wide installation.",
     ...(providers.has("codex")
       ? [
           "",
-          "For an attached Codex project, if the JSON result says the First Tree Hook is not trusted or enabled, ask me to run `/hooks` in this Codex session, find First Tree Context → SessionStart, choose Enable + Trust, then return to this original conversation and reply `continue`. Do not ask me to run a CLI command. When I continue, re-run the exact same enable command yourself in this session. A pathless project does not require Hook trust.",
+          "Only after I choose global or directory: if the Codex apply result says the First Tree Hook is not trusted or enabled, ask me to run `/hooks`, find First Tree Context → SessionStart, choose Enable + Trust, then return to this original conversation and reply `continue`. Re-run the exact same apply command. Session-only never requires Hook trust.",
         ]
       : []),
     "",
@@ -104,11 +100,11 @@ export function buildByoSetupPrompt({
     "",
     "Setup is ready only when `data.setup.complete` is `true` and `data.currentSessionHandoff` is present. A Complete result with a missing or invalid handoff is a setup failure: report it and do not reconstruct or guess one. If setup is incomplete for any reason other than the attached-Codex Hook approval described above, stop and report the specific `data.nextActions` recovery instead of claiming success.",
     "",
-    'When the handoff is ready, verify that it has `schemaVersion: 1`; that `provider` exactly matches the selected host and enable command; that `project` is either `{ kind: "path", root: <absolute path> }` or exactly `{ kind: "pathless" }`; a non-empty `activationContext`; and exactly the `first-tree`, `first-tree-read`, and `first-tree-write` Skill entries with non-empty descriptions and absolute `skillPath` values. Any mismatch is a setup failure.',
+    'When the handoff is ready, verify `schemaVersion: 2`, `consumerKind: "byo"`, the selected provider, a valid immutable project receipt, the exact selected activationScope, a non-empty neutral activationContext, and absolute Skill paths. Persistent scopes require exactly first-tree/first-tree-read/first-tree-write and `sessionCandidate: null`; session-only requires exactly first-tree-read/first-tree-write and an opaque sessionCandidate receipt. Any mismatch is a setup failure.',
     "",
     "Preserve the verified `{ provider, project }` as this current session's immutable activation receipt. It is the project identity that survived final binding and Team authority checks. Never replace or reclassify it from a later shell cwd, repository, Context Tree snapshot, or authoring worktree, even if cwd changes after setup.",
     "",
-    "Adopt `activationContext` verbatim as standing instructions for this current session. Treat `skills` as this session's progressive-disclosure catalog: when a task triggers one of those Skills, read the complete `SKILL.md` from its exact `skillPath` before acting. For this session's first `first-tree-read`, use the immutable handoff receipt as the Skill's host-confirmed project selector: pass `--project-root` with the receipt's exact root when `project.kind` is `path`, or pass `--pathless` when it is `pathless`. Never derive that selector from the then-current cwd. Preserve the `activationProject` receipt returned by that Read for every later Read/Write route as the Skill directs. Do not copy, summarize, or invent missing Skill workflows.",
+    "Adopt `activationContext` verbatim. Treat `skills` as the progressive-disclosure catalog and read a triggered SKILL.md completely. At every new task, first-tree-read must run the SCOPE router with this immutable provider/project receipt; for session-only it must also pass only the handoff's opaque sessionCandidate receipt. Read all returned SCOPE bodies before selecting. Never derive Team from cwd or accept an arbitrary Team. Preserve the selected task receipt for Write. Do not copy, summarize, or invent missing workflows.",
     "",
     `Only after adopting the activation context, immutable project receipt, and Skill catalog may you tell me First Tree Team Context is enabled in this current session. Do not require a restart, a new conversation, or Plugin UI hot reload. ${completion}`,
   ].join("\n");

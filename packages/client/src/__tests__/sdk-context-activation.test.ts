@@ -103,6 +103,100 @@ describe("SDK Context activation", () => {
     await expect(sdk.validateMemberContextActivation("org_acme", { schemaVersion: 2 })).rejects.toThrow();
   });
 
+  it("batch-validates only the explicit BYO routing candidate ids", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://first-tree.example/api/v1/me/context-activation/candidates/validate");
+      expect(JSON.parse(String(init?.body))).toEqual({ schemaVersion: 1, organizationIds: ["org_a", "org_b"] });
+      return new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          candidates: [
+            {
+              organizationId: "org_a",
+              outcome: "connected",
+              team: { organizationId: "org_a", displayName: "A", role: "member" },
+              binding: { provider: "github", repo: "https://github.com/acme/tree", branch: "main" },
+            },
+            {
+              organizationId: "org_b",
+              outcome: "unavailable",
+              reasonCode: "not_member",
+              message: "Membership unavailable.",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: "https://first-tree.example",
+      getAccessToken: () => "member-token",
+    });
+
+    await expect(
+      sdk.validateMemberContextRouteCandidates(
+        { schemaVersion: 1, organizationIds: ["org_a", "org_b"] },
+        { retry: false },
+      ),
+    ).resolves.toMatchObject({ candidates: [{ organizationId: "org_a" }, { organizationId: "org_b" }] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues and validates an opaque session-only candidate", async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push(String(input));
+      const body = JSON.parse(String(init?.body));
+      if (String(input).endsWith("/issue")) {
+        expect(body).toMatchObject({ schemaVersion: 1, provider: "codex", organizationId: "org_a" });
+        return new Response(JSON.stringify({ schemaVersion: 1, receipt: "x".repeat(40) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      expect(body).toMatchObject({ schemaVersion: 1, provider: "codex", receipt: "x".repeat(40) });
+      return new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          candidates: [
+            {
+              organizationId: "org_a",
+              outcome: "connected",
+              team: { organizationId: "org_a", displayName: "A", role: "member" },
+              binding: { provider: "github", repo: "https://github.com/acme/tree", branch: "main" },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: "https://first-tree.example",
+      getAccessToken: () => "member-token",
+    });
+    const project = { kind: "path" as const, root: "/tmp/session" };
+    const issued = await sdk.issueMemberContextSessionCandidate({
+      schemaVersion: 1,
+      provider: "codex",
+      project,
+      organizationId: "org_a",
+    });
+    await expect(
+      sdk.validateMemberContextSessionCandidate({
+        schemaVersion: 1,
+        provider: "codex",
+        project,
+        receipt: issued.receipt,
+      }),
+    ).resolves.toMatchObject({ candidates: [{ organizationId: "org_a" }] });
+    expect(calls).toEqual([
+      "https://first-tree.example/api/v1/me/context-activation/session-candidate/issue",
+      "https://first-tree.example/api/v1/me/context-activation/session-candidate/validate",
+    ]);
+  });
+
   it("uses one attempt signal for token acquisition and the activation request", async () => {
     let tokenSignal: AbortSignal | undefined;
     const getAccessToken = vi.fn((options?: { signal?: AbortSignal }) => {

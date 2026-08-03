@@ -16,7 +16,7 @@ function configure(command: Command): void {
   command
     .requiredOption("--provider <provider>", "claude-code or codex")
     .option("--project-root <directory>", "attached provider project root")
-    .option("--pathless", "inspect the provider's pathless project binding");
+    .option("--pathless", "inspect applicable grants for a pathless provider project");
 }
 
 export async function runContextStatus(context: CommandContext): Promise<void> {
@@ -52,8 +52,7 @@ export async function runContextStatus(context: CommandContext): Promise<void> {
   print.status("Hook trusted", renderHookTrust(status.hook));
   print.status("Hook enabled", renderHookEnabled(status.hook));
   renderProject(status);
-  renderBinding(status);
-  renderActivation(status);
+  renderGrants(status);
   for (const issue of status.hook.issues) print.status("Hook issue", issue);
   for (const issue of status.runtime.issues) print.status("Issue", issue);
   for (const item of recovery) print.status("Recovery", item);
@@ -99,39 +98,32 @@ function renderProject(status: ContextIntegrationStatus): void {
   print.status("Project action", status.project.nextAction);
 }
 
-function renderBinding(status: ContextIntegrationStatus): void {
-  if (status.binding.state === "exact") {
-    print.status("Project binding", `Connected — Team ${status.binding.organizationId}`);
+function renderGrants(status: ContextIntegrationStatus): void {
+  if (status.persistentGrants.length === 0) {
+    print.status("Persistent Team grants", "None");
+  } else {
+    for (const grant of status.persistentGrants) {
+      const scope = grant.activationScope.kind === "directory" ? `directory ${grant.activationScope.root}` : "global";
+      print.status("Persistent grant", `${grant.organizationId}; ${scope}`);
+    }
+  }
+  if (status.effectiveCandidates.length === 0) {
+    print.status("Effective candidates", "None for the current project");
     return;
   }
-  if (status.binding.state === "missing") {
-    print.status("Project binding", "Missing");
-    print.status("Binding action", status.binding.nextAction);
-    return;
-  }
-  print.status("Project binding", `Not checked — ${status.binding.reason}`);
-}
-
-function renderActivation(status: ContextIntegrationStatus): void {
-  if (status.activation.state === "connected") {
+  for (const candidate of status.effectiveCandidates) {
+    const scope =
+      candidate.grant.activationScope.kind === "directory"
+        ? `directory ${candidate.grant.activationScope.root}`
+        : "global";
+    const activation =
+      candidate.activation.state === "connected"
+        ? `${candidate.activation.team.displayName} (${candidate.activation.team.role})`
+        : `${candidate.activation.state} — ${candidate.activation.message}`;
     print.status(
-      "Live activation",
-      `Connected — ${status.activation.team.displayName} (${status.activation.team.role})`,
+      "Effective candidate",
+      `${candidate.grant.organizationId}; ${scope}; ${candidate.priority}; ${activation}`,
     );
-    return;
-  }
-  if (status.activation.state === "needs_admin") {
-    print.status("Live activation", `${status.activation.state} — ${status.activation.message}`);
-    if (status.activation.settingsUrl) print.status("Activation action", status.activation.settingsUrl);
-    return;
-  }
-  if (status.activation.state === "unavailable") {
-    print.status("Live activation", `Unavailable — ${status.activation.message}`);
-    print.status("Activation action", status.activation.nextAction);
-    return;
-  }
-  if (status.activation.state === "not_checked") {
-    print.status("Live activation", `Not checked — ${status.activation.reason}`);
   }
 }
 
@@ -139,7 +131,7 @@ export const contextStatusCommand: SubcommandModule = {
   name: "status",
   alias: "",
   summary: "",
-  description: "Inspect the local Context Plugin, binding, and live Team activation.",
+  description: "Inspect the shared Context Plugin, every persistent grant, and current effective candidates.",
   configure,
   action: runContextStatus,
 };

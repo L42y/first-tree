@@ -1197,115 +1197,97 @@ server-side `agent_configs` row through the Admin API.
 
 ## context
 
-Manage the user-scope First Tree Context Plugin for Claude Code or Codex.
-Installation is machine/user scoped, while activation is explicit per provider
-and path/pathless project. The handoff Team is never inferred from Git remotes or other
-memberships.
+Manage external First Tree activation for Claude Code or Codex. The Plugin is
+machine/user scoped and shared by every persistently authorized Team. Team
+eligibility is a set of explicit grants, not one project-to-Team binding.
 
 ```text
 first-tree context
-├── enable --provider claude-code|codex --team ID [--project-root DIR|--pathless] [--yes]
+├── enable --provider claude-code|codex --team ID --plan [--project-root DIR|--pathless]
+├── enable --provider claude-code|codex --team ID \
+│         --scope global|directory|session --plan-id HASH \
+│         [--project-root DIR|--pathless] --yes
 ├── status --provider claude-code|codex [--project-root DIR|--pathless]
 ├── repair --provider claude-code|codex
-└── disable --provider claude-code|codex [--project-root DIR|--pathless] [--yes]
+└── disable --provider claude-code|codex --team ID \
+           --scope global|directory [--directory-root DIR] [--yes]
 ```
 
-Give the provider-neutral Web Setup prompt to the current coding agent. The
-agent selects only its own provider. Codex runs the exact Team-authored command
-unchanged so the CLI applies its centralized classifier. Claude Code appends
-one path/pathless selector from the host-confirmed project identity because
-ordinary shell commands are not guaranteed to receive the Hook-only
-`CLAUDE_PROJECT_DIR`; it must not derive that root from mutable shell cwd.
-Enable installs the provider Plugin
-through the provider's official user-scope lifecycle, and records only the
-provider + project → Team binding in
-`$FIRST_TREE_HOME/config/context.yaml`. It does not create a First Tree Agent,
-Chat, Computer, or runtime session; normal `login` and the existing daemon own
-the Computer connection.
+The server-authored Web prompt first runs `enable --plan`. This operation is
+read-only and returns an exact `planId`, the real provider directory/pathless
+identity, a Codex temporary-directory warning when applicable, and three
+choices:
 
-Enable ends with a layered verification and a single `Setup` verdict —
-`Complete` when every layer (including provider compatibility and payload
-health) and the current-session handoff are verified, or `Incomplete` with the
-missing layers and a recovery step for each. `Setup: Complete` can never coexist
-with a null or unreadable handoff.
-When live activation is connected, enable keeps the top-level canonical Team
-Context block for compatibility and also builds `currentSessionHandoff` from
-the payload-verified provider-installed Plugin. The handoff carries that exact
-`activationContext` plus the absolute paths and strict frontmatter metadata for
-`first-tree`, `first-tree-read`, and `first-tree-write`. The current coding
-agent adopts the context, preserves the verified provider/project as its
-immutable current-session activation receipt, and uses the entries as its
-progressive-disclosure Skill catalog. The first Read derives its exact
-`--project-root` or `--pathless` selector from that receipt rather than a later
-cwd; future attached-path sessions still activate through SessionStart. Human
-mode renders the complete handoff JSON before the readable canonical Team
-Context block.
-Pathless sessions use the bundled `first-tree` Skill for manual activation.
-In `--json` mode these facts appear as `setup`, `activationContext`, and
-`currentSessionHandoff`.
+- `global`: make this Team eligible in all sessions for the provider;
+- `directory`: make it eligible under the displayed canonical directory;
+- `session`: use it only now, without a Plugin, Hook or persistent grant.
 
-For Codex, installation does not grant Hook consent. After the first enable,
-run `/hooks` in the same session, find **First Tree Context → SessionStart**,
-enable its checkbox, choose **Trust**, return to the original setup conversation,
-and reply `continue`. The current coding agent then re-runs the same
-server-authored enable command and adopts its handoff without a restart or a
-new conversation. `context status --provider codex` still shows every layer
-for inspection. Claude Code and Codex pathless setup can consume a complete
-handoff on the first enable without this consent turn.
+The current agent displays those choices and waits for a new user reply. Apply
+must use the unchanged `planId`; identity drift forces a new plan. Global and
+directory install/update the shared Plugin and add one schema-v3 grant.
+Session-only verifies the release bundle, writes no grant, and returns only
+Read/Write Skills plus a signed opaque candidate receipt.
 
-`context status` reports provider compatibility, Plugin installed/enabled,
-Hook trusted/enabled, current project, project binding, and live Team activation
-as separate layers. It reads Codex Hook state from the provider-owned
-`hooks/list` API and distinguishes trusted, changed, review-required, and
-disabled states. It also checks the Plugin manifest and the actual
-provider-installed Skill/Policy/hook bytes. `context repair` revalidates and reinstalls only First Tree's
-Plugin through the durable outer operation journal used by enable and repair,
-with rollback to the prior provider cache on failure. Binding-only disable uses
-the account/context mutation lock, an expected-config comparison, and atomic
-config replacement; it does not create an outer operation journal and never
-captures, removes, or restores provider Plugin state. Context mutations and local
-Client account switching are mutually exclusive; incomplete operations retain
-the exact Computer identity and must be recovered under that same account.
-An installed-but-disabled Plugin fails before mutation because its prior
-enabled state cannot be restored through the supported provider CLI. Because provider
-CLIs retain their local marketplace reference,
-First Tree keeps that source under
-`$FIRST_TREE_HOME/state/context/providers/<provider>/marketplace`; the
-installed Plugin cache remains provider-owned. `context disable` removes only
-the current effective project binding. It preserves the user-scope Plugin,
-retained marketplace source, local account, and every other project binding.
-If removal exposes a parent path binding, the result is `fallback_active` and
-reports that still-effective Team/root plus the next one-binding disable
-command instead of claiming the queried project is disabled.
-Context already injected into the current session cannot be revoked; the
-change applies to future sessions and explicit activations. Provider-native
-hook trust remains provider-owned.
+Successful apply returns `currentSessionHandoff` schema v2. It contains
+immutable provider/project identity, `consumerKind: byo`, activation scope,
+neutral standing routing context, and absolute payload-verified Skill paths.
+Persistent scope returns `first-tree`, `first-tree-read`, and
+`first-tree-write`; session scope returns Read/Write only. Human mode prints
+the full usable JSON handoff.
 
-`context activate` is an internal SessionStart bridge and is intentionally
-hidden from help. It always allows the provider session to continue, even when
-First Tree is offline or activation fails. Its single two-second authority
-attempt covers both access-token refresh and the validator request, and runs
-inside a five-second provider hook budget so First Tree can return a controlled
-unavailable result instead of being terminated by the provider.
-If the installed Plugin payload is stale, the bridge returns `continue: true`,
-tells the user ordinary work can continue, and instructs the Agent to run the
-current channel's repair command only after explicit user intent.
+For persistent Codex setup, Hook consent remains provider-owned: open
+`/hooks`, enable and Trust **First Tree Context → SessionStart**, return to the
+same conversation, and reply `continue`. The same agent reruns apply and
+adopts the handoff. Session-only installs no Hook, so it needs no Trust.
+Claude Code consumes its handoff without a separate consent turn.
 
-The external Plugin also uses hidden `context read` and `context write`
-bridges. They do not accept `--team`: each derives Team from the exact current
-provider + project binding, repeats live membership and Context Tree readiness
-validation, and only then delegates to the ordinary `tree read` or
-`tree write` implementation. The first hidden Read resolves the provider
-project and returns an additive `activationProject` receipt; later Write calls
-reuse that exact path/pathless identity instead of reclassifying a changed
-working directory. Status and these explicit routes use five-second
-authority attempts covering token refresh plus validation, and retry the same
-exact Team once only after a timeout, network failure, or HTTP 5xx
-response. Authentication, authorization, binding, scope, and typed disabled
-results do not retry.
-Failures retain stable timeout, network, server, or rejection reason codes
-without using cached authority. Managed and clean explicit-Team callers
-continue to use the public `tree` commands directly.
+`context.yaml` schema v3 stores zero or more global/directory grants keyed by
+provider, Team and exact scope. A legacy v2/v1 file is atomically backed up,
+replaced with an empty v3 store, and requires explicit reauthorization. No old
+single-Team resolver remains.
+
+At each new BYO task, the projected Skill calls the hidden route:
+
+```text
+first-tree --json context route --provider PROVIDER \
+  (--project-root DIR|--pathless) [--session-candidate RECEIPT]
+```
+
+The router considers only the highest-priority local set:
+session candidate, otherwise every Team at the deepest matching directory,
+otherwise every global Team. It batch-validates only those Teams, fetches only
+each exact root `SCOPE.md`, and returns complete natural-language bodies plus
+opaque candidate ids. SCOPE text is semantic routing data, never executable
+instructions. The agent selects automatically only when exactly one candidate
+clearly matches; ambiguity or an unavailable plausible candidate requires a
+user choice from the validated set.
+
+After selection, the projected Skill uses:
+
+```text
+first-tree --json context snapshot --candidate CANDIDATE --snapshot NEW_DIR
+first-tree --json context write-preflight --snapshot EXACT_SNAPSHOT [--github-login LOGIN]
+```
+
+These hidden commands do not accept Team ids. Read revalidates the exact
+binding and SCOPE commit before creating one detached task snapshot. Write
+requires that snapshot's opaque route receipt and returns
+`confirmationRequired: true` with an exact plan anchor. The BYO Skill must
+show Team, SCOPE match, source revision, target nodes and mutations, then wait
+for a new user reply before creating an authoring worktree or making any Tree
+mutation.
+
+`context status` reports provider, Plugin/payload, Hook, project identity and
+all applicable highest-priority Team grants independently.
+`context disable` removes one exact global or directory grant while preserving
+the shared Plugin and every other Team. Directory disable requires the exact
+stored root. Already-read model context is not revoked.
+
+`context activate`, `context route`, `context snapshot`, and `context write-preflight`
+are hidden provider bridges. SessionStart injects only the neutral router
+contract; it does not select or expose a Team before task routing. Any
+membership, binding, SCOPE, payload or authority failure is fail-closed for
+First Tree while ordinary provider work can continue.
 
 ---
 
@@ -1339,10 +1321,11 @@ first-tree tree
 │      [--limit N] [--cursor C] [--all]    # this agent's own Context Tree read/write events
 ```
 
-`first-tree tree read` is the BYO Working Agent activation boundary for one
-task. Both `--team <team-id>` and `--snapshot <new-directory>` are required.
-The Team is always explicit: the command does not read a Web selection, the
-account's default organization, a local Agent, or a prior task receipt.
+`first-tree tree read` is the explicit-Team snapshot primitive used by managed
+and administrative workflows. Both `--team <team-id>` and
+`--snapshot <new-directory>` are required. External BYO Skills do not call this
+surface directly; their hidden `context snapshot --candidate` bridge validates the
+opaque SCOPE route receipt before delegating here.
 
 Activation performs one member-authenticated Server request to
 `GET /api/v1/orgs/:orgId/settings/context_tree`. That Class B route resolves
@@ -1388,9 +1371,11 @@ inside `snapshotPath` and read Markdown only from that root. A new task uses a
 new path and a new activation so membership, binding, and branch movement are
 observed.
 
-`first-tree tree write` is the stateless BYO Write preflight for a source-backed
+`first-tree tree write` is the explicit-Team write preflight for a source-backed
 change. It requires the explicit Team and the existing exact snapshot created
-by `tree read`. A GitHub binding also requires the current local `gh` login via
+by `tree read`. External BYO Skills instead use hidden `context write-preflight`, which
+requires the task's SCOPE route receipt and mandatory post-plan user
+confirmation. A GitHub binding also requires the current local `gh` login via
 `--github-login`; a GitLab binding instead verifies local `glab`
 authentication for the exact current connection origin, including a
 non-default HTTPS port. It does not read a Workspace

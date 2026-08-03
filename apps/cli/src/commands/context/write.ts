@@ -1,50 +1,47 @@
+import { createHash } from "node:crypto";
 import type { Command } from "commander";
-import {
-  ExternalContextActivationRequiredError,
-  requireConnectedExternalContext,
-} from "../../core/context-integration/activation.js";
-import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
-import { contextRepairUnavailableMessage } from "../../core/context-integration/repair-guidance.js";
-import { inspectContextIntegrationRuntime } from "../../core/context-integration/runtime-health.js";
+import { readContextRouteReceipt } from "../../core/context-integration/context-route.js";
+import { readContextTreeReadSnapshotIdentity } from "../../core/context-tree-read.js";
 import { ContextTreeWritePreflightCliError, preflightContextTreeWrite } from "../../core/context-tree-write.js";
 import { isJsonMode, print } from "../../core/output.js";
 import { createMemberSdk } from "../_shared/member.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
-import { createContextIntegrationDriver, parseContextProvider } from "./shared.js";
 
-type ContextWriteOptions = {
-  provider?: string;
-  snapshot?: string;
-  githubLogin?: string;
-  projectRoot?: string;
-  pathless?: boolean;
-};
+type ContextWriteOptions = { snapshot?: string; githubLogin?: string };
 
 function configure(command: Command): void {
   command
-    .requiredOption("--provider <provider>", "provider Plugin owner")
-    .requiredOption("--snapshot <directory>", "exact snapshot created by the external Context Read route")
-    .option("--project-root <directory>", "attached provider project root")
-    .option("--pathless", "use the provider's explicit pathless project binding")
+    .requiredOption("--snapshot <directory>", "exact snapshot returned by context snapshot")
     .option("--github-login <login>", "current local gh login for a GitHub PR author");
 }
 
 export async function runContextWrite(context: CommandContext): Promise<void> {
   const options = context.command.opts<ContextWriteOptions>();
-  const provider = parseContextProvider(options.provider ?? "");
-  const health = inspectContextIntegrationRuntime(createContextIntegrationDriver(provider));
-  if (!health.healthy) {
-    print.fail("context_plugin_repair_required", contextRepairUnavailableMessage(provider, health.issues), 1);
-  }
-  const sdk = createMemberSdk();
   try {
-    const activation = await requireConnectedExternalContext(sdk, {
-      provider,
-      project: inspectContextClientPreflight(provider, {
-        projectRoot: options.projectRoot,
-        pathless: options.pathless,
-      }).project,
-    });
+    const snapshotIdentity = readContextTreeReadSnapshotIdentity(options.snapshot ?? "");
+    if (!snapshotIdentity?.routeCandidateId) {
+      print.fail(
+        "CONTEXT_TREE_WRITE_ROUTE_REQUIRED",
+        "The snapshot does not carry a BYO SCOPE route receipt. Run first-tree-read for this task again.",
+        2,
+      );
+      throw new Error("unreachable");
+    }
+    const candidate = readContextRouteReceipt(snapshotIdentity.routeCandidateId);
+    if (
+      candidate.organizationId !== snapshotIdentity.teamId ||
+      candidate.commit !== snapshotIdentity.commit ||
+      candidate.binding.repo !== snapshotIdentity.binding.repo ||
+      candidate.binding.branch !== snapshotIdentity.binding.branch
+    ) {
+      print.fail(
+        "CONTEXT_TREE_WRITE_ROUTE_CHANGED",
+        "The selected Team, binding, or exact snapshot no longer matches the task route receipt. Run first-tree-read again.",
+        2,
+      );
+      throw new Error("unreachable");
+    }
+    const sdk = createMemberSdk();
     const preflight = await preflightContextTreeWrite(
       {
         preflightMemberContextTreeWrite(teamId, request, callOptions): Promise<unknown> {
@@ -52,25 +49,43 @@ export async function runContextWrite(context: CommandContext): Promise<void> {
         },
       },
       {
-        teamId: activation.team.organizationId,
+        teamId: candidate.organizationId,
         snapshotPath: options.snapshot ?? "",
         ...(options.githubLogin ? { requesterGithubLogin: options.githubLogin } : {}),
       },
     );
+    const result = {
+      ...preflight,
+      consumerKind: "byo" as const,
+      selectedTeam: {
+        organizationId: candidate.organizationId,
+        displayName: candidate.team.displayName,
+      },
+      routeCandidateId: candidate.candidateId,
+      confirmationRequired: true,
+      confirmationContract:
+        "Show the exact Team, source artifact/revision, target nodes, and proposed mutations. Wait for a new user reply confirming this exact plan before creating an authoring worktree or making any Tree mutation.",
+      writePlanAnchor: createHash("sha256")
+        .update(
+          JSON.stringify({
+            candidateId: candidate.candidateId,
+            teamId: candidate.organizationId,
+            binding: candidate.binding,
+            commit: candidate.commit,
+          }),
+        )
+        .digest("hex"),
+    };
     if (context.options.json || isJsonMode()) {
-      print.result(preflight);
+      print.result(result);
       return;
     }
-    print.status("Team", `${activation.team.displayName} (${preflight.teamId})`);
-    print.status("Provider", preflight.provider);
+    print.status("Team", `${candidate.team.displayName} (${preflight.teamId})`);
     print.status("Binding", `${preflight.binding.repo}#${preflight.binding.branch}`);
     print.status("Exact base", preflight.baseCommit);
-    print.status("Snapshot", preflight.snapshotPath);
     print.status("Current Reviewer", preflight.reviewerAgentUuid);
+    print.status("User confirmation", "Required after the exact write plan is shown");
   } catch (error) {
-    if (error instanceof ExternalContextActivationRequiredError) {
-      print.fail(error.reasonCode, error.message, 1, { status: error.outcome });
-    }
     if (error instanceof ContextTreeWritePreflightCliError) {
       print.fail(error.code, error.message, error.exitCode, { status: error.stage });
     }
@@ -79,11 +94,11 @@ export async function runContextWrite(context: CommandContext): Promise<void> {
 }
 
 export const contextWriteCommand: SubcommandModule = {
-  name: "write",
+  name: "write-preflight",
   hidden: true,
   alias: "",
   summary: "",
-  description: "Internal external-Plugin Write route with project activation.",
+  description: "Validate a BYO write against the task's exact SCOPE route receipt.",
   configure,
   action: runContextWrite,
 };

@@ -28,15 +28,12 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
         `${executable} --json context enable`,
         `--provider ${shellQuote(query.provider)}`,
         `--team ${shellQuote(scope.organizationId)}`,
-        // Both intents run inside a non-TTY coding-agent session, where an
-        // interactive plan confirmation would stall; pasting the prompt is the
-        // member's acceptance of the displayed plan.
-        "--yes",
+        "--plan",
       ].join(" "),
       workingDirectoryInstruction:
         query.provider === "claude-code"
-          ? "Append one host-confirmed Claude Code selector: --project-root <root> for an attached project or --pathless for a truly pathless session. Never derive the project root from shell cwd."
-          : "Run this once unchanged. The First Tree CLI centrally classifies the canonical Codex cwd as an attached or known scratch pathless project.",
+          ? "Run unchanged inside Claude Code. The CLI reads and displays the host-provided Claude project directory before asking for activation scope."
+          : "Run unchanged inside Codex. The CLI displays the real canonical cwd and warns when it is a Codex session temporary directory.",
     });
   });
 }

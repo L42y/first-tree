@@ -164,6 +164,7 @@ async function readAssignableAgentForUpdate(
     .select({
       organizationId: members.organizationId,
       status: members.status,
+      role: members.role,
       userId: members.userId,
     })
     .from(members)
@@ -202,7 +203,7 @@ async function readAssignableAgentForUpdate(
   if (agent.status !== AGENT_STATUSES.ACTIVE) {
     fail(blocker("context_review_agent_inactive", "replace_review_agent"));
   }
-  if (manager?.organizationId !== input.organizationId || manager.status !== "active") {
+  if (manager?.organizationId !== input.organizationId || manager.status !== "active" || manager.role !== "admin") {
     fail(blocker("context_review_agent_manager_inactive", "open_agent_owner_flow"));
   }
   if (agent.visibility !== AGENT_VISIBILITY.ORGANIZATION) {

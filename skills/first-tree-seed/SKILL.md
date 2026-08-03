@@ -1,6 +1,6 @@
 ---
 name: first-tree-seed
-version: 0.5.2
+version: 0.6.0
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: "Bootstrap a team's Context Tree from readable source repos — for an onboarding \"build / set up the Context Tree\" task on a tree that has no domain structure yet: either no tree exists (creates and binds it) or a bound-but-empty tree (fills it). Supports clean explicit-Team invocation without a Workspace manifest, managed briefing, or prior setup-chat transcript, while preserving managed-workspace compatibility. Proposes an initial top-level + second-level domain structure for approval, then drafts initial leaf content — each as a reviewable PR/MR. Refuses unrelated re-seeding once the tree has domain structure and recovers Phase 2 from durable merged Tree state plus the same explicit sources."
@@ -576,6 +576,16 @@ structural decisions.
 
 ## Phase 1 — Structure
 
+Phase 1 also proposes the root `SCOPE.md`. A new Tree has no SCOPE from which
+to route, so Seed always starts from an explicit Team authority; never use the
+multi-Team router to choose a Seed target. Draft a short, domain-neutral
+natural-language description of what knowledge and work this Tree covers.
+Do not require fixed headings, examples, or an exclusions section. Frontmatter
+uses `schemaVersion: 1` and may include `relatedRepositories` when relevant.
+Show the complete proposed SCOPE body in the Phase 1 human confirmation.
+`SCOPE.md` is never silently inferred and committed: its later review also
+requires the Context Reviewer manager's exact-head approval.
+
 **Goal:** produce a top + second-level domain skeleton that reflects
 the team's concern axes (not the codebase's directory layout), drawn
 from observable signals across all resolved source repos.
@@ -698,11 +708,13 @@ domain — even ones marked "recommended ON".
 
 After the user confirms, create on the seed branch:
 
-- `<tree>/NODE.md` — root index, with `## Active Domains`,
-  `## Members`, `## Raw Context` sections enumerating what was opened.
-  Description paragraph drawn verbatim from the most-authoritative
-  source README first paragraph, or summarised in ≤30 words if that
-  paragraph is too long.
+- `<tree>/NODE.md` — root index, with `## Active Domains`, `## Members`, and
+  `## Raw Context` sections enumerating what was opened. Its description
+  paragraph is drawn verbatim from the most-authoritative source README first
+  paragraph, or summarised in ≤30 words if that paragraph is too long.
+- `<tree>/SCOPE.md` — the approved domain-neutral routing description with
+  strict schemaVersion 1 frontmatter; its complete body is the primary routing
+  signal and optional related repository URLs are only supporting signals.
 - `<tree>/members/<owner>/NODE.md` — see frontmatter spec below.
   Body has the owner's identity line plus a `## Recent Contributors`
   list (top 5 from `git log --since='6 months ago'`).

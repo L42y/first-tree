@@ -35,6 +35,8 @@ const features = orgContextTreeFeaturesOutputSchema.parse({
       uuid: "agent-1",
       name: "reviewer",
       displayName: "Context Reviewer",
+      managerHumanAgentId: "human-agent-1",
+      managerActiveAdmin: true,
     },
   },
 });
