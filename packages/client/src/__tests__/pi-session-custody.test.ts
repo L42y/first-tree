@@ -5,11 +5,12 @@ import { join } from "node:path";
 import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
 import { encodeProviderRetryEventMessage, RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPiHandler, type PiRetrySleep } from "../handlers/pi/index.js";
+import { createPiHandler, freshStartPiSessionId, type PiRetrySleep } from "../handlers/pi/index.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { AgentHandler } from "../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
 import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRegistry } from "../runtime/session-registry.js";
 import type { FirstTreeHubSDK } from "../sdk.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
@@ -258,6 +259,16 @@ function readCount(file: string): number {
   }
 }
 
+/** `--session-id` argv of each spawned RPC process (version-gate spawns excluded). */
+function rpcSessionIds(specs: ProviderProcessSpec[]): string[] {
+  return specs
+    .filter((spec) => spec.args.includes("--mode"))
+    .map((spec) => {
+      const index = spec.args.indexOf("--session-id");
+      return index >= 0 ? String(spec.args[index + 1] ?? "") : "";
+    });
+}
+
 function runtimeConfig(): AgentRuntimeConfig {
   return {
     agentId: "agent-1",
@@ -424,6 +435,7 @@ describe("Pi handler → SessionManager custody", () => {
     sendMessage: ReturnType<typeof vi.fn>;
     onHandler?: (handler: ReturnType<typeof createPiHandler>) => void;
     recoverChat?: (chatId: string) => Promise<void>;
+    registryPath?: string;
   }): SessionManager {
     const sdk = {
       register: vi.fn(),
@@ -465,6 +477,7 @@ describe("Pi handler → SessionManager custody", () => {
       log: silentLogger(),
       ackEntry: input.ackEntry,
       ...(input.recoverChat ? { recoverChat: input.recoverChat } : {}),
+      ...(input.registryPath ? { registryPath: input.registryPath } : {}),
       agentConfigCache: cache(runtimeConfig()),
     });
   }
@@ -1953,6 +1966,122 @@ describe("Pi handler → SessionManager custody", () => {
     await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(252));
     expect(readCount(promptCountFile)).toBe(1);
     expect(readCount(steerCountFile)).toBe(1);
+    await sm.shutdown();
+  });
+
+  it("suspend/resume keeps the persisted Pi session identity across spawns", async () => {
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    await sm.dispatch(mockEntry({ id: 301, chatId: "chat-pi-continuity", messageId: "msg-cont-1", content: "first" }));
+    expect(ackEntry).toHaveBeenCalledWith(301);
+    const firstIds = rpcSessionIds(specs);
+    expect(firstIds).toEqual([freshStartPiSessionId("agent-1", "chat-pi-continuity", "msg-cont-1")]);
+
+    await sm.handleCommand("chat-pi-continuity", "session:suspend");
+    await sm.dispatch(mockEntry({ id: 302, chatId: "chat-pi-continuity", messageId: "msg-cont-2", content: "second" }));
+    expect(ackEntry).toHaveBeenCalledWith(302);
+    const allIds = rpcSessionIds(specs);
+    expect(allIds).toHaveLength(2);
+    // Resume reopens the persisted identity — never a message-2-derived id.
+    expect(allIds[1]).toBe(allIds[0]);
+    await sm.shutdown();
+  });
+
+  it("Reset retires the Pi session: post-Reset delivery mints a fresh provider identity", async () => {
+    const registryPath = join(workspaceRoot, "sessions-reset.json");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+
+    await sm.dispatch(
+      mockEntry({ id: 311, chatId: "chat-pi-reset", messageId: "msg-reset-1", content: "before reset" }),
+    );
+    expect(ackEntry).toHaveBeenCalledWith(311);
+    const oldId = freshStartPiSessionId("agent-1", "chat-pi-reset", "msg-reset-1");
+    expect(rpcSessionIds(specs)).toEqual([oldId]);
+
+    // Reset apply resolves only after the mapping deletion is durably flushed.
+    await sm.handleCommand("chat-pi-reset", "session:terminate");
+    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as { entries: Record<string, unknown> };
+    expect(persisted.entries).toEqual({});
+
+    await sm.dispatch(
+      mockEntry({ id: 312, chatId: "chat-pi-reset", messageId: "msg-reset-2", content: "after reset" }),
+    );
+    expect(ackEntry).toHaveBeenCalledWith(312);
+    const allIds = rpcSessionIds(specs);
+    expect(allIds).toHaveLength(2);
+    // Pi keys its on-disk JSONL transcript by session id: a NEW id means the
+    // discarded transcript/model state can never be silently reopened.
+    expect(allIds[1]).toBe(freshStartPiSessionId("agent-1", "chat-pi-reset", "msg-reset-2"));
+    expect(allIds[1]).not.toBe(oldId);
+    await sm.shutdown();
+  });
+
+  it("redelivery of the same first message keeps one fresh-start identity across transient start retry", async () => {
+    setPiTestMode("transient_get_state_once_then_bash_hold");
+    writeFileSync(getStateFailRemainFile, "1");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-reidentity" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+
+    const dispatchPromise = sm.dispatch(
+      mockEntry({ id: 321, chatId: "chat-pi-reidentity", messageId: "msg-reidentity", content: "run sleep 60" }),
+    );
+    await vi.waitFor(() => expect(readCount(bashStartFile)).toBe(1), { timeout: 10_000 });
+    // Initial attempt + transient retry each spawned an RPC process, but the
+    // SAME uncommitted first row must select the SAME provider session —
+    // never a second identity.
+    const ids = rpcSessionIds(specs);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(freshStartPiSessionId("agent-1", "chat-pi-reidentity", "msg-reidentity"));
+    expect(ids[1]).toBe(ids[0]);
+
+    await sm.handleCommand("chat-pi-reidentity", "session:suspend");
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(321));
+    await dispatchPromise;
+    await sm.shutdown();
+  });
+
+  it("Reset apply rejects on registry-flush failure and retry converges to retirement", async () => {
+    const registryPath = join(workspaceRoot, "sessions-reset-flush.json");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+
+    await sm.dispatch(
+      mockEntry({ id: 331, chatId: "chat-pi-reset-flush", messageId: "msg-flush-1", content: "before reset" }),
+    );
+    expect(ackEntry).toHaveBeenCalledWith(331);
+    const oldId = freshStartPiSessionId("agent-1", "chat-pi-reset-flush", "msg-flush-1");
+
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    // The apply must reject instead of acking over a live mapping; the entry
+    // stays retryable (terminatePersistFailures) instead of a false applied.
+    await expect(sm.handleCommand("chat-pi-reset-flush", "session:terminate")).rejects.toBe(boom);
+
+    // Retry converges: mapping durably removed, next delivery mints a fresh id.
+    await sm.handleCommand("chat-pi-reset-flush", "session:terminate");
+    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as { entries: Record<string, unknown> };
+    expect(persisted.entries).toEqual({});
+
+    await sm.dispatch(
+      mockEntry({ id: 332, chatId: "chat-pi-reset-flush", messageId: "msg-flush-2", content: "after reset" }),
+    );
+    expect(ackEntry).toHaveBeenCalledWith(332);
+    const allIds = rpcSessionIds(specs);
+    expect(allIds).toHaveLength(2);
+    expect(allIds[1]).toBe(freshStartPiSessionId("agent-1", "chat-pi-reset-flush", "msg-flush-2"));
+    expect(allIds[1]).not.toBe(oldId);
     await sm.shutdown();
   });
 });

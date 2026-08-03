@@ -105,8 +105,20 @@ export function sanitizePiProviderDetail(raw: string): string {
   return "pi_provider_error";
 }
 
-export function stablePiSessionId(agentId: string, chatId: string): string {
-  return createHash("sha256").update(`first-tree:${agentId}:${chatId}`).digest("hex").slice(0, 32);
+/**
+ * Deterministic Pi session id for a fresh First Tree start, derived from the
+ * first inbound message. This is the provider-session retirement boundary:
+ * Reset (`session:terminate`) durably deletes First Tree's chat→session
+ * mapping, so the next addressed message takes `start` with a NEW first
+ * message id and mints a NEW Pi session id — Pi cannot silently reopen the
+ * discarded on-disk transcript/model state. Suspend, idle yield, daemon
+ * restart, and LRU eviction keep the mapping, and `resume` adopts the
+ * persisted id verbatim, so ordinary continuity is preserved. Crash-redelivery
+ * of the SAME uncommitted first row re-derives the same id, never a second
+ * identity. First Tree never deletes provider-owned session files.
+ */
+export function freshStartPiSessionId(agentId: string, chatId: string, firstMessageId: string): string {
+  return createHash("sha256").update(`first-tree:${agentId}:${chatId}:${firstMessageId}`).digest("hex").slice(0, 32);
 }
 
 export {
@@ -1780,7 +1792,7 @@ export const createPiHandler: HandlerFactory = (config) => {
     }
   }
 
-  async function prepareSession(sessionCtx: SessionContext): Promise<PreparedSession> {
+  async function prepareSession(sessionCtx: SessionContext, resolvedSessionId: string): Promise<PreparedSession> {
     const generation = lifecycleGeneration;
     if (isLandingCampaignTrialAgentMetadata(sessionCtx.agent.metadata)) {
       throw new Error("landing campaign trial agents require the codex app-server workspace-only runtime");
@@ -1793,7 +1805,8 @@ export const createPiHandler: HandlerFactory = (config) => {
     ctx = sessionCtx;
     const workspaceCwd = acquireAgentHome(workspaceRoot);
     cwd = workspaceCwd;
-    const resolvedSessionId = stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId);
+    // The caller owns identity selection: `start` mints a fresh-start id from
+    // the first inbound message; `resume` passes the persisted mapping id.
     sessionId = resolvedSessionId;
 
     let runtimeConfig: AgentRuntimeConfig | null = null;
@@ -1912,18 +1925,19 @@ export const createPiHandler: HandlerFactory = (config) => {
     async start(message, sessionCtx, token) {
       const explicitToken = token !== undefined;
       const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      // Mint the fresh-start identity from the first inbound message (see
+      // freshStartPiSessionId): Reset retires the chat→session mapping, so a
+      // post-Reset start must never reopen the discarded Pi transcript.
+      const startSessionId = freshStartPiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId, message.id);
       let prepared: PreparedSession;
       try {
-        prepared = await prepareSession(sessionCtx);
+        prepared = await prepareSession(sessionCtx, startSessionId);
       } catch (error) {
         if (error instanceof PiLifecycleCancelledError) {
           deliveryToken.retry([message], "pi_turn_cancelled");
           return explicitToken
-            ? {
-                sessionId: stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId),
-                route: { kind: "owned", mode: "processing" },
-              }
-            : stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId);
+            ? { sessionId: startSessionId, route: { kind: "owned", mode: "processing" } }
+            : startSessionId;
         }
         await cleanupFailedInitialization();
         throw error;
@@ -1979,23 +1993,17 @@ export const createPiHandler: HandlerFactory = (config) => {
       const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
       let prepared: PreparedSession;
       try {
-        prepared = await prepareSession(sessionCtx);
+        // Resume adopts the persisted mapping id verbatim: First Tree's
+        // registry is the identity authority and Reset is the retirement
+        // boundary (see freshStartPiSessionId).
+        prepared = await prepareSession(sessionCtx, id);
       } catch (error) {
         if (error instanceof PiLifecycleCancelledError) {
           if (message) deliveryToken.retry([message], "pi_turn_cancelled");
-          return explicitToken
-            ? {
-                sessionId: stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId),
-                route: message ? { kind: "owned", mode: "processing" } : null,
-              }
-            : stablePiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId);
+          return explicitToken ? { sessionId: id, route: message ? { kind: "owned", mode: "processing" } : null } : id;
         }
         await cleanupFailedInitialization();
         throw error;
-      }
-      if (id !== prepared.sessionId) {
-        await cleanupFailedInitialization();
-        throw new Error(`Pi resume session identity mismatch: expected ${prepared.sessionId}, resume requested ${id}`);
       }
       if (message) {
         if (!sessionActive) {

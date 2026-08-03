@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPiChildEnvControls, createPiHandler, stablePiSessionId } from "../handlers/pi/index.js";
+import { applyPiChildEnvControls, createPiHandler, freshStartPiSessionId } from "../handlers/pi/index.js";
 import { buildPiRpcArgs, PiRpcClient } from "../handlers/pi/rpc-client.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
@@ -238,7 +238,7 @@ describe.runIf(runHostSmoke)("Pi host smoke (real 0.83.x)", () => {
       token,
     );
     expect(result).toMatchObject({
-      sessionId: stablePiSessionId("agent-pi-smoke", "chat-pi-smoke"),
+      sessionId: freshStartPiSessionId("agent-pi-smoke", "chat-pi-smoke", "m-smoke"),
       route: { kind: "owned", mode: "processing" },
     });
     expect(token.completed).toEqual([expect.objectContaining({ status: "success" })]);

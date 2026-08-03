@@ -7,12 +7,12 @@ import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPiHandler,
+  freshStartPiSessionId,
   type PiRetrySleep,
   parsePiModelSelector,
   piLifecycleAbortWaiterCountForTests,
   resolvePiNativeToolRefs,
   sanitizePiProviderDetail,
-  stablePiSessionId,
 } from "../handlers/pi/index.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import { clearGitRepoIdentityCacheForTests } from "../runtime/git-repo-identity.js";
@@ -667,7 +667,7 @@ describe("resolvePiNativeToolRefs", () => {
 });
 
 describe("Pi handler", () => {
-  it("uses a stable session id and skills path in rpc args", async () => {
+  it("derives the fresh-start session id from the first inbound message", async () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
@@ -678,11 +678,14 @@ describe("Pi handler", () => {
     });
     const events: SessionEvent[] = [];
     const token = makeToken();
-    const expectedId = stablePiSessionId("agent-pi", "chat-pi");
+    const expectedId = freshStartPiSessionId("agent-pi", "chat-pi", "m1");
     const result = await handler.start(message("m1", "work"), makeContext(events), token);
 
     expect(result).toMatchObject({ sessionId: expectedId, route: { kind: "owned", mode: "processing" } });
-    expect(expectedId).toBe(createHash("sha256").update("first-tree:agent-pi:chat-pi").digest("hex").slice(0, 32));
+    expect(expectedId).toBe(createHash("sha256").update("first-tree:agent-pi:chat-pi:m1").digest("hex").slice(0, 32));
+    // A different first message mints a different provider session identity —
+    // this is what makes Reset a true retirement boundary.
+    expect(freshStartPiSessionId("agent-pi", "chat-pi", "m-other")).not.toBe(expectedId);
     const rpcSpec = specs.find((spec) => spec.args.includes("--mode"));
     expect(rpcSpec?.args).toEqual(
       expect.arrayContaining([
@@ -765,7 +768,7 @@ describe("Pi handler", () => {
     expect(waiterCount()).toBe(1);
     await handler.shutdown();
     await expect(startPromise).resolves.toMatchObject({
-      sessionId: stablePiSessionId("agent-pi", "chat-pi"),
+      sessionId: freshStartPiSessionId("agent-pi", "chat-pi", "m2"),
     });
     expect(waiterCount()).toBe(0);
     // Unblock the orphaned refresh so it cannot leak as an unhandled rejection.
@@ -829,7 +832,9 @@ describe("Pi handler", () => {
     expect(token.processingStarted).toHaveBeenCalled();
     expect(token.completed).toEqual([expect.objectContaining({ status: "error", completion: "consumed" })]);
     expect(readCount(promptCountFile)).toBe(1);
-    expect(readSessionBriefingFingerprint(workspaceRoot, stablePiSessionId("agent-pi", "chat-pi"))).toBeNull();
+    expect(
+      readSessionBriefingFingerprint(workspaceRoot, freshStartPiSessionId("agent-pi", "chat-pi", "m1")),
+    ).toBeNull();
     await handler.shutdown();
   });
 
@@ -864,9 +869,9 @@ describe("Pi handler", () => {
     ).toBe(true);
     expect(JSON.stringify(events)).not.toContain("provider overloaded");
     // Accepted terminal failure still advances one-shot briefing fingerprint.
-    expect(readSessionBriefingFingerprint(workspaceRoot, stablePiSessionId("agent-pi", "chat-pi"))).toBeTypeOf(
-      "string",
-    );
+    expect(
+      readSessionBriefingFingerprint(workspaceRoot, freshStartPiSessionId("agent-pi", "chat-pi", "m1")),
+    ).toBeTypeOf("string");
     await handler.shutdown();
   });
 
@@ -1132,7 +1137,12 @@ describe("Pi handler", () => {
     skillRevision = 2;
     writeFileSync(join(skillDir, "marker.txt"), "skill-v2");
     agentCache.set(runtimeConfig({ prompt: { append: "briefing-v2" } }));
-    await handler.resume(message("m2", "second"), stablePiSessionId("agent-pi", "chat-pi"), sessionCtx, makeToken());
+    await handler.resume(
+      message("m2", "second"),
+      freshStartPiSessionId("agent-pi", "chat-pi", "m1"),
+      sessionCtx,
+      makeToken(),
+    );
     expect(readFileSync(join(workspaceRoot, "AGENTS.md"), "utf8")).toContain("briefing-v2");
     const rpcSpawnsAfterSecond = specs.filter((spec) => spec.args.includes("--mode")).length;
     expect(rpcSpawnsAfterSecond).toBe(2);
@@ -1140,7 +1150,7 @@ describe("Pi handler", () => {
     await handler.shutdown();
   });
 
-  it("fails closed on mismatched resume session id", async () => {
+  it("resume adopts the persisted provider session id verbatim", async () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
@@ -1149,9 +1159,22 @@ describe("Pi handler", () => {
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
       providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
-    await expect(handler.resume(undefined, "not-the-stable-id", makeContext([]))).rejects.toThrow(
-      /resume session identity mismatch/,
+    // First Tree's registry is the identity authority: resume reopens whatever
+    // id the mapping persisted instead of recomputing one — Reset retires the
+    // mapping (see freshStartPiSessionId), not a handler-side derivation.
+    const result = await handler.resume(
+      message("m-resume", "continue"),
+      "persisted-pi-session-id",
+      makeContext([]),
+      makeToken(),
     );
+    expect(result).toMatchObject({
+      sessionId: "persisted-pi-session-id",
+      route: { kind: "owned", mode: "processing" },
+    });
+    const rpcSpec = specs.find((spec) => spec.args.includes("--mode"));
+    expect(rpcSpec?.args).toEqual(expect.arrayContaining(["--session-id", "persisted-pi-session-id"]));
+    await handler.shutdown();
   });
 
   it("surfaces version-gate supervisor timeout as transient", async () => {
@@ -1334,7 +1357,7 @@ describe("Pi handler", () => {
       providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
     const sessionCtx = makeContext([]);
-    await handler.resume(undefined, stablePiSessionId("agent-pi", "chat-pi"), sessionCtx);
+    await handler.resume(undefined, freshStartPiSessionId("agent-pi", "chat-pi", "m1"), sessionCtx);
     const receipt = handler.inject(message("m-queue", "queued"), makeToken());
     expect(receipt).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(specs.some((spec) => spec.args.includes("--mode"))).toBe(true));
@@ -1350,7 +1373,7 @@ describe("Pi handler", () => {
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
       providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
-    const expectedId = stablePiSessionId("agent-pi", "chat-pi");
+    const expectedId = freshStartPiSessionId("agent-pi", "chat-pi", "m1");
     await handler.start(message("m1", "work"), makeContext([]), makeToken());
     expect(readSessionBriefingFingerprint(workspaceRoot, expectedId)).toBeTypeOf("string");
     await handler.shutdown();
@@ -1388,7 +1411,7 @@ describe("Pi handler", () => {
       providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
     const sessionCtx = makeContext([]);
-    const expectedId = stablePiSessionId("agent-pi", "chat-pi");
+    const expectedId = freshStartPiSessionId("agent-pi", "chat-pi", "m1");
     await handler.start(message("m1", "first"), sessionCtx, makeToken());
     const fp1 = readSessionBriefingFingerprint(workspaceRoot, expectedId);
     expect(fp1).toBeTypeOf("string");
