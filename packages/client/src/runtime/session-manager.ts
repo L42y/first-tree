@@ -4601,7 +4601,7 @@ export class SessionManager {
   private loadPersistedSessions(): void {
     if (!this.registry) return;
 
-    const { entries } = this.registry.load();
+    const { entries } = this.registry.loadSnapshot();
     let loadedCount = 0;
     for (const [chatId, data] of entries) {
       // All persisted sessions become evicted mappings on load.

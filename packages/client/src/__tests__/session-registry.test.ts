@@ -38,7 +38,7 @@ describe("SessionRegistry", () => {
     return new Map(Object.entries(data));
   }
 
-  it("round-trips save and load", () => {
+  it("round-trips save and load via the public Map contract", () => {
     const registry = new SessionRegistry(filePath);
     const entries = makeEntries({
       "chat-1": { claudeSessionId: "sess-aaa", lastActivity: 1700000000000, status: "active" },
@@ -52,44 +52,86 @@ describe("SessionRegistry", () => {
     const loaded = registry2.load();
     registry2.dispose();
 
-    expect(loaded.entries.size).toBe(2);
-    expect(loaded.entries.get("chat-1")?.claudeSessionId).toBe("sess-aaa");
-    expect(loaded.entries.get("chat-1")?.lastActivity).toBe(1700000000000);
-    expect(loaded.entries.get("chat-1")?.status).toBe("active");
-    expect(loaded.entries.get("chat-2")?.claudeSessionId).toBe("sess-bbb");
-    expect(loaded.entries.get("chat-2")?.status).toBe("suspended");
-    expect(loaded.freshStartNonces.size).toBe(0);
+    expect(loaded).toBeInstanceOf(Map);
+    expect(loaded.size).toBe(2);
+    expect(loaded.get("chat-1")?.claudeSessionId).toBe("sess-aaa");
+    expect(loaded.get("chat-1")?.lastActivity).toBe(1700000000000);
+    expect(loaded.get("chat-1")?.status).toBe("active");
+    expect(loaded.get("chat-2")?.claudeSessionId).toBe("sess-bbb");
+    expect(loaded.get("chat-2")?.status).toBe("suspended");
   });
 
-  it("returns empty maps when file does not exist", () => {
-    const registry = new SessionRegistry(join(testDir, "nonexistent.json"));
-    const loaded = registry.load();
+  it("loadSnapshot returns mappings plus fresh-start nonces", () => {
+    const registry = new SessionRegistry(filePath);
+    registry.flush(
+      makeEntries({
+        "chat-1": { claudeSessionId: "sess-aaa", lastActivity: 1700000000000, status: "active" },
+      }),
+    );
+    const nonce = registry.rotateFreshStartNonce("chat-1");
+    registry.flushOrThrow(new Map());
+    registry.markResetNonceDurable("chat-1");
     registry.dispose();
 
-    expect(loaded.entries.size).toBe(0);
-    expect(loaded.freshStartNonces.size).toBe(0);
+    const snapshot = new SessionRegistry(filePath).loadSnapshot();
+    expect(snapshot.entries.size).toBe(0);
+    expect(snapshot.freshStartNonces.get("chat-1")).toBe(nonce);
+  });
+
+  it("load and loadSnapshot both hydrate the in-memory nonce map", () => {
+    const writer = new SessionRegistry(filePath);
+    writer.flush(
+      makeEntries({
+        "chat-1": { claudeSessionId: "sess-aaa", lastActivity: 1700000000000, status: "active" },
+      }),
+    );
+    const nonce = writer.rotateFreshStartNonce("chat-1");
+    writer.flushOrThrow(new Map());
+    writer.markResetNonceDurable("chat-1");
+    writer.dispose();
+
+    const viaLoad = new SessionRegistry(filePath);
+    viaLoad.load();
+    expect(viaLoad.getFreshStartNonce("chat-1")).toBe(nonce);
+
+    const viaSnapshot = new SessionRegistry(filePath);
+    viaSnapshot.loadSnapshot();
+    expect(viaSnapshot.getFreshStartNonce("chat-1")).toBe(nonce);
+  });
+
+  it("returns empty map when file does not exist", () => {
+    const registry = new SessionRegistry(join(testDir, "nonexistent.json"));
+    const loaded = registry.load();
+    const snapshot = registry.loadSnapshot();
+    registry.dispose();
+
+    expect(loaded.size).toBe(0);
+    expect(snapshot.entries.size).toBe(0);
+    expect(snapshot.freshStartNonces.size).toBe(0);
   });
 
   it("returns empty maps on version mismatch", () => {
     writeFileSync(filePath, JSON.stringify({ version: 999, entries: { "chat-1": {} } }), "utf-8");
 
     const registry = new SessionRegistry(filePath);
-    const loaded = registry.load();
+    expect(registry.load().size).toBe(0);
+    const snapshot = registry.loadSnapshot();
     registry.dispose();
 
-    expect(loaded.entries.size).toBe(0);
-    expect(loaded.freshStartNonces.size).toBe(0);
+    expect(snapshot.entries.size).toBe(0);
+    expect(snapshot.freshStartNonces.size).toBe(0);
   });
 
   it("returns empty maps on corrupted JSON", () => {
     writeFileSync(filePath, "not valid json {{{{", "utf-8");
 
     const registry = new SessionRegistry(filePath);
-    const loaded = registry.load();
+    expect(registry.load().size).toBe(0);
+    const snapshot = registry.loadSnapshot();
     registry.dispose();
 
-    expect(loaded.entries.size).toBe(0);
-    expect(loaded.freshStartNonces.size).toBe(0);
+    expect(snapshot.entries.size).toBe(0);
+    expect(snapshot.freshStartNonces.size).toBe(0);
   });
 
   it("loads legacy v1 files without freshStartNonces while preserving mappings", () => {
@@ -110,13 +152,16 @@ describe("SessionRegistry", () => {
 
     const registry = new SessionRegistry(filePath);
     const loaded = registry.load();
-    expect(loaded.entries.get("chat-legacy")?.claudeSessionId).toBe("sess-legacy");
-    expect(loaded.freshStartNonces.size).toBe(0);
+    expect(loaded.get("chat-legacy")?.claudeSessionId).toBe("sess-legacy");
+    expect(registry.getFreshStartNonce("chat-legacy")).toBeUndefined();
+    const snapshot = registry.loadSnapshot();
+    expect(snapshot.entries.get("chat-legacy")?.claudeSessionId).toBe("sess-legacy");
+    expect(snapshot.freshStartNonces.size).toBe(0);
     // Unrelated save must not invent or drop mapping state.
-    registry.flush(loaded.entries);
+    registry.flush(loaded);
     const reloaded = new SessionRegistry(filePath).load();
-    expect(reloaded.entries.get("chat-legacy")?.claudeSessionId).toBe("sess-legacy");
-    expect(reloaded.freshStartNonces.size).toBe(0);
+    expect(reloaded.get("chat-legacy")?.claudeSessionId).toBe("sess-legacy");
+    expect(new SessionRegistry(filePath).loadSnapshot().freshStartNonces.size).toBe(0);
   });
 
   it("round-trips Reset fresh-start nonces and keeps them after mapping deletion", () => {
@@ -130,7 +175,7 @@ describe("SessionRegistry", () => {
     registry.markResetNonceDurable("chat-1");
     registry.dispose();
 
-    const loaded = new SessionRegistry(filePath).load();
+    const loaded = new SessionRegistry(filePath).loadSnapshot();
     expect(loaded.entries.size).toBe(0);
     expect(loaded.freshStartNonces.get("chat-1")).toBe(nonce);
 
@@ -142,7 +187,7 @@ describe("SessionRegistry", () => {
         "chat-other": { claudeSessionId: "sess-other", lastActivity: 1700002000000, status: "active" },
       }),
     );
-    const afterOther = new SessionRegistry(filePath).load();
+    const afterOther = new SessionRegistry(filePath).loadSnapshot();
     expect(afterOther.entries.get("chat-other")?.claudeSessionId).toBe("sess-other");
     expect(afterOther.freshStartNonces.get("chat-1")).toBe(nonce);
   });
@@ -160,7 +205,7 @@ describe("SessionRegistry", () => {
     registry.flushOrThrow(new Map());
     registry.markResetNonceDurable("chat-1");
 
-    const loaded = new SessionRegistry(filePath).load();
+    const loaded = new SessionRegistry(filePath).loadSnapshot();
     expect(loaded.entries.size).toBe(0);
     expect(loaded.freshStartNonces.get("chat-1")).toBe(first);
     // A later Reset attempt after durable success mints a new nonce.

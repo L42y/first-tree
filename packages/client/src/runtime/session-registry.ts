@@ -60,8 +60,21 @@ export class SessionRegistry {
     this.filePath = filePath;
   }
 
-  /** Load the registry from disk. Returns entries + fresh-start nonces. */
-  load(): RegistrySnapshot {
+  /**
+   * Load mappings from disk. Preserves the historical public return shape
+   * (`Map<chatId, entry>`). Also hydrates the authoritative in-memory Reset
+   * nonce map as a side effect so subsequent get/rotate/flush see durable
+   * tombstones; callers that need the nonce map should use `loadSnapshot()`.
+   */
+  load(): Map<string, RegistryEntry> {
+    return this.loadSnapshot().entries;
+  }
+
+  /**
+   * Load the full registry snapshot (mappings + Reset fresh-start nonces).
+   * Both this and `load()` populate the in-memory nonce map from disk.
+   */
+  loadSnapshot(): RegistrySnapshot {
     const entries = new Map<string, RegistryEntry>();
     const freshStartNonces = new Map<string, string>();
 
@@ -76,7 +89,7 @@ export class SessionRegistry {
         return { entries, freshStartNonces };
       }
 
-      for (const [chatId, entry] of Object.entries(data.entries)) {
+      for (const [chatId, entry] of Object.entries(data.entries ?? {})) {
         entries.set(chatId, {
           claudeSessionId: entry.claudeSessionId,
           lastActivity: new Date(entry.lastActivity).getTime(),

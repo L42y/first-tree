@@ -145,9 +145,7 @@ beforeEach(() => {
     unitPath: "/tmp/unit.plist",
     state: "active",
   });
-  clientMocks.SessionRegistry.mockImplementation(() => ({
-    load: vi.fn(() => ({ entries: new Map(), freshStartNonces: new Map() })),
-  }));
+  clientMocks.SessionRegistry.mockImplementation(() => ({ load: vi.fn(() => new Map()) }));
   clientMocks.cleanWorkspaces.mockReturnValue([]);
   localAgentMocks.createSdk.mockReturnValue({
     addChatParticipant: vi.fn(async () => [{ agentId: "agent-2" }]),
@@ -488,13 +486,13 @@ describe("agent admin and local commands", () => {
     mkdirSync(join(workspaces, "nova"), { recursive: true });
     mkdirSync(join(workspaces, "mira"), { recursive: true });
     clientMocks.SessionRegistry.mockImplementation(() => ({
-      load: vi.fn(() => ({
-        entries: new Map([
-          ["chat-active", { status: "active" }],
-          ["chat-evicted", { status: "evicted" }],
-        ]),
-        freshStartNonces: new Map(),
-      })),
+      load: vi.fn(
+        () =>
+          new Map([
+            ["chat-active", { status: "active" }],
+            ["chat-evicted", { status: "evicted" }],
+          ]),
+      ),
     }));
     clientMocks.cleanWorkspaces.mockReturnValueOnce(["chat-old"]).mockReturnValueOnce([]);
 

@@ -146,8 +146,10 @@ export type SessionContext = HandlerContext & {
   chatId: string;
   /**
    * Optional opaque Reset tombstone for reconstructible provider fresh-start
-   * identities. Absent until a successful Reset rotates a durable per-chat
-   * nonce in the session registry; survives mapping deletion and manager
+   * identities. Present once a Reset attempt has rotated a per-chat nonce in
+   * the session registry (including an in-memory pending rotation after a
+   * failed flush that is not yet apply-acknowledged). A successful Reset
+   * flush makes that nonce durable across mapping deletion and manager
    * restart. Providers that mint deterministic start ids from inbox material
    * must include this nonce so post-Reset same-row redelivery cannot reopen
    * a discarded provider artifact.

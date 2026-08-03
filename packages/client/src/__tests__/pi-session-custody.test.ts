@@ -2114,12 +2114,27 @@ describe("Pi handler → SessionManager custody", () => {
     const entryId = 341;
     const entry = mockEntry({ id: entryId, chatId, messageId, content: "settled but unacked" });
 
-    void sm1.dispatch(entry);
+    const firstDispatch = sm1.dispatch(entry);
     await vi.waitFor(() => expect(rpcSessionIds(specs)).toHaveLength(1), { timeout: 10_000 });
     const oldId = rpcSessionIds(specs)[0]!;
     expect(oldId).toBe(freshStartPiSessionId("agent-1", chatId, messageId));
     // Turn settled under ACK failure — coordinator keeps the uncommitted row.
     await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(entryId), { timeout: 10_000 });
+    // Await adoption/settlement completion so Pause/Reset cannot race an
+    // unfinished startNewSession; reject if the harness surfaces an error.
+    await expect(firstDispatch).resolves.toBeUndefined();
+    // Premise: the old provider mapping is durable while ACK is still failing.
+    await vi.waitFor(
+      () => {
+        expect(existsSync(registryPath)).toBe(true);
+        const beforeReset = JSON.parse(readFileSync(registryPath, "utf8")) as {
+          entries: Record<string, { claudeSessionId?: string }>;
+        };
+        expect(beforeReset.entries[chatId]?.claudeSessionId).toBe(oldId);
+      },
+      { timeout: 5000 },
+    );
+    expect(ackEntry).toHaveBeenCalledWith(entryId);
 
     await sm1.handleCommand(chatId, "session:suspend");
     await sm1.handleCommand(chatId, "session:terminate");
