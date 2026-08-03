@@ -20,7 +20,7 @@ export function registerChatListCommand(chat: Command): void {
     )
     .option(
       "--chat <chatId>",
-      "Exact one-chat preflight before `chat archive` (requires --engagement; cannot combine with --cursor)",
+      "Exact one-chat preflight before `chat archive` — merges the Workspace row's attention fields with the raw member chat detail (metadata, lastReadAt, …); the detail's engagement is the current-state verdict (requires --engagement; cannot combine with --cursor)",
     )
     .option("--agent <name>", "Agent name on the First Tree server (default: first configured on this client)")
     .action(async (options: { limit: string; cursor?: string; engagement?: string; chat?: string; agent?: string }) => {

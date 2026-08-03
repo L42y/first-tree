@@ -523,11 +523,16 @@ first-tree chat list --engagement active
 first-tree chat list --engagement archived --cursor <cursor>
 
 # Exact one-chat preflight — the read-only check to run immediately before
-# `chat archive`. Returns at most one item (with the raw chat `metadata`,
-# where the SCM entityKey/URL lives) and `nextCursor: null`, only when the
-# selected agent is a speaker in that chat AND your current engagement
-# matches the requested view; otherwise `items` is empty. Requires
-# --engagement and cannot be combined with --cursor.
+# `chat archive`. Finds the chat's Workspace conversation row by paging the
+# requested engagement view, then merges that row (all attention fields:
+# unreadMentionCount, openRequestCount, liveActivity, failedAgentIds,
+# busyAgentIds, createdByMe, source, entityType, activityAt, …) with the raw
+# member chat detail (`metadata` — where the SCM entityKey/URL lives —,
+# lastReadAt, descriptionUpdatedAt, …). The detail's `engagementStatus` is
+# the current-state verdict. Returns at most one item and `nextCursor: null`,
+# only when the chat appears in the requested view AND the selected agent is
+# a speaker in it; otherwise `items` is empty. Requires --engagement and
+# cannot be combined with --cursor.
 first-tree chat list --engagement active --chat <chatId>
 first-tree chat archive <chatId>
 
@@ -591,7 +596,10 @@ their default Active view until new chat activity revives it. Pass
 (Active excludes archived rows; Archived shows only them), and add
 `--chat <chatId>` for the exact read-only preflight that mirrors what
 `chat archive <chatId>` will see — it returns the chat only while it is
-still in the requested view for you.
+still in the requested view for you. The exact item combines the Workspace
+conversation row (attention fields) with the raw member chat detail
+(`metadata`, `lastReadAt`, …), and the detail's engagement is the
+current-state verdict.
 
 `chat create` is different: it creates a new task chat and writes the first
 message in one command. Use it to split genuinely new work into a fresh chat.
