@@ -37,6 +37,7 @@ type AuthValue = React.ComponentProps<typeof AuthContext.Provider>["value"];
 const DEFAULT_AUTH = {
   isAuthenticated: true,
   meLoaded: true,
+  meAuthoritative: true,
   user: { id: "preview-human", displayName: "Gandy", username: "gandy2025", avatarUrl: null },
   memberships: [],
   currentMembership: null,

@@ -56,6 +56,15 @@ type AuthContextValue = {
   user: MeUser | null;
   memberships: MeMembership[];
   /**
+   * `true` once an authoritative live `/me` snapshot has been fully applied
+   * in this session. Distinct from `meLoaded`: an initial transport failure
+   * flips `meLoaded` (fail-soft shell) but leaves this false. Resets on
+   * logout and every new login/adopted-token session. Flows that need real
+   * Team authority (e.g. the Template use-intent) must wait for this, not
+   * just `meLoaded`.
+   */
+  meAuthoritative: boolean;
+  /**
    * Currently selected membership — drives `organizationId / memberId / role
    * / agentId` and the admin gate. Initialized from
    * `localStorage.selectedOrganizationId`; falls back to the first active
@@ -259,13 +268,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // relogin as the same user is still a new session. Token refresh does not
   // advance it (same session, only the raw token changed).
   const sessionGenRef = useRef(0);
-  // Monotonic confirmation epoch: advances ONLY inside loadMe, after the
-  // live generation+subject guard passed and the authoritative snapshot was
-  // applied. selectOrganization captures it before an optimistic switch so a
-  // "concurrent /me already confirmed the target" shortcut can require a
-  // confirmation that happened AFTER this attempt began — a pre-existing
-  // confirmed org alone never turns a new failed request into success.
-  const meConfirmEpochRef = useRef(0);
+  // Monotonic /me request-start identity. Each loadMe captures its id AND the
+  // selected-org identity at request start; a successful live confirmation
+  // records {requestId, requestStartOrg, settledOrg}. selectOrganization
+  // captures a watermark before its optimistic write, so a "concurrent /me
+  // already confirmed the target" shortcut can require a confirmation whose
+  // REQUEST BEGAN after this attempt — a pre-attempt refresh can never
+  // satisfy it, even if it resolves later and settles the mutable target.
+  const meRequestIdRef = useRef(0);
+  const lastLiveConfirmRef = useRef<{
+    requestId: number;
+    requestStartOrg: string | null;
+    settledOrg: string | null;
+  } | null>(null);
+  // True only after an authoritative live /me snapshot was fully applied in
+  // this session. An initial transport failure may still flip `meLoaded`
+  // (fail-soft app shell) but leaves this false; reset on logout and every
+  // new login/adopted-token session. A later refresh failure does not erase
+  // an already-authoritative snapshot.
+  const [meAuthoritative, setMeAuthoritative] = useState(false);
   // Stays false until the first fetchMe settles. Unauthenticated visitors
   // never need /me, so the gate also flips for them via the unauth branch
   // below — RequireAuth only blocks the loading frame when the user IS
@@ -305,6 +326,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOnboardingCompletedAt(null);
     setDocsEnabled(false);
     setMeLoaded(false);
+    setMeAuthoritative(false);
     setSwitchingOrg(null);
   }, [queryClient]);
 
@@ -315,6 +337,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // confirmation authority.
     const generation = sessionGenRef.current;
     const subject = userIdFromToken();
+    const requestId = ++meRequestIdRef.current;
+    const requestStartOrg = selectedOrgIdRef.current;
     try {
       const data = await api.get<MeResponse>("/me");
       // A stale SUCCESS must mutate nothing: the session moved on (logout,
@@ -360,10 +384,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       writeSelectedOrgId(userId, settled);
       setApiSelectedOrganizationId(settled);
       setSelectedOrgId(settled);
-      // The authoritative snapshot is fully applied — advance the
-      // confirmation epoch so a concurrent switch can tell THIS confirmation
-      // apart from anything settled before its attempt began.
-      meConfirmEpochRef.current += 1;
+      // The authoritative snapshot is fully applied — record the live
+      // confirmation with its request-start identity (a pre-attempt request
+      // can never satisfy a later switch's confirmation shortcut) and mark
+      // this session's /me authority as established.
+      lastLiveConfirmRef.current = { requestId, requestStartOrg, settledOrg: settled };
+      setMeAuthoritative(true);
     } finally {
       // Flip the gate only for the LIVE session (generation + subject,
       // matching the success guard) — a request discarded for identity
@@ -390,6 +416,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const tokens = await loginApi(username, password);
       // A new authenticated session starts — even for the same subject.
       sessionGenRef.current += 1;
+      setMeAuthoritative(false);
       setStoredTokens({ accessToken: tokens.accessToken, refreshToken: tokens.refreshToken });
       setIsAuthenticated(true);
       await fetchMe();
@@ -401,6 +428,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (tokens: { accessToken: string; refreshToken: string }) => {
       // A new authenticated session starts — even for the same subject.
       sessionGenRef.current += 1;
+      setMeAuthoritative(false);
       setStoredTokens(tokens);
       setIsAuthenticated(true);
       await fetchMe();
@@ -412,11 +440,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (organizationId: string) => {
       // The post-switch /me confirms the switch. Capture the session
       // generation, the subject marker, the last CONFIRMED org (never the
-      // optimistic target), and the confirmation epoch up front.
+      // optimistic target), and the /me request watermark up front.
       const sessionGeneration = sessionGenRef.current;
       const sessionMarker = userIdFromToken();
       const previousOrgId = confirmedOrgIdRef.current;
-      const attemptEpoch = meConfirmEpochRef.current;
+      const attemptRequestWatermark = meRequestIdRef.current;
       // Persist under the current user's key (token `sub`) so the selection
       // is restored only for this account.
       writeSelectedOrgId(userIdFromToken(), organizationId);
@@ -442,18 +470,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // mid-switch does not masquerade as an identity change, while
         // logout + relogin as the same subject still counts as a new session.
         if (sessionGenRef.current !== sessionGeneration || userIdFromToken() !== sessionMarker) throw error;
-        // A concurrent same-session /me may have authoritatively confirmed
-        // the target AFTER this attempt began (e.g. a manual refresh settled
-        // first). Only that — never a pre-existing confirmed org — suppresses
-        // the rollback and counts as confirmation for THIS switch.
-        if (meConfirmEpochRef.current > attemptEpoch && confirmedOrgIdRef.current === organizationId) return;
+        // Only a live /me whose REQUEST BEGAN after this attempt — and whose
+        // request-start and settled targets both equal the exact Team — can
+        // satisfy this switch (e.g. a manual refresh that started after the
+        // optimistic write and confirmed the target). A refresh begun BEFORE
+        // the attempt never satisfies it, even when it resolves later and
+        // happens to settle the mutable target; a pre-existing confirmed org
+        // never turns a new failed request into success.
+        const confirm = lastLiveConfirmRef.current;
+        if (
+          confirm &&
+          confirm.requestId > attemptRequestWatermark &&
+          confirm.requestStartOrg === organizationId &&
+          confirm.settledOrg === organizationId
+        ) {
+          return;
+        }
         // Ordinary transport failure within the SAME live session: /me never
         // confirmed the target, so roll back the React selection, the
-        // per-user persisted org, the API override, and the admin WS target,
-        // and drop anything cached against the unconfirmed target during the
-        // optimistic window. The rejection lets the caller surface a
-        // recoverable error.
+        // per-user persisted org, the API override, the admin WS target, and
+        // the HIDDEN rollback baseline — a rejected pre-attempt response is
+        // not authority for this switch and must not survive as the next
+        // attempt's `previousOrgId`. Also drop anything cached against the
+        // unconfirmed target during the optimistic window. The rejection
+        // lets the caller surface a recoverable error.
         selectedOrgIdRef.current = previousOrgId;
+        confirmedOrgIdRef.current = previousOrgId;
         writeSelectedOrgId(userIdFromToken(), previousOrgId);
         setApiSelectedOrganizationId(previousOrgId);
         window.dispatchEvent(new CustomEvent(ADMIN_WS_ORG_CHANGED_EVENT));
@@ -642,6 +684,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         isAuthenticated,
         meLoaded,
+        meAuthoritative,
         user,
         memberships,
         currentMembership,

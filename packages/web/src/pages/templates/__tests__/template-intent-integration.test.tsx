@@ -41,6 +41,7 @@ const authMock = vi.hoisted(() => ({
   value: {
     isAuthenticated: true,
     meLoaded: true,
+    meAuthoritative: true,
     onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
     currentOrgHasPersonalAgent: true,
     onboardingDismissedAt: null as string | null,
@@ -196,6 +197,7 @@ describe("Template intent × real queryClient.clear() integration", () => {
     templateMocks.getAgentTemplate.mockResolvedValue(TEMPLATE);
     authMock.value.isAuthenticated = true;
     authMock.value.meLoaded = true;
+    authMock.value.meAuthoritative = true;
     authMock.value.onboardingStep = "completed";
     authMock.value.currentOrgHasPersonalAgent = true;
     authMock.value.onboardingDismissedAt = null;

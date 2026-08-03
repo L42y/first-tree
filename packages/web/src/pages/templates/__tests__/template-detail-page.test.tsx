@@ -25,6 +25,8 @@ const authMock = vi.hoisted(() => ({
   value: {
     isAuthenticated: false,
     meLoaded: false,
+    meAuthoritative: false,
+    refreshMe: vi.fn(async () => undefined),
     memberships: [] as unknown[],
   },
 }));
@@ -95,22 +97,35 @@ async function flush(): Promise<void> {
   });
 }
 
+let pageQueryClient: QueryClient | null = null;
+
+function pageTree(entry: string) {
+  return (
+    <QueryClientProvider client={pageQueryClient as QueryClient}>
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path="/templates/:slug" element={<TemplateDetailPage />} />
+          <Route path="/login" element={<LoginProbe />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
 async function renderPage(entry: string): Promise<void> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  pageQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root?.render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[entry]}>
-          <Routes>
-            <Route path="/templates/:slug" element={<TemplateDetailPage />} />
-            <Route path="/login" element={<LoginProbe />} />
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+    root?.render(pageTree(entry));
+  });
+  await flush();
+}
+
+async function rerenderPage(entry: string): Promise<void> {
+  await act(async () => {
+    root?.render(pageTree(entry));
   });
   await flush();
 }
@@ -136,6 +151,8 @@ describe("TemplateDetailPage", () => {
     loginStateProbe = null;
     authMock.value.isAuthenticated = false;
     authMock.value.meLoaded = false;
+    authMock.value.meAuthoritative = false;
+    authMock.value.refreshMe = vi.fn(async () => undefined);
     authMock.value.memberships = [];
   });
 
@@ -252,6 +269,7 @@ describe("TemplateDetailPage", () => {
   it("hands a signed-in active intent to the intent resolution", async () => {
     authMock.value.isAuthenticated = true;
     authMock.value.meLoaded = true;
+    authMock.value.meAuthoritative = true;
     templateMocks.getAgentTemplate.mockResolvedValue(template());
     await renderPage("/templates/pr-engineer?use=1");
 
@@ -262,10 +280,48 @@ describe("TemplateDetailPage", () => {
   it("never resolves an intent for a retired template", async () => {
     authMock.value.isAuthenticated = true;
     authMock.value.meLoaded = true;
+    authMock.value.meAuthoritative = true;
     templateMocks.getAgentTemplate.mockResolvedValue(template({ status: "retired" }));
     await renderPage("/templates/pr-engineer?use=1");
 
     expect(intentMock.calls).toHaveLength(0);
     expect(document.body.textContent).toContain("has been retired");
+  });
+
+  it("shows a recoverable error with guarded retry when signed-in intent lacks /me authority", async () => {
+    authMock.value.isAuthenticated = true;
+    authMock.value.meLoaded = true;
+    authMock.value.meAuthoritative = false;
+    templateMocks.getAgentTemplate.mockResolvedValue(template());
+    let resolveRetry!: () => void;
+    authMock.value.refreshMe = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRetry = resolve;
+        }),
+    );
+    await renderPage("/templates/pr-engineer?use=1");
+
+    // No resolution surface may mount without authoritative memberships:
+    // no chooser, no dialog, no handoff.
+    expect(document.body.textContent).toContain("couldn't confirm your team");
+    expect(document.body.textContent).not.toContain("intent-resolution-stub");
+    expect(intentMock.calls).toHaveLength(0);
+
+    // Retry is guarded against double-fire while in flight.
+    await click(buttonByText("Try again"));
+    expect(authMock.value.refreshMe).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain("Retrying…");
+    await click(buttonByText("Retrying…"));
+    expect(authMock.value.refreshMe).toHaveBeenCalledTimes(1);
+
+    // A successful fresh /me flips authority and proceeds into resolution.
+    authMock.value.meAuthoritative = true;
+    await act(async () => {
+      resolveRetry();
+    });
+    await rerenderPage("/templates/pr-engineer?use=1");
+    expect(intentMock.calls).toEqual([{ slug: "pr-engineer" }]);
+    expect(document.body.textContent).toContain("intent-resolution-stub");
   });
 });

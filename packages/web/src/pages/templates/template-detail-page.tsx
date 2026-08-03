@@ -41,6 +41,39 @@ function LoadError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/**
+ * Recoverable state for a signed-in Template intent whose initial `/me`
+ * failed: Team membership is unknown, so no Team decision may render. Retry
+ * re-fetches `/me`; the in-flight state disables repeat clicks, and a
+ * successful refresh flips `meAuthoritative`, which re-renders this page
+ * into the ordinary intent resolution.
+ */
+function MeAuthorityError() {
+  const { refreshMe } = useAuth();
+  const [retrying, setRetrying] = useState(false);
+  return (
+    <div className="landing-marketing flex min-h-screen items-center justify-center bg-background text-foreground">
+      <div className="w-full max-w-md rounded-[var(--radius-panel)] border border-border bg-card p-6 text-center">
+        <p className="text-body text-fg-2">
+          We couldn&apos;t confirm your team right now. This is usually temporary — try again.
+        </p>
+        <Button
+          variant="outline"
+          className="mt-4"
+          disabled={retrying}
+          onClick={() => {
+            if (retrying) return;
+            setRetrying(true);
+            void refreshMe().finally(() => setRetrying(false));
+          }}
+        >
+          {retrying ? "Retrying…" : "Try again"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function RetiredNotice({ template }: { template: AgentTemplatePublicTemplate }) {
   return (
     <div className="rounded-[var(--radius-panel)] border border-border bg-card p-5">
@@ -83,7 +116,7 @@ export function TemplateDetailPage() {
   const { slug: rawSlug } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAuthenticated, meLoaded, memberships } = useAuth();
+  const { isAuthenticated, meLoaded, meAuthoritative, memberships } = useAuth();
   const slugResult = agentTemplateSlugSchema.safeParse(rawSlug ?? "");
   const slug = slugResult.success ? slugResult.data : null;
   // The intent flag is judged by the SAME strict shared parser the server
@@ -159,6 +192,14 @@ export function TemplateDetailPage() {
           Loading…
         </div>
       );
+    }
+    // meLoaded alone is not Team authority: an initial /me transport failure
+    // also flips it. Without an authoritative membership snapshot, never
+    // mount the resolution (chooser/dialog/handoff could otherwise run on an
+    // empty or guessed Team) — show a recoverable error with a guarded retry
+    // instead.
+    if (!meAuthoritative) {
+      return <MeAuthorityError />;
     }
     if (activeStickyIntentTemplate) {
       // Keyed by slug so every piece of intent state (chooser, dialog,

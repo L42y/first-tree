@@ -63,6 +63,7 @@ const authMock = vi.hoisted(() => ({
   value: {
     isAuthenticated: true,
     meLoaded: true,
+    meAuthoritative: true,
     onboardingStep: "completed" as const,
     currentOrgHasPersonalAgent: true,
     onboardingDismissedAt: null as string | null,

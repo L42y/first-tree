@@ -1,6 +1,6 @@
 import type { AgentTemplatePublicTemplate, AgentVisibility } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getAgentTemplate } from "../../../api/agent-templates.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { Button } from "../../../components/ui/button.js";
@@ -86,9 +86,23 @@ export function StepCreateAgent() {
     setIntentRemoved(false);
   }
   const intentFetchSeqRef = useRef(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the invalidation must fire exactly when the committed {org, slug} identity changes; the ref itself is not a dependency.
+  useLayoutEffect(() => {
+    // Invalidate in-flight lookups from the PREVIOUS committed {org, slug}
+    // synchronously at commit. A passive effect would leave a
+    // commit-to-effect window where Team A's late success/failure callback
+    // could still pass the old sequence and mutate Team B's intent state;
+    // layout effects run inside the commit, before any promise callback can
+    // interleave.
+    intentFetchSeqRef.current += 1;
+  }, [organizationId, intentSlug]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: organizationId is part of the committed {org, slug} lookup identity even though the request itself only uses the slug.
   useEffect(() => {
     // Sequence-guarded so a late response for the PREVIOUS org's slug can
-    // never overwrite the new org's state.
+    // never overwrite the new org's state. The lookup identity is the
+    // committed {organizationId, intentSlug} pair — two Teams may hand off
+    // the SAME slug, and the new Team still needs its own request (the slug
+    // string alone does not change).
     const seq = ++intentFetchSeqRef.current;
     if (!intentSlug) return;
     getAgentTemplate(intentSlug)
@@ -101,7 +115,7 @@ export function StepCreateAgent() {
         if (seq !== intentFetchSeqRef.current) return;
         setIntentUnavailable(true);
       });
-  }, [intentSlug]);
+  }, [organizationId, intentSlug]);
   const activeIntentTemplate = intentTemplate && !intentRemoved ? intentTemplate : null;
   // An explicit intent whose lookup is still in flight. While pending,
   // creation is BLOCKED (visible resolving state + handler guard) so a

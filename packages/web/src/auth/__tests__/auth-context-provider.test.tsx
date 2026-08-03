@@ -841,4 +841,86 @@ describe("AuthProvider", () => {
     expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-1");
     expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-1");
   });
+
+  it("exposes /me authority separately from the fail-soft loaded gate", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+    await renderAuth();
+
+    // Initial transport failure: fail-soft shell opens, but no authoritative
+    // snapshot exists — meLoaded true, authority false.
+    expect(latestAuth?.meLoaded).toBe(true);
+    expect(latestAuth?.meAuthoritative).toBe(false);
+    expect(latestAuth?.currentMembership).toBeNull();
+
+    // A successful retry establishes authority with the exact memberships/org.
+    await act(async () => {
+      await latestAuth?.refreshMe();
+    });
+    expect(latestAuth?.meAuthoritative).toBe(true);
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+  });
+
+  it("rejects a switch satisfied only by a refresh begun before the attempt", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+
+    const deferred: Array<{ resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = [];
+    apiMocks.apiGet.mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          deferred.push({ resolve, reject });
+        }),
+    );
+    const mePayload = {
+      user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+      memberships: MEMBERSHIPS,
+      defaultOrganizationId: "org-1",
+      onboarding: { step: "completed" },
+    };
+
+    let switchError: unknown = null;
+    await act(async () => {
+      // A refresh that BEGAN before the switch attempt.
+      void latestAuth?.refreshMe();
+      await Promise.resolve();
+      const settled = latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+        switchError = error;
+      });
+      // The pre-attempt refresh resolves first and happens to settle the
+      // mutable target; the switch-owned request then fails. The pre-attempt
+      // request must NOT satisfy this switch.
+      deferred[0]?.resolve(mePayload);
+      deferred[1]?.reject(new Error("offline"));
+      await settled;
+    });
+
+    expect(switchError).toBeInstanceOf(Error);
+    // Full rollback to the prior confirmed Team — no borrowed authority.
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+    expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-1");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-1");
+
+    // The hidden rollback baseline must also be A: a SECOND failed switch
+    // (no confirming request at all) must roll back to A again — never to
+    // the pre-attempt refresh's incidentally settled B.
+    apiMocks.apiGet.mockRejectedValueOnce(new Error("offline"));
+    let secondError: unknown = null;
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-2").catch((error: unknown) => {
+        secondError = error;
+      });
+    });
+    expect(secondError).toBeInstanceOf(Error);
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-1");
+    expect(localStorage.getItem("first-tree:selectedOrganizationId:user-1")).toBe("org-1");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-1");
+  });
 });
