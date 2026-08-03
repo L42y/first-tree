@@ -417,6 +417,29 @@ export const listMeChatsResponseSchema = z.object({
 });
 export type ListMeChatsResponse = z.infer<typeof listMeChatsResponseSchema>;
 
+/**
+ * CLI-facing Workspace conversation-list item: the member `MeChatRow` plus an
+ * `id` alias of `chatId` so agent tooling can treat the Workspace projection
+ * and the structural inventory (`Chat.id`) uniformly.
+ */
+export const workspaceChatListItemSchema = meChatRowSchema.extend({
+  id: z.string(),
+});
+export type WorkspaceChatListItem = z.infer<typeof workspaceChatListItemSchema>;
+
+/**
+ * CLI-facing Workspace conversation-list page in the common
+ * `{ items, nextCursor }` shape. Produced client-side from
+ * `ListMeChatsResponse.rows` (the complete additive stream — pinned chats
+ * also appear in `rows`), with `nextCursor` passed through as the opaque
+ * pagination token.
+ */
+export const workspaceChatListResponseSchema = z.object({
+  items: z.array(workspaceChatListItemSchema),
+  nextCursor: z.string().nullable(),
+});
+export type WorkspaceChatListResponse = z.infer<typeof workspaceChatListResponseSchema>;
+
 export const createMeChatSchema = z.object({
   participantIds: z.array(z.string().min(1)).min(1),
   topic: z.string().trim().max(500).optional().nullable(),

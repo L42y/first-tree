@@ -930,6 +930,10 @@ export {
   meChatUnreadResponseSchema,
   type PinMeChat,
   pinMeChatSchema,
+  type WorkspaceChatListItem,
+  type WorkspaceChatListResponse,
+  workspaceChatListItemSchema,
+  workspaceChatListResponseSchema,
 } from "./schemas/me-chat.js";
 export {
   type DocSnapshotFailReason,

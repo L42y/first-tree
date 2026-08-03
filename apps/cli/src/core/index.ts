@@ -273,3 +273,6 @@ export {
   readWorkspaceManifest,
   writeWorkspaceManifest,
 } from "./workspace.js";
+// Workspace engagement chat listing (member projection for `chat list --engagement`)
+export type { WorkspaceChatExactListItem, WorkspaceChatExactListResponse } from "./workspace-chat-list.js";
+export { getWorkspaceChatExactForAgent, listWorkspaceChatsForAgent } from "./workspace-chat-list.js";
