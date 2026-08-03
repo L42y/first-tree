@@ -17,13 +17,15 @@ import { createTestAdmin, useTestApp } from "./helpers.js";
  */
 async function resolveTargetChat(
   db: Parameters<typeof resolveTargetChatRaw>[0],
-  params: Omit<Parameters<typeof resolveTargetChatRaw>[1], "isMentionMatched"> & {
+  params: Omit<Parameters<typeof resolveTargetChatRaw>[1], "isMentionMatched" | "intent"> & {
     isMentionMatched?: boolean;
+    intent?: Parameters<typeof resolveTargetChatRaw>[1]["intent"];
   },
 ): Promise<NonNullable<Awaited<ReturnType<typeof resolveTargetChatRaw>>>> {
   const result = await resolveTargetChatRaw(db, {
     ...params,
     isMentionMatched: params.isMentionMatched ?? true,
+    intent: params.intent ?? { kind: "strict_new_line" },
   });
   if (!result) throw new Error("resolveTargetChat returned null in legacy test path");
   return result;
@@ -410,7 +412,7 @@ describe("resolveTargetChat", () => {
     expect(mappings[0]?.chatId).toBe(r1.chatId);
   });
 
-  it("reuses the existing chat when a different delegate hits the same (human, entity) tuple", async () => {
+  it("keeps provider-task human fallback when a different agent hits the same (human, entity) tuple", async () => {
     // Regression for the assignee-creates-new-chat bug. The agent that
     // created the issue (delegateA) wrote a mapping under (human, delegateA).
     // A later webhook resolves the audience via `human.delegateMention =
@@ -440,6 +442,7 @@ describe("resolveTargetChat", () => {
       relatedEntities: [],
       eventType: "issues",
       action: "assigned",
+      intent: { kind: "provider_task_target" },
     });
 
     expect(followUp.chatId).toBe(created.chatId);
@@ -464,6 +467,43 @@ describe("resolveTargetChat", () => {
 
     const allChats = await app.db.select({ id: chats.id }).from(chats).where(eq(chats.id, created.chatId));
     expect(allChats).toHaveLength(1);
+  });
+
+  it("executes strict personnel intent without human-scoped fallback", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const delegateA = await seedDelegate(app, admin.organizationId, admin.memberId, `dlgA-${randomUUID().slice(0, 6)}`);
+    const delegateB = await seedDelegate(app, admin.organizationId, admin.memberId, `dlgB-${randomUUID().slice(0, 6)}`);
+    const carrierLine = await resolveTargetChat(app.db, {
+      organizationId: admin.organizationId,
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: delegateA,
+      entity: issue42,
+      relatedEntities: [],
+      eventType: "issues",
+      action: "opened",
+    });
+
+    const strict = await resolveTargetChatRaw(app.db, {
+      organizationId: admin.organizationId,
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: delegateB,
+      entity: issue42,
+      relatedEntities: [],
+      eventType: "issues",
+      action: "assigned",
+      isMentionMatched: true,
+      intent: { kind: "strict_new_line" },
+    });
+
+    expect(strict?.chatId).not.toBe(carrierLine.chatId);
+    expect(strict?.boundVia).toBe("direct");
+    const mappings = await app.db
+      .select()
+      .from(githubEntityChatMappings)
+      .where(eq(githubEntityChatMappings.entityKey, issue42.key));
+    expect(mappings).toHaveLength(2);
+    expect(mappings.find((row) => row.delegateAgentId === delegateB)?.boundVia).toBe("direct");
   });
 
   it("renders 'PR Review' topic when a PR chat is first created by review_requested", async () => {

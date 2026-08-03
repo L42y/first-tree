@@ -206,18 +206,18 @@ function readStringArray(value: unknown): string[] {
 type InvolveItem = { externalUsername: string; reason: InvolveReason };
 
 function buildInvolves(items: ReadonlyArray<{ logins: string[]; reason: InvolveReason }>): InvolveItem[] {
-  // First-occurrence wins per (lowercased) login. Callers should list
-  // structural reasons (review_requested, assigned) before textual ones
-  // (mentioned) so a participant cited via both routes keeps the more
-  // specific reason in the audience card.
+  // Deduplicate repeated provider evidence only within the same reason. Cross-
+  // reason candidates must reach shared SCM composition, which owns the stable
+  // review_requested > mentioned > assigned priority for every provider.
   const seen = new Set<string>();
   const out: InvolveItem[] = [];
   for (const group of items) {
     for (const login of group.logins) {
-      const key = login.toLowerCase();
+      const normalizedLogin = login.toLowerCase();
+      const key = `${normalizedLogin}\u0000${group.reason}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ externalUsername: key, reason: group.reason });
+      out.push({ externalUsername: normalizedLogin, reason: group.reason });
     }
   }
   return out;

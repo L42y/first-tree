@@ -650,6 +650,7 @@ describe("Agent Chats API", () => {
         eventType: "pull_request",
         action: "opened",
         isMentionMatched: true,
+        intent: { kind: "strict_new_line" },
       });
       expect(resolved).not.toBeNull();
       if (!resolved) throw new Error("unreachable");

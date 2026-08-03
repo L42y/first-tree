@@ -3,15 +3,16 @@ import type { FastifyInstance } from "fastify";
 import type { GithubEntity } from "../api/webhooks/github-entity.js";
 import { createLogger } from "../observability/index.js";
 import { uuidv7 } from "../uuid.js";
-import type { AudienceTarget } from "./github-audience.js";
-import { findReuseChatForInvolved, refreshGithubChatTopic, resolveTargetChat } from "./github-entity-chat.js";
+import type { GithubProviderTaskContext } from "./github-audience.js";
+import { decideGithubPersonnelTargetChat, refreshGithubChatTopic, resolveTargetChat } from "./github-entity-chat.js";
 import { type EntityStateSeed, setEntityTitle } from "./github-entity-state.js";
 import { applyMembershipWrite } from "./participant-mode.js";
+import type { ScmAudienceTarget } from "./scm-audience-composition.js";
 import { sendScmSystemCard } from "./scm-card-delivery.js";
 import {
   compareScmDeliveryEntries,
   planScmChatDeliveries,
-  type ScmAudienceTarget,
+  scmProviderContextEntries,
   scmTargetHumanAgentId,
   scmTargetWakeAgentId,
   scmWakeAgentIds,
@@ -53,17 +54,17 @@ type DeliveryOptions = {
  * Two phases. Phase 1 resolves every audience target to a chat (subscribed
  * targets short-circuit; involved targets reuse the entity's existing chat
  * when the involved human+delegate are already speakers, else mint a fresh
- * one) and accumulates the per-chat entries. Self-echo pruning happens before
- * fresh-chat resolution, so an actor's own target does not create an empty
- * chat. Phase 2 delivers one card per chat, waking the union of surviving
- * wake agents via native `metadata.mentions`.
+ * one) and accumulates the per-chat entries. Actor-owned existing lines retain
+ * their card routes but become wake-ineligible; fresh directed targets remain
+ * eligible to create the work entry. Phase 2 delivers one card per chat,
+ * waking the union of eligible agents via native `metadata.mentions`.
  * Each chat is delivered independently so a single failure doesn't poison the
  * rest — the loop logs and continues.
  */
 export async function deliverGithubEvent(
   app: FastifyInstance,
   event: NormalizedScmEvent,
-  audience: AudienceTarget[],
+  audience: ScmAudienceTarget<GithubProviderTaskContext>[],
   options: DeliveryOptions = {},
 ): Promise<DeliveryStats> {
   const stats: DeliveryStats = { delivered: 0, newChats: 0, failed: 0 };
@@ -71,48 +72,9 @@ export async function deliverGithubEvent(
   const existingMappedChatIds = existingMappedChatIdsForProjection(audience);
   const entity = entityFromEvent(event);
 
-  // Phase 1 — shared SCM planner owns echo pruning and one-delivery-per-chat.
+  // Phase 1 — shared SCM planner owns echo wake policy and one-delivery-per-chat.
   const planned = await planScmChatDeliveries({
-    targets: audience.map(
-      (target): ScmAudienceTarget =>
-        target.kind === "existing"
-          ? {
-              entry: {
-                kind: "existing_line",
-                line: {
-                  kind: "attention_line",
-                  humanAgentId: target.humanAgentId,
-                  wakeAgentId: target.delegateAgentId,
-                  chatId: target.chatId as string,
-                  provenance: target.provenance ?? "identity_target",
-                },
-              },
-              directedContext:
-                target.involveReason && target.involveLogin
-                  ? {
-                      reason: target.involveReason,
-                      externalUsername: target.involveLogin,
-                      ...(target.teamAgentTask ? { teamAgentTask: target.teamAgentTask } : {}),
-                    }
-                  : null,
-            }
-          : {
-              entry: {
-                kind: "personnel_target",
-                reason: target.involveReason as InvolveReason,
-                humanAgentId: target.humanAgentId,
-                wakeAgentId: target.delegateAgentId,
-                externalUsername: target.involveLogin as string,
-              },
-              directedContext: target.teamAgentTask
-                ? {
-                    reason: target.involveReason as InvolveReason,
-                    externalUsername: target.involveLogin as string,
-                    teamAgentTask: target.teamAgentTask,
-                  }
-                : null,
-            },
-    ),
+    targets: audience,
     actorHumanId,
     resolveChat: (target) => resolveChatFor(app, event, target, options),
     onTargetError: (target, err) => {
@@ -150,9 +112,8 @@ export async function deliverGithubEvent(
   const byChat = planned.deliveries;
 
   // Phase 1.5 — refresh the local projection for this entity independently
-  // from card delivery. A self-only event can prune every delivery entry, but
-  // it still proves the entity has an existing local mapping whose title/topic
-  // projection must stay fresh.
+  // from card delivery. Existing local mappings refresh their title/topic
+  // projection regardless of whether their wake is actor-echo suppressed.
   const shouldRefreshEntityProjection = byChat.size > 0 || existingMappedChatIds.length > 0;
   if (shouldRefreshEntityProjection && event.entity.title && event.entity.title.length > 0) {
     try {
@@ -193,15 +154,20 @@ export async function deliverGithubEvent(
       const entries = [...delivery.entries.values()].sort(compareScmDeliveryEntries);
       const senderId = selectScmSenderId(entries);
       const cardContext = selectScmCardContext(entries);
-      const taskRun =
-        cardContext.teamAgentTask && cardContext.teamAgentTaskHumanAgentId
-          ? createGithubTaskRun(event, cardContext.teamAgentTask, cardContext.teamAgentTaskHumanAgentId)
-          : null;
+      const taskEntry = scmProviderContextEntries(entries)
+        .filter(
+          (entry) =>
+            entry.providerContext.kind === "github_app_task" && entry.providerContext.agentUuid === entry.wakeAgentId,
+        )
+        .sort(compareScmDeliveryEntries)[0];
+      const taskRun = taskEntry?.humanAgentId
+        ? createGithubTaskRun(event, taskEntry.providerContext, taskEntry.humanAgentId)
+        : null;
       const card = buildCard(
         event,
         cardContext.involveReason,
         cardContext.involveLogin,
-        taskRun?.marker ?? cardContext.teamAgentTask,
+        taskRun?.marker ?? taskEntry?.providerContext ?? null,
       );
       const mentionedUser = card.mentionedUser ?? undefined;
       // Native wake-set (S8): the delegates are passed as `metadata.mentions`,
@@ -267,11 +233,9 @@ export async function deliverGithubEvent(
   return stats;
 }
 
-function existingMappedChatIdsForProjection(audience: AudienceTarget[]): string[] {
+function existingMappedChatIdsForProjection(audience: ScmAudienceTarget<GithubProviderTaskContext>[]): string[] {
   return [
-    ...new Set(
-      audience.filter((target) => target.kind === "existing" && target.chatId).map((target) => target.chatId as string),
-    ),
+    ...new Set(audience.flatMap((target) => (target.entry.kind === "existing_line" ? [target.entry.line.chatId] : []))),
   ].sort();
 }
 
@@ -289,7 +253,7 @@ type ResolvedChat = { chatId: string; created: boolean };
 async function resolveChatFor(
   app: FastifyInstance,
   event: NormalizedScmEvent,
-  target: ScmAudienceTarget,
+  target: ScmAudienceTarget<GithubProviderTaskContext>,
   options: DeliveryOptions,
 ): Promise<ResolvedChat | null> {
   if (target.entry.kind === "existing_line") {
@@ -306,24 +270,17 @@ async function resolveChatFor(
     title: event.entity.title,
     url: event.entity.url,
   };
-  // Reviewer-reuse (S9, deliver-once-per-chat) — scoped to `review_requested`
-  // ONLY. When the entity already has exactly one reusable bound chat (the
-  // reviewer's human + delegate both already speak there), route there instead
-  // of minting a sibling chat, writing NO mapping row; the pair sees the
-  // entity's events through chat membership and Phase 2 dedups to one card.
-  // `mentioned` / `assigned` involves are deliberately NOT reused: a mention is
-  // a directed call that must mint a fresh chat (S5 — mentions pierce into a
-  // new chat, never back into an existing/unfollowed one).
-  if (target.entry.reason === "review_requested") {
-    const reuseChatId = await findReuseChatForInvolved(
-      app.db,
-      event.source.organizationId,
-      entity,
-      humanAgentId,
-      wakeAgentId,
-    );
-    if (reuseChatId) return { chatId: reuseChatId, created: false };
-  }
+  const intent =
+    target.entry.kind === "provider_task_target"
+      ? ({ kind: "provider_task_target" } as const)
+      : await decideGithubPersonnelTargetChat(
+          app.db,
+          event.source.organizationId,
+          entity,
+          humanAgentId,
+          wakeAgentId,
+          target.entry.reason,
+        );
 
   const relatedEntities: GithubEntity[] = event.relatedRefs.map((ref) => ({
     type: "issue",
@@ -338,14 +295,19 @@ async function resolveChatFor(
     eventType: event.eventType,
     action: event.action ?? "",
     entityStateSeed: options.entityStateSeed ?? null,
-    // `kind: "new"` audience targets come from explicit mentions / involves in
-    // the event payload — the only path allowed to mint a fresh chat for an
+    // Personnel and provider-task targets come from explicit directed evidence
+    // in the event payload — the only paths allowed to mint a fresh chat for an
     // opened creation event. Subscription targets short-circuit above; the
     // guard is still wired so any future caller is safe by default.
     isMentionMatched: true,
+    intent,
   });
   if (!resolved) return null;
-  if (target.directedContext?.teamAgentTask && target.directedContext.teamAgentTask.agentUuid === wakeAgentId) {
+  if (
+    target.entry.kind === "provider_task_target" &&
+    target.entry.providerContext.kind === "github_app_task" &&
+    target.entry.providerContext.agentUuid === wakeAgentId
+  ) {
     await applyMembershipWrite(app.db, resolved.chatId, [{ agentId: wakeAgentId }], { upgradeWatcherToSpeaker: true });
   }
   return { chatId: resolved.chatId, created: resolved.created };

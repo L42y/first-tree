@@ -357,6 +357,26 @@ describe("normalizeGithubEvent — pull_request", () => {
     expect(event.surface.title).toBe("PR #10: Refactor inbox");
   });
 
+  it("keeps the same login's assigned and mentioned evidence for shared composition", () => {
+    const event = normalize("pull_request", {
+      action: "opened",
+      sender: senderUser,
+      repository,
+      pull_request: {
+        number: 11,
+        title: "Route shared priority",
+        html_url: "https://github.com/owner/repo/pull/11",
+        body: "Please check this @Dave",
+        assignees: [{ login: "DAVE" }, { login: "dave" }],
+      },
+    });
+
+    expect(event?.targets).toEqual([
+      { externalUsername: "dave", reason: "assigned" },
+      { externalUsername: "dave", reason: "mentioned" },
+    ]);
+  });
+
   it("synchronize: kind=synchronized with empty involves (Bug 1: no longer silenced)", () => {
     const event = normalize("pull_request", {
       action: "synchronize",

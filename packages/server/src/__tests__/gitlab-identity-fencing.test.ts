@@ -5,6 +5,7 @@ import type { Database } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
 import { gitlabIdentityLinks } from "../db/schema/gitlab-identity-links.js";
+import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { createAgent, suspendAgent, updateAgent } from "../services/agent.js";
@@ -230,6 +231,12 @@ describe("GitLab identity authority fencing", () => {
         .select()
         .from(messages)
         .where(and(eq(messages.chatId, chat.id), eq(messages.source, "gitlab"))),
+    ).toHaveLength(1);
+    expect(
+      await app.db
+        .select()
+        .from(inboxEntries)
+        .where(and(eq(inboxEntries.chatId, chat.id), eq(inboxEntries.notify, true))),
     ).toHaveLength(0);
 
     const response = await app.inject({
@@ -244,7 +251,7 @@ describe("GitLab identity authority fencing", () => {
         .select()
         .from(messages)
         .where(and(eq(messages.chatId, chat.id), eq(messages.source, "gitlab"))),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   }, 20_000);
 
   it.each([

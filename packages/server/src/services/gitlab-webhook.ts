@@ -4,6 +4,7 @@ import type {
   GitlabTargetClass,
   InvolveReason,
   NormalizedScmEvent,
+  ScmAudienceEntry,
   ScmEntityObservation,
   ScmIngressContext,
   ScmNormalizedWebhook,
@@ -30,11 +31,11 @@ import {
   normalizeGitlabUsername,
   resolveActiveGitlabIdentity,
 } from "./gitlab-identities.js";
+import { composeScmAudience, type ScmAudienceTarget, type ScmPersonnelTarget } from "./scm-audience-composition.js";
 import { type DeferredScmCardPostCommitEffects, sendScmSystemCard } from "./scm-card-delivery.js";
 import {
   compareScmDeliveryEntries,
   planScmChatDeliveries,
-  type ScmAudienceTarget,
   scmTargetHumanAgentId,
   scmTargetWakeAgentId,
   scmWakeAgentIds,
@@ -705,7 +706,7 @@ export async function resolveGitlabAudience(
   actorHumanId = actor.outcome === "ok" ? actor.identity.humanAgentId : null;
   const rows =
     input.followers ?? (await observeGitlabEntityAndResolveFollowers(db, input.connectionId, input.entityIdentity));
-  const targets: ScmAudienceTarget[] = [];
+  const existingEntries: Array<Exclude<ScmAudienceEntry, { kind: "personnel_target" }>> = [];
   for (const row of rows) {
     if (row.boundVia === "identity_target") {
       if (!row.identityLinkId || !row.humanAgentId || !row.delegateAgentId) continue;
@@ -735,51 +736,46 @@ export async function resolveGitlabAudience(
       ) {
         continue;
       }
-      targets.push({
-        entry: {
-          kind: "existing_line",
-          line: {
-            kind: "attention_line",
-            humanAgentId: row.humanAgentId,
-            wakeAgentId: row.delegateAgentId,
-            chatId: row.chatId,
-            provenance: "identity_target",
-          },
+      existingEntries.push({
+        kind: "existing_line",
+        line: {
+          kind: "attention_line",
+          humanAgentId: row.humanAgentId,
+          wakeAgentId: row.delegateAgentId,
+          chatId: row.chatId,
+          provenance: "identity_target",
         },
       });
     } else {
       const humanAgentId = row.humanAgentId;
       const wakeAgentId = row.delegateAgentId;
       if (humanAgentId !== null && wakeAgentId !== null) {
-        targets.push({
-          entry: {
-            kind: "existing_line",
-            line: {
-              kind: "attention_line",
-              humanAgentId,
-              wakeAgentId,
-              chatId: row.chatId,
-              provenance: "explicit",
-            },
+        existingEntries.push({
+          kind: "existing_line",
+          line: {
+            kind: "attention_line",
+            humanAgentId,
+            wakeAgentId,
+            chatId: row.chatId,
+            provenance: "explicit",
           },
         });
       } else {
-        targets.push({
-          entry: {
-            kind: "legacy_route",
-            route: {
-              kind: "legacy_route_only",
-              chatId: row.chatId,
-              senderAgentId: row.declaredByAgentId,
-              wakeAgentId: null,
-              provenance: "legacy_explicit",
-            },
+        existingEntries.push({
+          kind: "legacy_route",
+          route: {
+            kind: "legacy_route_only",
+            chatId: row.chatId,
+            senderAgentId: row.declaredByAgentId,
+            wakeAgentId: null,
+            provenance: "legacy_explicit",
           },
         });
       }
     }
   }
 
+  const personnelTargets: ScmPersonnelTarget[] = [];
   for (const target of input.event.targets) {
     const normalizedUsername = normalizeGitlabUsername(target.externalUsername).normalized;
     const resolved = await resolveActiveGitlabIdentity(db, {
@@ -799,34 +795,16 @@ export async function resolveGitlabAudience(
       });
       continue;
     }
-    const existingIndex = targets.findIndex(
-      (candidate) =>
-        candidate.entry.kind === "existing_line" &&
-        candidate.entry.line.humanAgentId === resolved.identity.humanAgentId &&
-        candidate.entry.line.wakeAgentId === resolved.identity.delegateAgentId,
-    );
-    if (existingIndex >= 0) {
-      const existing = targets[existingIndex];
-      if (existing) {
-        targets.push({
-          entry: existing.entry,
-          directedContext: { reason: target.reason, externalUsername: normalizedUsername },
-        });
-      }
-      continue;
-    }
-    targets.push({
-      entry: {
-        kind: "personnel_target",
-        reason: target.reason,
-        humanAgentId: resolved.identity.humanAgentId,
-        wakeAgentId: resolved.identity.delegateAgentId,
-        externalUsername: normalizedUsername,
-      },
+    personnelTargets.push({
+      kind: "personnel_target",
+      reason: target.reason,
+      humanAgentId: resolved.identity.humanAgentId,
+      wakeAgentId: resolved.identity.delegateAgentId,
+      externalUsername: normalizedUsername,
     });
   }
 
-  return { targets, actorHumanId };
+  return { targets: composeScmAudience({ existingEntries, personnelTargets }), actorHumanId };
 }
 
 async function resolveGitlabTargetChat(

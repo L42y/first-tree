@@ -85,6 +85,7 @@ describe("github binding invariants", () => {
         eventType: "pull_request",
         action: "opened",
         isMentionMatched: false,
+        intent: { kind: "strict_new_line" },
       });
 
       expect(result).toBeNull();
@@ -108,6 +109,7 @@ describe("github binding invariants", () => {
         eventType: "pull_request",
         action: "opened",
         isMentionMatched: true,
+        intent: { kind: "strict_new_line" },
       });
 
       expect(result).not.toBeNull();
@@ -129,6 +131,7 @@ describe("github binding invariants", () => {
         eventType: "issue_comment",
         action: "created",
         isMentionMatched: false,
+        intent: { kind: "strict_new_line" },
       });
 
       expect(result).not.toBeNull();
