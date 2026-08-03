@@ -1471,7 +1471,7 @@ describe("Agent client WS edge protocol coverage", () => {
         clientId: seed.clientId,
         hostname: "edge-host",
         os: "linux",
-        wireCapabilities: { wsSessionTerminateApplyAck: true, wsSessionResetFinalizeHandshake: true },
+        wireCapabilities: { wsSessionResetV1: true },
       }),
     );
     await waitForFrame(ws, (message) => (message as { type?: string }).type === "client:registered");
@@ -1480,7 +1480,7 @@ describe("Agent client WS edge protocol coverage", () => {
       await expect(bindAgent(ws, agent.uuid, "bind-apply-ack")).resolves.toMatchObject({ type: "agent:bound" });
 
       // The capabilities advertised at register are visible on the live connection.
-      expect(connectionManager.agentSupportsTerminateApplyAck(agent.uuid)).toBe(true);
+      expect(connectionManager.agentSupportsSessionResetV1(agent.uuid)).toBe(true);
       expect(connectionManager.getAgentLiveClientId(agent.uuid)).toBe(seed.clientId);
 
       // A well-formed ack resolves the HTTP route's waiter with its payload.

@@ -26,8 +26,12 @@ import { SessionRegistry } from "../runtime/session-registry.js";
  *     finalizes, and the exact `finalized` arrives only after that commit;
  *  3. exactly one recovery follows, and the intervening row enters a fresh
  *     nonce-derived session and ACKs once — on the same socket, no reconnect;
- *  4. a stale/duplicate ref, a foreign-agent ref, and a lost first finalized
- *     signal can neither release early nor stall the chat permanently.
+ *  4. a stale/duplicate ref and a foreign-agent ref can neither release early
+ *     nor stall the chat, and a lost finalize path converges through the
+ *     operator's real recovery — a retried Reset with a NEW terminate ref;
+ *  5. a clean Reset with no preexisting debt still fences the window between
+ *     `applied` and `finalized`, so a row arriving there parks instead of
+ *     entering the session the Reset just destroyed.
  */
 
 const AGENT_ID = "11111111-2222-4333-8444-555555555555";
@@ -61,8 +65,10 @@ class FakeServer {
   registerCapabilities: Record<string, unknown> = {};
   connections = 0;
   noProgressCircuitOpen = false;
-  /** Flip off to model a server build that predates the finalize handshake. */
-  advertiseFinalizeHandshake = true;
+  /** Flip off to model a server build that predates the composite v1 protocol. */
+  advertiseSessionResetV1 = true;
+  /** Finalize signals the test drops in transit, keyed by terminate ref. */
+  readonly lostFinalizeRefs = new Set<string>();
 
   private http!: Server;
   private wss!: WebSocketServer;
@@ -133,6 +139,13 @@ class FakeServer {
 
   /** Post-`finalizeTerminatedSession` signal on the exact client route. */
   sendFinalized(ref: string, ackRef: string, agentId: string = AGENT_ID): void {
+    if (this.lostFinalizeRefs.has(ref)) {
+      // Production loss shape: the frame (or its PG wake) never reaches the
+      // client, so this Reset's HTTP request fails with 503 and the operator
+      // retries with a brand-new terminate ref.
+      this.trace.push("finalized:lost");
+      return;
+    }
     this.trace.push("finalized:sent");
     this.send({
       type: "session:command:finalized",
@@ -223,7 +236,7 @@ class FakeServer {
               wsInboxDeliver: true,
               wsInboxAckConfirm: true,
               wsSessionEventConfirm: true,
-              ...(this.advertiseFinalizeHandshake ? { wsSessionResetFinalizeHandshake: true } : {}),
+              ...(this.advertiseSessionResetV1 ? { wsSessionResetV1: true } : {}),
             },
           }),
         );
@@ -346,7 +359,7 @@ describe("Reset finalize handshake — wire level", () => {
     setShutdownGate: (gate: Promise<void> | null) => void;
   };
 
-  async function bootWireHarness(options: { advertiseFinalizeHandshake?: boolean } = {}): Promise<Harness> {
+  async function bootWireHarness(options: { advertiseSessionResetV1?: boolean } = {}): Promise<Harness> {
     const home = mkdtempSync(join(tmpdir(), "ft-reset-wire-"));
     const previousHome = process.env.FIRST_TREE_HOME;
     process.env.FIRST_TREE_HOME = home;
@@ -357,7 +370,7 @@ describe("Reset finalize handshake — wire level", () => {
     });
 
     const server = new FakeServer();
-    server.advertiseFinalizeHandshake = options.advertiseFinalizeHandshake ?? true;
+    server.advertiseSessionResetV1 = options.advertiseSessionResetV1 ?? true;
     await server.listen();
     cleanups.push(() => server.close());
 
@@ -430,11 +443,8 @@ describe("Reset finalize handshake — wire level", () => {
   it("drives park → applied → finalized → receipt → one recovery over a real socket", async () => {
     const { server, home, starts, setShutdownGate } = await bootWireHarness();
 
-    // Both halves of the Reset contract were negotiated on this socket.
-    expect(server.registerCapabilities).toEqual({
-      wsSessionTerminateApplyAck: true,
-      wsSessionResetFinalizeHandshake: true,
-    });
+    // The whole Reset contract was negotiated on this socket as one version.
+    expect(server.registerCapabilities).toEqual({ wsSessionResetV1: true });
 
     // ── Baseline turn: the chat has a live provider session ────────────────
     server.seed({ entryId: 1, messageId: "msg-baseline", content: "hello" });
@@ -500,17 +510,24 @@ describe("Reset finalize handshake — wire level", () => {
     expect(traceAfterReset).toEqual(["applied:true", "finalize-commit", "finalized:sent", "recover", "receipt:true"]);
 
     // ── 4a. Duplicate + foreign finalized frames ───────────────────────────
+    // A duplicate for the SAME generation is idempotent, not stale: this
+    // client really did release that fence, so the retrying server gets a
+    // truthful `released: true` — but nothing recovers twice.
     server.sendFinalized("ref-b", "ack-b-late");
     server.sendFinalized("ref-b", "ack-foreign", "99999999-2222-4333-8444-555555555555");
     await vi.waitFor(() => expect(server.receipts).toHaveLength(2), { timeout: 5_000 });
-    expect(server.receipts[1]).toEqual({ ref: "ref-b", ackRef: "ack-b-late", released: false });
+    expect(server.receipts[1]).toEqual({ ref: "ref-b", ackRef: "ack-b-late", released: true });
     await new Promise((resolve) => setTimeout(resolve, 100));
     // The foreign agent's frame is not this slot's to answer, and neither
     // stale frame may drive another recovery.
     expect(server.receipts).toHaveLength(2);
     expect(server.recovers).toHaveLength(1);
 
-    // ── 4b. Lost first finalized signal: parked, not released, not stalled ─
+    // ── 4b. Lost finalize on Reset C, operator retries Reset with a NEW ref ─
+    // Production shape: the first finalize path is lost, that HTTP attempt
+    // ends in 503, and the operator presses Reset again — a fresh terminate
+    // ref, never a replay of the finalized frame for the dead one.
+    server.lostFinalizeRefs.add("ref-c");
     let releaseShutdown: (() => void) | undefined;
     setShutdownGate(
       new Promise<void>((resolve) => {
@@ -528,28 +545,51 @@ describe("Reset finalize handshake — wire level", () => {
     await vi.waitFor(() => expect(server.applied).toHaveLength(3), { timeout: 5_000 });
     expect(server.applied[2]).toEqual({ ref: "ref-c", applied: true });
 
-    // The finalized frame is dropped in transit: the row stays parked, and the
-    // client must NOT recover, ACK, or start a provider session on its own.
+    // The finalize signal for ref-c never lands (HTTP 503 for the operator):
+    // the row stays parked, and the client must NOT recover, ACK, or start a
+    // provider session on its own.
+    server.sendFinalized("ref-c", "ack-c");
     await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(server.trace).toContain("finalized:lost");
     expect(server.recovers).toHaveLength(1);
+    expect(server.receipts).toHaveLength(2);
     expect(server.ackedRows()).not.toContain(4);
     expect(server.noProgressCircuitOpen).toBe(false);
 
-    // The server's retry (or its durable fallback) converges on the same socket.
-    server.sendFinalized("ref-c", "ack-c");
+    // The retried Reset carries a new terminate ref. It applies against the
+    // already-terminated chat and arms the current generation, so ITS
+    // finalize releases the row parked by the lost attempt — exactly once,
+    // on the same socket.
+    server.sendTerminate("ref-d");
+    await vi.waitFor(() => expect(server.applied).toHaveLength(4), { timeout: 5_000 });
+    expect(server.applied[3]).toEqual({ ref: "ref-d", applied: true });
+    expect(server.recovers).toHaveLength(1);
+
+    server.sendFinalized("ref-d", "ack-d");
     await vi.waitFor(() => expect(server.ackedRows()).toContain(4), { timeout: 5_000 });
-    expect(server.receipts.at(-1)).toEqual({ ref: "ref-c", ackRef: "ack-c", released: true });
+    expect(server.receipts.at(-1)).toEqual({ ref: "ref-d", ackRef: "ack-d", released: true });
     expect(server.recovers).toHaveLength(2);
     expect(server.noProgressCircuitOpen).toBe(false);
     expect(server.connections).toBe(1);
+
+    // A late finalize for the abandoned generation is answered honestly and
+    // recovers nothing: the retry's generation superseded it.
+    server.lostFinalizeRefs.delete("ref-c");
+    server.sendFinalized("ref-c", "ack-c-late");
+    await vi.waitFor(() => expect(server.receipts.at(-1)?.ackRef).toBe("ack-c-late"), { timeout: 5_000 });
+    expect(server.receipts.at(-1)).toEqual({ ref: "ref-c", ackRef: "ack-c-late", released: false });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(server.recovers).toHaveLength(2);
+    expect(server.noProgressCircuitOpen).toBe(false);
   }, 30_000);
 
-  it("fails a ref'd Reset closed against a server without the finalize handshake", async () => {
-    const { server, starts, injects } = await bootWireHarness({ advertiseFinalizeHandshake: false });
+  it("fails a ref'd Reset closed against a server without the v1 Reset protocol", async () => {
+    const { server, starts, injects } = await bootWireHarness({ advertiseSessionResetV1: false });
 
-    // The client withheld the finalize half, so a correctly-gated server would
-    // not even offer Reset here.
-    expect(server.registerCapabilities).toEqual({ wsSessionTerminateApplyAck: true });
+    // The client advertised no Reset capability at all — not even the legacy
+    // apply-only flag, which an old server would have read as consent — so a
+    // correctly-gated server would not even offer Reset here.
+    expect(server.registerCapabilities).toEqual({});
 
     server.seed({ entryId: 1, messageId: "msg-skew-baseline", content: "hello" });
     server.deliver(1);
@@ -569,5 +609,50 @@ describe("Reset finalize handshake — wire level", () => {
     expect(server.recovers).toHaveLength(0);
     expect(server.receipts).toHaveLength(0);
     expect(starts.map((entry) => entry.messageId)).toEqual(["msg-skew-baseline"]);
+  }, 30_000);
+
+  it("fences a clean Reset's post-apply window even with nothing parked at apply time", async () => {
+    const { server, home, starts, injects } = await bootWireHarness();
+
+    // Baseline turn, fully settled: this Reset starts from zero debt, which
+    // is the ordinary operator case and used to skip the fence entirely.
+    server.seed({ entryId: 1, messageId: "msg-clean-baseline", content: "hello" });
+    server.deliver(1);
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(1), { timeout: 5_000 });
+    expect(starts).toHaveLength(1);
+
+    server.send({ type: "session:suspend", agentId: AGENT_ID, chatId: CHAT_ID });
+    server.sendTerminate("ref-clean");
+    await vi.waitFor(() => expect(server.applied).toHaveLength(1), { timeout: 5_000 });
+    expect(server.applied[0]).toEqual({ ref: "ref-clean", applied: true });
+
+    // The server has not finalized yet: the old session is already gone, so a
+    // row arriving now must park — no provider route, no recovery, no ACK.
+    server.seed({ entryId: 2, messageId: "msg-in-post-apply-window", content: "arrived after applied" });
+    server.deliver(2);
+    server.deliver(2);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(starts).toHaveLength(1);
+    expect(injects).toEqual([]);
+    expect(server.recovers).toHaveLength(0);
+    expect(server.ackedRows()).toEqual([1]);
+    expect(server.noProgressCircuitOpen).toBe(false);
+
+    // The exact finalized ref lifts the fence: one recovery, and the parked
+    // row settles in a fresh nonce-derived session.
+    server.sendFinalized("ref-clean", "ack-clean");
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(2), { timeout: 5_000 });
+    expect(server.receipts).toEqual([{ ref: "ref-clean", ackRef: "ack-clean", released: true }]);
+    expect(server.recovers).toHaveLength(1);
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.messageId).toBe("msg-in-post-apply-window");
+    expect(server.noProgressCircuitOpen).toBe(false);
+    expect(server.connections).toBe(1);
+
+    const registry = JSON.parse(readFileSync(join(home, "data", "sessions", "wire-agent.json"), "utf-8")) as {
+      freshStartNonces?: Record<string, string>;
+    };
+    expect(starts[1]?.freshStartNonce).toBe(registry.freshStartNonces?.[CHAT_ID]);
+    expect(starts[1]?.freshStartNonce).not.toBe(starts[0]?.freshStartNonce);
   }, 30_000);
 });

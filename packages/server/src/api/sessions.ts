@@ -179,14 +179,18 @@ async function terminateWithApplyAck(
 
   // DB-authoritative route (shared predicate): durable agent binding +
   // online presence + connected client must all agree on client/instance,
-  // and the client must have registered the apply-ack capability. Any
-  // replica reaches the same verdict, independent of socket ownership.
+  // and the client must have registered the composite `wsSessionResetV1`
+  // capability — a legacy apply-only client is refused here, before any
+  // destructive command is sent. Any replica reaches the same verdict,
+  // independent of socket ownership.
   const route = await resolveAgentApplyAckRoute(app.db, agentId);
   if (!route) {
     throw new ServiceUnavailableError("The agent's client is disconnected");
   }
   if (!route.capable) {
-    throw new ServiceUnavailableError("The agent's client does not support terminate apply-ack; Reset is unavailable");
+    throw new ServiceUnavailableError(
+      "The agent's client does not support this version of the Reset protocol; Reset is unavailable",
+    );
   }
   const clientId = route.clientId;
   const targetInstanceId = route.instanceId;

@@ -93,6 +93,7 @@ describe("WS server:welcome — wire-additive frame before auth:ok", () => {
         wsInboxDeliver?: boolean;
         wsInboxAckConfirm?: boolean;
         wsSessionEventConfirm?: boolean;
+        wsSessionResetV1?: boolean;
         wsSessionResetFinalizeHandshake?: boolean;
       };
     };
@@ -105,6 +106,10 @@ describe("WS server:welcome — wire-additive frame before auth:ok", () => {
     expect(welcome.capabilities?.wsInboxDeliver).toBe(true);
     expect(welcome.capabilities?.wsInboxAckConfirm).toBe(true);
     expect(welcome.capabilities?.wsSessionEventConfirm).toBe(true);
-    expect(welcome.capabilities?.wsSessionResetFinalizeHandshake).toBe(true);
+    // Versioned composite Reset: one flag covers apply-ack + finalize
+    // handshake, and the superseded pre-v1 flag is not advertised, so a
+    // client cannot negotiate half a protocol from this welcome.
+    expect(welcome.capabilities?.wsSessionResetV1).toBe(true);
+    expect(welcome.capabilities?.wsSessionResetFinalizeHandshake).toBeUndefined();
   });
 });

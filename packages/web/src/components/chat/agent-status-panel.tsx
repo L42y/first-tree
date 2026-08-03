@@ -103,11 +103,12 @@ export function canResumeStatus(status: AgentChatStatus | null): boolean {
  * Reset (clear the chat session) is offered only for a STOPPED session —
  * `suspended`, or failed (session state `errored` projects as engagement
  * `none` with the errored axis set) — on a reachable agent whose live client
- * declares the terminate apply-ack capability (`sessionResetSupported`).
+ * negotiated the composite Reset protocol (`sessionResetSupported`).
  * Active sessions never offer Reset, even when idle: a running agent must be
  * paused first, so Reset never tears down an in-flight turn. Offline agents
- * and old clients are excluded because the apply-ack is the only proof the
- * old provider-session mapping is gone. Exported for tests.
+ * and clients on an older protocol version are excluded: without the whole
+ * handshake there is no proof the old provider-session mapping is gone and no
+ * way to release the rows the client parks meanwhile. Exported for tests.
  */
 export function canResetSessionStatus(status: AgentChatStatus | null): boolean {
   if (!status || !status.reachable || status.sessionResetSupported !== true) return false;

@@ -214,24 +214,19 @@ export function sendToAgent(agentId: string, message: Record<string, unknown>): 
 }
 
 /**
- * Does the agent's CURRENT live client connection support the whole Web
- * chat-session Reset handshake — the terminate apply-ack
- * (`wsSessionTerminateApplyAck`) AND the post-finalize handshake
- * (`wsSessionResetFinalizeHandshake`)? Without the apply-ack the server
- * cannot prove the client dropped the old provider-session mapping; without
- * the finalize handshake the client would park its intervening inbox rows
- * behind a fence it never lifts. Either gap hides Reset.
+ * Does the agent's CURRENT live client connection speak version 1 of the
+ * composite Web chat-session Reset protocol? `wsSessionResetV1` covers the
+ * whole flow — terminate apply-ack, parked-fence release on the exact
+ * terminate ref, and the post-finalize receipt. The legacy apply-only flag is
+ * not accepted as a substitute: without the finalize half the client parks
+ * its intervening inbox rows behind a fence it never lifts, so such a
+ * connection hides Reset.
  */
-export function agentSupportsTerminateApplyAck(agentId: string): boolean {
+export function agentSupportsSessionResetV1(agentId: string): boolean {
   const clientId = agentToClient.get(agentId);
   if (!clientId) return false;
   const entry = clientConnections.get(clientId);
-  return (
-    entry !== undefined &&
-    entry.ws.readyState === 1 &&
-    entry.capabilities?.wsSessionTerminateApplyAck === true &&
-    entry.capabilities?.wsSessionResetFinalizeHandshake === true
-  );
+  return entry !== undefined && entry.ws.readyState === 1 && entry.capabilities?.wsSessionResetV1 === true;
 }
 
 /** The clientId of the agent's current live connection, if any. */

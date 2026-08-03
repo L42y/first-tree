@@ -109,19 +109,26 @@ export const serverCapabilitiesSchema = z
      */
     wsSessionEventConfirm: z.boolean().default(false),
     /**
-     * Server completes the chat-session Reset handshake past the apply-ack:
-     * after `finalizeTerminatedSession` it sends `session:command:finalized`
-     * on the exact client route and holds the Reset request open until the
-     * client's `session:command:finalized:ack` receipt lands.
+     * Version 1 of the COMPOSITE chat-session Reset protocol: the ref'd
+     * `session:terminate` apply-ack AND the post-finalize handshake
+     * (`session:command:finalized` on the exact client route, request held
+     * open until the client's `session:command:finalized:ack` receipt lands).
+     * The two halves are one indivisible capability — a peer that implements
+     * only the apply-ack cannot participate at all, because the client parks
+     * inbox rows behind a fence that only the finalize signal lifts.
      *
-     * This is the server half of a two-sided negotiation. A client that parks
-     * inbox recovery behind the Reset fence must NOT declare
-     * `wsSessionResetFinalizeHandshake` unless it saw this flag, because an
-     * older server never sends the finalize frame and the park would never be
-     * released. The welcome frame is therefore emitted BEFORE `auth:ok` so the
-     * client can answer with an accurate `client:register`.
+     * This is the server half of a two-sided negotiation. A client must NOT
+     * declare `wsSessionResetV1` unless it saw this flag, and must not fall
+     * back to advertising the legacy apply-only flag as Reset-readiness: an
+     * older server would accept that as consent, run the legacy flow, and
+     * leave the client parked forever. The welcome frame is emitted BEFORE
+     * `auth:ok` so the client can answer with an accurate `client:register`.
+     *
+     * Future protocol changes bump to a new `wsSessionResetV2` field rather
+     * than redefining this one, so version skew stays decidable from the
+     * frame alone.
      */
-    wsSessionResetFinalizeHandshake: z.boolean().default(false),
+    wsSessionResetV1: z.boolean().default(false),
   })
   .partial();
 export type ServerCapabilities = z.infer<typeof serverCapabilitiesSchema>;

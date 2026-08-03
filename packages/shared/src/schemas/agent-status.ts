@@ -145,10 +145,14 @@ export const agentChatStatusSchema = z
      */
     statusReason: agentStatusReasonSchema.optional(),
     /**
-     * The agent's live client connection declares `wsSessionTerminateApplyAck`
-     * — i.e. a chat-session Reset can wait for the client's terminate
-     * apply-ack before reporting success. Absent/false for old clients and
-     * offline agents; Web shows Reset only when this is `=== true`.
+     * The agent's live client connection declares the composite Reset
+     * capability `wsSessionResetV1` — i.e. it answers a ref'd terminate with
+     * an apply-ack, parks intervening inbox rows behind the Reset fence, and
+     * releases them only against the matching `session:command:finalized`,
+     * which it receipts. A client that declares only the legacy apply-only
+     * flag reads as `false` here, because the server would otherwise evict
+     * its session into a fence it never lifts. Absent/false for old clients
+     * and offline agents; Web shows Reset only when this is `=== true`.
      */
     sessionResetSupported: z.boolean().optional(),
   })

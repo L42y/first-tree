@@ -48,32 +48,43 @@ function wireCapabilities(metadata: unknown): Record<string, unknown> | undefine
   return (metadata as Record<string, unknown> | null)?.wireCapabilities as Record<string, unknown> | undefined;
 }
 
-/** The `wsSessionTerminateApplyAck` flag out of a `clients.metadata` blob. */
-export function metadataHasApplyAckCapability(metadata: unknown): boolean {
+/**
+ * The LEGACY apply-only flag out of a `clients.metadata` blob. It identifies
+ * a pre-v1 client and is NOT a Reset verdict: such a client answers the
+ * apply-ack and then waits for a post-finalize signal it does not understand.
+ * Kept so this server can recognise old clients (and so the mixed-fleet
+ * regression can prove a current client is not mistaken for one).
+ */
+export function metadataHasLegacyApplyAckCapability(metadata: unknown): boolean {
   return wireCapabilities(metadata)?.wsSessionTerminateApplyAck === true;
 }
 
-/** The `wsSessionResetFinalizeHandshake` flag out of a `clients.metadata` blob. */
-export function metadataHasResetFinalizeHandshakeCapability(metadata: unknown): boolean {
-  return wireCapabilities(metadata)?.wsSessionResetFinalizeHandshake === true;
+/** The composite `wsSessionResetV1` flag out of a `clients.metadata` blob. */
+export function metadataHasSessionResetV1Capability(metadata: unknown): boolean {
+  return wireCapabilities(metadata)?.wsSessionResetV1 === true;
 }
 
 /**
- * The ONE capability verdict for chat-session Reset. Both halves are
- * required: the apply-ack proves the client dropped the provider mapping, and
- * the finalize handshake proves it will release its parked inbox recovery and
- * answer the post-finalize signal. A client that declares only the apply-ack
- * would park its intervening rows behind a fence this server lifts with a
- * frame the client never answers, so Reset must stay hidden and fail closed
- * BEFORE anything destructive is applied locally.
+ * The ONE capability verdict for chat-session Reset: the client declared the
+ * composite `wsSessionResetV1` protocol. That single flag covers the whole
+ * flow — apply-ack (the provider mapping is gone), parked-fence release on
+ * the exact terminate ref, and the post-finalize receipt — so there is no way
+ * to negotiate half of it.
+ *
+ * The legacy apply-only flag deliberately does NOT count, in either
+ * direction. An old client that declares it would park its intervening rows
+ * behind a fence this server lifts with a frame the client never answers, so
+ * Reset stays hidden and fails closed before anything destructive is applied
+ * locally; and a current client never sends it, so an older server offering
+ * the legacy flow finds no consent either.
  */
 export function metadataSupportsSessionReset(metadata: unknown): boolean {
-  return metadataHasApplyAckCapability(metadata) && metadataHasResetFinalizeHandshakeCapability(metadata);
+  return metadataHasSessionResetV1Capability(metadata);
 }
 
 /**
  * DB-authoritative route for one agent: consistent route (see
- * `isConsistentAgentRoute`) plus the registered apply-ack capability.
+ * `isConsistentAgentRoute`) plus the registered composite Reset capability.
  * `null` when the route is inconsistent or the agent row is missing.
  */
 export async function resolveAgentApplyAckRoute(

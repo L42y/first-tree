@@ -1056,8 +1056,8 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
           try {
             // Welcome goes out BEFORE `auth:ok`. The client answers `auth:ok`
             // with `client:register`, and its Reset capability declaration is
-            // only honest once it knows whether this server completes the
-            // finalize handshake — so the advertisement must arrive first.
+            // only honest once it knows which Reset protocol version this
+            // server speaks — so the advertisement must arrive first.
             // Wire-additive: older clients drop the unknown type; newer ones
             // use it to detect version drift. `capabilities.wsInboxDeliver`
             // must stay `true` here so 0.10.4 ~ 0.14.2 clients suppress
@@ -1073,7 +1073,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                 wsInboxDeliver: true,
                 wsInboxAckConfirm: true,
                 wsSessionEventConfirm: true,
-                wsSessionResetFinalizeHandshake: true,
+                wsSessionResetV1: true,
               },
             });
             sendJsonOrThrow(socket, { type: "auth:ok" });

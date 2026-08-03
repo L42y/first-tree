@@ -708,7 +708,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
   async function setup(
     state: string,
     opts: {
-      /** `"apply-ack-only"` models a client that predates the finalize handshake. */
+      /** `"apply-ack-only"` models a legacy client that predates the composite v1 protocol. */
       capable?: boolean | "apply-ack-only";
       connected?: boolean;
       remote?: boolean;
@@ -746,7 +746,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
         metadata: {
           wireCapabilities:
             capable === true
-              ? { wsSessionTerminateApplyAck: true, wsSessionResetFinalizeHandshake: true }
+              ? { wsSessionResetV1: true }
               : capable === "apply-ack-only"
                 ? { wsSessionTerminateApplyAck: true }
                 : {},
@@ -796,10 +796,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       close: vi.fn(),
     };
     if (localSocket) {
-      setClientConnection(admin.clientId, ws as unknown as WebSocket, {
-        wsSessionTerminateApplyAck: true,
-        wsSessionResetFinalizeHandshake: true,
-      });
+      setClientConnection(admin.clientId, ws as unknown as WebSocket, { wsSessionResetV1: true });
       bindAgentToClient(admin.clientId, agent.uuid);
     }
     return { app, admin, agent, chat, ws };
@@ -1209,10 +1206,11 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     }
   });
 
-  it("fails 503 when the client declares the apply-ack but not the finalize handshake", async () => {
-    // Half a handshake is worse than none: the client would park its
-    // intervening inbox rows behind a Reset fence and never answer the
-    // post-finalize signal, so Reset must fail before anything is applied.
+  it("fails 503 for a legacy client that declares only the apply-only Reset flag", async () => {
+    // Old client → new server. Half a handshake is worse than none: the
+    // client would park its intervening inbox rows behind a Reset fence and
+    // never answer the post-finalize signal, so Reset must fail before
+    // anything is applied.
     const { app, admin, agent, chat, ws } = await setup("suspended", { capable: "apply-ack-only" });
     try {
       const res = await terminateReq(app, admin, agent.uuid, chat.id);

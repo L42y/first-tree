@@ -79,6 +79,20 @@ surface, skills projection, or provider supervisor changes.
   `session:command:applied` and the server finishes Reset finalization (`session:command:finalized` / session
   `evicted`), that exact durable row recovers on the same socket (no reconnect, no HTTP conflict, no no-progress
   circuit) into one fresh nonce-derived Pi identity — apply/finalization precedes the single recovery.
+- Reset fence window: the window between `session:command:applied` and the matching `session:command:finalized` is
+  closed even for a clean Reset that had nothing queued when it applied. A message delivered inside that window must
+  park — no start/resume/inject, no ACK, no same-socket recovery — and must settle into one fresh nonce-derived Pi
+  identity only after that generation's exact `finalized` is accepted.
+- Reset generation authority: refs that join one in-flight terminate are aliases of a single generation, so either
+  one's `finalized` releases the fence once and its duplicate is idempotent, while a superseded or unknown ref is
+  answered `released: false` and releases nothing. A stale-reconcile terminate carries no generation and must not
+  release an armed one. When a finalize path is lost, the operator's retried Reset (a NEW terminate ref) is what
+  releases the row parked by the abandoned attempt — exactly once, on the same socket.
+- Reset protocol version: Reset is offered and accepted only when client and server both advertise the composite
+  `wsSessionResetV1` capability (welcome before `auth:ok`, answered in `client:register`). A client that declares only
+  the legacy apply-only flag is refused with 503 before anything destructive is applied, and a current client never
+  advertises that legacy flag, so an older server cannot mistake it for a pre-v1 peer and start a Reset whose fence it
+  will never lift.
   Inject during streaming
   uses `steer`; non-streaming input starts the next prompt. Accepted steered messages keep DeliveryToken custody
   through `agent_settled`. A settle-vs-steer rejection queues the inbound message for the next prompt rather than
@@ -111,7 +125,9 @@ clean supported install, missing forced `PI_SKIP_VERSION_CHECK=1` / `PI_TELEMETR
 `{type:"request"}` envelope, credentials retained by First Tree, an unadmitted runtime process, silent model fallback,
 treating `agent_end` as settlement, hanging on credential preflight or corrupted JSONL, silent non-empty MCP acceptance,
 unsafe side-effect replay, auto-resending a timed-out prompt as pre-provider, terminal failure consumed before its
-durable notice, or a client switch authorized by child registry alone.
+durable notice, a message admitted between Reset `applied` and `finalized`, a `finalized` receipt that claims a
+release the client did not perform, a Reset offered across mismatched protocol versions, or a client switch authorized
+by child registry alone.
 
 `BLOCKED` means a compatible CLI, provider login/entitlement/network, isolated platform bridge, owner-reviewed Windows
 drain authority, or product Job supervisor is absent. Unit tests and a raw Pi CLI probe alone do not turn a blocked

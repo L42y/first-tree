@@ -5710,11 +5710,11 @@ describe("SessionManager edge coverage", () => {
     await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
 
     // A ref that is not the armed generation may not lift the fence.
-    sm.releaseParkedResetFenceRecovery(chatId, "ref-not-armed");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-not-armed")).toBe("stale");
     expect(recoverChat).not.toHaveBeenCalled();
     expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
 
-    sm.releaseParkedResetFenceRecovery(chatId, "ref-a");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("accepted");
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
 
     // Generation B parks new debt and arms over A; A's delayed duplicate is
@@ -5726,19 +5726,21 @@ describe("SessionManager edge coverage", () => {
     await sm.dispatch(mockEntry({ id: 602, chatId, messageId: "msg-ref-scope-b" }));
     await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
     expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
-    sm.releaseParkedResetFenceRecovery(chatId, "ref-a");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("stale");
     expect(recoverChat).toHaveBeenCalledTimes(1);
 
-    sm.releaseParkedResetFenceRecovery(chatId, "ref-b");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("accepted");
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(2));
-    sm.releaseParkedResetFenceRecovery(chatId, "ref-b");
+    // A duplicate for the same generation is honest about the fence being
+    // down without recovering a second time.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("idempotent");
     expect(recoverChat).toHaveBeenCalledTimes(2);
 
     await sm.shutdown();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("arms the joining ref'd terminate's generation when it coalesces onto an in-flight apply", async () => {
+  it("associates every ref that joins one termination with a single generation", async () => {
     let signalShutdownStarted: (() => void) | undefined;
     let resolveShutdown: (() => void) | undefined;
     const shutdownStarted = new Promise<void>((resolve) => {
@@ -5769,13 +5771,147 @@ describe("SessionManager edge coverage", () => {
     await first;
     await second;
 
-    // The joining generation owns the park: the superseded ref cannot lift it.
-    sm.releaseParkedResetFenceRecovery(chatId, "ref-first");
+    // A and B share one termination, so they share one generation: either
+    // alias is an honest release, and the second one recovers nothing extra.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-first")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-second")).toBe("idempotent");
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    // A later generation retires both aliases.
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-third" });
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-first")).toBe("stale");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-second")).toBe("stale");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-third")).toBe("accepted");
+
+    await sm.shutdown();
+  });
+
+  it("keeps the joining alias releasable when the second ref's finalized lands first", async () => {
+    let signalShutdownStarted: (() => void) | undefined;
+    let resolveShutdown: (() => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    });
+    const terminatingHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalShutdownStarted?.();
+        await shutdownGate;
+      }),
+    });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [terminatingHandler], recoverChat });
+    const i = internals(sm);
+    const chatId = "chat-reset-alias-order";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    i._activeCount = 1;
+
+    const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
+    await shutdownStarted;
+    await sm.dispatch(mockEntry({ id: 611, chatId, messageId: "msg-alias-order" }));
+    const second = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
+
+    resolveShutdown?.();
+    await first;
+    await second;
+
+    // Whichever Reset the server finalizes first is the one that releases;
+    // latest-ref-wins would have made this the stale one.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("idempotent");
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+  });
+
+  it("keeps a delayed stale reconcile from releasing a newer armed Reset generation", async () => {
+    const start = vi.fn().mockResolvedValue("should-not-start");
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [handler({ start }), handler({ start })], recoverChat, ackEntry });
+    const i = internals(sm);
+    const chatId = "chat-reset-stale-reconcile";
+
+    // Reset B is armed and holding a parked row.
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
+    await sm.dispatch(mockEntry({ id: 620, chatId, messageId: "msg-behind-generation-b" }));
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
     expect(recoverChat).not.toHaveBeenCalled();
-    sm.releaseParkedResetFenceRecovery(chatId, "ref-second");
+
+    // A reconcile result computed from older server state declares the chat
+    // stale. Its terminate still runs, but it carries no generation, so it
+    // must NOT lift B's fence — that would redeliver into a Reset the server
+    // has not finalized.
+    sm.applyStaleChatIds([chatId]);
+    await vi.waitFor(() => expect(i.terminatingChats.has(chatId)).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    // Only B's own finalized releases it.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("accepted");
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
 
     await sm.shutdown();
+  });
+
+  it("fences the post-apply window of a zero-debt Reset until its exact finalized", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-reset-zero-debt-fence-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-reset-zero-debt";
+
+    const start = vi.fn().mockImplementation(async (message: SessionMessage, ctx: SessionContext, token) => {
+      token?.processingStarted(message);
+      await token?.complete(message, { status: "success", terminal: true });
+      await ctx.finishTurn(message, { status: "success", terminal: true });
+      return `fresh-${message.id}`;
+    });
+    const inject = vi.fn().mockReturnValue({ kind: "owned", mode: "processing" });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(id: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ registryPath, handlers: [handler({ start, inject })], recoverChat, ackEntry });
+    const i = internals(sm);
+
+    // Clean Reset: no recovery debt and no unsettled work when it applies.
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-clean" });
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(false);
+    expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
+    // The fence is armed anyway — the session is gone but the server has not
+    // finalized, so the chat is not open for business yet.
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(sm.getHeldChatIds(new Set())).toContain(chatId);
+
+    const late = mockEntry({ id: 630, chatId, messageId: "msg-after-applied" });
+    await sm.dispatch(late);
+    await sm.dispatch(late);
+    expect(start).not.toHaveBeenCalled();
+    expect(inject).not.toHaveBeenCalled();
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+
+    // A foreign ref still cannot open it.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-other")).toBe("stale");
+    expect(recoverChat).not.toHaveBeenCalled();
+
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-clean")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(false);
+
+    // The redelivered row now enters one fresh post-Reset session and settles.
+    await sm.dispatch(late);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(late.id));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("cancels admitted delivery when terminate arrives before SessionEntry creation", async () => {

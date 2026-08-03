@@ -529,15 +529,15 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   private serverSupportsInboxAckConfirm = false;
   private serverSupportsSessionEventConfirm = false;
   /**
-   * Does the CURRENT server complete the Reset finalize handshake
-   * (`session:command:finalized` + receipt)? Reset parks inbox recovery
-   * behind a fence only this signal lifts, so an unsupported server must make
-   * the client refuse the ref'd terminate BEFORE applying it locally rather
-   * than tear the session down and park forever. Cleared on every new socket
-   * and re-learned from that connection's welcome, which the server sends
-   * ahead of `auth:ok`.
+   * Does the CURRENT server speak version 1 of the composite Reset protocol
+   * (ref'd terminate apply-ack + `session:command:finalized` + receipt)?
+   * Reset parks inbox recovery behind a fence only the finalize signal lifts,
+   * so a server without this capability must make the client refuse the ref'd
+   * terminate BEFORE applying it locally rather than tear the session down
+   * and park forever. Cleared on every new socket and re-learned from that
+   * connection's welcome, which the server sends ahead of `auth:ok`.
    */
-  private serverSupportsResetFinalizeHandshake = false;
+  private serverSupportsSessionResetV1 = false;
   /**
    * Last handshake error, stashed for the `close` handler to surface a typed
    * reason (e.g. {@link ClientOrgMismatchError}) instead of a generic
@@ -1213,14 +1213,15 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   }
 
   /**
-   * Does the connected server complete the Reset finalize handshake? The
-   * agent slot consults this BEFORE applying a ref'd terminate: on an older
-   * server the post-finalize signal never arrives, so the Reset must fail
-   * closed instead of destroying the local session and parking its queued
-   * work behind a fence nothing will lift.
+   * Did this connection negotiate version 1 of the composite Reset protocol?
+   * The agent slot consults this BEFORE applying a ref'd terminate: on a
+   * server that speaks only the legacy apply-only flow the post-finalize
+   * signal never arrives, so the Reset must fail closed instead of destroying
+   * the local session and parking its queued work behind a fence nothing will
+   * lift.
    */
-  get supportsResetFinalizeHandshake(): boolean {
-    return this.serverSupportsResetFinalizeHandshake;
+  get supportsSessionResetV1(): boolean {
+    return this.serverSupportsSessionResetV1;
   }
 
   /**
@@ -1417,7 +1418,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         // Capability negotiation is per-connection: never carry a previous
         // server's Reset support into the register frame of a socket that may
         // have landed on a rolled-back replica.
-        this.serverSupportsResetFinalizeHandshake = false;
+        this.serverSupportsSessionResetV1 = false;
         // Don't reset reconnectAttempt here — a TCP/WS handshake succeeding
         // but the auth phase failing is exactly the loop the client.log
         // captured at 19:40 (1 Hz reconnect storm with `failed to obtain
@@ -1564,17 +1565,18 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           hostname: getHostname(),
           os: platform(),
           sdkVersion: this.sdkVersion,
-          // Two-sided Reset negotiation. The apply-ack half is static: this
-          // client always answers a ref'd session:terminate with a
-          // session:command:applied once the local mapping is dropped. The
-          // finalize half is declared ONLY when this connection's welcome
-          // (sent before auth:ok) advertised server support — otherwise the
-          // server would offer a Reset whose post-finalize signal never
-          // arrives, and the client's parked inbox rows would never be
-          // released. Old servers ignore unknown wireCapabilities fields.
+          // Two-sided, VERSIONED Reset negotiation. `wsSessionResetV1` is the
+          // whole protocol (apply-ack + parked-fence release + finalize
+          // receipt) and is declared ONLY when this connection's welcome
+          // (sent before auth:ok) advertised the same version. The legacy
+          // apply-only flag is deliberately never sent: an old server reads
+          // it as Reset consent, runs the pre-finalize flow, and answers the
+          // operator with a 200 while this client's inbox rows stay parked
+          // behind a fence that server will never lift. Withholding it makes
+          // both skew directions fail closed before anything destructive is
+          // applied locally. Old servers ignore the unknown v1 field.
           wireCapabilities: {
-            wsSessionTerminateApplyAck: true,
-            ...(this.serverSupportsResetFinalizeHandshake ? { wsSessionResetFinalizeHandshake: true } : {}),
+            ...(this.serverSupportsSessionResetV1 ? { wsSessionResetV1: true } : {}),
           },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),
         }),
@@ -1598,7 +1600,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       this.welcomeFramesReceived++;
       this.serverSupportsInboxAckConfirm = parsed.data.capabilities?.wsInboxAckConfirm === true;
       this.serverSupportsSessionEventConfirm = parsed.data.capabilities?.wsSessionEventConfirm === true;
-      this.serverSupportsResetFinalizeHandshake = parsed.data.capabilities?.wsSessionResetFinalizeHandshake === true;
+      this.serverSupportsSessionResetV1 = parsed.data.capabilities?.wsSessionResetV1 === true;
       this.emit("server:welcome", { frame: parsed.data, isReconnect });
       return;
     }

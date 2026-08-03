@@ -133,14 +133,6 @@ export class AgentSlot {
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private postBindReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners: ConnectionListener[] = [];
-  /**
-   * `chatId → terminate ref` for ref'd Resets this slot applied and whose
-   * `session:command:finalized` it is still waiting on. A newer Reset
-   * overwrites the entry, and every alternate release path (unref'd
-   * terminate, slot stop) drops it — so a delayed duplicate finalized can
-   * neither release twice nor lift a newer generation's fence.
-   */
-  private readonly pendingResetFinalizations = new Map<string, string>();
   private stopping: Promise<void> | null = null;
   /** One agent-wide rebind serves every chat that observes the same stale proof. */
   private runtimeSessionProofRecoveryInFlight: Promise<void> | null = null;
@@ -413,14 +405,14 @@ export class AgentSlot {
           // Parked Reset-fence recovery must wait for session:command:finalized
           // (server post-finalize), not local success or the applied send alone.
           const ref = cmd.ref;
-          if (!this.clientConnection.supportsResetFinalizeHandshake) {
+          if (!this.clientConnection.supportsSessionResetV1) {
             // Old server, new client: nothing would ever send the finalized
             // frame, so applying here would destroy the session and leave any
             // intervening delivery parked behind a fence forever. Refuse
             // BEFORE the destructive apply and let the Reset fail closed.
             this.logger.warn(
               { chatId: cmd.chatId, ref },
-              "refusing ref'd Reset: server does not support the finalize handshake",
+              "refusing ref'd Reset: this connection did not negotiate the v1 Reset protocol",
             );
             this.clientConnection.reportSessionCommandApplied({
               ref,
@@ -434,7 +426,6 @@ export class AgentSlot {
           this.sessionManager
             .handleCommand(cmd.chatId, cmd.type, { resetRef: ref })
             .then(() => {
-              this.pendingResetFinalizations.set(cmd.chatId, ref);
               this.clientConnection.reportSessionCommandApplied({
                 ref,
                 agentId: cmd.agentId,
@@ -445,9 +436,6 @@ export class AgentSlot {
             })
             .catch((err) => {
               this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
-              if (this.pendingResetFinalizations.get(cmd.chatId) === ref) {
-                this.pendingResetFinalizations.delete(cmd.chatId);
-              }
               this.clientConnection.reportSessionCommandApplied({
                 ref,
                 agentId: cmd.agentId,
@@ -459,15 +447,15 @@ export class AgentSlot {
           return;
         }
         if (cmd.type === "session:terminate") {
-          // Legacy unref'd terminate: server already archived/finalized before
-          // sending the command, so release parked Reset-fence debt after a
-          // successful local apply. That release also retires any armed ref,
-          // so a finalized frame for the superseded generation is ignored.
+          // Legacy unref'd terminate: the server archived and finalized this
+          // session before sending the command, so it carries its own
+          // authority to retire whatever Reset generation is armed. That is
+          // an explicit supersede, not the incidental unref'd release — a
+          // finalized frame for the superseded generation is then ignored.
           this.sessionManager
             .handleCommand(cmd.chatId, cmd.type)
             .then(() => {
-              this.pendingResetFinalizations.delete(cmd.chatId);
-              this.sessionManager?.releaseParkedResetFenceRecovery(cmd.chatId);
+              this.sessionManager?.supersedeResetGeneration(cmd.chatId, "unrefd_server_terminate");
             })
             .catch((err) => {
               this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
@@ -490,20 +478,20 @@ export class AgentSlot {
         state: "evicted";
       }) => {
         if (frame.agentId !== this.config.agentId || !this.sessionManager) return;
-        // Ref-scoped: only the generation this slot actually applied and is
-        // still waiting on may release. A duplicate/stale/superseded ref is
-        // answered honestly with `released: false` instead of lifting a newer
-        // Reset's fence — and the server needs SOME receipt either way, or
-        // its request would hang until timeout.
-        const armedRef = this.pendingResetFinalizations.get(frame.chatId);
-        const released = armedRef === frame.ref;
-        if (released) {
-          this.pendingResetFinalizations.delete(frame.chatId);
-          this.sessionManager.releaseParkedResetFenceRecovery(frame.chatId, frame.ref);
-        } else {
+        // The SessionManager is the single Reset-generation authority: it
+        // knows which refs are aliases of the current generation, which one
+        // superseded which, and whether the fence actually came down. The
+        // slot asks and reports that verdict verbatim — keeping a second map
+        // here is what let the receipt disagree with the fence. `idempotent`
+        // is still a released fence (duplicate finalized), `stale` is not.
+        // The server needs SOME receipt either way, or its request would hang
+        // until timeout.
+        const verdict = this.sessionManager.releaseParkedResetFenceRecovery(frame.chatId, frame.ref);
+        const released = verdict === "accepted" || verdict === "idempotent";
+        if (!released) {
           this.logger.warn(
-            { chatId: frame.chatId, ref: frame.ref, armedRef: armedRef ?? null },
-            "ignoring Reset finalization for a ref this slot has not armed",
+            { chatId: frame.chatId, ref: frame.ref, verdict },
+            "Reset finalization did not release this client's fence",
           );
         }
         this.clientConnection.reportSessionCommandFinalizedAck({
@@ -730,10 +718,9 @@ export class AgentSlot {
       this.clientConnection.off(entry.event, entry.fn);
     }
     this.listeners = [];
-    // The armed Reset generations die with the slot: a finalized frame that
-    // arrives after a restart belongs to a session manager that no longer
-    // exists and must not release anything the new one parked.
-    this.pendingResetFinalizations.clear();
+    // The armed Reset generations die with the SessionManager below, so a
+    // finalized frame arriving after a restart belongs to a manager that no
+    // longer exists and cannot release anything the new one parked.
     let firstError: unknown = null;
     // Settle provider-entered custody (durable notice + ACK) while the agent is
     // still bound *and* the dynamic runtime-session proof provider is still
@@ -789,7 +776,6 @@ export class AgentSlot {
       this.clientConnection.off(entry.event, entry.fn);
     }
     this.listeners = [];
-    this.pendingResetFinalizations.clear();
     try {
       try {
         await this.sessionManager?.shutdown();
