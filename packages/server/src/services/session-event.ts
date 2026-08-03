@@ -43,6 +43,8 @@ export type ChatSessionEventFeed = {
   agentId: string;
   items: SessionEventRow[];
   nextCursor: number | null;
+  /** Stable start of the active turn, independent of the capped event window. */
+  turnStartedAt: string | null;
 };
 
 const NUL_CHAR = "\u0000";
@@ -283,7 +285,7 @@ export async function listChatSpeakerEvents(
   const direction = options?.direction ?? "asc";
   const orderFragment = direction === "desc" ? sql`DESC` : sql`ASC`;
 
-  const ranked = db
+  const scoped = db
     .select({
       id: sessionEvents.id,
       agentId: sessionEvents.agentId,
@@ -292,10 +294,11 @@ export async function listChatSpeakerEvents(
       kind: sessionEvents.kind,
       payload: sessionEvents.payload,
       createdAt: sessionEvents.createdAt,
-      rank: sql<number>`row_number() over (
-        partition by ${sessionEvents.agentId}
-        order by ${sessionEvents.seq} ${orderFragment}
-      )`.as("event_rank"),
+      lastTurnEndSeq: sql<number>`coalesce(
+        max(${sessionEvents.seq}) filter (where ${sessionEvents.kind} = 'turn_end')
+          over (partition by ${sessionEvents.agentId}),
+        0
+      )`.as("last_turn_end_seq"),
     })
     .from(sessionEvents)
     .innerJoin(
@@ -312,6 +315,27 @@ export async function listChatSpeakerEvents(
         eq(agents.organizationId, chats.organizationId),
       ),
     )
+    .as("scoped_chat_session_events");
+
+  const ranked = db
+    .select({
+      id: scoped.id,
+      agentId: scoped.agentId,
+      chatId: scoped.chatId,
+      seq: scoped.seq,
+      kind: scoped.kind,
+      payload: scoped.payload,
+      createdAt: scoped.createdAt,
+      turnStartedAt: sql<Date | string | null>`min(${scoped.createdAt}) filter (
+        where ${scoped.seq} > ${scoped.lastTurnEndSeq}
+          and ${scoped.kind} in ('tool_call', 'thinking', 'assistant_text')
+      ) over (partition by ${scoped.agentId})`.as("turn_started_at"),
+      rank: sql<number>`row_number() over (
+        partition by ${scoped.agentId}
+        order by ${scoped.seq} ${orderFragment}
+      )`.as("event_rank"),
+    })
+    .from(scoped)
     .as("ranked_chat_session_events");
 
   const rows = await db
@@ -323,6 +347,7 @@ export async function listChatSpeakerEvents(
       kind: ranked.kind,
       payload: ranked.payload,
       createdAt: ranked.createdAt,
+      turnStartedAt: ranked.turnStartedAt,
     })
     .from(ranked)
     .where(lte(ranked.rank, limit + 1))
@@ -340,7 +365,19 @@ export async function listChatSpeakerEvents(
       const hasMore = feedRows.length > limit;
       const items = (hasMore ? feedRows.slice(0, limit) : feedRows).map(rowToEvent);
       const last = items[items.length - 1];
-      return { agentId, items, nextCursor: hasMore && last ? last.seq : null };
+      const turnStartedAt = feedRows[0]?.turnStartedAt ?? null;
+      const turnStartedAtIso =
+        turnStartedAt instanceof Date
+          ? turnStartedAt.toISOString()
+          : typeof turnStartedAt === "string"
+            ? new Date(turnStartedAt).toISOString()
+            : null;
+      return {
+        agentId,
+        items,
+        nextCursor: hasMore && last ? last.seq : null,
+        turnStartedAt: turnStartedAtIso,
+      };
     }),
   };
 }

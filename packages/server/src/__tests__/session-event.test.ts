@@ -318,12 +318,14 @@ describe("sessionEventService", () => {
       { chatId: c, agentId: viewer.humanAgentUuid, accessMode: "speaker" },
     ]);
 
+    const firstEventAtByAgent = new Map<string, string>();
     for (const target of [privateOne.agent.uuid, privateTwo.agent.uuid]) {
       for (let i = 1; i <= 3; i++) {
-        await sessionEventService.appendEvent(app.db, target, c, {
+        const event = await sessionEventService.appendEvent(app.db, target, c, {
           kind: "assistant_text",
           payload: { text: `${target}-event-${i}` },
         });
+        if (i === 1) firstEventAtByAgent.set(target, event.createdAt);
       }
     }
     // A forged/stale event for an agent that is not a chat speaker must never
@@ -343,7 +345,12 @@ describe("sessionEventService", () => {
     const speakerResponse = await requestAsViewer();
     expect(speakerResponse.statusCode).toBe(200);
     const speakerBody = speakerResponse.json<{
-      feeds: Array<{ agentId: string; items: Array<{ seq: number; payload: unknown }>; nextCursor: number | null }>;
+      feeds: Array<{
+        agentId: string;
+        items: Array<{ seq: number; payload: unknown }>;
+        nextCursor: number | null;
+        turnStartedAt: string | null;
+      }>;
     }>();
     expect(speakerBody.feeds.map((feed) => feed.agentId)).toEqual(
       [privateOne.agent.uuid, privateTwo.agent.uuid].sort(),
@@ -351,6 +358,7 @@ describe("sessionEventService", () => {
     for (const feed of speakerBody.feeds) {
       expect(feed.items.map((event) => event.seq)).toEqual([3, 2]);
       expect(feed.nextCursor).toBe(2);
+      expect(feed.turnStartedAt).toBe(firstEventAtByAgent.get(feed.agentId));
     }
     expect(speakerBody.feeds.some((feed) => feed.agentId === nonSpeaker.agent.uuid)).toBe(false);
 

@@ -1276,7 +1276,7 @@ function ImageBatchFromRef({
 type TimelineItem =
   | { kind: "message"; at: string; key: string; data: MessageWithDelivery }
   | { kind: "event"; at: string; key: string; data: SessionEventRow }
-  | { kind: "workgroup"; at: string; key: string; events: SessionEventRow[] };
+  | { kind: "workgroup"; at: string; key: string; events: SessionEventRow[]; startedAt: string };
 
 /**
  * Resolve the one participant whose tag must remain visible on request-action
@@ -1423,6 +1423,7 @@ const ChatTimeline = memo(function ChatTimeline({
                   <WorkingTurn
                     key={item.key}
                     events={item.events}
+                    startedAt={item.startedAt}
                     defaultOpen={defaultWorkgroupOpen}
                     agentNameFn={agentNameFn}
                     agentAvatarFn={agentAvatarFn}
@@ -2734,7 +2735,9 @@ export function ChatView({
     // independently fetched feeds by agent before finding turn boundaries.
     // Dedup by event id protects a temporarily duplicated participant/query.
     const rawEventsByAgent = new Map<string, Map<string, SessionEventRow>>();
+    const turnStartedAtByAgent = new Map<string, string>();
     for (const feed of eventFeedsData?.feeds ?? []) {
+      if (feed.turnStartedAt) turnStartedAtByAgent.set(feed.agentId, feed.turnStartedAt);
       for (const event of feed.items) {
         const existing = rawEventsByAgent.get(event.agentId);
         if (existing) existing.set(event.id, event);
@@ -2767,6 +2770,9 @@ export function ChatView({
           at: first.createdAt,
           key: `wg-${lastTurnEndSeq}-${eventAgentId}`,
           events: turnEvents,
+          // Older servers omit the stable anchor; preserve compatibility by
+          // falling back to the first event in the current response window.
+          startedAt: turnStartedAtByAgent.get(eventAgentId) ?? first.createdAt,
         });
       }
     }
