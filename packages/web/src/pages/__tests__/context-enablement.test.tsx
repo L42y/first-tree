@@ -40,7 +40,7 @@ describe("personal Context access", () => {
         role: "member",
         provider,
         intent,
-        command: `'first-tree-staging' context enable --provider '${provider}' --team 'org-1'`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
         workingDirectoryInstruction: "Run with an explicit project selector.",
       }),
     );
@@ -128,7 +128,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "member",
         provider,
-        command: `'first-tree-staging' context enable --provider '${provider}' --team 'org-1'`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
         workingDirectoryInstruction: "Run this once from the repository root.",
       }),
     );
@@ -141,6 +141,19 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("--provider 'codex'");
     expect(copiedPrompt).toContain("--provider 'claude-code'");
     expect(copiedPrompt).toContain("/hooks");
+    expect(copiedPrompt).toContain("return to this original conversation and reply `continue`");
+    expect(copiedPrompt).toContain("re-run the exact same enable command yourself in this session");
+    expect(copiedPrompt).toContain("`data.currentSessionHandoff`");
+    expect(copiedPrompt).toContain("Adopt `activationContext` verbatim");
+    expect(copiedPrompt).toContain("progressive-disclosure catalog");
+    expect(copiedPrompt).toContain("immutable activation receipt");
+    expect(copiedPrompt).toContain("even if cwd changes after setup");
+    expect(copiedPrompt).toContain("pass `--pathless` when it is `pathless`");
+    expect(copiedPrompt).toContain("receipt's exact root");
+    expect(copiedPrompt).toContain("Never derive that selector from the then-current cwd");
+    expect(copiedPrompt).toContain("activation context, immutable project receipt, and Skill catalog");
+    expect(copiedPrompt).toContain("Do not require a restart, a new conversation");
+    expect(copiedPrompt).not.toContain("Exit and start a new Codex session");
   });
 
   it("does not copy an onboarding prompt after its readiness is revoked", async () => {
@@ -164,7 +177,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "member",
         provider: "claude-code",
-        command: "'first-tree-staging' context enable --provider 'claude-code' --team 'org-1'",
+        command: "'first-tree-staging' --json context enable --provider 'claude-code' --team 'org-1' --yes",
         workingDirectoryInstruction: "Run this once from the repository root.",
       });
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -204,7 +217,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "member",
         provider,
-        command: `'first-tree-staging' context enable --provider '${provider}' --team 'org-1'`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
         workingDirectoryInstruction: "Run with an explicit project selector.",
       }),
     );
@@ -228,7 +241,7 @@ describe("personal Context access", () => {
         teamDisplayName: "Acme",
         role: "admin",
         provider,
-        command: `'first-tree-staging' context enable --provider '${provider}' --team 'org-1'`,
+        command: `'first-tree-staging' --json context enable --provider '${provider}' --team 'org-1' --yes`,
         workingDirectoryInstruction: "Run this once from the repository root.",
       }),
     );
@@ -268,6 +281,10 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("Run this Codex handoff unchanged");
     expect(copiedPrompt).toContain("--project-root '<host-confirmed-project-root>'");
     expect(copiedPrompt).toContain("Do not derive the root from shell `pwd`/cwd");
+    expect(copiedPrompt).toContain("--json context enable");
+    expect(copiedPrompt).toContain("--yes");
+    expect(copiedPrompt).toContain("`ok: true`");
+    expect(copiedPrompt).toContain("Complete result with a missing or invalid handoff is a setup failure");
     expect(copiedPrompt).not.toContain("Determine whether this session has an attached local project");
     expect(copiedPrompt).toContain("Do not mark onboarding complete.");
     expect(host.textContent).toContain("Setup prompt copied.");
@@ -336,6 +353,36 @@ describe("personal Context access", () => {
     expect(prompt).toContain("First Tree Web owns onboarding completion separately.");
     expect(prompt).not.toContain("confirms that onboarding is complete");
     expect(prompt).not.toContain("Do not mark onboarding complete.");
+  });
+
+  it("pins the first Read selector to the verified path/pathless receipt after cwd changes", () => {
+    const prompt = buildByoSetupPrompt({
+      organizationId: "org-1",
+      bootstrapCommand: "bootstrap-command",
+      handoffs: [
+        {
+          protocolVersion: 1,
+          organizationId: "org-1",
+          teamDisplayName: "Acme",
+          role: "member",
+          provider: "codex",
+          intent: "onboarding",
+          command: "codex-command",
+          workingDirectoryInstruction: "Run unchanged.",
+        },
+      ],
+      intent: "onboarding",
+    });
+
+    expect(prompt).toContain("`provider` exactly matches the selected host and enable command");
+    expect(prompt).toContain('{ kind: "path", root: <absolute path> }');
+    expect(prompt).toContain('{ kind: "pathless" }');
+    expect(prompt).toContain("immutable activation receipt");
+    expect(prompt).toContain("even if cwd changes after setup");
+    expect(prompt).toContain("first `first-tree-read`");
+    expect(prompt).toContain("pass `--project-root` with the receipt's exact root");
+    expect(prompt).toContain("pass `--pathless` when it is `pathless`");
+    expect(prompt).toContain("Never derive that selector from the then-current cwd");
   });
 
   it("lets the Admin retry prompt preparation after an API failure", async () => {

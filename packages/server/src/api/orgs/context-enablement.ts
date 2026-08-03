@@ -21,7 +21,7 @@ export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<
       provider: query.provider,
       intent: query.intent,
       command: [
-        `${executable} context enable`,
+        `${executable} --json context enable`,
         `--provider ${shellQuote(query.provider)}`,
         `--team ${shellQuote(scope.organizationId)}`,
         // Both intents run inside a non-TTY coding-agent session, where an

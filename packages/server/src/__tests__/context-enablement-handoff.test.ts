@@ -21,7 +21,7 @@ describe("Context enablement handoff", () => {
       role: "admin",
     });
     expect(response.json().command).toBe(
-      `'first-tree-staging' context enable --provider 'codex' --team '${admin.organizationId}' --yes`,
+      `'first-tree-staging' --json context enable --provider 'codex' --team '${admin.organizationId}' --yes`,
     );
     expect(response.json().workingDirectoryInstruction).toContain("CLI centrally classifies");
     expect(response.json().workingDirectoryInstruction).not.toContain("shell cwd");
@@ -45,7 +45,7 @@ describe("Context enablement handoff", () => {
       intent: "onboarding",
     });
     expect(response.json().command).toBe(
-      `'first-tree-staging' context enable --provider 'claude-code' --team '${admin.organizationId}' --yes`,
+      `'first-tree-staging' --json context enable --provider 'claude-code' --team '${admin.organizationId}' --yes`,
     );
     expect(response.json().workingDirectoryInstruction).toContain("host-confirmed Claude Code selector");
     expect(response.json().workingDirectoryInstruction).toContain("--pathless");

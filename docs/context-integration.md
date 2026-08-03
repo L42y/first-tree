@@ -39,6 +39,18 @@ manifest also records both adapter digests and the canonical Policy digest.
   required when a provider's ordinary shell does not expose stable project
   identity, and are reused from the first activation receipt after shell cwd
   changes.
+- A successful JSON enable returns a verified `currentSessionHandoff`. It
+  contains the canonical `activationContext` plus a progressive-disclosure
+  catalog for the provider-installed `first-tree`, `first-tree-read`, and
+  `first-tree-write` manifests. The current coding agent adopts that handoff
+  immediately and preserves its verified provider/project as the immutable
+  activation receipt: the first Read uses that exact path or pathless selector
+  even if shell cwd later changes, then preserves Read's returned
+  `activationProject` for subsequent operations. The Plugin and SessionStart
+  Hook remain the persistent path for future sessions. Handoff construction
+  reads only the complete payload-verified provider cache, rejects symbolic
+  links and invalid Skill frontmatter, and never copies a second workflow into
+  Web or CLI code.
 - `config/context.yaml` schema v2 stores only
   `provider + project(path|pathless) → organizationId`. It never stores source
   repository identity or a Context Tree remote/local snapshot path.
@@ -99,13 +111,13 @@ Codex owns Hook consent. First Tree installs the Plugin but never bypasses,
 pre-approves, or silently enables the SessionStart Hook. After the first
 path-project `context enable --provider codex`:
 
-1. open Codex in the enabled project;
-2. run `/hooks`;
-3. find **First Tree Context → SessionStart**, enable its checkbox, and choose
+1. in the same Codex session, run `/hooks`;
+2. find **First Tree Context → SessionStart**, enable its checkbox, and choose
    **Trust**;
-4. exit and start a new Codex session in that project;
-5. run `first-tree context status --provider codex` and confirm **Hook trusted**
-   and **Hook enabled** are `Yes`, and **Live activation** is `Connected`.
+3. return to the original setup conversation and reply `continue`;
+4. let that same coding agent re-run the exact JSON `context enable` handoff,
+   adopt its verified `currentSessionHandoff`, and confirm the current session
+   is active.
 
 Both `context enable` and `context status` query Codex's provider-owned
 `hooks/list` API after installation. They report trust and enablement
@@ -114,6 +126,12 @@ and enabled Hook therefore does not receive another review prompt.
 
 Pathless Codex projects activate through the bundled `first-tree` Skill and do
 not require Hook consent for `Setup: Complete`.
+
+Claude Code needs no corresponding consent turn. The coding agent consumes the
+handoff after its first complete enable and activates the current session
+without a restart or `/reload-plugins`. Provider-native Plugin UI discovery may
+still follow provider lifecycle rules; it is not evidence for or against the
+verified current-session handoff.
 
 Status output also keeps machine/user/provider and project authority
 separate: provider compatibility, Plugin installation, Plugin enablement,

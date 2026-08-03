@@ -34,13 +34,13 @@ project/Team activation.
 - Run the Team-authored `context enable --provider codex` handoff with the
   ordinary parent as `--project-root`.
 - Follow only the displayed consent steps: open Codex, run `/hooks`, find First
-  Tree Context → SessionStart, enable it, trust it, and start a new session.
-- Re-run the same Team-authored enable command after consent, in human and JSON
-  modes; capture its `Setup:` verdict line, next actions, and Team Context
-  block.
+  Tree Context → SessionStart, enable it, trust it, return to the original
+  conversation, and reply `continue` without starting a new session.
+- Confirm the same coding agent re-runs the exact Team-authored enable command
+  after consent, in human and JSON modes; capture its `Setup:` verdict line,
+  next actions, Team Context block, and `currentSessionHandoff`.
 - Run `context status --provider codex` in human and JSON modes before consent,
-  after enabling without trust, after trust, and after starting the new
-  session.
+  after enabling without trust, and after trust in the same session.
 - Disable the Hook while retaining trust, then change the installed Hook
   definition so Codex reports modified trust; inspect status after each state.
 - Repeat enable with the already trusted and enabled Hook.
@@ -58,9 +58,13 @@ project/Team activation.
   verdict is `Incomplete`; after consent, re-running enable is what produces
   `Setup: Complete`.
 - On connected live activation, enable prints the same Team Context block a
-  SessionStart injects (JSON `activationContext`), headed by the instruction to
-  adopt it in the current session; the `setup` object in JSON mirrors the
-  verdict.
+  SessionStart injects (JSON `activationContext`) and returns a non-null
+  `currentSessionHandoff` with the same bytes and all three verified Skill
+  entries. The `setup` object in JSON mirrors the verdict; Complete never
+  coexists with a null handoff.
+- Before Hook consent the handoff is null. Consent guidance returns the member
+  to the original conversation and never asks for exit, restart, or a new
+  session.
 - Provider compatibility, Plugin installed, Plugin enabled, Hook trusted, Hook
   enabled, project, project binding, and live activation are separate fields in
   human and JSON output.
