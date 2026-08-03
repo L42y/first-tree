@@ -52,40 +52,141 @@ describe("SessionRegistry", () => {
     const loaded = registry2.load();
     registry2.dispose();
 
-    expect(loaded.size).toBe(2);
-    expect(loaded.get("chat-1")?.claudeSessionId).toBe("sess-aaa");
-    expect(loaded.get("chat-1")?.lastActivity).toBe(1700000000000);
-    expect(loaded.get("chat-1")?.status).toBe("active");
-    expect(loaded.get("chat-2")?.claudeSessionId).toBe("sess-bbb");
-    expect(loaded.get("chat-2")?.status).toBe("suspended");
+    expect(loaded.entries.size).toBe(2);
+    expect(loaded.entries.get("chat-1")?.claudeSessionId).toBe("sess-aaa");
+    expect(loaded.entries.get("chat-1")?.lastActivity).toBe(1700000000000);
+    expect(loaded.entries.get("chat-1")?.status).toBe("active");
+    expect(loaded.entries.get("chat-2")?.claudeSessionId).toBe("sess-bbb");
+    expect(loaded.entries.get("chat-2")?.status).toBe("suspended");
+    expect(loaded.freshStartNonces.size).toBe(0);
   });
 
-  it("returns empty map when file does not exist", () => {
+  it("returns empty maps when file does not exist", () => {
     const registry = new SessionRegistry(join(testDir, "nonexistent.json"));
     const loaded = registry.load();
     registry.dispose();
 
-    expect(loaded.size).toBe(0);
+    expect(loaded.entries.size).toBe(0);
+    expect(loaded.freshStartNonces.size).toBe(0);
   });
 
-  it("returns empty map on version mismatch", () => {
+  it("returns empty maps on version mismatch", () => {
     writeFileSync(filePath, JSON.stringify({ version: 999, entries: { "chat-1": {} } }), "utf-8");
 
     const registry = new SessionRegistry(filePath);
     const loaded = registry.load();
     registry.dispose();
 
-    expect(loaded.size).toBe(0);
+    expect(loaded.entries.size).toBe(0);
+    expect(loaded.freshStartNonces.size).toBe(0);
   });
 
-  it("returns empty map on corrupted JSON", () => {
+  it("returns empty maps on corrupted JSON", () => {
     writeFileSync(filePath, "not valid json {{{{", "utf-8");
 
     const registry = new SessionRegistry(filePath);
     const loaded = registry.load();
     registry.dispose();
 
-    expect(loaded.size).toBe(0);
+    expect(loaded.entries.size).toBe(0);
+    expect(loaded.freshStartNonces.size).toBe(0);
+  });
+
+  it("loads legacy v1 files without freshStartNonces while preserving mappings", () => {
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          "chat-legacy": {
+            claudeSessionId: "sess-legacy",
+            lastActivity: new Date(1700000000000).toISOString(),
+            status: "suspended",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const registry = new SessionRegistry(filePath);
+    const loaded = registry.load();
+    expect(loaded.entries.get("chat-legacy")?.claudeSessionId).toBe("sess-legacy");
+    expect(loaded.freshStartNonces.size).toBe(0);
+    // Unrelated save must not invent or drop mapping state.
+    registry.flush(loaded.entries);
+    const reloaded = new SessionRegistry(filePath).load();
+    expect(reloaded.entries.get("chat-legacy")?.claudeSessionId).toBe("sess-legacy");
+    expect(reloaded.freshStartNonces.size).toBe(0);
+  });
+
+  it("round-trips Reset fresh-start nonces and keeps them after mapping deletion", () => {
+    const registry = new SessionRegistry(filePath);
+    const entries = makeEntries({
+      "chat-1": { claudeSessionId: "sess-aaa", lastActivity: 1700000000000, status: "active" },
+    });
+    registry.flush(entries);
+    const nonce = registry.rotateFreshStartNonce("chat-1");
+    registry.flushOrThrow(new Map()); // mapping gone; tombstone remains
+    registry.markResetNonceDurable("chat-1");
+    registry.dispose();
+
+    const loaded = new SessionRegistry(filePath).load();
+    expect(loaded.entries.size).toBe(0);
+    expect(loaded.freshStartNonces.get("chat-1")).toBe(nonce);
+
+    // Unrelated mapping save for another chat must not erase the tombstone.
+    const registry2 = new SessionRegistry(filePath);
+    registry2.load();
+    registry2.flush(
+      makeEntries({
+        "chat-other": { claudeSessionId: "sess-other", lastActivity: 1700002000000, status: "active" },
+      }),
+    );
+    const afterOther = new SessionRegistry(filePath).load();
+    expect(afterOther.entries.get("chat-other")?.claudeSessionId).toBe("sess-other");
+    expect(afterOther.freshStartNonces.get("chat-1")).toBe(nonce);
+  });
+
+  it("retains one pending Reset nonce until markResetNonceDurable", () => {
+    const registry = new SessionRegistry(filePath);
+    registry.flush(
+      makeEntries({
+        "chat-1": { claudeSessionId: "sess-aaa", lastActivity: 1700000000000, status: "active" },
+      }),
+    );
+    const first = registry.rotateFreshStartNonce("chat-1");
+    // A failed flush leaves the pending rotation — genuine retry must reuse it.
+    expect(registry.rotateFreshStartNonce("chat-1")).toBe(first);
+    registry.flushOrThrow(new Map());
+    registry.markResetNonceDurable("chat-1");
+
+    const loaded = new SessionRegistry(filePath).load();
+    expect(loaded.entries.size).toBe(0);
+    expect(loaded.freshStartNonces.get("chat-1")).toBe(first);
+    // A later Reset attempt after durable success mints a new nonce.
+    const second = registry.rotateFreshStartNonce("chat-1");
+    expect(second).not.toBe(first);
+  });
+
+  it("stale debounced save cannot erase a Reset tombstone after flushOrThrow", () => {
+    vi.useFakeTimers();
+    const registry = new SessionRegistry(filePath);
+    const withMapping = makeEntries({
+      "chat-1": { claudeSessionId: "sess-old", lastActivity: 1700000000000, status: "active" },
+    });
+    registry.save(withMapping);
+    const nonce = registry.rotateFreshStartNonce("chat-1");
+    registry.flushOrThrow(new Map());
+    registry.markResetNonceDurable("chat-1");
+    // Advancing past the debounce window must not resurrect mapping or drop nonce.
+    vi.advanceTimersByTime(1000);
+    const raw = JSON.parse(readFileSync(filePath, "utf-8")) as {
+      entries: Record<string, unknown>;
+      freshStartNonces: Record<string, string>;
+    };
+    expect(raw.entries).toEqual({});
+    expect(raw.freshStartNonces["chat-1"]).toBe(nonce);
+    registry.dispose();
   });
 
   it("creates directory if it does not exist", () => {
@@ -132,6 +233,7 @@ describe("SessionRegistry", () => {
     expect(existsSync(filePath)).toBe(true);
     const raw = JSON.parse(readFileSync(filePath, "utf-8"));
     expect(raw.entries["chat-1"].claudeSessionId).toBe("sess-x");
+    expect(raw.freshStartNonces).toEqual({});
 
     registry.dispose();
   });

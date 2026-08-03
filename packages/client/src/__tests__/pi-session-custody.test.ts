@@ -2004,10 +2004,15 @@ describe("Pi handler → SessionManager custody", () => {
     const oldId = freshStartPiSessionId("agent-1", "chat-pi-reset", "msg-reset-1");
     expect(rpcSessionIds(specs)).toEqual([oldId]);
 
-    // Reset apply resolves only after the mapping deletion is durably flushed.
+    // Reset apply resolves only after mapping deletion + Reset tombstone flush.
     await sm.handleCommand("chat-pi-reset", "session:terminate");
-    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as { entries: Record<string, unknown> };
+    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as {
+      entries: Record<string, unknown>;
+      freshStartNonces: Record<string, string>;
+    };
     expect(persisted.entries).toEqual({});
+    const resetNonce = persisted.freshStartNonces["chat-pi-reset"] ?? "";
+    expect(resetNonce.length).toBeGreaterThan(0);
 
     await sm.dispatch(
       mockEntry({ id: 312, chatId: "chat-pi-reset", messageId: "msg-reset-2", content: "after reset" }),
@@ -2017,8 +2022,9 @@ describe("Pi handler → SessionManager custody", () => {
     expect(allIds).toHaveLength(2);
     // Pi keys its on-disk JSONL transcript by session id: a NEW id means the
     // discarded transcript/model state can never be silently reopened.
-    expect(allIds[1]).toBe(freshStartPiSessionId("agent-1", "chat-pi-reset", "msg-reset-2"));
+    expect(allIds[1]).toBe(freshStartPiSessionId("agent-1", "chat-pi-reset", "msg-reset-2", resetNonce));
     expect(allIds[1]).not.toBe(oldId);
+    expect(allIds[1]).not.toBe(freshStartPiSessionId("agent-1", "chat-pi-reset", "msg-reset-2"));
     await sm.shutdown();
   });
 
@@ -2061,6 +2067,7 @@ describe("Pi handler → SessionManager custody", () => {
     expect(ackEntry).toHaveBeenCalledWith(331);
     const oldId = freshStartPiSessionId("agent-1", "chat-pi-reset-flush", "msg-flush-1");
 
+    const rotateSpy = vi.spyOn(SessionRegistry.prototype, "rotateFreshStartNonce");
     const boom = new Error("disk full");
     vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
       throw boom;
@@ -2068,11 +2075,20 @@ describe("Pi handler → SessionManager custody", () => {
     // The apply must reject instead of acking over a live mapping; the entry
     // stays retryable (terminatePersistFailures) instead of a false applied.
     await expect(sm.handleCommand("chat-pi-reset-flush", "session:terminate")).rejects.toBe(boom);
+    expect(rotateSpy).toHaveBeenCalledWith("chat-pi-reset-flush");
+    const pendingNonce = rotateSpy.mock.results[0]?.value as string;
+    expect(typeof pendingNonce).toBe("string");
 
-    // Retry converges: mapping durably removed, next delivery mints a fresh id.
+    // Retry converges with the SAME pending nonce: mapping removed + tombstone durable.
     await sm.handleCommand("chat-pi-reset-flush", "session:terminate");
-    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as { entries: Record<string, unknown> };
+    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as {
+      entries: Record<string, unknown>;
+      freshStartNonces: Record<string, string>;
+    };
     expect(persisted.entries).toEqual({});
+    expect(persisted.freshStartNonces["chat-pi-reset-flush"]).toBe(pendingNonce);
+    // Only one unique nonce was minted across the failed attempt + retry.
+    expect(new Set(rotateSpy.mock.results.map((r) => r.value))).toEqual(new Set([pendingNonce]));
 
     await sm.dispatch(
       mockEntry({ id: 332, chatId: "chat-pi-reset-flush", messageId: "msg-flush-2", content: "after reset" }),
@@ -2080,8 +2096,57 @@ describe("Pi handler → SessionManager custody", () => {
     expect(ackEntry).toHaveBeenCalledWith(332);
     const allIds = rpcSessionIds(specs);
     expect(allIds).toHaveLength(2);
-    expect(allIds[1]).toBe(freshStartPiSessionId("agent-1", "chat-pi-reset-flush", "msg-flush-2"));
+    expect(allIds[1]).toBe(freshStartPiSessionId("agent-1", "chat-pi-reset-flush", "msg-flush-2", pendingNonce));
     expect(allIds[1]).not.toBe(oldId);
     await sm.shutdown();
+  });
+
+  it("settled + ACK failure + Pause/Reset + new SessionManager + same-row redelivery cannot reopen retired Pi history", async () => {
+    const registryPath = join(workspaceRoot, "sessions-reset-redelivery.json");
+    const specs: ProviderProcessSpec[] = [];
+    // Persistent ACK failure leaves the settled first row as recovery debt.
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockRejectedValue(new Error("ack offline"));
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm1 = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+
+    const chatId = "chat-pi-reset-redelivery";
+    const messageId = "msg-reset-redelivery";
+    const entryId = 341;
+    const entry = mockEntry({ id: entryId, chatId, messageId, content: "settled but unacked" });
+
+    void sm1.dispatch(entry);
+    await vi.waitFor(() => expect(rpcSessionIds(specs)).toHaveLength(1), { timeout: 10_000 });
+    const oldId = rpcSessionIds(specs)[0]!;
+    expect(oldId).toBe(freshStartPiSessionId("agent-1", chatId, messageId));
+    // Turn settled under ACK failure — coordinator keeps the uncommitted row.
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(entryId), { timeout: 10_000 });
+
+    await sm1.handleCommand(chatId, "session:suspend");
+    await sm1.handleCommand(chatId, "session:terminate");
+    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as {
+      entries: Record<string, unknown>;
+      freshStartNonces: Record<string, string>;
+    };
+    expect(persisted.entries).toEqual({});
+    const resetNonce = persisted.freshStartNonces[chatId] ?? "";
+    expect(resetNonce.length).toBeGreaterThan(0);
+
+    await sm1.shutdown();
+
+    // New SessionManager (client restart): in-memory terminal ledger is gone.
+    // Same durable inbox row is redelivered; ACK is available this time.
+    const ackEntry2 = mockAckEntry();
+    const sm2 = makePiSessionManager({ specs, ackEntry: ackEntry2, sendMessage, registryPath });
+    await sm2.dispatch(mockEntry({ id: entryId, chatId, messageId, content: "settled but unacked" }));
+    expect(ackEntry2).toHaveBeenCalledWith(entryId);
+
+    const allIds = rpcSessionIds(specs);
+    expect(allIds).toHaveLength(2);
+    const expectedFresh = freshStartPiSessionId("agent-1", chatId, messageId, resetNonce);
+    expect(allIds[1]).toBe(expectedFresh);
+    expect(allIds[1]).not.toBe(oldId);
+    // Reconstructible message-id-only identity must NOT be selected after Reset.
+    expect(allIds[1]).not.toBe(freshStartPiSessionId("agent-1", chatId, messageId));
+    await sm2.shutdown();
   });
 });

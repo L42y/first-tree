@@ -686,6 +686,13 @@ describe("Pi handler", () => {
     // A different first message mints a different provider session identity —
     // this is what makes Reset a true retirement boundary.
     expect(freshStartPiSessionId("agent-pi", "chat-pi", "m-other")).not.toBe(expectedId);
+    // A durable Reset tombstone must change the identity for the SAME message
+    // id — otherwise post-Reset same-row redelivery reopens the discarded session.
+    const withNonce = freshStartPiSessionId("agent-pi", "chat-pi", "m1", "reset-nonce-1");
+    expect(withNonce).not.toBe(expectedId);
+    expect(withNonce).toBe(
+      createHash("sha256").update("first-tree:agent-pi:chat-pi:m1:reset-nonce-1").digest("hex").slice(0, 32),
+    );
     const rpcSpec = specs.find((spec) => spec.args.includes("--mode"));
     expect(rpcSpec?.args).toEqual(
       expect.arrayContaining([
@@ -710,6 +717,25 @@ describe("Pi handler", () => {
     expect(token.processingStarted).toHaveBeenCalled();
     expect(events).toContainEqual({ kind: "turn_end", payload: { status: "success" } });
     expect(readCount(promptCountFile)).toBe(1);
+    await handler.shutdown();
+  });
+
+  it("includes SessionContext freshStartNonce in the spawned Pi session id", async () => {
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const ctx = makeContext([]);
+    ctx.freshStartNonce = () => "durable-reset-nonce";
+    const expectedId = freshStartPiSessionId("agent-pi", "chat-pi", "m1", "durable-reset-nonce");
+    const result = await handler.start(message("m1", "work"), ctx, makeToken());
+    expect(result).toMatchObject({ sessionId: expectedId, route: { kind: "owned", mode: "processing" } });
+    const rpcSpec = specs.find((spec) => spec.args.includes("--mode"));
+    expect(rpcSpec?.args).toEqual(expect.arrayContaining(["--session-id", expectedId]));
     await handler.shutdown();
   });
 

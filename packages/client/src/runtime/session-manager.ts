@@ -1114,18 +1114,24 @@ export class SessionManager {
   /**
    * Durably flush the authoritative registry snapshot for a Reset
    * terminate. The Reset apply-ack is only truthful once the mapping
-   * deletion is durable: a crash between ack and a debounced write would
-   * reload the stale mapping on restart and revive the old provider
-   * session. The flush is the CURRENT authoritative snapshot (all chats,
-   * not just this one), so other chats' mappings are preserved, and it
-   * cancels any older pending debounced snapshot so a stale write cannot
-   * resurrect the deletion later. A failure is recorded in
+   * deletion AND the per-chat Reset fresh-start nonce are durable: a crash
+   * between ack and a debounced write would reload the stale mapping (or
+   * lose the tombstone) on restart and revive the old provider session.
+   * The flush is the CURRENT authoritative snapshot (all chats' mappings
+   * plus every Reset nonce), so other chats are preserved, and it cancels
+   * any older pending debounced snapshot so a stale write cannot resurrect
+   * the deletion or erase the tombstone later. A failed flush keeps the
+   * in-memory pending nonce for the genuine retry. A failure is recorded in
    * terminatePersistFailures so a retry terminate re-runs the full body
    * (and re-attempts the flush) instead of a false applied:true.
    */
   private flushTerminateRegistry(chatId: string): void {
     try {
+      // Rotate once per in-flight Reset attempt before the durable write.
+      // flushOrThrow failure retains this nonce for the genuine retry.
+      this.registry?.rotateFreshStartNonce(chatId);
       this.persistRegistry({ throwOnFailure: true });
+      this.registry?.markResetNonceDurable(chatId);
       this.terminatePersistFailures.delete(chatId);
     } catch (err) {
       this.terminatePersistFailures.add(chatId);
@@ -4345,6 +4351,7 @@ export class SessionManager {
       },
       log,
       chatId,
+      freshStartNonce: () => this.registry?.getFreshStartNonce(chatId),
       recordProviderActivity: () => {
         if (mutationValid && !mutationValid()) return;
         const entry = this.sessions.get(chatId);
@@ -4594,9 +4601,9 @@ export class SessionManager {
   private loadPersistedSessions(): void {
     if (!this.registry) return;
 
-    const persisted = this.registry.load();
+    const { entries } = this.registry.load();
     let loadedCount = 0;
-    for (const [chatId, data] of persisted) {
+    for (const [chatId, data] of entries) {
       // All persisted sessions become evicted mappings on load.
       // Handlers are allocated lazily when a message arrives (startNewSession
       // checks evictedMappings and calls handler.resume instead of start).

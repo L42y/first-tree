@@ -144,6 +144,15 @@ export function noopDeliveryToken(): DeliveryToken {
 export type SessionContext = HandlerContext & {
   /** The server-side chat this session belongs to. */
   chatId: string;
+  /**
+   * Optional opaque Reset tombstone for reconstructible provider fresh-start
+   * identities. Absent until a successful Reset rotates a durable per-chat
+   * nonce in the session registry; survives mapping deletion and manager
+   * restart. Providers that mint deterministic start ids from inbox material
+   * must include this nonce so post-Reset same-row redelivery cannot reopen
+   * a discarded provider artifact.
+   */
+  freshStartNonce?: () => string | undefined;
   /** Refresh `lastActivity` timestamp when the provider produces activity. */
   recordProviderActivity: () => void;
   /**

@@ -31,9 +31,9 @@ export function registerAgentWorkspaceCleanCommand(workspace: Command): void {
 
         const registryPath = join(defaultDataDir(), "sessions", `${name}.json`);
         const registry = new SessionRegistry(registryPath);
-        const persisted = registry.load();
+        const { entries } = registry.load();
         const activeChatIds = new Set<string>();
-        for (const [chatId, data] of persisted) {
+        for (const [chatId, data] of entries) {
           if (data.status !== "evicted") {
             activeChatIds.add(chatId);
           }

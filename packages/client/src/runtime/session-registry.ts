@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLogger } from "../observability/logger.js";
@@ -13,27 +14,56 @@ type PersistedEntry = {
 type RegistryData = {
   version: number;
   entries: Record<string, PersistedEntry>;
+  /**
+   * Optional per-chat opaque Reset nonces. Absent on legacy v1 files — those
+   * load with an empty nonce map while preserving every existing mapping.
+   * Tombstones outlive mapping deletion: a durable inbox row can still arrive
+   * after Reset, and the nonce keeps reconstructible fresh-start identities
+   * from reopening the discarded provider artifact.
+   */
+  freshStartNonces?: Record<string, string>;
+};
+
+export type RegistryEntry = { claudeSessionId: string; lastActivity: number; status: string };
+
+export type RegistrySnapshot = {
+  entries: Map<string, RegistryEntry>;
+  freshStartNonces: Map<string, string>;
 };
 
 /**
- * SessionRegistry — persists `chatId → claudeSessionId` mappings to disk.
+ * SessionRegistry — persists `chatId → claudeSessionId` mappings to disk,
+ * plus optional per-chat Reset fresh-start nonces.
  *
- * Write strategy: debounced write-then-rename for atomicity.
+ * Write strategy: debounced write-then-rename for atomicity. Every write
+ * carries the current authoritative mapping set AND the full nonce map so a
+ * stale debounced snapshot cannot erase a Reset tombstone or resurrect a
+ * deleted mapping.
+ *
  * On load, all entries start as `suspended`.
  */
 export class SessionRegistry {
   private readonly filePath: string;
   private readonly logger = createLogger("session-registry");
   private writeTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingEntries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }> | null = null;
+  private pendingEntries: Map<string, RegistryEntry> | null = null;
+  /** Authoritative in-memory Reset nonces; always written with every flush. */
+  private freshStartNonces = new Map<string, string>();
+  /**
+   * Nonces rotated for an in-flight Reset whose durable flush has not yet
+   * succeeded. Retained across flushOrThrow failures so a genuine retry
+   * reuses the same nonce instead of rotating unpredictably.
+   */
+  private pendingResetRotations = new Map<string, string>();
 
   constructor(filePath: string) {
     this.filePath = filePath;
   }
 
-  /** Load the registry from disk. Returns entries map with persisted status. */
-  load(): Map<string, { claudeSessionId: string; lastActivity: number; status: string }> {
-    const result = new Map<string, { claudeSessionId: string; lastActivity: number; status: string }>();
+  /** Load the registry from disk. Returns entries + fresh-start nonces. */
+  load(): RegistrySnapshot {
+    const entries = new Map<string, RegistryEntry>();
+    const freshStartNonces = new Map<string, string>();
 
     try {
       const raw = readFileSync(this.filePath, "utf-8");
@@ -41,25 +71,60 @@ export class SessionRegistry {
 
       if (data.version !== REGISTRY_VERSION) {
         // Version mismatch — discard and start fresh
-        return result;
+        this.freshStartNonces = freshStartNonces;
+        this.pendingResetRotations.clear();
+        return { entries, freshStartNonces };
       }
 
       for (const [chatId, entry] of Object.entries(data.entries)) {
-        result.set(chatId, {
+        entries.set(chatId, {
           claudeSessionId: entry.claudeSessionId,
           lastActivity: new Date(entry.lastActivity).getTime(),
           status: entry.status,
         });
       }
+      if (data.freshStartNonces && typeof data.freshStartNonces === "object") {
+        for (const [chatId, nonce] of Object.entries(data.freshStartNonces)) {
+          if (typeof nonce === "string" && nonce.length > 0) {
+            freshStartNonces.set(chatId, nonce);
+          }
+        }
+      }
     } catch {
       // File doesn't exist or is corrupted — start fresh
     }
 
-    return result;
+    this.freshStartNonces = new Map(freshStartNonces);
+    this.pendingResetRotations.clear();
+    return { entries, freshStartNonces };
+  }
+
+  getFreshStartNonce(chatId: string): string | undefined {
+    return this.freshStartNonces.get(chatId);
+  }
+
+  /**
+   * Rotate the chat's fresh-start nonce for a Reset attempt. The first call
+   * for an in-flight Reset mints a cryptographically random UUID; a failed
+   * flush keeps that pending rotation so the genuine retry writes the same
+   * nonce with the mapping deletion.
+   */
+  rotateFreshStartNonce(chatId: string): string {
+    const pending = this.pendingResetRotations.get(chatId);
+    if (pending) return pending;
+    const nonce = randomUUID();
+    this.pendingResetRotations.set(chatId, nonce);
+    this.freshStartNonces.set(chatId, nonce);
+    return nonce;
+  }
+
+  /** Clear the in-flight rotation marker after a successful Reset flush. */
+  markResetNonceDurable(chatId: string): void {
+    this.pendingResetRotations.delete(chatId);
   }
 
   /** Mark the registry as dirty; a debounced write will follow. */
-  save(entries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }>): void {
+  save(entries: Map<string, RegistryEntry>): void {
     this.pendingEntries = entries;
     if (!this.writeTimer) {
       this.writeTimer = setTimeout(() => {
@@ -73,7 +138,7 @@ export class SessionRegistry {
   }
 
   /** Force an immediate write (used during shutdown). */
-  flush(entries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }>): void {
+  flush(entries: Map<string, RegistryEntry>): void {
     this.clearPendingWrite();
     try {
       this.writeToDisk(entries);
@@ -86,10 +151,10 @@ export class SessionRegistry {
   /**
    * Force an immediate write and propagate failure to the caller. Used by
    * chat-session Reset: the client apply-acks `session:terminate` only after
-   * the mapping deletion is durable, so a failed write must fail the
-   * terminate instead of being swallowed.
+   * the mapping deletion (and Reset tombstone) are durable, so a failed write
+   * must fail the terminate instead of being swallowed.
    */
-  flushOrThrow(entries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }>): void {
+  flushOrThrow(entries: Map<string, RegistryEntry>): void {
     this.clearPendingWrite();
     this.writeToDisk(entries);
   }
@@ -100,16 +165,22 @@ export class SessionRegistry {
       this.writeTimer = null;
     }
     // flush(entries) is authoritative — `entries` is the freshest known
-    // state. Any older debounced snapshot in pendingEntries is now stale,
-    // so drop it; otherwise dispose()'s pending fallback would later
-    // rewrite the stale snapshot on top of what we just persisted.
+    // mapping state. Any older debounced snapshot in pendingEntries is now
+    // stale, so drop it; otherwise dispose()'s pending fallback would later
+    // rewrite the stale snapshot on top of what we just persisted. Nonces
+    // always come from the authoritative in-memory map at write time.
     this.pendingEntries = null;
   }
 
-  private writeToDisk(entries: Map<string, { claudeSessionId: string; lastActivity: number; status: string }>): void {
+  private writeToDisk(entries: Map<string, RegistryEntry>): void {
+    const freshStartNonces: Record<string, string> = {};
+    for (const [chatId, nonce] of this.freshStartNonces) {
+      freshStartNonces[chatId] = nonce;
+    }
     const data: RegistryData = {
       version: REGISTRY_VERSION,
       entries: {},
+      freshStartNonces,
     };
 
     for (const [chatId, entry] of entries) {

@@ -67,11 +67,13 @@ surface, skills projection, or provider supervisor changes.
   unknown/`provider_entered` custody: fence the transport and do not auto-resend the same prompt as pre-provider.
 - Session and inject: the session id survives suspend/resume plus process restart against the same `--session-dir`
   through First Tree's persisted mapping (the id is derived from the first inbound message, never recomputed per turn).
-  A successful `session:terminate` / Reset retires the provider session: the next addressed message must start a fresh
-  Pi session identity with no access to the discarded transcript/model state, while crash-redelivery of the same
-  uncommitted first message keeps the same identity. Inject during streaming uses `steer`; non-streaming input starts
-  the next prompt. Accepted steered messages keep DeliveryToken custody through `agent_settled`. A settle-vs-steer
-  rejection queues the inbound message for the next prompt rather than fabricating terminal-rejection evidence.
+  A successful `session:terminate` / Reset retires the provider session at a durable mapping+tombstone boundary: the
+  next addressed message — including same-row redelivery after Client restart when the first turn settled but ACK
+  never committed — must start a fresh Pi session identity with no access to the discarded transcript/model state,
+  while crash-redelivery of the same uncommitted first message *before* any Reset keeps the same identity. Inject
+  during streaming uses `steer`; non-streaming input starts the next prompt. Accepted steered messages keep
+  DeliveryToken custody through `agent_settled`. A settle-vs-steer rejection queues the inbound message for the next
+  prompt rather than fabricating terminal-rejection evidence.
 - Abort / suspend: abort mid-stream, wait for both the abort response and `agent_settled` in either order, then close
   stdin/process cleanly without orphaning the RPC child.
 - Managed Skills: projected Skills live under `.agents/skills` (shared Codex native root). Confirm `--no-skills --skill

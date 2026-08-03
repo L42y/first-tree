@@ -106,19 +106,34 @@ export function sanitizePiProviderDetail(raw: string): string {
 }
 
 /**
- * Deterministic Pi session id for a fresh First Tree start, derived from the
- * first inbound message. This is the provider-session retirement boundary:
- * Reset (`session:terminate`) durably deletes First Tree's chat→session
- * mapping, so the next addressed message takes `start` with a NEW first
- * message id and mints a NEW Pi session id — Pi cannot silently reopen the
- * discarded on-disk transcript/model state. Suspend, idle yield, daemon
- * restart, and LRU eviction keep the mapping, and `resume` adopts the
- * persisted id verbatim, so ordinary continuity is preserved. Crash-redelivery
- * of the SAME uncommitted first row re-derives the same id, never a second
- * identity. First Tree never deletes provider-owned session files.
+ * Deterministic Pi session id for a fresh First Tree start.
+ *
+ * Pre-Reset (no tombstone): derived from `(agentId, chatId, firstMessageId)`
+ * so crash-redelivery of the same uncommitted first row keeps one identity.
+ *
+ * Post-Reset: SessionRegistry rotates a durable per-chat fresh-start nonce
+ * that survives mapping deletion and manager restart. Hashing that nonce in
+ * makes retirement non-reconstructible from the durable inbox row alone —
+ * settled+ACK-failed → Pause/Reset → new SessionManager → same-row redelivery
+ * cannot reopen the discarded Pi transcript/model state. Without a nonce the
+ * pre-Reset deterministic identity is preserved for backward compatibility.
+ *
+ * Suspend, idle yield, daemon restart, and LRU eviction keep the mapping, and
+ * `resume` adopts the persisted id verbatim. First Tree never deletes
+ * provider-owned session files; Reset retires by dropping the mapping and
+ * rotating the tombstone together before apply-ACK.
  */
-export function freshStartPiSessionId(agentId: string, chatId: string, firstMessageId: string): string {
-  return createHash("sha256").update(`first-tree:${agentId}:${chatId}:${firstMessageId}`).digest("hex").slice(0, 32);
+export function freshStartPiSessionId(
+  agentId: string,
+  chatId: string,
+  firstMessageId: string,
+  freshStartNonce?: string,
+): string {
+  const material =
+    typeof freshStartNonce === "string" && freshStartNonce.length > 0
+      ? `first-tree:${agentId}:${chatId}:${firstMessageId}:${freshStartNonce}`
+      : `first-tree:${agentId}:${chatId}:${firstMessageId}`;
+  return createHash("sha256").update(material).digest("hex").slice(0, 32);
 }
 
 export {
@@ -1925,10 +1940,16 @@ export const createPiHandler: HandlerFactory = (config) => {
     async start(message, sessionCtx, token) {
       const explicitToken = token !== undefined;
       const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
-      // Mint the fresh-start identity from the first inbound message (see
-      // freshStartPiSessionId): Reset retires the chat→session mapping, so a
-      // post-Reset start must never reopen the discarded Pi transcript.
-      const startSessionId = freshStartPiSessionId(sessionCtx.agent.agentId, sessionCtx.chatId, message.id);
+      // Mint the fresh-start identity from the first inbound message plus any
+      // durable Reset tombstone (see freshStartPiSessionId). Mapping deletion
+      // alone is not enough: same-row redelivery after restart must still mint
+      // a different Pi id when a Reset nonce is present.
+      const startSessionId = freshStartPiSessionId(
+        sessionCtx.agent.agentId,
+        sessionCtx.chatId,
+        message.id,
+        sessionCtx.freshStartNonce?.(),
+      );
       let prepared: PreparedSession;
       try {
         prepared = await prepareSession(sessionCtx, startSessionId);
