@@ -492,9 +492,7 @@ function handleNet(rawUrl: string): Promise<Response> | Response | null {
       role: "member",
       provider: selectedProvider,
       intent,
-      command:
-        `first-tree-dev context enable --provider '${selectedProvider}' --team '${ORG_ID}'` +
-        (intent === "onboarding" ? " --yes" : ""),
+      command: `first-tree-dev --json context enable --provider '${selectedProvider}' --team '${ORG_ID}' --yes`,
       workingDirectoryInstruction: "Run this once from the repository root.",
     });
   }

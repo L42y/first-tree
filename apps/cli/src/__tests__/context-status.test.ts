@@ -182,6 +182,7 @@ describe("Context enable setup verdict", () => {
       hook: { trust: "review_required" as const, enabled: false, source: "provider_api" as const, issues: [] },
     };
     expect(collectMissingSetupLayers("codex", hookPending)).toEqual(["Hook trusted: No", "Hook enabled: No"]);
+    expect(collectMissingSetupLayers("claude-code", hookPending)).toEqual([]);
     expect(
       collectMissingSetupLayers("codex", {
         ...hookPending,
@@ -190,6 +191,31 @@ describe("Context enable setup verdict", () => {
     ).toEqual([]);
     expect(
       buildContextEnableNextActions("codex", hookPending.hook, "first-tree-staging", { kind: "pathless" }),
+    ).toEqual([]);
+    const attachedActions = buildContextEnableNextActions(
+      "codex",
+      hookPending.hook,
+      "first-tree-staging",
+      greenVerification.project.project,
+    );
+    expect(attachedActions.join(" ")).toContain("Return to the original setup conversation");
+    expect(attachedActions.join(" ")).toContain("agent must re-run");
+    expect(attachedActions.join(" ")).not.toMatch(/exit|new Codex session/iu);
+    expect(
+      buildContextEnableNextActions(
+        "codex",
+        { ...hookPending.hook, trust: "trusted" },
+        "first-tree-staging",
+        greenVerification.project.project,
+      ).join(" "),
+    ).toContain("enable its checkbox");
+    expect(
+      buildContextEnableNextActions(
+        "codex",
+        greenVerification.hook,
+        "first-tree-staging",
+        greenVerification.project.project,
+      ),
     ).toEqual([]);
   });
 
@@ -207,6 +233,18 @@ describe("Context enable setup verdict", () => {
     );
     expect(actions.join(" ")).toContain("first-tree-staging context repair --provider codex");
     expect(actions.length).toBeGreaterThan(0);
+  });
+
+  it("turns current-session handoff validation failures into an actionable incomplete setup", () => {
+    const actions = buildSetupNextActions(
+      "codex",
+      greenVerification,
+      { complete: false, missingLayers: ["Current-session handoff: unavailable"] },
+      "first-tree-staging",
+      "Context Skill first-tree-write manifest is missing.",
+    );
+    expect(actions.join(" ")).toContain("Current-session handoff validation failed");
+    expect(actions.join(" ")).toContain("first-tree-staging context repair --provider codex");
   });
 
   it("renders provider Hook states", () => {

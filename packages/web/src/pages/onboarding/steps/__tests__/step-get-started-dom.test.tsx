@@ -174,7 +174,7 @@ beforeEach(() => {
     role: "member",
     provider,
     intent: "onboarding",
-    command: `'first-tree' context enable --provider '${provider}' --team 'org-1' --yes`,
+    command: `'first-tree' --json context enable --provider '${provider}' --team 'org-1' --yes`,
     workingDirectoryInstruction: "Run this once from the root of the code repository.",
   }));
 });
@@ -352,7 +352,7 @@ describe("StepGetStarted", () => {
     expect(container.textContent).toContain("Set up in your coding agent");
     expect(container.textContent).toContain("server-provided bootstrap");
     expect(container.textContent).toContain("first-tree login fresh-connect-token");
-    expect(container.textContent).toContain("'first-tree' context enable");
+    expect(container.textContent).toContain("'first-tree' --json context enable");
     expect(container.textContent).not.toContain("--complete-onboarding");
     expect(container.textContent).toContain("First Tree Web owns onboarding completion separately");
     expect(container.textContent).toContain("does not create a First Tree agent");

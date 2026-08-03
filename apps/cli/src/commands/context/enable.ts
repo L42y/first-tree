@@ -8,6 +8,10 @@ import {
   findContextBinding,
   readContextIntegrationConfig,
 } from "../../core/context-integration/context-binding-store.js";
+import {
+  buildCurrentSessionHandoff,
+  type CurrentSessionHandoff,
+} from "../../core/context-integration/current-session-handoff.js";
 import { planContextIntegrationInstall } from "../../core/context-integration/installer.js";
 import { enableContextIntegrationOperation } from "../../core/context-integration/operation.js";
 import type { ProviderHookProbe } from "../../core/context-integration/provider-driver.js";
@@ -113,26 +117,61 @@ export async function runContextEnable(context: CommandContext): Promise<void> {
   const verification = await inspectContextIntegrationStatus(driver, sdk, {
     ...(preflight.project.kind === "path" ? { projectRoot: preflight.project.root } : { pathless: true }),
   });
+  const missingLayers = collectMissingSetupLayers(provider, verification);
+  const handoffIdentityIssues = collectHandoffIdentityIssues(preflight.project, teamId, verification);
+  missingLayers.push(...handoffIdentityIssues);
   const activationContext =
-    verification.activation.state === "connected"
+    verification.activation.state === "connected" && handoffIdentityIssues.length === 0
       ? buildConnectedContextAdditionalContext(verification.activation.team)
       : null;
-  const missingLayers = collectMissingSetupLayers(provider, verification);
+  let currentSessionHandoff: CurrentSessionHandoff | null = null;
+  let currentSessionHandoffIssue: string | null = null;
+  if (missingLayers.length === 0) {
+    try {
+      if (verification.activation.state !== "connected" || !verification.plugin.installedPath) {
+        throw new Error("Verified activation or provider-installed Plugin path is unavailable.");
+      }
+      currentSessionHandoff = buildCurrentSessionHandoff({
+        provider,
+        project: preflight.project,
+        team: verification.activation.team,
+        installedPluginRoot: verification.plugin.installedPath,
+      });
+    } catch (error) {
+      currentSessionHandoffIssue = error instanceof Error ? error.message : String(error);
+      missingLayers.push("Current-session handoff: unavailable");
+    }
+  }
   const setup = { complete: missingLayers.length === 0, missingLayers };
-  const nextActions = buildSetupNextActions(provider, verification, setup);
+  const nextActions = buildSetupNextActions(
+    provider,
+    verification,
+    setup,
+    channelConfig.binName,
+    currentSessionHandoffIssue,
+    handoffIdentityIssues,
+  );
+  const verifiedTeam = verification.activation.state === "connected" ? verification.activation.team : activation.team;
   const result = {
     provider,
-    team: activation.team,
+    team: verifiedTeam,
+    requestedTeam: activation.team,
     project: preflight.project,
     plugin: installPlan.operation,
     verification,
     setup,
     activationContext,
+    currentSessionHandoff,
     nextActions,
   };
   if (context.options.json) print.result(result);
   else {
-    print.status("Context", `Enabled for ${activation.team.displayName}`);
+    print.status(
+      "Context",
+      handoffIdentityIssues.length === 0
+        ? `Enabled for ${verifiedTeam.displayName}`
+        : `Requested ${activation.team.displayName}; final project/Team identity changed during verification`,
+    );
     print.status("Plugin installed", verification.plugin.installed ? "Yes" : "No");
     print.status("Plugin enabled", verification.plugin.enabled ? "Yes" : "No");
     print.status("Hook trusted", renderHookTrust(verification.hook));
@@ -149,14 +188,18 @@ export async function runContextEnable(context: CommandContext): Promise<void> {
         ? `Connected — ${verification.activation.team.displayName}`
         : verification.activation.state,
     );
+    print.status("Current-session handoff", currentSessionHandoff ? "Ready" : "Unavailable");
     print.line(`\n${renderSetupVerdictLine(setup)}\n`);
-    if (activationContext) {
+    if (currentSessionHandoff) {
       print.line(
-        setup.complete
-          ? preflight.project.kind === "path"
-            ? "\nAdopt this Team Context in your current coding-agent session and follow it from now on; future sessions in this project activate automatically:\n\n"
-            : "\nAdopt this Team Context in your current coding-agent session. Pathless sessions activate manually:\n\n"
-          : "\nAdopt this Team Context in your current coding-agent session; finish the Next steps below:\n\n",
+        preflight.project.kind === "path"
+          ? "\nAdopt the verified current-session handoff in this coding-agent session now; future sessions in this project activate automatically:\n\n"
+          : "\nAdopt the verified current-session handoff in this coding-agent session now. Pathless sessions activate manually:\n\n",
+      );
+      print.line(`${currentSessionHandoff.activationContext}\n`);
+    } else if (activationContext) {
+      print.line(
+        "\nLive Team Context was verified, but it is not ready for current-session adoption. Finish the Next steps below and re-run this command:\n\n",
       );
       print.line(`${activationContext}\n`);
     }
@@ -201,6 +244,31 @@ export function collectMissingSetupLayers(
     ...(verification.project.state === "ready" ? [] : ["Project: unavailable"]),
     ...(verification.binding.state === "exact" ? [] : [`Project binding: ${verification.binding.state}`]),
     ...(verification.activation.state === "connected" ? [] : [`Live activation: ${verification.activation.state}`]),
+  ];
+}
+
+/**
+ * The final status read happens after the install/binding transaction lock is
+ * released. Bind the handoff verdict back to the exact server-authored request
+ * so a concurrent rebind (including ancestor fallback) can never turn another
+ * Team's connected Context into a successful handoff.
+ */
+export function collectHandoffIdentityIssues(
+  expectedProject: import("@first-tree/shared").ContextIntegrationProject,
+  expectedOrganizationId: string,
+  verification: Pick<ContextIntegrationStatus, "project" | "binding" | "activation">,
+): string[] {
+  return [
+    ...(verification.project.state === "ready" && !sameProject(verification.project.project, expectedProject)
+      ? ["Requested project: changed during verification"]
+      : []),
+    ...(verification.binding.state === "exact" && verification.binding.organizationId !== expectedOrganizationId
+      ? ["Requested Team binding: changed during verification"]
+      : []),
+    ...(verification.activation.state === "connected" &&
+    verification.activation.team.organizationId !== expectedOrganizationId
+      ? ["Requested Team activation: changed during verification"]
+      : []),
   ];
 }
 
@@ -274,6 +342,8 @@ export function buildSetupNextActions(
   verification: Pick<ContextIntegrationStatus, "provider" | "runtime" | "hook" | "project" | "binding" | "activation">,
   setup: { complete: boolean; missingLayers: string[] },
   binName = channelConfig.binName,
+  currentSessionHandoffIssue: string | null = null,
+  handoffIdentityIssues: string[] = [],
 ): string[] {
   const actions = [
     ...collectSetupRecoveryActions(provider, verification, binName),
@@ -284,6 +354,16 @@ export function buildSetupNextActions(
       verification.project.state === "ready" ? verification.project.project : null,
     ),
   ];
+  if (currentSessionHandoffIssue) {
+    actions.push(
+      `Current-session handoff validation failed: ${currentSessionHandoffIssue} Run \`${binName} context repair --provider ${provider}\`, then re-run this command.`,
+    );
+  }
+  if (handoffIdentityIssues.length > 0) {
+    actions.push(
+      `Final verification no longer matches this server-authored project/Team handoff (${handoffIdentityIssues.join("; ")}). Re-run the exact server-authored \`${binName} context enable\` handoff; if this repeats, stop concurrent Context setup or binding changes before retrying.`,
+    );
+  }
   if (!setup.complete && actions.length === 0) {
     actions.push(`Fix the layers listed in the Setup line, then re-run this \`${binName} context enable\` command.`);
   }
@@ -300,23 +380,21 @@ export function buildContextEnableNextActions(
     return [];
   }
   if (hook.trust === "trusted" && hook.enabled === true) {
-    return [`Run \`${binName} context status --provider codex\` to verify every layer remains connected.`];
+    return [];
   }
   if (hook.trust === "trusted" && hook.enabled === false) {
     return [
-      "Open Codex in this project.",
-      "Run `/hooks`.",
+      "Run `/hooks` in this Codex session.",
       "Find First Tree Context → SessionStart and enable its checkbox.",
-      "Exit and start a new Codex session in this project.",
-      `Re-run the same \`${binName} context enable\` command; setup is complete only when it reports Setup: Complete.`,
+      "Return to the original setup conversation and tell the agent to continue.",
+      `The agent must re-run the same \`${binName} context enable\` command in this session; setup is complete only when it reports Setup: Complete.`,
     ];
   }
   return [
-    "Open Codex in this project.",
-    "Run `/hooks`.",
+    "Run `/hooks` in this Codex session.",
     "Find First Tree Context → SessionStart, enable its checkbox, and choose Trust.",
-    "Exit and start a new Codex session in this project.",
-    `Re-run the same \`${binName} context enable\` command; setup is complete only when it reports Setup: Complete.`,
+    "Return to the original setup conversation and tell the agent to continue.",
+    `The agent must re-run the same \`${binName} context enable\` command in this session; setup is complete only when it reports Setup: Complete.`,
   ];
 }
 
@@ -331,4 +409,11 @@ export const contextEnableCommand: SubcommandModule = {
 
 function renderProject(project: import("@first-tree/shared").ContextIntegrationProject): string {
   return project.kind === "path" ? project.root : "Pathless";
+}
+
+function sameProject(
+  left: import("@first-tree/shared").ContextIntegrationProject,
+  right: import("@first-tree/shared").ContextIntegrationProject,
+): boolean {
+  return left.kind === right.kind && (left.kind === "pathless" || (right.kind === "path" && left.root === right.root));
 }

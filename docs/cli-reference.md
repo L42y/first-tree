@@ -1191,20 +1191,29 @@ the Computer connection.
 
 Enable ends with a layered verification and a single `Setup` verdict —
 `Complete` when every layer (including provider compatibility and payload
-health) is green, or `Incomplete` with the missing layers and a recovery step
-for each.
-When live activation is connected it also prints the same Team Context block a
-SessionStart would inject, so the current coding-agent session can adopt Team
-Context immediately; future attached-path sessions activate automatically.
+health) and the current-session handoff are verified, or `Incomplete` with the
+missing layers and a recovery step for each. `Setup: Complete` can never coexist
+with a null or unreadable handoff.
+When live activation is connected, enable keeps the top-level canonical Team
+Context block for compatibility and also builds `currentSessionHandoff` from
+the payload-verified provider-installed Plugin. The handoff carries that exact
+`activationContext` plus the absolute paths and strict frontmatter metadata for
+`first-tree`, `first-tree-read`, and `first-tree-write`. The current coding
+agent adopts the context and uses the entries as its progressive-disclosure
+Skill catalog; future attached-path sessions still activate through
+SessionStart.
 Pathless sessions use the bundled `first-tree` Skill for manual activation.
-In `--json` mode the same facts appear as `setup` and `activationContext`.
+In `--json` mode these facts appear as `setup`, `activationContext`, and
+`currentSessionHandoff`.
 
 For Codex, installation does not grant Hook consent. After the first enable,
-open Codex in the path project, run `/hooks`, find **First Tree Context →
-SessionStart**, enable its checkbox, choose **Trust**, and start a new session.
-Then re-run the same `context enable` command — the setup verdict comes only
-from enable, and it must report `Setup: Complete`. `context status --provider
-codex` still shows every layer for inspection.
+run `/hooks` in the same session, find **First Tree Context → SessionStart**,
+enable its checkbox, choose **Trust**, return to the original setup conversation,
+and reply `continue`. The current coding agent then re-runs the same
+server-authored enable command and adopts its handoff without a restart or a
+new conversation. `context status --provider codex` still shows every layer
+for inspection. Claude Code and Codex pathless setup can consume a complete
+handoff on the first enable without this consent turn.
 
 `context status` reports provider compatibility, Plugin installed/enabled,
 Hook trusted/enabled, current project, project binding, and live Team activation
