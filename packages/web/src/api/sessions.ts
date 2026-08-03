@@ -117,7 +117,13 @@ export type SessionEventsResponse = {
 };
 
 export type ChatSessionEventsResponse = {
-  feeds: Array<SessionEventsResponse & { agentId: string }>;
+  feeds: Array<
+    SessionEventsResponse & {
+      agentId: string;
+      /** Stable active-turn origin. Optional while older servers roll out. */
+      turnStartedAt?: string | null;
+    }
+  >;
 };
 
 export const chatSessionEventsQueryKey = (chatId: string) => ["chat-session-events", chatId] as const;

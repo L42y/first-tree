@@ -34,6 +34,8 @@ type WorkingTurnProps = {
    * open/closed state.
    */
   events: SessionEventRow[];
+  /** Stable active-turn origin supplied independently of the capped event window. */
+  startedAt: string;
   /** Direct chats pass `true` (expand the process lane); group chats `false`. */
   defaultOpen: boolean;
   agentNameFn: (id: string) => string;
@@ -225,13 +227,20 @@ function useElapsedSeconds(startIso: string): number {
   return Math.max(0, Math.round((now - new Date(startIso).getTime()) / 1000));
 }
 
-export function WorkingTurn({ events, defaultOpen, agentNameFn, agentAvatarFn, agentColorTokenFn }: WorkingTurnProps) {
+export function WorkingTurn({
+  events,
+  startedAt,
+  defaultOpen,
+  agentNameFn,
+  agentAvatarFn,
+  agentColorTokenFn,
+}: WorkingTurnProps) {
   // `open` is local state so a manual toggle survives incoming events. It only
   // resets on remount, which the parent triggers when `turn_end` ends the turn.
   const [open, setOpen] = useState<boolean>(defaultOpen);
 
   const first = events[0];
-  const elapsedSec = useElapsedSeconds(first?.createdAt ?? new Date().toISOString());
+  const elapsedSec = useElapsedSeconds(startedAt);
   if (!first) return null;
 
   const agentId = first.agentId;

@@ -50,6 +50,7 @@ function buttonByLabel(container: ParentNode, label: string): HTMLButtonElement 
 }
 
 const props = {
+  startedAt: NOW,
   agentNameFn: (id: string) => (id === "agent-1" ? "Nova" : id),
   agentAvatarFn: (id: string) => `https://example.test/${id}.png`,
   agentColorTokenFn: () => "hue-2",
@@ -122,6 +123,29 @@ describe("WorkingTurn", () => {
 
     await click(buttonByLabel(container, "Expand working details"));
     expect(container.textContent).toContain("pnpm test");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps elapsed time stable when the capped event window drops its oldest row", async () => {
+    const { WorkingTurn } = await import("../working-turn.js");
+    const startedAt = "2026-05-28T11:39:00.000Z";
+    const newerEvent = event({
+      id: "newer",
+      seq: 2,
+      kind: "assistant_text",
+      createdAt: "2026-05-28T11:40:00.000Z",
+    });
+    const firstWindow = [event({ id: "oldest", seq: 1, kind: "assistant_text", createdAt: startedAt }), newerEvent];
+    const { container, root } = await renderDom(
+      <WorkingTurn {...props} startedAt={startedAt} events={firstWindow} defaultOpen={false} />,
+    );
+    expect(container.textContent).toContain("working · 21m00s");
+
+    await act(async () => {
+      root.render(<WorkingTurn {...props} startedAt={startedAt} events={[newerEvent]} defaultOpen={false} />);
+    });
+    expect(container.textContent).toContain("working · 21m00s");
 
     await act(async () => root.unmount());
   });
