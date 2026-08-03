@@ -601,6 +601,12 @@ export class SessionManager {
    */
   private readonly terminatePersistFailures = new Set<string>();
   /**
+   * Coalesce one post-Reset-fence recovery per chat after the combined
+   * admission fence clears. Parked intervening deliveries must not open
+   * repeated same-socket recoverChat calls while the fence is set.
+   */
+  private readonly postResetFenceRecoveryScheduled = new Set<string>();
+  /**
    * Per-chat teardown debt: handlers detached from their SessionEntry (LRU
    * eviction, failSessionForRecovery, abortUnownedRoute, terminal cleanup,
    * canceled fresh-start, resume/retry handler replacement) without a
@@ -739,6 +745,10 @@ export class SessionManager {
 
     if (
       !isRecoveryRedelivery &&
+      // Never open same-socket recovery while Reset admission is fenced:
+      // recoverChat would redeliver the same unacked rows into the fence and
+      // trip the server's no-progress circuit.
+      !this.isProviderRouteAdmissionFenced(chatId) &&
       this.inboxDelivery.shouldRecoverBeforeDispatch(
         chatId,
         this.hasHealthyLiveHandler(chatId) || this.hasPendingTransientRetry(chatId),
@@ -815,7 +825,11 @@ export class SessionManager {
 
         if (!admissionValid()) {
           if (this.inboxDelivery.hasEntry(work)) {
-            this.retryDeliveryTurn(chatId, message, "delivery_admission_invalidated");
+            if (this.isProviderRouteAdmissionFenced(chatId)) {
+              await this.parkDeliveryBehindResetAdmissionFence(chatId, message);
+            } else {
+              this.retryDeliveryTurn(chatId, message, "delivery_admission_invalidated");
+            }
           }
           return;
         }
@@ -1093,8 +1107,10 @@ export class SessionManager {
         }
 
         // Terminate is operator intent: accepted delivery work can be drained,
-        // but coordinator keeps any uncommitted tail as recovery debt.
-        await this.inboxDelivery.drainForTerminate(chatId);
+        // but coordinator keeps any uncommitted tail as recovery debt. Defer
+        // same-socket recoverChat until the admission fence clears so fenced
+        // redelivery cannot open the server's no-progress circuit.
+        await this.inboxDelivery.drainForTerminate(chatId, { requestNow: false });
 
         this.recomputeRuntimeState();
         this.flushTerminateRegistry(chatId);
@@ -1110,6 +1126,9 @@ export class SessionManager {
         if (this.terminatingChats.get(chatId) === termination) {
           this.terminatingChats.delete(chatId);
         }
+        // After the in-flight fence lifts, release any parked Reset-fence
+        // work once — but only when persist failure is also clear.
+        this.schedulePostResetFenceRecovery(chatId);
       }
     }
   }
@@ -1475,6 +1494,45 @@ export class SessionManager {
    */
   private isProviderRouteAdmissionFenced(chatId: string): boolean {
     return this.terminatingChats.has(chatId) || this.terminatePersistFailures.has(chatId);
+  }
+
+  /**
+   * Retain coordinator custody for a delivery that hit the Reset admission
+   * fence without requesting same-socket recoverChat. Generic
+   * `retryDeliveryTurn` would immediately recover, redeliver into the same
+   * fence, and open the server's no-progress circuit after repeated identical
+   * resets. Parked debt is released once by `schedulePostResetFenceRecovery`
+   * after a successful terminate flush clears the fence.
+   */
+  private async parkDeliveryBehindResetAdmissionFence(
+    chatId: string,
+    messages: SessionMessage | readonly SessionMessage[],
+  ): Promise<void> {
+    const messageIds = (Array.isArray(messages) ? messages : [messages]).map((message) => message.id);
+    this.config.log.info(
+      { chatId, messageIds },
+      "parking delivery behind Reset admission fence without same-socket recovery",
+    );
+    await this.inboxDelivery.holdTurnForBindRecovery(chatId, messages, "reset_admission_fence");
+  }
+
+  /**
+   * Coalesce one recoverChat after the combined Reset admission fence clears.
+   * Invoked from terminate's `finally` so both the in-flight and persist-failure
+   * fences are evaluated after the current termination attempt settles.
+   */
+  private schedulePostResetFenceRecovery(chatId: string): void {
+    if (this.isProviderRouteAdmissionFenced(chatId)) return;
+    if (this.postResetFenceRecoveryScheduled.has(chatId)) return;
+    if (!this.inboxDelivery.hasRecoveryDebt(chatId) && !this.inboxDelivery.hasUnsettledWork(chatId)) {
+      return;
+    }
+    this.postResetFenceRecoveryScheduled.add(chatId);
+    queueMicrotask(() => {
+      this.postResetFenceRecoveryScheduled.delete(chatId);
+      if (this.isProviderRouteAdmissionFenced(chatId)) return;
+      void this.inboxDelivery.recoverIfNeeded(chatId, "reset_admission_fence_cleared");
+    });
   }
 
   private clearRetryAttemptState(entry: SessionEntry): void {
@@ -2519,10 +2577,10 @@ export class SessionManager {
       return;
     }
     if (this.isProviderRouteAdmissionFenced(chatId)) {
-      this.config.log.info(
-        { chatId, messageId: message.id },
-        "delivery held while session Reset retirement is pending",
-      );
+      // Race path: admission was valid earlier in dispatch but the fence
+      // landed before route. Park without same-socket recovery — same policy
+      // as the admissionValid fence branch above.
+      await this.parkDeliveryBehindResetAdmissionFence(chatId, message);
       return;
     }
     if (this.isChatReplayFenced(chatId)) {

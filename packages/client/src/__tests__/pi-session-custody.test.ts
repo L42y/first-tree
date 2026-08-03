@@ -2170,7 +2170,20 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm1 = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+    let consecutiveNoProgressResets = 0;
+    let lastResetSignature: string | null = null;
+    let noProgressCircuitOpen = false;
+    const NO_PROGRESS_LIMIT = 2;
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
+      const resetSignature = "352";
+      consecutiveNoProgressResets = lastResetSignature === resetSignature ? consecutiveNoProgressResets + 1 : 1;
+      lastResetSignature = resetSignature;
+      if (consecutiveNoProgressResets > NO_PROGRESS_LIMIT) {
+        noProgressCircuitOpen = true;
+        throw new Error("recover_failed: no-progress circuit open");
+      }
+    });
+    const sm1 = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath, recoverChat });
     const chatId = "chat-pi-reset-fence";
 
     await sm1.dispatch(mockEntry({ id: 351, chatId, messageId: "msg-fence-old", content: "establish identity" }));
@@ -2191,6 +2204,7 @@ describe("Pi handler → SessionManager custody", () => {
     const sm1Internals = sm1 as unknown as {
       terminatePersistFailures: Set<string>;
       terminatingChats: Map<string, Promise<void>>;
+      inboxDelivery: { hasRecoveryDebt(chatId: string): boolean };
     };
     expect(sm1Internals.terminatePersistFailures.has(chatId)).toBe(true);
     expect(sm1Internals.terminatingChats.has(chatId)).toBe(false);
@@ -2202,22 +2216,27 @@ describe("Pi handler → SessionManager custody", () => {
     const interveningAckCallsBefore = ackEntry.mock.calls.filter((call) => call[0] === interveningEntryId).length;
     const promptsBefore = readCount(promptCountFile);
     const spawnsBefore = rpcSessionIds(specs).length;
+    const interveningEntry = mockEntry({
+      id: interveningEntryId,
+      chatId,
+      messageId: interveningMessageId,
+      content: "must not consume pending nonce",
+    });
 
-    // Intervening durable row while Reset is failed: must not enter Pi or ACK.
-    await sm1.dispatch(
-      mockEntry({
-        id: interveningEntryId,
-        chatId,
-        messageId: interveningMessageId,
-        content: "must not consume pending nonce",
-      }),
-    );
+    // Intervening durable row while Reset is failed: must not enter Pi or ACK,
+    // and must not open a same-socket recoverChat storm / no-progress circuit.
+    await sm1.dispatch(interveningEntry);
+    await sm1.dispatch(interveningEntry);
+    await sm1.dispatch(interveningEntry);
     expect(rpcSessionIds(specs)).toHaveLength(spawnsBefore);
     expect(readCount(promptCountFile)).toBe(promptsBefore);
     expect(readCount(steerCountFile)).toBe(0);
     expect(ackEntry.mock.calls.filter((call) => call[0] === interveningEntryId)).toHaveLength(
       interveningAckCallsBefore,
     );
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(noProgressCircuitOpen).toBe(false);
+    expect(sm1Internals.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
     // Pending nonce must not have been consumed by an intervening start identity.
     expect(rpcSessionIds(specs)).not.toContain(
       freshStartPiSessionId("agent-1", chatId, interveningMessageId, pendingNonce),
@@ -2233,28 +2252,27 @@ describe("Pi handler → SessionManager custody", () => {
     expect(persisted.entries).toEqual({});
     expect(persisted.freshStartNonces[chatId]).toBe(pendingNonce);
     expect(new Set(rotateSpy.mock.results.map((r) => r.value))).toEqual(new Set([pendingNonce]));
+    // Successful retry releases parked work with exactly one same-socket recovery.
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(recoverChat).toHaveBeenCalledWith(chatId);
+    expect(noProgressCircuitOpen).toBe(false);
 
-    await sm1.shutdown();
-
-    const ackEntry2 = mockAckEntry();
-    const sm2 = makePiSessionManager({ specs, ackEntry: ackEntry2, sendMessage, registryPath });
-    await sm2.dispatch(
-      mockEntry({
-        id: interveningEntryId,
-        chatId,
-        messageId: interveningMessageId,
-        content: "must not consume pending nonce",
-      }),
+    // Same-socket redelivery of the exact intervening row after fence clear.
+    await sm1.dispatch(interveningEntry);
+    await vi.waitFor(() =>
+      expect(ackEntry.mock.calls.filter((call) => call[0] === interveningEntryId).length).toBeGreaterThan(
+        interveningAckCallsBefore,
+      ),
     );
-    expect(ackEntry2).toHaveBeenCalledWith(interveningEntryId);
-    expect(ackEntry2.mock.calls.filter((call) => call[0] === interveningEntryId)).toHaveLength(1);
-
     const allIds = rpcSessionIds(specs);
     expect(allIds).toHaveLength(2);
     const expectedFresh = freshStartPiSessionId("agent-1", chatId, interveningMessageId, pendingNonce);
     expect(allIds[1]).toBe(expectedFresh);
     expect(allIds[1]).not.toBe(oldId);
     expect(allIds[1]).not.toBe(freshStartPiSessionId("agent-1", chatId, interveningMessageId));
-    await sm2.shutdown();
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+    expect(noProgressCircuitOpen).toBe(false);
+
+    await sm1.shutdown();
   });
 });

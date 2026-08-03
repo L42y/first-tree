@@ -579,7 +579,7 @@ export class InboxDeliveryCoordinator {
     void this.markRecoveryDebt(chatId, reason);
   }
 
-  async drainForTerminate(chatId: string): Promise<void> {
+  async drainForTerminate(chatId: string, opts: { requestNow?: boolean } = {}): Promise<void> {
     const ledger = this.ledgers.get(chatId);
     if (!ledger || ledger.entries.length === 0) return;
 
@@ -596,7 +596,14 @@ export class InboxDeliveryCoordinator {
     }
 
     const remaining = this.ledgers.get(chatId)?.entries ?? [];
-    if (remaining.length > 0) await this.markRecoveryDebt(chatId, "terminate_non_terminal_remainder");
+    if (remaining.length > 0) {
+      await this.markRecoveryDebt(chatId, "terminate_non_terminal_remainder", {
+        // Reset terminate passes requestNow:false so recoverChat waits until
+        // the admission fence clears. Terminal-failure teardown keeps the
+        // default immediate recovery.
+        requestNow: opts.requestNow,
+      });
+    }
   }
 
   hasUnsettledWork(chatId: string): boolean {

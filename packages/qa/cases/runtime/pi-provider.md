@@ -72,7 +72,10 @@ surface, skills projection, or provider supervisor changes.
   never committed — must start a fresh Pi session identity with no access to the discarded transcript/model state,
   while crash-redelivery of the same uncommitted first message *before* any Reset keeps the same identity. When a
   Reset registry flush fails, provider route admission stays fenced until a successful terminate retry; an intervening
-  delivery must not start/resume/inject or ACK, and cannot consume the pending Reset nonce. Inject during streaming
+  delivery must not start/resume/inject or ACK, cannot consume the pending Reset nonce, and must not open repeated
+  same-socket inbox recovery that trips the server's no-progress circuit. After the successful Reset retry clears the
+  fence, that exact durable row recovers on the same socket (no reconnect) into one fresh nonce-derived Pi identity.
+  Inject during streaming
   uses `steer`; non-streaming input starts the next prompt. Accepted steered messages keep DeliveryToken custody
   through `agent_settled`. A settle-vs-steer rejection queues the inbound message for the next prompt rather than
   fabricating terminal-rejection evidence.
