@@ -10,12 +10,55 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
-import { type AudienceTarget, resolveGithubAudience } from "../services/github-audience.js";
+import { type GithubProviderTaskContext, resolveGithubAudience } from "../services/github-audience.js";
 import { deliverGithubEvent } from "../services/github-delivery.js";
 import { resolveAgentScmBindingPair } from "../services/scm-attention-line.js";
+import type { ScmAudienceTarget } from "../services/scm-audience-composition.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;
+type GithubAudienceTarget = ScmAudienceTarget<GithubProviderTaskContext>;
+
+function existingTarget(input: {
+  humanAgentId: string;
+  wakeAgentId: string;
+  chatId: string;
+  reason?: "review_requested" | "mentioned" | "assigned";
+  externalUsername?: string;
+}): GithubAudienceTarget {
+  return {
+    entry: {
+      kind: "existing_line",
+      line: {
+        kind: "attention_line",
+        humanAgentId: input.humanAgentId,
+        wakeAgentId: input.wakeAgentId,
+        chatId: input.chatId,
+        provenance: "identity_target",
+      },
+    },
+    ...(input.reason && input.externalUsername
+      ? { directedContext: { reason: input.reason, externalUsername: input.externalUsername } }
+      : {}),
+  };
+}
+
+function personnelTarget(input: {
+  humanAgentId: string;
+  wakeAgentId: string;
+  reason: "review_requested" | "mentioned" | "assigned";
+  externalUsername: string;
+}): GithubAudienceTarget {
+  return {
+    entry: {
+      kind: "personnel_target",
+      reason: input.reason,
+      humanAgentId: input.humanAgentId,
+      wakeAgentId: input.wakeAgentId,
+      externalUsername: input.externalUsername,
+    },
+  };
+}
 
 async function seedAgent(
   app: App,
@@ -169,14 +212,7 @@ describe("deliverGithubEvent", () => {
       boundVia: "direct",
     });
 
-    const target: AudienceTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+    const target = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -240,14 +276,7 @@ describe("deliverGithubEvent", () => {
       boundVia: "direct",
     });
 
-    const target: AudienceTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+    const target = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -270,11 +299,11 @@ describe("deliverGithubEvent", () => {
     expect(delegateEntries).toHaveLength(0);
   });
 
-  it("echo pruning: drops a self-only delivery before writing a card", async () => {
+  it("actor echo keeps a self-only card route while suppressing wake", async () => {
     // The delegate is a live speaker of the bound chat, so an unresolved actor
     // would normally wake it. When the GitHub actor resolves to the same human
-    // that owns this mapping, delivery prunes that entry before send: no card,
-    // no inbox row, and no wake.
+    // that owns this mapping, delivery keeps the shared history card while
+    // suppressing the matching line's wake.
     const app = getApp();
     const admin = await createTestAdmin(app);
     const delegate = await seedAgent(app, {
@@ -304,14 +333,7 @@ describe("deliverGithubEvent", () => {
       chatId,
       boundVia: "direct",
     });
-    const baseTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    } satisfies AudienceTarget;
+    const baseTarget = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -319,9 +341,14 @@ describe("deliverGithubEvent", () => {
     });
 
     const echoStats = await deliverGithubEvent(app, event, [baseTarget], { actorHumanId: human });
-    expect(echoStats).toEqual({ delivered: 0, newChats: 0, failed: 0 });
-    await expect(app.db.select().from(messages).where(eq(messages.chatId, chatId))).resolves.toHaveLength(0);
-    await expect(app.db.select().from(inboxEntries).where(eq(inboxEntries.chatId, chatId))).resolves.toHaveLength(0);
+    expect(echoStats).toEqual({ delivered: 1, newChats: 0, failed: 0 });
+    await expect(app.db.select().from(messages).where(eq(messages.chatId, chatId))).resolves.toHaveLength(1);
+    await expect(
+      app.db
+        .select()
+        .from(inboxEntries)
+        .where(and(eq(inboxEntries.chatId, chatId), eq(inboxEntries.notify, true))),
+    ).resolves.toHaveLength(0);
 
     // Unknown actor: no self pruning, so the speaker-delegate IS woken.
     const okStats = await deliverGithubEvent(app, event, [baseTarget], { actorHumanId: null });
@@ -355,14 +382,12 @@ describe("deliverGithubEvent", () => {
       type: "human",
     });
     const entityKey = "owner/repo#1536";
-    const target = {
+    const target = personnelTarget({
       humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "new",
-      chatId: null,
-      involveReason: "assigned",
-      involveLogin: humanName.toLowerCase(),
-    } satisfies AudienceTarget;
+      wakeAgentId: delegate,
+      reason: "assigned",
+      externalUsername: humanName.toLowerCase(),
+    });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "issue",
@@ -439,7 +464,9 @@ describe("deliverGithubEvent", () => {
     // self-directed involve.
     expect(resolution.actorHumanId).toBe(human);
     expect(resolution.targets).toHaveLength(1);
-    expect(resolution.targets[0]).toMatchObject({ humanAgentId: human, kind: "new", involveReason: "assigned" });
+    expect(resolution.targets[0]).toMatchObject({
+      entry: { kind: "personnel_target", humanAgentId: human, reason: "assigned" },
+    });
 
     const stats = await deliverGithubEvent(app, event, resolution.targets, {
       actorHumanId: resolution.actorHumanId,
@@ -464,12 +491,12 @@ describe("deliverGithubEvent", () => {
     }
   });
 
-  it("self-echo boundary: a self-assign on an already-bound entity stays pruned (#1536)", async () => {
+  it("self-echo boundary: an already-bound self-assign keeps a silent card (#1536)", async () => {
     // The other side of the #1536 carve-out. When the entity ALREADY has a
     // bound chat (`kind: "existing"`), a self-directed involve is a true echo
     // of the actor's own action into a chat they already sit in — nothing new
-    // to create — so it must stay pruned even though it carries an
-    // `involveReason`. Locks the carve-out to `kind: "new"` only.
+    // to create — so its wake is suppressed even though it carries directed
+    // context. The shared activity card still remains in chat history.
     const app = getApp();
     const admin = await createTestAdmin(app);
     const delegate = await seedAgent(app, {
@@ -500,14 +527,13 @@ describe("deliverGithubEvent", () => {
       chatId,
       boundVia: "direct",
     });
-    const target = {
+    const target = existingTarget({
       humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
+      wakeAgentId: delegate,
       chatId,
-      involveReason: "assigned",
-      involveLogin: humanName.toLowerCase(),
-    } satisfies AudienceTarget;
+      reason: "assigned",
+      externalUsername: humanName.toLowerCase(),
+    });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "issue",
@@ -519,12 +545,17 @@ describe("deliverGithubEvent", () => {
     });
 
     const stats = await deliverGithubEvent(app, event, [target], { actorHumanId: human });
-    expect(stats).toEqual({ delivered: 0, newChats: 0, failed: 0 });
-    await expect(app.db.select().from(messages).where(eq(messages.chatId, chatId))).resolves.toHaveLength(0);
-    await expect(app.db.select().from(inboxEntries).where(eq(inboxEntries.chatId, chatId))).resolves.toHaveLength(0);
+    expect(stats).toEqual({ delivered: 1, newChats: 0, failed: 0 });
+    await expect(app.db.select().from(messages).where(eq(messages.chatId, chatId))).resolves.toHaveLength(1);
+    await expect(
+      app.db
+        .select()
+        .from(inboxEntries)
+        .where(and(eq(inboxEntries.chatId, chatId), eq(inboxEntries.notify, true))),
+    ).resolves.toHaveLength(0);
   });
 
-  it("humanA requesting humanB review prunes humanA's follow delivery and wakes humanB's delegate", async () => {
+  it("humanA requesting humanB review keeps humanA's card route and wakes humanB's delegate", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const delegateA = await seedAgent(app, {
@@ -585,8 +616,8 @@ describe("deliverGithubEvent", () => {
     const stats = await deliverGithubEvent(app, event, resolution.targets, {
       actorHumanId: resolution.actorHumanId,
     });
-    expect(stats).toEqual({ delivered: 1, newChats: 1, failed: 0 });
-    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatA))).toHaveLength(0);
+    expect(stats).toEqual({ delivered: 2, newChats: 1, failed: 0 });
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatA))).toHaveLength(1);
     expect(await notifyCount(app, chatA, delegateA)).toBe(0);
 
     const [mappingB] = await app.db
@@ -607,7 +638,7 @@ describe("deliverGithubEvent", () => {
     expect(messageB?.senderId).toBe(humanB);
   });
 
-  it("reviewer comment prunes the reviewer's own follow chat but not the PR author's chat", async () => {
+  it("reviewer comment stays visible in both chats but does not self-wake the reviewer", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const delegateA = await seedAgent(app, {
@@ -683,9 +714,9 @@ describe("deliverGithubEvent", () => {
       actorHumanId: resolution.actorHumanId,
     });
 
-    expect(stats).toEqual({ delivered: 1, newChats: 0, failed: 0 });
+    expect(stats).toEqual({ delivered: 2, newChats: 0, failed: 0 });
     expect(await app.db.select().from(messages).where(eq(messages.chatId, chatA))).toHaveLength(1);
-    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatB))).toHaveLength(0);
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatB))).toHaveLength(1);
     expect(await notifyCount(app, chatA, delegateA)).toBe(1);
     expect(await notifyCount(app, chatB, delegateB)).toBe(0);
   });
@@ -990,14 +1021,7 @@ describe("deliverGithubEvent", () => {
       boundVia: "direct",
     });
 
-    const target: AudienceTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+    const target = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -1045,14 +1069,7 @@ describe("deliverGithubEvent", () => {
       boundVia: "direct",
     });
 
-    const target: AudienceTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+    const target = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -1077,7 +1094,7 @@ describe("deliverGithubEvent", () => {
     expect(mapping?.title).toBe("Renamed title");
   });
 
-  it("refreshes entity projection even when self-echo pruning drops the card", async () => {
+  it("refreshes entity projection while self-echo delivery keeps a silent card", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const delegate = await seedAgent(app, {
@@ -1128,9 +1145,14 @@ describe("deliverGithubEvent", () => {
     const stats = await deliverGithubEvent(app, event, resolution.targets, {
       actorHumanId: resolution.actorHumanId,
     });
-    expect(stats).toEqual({ delivered: 0, newChats: 0, failed: 0 });
-    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(0);
-    expect(await app.db.select().from(inboxEntries).where(eq(inboxEntries.chatId, chatId))).toHaveLength(0);
+    expect(stats).toEqual({ delivered: 1, newChats: 0, failed: 0 });
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(1);
+    expect(
+      await app.db
+        .select()
+        .from(inboxEntries)
+        .where(and(eq(inboxEntries.chatId, chatId), eq(inboxEntries.notify, true))),
+    ).toHaveLength(0);
 
     const [chat] = await app.db.select({ topic: chats.topic }).from(chats).where(eq(chats.id, chatId)).limit(1);
     expect(chat?.topic).toBe("PR repo#209: New title");
@@ -1189,14 +1211,7 @@ describe("deliverGithubEvent", () => {
       },
     ]);
 
-    const target: AudienceTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+    const target = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -1234,14 +1249,7 @@ describe("deliverGithubEvent", () => {
       topic: "agent-chosen label",
     });
 
-    const target: AudienceTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+    const target = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -1270,14 +1278,12 @@ describe("deliverGithubEvent", () => {
       type: "human",
     });
 
-    const target: AudienceTarget = {
+    const target = personnelTarget({
       humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "new",
-      chatId: null,
-      involveReason: "review_requested",
-      involveLogin: humanName.toLowerCase(),
-    };
+      wakeAgentId: delegate,
+      reason: "review_requested",
+      externalUsername: humanName.toLowerCase(),
+    });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -1345,22 +1351,12 @@ describe("deliverGithubEvent", () => {
       boundVia: "direct",
     });
 
-    const broken: AudienceTarget = {
+    const broken = existingTarget({
       humanAgentId: goodHuman,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId: null, // forces the runtime guard to throw
-      involveReason: null,
-      involveLogin: null,
-    };
-    const ok: AudienceTarget = {
-      humanAgentId: goodHuman,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId: goodChatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+      wakeAgentId: delegate,
+      chatId: "missing-chat",
+    });
+    const ok = existingTarget({ humanAgentId: goodHuman, wakeAgentId: delegate, chatId: goodChatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -1428,22 +1424,13 @@ describe("deliverGithubEvent", () => {
     });
 
     const event = makeEvent({ orgId: admin.organizationId, entityType: "pull_request", entityKey: "owner/repo#210" });
-    const subscribed: AudienceTarget = {
-      humanAgentId: humanA,
-      delegateAgentId: delegateA,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
-    const involved: AudienceTarget = {
+    const subscribed = existingTarget({ humanAgentId: humanA, wakeAgentId: delegateA, chatId });
+    const involved = personnelTarget({
       humanAgentId: humanR,
-      delegateAgentId: delegateR,
-      kind: "new",
-      chatId: null,
-      involveReason: "review_requested",
-      involveLogin: "humanr",
-    };
+      wakeAgentId: delegateR,
+      reason: "review_requested",
+      externalUsername: "humanr",
+    });
 
     const stats = await deliverGithubEvent(app, event, [subscribed, involved]);
 
@@ -1481,6 +1468,146 @@ describe("deliverGithubEvent", () => {
       .from(githubEntityChatMappings)
       .where(eq(githubEntityChatMappings.entityKey, "owner/repo#210"));
     expect(mappings).toHaveLength(1);
+  });
+
+  it("routes a carrier-owned review request to the current delegate already in the same chat", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const follower = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `carrier-follower-${randomUUID().slice(0, 6)}`,
+    });
+    const currentDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `current-delegate-${randomUUID().slice(0, 6)}`,
+    });
+    const humanName = `carrier-human-${randomUUID().slice(0, 6)}`;
+    const human = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: humanName,
+      delegateMention: currentDelegate,
+      type: "human",
+    });
+    const chatId = `chat_${randomUUID()}`;
+    await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
+    await app.db.insert(chatMembership).values(
+      [human, follower, currentDelegate].map((agentId, index) => ({
+        chatId,
+        agentId,
+        role: index === 0 ? "owner" : "member",
+        accessMode: "speaker" as const,
+        mode: "full" as const,
+        source: "manual" as const,
+      })),
+    );
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: human,
+      delegateAgentId: follower,
+      entityType: "pull_request",
+      entityKey: "owner/repo#212",
+      chatId,
+      boundVia: "agent_declared",
+    });
+    const event = makeEvent({
+      orgId: admin.organizationId,
+      entityType: "pull_request",
+      entityKey: "owner/repo#212",
+      actorLogin: "review-requester",
+      targets: [{ externalUsername: humanName, reason: "review_requested" }],
+      kind: "review_requested",
+      action: "review_requested",
+    });
+
+    const resolution = await resolveGithubAudience(app.db, event);
+    expect(resolution.targets.map((target) => target.entry.kind)).toEqual(["existing_line", "personnel_target"]);
+    const stats = await deliverGithubEvent(app, event, resolution.targets, {
+      actorHumanId: resolution.actorHumanId,
+    });
+
+    expect(stats).toEqual({ delivered: 1, newChats: 0, failed: 0 });
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(1);
+    expect(await notifyCount(app, chatId, follower)).toBe(1);
+    expect(await notifyCount(app, chatId, currentDelegate)).toBe(1);
+    const mappings = await app.db
+      .select()
+      .from(githubEntityChatMappings)
+      .where(eq(githubEntityChatMappings.entityKey, "owner/repo#212"));
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0]?.delegateAgentId).toBe(follower);
+  });
+
+  it("creates a strict review line when the current delegate is absent from the carrier chat", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const follower = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `carrier-follower-${randomUUID().slice(0, 6)}`,
+    });
+    const currentDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `current-delegate-${randomUUID().slice(0, 6)}`,
+    });
+    const humanName = `carrier-human-${randomUUID().slice(0, 6)}`;
+    const human = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: humanName,
+      delegateMention: currentDelegate,
+      type: "human",
+    });
+    const carrierChatId = `chat_${randomUUID()}`;
+    await app.db.insert(chats).values({ id: carrierChatId, organizationId: admin.organizationId, type: "group" });
+    await app.db.insert(chatMembership).values([
+      { chatId: carrierChatId, agentId: human, role: "owner", accessMode: "speaker", mode: "full", source: "manual" },
+      {
+        chatId: carrierChatId,
+        agentId: follower,
+        role: "member",
+        accessMode: "speaker",
+        mode: "full",
+        source: "manual",
+      },
+    ]);
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: human,
+      delegateAgentId: follower,
+      entityType: "pull_request",
+      entityKey: "owner/repo#213",
+      chatId: carrierChatId,
+      boundVia: "agent_declared",
+    });
+    const event = makeEvent({
+      orgId: admin.organizationId,
+      entityType: "pull_request",
+      entityKey: "owner/repo#213",
+      actorLogin: "review-requester",
+      targets: [{ externalUsername: humanName, reason: "review_requested" }],
+      kind: "review_requested",
+      action: "review_requested",
+    });
+
+    const resolution = await resolveGithubAudience(app.db, event);
+    const stats = await deliverGithubEvent(app, event, resolution.targets, {
+      actorHumanId: resolution.actorHumanId,
+    });
+
+    expect(stats).toEqual({ delivered: 2, newChats: 1, failed: 0 });
+    const mappings = await app.db
+      .select()
+      .from(githubEntityChatMappings)
+      .where(eq(githubEntityChatMappings.entityKey, "owner/repo#213"));
+    expect(mappings).toHaveLength(2);
+    const strictLine = mappings.find((row) => row.delegateAgentId === currentDelegate);
+    expect(strictLine?.chatId).not.toBe(carrierChatId);
+    expect(strictLine?.boundVia).toBe("direct");
+    expect(await notifyCount(app, strictLine?.chatId ?? "", currentDelegate)).toBe(1);
   });
 
   it("a `mentioned` involve does NOT reuse the entity chat — it mints a fresh chat (S5, reuse is review_requested-only)", async () => {
@@ -1538,14 +1665,12 @@ describe("deliverGithubEvent", () => {
     });
 
     const event = makeEvent({ orgId: admin.organizationId, entityType: "pull_request", entityKey: "owner/repo#211" });
-    const involvedMention: AudienceTarget = {
+    const involvedMention = personnelTarget({
       humanAgentId: humanM,
-      delegateAgentId: delegateM,
-      kind: "new",
-      chatId: null,
-      involveReason: "mentioned",
-      involveLogin: "humanm",
-    };
+      wakeAgentId: delegateM,
+      reason: "mentioned",
+      externalUsername: "humanm",
+    });
 
     const stats = await deliverGithubEvent(app, event, [involvedMention]);
 
@@ -1608,14 +1733,7 @@ describe("deliverGithubEvent", () => {
       boundVia: "direct",
     });
 
-    const target: AudienceTarget = {
-      humanAgentId: human,
-      delegateAgentId: delegate,
-      kind: "existing",
-      chatId,
-      involveReason: null,
-      involveLogin: null,
-    };
+    const target = existingTarget({ humanAgentId: human, wakeAgentId: delegate, chatId });
     const event = makeEvent({
       orgId: admin.organizationId,
       entityType: "pull_request",
@@ -1720,13 +1838,15 @@ describe("deliverGithubEvent", () => {
     const resolution = await resolveGithubAudience(app.db, event);
     const audience = resolution.targets;
     expect(audience).toHaveLength(2);
-    expect(new Set(audience.map((a) => a.chatId))).toEqual(new Set([chatA, chatB]));
+    expect(
+      new Set(audience.flatMap((target) => (target.entry.kind === "existing_line" ? [target.entry.line.chatId] : []))),
+    ).toEqual(new Set([chatA, chatB]));
     expect(resolution.actorHumanId).toBe(human);
 
     const stats = await deliverGithubEvent(app, event, audience, { actorHumanId: resolution.actorHumanId });
-    expect(stats).toEqual({ delivered: 0, newChats: 0, failed: 0 });
-    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatA))).toHaveLength(0);
-    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatB))).toHaveLength(0);
+    expect(stats).toEqual({ delivered: 2, newChats: 0, failed: 0 });
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatA))).toHaveLength(1);
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatB))).toHaveLength(1);
     expect(await app.db.select().from(inboxEntries).where(eq(inboxEntries.notify, true))).toHaveLength(0);
   });
 });

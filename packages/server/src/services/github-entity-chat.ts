@@ -14,7 +14,7 @@ import {
 } from "./github-entity-key.js";
 import type { EntityState, EntityStateSeed } from "./github-entity-state.js";
 import { resolveAgentScmBindingPair } from "./scm-attention-line.js";
-import { decideScmPersonnelTargetChat } from "./scm-target-chat-policy.js";
+import { decideScmPersonnelTargetChat, type ScmTargetChatDecision } from "./scm-target-chat-policy.js";
 
 const log = createLogger("GithubEntityChat");
 
@@ -73,19 +73,19 @@ export function isCreationEvent(eventType: string, action: string): boolean {
  * events through chat membership, and `deliverGithubEvent` dedups so the
  * chat receives one card whose wake-set includes this delegate.
  *
- * Returns the chat id when exactly one such chat exists; null when there is
- * none, or when the candidate is ambiguous (≥2 bound chats both speak in),
- * in which case the caller mints a fresh chat via `resolveTargetChat` (the
- * strict per-`(human, delegate)` path — we never guess). Preserves S1 (the
- * chat follows, not the person) and S7 (no followed chat is dropped).
+ * Returns a discriminated policy decision so the provider executor cannot
+ * collapse `strict_new_line` into a nullable chat id and accidentally re-enter
+ * human-scoped fallback. Preserves S1 (the chat follows, not the person) and
+ * S7 (no followed chat is dropped).
  */
-export async function findReuseChatForInvolved(
+export async function decideGithubPersonnelTargetChat(
   db: Database,
   organizationId: string,
   entity: GithubEntity,
   humanAgentId: string,
   delegateAgentId: string,
-): Promise<string | null> {
+  reason: "review_requested" | "mentioned" | "assigned",
+): Promise<ScmTargetChatDecision> {
   const candidateKeys = githubEntityKeyCandidates(entity.type, entity.key);
   const boundChats = await db
     .selectDistinct({ chatId: githubEntityChatMappings.chatId })
@@ -97,16 +97,17 @@ export async function findReuseChatForInvolved(
         inArray(githubEntityChatMappings.entityKey, candidateKeys),
       ),
     );
-  if (boundChats.length === 0) return null;
+  if (boundChats.length === 0) return { kind: "strict_new_line" };
 
-  const decision = await decideScmPersonnelTargetChat(db, {
-    reason: "review_requested",
+  return decideScmPersonnelTargetChat(db, {
+    reason,
     candidateChatIds: boundChats.map((row) => row.chatId),
     humanAgentId,
     wakeAgentId: delegateAgentId,
   });
-  return decision.kind === "reuse" ? decision.chatId : null;
 }
+
+export type GithubTargetChatIntent = { kind: "provider_task_target" } | ScmTargetChatDecision;
 
 /**
  * Resolve which chat a GitHub event for (human, delegate, entity) belongs to.
@@ -151,6 +152,10 @@ export async function resolveTargetChat(
      * chat-proliferation behaviour.
      */
     isMentionMatched: boolean;
+    /** Shared policy intent. Strict personnel targets may never reuse another
+     * delegate's human-scoped mapping; provider tasks retain their established
+     * team-level fallback behavior. */
+    intent: GithubTargetChatIntent;
     /**
      * State derived from the current webhook payload. Used only when this
      * resolution writes a new mapping for the same entity; existing rows are
@@ -158,7 +163,7 @@ export async function resolveTargetChat(
      */
     entityStateSeed?: EntityStateSeed | null;
   },
-): Promise<{ chatId: string; created: boolean; boundVia: BoundVia } | null> {
+): Promise<{ chatId: string; created: boolean; boundVia: BoundVia | null } | null> {
   const {
     organizationId,
     humanAgentId,
@@ -168,10 +173,15 @@ export async function resolveTargetChat(
     eventType,
     action,
     isMentionMatched,
+    intent,
   } = params;
   const entity = normalizeGithubEntity(rawEntity);
   const relatedEntities = rawRelatedEntities.map(normalizeGithubEntity);
   const entityState = stateSeedForEntity(params.entityStateSeed ?? null, entity);
+
+  if (intent.kind === "reuse") {
+    return { chatId: intent.chatId, created: false, boundVia: null };
+  }
 
   // (a) Direct hit.
   const direct = await lookupMapping(db, organizationId, humanAgentId, delegateAgentId, entity);
@@ -179,25 +189,25 @@ export async function resolveTargetChat(
     return { chatId: direct.chatId, created: false, boundVia: direct.boundVia };
   }
 
-  // (a.5) Human-scoped fallback. The mapping primary key still includes
-  // `delegate_agent_id`, but routing treats `(org, human, entity)` as the
-  // logical cluster: an entity that is already bound to a chat under this
-  // human should never trigger a fresh chat just because a *different*
-  // delegate happened to drive this event. Pick the existing chat (open
-  // entities first, then earliest `bound_at`) and write a sibling mapping
-  // row so the next event hits (a) directly.
-  const humanScoped = await lookupMappingByHuman(db, organizationId, humanAgentId, entity);
-  if (humanScoped) {
-    const inserted = await insertMappingIfAbsent(db, {
-      organizationId,
-      humanAgentId,
-      delegateAgentId,
-      entity,
-      chatId: humanScoped.chatId,
-      boundVia: "human_fallback",
-      entityState,
-    });
-    return { chatId: inserted.chatId, created: false, boundVia: inserted.boundVia };
+  // (a.5) Provider-task human-scoped fallback. Personnel
+  // `strict_new_line` intent deliberately skips this branch: another wake
+  // agent using the same human as carrier is not the current delegate's line.
+  // The provider-owned task path retains the established deterministic fallback
+  // and writes a sibling mapping so its next event hits (a).
+  if (intent.kind === "provider_task_target") {
+    const humanScoped = await lookupMappingByHuman(db, organizationId, humanAgentId, entity);
+    if (humanScoped) {
+      const inserted = await insertMappingIfAbsent(db, {
+        organizationId,
+        humanAgentId,
+        delegateAgentId,
+        entity,
+        chatId: humanScoped.chatId,
+        boundVia: "human_fallback",
+        entityState,
+      });
+      return { chatId: inserted.chatId, created: false, boundVia: inserted.boundVia };
+    }
   }
 
   // (b) Fixes-link reuse.

@@ -1203,7 +1203,7 @@ describe("GitLab Stage 3 personnel routing", () => {
   it.each([
     { boundVia: "human_declared" as const, declaredBy: "human" as const },
     { boundVia: "agent_declared" as const, declaredBy: "agent" as const },
-  ])("prunes actor echo from an explicit $boundVia follow", async ({ boundVia, declaredBy }) => {
+  ])("keeps actor echo card silent for an explicit $boundVia follow", async ({ boundVia, declaredBy }) => {
     const app = getApp();
     const setup = await setupTarget(app);
     const iid = declaredBy === "human" ? 61 : 62;
@@ -1236,6 +1236,12 @@ describe("GitLab Stage 3 personnel routing", () => {
         .select()
         .from(messages)
         .where(and(eq(messages.chatId, chat.id), eq(messages.source, "gitlab"))),
+    ).toHaveLength(1);
+    expect(
+      await app.db
+        .select()
+        .from(inboxEntries)
+        .where(and(eq(inboxEntries.chatId, chat.id), eq(inboxEntries.notify, true))),
     ).toHaveLength(0);
   });
 

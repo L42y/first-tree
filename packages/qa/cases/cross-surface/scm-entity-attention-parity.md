@@ -40,7 +40,13 @@ card significance, lifecycle projection, topic protection, and archive behavior.
   removed line.
 - Exercise reviewer, assignee, and mention targets with equivalent identities. Only reviewer routing may reuse exactly one
   eligible membership chat without writing a new line; assignee and mention routing establish the target's own line/chat.
-  Ambiguous membership reuse must fail closed.
+  Ambiguous membership reuse must fail closed. Also create an agent follow whose stable human carrier is the reviewer but
+  whose wake agent differs from that human's current delegate. Confirm the carrier line remains intact, the current
+  delegate is still addressed by exact pair, reviewer membership reuse happens only when both sides already speak in one
+  candidate chat, and the strict path otherwise creates a separate deliverable line without human-scoped fallback.
+- Have a delegate act through its human's provider identity in an entity followed by that human's line. Confirm every
+  valid routed chat keeps one provider card, the matching existing line does not wake itself, eligible sibling lines still
+  wake, and a chat with no eligible wake line receives a silent history card instead of losing the event.
 - Deliver equivalent code updates, draft/ready transitions, description mentions, terminal state changes, and
   metadata-only updates. Confirm code updates are actionable, ready reviewers are actionable, description mentions route
   only on open or actual description change, and observation-only/metadata-only activity refreshes title/state without an
@@ -62,9 +68,9 @@ card significance, lifecycle projection, topic protection, and archive behavior.
 unfollow, target-chat, wake, card-significance, lifecycle, topic-protection, header-link, archive, and revive behavior;
 only the declared protocol exceptions differ.
 
-`FAIL`: either provider permits a silent complete attention line, duplicates a pair across chats, chooses a different
-target-chat policy, delivers a semantically noisy card, leaks internal identifiers, overwrites a manual topic, guesses an
-entity URL, or archives despite a safety guard.
+`FAIL`: either provider permits a complete attention line to become permanently unwakeable, drops an actor-authored card,
+duplicates a pair across chats, chooses a different target-chat policy, delivers a semantically noisy card, leaks internal
+identifiers, overwrites a manual topic, guesses an entity URL, or archives despite a safety guard.
 
 `BLOCKED`: the complete isolated harness cannot receive both providers' disposable webhooks or cannot observe the required
 Web, CLI, Inbox/session, and archive surfaces.
