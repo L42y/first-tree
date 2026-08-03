@@ -85,9 +85,14 @@ export const clientWireCapabilitiesSchema = z
     /**
      * Version 1 of the COMPOSITE Reset protocol (see `wsSessionResetV1` in
      * the server capabilities): apply-ack plus parked-fence release on the
-     * exact terminate ref plus `session:command:finalized:ack`. Declared ONLY
-     * when the server advertised `wsSessionResetV1` in its welcome, so the
-     * flag proves both peers speak the same version. The server gates
+     * exact terminate ref plus BOTH receipted terminal dispositions —
+     * `session:command:finalized:ack` for a durable eviction and
+     * `session:command:aborted:ack` for a Reset the server could not finalize.
+     * Both dispositions belong to this one version: a peer that could answer
+     * only the finalized half would stay fenced on every abort branch, so
+     * there is nothing to negotiate separately. Declared ONLY when the server
+     * advertised `wsSessionResetV1` in its welcome, so the flag proves both
+     * peers speak the same version. The server gates
      * `terminate?waitForApply=true` on this field alone.
      */
     wsSessionResetV1: z.boolean().default(false),

@@ -82,6 +82,7 @@ class FakeClientConnection extends EventEmitter {
   reportSessionRuntime = vi.fn();
   reportSessionCommandApplied = vi.fn();
   reportSessionCommandFinalizedAck = vi.fn();
+  reportSessionCommandAbortedAck = vi.fn();
   sendSessionReconcile = vi.fn();
   /** Negotiated per connection; flip to false to model an old server. */
   supportsSessionResetV1 = true;
@@ -868,6 +869,92 @@ describe("AgentSlot", () => {
     );
 
     await slot.stop();
+  });
+
+  it("answers session:command:aborted through the same generation authority as finalized", async () => {
+    // The local truth after `applied: true` is identical either way: the
+    // provider session is already gone, so an abort has nothing to restore and
+    // simply lifts the generation that fenced provider admission afterwards.
+    // Without this listener the client would hold that fence forever whenever
+    // the server failed to commit the eviction.
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const abort = (
+      ref: string,
+      ackRef: string,
+      reason: "reactivated" | "route_refused" | "cleanup_failed" = "reactivated",
+      agentId = "agent-1",
+    ) => {
+      connection.emit("session:command:aborted", {
+        type: "session:command:aborted",
+        ref,
+        ackRef,
+        agentId,
+        chatId: "chat-abort",
+        command: "session:terminate",
+        reason,
+      });
+    };
+
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-abort",
+      type: "session:terminate",
+      ref: "ref-abort",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: "ref-abort", applied: true }),
+      ),
+    );
+    // Applying alone releases nothing — only an exact disposition does.
+    expect(session.releaseParkedResetFenceRecovery).not.toHaveBeenCalled();
+
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("accepted");
+    abort("ref-abort", "ack-abort", "cleanup_failed");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-abort", "ref-abort");
+    expect(connection.reportSessionCommandAbortedAck).toHaveBeenCalledWith({
+      ref: "ref-abort",
+      ackRef: "ack-abort",
+      agentId: "agent-1",
+      chatId: "chat-abort",
+      command: "session:terminate",
+      released: true,
+    });
+    // The two dispositions are distinct on the wire, so a server waiting on one
+    // can never be settled by the other.
+    expect(connection.reportSessionCommandFinalizedAck).not.toHaveBeenCalled();
+
+    // Duplicate → still a lifted fence; superseded/unknown → answered honestly
+    // so a late abort cannot claim it released a newer generation.
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("idempotent");
+    abort("ref-abort", "ack-abort-late");
+    expect(connection.reportSessionCommandAbortedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ackRef: "ack-abort-late", released: true }),
+    );
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("stale");
+    abort("ref-superseded", "ack-superseded");
+    expect(connection.reportSessionCommandAbortedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-superseded", ackRef: "ack-superseded", released: false }),
+    );
+
+    // Another agent's abort is not this slot's to answer at all.
+    const consulted = session.releaseParkedResetFenceRecovery.mock.calls.length;
+    abort("ref-abort", "ack-foreign", "reactivated", "other-agent");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(consulted);
+    expect(connection.reportSessionCommandAbortedAck).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ackRef: "ack-foreign" }),
+    );
+
+    await slot.stop();
+    // The listener is torn down with the slot, so a late abort cannot reach a
+    // manager that no longer holds the generation it named.
+    const afterStop = session.releaseParkedResetFenceRecovery.mock.calls.length;
+    abort("ref-abort", "ack-after-stop");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(afterStop);
   });
 
   it("an unref'd terminate supersedes the armed generation so its late finalized cannot release", async () => {

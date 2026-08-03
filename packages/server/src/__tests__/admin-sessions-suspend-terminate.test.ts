@@ -16,7 +16,7 @@ import {
 } from "../services/connection-manager.js";
 import { sendMessage } from "../services/message.js";
 import * as sessionService from "../services/session.js";
-import { storeSessionCommandRpcResult } from "../services/session-command-rpc.js";
+import { readSessionCommandRpcResult, storeSessionCommandRpcResult } from "../services/session-command-rpc.js";
 import * as sessionEventService from "../services/session-event.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
@@ -700,7 +700,8 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
   const REMOTE_INSTANCE = "remote-instance";
 
   /**
-   * How the fake client answers `session:command:finalized`:
+   * How the fake client answers a post-apply disposition
+   * (`session:command:finalized` / `session:command:aborted`):
    * `"released"` — immediate receipt (compliant client);
    * `"refused"` — receipt saying the ref was not the armed generation;
    * `"durable"` — receipt persisted but the wake is lost;
@@ -708,33 +709,59 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
    */
   type FinalizeReceiptMode = "released" | "refused" | "durable" | "drop";
 
+  /** One post-apply disposition frame the route delivered, as the client saw it. */
+  type ObservedDisposition = {
+    phase: "finalized" | "aborted";
+    ref: string;
+    ackRef: string;
+    reason?: string;
+  };
+
   /**
-   * A fake daemon socket that answers the post-finalize signal the way a
+   * A fake daemon socket that answers BOTH post-apply dispositions the way a
    * compliant client does, so a Reset request can complete past
-   * `finalizeTerminatedSession`.
+   * `finalizeTerminatedSession` and — just as importantly — so a Reset that
+   * cannot finalize still gets its abort receipted instead of stalling on the
+   * disposition waiter. `dispositions` records what actually arrived, in order.
    */
   function makeFakeClientSocket(
     app: FastifyInstance,
     clientId: string,
     finalizeReceipt: FinalizeReceiptMode = "released",
   ) {
+    const dispositions: ObservedDisposition[] = [];
     return {
       readyState: 1,
+      dispositions,
       send: vi.fn((raw: string) => {
-        if (finalizeReceipt === "drop") return;
-        let frame: { type?: string; ackRef?: string; agentId?: string; chatId?: string };
+        let frame: {
+          type?: string;
+          ref?: string;
+          ackRef?: string;
+          agentId?: string;
+          chatId?: string;
+          reason?: string;
+        };
         try {
           frame = JSON.parse(raw) as typeof frame;
         } catch {
           return;
         }
-        if (frame.type !== "session:command:finalized" || !frame.ackRef) return;
+        const phase =
+          frame.type === "session:command:finalized"
+            ? ("finalized" as const)
+            : frame.type === "session:command:aborted"
+              ? ("aborted" as const)
+              : null;
+        if (!phase || !frame.ackRef) return;
+        dispositions.push({ phase, ref: String(frame.ref ?? ""), ackRef: frame.ackRef, reason: frame.reason });
+        if (finalizeReceipt === "drop") return;
         const receipt = {
           command: "session:terminate" as const,
           agentId: frame.agentId as string,
           chatId: frame.chatId as string,
           applied: finalizeReceipt !== "refused",
-          phase: "finalized" as const,
+          phase,
         };
         if (finalizeReceipt === "durable") {
           void storeSessionCommandRpcResult(app.db, clientId, frame.ackRef, receipt, LOCAL_INSTANCE);
@@ -1207,6 +1234,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     try {
       const pending = terminateReq(app, admin, agent.uuid, chat.id);
       await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      const terminateRef = (JSON.parse(ws.send.mock.calls[0]?.[0] as string) as { ref: string }).ref;
       // A new addressed message re-activates the session before the ack lands.
       await activityService.upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId);
       await ackSentCommand(ws, admin.clientId);
@@ -1214,7 +1242,82 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.statusCode).toBe(409);
       expect(await readState(app, agent.uuid, chat.id)).toBe("active");
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+
+      // The client TRUTHFULLY applied before this conflict, so its Reset
+      // generation is armed and only an exact receipted disposition can lift
+      // it. Answering 409 without one would leave the chat fenced forever.
+      // The frame carries the terminate ref (so the client can scope the
+      // release) on a separate rendezvous ref (so a late apply-ack wake cannot
+      // settle it), and the request only resolved because the receipt landed —
+      // a dropped receipt fails the request closed instead (see below).
+      expect(ws.dispositions).toEqual([
+        { phase: "aborted", ref: terminateRef, ackRef: expect.any(String), reason: "reactivated" },
+      ]);
+      expect(ws.dispositions[0]?.ackRef).not.toBe(terminateRef);
+      // Aborting lifts the generation only — it must not resurrect the Reset or
+      // disturb the fresh session's state or trace.
+      expect(await readState(app, agent.uuid, chat.id)).toBe("active");
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
     } finally {
+      cleanup(admin, ws);
+    }
+  });
+
+  it("aborts to the ORIGINAL applying client when the agent route moved after the apply", async () => {
+    // The finalize transaction refuses to evict against a moved route (409).
+    // The abort that follows is addressed by the applying client's identity,
+    // not the agent's current route — the replacement client never applied
+    // anything and holds no generation to lift, so redirecting there would both
+    // lie to it and strand the client that really is fenced.
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    const notifySpy = vi.spyOn(app.notifier, "notifyDaemonClientCommand");
+    const replacement = makeFakeClientSocket(app, "cli-replacement");
+    setClientConnection("cli-replacement", replacement as unknown as WebSocket, { wsSessionResetV1: true });
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      const terminateRef = (JSON.parse(ws.send.mock.calls[0]?.[0] as string) as { ref: string }).ref;
+      // Rebind the agent elsewhere, both in the DB route and process-locally,
+      // before the ack lands.
+      const { eq } = await import("drizzle-orm");
+      await app.db.update(agentPresence).set({ instanceId: "elsewhere" }).where(eq(agentPresence.agentId, agent.uuid));
+      await ackSentCommand(ws, admin.clientId);
+      bindAgentToClient("cli-replacement", agent.uuid);
+      const res = await pending;
+      expect(res.statusCode).toBe(409);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+
+      expect(ws.dispositions).toEqual([
+        { phase: "aborted", ref: terminateRef, ackRef: expect.any(String), reason: "route_refused" },
+      ]);
+      // Never redirected to the replacement, and never fanned out blindly.
+      expect(replacement.dispositions).toEqual([]);
+      expect(notifySpy).not.toHaveBeenCalled();
+    } finally {
+      notifySpy.mockRestore();
+      cleanup({ clientId: "cli-replacement" }, replacement);
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fails closed when the applied Reset cannot be finalized AND its abort is never receipted", async () => {
+    // The honest end state: the Reset did not happen and the client may still
+    // be fenced. Reporting the plain conflict here would hide the worse half.
+    const { app, admin, agent, chat, ws } = await setup("suspended", { finalizeReceipt: "drop" });
+    setClientReplyTimeoutMsForTests(80);
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      await activityService.upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId);
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(503);
+      expect(res.json().error).toContain("was not reset");
+      // The abort was attempted exactly once and nothing was evicted.
+      expect(ws.dispositions.map((entry) => entry.phase)).toEqual(["aborted"]);
+      expect(await readState(app, agent.uuid, chat.id)).toBe("active");
+    } finally {
+      setClientReplyTimeoutMsForTests(null);
       cleanup(admin, ws);
     }
   });
@@ -1297,7 +1400,6 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       .update(clients)
       .set({ metadata: { wireCapabilities: { wsSessionTerminateApplyAck: true } } })
       .where(eq(clients.id, admin.clientId));
-    const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
     try {
       const appliedRef = crypto.randomUUID();
       expect(
@@ -1330,25 +1432,95 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     }
   });
 
-  it("fails closed instead of fanning out when the local agent route moved before the finalized send", async () => {
+  it("durable post-apply disposition receipts survive the agent route moving away from the applying client", async () => {
+    // A disposition receipt's authority is the applying CLIENT identity
+    // (`clients.id` + owning instance), not the agent's current route: it says
+    // "this client answered for the generation it armed". Abort exists for
+    // exactly the branches where that route moved after a truthful apply, and
+    // the eviction receipt can arrive after a rebind too, so keeping the route
+    // guard on either would drop the receipt on the socket-owning replica and
+    // fail the Reset request over a fence the client already lifted. Only the
+    // destructive `applied` phase keeps the route + capability guard.
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    const { eq } = await import("drizzle-orm");
+    await app.db.update(agentPresence).set({ instanceId: "elsewhere" }).where(eq(agentPresence.agentId, agent.uuid));
+    try {
+      const receipt = {
+        command: "session:terminate" as const,
+        agentId: agent.uuid,
+        chatId: chat.id,
+        applied: true,
+      };
+      for (const phase of ["aborted", "finalized"] as const) {
+        const ref = crypto.randomUUID();
+        expect(
+          await storeSessionCommandRpcResult(app.db, admin.clientId, ref, { ...receipt, phase }, LOCAL_INSTANCE),
+        ).toBe(true);
+        expect(await readSessionCommandRpcResult(app.db, admin.clientId, ref, phase)).toMatchObject({
+          applied: true,
+          phase,
+        });
+        // A phase mismatch still fails closed, so no disposition receipt can
+        // settle another phase's waiter on the durable fallback path.
+        const otherPhase = phase === "aborted" ? "finalized" : "aborted";
+        expect(await readSessionCommandRpcResult(app.db, admin.clientId, ref, otherPhase)).toBeNull();
+        expect(await readSessionCommandRpcResult(app.db, admin.clientId, ref, "applied")).toBeNull();
+      }
+
+      // The destructive apply-ack still refuses the moved route…
+      expect(
+        await storeSessionCommandRpcResult(
+          app.db,
+          admin.clientId,
+          crypto.randomUUID(),
+          { ...receipt, phase: "applied" },
+          LOCAL_INSTANCE,
+        ),
+      ).toBe(false);
+      // …and client ownership still gates the dispositions themselves.
+      expect(
+        await storeSessionCommandRpcResult(
+          app.db,
+          admin.clientId,
+          crypto.randomUUID(),
+          { ...receipt, phase: "aborted" },
+          "not-this-replica",
+        ),
+      ).toBe(false);
+    } finally {
+      cleanup(admin, ws);
+    }
+  });
+
+  it("delivers the finalized signal to the applying client even when the local agent route moved", async () => {
     // `sendToAgent` follows the process-local binding, so a takeover between
-    // the ack and the post-finalize signal would otherwise deliver to the
-    // wrong client and report success.
+    // the ack and the post-finalize signal used to fail this hand-off closed —
+    // the eviction was durable but the client that armed the fence never heard
+    // about it, and only an operator retry could unstick the chat. Addressing
+    // the ORIGINAL applying `clientId` is both safe (it can only ever reach the
+    // one identity that applied) and live (that identity still owns the fence).
     const { app, admin, agent, chat, ws } = await setup("suspended");
     const notifySpy = vi.spyOn(app.notifier, "notifyDaemonClientCommand");
+    const replacement = makeFakeClientSocket(app, "cli-someone-else");
+    setClientConnection("cli-someone-else", replacement as unknown as WebSocket, { wsSessionResetV1: true });
     try {
       const pending = terminateReq(app, admin, agent.uuid, chat.id);
       await ackSentCommand(ws, admin.clientId);
       bindAgentToClient("cli-someone-else", agent.uuid);
       const res = await pending;
-      expect(res.statusCode).toBe(503);
-      // The eviction itself committed; only the client hand-off failed.
+      expect(res.statusCode).toBe(200);
       expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
-      // Never a blind fan-out after a wrong local send.
+      expect(ws.dispositions).toEqual([
+        { phase: "finalized", ref: expect.any(String), ackRef: expect.any(String), reason: undefined },
+      ]);
+      // The replacement client applied nothing and holds no generation, so it
+      // must never be handed another client's fence release — and there is
+      // still no blind fan-out from the owning replica.
+      expect(replacement.dispositions).toEqual([]);
       expect(notifySpy).not.toHaveBeenCalled();
-      expect(ws.send.mock.calls.some((call) => String(call[0]).includes("session:command:finalized"))).toBe(false);
     } finally {
       notifySpy.mockRestore();
+      cleanup({ clientId: "cli-someone-else" }, replacement);
       cleanup(admin, ws);
     }
   });
@@ -1405,12 +1577,23 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     const clearSpy = vi.spyOn(sessionEventService, "clearEvents").mockRejectedValueOnce(new Error("delete failed"));
     try {
       const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
+      const terminateRef = (JSON.parse(ws.send.mock.calls[0]?.[0] as string) as { ref: string }).ref;
       await ackSentCommand(ws, admin.clientId);
       const res = await pending;
       expect(res.statusCode).toBe(500);
       // Rollback: not evicted, events intact — a later retry can still converge.
       expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+      // The client had already applied, so the failure response is not the end
+      // of this server's obligations: the armed generation is aborted and
+      // receipted first. Answering 500 with no wire outcome at all is what left
+      // the chat fenced behind a generation nobody would lift.
+      expect(ws.dispositions).toEqual([
+        { phase: "aborted", ref: terminateRef, ackRef: expect.any(String), reason: "cleanup_failed" },
+      ]);
+      // No `finalized` may ever claim an eviction that rolled back.
+      expect(ws.dispositions.some((entry) => entry.phase === "finalized")).toBe(false);
     } finally {
       clearSpy.mockRestore();
       cleanup(admin, ws);

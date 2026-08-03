@@ -265,6 +265,70 @@ export const sessionCommandFinalizedAckFrameSchema = z.object({
 });
 export type SessionCommandFinalizedAckFrame = z.infer<typeof sessionCommandFinalizedAckFrameSchema>;
 
+/**
+ * Why a Reset generation is being lifted WITHOUT a durable eviction:
+ *
+ *   - `reactivated`    — `finalizeTerminatedSession` did not commit `evicted`
+ *                        (a new addressed message re-activated the session
+ *                        while the apply-ack was in flight);
+ *   - `route_refused`  — the last-in-transaction route revalidation refused
+ *                        the eviction after the client had already applied;
+ *   - `cleanup_failed` — the atomic evict + trace-clear transaction threw, so
+ *                        nothing was committed.
+ */
+export const sessionCommandAbortReasonSchema = z.enum(["reactivated", "route_refused", "cleanup_failed"]);
+export type SessionCommandAbortReason = z.infer<typeof sessionCommandAbortReasonSchema>;
+
+/**
+ * Server→Client terminal disposition for a ref'd Reset terminate the client
+ * TRUTHFULLY applied but the server could not finalize. It mirrors
+ * {@link sessionCommandFinalizedFrameSchema} because the client's obligation is
+ * identical: once `session:command:applied` with `applied: true` is accepted,
+ * the client's Reset generation is armed and only an exact, receipted
+ * disposition for that `ref` can lift it. Without this frame a server branch
+ * that throws (reactivation, route refusal, cleanup failure) would return an
+ * HTTP error and leave the chat fenced forever.
+ *
+ * Aborting does NOT restore the retired provider mapping or the old session —
+ * that mapping is durably gone the moment the client acked. It only lifts that
+ * exact generation, so the durable unACKed row recovers once on the same
+ * socket into a fresh nonce-derived provider session.
+ *
+ * The frame is addressed to the ORIGINAL applying client identity, not the
+ * agent's current route: abort exists precisely for the case where the route
+ * moved or the session re-activated after a truthful apply.
+ */
+export const sessionCommandAbortedFrameSchema = z.object({
+  type: z.literal("session:command:aborted"),
+  ref: z.string().min(1),
+  ackRef: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1),
+  command: z.literal("session:terminate"),
+  reason: sessionCommandAbortReasonSchema,
+});
+export type SessionCommandAbortedFrame = z.infer<typeof sessionCommandAbortedFrameSchema>;
+
+/**
+ * Client→Server receipt for {@link sessionCommandAbortedFrameSchema}, the exact
+ * counterpart of {@link sessionCommandFinalizedAckFrameSchema}. The Reset HTTP
+ * request stays open until this lands, so a lost abort signal fails the request
+ * closed instead of silently leaving the client parked. `released: false` is
+ * the honest answer for a stale, foreign, or superseded ref — such a ref must
+ * never lift a newer generation.
+ */
+export const sessionCommandAbortedAckFrameSchema = z.object({
+  type: z.literal("session:command:aborted:ack"),
+  ref: z.string().min(1),
+  ackRef: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1),
+  command: z.literal("session:terminate"),
+  /** False when the ref did not match a locally armed Reset generation. */
+  released: z.boolean(),
+});
+export type SessionCommandAbortedAckFrame = z.infer<typeof sessionCommandAbortedAckFrameSchema>;
+
 export const sessionEventAcceptedFrameSchema = z.object({
   type: z.literal("session:event:accepted"),
   ref: z.string().min(1),

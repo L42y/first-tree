@@ -28,10 +28,12 @@ import {
   type RuntimeState,
   runtimeAuthStartCommandSchema,
   type ServerWelcomeFrame,
+  type SessionCommandAbortedFrame,
   type SessionCommandFinalizedFrame,
   type SessionEvent,
   type SessionState,
   serverWelcomeFrameSchema,
+  sessionCommandAbortedFrameSchema,
   sessionCommandFinalizedFrameSchema,
   sessionEventAcceptedFrameSchema,
   sessionEventRejectedFrameSchema,
@@ -254,6 +256,15 @@ type ClientConnectionEvents = {
    * recovery may release only after this frame.
    */
   "session:command:finalized": [frame: SessionCommandFinalizedFrame];
+  /**
+   * Server gave up on a Reset it had already accepted `session:command:applied`
+   * for: the eviction never committed (the session re-activated, the route was
+   * refused, or the cleanup transaction rolled back). The armed generation must
+   * still be released — the local provider session is gone either way — so this
+   * frame lifts exactly that generation's fence and is receipted like
+   * `session:command:finalized`.
+   */
+  "session:command:aborted": [frame: SessionCommandAbortedFrame];
   "runtime-auth:start": [command: RuntimeAuthCommand];
   "provider-models:list": [command: ProviderModelsListCommand];
   "session:reconcile:result": [result: SessionReconcileResult];
@@ -1239,10 +1250,42 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     command: "session:terminate";
     released: boolean;
   }): void {
+    this.sendSessionCommandDispositionAck("session:command:finalized:ack", input);
+  }
+
+  /**
+   * Receipt for `session:command:aborted` — the exact counterpart of
+   * {@link reportSessionCommandFinalizedAck} for a Reset the server accepted the
+   * apply for but could not finalize. The server holds the Reset HTTP request
+   * open until this lands, so it is sent after the release decision for that ref
+   * is made, `released: false` included.
+   */
+  reportSessionCommandAbortedAck(input: {
+    ref: string;
+    ackRef: string;
+    agentId: string;
+    chatId: string;
+    command: "session:terminate";
+    released: boolean;
+  }): void {
+    this.sendSessionCommandDispositionAck("session:command:aborted:ack", input);
+  }
+
+  private sendSessionCommandDispositionAck(
+    type: "session:command:finalized:ack" | "session:command:aborted:ack",
+    input: {
+      ref: string;
+      ackRef: string;
+      agentId: string;
+      chatId: string;
+      command: "session:terminate";
+      released: boolean;
+    },
+  ): void {
     if (!this.canSendAgentFrame(input.agentId) || !this.ws) return;
     this.ws.send(
       JSON.stringify({
-        type: "session:command:finalized:ack",
+        type,
         ref: input.ref,
         ackRef: input.ackRef,
         agentId: input.agentId,
@@ -1857,6 +1900,19 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         return;
       }
       this.emit("session:command:finalized", parsed.data);
+      return;
+    }
+
+    if (type === "session:command:aborted") {
+      const parsed = sessionCommandAbortedFrameSchema.safeParse(msg);
+      if (!parsed.success) {
+        this.wsLogger.warn(
+          { issues: parsed.error.issues.map((i) => i.message) },
+          "ignoring malformed session:command:aborted frame",
+        );
+        return;
+      }
+      this.emit("session:command:aborted", parsed.data);
       return;
     }
 

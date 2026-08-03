@@ -88,6 +88,18 @@ surface, skills projection, or provider supervisor changes.
   answered `released: false` and releases nothing. A stale-reconcile terminate carries no generation and must not
   release an armed one. When a finalize path is lost, the operator's retried Reset (a NEW terminate ref) is what
   releases the row parked by the abandoned attempt — exactly once, on the same socket.
+- Post-apply disposition boundary: once `session:command:applied` reports `applied: true`, the provider session is
+  already gone, so every Server outcome for that terminate ref must reach a terminal wire disposition before the
+  operator's HTTP result. A durable eviction sends `session:command:finalized`; a Server exit that does not commit the
+  eviction (the addressed row re-activating the chat inside the ACK/finalize window, a refused route, a rolled-back
+  cleanup) sends `session:command:aborted` with its reason. An abort lifts only that exact generation: it never restores
+  the retired provider mapping or the discarded transcript, and the row it releases must still enter one fresh
+  nonce-derived Pi identity through a single same-socket recovery — no extra Pause/Reset, no reconnect, no no-progress
+  circuit. Before that exact disposition arrives nothing may start/resume/inject, recover, or ACK. Both dispositions
+  carry the same generation authority as `finalized`: duplicates are idempotent, and a stale, superseded, or
+  foreign-agent ref is answered `released: false` and lifts nothing. Delivery and receipt are scoped to the Client
+  identity that applied, so a route change after the apply still converges instead of stranding the fence, and a
+  disposition whose receipt never lands fails the operator's Reset closed rather than reporting success.
 - Reset protocol version: Reset is offered and accepted only when client and server both advertise the composite
   `wsSessionResetV1` capability (welcome before `auth:ok`, answered in `client:register`). A client that declares only
   the legacy apply-only flag is refused with 503 before anything destructive is applied, and a current client never
@@ -129,7 +141,9 @@ clean supported install, missing forced `PI_SKIP_VERSION_CHECK=1` / `PI_TELEMETR
 treating `agent_end` as settlement, hanging on credential preflight or corrupted JSONL, silent non-empty MCP acceptance,
 unsafe side-effect replay, auto-resending a timed-out prompt as pre-provider, terminal failure consumed before its
 durable notice, a message admitted between Reset `applied` and `finalized`, a `finalized` receipt that claims a
-release the client did not perform, a Reset offered across mismatched protocol versions, or a client switch authorized
+release the client did not perform, a truthfully applied Reset whose Server outcome returns with no receipted
+`finalized` or `aborted` disposition (leaving the chat fenced), an abort that restores the retired provider session or
+lifts a newer generation, a Reset offered across mismatched protocol versions, or a client switch authorized
 by child registry alone.
 
 `BLOCKED` means a compatible CLI, provider login/entitlement/network, isolated platform bridge, owner-reviewed Windows

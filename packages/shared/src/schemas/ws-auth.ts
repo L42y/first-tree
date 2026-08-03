@@ -110,12 +110,16 @@ export const serverCapabilitiesSchema = z
     wsSessionEventConfirm: z.boolean().default(false),
     /**
      * Version 1 of the COMPOSITE chat-session Reset protocol: the ref'd
-     * `session:terminate` apply-ack AND the post-finalize handshake
-     * (`session:command:finalized` on the exact client route, request held
-     * open until the client's `session:command:finalized:ack` receipt lands).
-     * The two halves are one indivisible capability — a peer that implements
-     * only the apply-ack cannot participate at all, because the client parks
-     * inbox rows behind a fence that only the finalize signal lifts.
+     * `session:terminate` apply-ack AND the post-apply disposition handshake
+     * on the exact applying client route, with the request held open until the
+     * client's receipt lands. The disposition is `session:command:finalized` /
+     * `session:command:finalized:ack` when the eviction committed durably, and
+     * `session:command:aborted` / `session:command:aborted:ack` when the server
+     * could not finalize (reactivation, route refusal, cleanup failure). All of
+     * it is one indivisible capability — a peer that implements only the
+     * apply-ack, or only the finalized disposition, cannot participate at all,
+     * because the client parks inbox rows behind a fence that only an exact
+     * receipted disposition lifts.
      *
      * This is the server half of a two-sided negotiation. A client must NOT
      * declare `wsSessionResetV1` unless it saw this flag, and must not fall

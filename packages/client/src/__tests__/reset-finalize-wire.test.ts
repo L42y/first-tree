@@ -31,7 +31,11 @@ import { SessionRegistry } from "../runtime/session-registry.js";
  *     operator's real recovery — a retried Reset with a NEW terminate ref;
  *  5. a clean Reset with no preexisting debt still fences the window between
  *     `applied` and `finalized`, so a row arriving there parks instead of
- *     entering the session the Reset just destroyed.
+ *     entering the session the Reset just destroyed;
+ *  6. an applied Reset the server could NOT finalize (the reactivation race)
+ *     still reaches a terminal wire outcome: the receipted `aborted`
+ *     disposition lifts exactly that generation once, so the fenced row enters
+ *     a fresh nonce-derived session instead of sitting behind a fence forever.
  */
 
 const AGENT_ID = "11111111-2222-4333-8444-555555555555";
@@ -49,6 +53,7 @@ type InboxRow = {
 
 type AppliedFrame = { ref: string; applied: boolean };
 type ReceiptFrame = { ref: string; ackRef: string; released: boolean };
+type AbortReceiptFrame = ReceiptFrame;
 
 /**
  * Minimal but route-faithful First Tree server: the HTTP surface `AgentSlot`
@@ -61,6 +66,7 @@ class FakeServer {
   readonly trace: string[] = [];
   readonly applied: AppliedFrame[] = [];
   readonly receipts: ReceiptFrame[] = [];
+  readonly abortReceipts: AbortReceiptFrame[] = [];
   readonly recovers: string[] = [];
   registerCapabilities: Record<string, unknown> = {};
   connections = 0;
@@ -155,6 +161,30 @@ class FakeServer {
       chatId: CHAT_ID,
       command: "session:terminate",
       state: "evicted",
+    });
+  }
+
+  /**
+   * The other terminal disposition: the client applied truthfully but the
+   * server could not commit the eviction (a re-activated row, a refused route,
+   * a rolled-back cleanup), so it lifts that exact generation instead. Same
+   * exact-route, same-ref, own-rendezvous shape as `sendFinalized`.
+   */
+  sendAborted(
+    ref: string,
+    ackRef: string,
+    reason: "reactivated" | "route_refused" | "cleanup_failed" = "reactivated",
+    agentId: string = AGENT_ID,
+  ): void {
+    this.trace.push("aborted:sent");
+    this.send({
+      type: "session:command:aborted",
+      ref,
+      ackRef,
+      agentId,
+      chatId: CHAT_ID,
+      command: "session:terminate",
+      reason,
     });
   }
 
@@ -330,6 +360,14 @@ class FakeServer {
       case "session:command:finalized:ack":
         this.trace.push(`receipt:${msg.released === true}`);
         this.receipts.push({
+          ref: msg.ref as string,
+          ackRef: msg.ackRef as string,
+          released: msg.released === true,
+        });
+        return;
+      case "session:command:aborted:ack":
+        this.trace.push(`abort-receipt:${msg.released === true}`);
+        this.abortReceipts.push({
           ref: msg.ref as string,
           ackRef: msg.ackRef as string,
           released: msg.released === true,
@@ -580,6 +618,134 @@ describe("Reset finalize handshake — wire level", () => {
     expect(server.receipts.at(-1)).toEqual({ ref: "ref-c", ackRef: "ack-c-late", released: false });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(server.recovers).toHaveLength(2);
+    expect(server.noProgressCircuitOpen).toBe(false);
+  }, 30_000);
+
+  it("releases an applied Reset the server could not finalize, through the receipted abort", async () => {
+    const { server, home, starts, injects, setShutdownGate } = await bootWireHarness();
+
+    // ── Baseline turn: the chat has a live provider session ────────────────
+    server.seed({ entryId: 1, messageId: "msg-abort-baseline", content: "hello" });
+    server.deliver(1);
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(1), { timeout: 5_000 });
+    expect(starts).toHaveLength(1);
+
+    // ── The Reset applies truthfully, with a row landing during the drain ──
+    // Production shape for the server's reactivation race: the addressed row
+    // arrives inside the ACK/finalize window, which is exactly what flips the
+    // session row back to `active` and makes `finalizeTerminatedSession` refuse
+    // to evict. The client has already destroyed its provider session by then.
+    let releaseShutdown: (() => void) | undefined;
+    setShutdownGate(
+      new Promise<void>((resolve) => {
+        releaseShutdown = resolve;
+      }),
+    );
+    server.sendTerminate("ref-abort");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    server.seed({ entryId: 2, messageId: "msg-reactivating", content: "arrived during the ack window" });
+    server.deliver(2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseShutdown?.();
+    setShutdownGate(null);
+    await vi.waitFor(() => expect(server.applied).toHaveLength(1), { timeout: 5_000 });
+    expect(server.applied[0]).toEqual({ ref: "ref-abort", applied: true });
+
+    // ── Before the exact abort: absolutely nothing moves ───────────────────
+    // The server is about to answer the operator 409. Without a terminal wire
+    // outcome the chat would sit here forever — that is the regression.
+    server.deliver(2);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(server.recovers).toHaveLength(0);
+    expect(starts).toHaveLength(1);
+    expect(injects).toEqual([]);
+    expect(server.ackedRows()).toEqual([1]);
+    expect(server.noProgressCircuitOpen).toBe(false);
+
+    // ── A stale/foreign/unknown ref must not lift this generation ──────────
+    server.sendAborted("ref-not-mine", "ack-stale");
+    server.sendAborted("ref-abort", "ack-foreign", "reactivated", "99999999-2222-4333-8444-555555555555");
+    await vi.waitFor(() => expect(server.abortReceipts).toHaveLength(1), { timeout: 5_000 });
+    expect(server.abortReceipts[0]).toEqual({ ref: "ref-not-mine", ackRef: "ack-stale", released: false });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The foreign agent's frame is not this slot's to answer at all.
+    expect(server.abortReceipts).toHaveLength(1);
+    expect(server.recovers).toHaveLength(0);
+    expect(server.ackedRows()).toEqual([1]);
+
+    // ── The exact abort releases once, into a fresh nonce-derived session ──
+    server.sendAborted("ref-abort", "ack-abort");
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(2), { timeout: 5_000 });
+    expect(server.abortReceipts.at(-1)).toEqual({ ref: "ref-abort", ackRef: "ack-abort", released: true });
+    expect(server.recovers).toHaveLength(1);
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.messageId).toBe("msg-reactivating");
+    // No extra Pause/Reset/reconnect was needed, and repeated fenced
+    // redelivery never opened the server's no-progress circuit.
+    expect(server.applied).toHaveLength(1);
+    expect(server.connections).toBe(1);
+    expect(server.noProgressCircuitOpen).toBe(false);
+
+    // Abort lifted the generation; it did NOT restore the retired provider
+    // session. The recovered row entered a fresh nonce-derived identity with the
+    // old mapping still gone.
+    const registry = JSON.parse(readFileSync(join(home, "data", "sessions", "wire-agent.json"), "utf-8")) as {
+      entries: Record<string, { claudeSessionId: string }>;
+      freshStartNonces?: Record<string, string>;
+    };
+    const nonce = registry.freshStartNonces?.[CHAT_ID];
+    expect(nonce).toBeTruthy();
+    expect(starts[1]?.freshStartNonce).toBe(nonce);
+    expect(starts[0]?.freshStartNonce).not.toBe(nonce);
+    expect(injects).toEqual([]);
+
+    const traceAfterReset = server.trace.filter((event) => !event.startsWith("ack:"));
+    expect(traceAfterReset).toEqual([
+      "applied:true",
+      "aborted:sent",
+      "aborted:sent",
+      "abort-receipt:false",
+      "aborted:sent",
+      "recover",
+      "abort-receipt:true",
+    ]);
+
+    // ── A duplicate abort is idempotent; a finalized frame for the same
+    //    already-released generation is too — neither recovers twice ────────
+    server.sendAborted("ref-abort", "ack-abort-late");
+    await vi.waitFor(() => expect(server.abortReceipts).toHaveLength(3), { timeout: 5_000 });
+    expect(server.abortReceipts.at(-1)).toEqual({ ref: "ref-abort", ackRef: "ack-abort-late", released: true });
+    server.sendFinalized("ref-abort", "ack-crossed");
+    await vi.waitFor(() => expect(server.receipts).toHaveLength(1), { timeout: 5_000 });
+    expect(server.receipts[0]).toEqual({ ref: "ref-abort", ackRef: "ack-crossed", released: true });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(server.recovers).toHaveLength(1);
+    expect(server.noProgressCircuitOpen).toBe(false);
+
+    // ── A later genuine Reset still works, and the abandoned ref cannot lift
+    //    the NEW generation ───────────────────────────────────────────────
+    server.send({ type: "session:suspend", agentId: AGENT_ID, chatId: CHAT_ID });
+    server.sendTerminate("ref-after-abort");
+    await vi.waitFor(() => expect(server.applied).toHaveLength(2), { timeout: 5_000 });
+    expect(server.applied[1]).toEqual({ ref: "ref-after-abort", applied: true });
+    server.seed({ entryId: 3, messageId: "msg-after-abort", content: "queued behind the new generation" });
+    server.deliver(3);
+    server.sendAborted("ref-abort", "ack-superseded");
+    await vi.waitFor(() => expect(server.abortReceipts).toHaveLength(4), { timeout: 5_000 });
+    expect(server.abortReceipts.at(-1)).toEqual({ ref: "ref-abort", ackRef: "ack-superseded", released: false });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(server.recovers).toHaveLength(1);
+    expect(server.ackedRows()).not.toContain(3);
+
+    server.sendFinalized("ref-after-abort", "ack-after-abort");
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(3), { timeout: 5_000 });
+    expect(server.receipts.at(-1)).toEqual({
+      ref: "ref-after-abort",
+      ackRef: "ack-after-abort",
+      released: true,
+    });
+    expect(server.recovers).toHaveLength(2);
+    expect(server.connections).toBe(1);
     expect(server.noProgressCircuitOpen).toBe(false);
   }, 30_000);
 

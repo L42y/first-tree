@@ -207,12 +207,16 @@ export const SESSION_COMMAND_RPC_MAX_ENTRIES = 20;
 const REF_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Which half of the Reset handshake an entry records. `applied` is the
- * pre-finalize apply-ack; `finalized` is the client's post-finalize receipt,
- * stored under its own rendezvous ref so the two can never satisfy each
- * other's waiter. Legacy entries without the field read back as `applied`.
+ * Which phase of the Reset handshake an entry records. `applied` is the
+ * pre-finalize apply-ack; `finalized` and `aborted` are the two mutually
+ * exclusive post-apply dispositions the client receipts (durable eviction vs a
+ * Reset the server could not finalize). Each is stored under its own
+ * rendezvous ref so no two can satisfy each other's waiter. Legacy entries
+ * without the field read back as `applied`.
  */
-export type SessionCommandRpcPhase = "applied" | "finalized";
+export type SessionCommandRpcPhase = "applied" | "finalized" | "aborted";
+
+const RPC_PHASES: readonly SessionCommandRpcPhase[] = ["applied", "finalized", "aborted"];
 
 export type SessionCommandRpcResult = {
   command: "session:terminate";
@@ -236,7 +240,7 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
   ) {
     return null;
   }
-  if (row.phase !== undefined && row.phase !== "applied" && row.phase !== "finalized") return null;
+  if (row.phase !== undefined && !RPC_PHASES.includes(row.phase as SessionCommandRpcPhase)) return null;
   const storedMs = Date.parse(row.storedAt);
   if (!Number.isFinite(storedMs) || Date.now() - storedMs >= SESSION_COMMAND_RPC_MAX_AGE_MS) return null;
   return {
@@ -256,18 +260,22 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
  * (takeover), the agent's route moved, or the row is gone. Physically prunes
  * aged/excess refs in the same statement.
  *
- * The `applied` phase additionally requires the CURRENTLY registered
- * `wsSessionResetV1` capability. That half of the handshake is the
- * destructive one — persisting it is what lets an HTTP waiter conclude the
- * provider mapping is gone and go on to evict — so a legacy build that
- * re-registered under the same client/instance since the preflight must not
- * be able to satisfy it.
+ * The `applied` phase is the ONLY one guarded on the agent route and the
+ * CURRENTLY registered `wsSessionResetV1` capability. It is the destructive
+ * half — persisting it is what lets an HTTP waiter conclude the provider
+ * mapping is gone and go on to evict — so neither a legacy build that
+ * re-registered under the same client/instance since the preflight nor a moved
+ * agent route may satisfy it.
  *
- * The `finalized` phase deliberately stays identity-only. It is a post-apply
- * receipt from a client that already proved v1 by applying, and it only
- * releases that client's own parked rows; failing it closed on a capability
- * flag that flipped between apply and receipt would strand a genuinely
- * capable client behind a fence with the session already evicted.
+ * Both post-apply disposition phases (`finalized`, `aborted`) are scoped to
+ * CLIENT IDENTITY instead: `clients.id` plus the owning `instance_id`, with no
+ * agent-route or capability condition. Their authority is "this client answered
+ * for the generation it armed", which the agent's current route says nothing
+ * about, and their whole purpose is to lift that client's own fence. Guarding
+ * them on the route would refuse the receipt in exactly the situations the
+ * dispositions exist for — a route that moved or a session that re-activated
+ * after a truthful apply — leaving a genuinely capable client fenced over a
+ * session it can no longer reach.
  */
 export async function storeSessionCommandRpcResult(
   db: Database,
@@ -312,9 +320,9 @@ export async function storeSessionCommandRpcResult(
       and(
         eq(clients.id, clientId),
         eq(clients.instanceId, expectedInstanceId),
-        agentRouteGuardSql(result.agentId, clientId, expectedInstanceId, {
-          requireSessionResetV1: phase === "applied",
-        }),
+        phase === "applied"
+          ? agentRouteGuardSql(result.agentId, clientId, expectedInstanceId, { requireSessionResetV1: true })
+          : undefined,
       ),
     )
     .returning({ id: clients.id });
