@@ -26,39 +26,10 @@
  * Run: DATABASE_URL=... pnpm --filter @first-tree/server tsx scripts/audit-shared-context-tree-repos.ts
  */
 
+import { pathToFileURL } from "node:url";
 import { sql } from "drizzle-orm";
 import { connectDatabase } from "../src/db/connection.js";
-import { contextTreeRepoOwnershipIdentity } from "../src/services/org-settings.js";
-
-type BindingRow = {
-  organization_id: string;
-  display_name: string | null;
-  repo: string | null;
-  instance_origin: string | null;
-};
-
-type SharedRepo = {
-  identity: string;
-  teams: Array<{ organizationId: string; displayName: string; repo: string }>;
-};
-
-function groupBySharedRepo(rows: BindingRow[]): SharedRepo[] {
-  const byIdentity = new Map<string, SharedRepo>();
-  for (const row of rows) {
-    const identity = contextTreeRepoOwnershipIdentity(row.repo, row.instance_origin);
-    if (!identity || !row.repo) continue;
-    const entry = byIdentity.get(identity) ?? { identity, teams: [] };
-    entry.teams.push({
-      organizationId: row.organization_id,
-      displayName: row.display_name ?? "",
-      repo: row.repo,
-    });
-    byIdentity.set(identity, entry);
-  }
-  return [...byIdentity.values()]
-    .filter((entry) => entry.teams.length > 1)
-    .sort((a, b) => b.teams.length - a.teams.length);
-}
+import { auditBindings, type BindingRow } from "../src/services/context-tree-binding-audit.js";
 
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL;
@@ -84,13 +55,8 @@ async function main(): Promise<void> {
       ORDER BY s.organization_id
     `);
 
-    const shared = groupBySharedRepo([...rows]);
-    if (shared.length === 0) {
-      console.log("No Context Tree repo is bound to more than one team.");
-      return;
-    }
+    const { shared, unresolved } = auditBindings([...rows]);
 
-    console.log(`${shared.length} Context Tree repo(s) bound to more than one team:\n`);
     for (const entry of shared) {
       console.log(`${entry.identity}  (${entry.teams.length} teams)`);
       for (const team of entry.teams) {
@@ -98,16 +64,36 @@ async function main(): Promise<void> {
       }
       console.log("");
     }
-    console.log(
-      "Each of these needs an owner decision: which team keeps the tree, and where the others' context goes.",
-    );
+    if (shared.length > 0) {
+      console.log(`${shared.length} Context Tree repo(s) bound to more than one team.`);
+      console.log("Each needs an owner decision: which team keeps the tree, and where the others' context goes.\n");
+    }
+
+    if (unresolved.length > 0) {
+      console.log(`${unresolved.length} binding(s) whose forge could not be established:\n`);
+      for (const team of unresolved) {
+        console.log(`  - ${team.organizationId}  ${team.displayName}  ${team.repo}`);
+      }
+      console.log("\nThese were not compared against anything, so this run cannot tell you whether they are shared.");
+      console.log("Resolve them — connect the owning team's forge, or correct the binding — and run again.");
+    }
+
+    if (shared.length === 0 && unresolved.length === 0) {
+      console.log("No Context Tree repo is bound to more than one team, and every binding resolved.");
+      return;
+    }
+
     process.exitCode = 1;
   } finally {
     await db.end();
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exitCode = 1;
-});
+// Importing this module for its pure helpers must not open a database
+// connection, so only a direct run performs the audit.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
+}
