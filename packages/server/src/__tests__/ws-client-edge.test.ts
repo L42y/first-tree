@@ -120,14 +120,25 @@ describe("Agent client WS edge protocol coverage", () => {
     return ws;
   }
 
-  async function openRegisteredSocket(seed: {
-    userId: string;
-    memberId: string;
-    organizationId: string;
-    clientId: string;
-  }): Promise<WebSocket> {
+  async function openRegisteredSocket(
+    seed: {
+      userId: string;
+      memberId: string;
+      organizationId: string;
+      clientId: string;
+    },
+    wireCapabilities?: Record<string, boolean>,
+  ): Promise<WebSocket> {
     const ws = await openAuthenticatedSocket(await signAccess(seed.userId, seed.memberId, seed.organizationId));
-    ws.send(JSON.stringify({ type: "client:register", clientId: seed.clientId, hostname: "edge-host", os: "linux" }));
+    ws.send(
+      JSON.stringify({
+        type: "client:register",
+        clientId: seed.clientId,
+        hostname: "edge-host",
+        os: "linux",
+        ...(wireCapabilities ? { wireCapabilities } : {}),
+      }),
+    );
     await waitForFrame(ws, (message) => (message as { type?: string }).type === "client:registered");
     return ws;
   }
@@ -1520,7 +1531,7 @@ describe("Agent client WS edge protocol coverage", () => {
     // before forwarding the ref'd terminate.
     const seed = await createAdminContext(app, { username: `ws-fanout-${crypto.randomUUID().slice(0, 8)}` });
     const agent = await createPinnedAgent({ ...seed, suffix: "fanout" });
-    const ws = await openRegisteredSocket(seed);
+    const ws = await openRegisteredSocket(seed, { wsSessionResetV1: true });
 
     try {
       await expect(bindAgent(ws, agent.uuid, "bind-fanout")).resolves.toMatchObject({ type: "agent:bound" });
@@ -1582,6 +1593,147 @@ describe("Agent client WS edge protocol coverage", () => {
       await closeSocket(ws);
     }
   });
+
+  it("drops a fanned-out session:terminate after a same-client, same-instance capability downgrade", async () => {
+    // The identity checks are useless against this shape: the clientId, the
+    // instance, the presence route and the process-local binding are all
+    // unchanged — only the advertised Reset capability moved, because
+    // `client:register` replaces `wireCapabilities` wholesale. Both halves of
+    // the guard are exercised: the DB route's registered capability, and the
+    // live socket the owning process holds.
+    const seed = await createAdminContext(app, { username: `ws-fanout-cap-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "fanout-cap" });
+    const v1Metadata = { wireCapabilities: { wsSessionResetV1: true } };
+
+    function fanOutTerminate(ref: string, chatId: string): Promise<void> {
+      return app.notifier.notifyDaemonClientCommand({
+        type: "session:terminate",
+        clientId: seed.clientId,
+        agentId: agent.uuid,
+        chatId,
+        ref,
+        targetInstanceId: "test-instance",
+      });
+    }
+
+    async function expectNoTerminate(ws: WebSocket, fanOut: () => Promise<void>): Promise<void> {
+      const frames: unknown[] = [];
+      const collector = (raw: WebSocket.RawData) => frames.push(JSON.parse(String(raw)));
+      ws.on("message", collector);
+      await fanOut();
+      ws.send(JSON.stringify({ type: "heartbeat" }));
+      await waitForFrame(ws, (message) => (message as { type?: string }).type === "heartbeat:ack");
+      await new Promise((r) => setTimeout(r, 300));
+      ws.off("message", collector);
+      expect(frames.filter((f) => (f as { type?: string }).type === "session:terminate")).toEqual([]);
+    }
+
+    // (1) The DB route no longer carries the composite flag; the live socket
+    // still advertises it.
+    const staleDbWs = await openRegisteredSocket(seed, { wsSessionResetV1: true });
+    try {
+      await expect(bindAgent(staleDbWs, agent.uuid, "bind-cap-db")).resolves.toMatchObject({ type: "agent:bound" });
+      await app.db
+        .update(clients)
+        .set({ metadata: { wireCapabilities: { wsSessionTerminateApplyAck: true } } })
+        .where(eq(clients.id, seed.clientId));
+      await expectNoTerminate(staleDbWs, () => fanOutTerminate("550e8400-e29b-41d4-a716-446655440050", "chat-cap-db"));
+    } finally {
+      await closeSocket(staleDbWs);
+    }
+
+    // (2) The owning process's live socket re-registered without the flag,
+    // while the DB row is (re)written back to v1 — only the socket is legacy.
+    const legacySocketWs = await openRegisteredSocket(seed, { wsSessionTerminateApplyAck: true });
+    try {
+      await expect(bindAgent(legacySocketWs, agent.uuid, "bind-cap-live")).resolves.toMatchObject({
+        type: "agent:bound",
+      });
+      await app.db.update(clients).set({ metadata: v1Metadata }).where(eq(clients.id, seed.clientId));
+      await expectNoTerminate(legacySocketWs, () =>
+        fanOutTerminate("550e8400-e29b-41d4-a716-446655440051", "chat-cap-live"),
+      );
+    } finally {
+      await closeSocket(legacySocketWs);
+    }
+
+    // (3) Positive control — the same clientId reconnecting while still
+    // advertising v1 keeps receiving the command.
+    const currentWs = await openRegisteredSocket(seed, { wsSessionResetV1: true });
+    try {
+      await expect(bindAgent(currentWs, agent.uuid, "bind-cap-ok")).resolves.toMatchObject({ type: "agent:bound" });
+      await fanOutTerminate("550e8400-e29b-41d4-a716-446655440052", "chat-cap-ok");
+      await expect(
+        waitForFrame(currentWs, (message) => (message as { type?: string }).type === "session:terminate"),
+      ).resolves.toMatchObject({
+        type: "session:terminate",
+        agentId: agent.uuid,
+        chatId: "chat-cap-ok",
+        ref: "550e8400-e29b-41d4-a716-446655440052",
+      });
+    } finally {
+      await closeSocket(currentWs);
+    }
+  }, 30000);
+
+  it("ignores an apply-ack from a socket that re-registered without the composite Reset capability", async () => {
+    // The ack is what lets the HTTP waiter conclude the provider mapping is
+    // gone and evict, so a legacy replacement on the same clientId must not
+    // be able to resolve the waiter or leave a durable result behind.
+    const seed = await createAdminContext(app, { username: `ws-cap-ack-${crypto.randomUUID().slice(0, 8)}` });
+    const agent = await createPinnedAgent({ ...seed, suffix: "cap-ack" });
+    const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+
+    const legacyWs = await openRegisteredSocket(seed, { wsSessionTerminateApplyAck: true });
+    const legacyRef = "550e8400-e29b-41d4-a716-446655440060";
+    try {
+      await expect(bindAgent(legacyWs, agent.uuid, "bind-cap-ack-legacy")).resolves.toMatchObject({
+        type: "agent:bound",
+      });
+      const waiter = connectionManager.waitForClientReply(seed.clientId, legacyRef, 500);
+      waiter.catch(() => undefined);
+      legacyWs.send(
+        JSON.stringify({
+          type: "session:command:applied",
+          ref: legacyRef,
+          agentId: agent.uuid,
+          chatId: "chat-cap-ack",
+          command: "session:terminate",
+          applied: true,
+        }),
+      );
+      await expect(waiter).rejects.toThrow();
+      expect(await readSessionCommandRpcResult(app.db, seed.clientId, legacyRef)).toBeNull();
+    } finally {
+      await closeSocket(legacyWs);
+    }
+
+    // Positive control: the same client back on v1 acks normally again.
+    const currentWs = await openRegisteredSocket(seed, { wsSessionResetV1: true });
+    const currentRef = "550e8400-e29b-41d4-a716-446655440061";
+    try {
+      await expect(bindAgent(currentWs, agent.uuid, "bind-cap-ack-v1")).resolves.toMatchObject({
+        type: "agent:bound",
+      });
+      const waiter = connectionManager.waitForClientReply(seed.clientId, currentRef);
+      currentWs.send(
+        JSON.stringify({
+          type: "session:command:applied",
+          ref: currentRef,
+          agentId: agent.uuid,
+          chatId: "chat-cap-ack",
+          command: "session:terminate",
+          applied: true,
+        }),
+      );
+      await expect(waiter).resolves.toMatchObject({ ref: currentRef, agentId: agent.uuid, applied: true });
+      await vi.waitFor(async () => {
+        expect(await readSessionCommandRpcResult(app.db, seed.clientId, currentRef)).toMatchObject({ applied: true });
+      });
+    } finally {
+      await closeSocket(currentWs);
+    }
+  }, 30000);
 
   it("forwards a fanned-out session:command:finalized only while the route is current", async () => {
     // The post-finalize signal lifts the client's Reset admission fence, so

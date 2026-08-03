@@ -152,7 +152,16 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
  * (`finalizeTerminatedSession`), then confirm that finalization with the
  * client (see {@link confirmResetFinalization}) before reporting success. The ack is also persisted by the
  * socket-owning replica, so a lost result wake falls back to one durable
- * read. Every failure — offline/incapable client, send failure,
+ * read.
+ *
+ * The preflight capability verdict is a snapshot, so it is NOT the only
+ * capability gate: the composite `wsSessionResetV1` flag is revalidated
+ * again at command delivery (live socket here, live socket + DB route on the
+ * cross-replica fan-out) and once more when the apply-ack is made durable.
+ * Only the post-apply finalize half stays identity-only, so a client that
+ * already applied can always be released.
+ *
+ * Every failure — offline/incapable client, send failure,
  * disconnect/timeout while waiting, `applied:false`, or a state change
  * during the wait — rejects the request WITHOUT touching the session row, so
  * the session stays stopped and Reset remains retryable after a reconnect or
@@ -201,9 +210,17 @@ async function terminateWithApplyAck(
   const waiter = connectionManager.waitForClientReply(clientId, ref);
   if (targetInstanceId === app.config.instanceId) {
     // Same-replica path — the command semantics are identical to the remote
-    // fan-out, including the current-binding check.
+    // fan-out, including the current-binding AND current-capability checks.
+    // Identity alone is not enough: the preflight's capability verdict is a
+    // DB read taken before the send, and the same clientId on the same
+    // instance can have reconnected as a legacy build in between
+    // (`client:register` replaces `wireCapabilities` wholesale). Such a
+    // client would destroy its provider session on the terminate and then
+    // park intervening rows behind a fence it never lifts, so re-check the
+    // LIVE socket's capability and fail closed.
     if (
       connectionManager.getAgentClientId(agentId) !== clientId ||
+      !connectionManager.agentSupportsSessionResetV1(agentId) ||
       !sendToAgent(agentId, { type: "session:terminate", chatId, ref })
     ) {
       // Nobody will `await` this waiter on the failure path, so absorb the
@@ -282,6 +299,15 @@ async function terminateWithApplyAck(
  * The receipt is correlated on a FRESH `ackRef`, not the terminate `ref`: the
  * apply-ack's cross-replica result wake for `ref` can still be in flight and
  * would otherwise resolve this waiter with the wrong phase.
+ *
+ * Unlike the terminate itself, this phase is deliberately identity-only — no
+ * `wsSessionResetV1` revalidation. The frame is non-destructive (it lifts a
+ * fence the client armed itself) and it is only ever sent after a genuinely
+ * capable client already applied. Re-gating on a capability flag that flipped
+ * between apply and receipt would leave that client fenced over an
+ * already-evicted session with no way to converge; a client that truly cannot
+ * answer still fails the request through the receipt waiter rather than a
+ * capability check.
  */
 async function confirmResetFinalization(
   app: FastifyInstance,

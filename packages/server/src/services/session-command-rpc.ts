@@ -116,14 +116,41 @@ export async function resolveAgentApplyAckRoute(
 }
 
 /**
+ * Extra conditions a route guard may impose on top of pure identity.
+ *
+ * `requireSessionResetV1` re-reads the client's CURRENTLY registered
+ * composite capability out of `clients.metadata`. Identity alone is not a
+ * Reset verdict: `client:register` replaces `wireCapabilities` wholesale, so
+ * the SAME `clientId` on the SAME `instanceId` can come back as a legacy
+ * build after the HTTP preflight already saw v1. Anything that would apply a
+ * destructive terminate must therefore re-check the capability, not just the
+ * route.
+ */
+export type AgentRouteGuardOptions = { requireSessionResetV1?: boolean };
+
+function sessionResetV1MetadataSql() {
+  return sql`(${clients.metadata} -> 'wireCapabilities' ->> 'wsSessionResetV1') = 'true'`;
+}
+
+/**
  * SQL predicate guarding that the agent is STILL routed to `clientId` on
  * `instanceId` — durable binding + online presence AND the connected client
  * row must all agree. Embedded in atomic UPDATEs and the cross-replica
  * fan-out so a takeover (e.g. `clients.instance_id` moved to another
  * replica while the old presence route and process-local binding linger)
  * cannot land state or deliver a destructive command.
+ *
+ * With `requireSessionResetV1`, the same predicate also demands the
+ * registered composite Reset capability, closing the same-client/same-
+ * instance downgrade hole described on {@link AgentRouteGuardOptions}.
  */
-export function agentRouteGuardSql(agentId: string, clientId: string, instanceId: string) {
+export function agentRouteGuardSql(
+  agentId: string,
+  clientId: string,
+  instanceId: string,
+  options: AgentRouteGuardOptions = {},
+) {
+  const capabilityClause = options.requireSessionResetV1 ? sql` AND ${sessionResetV1MetadataSql()}` : sql.empty();
   return sql`EXISTS (
     SELECT 1 FROM ${agents}
     INNER JOIN ${agentPresence} ON ${agentPresence.agentId} = ${agents.uuid}
@@ -135,7 +162,7 @@ export function agentRouteGuardSql(agentId: string, clientId: string, instanceId
       AND ${agentPresence.clientId} = ${clientId}
       AND ${agentPresence.instanceId} = ${instanceId}
       AND ${clients.status} = 'connected'
-      AND ${clients.instanceId} = ${instanceId}
+      AND ${clients.instanceId} = ${instanceId}${capabilityClause}
   )`;
 }
 
@@ -145,11 +172,12 @@ export async function agentRoutedTo(
   agentId: string,
   clientId: string,
   instanceId: string,
+  options: AgentRouteGuardOptions = {},
 ): Promise<boolean> {
   const [row] = await db
     .select({ agentId: agents.uuid })
     .from(agents)
-    .where(and(eq(agents.uuid, agentId), agentRouteGuardSql(agentId, clientId, instanceId)))
+    .where(and(eq(agents.uuid, agentId), agentRouteGuardSql(agentId, clientId, instanceId, options)))
     .limit(1);
   return row !== undefined;
 }
@@ -222,11 +250,24 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
 }
 
 /**
- * Persist one apply-ack ref iff this replica still owns the client row AND
+ * Persist one handshake ref iff this replica still owns the client row AND
  * the agent is still routed to this client/instance (durable binding +
  * online presence). Returns false when `instance_id` no longer matches
  * (takeover), the agent's route moved, or the row is gone. Physically prunes
  * aged/excess refs in the same statement.
+ *
+ * The `applied` phase additionally requires the CURRENTLY registered
+ * `wsSessionResetV1` capability. That half of the handshake is the
+ * destructive one — persisting it is what lets an HTTP waiter conclude the
+ * provider mapping is gone and go on to evict — so a legacy build that
+ * re-registered under the same client/instance since the preflight must not
+ * be able to satisfy it.
+ *
+ * The `finalized` phase deliberately stays identity-only. It is a post-apply
+ * receipt from a client that already proved v1 by applying, and it only
+ * releases that client's own parked rows; failing it closed on a capability
+ * flag that flipped between apply and receipt would strand a genuinely
+ * capable client behind a fence with the session already evicted.
  */
 export async function storeSessionCommandRpcResult(
   db: Database,
@@ -238,7 +279,8 @@ export async function storeSessionCommandRpcResult(
   if (!REF_RE.test(ref)) {
     throw new Error(`Invalid session-command RPC ref: ${ref}`);
   }
-  const entry = { ...result, phase: result.phase ?? "applied", storedAt: new Date().toISOString() };
+  const phase = result.phase ?? "applied";
+  const entry = { ...result, phase, storedAt: new Date().toISOString() };
   const maxAgeSeconds = Math.floor(SESSION_COMMAND_RPC_MAX_AGE_MS / 1000);
   // One UPDATE: ownership + agent-route guards + merge ref + physical prune
   // (age then newest N). Column refs in SET are the pre-update row;
@@ -270,7 +312,9 @@ export async function storeSessionCommandRpcResult(
       and(
         eq(clients.id, clientId),
         eq(clients.instanceId, expectedInstanceId),
-        agentRouteGuardSql(result.agentId, clientId, expectedInstanceId),
+        agentRouteGuardSql(result.agentId, clientId, expectedInstanceId, {
+          requireSessionResetV1: phase === "applied",
+        }),
       ),
     )
     .returning({ id: clients.id });

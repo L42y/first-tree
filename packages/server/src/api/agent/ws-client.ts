@@ -326,9 +326,13 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         return;
       }
       if (payload.type === "session:command:finalized") {
-        // Same revalidation as the ref'd terminate: a takeover between the
-        // HTTP finalize and this fan-out must not lift another socket's Reset
-        // fence or let a stale route answer the receipt waiter.
+        // Same ROUTE revalidation as the ref'd terminate: a takeover between
+        // the HTTP finalize and this fan-out must not lift another socket's
+        // Reset fence or let a stale route answer the receipt waiter.
+        // Deliberately identity-only, with no `wsSessionResetV1` re-check:
+        // this frame is non-destructive and only follows an apply from a
+        // genuinely capable client, so a capability flag that flipped between
+        // apply and receipt must not strand that client behind its own fence.
         void (async () => {
           const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId);
           if (!routed) return;
@@ -355,10 +359,20 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
       // HTTP preflight and delivery could otherwise deliver a destructive
       // terminate to a stale socket. Re-verify the full DB route (durable
       // binding + online presence + this instance) before forwarding.
+      //
+      // Identity is also not enough on its own. The SAME clientId on the SAME
+      // instance may have reconnected as a legacy build since the preflight,
+      // and this frame destroys the client's provider session. Both halves of
+      // the capability are therefore rechecked here: the DB route must still
+      // carry the registered composite `wsSessionResetV1` flag, and the live
+      // socket this process owns must still advertise it.
       void (async () => {
-        const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId);
+        const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId, {
+          requireSessionResetV1: true,
+        });
         if (!routed) return;
         if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
+        if (!connectionManager.agentSupportsSessionResetV1(payload.agentId)) return;
         connectionManager.sendToClient(payload.clientId, {
           type: "session:terminate",
           agentId: payload.agentId,
@@ -1783,6 +1797,20 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                 );
                 return;
               }
+              // …and from a socket that still speaks the composite Reset
+              // protocol. Accepting this ack is what lets the HTTP waiter
+              // conclude the provider mapping is gone and evict the session,
+              // so a legacy build that re-registered under the same clientId
+              // must not be able to complete a Reset it cannot finish. The
+              // durable store applies the same rule for the `applied` phase;
+              // this is the live-socket half of it.
+              if (!connectionManager.agentSupportsSessionResetV1(parsedAck.data.agentId)) {
+                app.log.debug(
+                  { clientId, agentId: parsedAck.data.agentId, ref: parsedAck.data.ref },
+                  "ignoring session:command:applied from a client that no longer advertises wsSessionResetV1",
+                );
+                return;
+              }
               const stored = await storeSessionCommandRpcResult(
                 app.db,
                 clientId,
@@ -1810,7 +1838,12 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               // generation. Correlated on its own `ackRef` so a late
               // apply-ack wake for the terminate ref cannot satisfy the
               // finalize waiter. Same route guards and durable rendezvous as
-              // the apply-ack, so a lost PG wake still converges.
+              // the apply-ack, so a lost PG wake still converges — but
+              // deliberately WITHOUT the apply-ack's `wsSessionResetV1`
+              // recheck. Only a client that already applied gets here, and
+              // this receipt just releases its own parked rows; rejecting it
+              // over a capability flag that flipped mid-handshake would leave
+              // that client fenced on an already-evicted session.
               const parsedReceipt = sessionCommandFinalizedAckFrameSchema.safeParse(msg);
               if (!parsedReceipt.success) {
                 app.log.warn(

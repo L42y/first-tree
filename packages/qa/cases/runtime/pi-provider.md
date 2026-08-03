@@ -92,7 +92,10 @@ surface, skills projection, or provider supervisor changes.
   `wsSessionResetV1` capability (welcome before `auth:ok`, answered in `client:register`). A client that declares only
   the legacy apply-only flag is refused with 503 before anything destructive is applied, and a current client never
   advertises that legacy flag, so an older server cannot mistake it for a pre-v1 peer and start a Reset whose fence it
-  will never lift.
+  will never lift. The capability is revalidated at command delivery and at apply-ACK, not only at the HTTP preflight:
+  a same-client, same-instance reconnect that comes back without `wsSessionResetV1` receives no terminate frame (direct
+  or fanned out) and cannot persist or resolve the apply-ACK. Only the post-apply `finalized` delivery and receipt stay
+  identity-only, so a client that already applied still converges if its advertised capability changes afterwards.
   Inject during streaming
   uses `steer`; non-streaming input starts the next prompt. Accepted steered messages keep DeliveryToken custody
   through `agent_settled`. A settle-vs-steer rejection queues the inbound message for the next prompt rather than

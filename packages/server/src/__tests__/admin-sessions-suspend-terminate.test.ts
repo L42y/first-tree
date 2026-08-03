@@ -700,6 +700,53 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
   const REMOTE_INSTANCE = "remote-instance";
 
   /**
+   * How the fake client answers `session:command:finalized`:
+   * `"released"` — immediate receipt (compliant client);
+   * `"refused"` — receipt saying the ref was not the armed generation;
+   * `"durable"` — receipt persisted but the wake is lost;
+   * `"drop"` — nothing comes back at all.
+   */
+  type FinalizeReceiptMode = "released" | "refused" | "durable" | "drop";
+
+  /**
+   * A fake daemon socket that answers the post-finalize signal the way a
+   * compliant client does, so a Reset request can complete past
+   * `finalizeTerminatedSession`.
+   */
+  function makeFakeClientSocket(
+    app: FastifyInstance,
+    clientId: string,
+    finalizeReceipt: FinalizeReceiptMode = "released",
+  ) {
+    return {
+      readyState: 1,
+      send: vi.fn((raw: string) => {
+        if (finalizeReceipt === "drop") return;
+        let frame: { type?: string; ackRef?: string; agentId?: string; chatId?: string };
+        try {
+          frame = JSON.parse(raw) as typeof frame;
+        } catch {
+          return;
+        }
+        if (frame.type !== "session:command:finalized" || !frame.ackRef) return;
+        const receipt = {
+          command: "session:terminate" as const,
+          agentId: frame.agentId as string,
+          chatId: frame.chatId as string,
+          applied: finalizeReceipt !== "refused",
+          phase: "finalized" as const,
+        };
+        if (finalizeReceipt === "durable") {
+          void storeSessionCommandRpcResult(app.db, clientId, frame.ackRef, receipt, LOCAL_INSTANCE);
+          return;
+        }
+        resolveClientReply(clientId, frame.ackRef, receipt);
+      }),
+      close: vi.fn(),
+    };
+  }
+
+  /**
    * Seed the DB-authoritative client route the waitForApply preflight reads:
    * `clients` row (status + owning instance + registered wireCapabilities)
    * and the agent's presence route. `remote: true` points the owning
@@ -713,14 +760,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       connected?: boolean;
       remote?: boolean;
       localSocket?: boolean;
-      /**
-       * How the fake client answers `session:command:finalized`:
-       * `"released"` — immediate receipt (compliant client);
-       * `"refused"` — receipt saying the ref was not the armed generation;
-       * `"durable"` — receipt persisted but the wake is lost;
-       * `"drop"` — nothing comes back at all.
-       */
-      finalizeReceipt?: "released" | "refused" | "durable" | "drop";
+      finalizeReceipt?: FinalizeReceiptMode;
     } = {},
   ) {
     const app = getApp();
@@ -767,34 +807,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
         set: { status: "online", clientId: admin.clientId, instanceId, runtimeState: "idle" },
       });
 
-    // The fake socket answers the post-finalize signal the way a compliant
-    // client does, so the Reset request can complete past `finalizeTerminatedSession`.
-    const ws = {
-      readyState: 1,
-      send: vi.fn((raw: string) => {
-        if (finalizeReceipt === "drop") return;
-        let frame: { type?: string; ackRef?: string; agentId?: string; chatId?: string };
-        try {
-          frame = JSON.parse(raw) as typeof frame;
-        } catch {
-          return;
-        }
-        if (frame.type !== "session:command:finalized" || !frame.ackRef) return;
-        const receipt = {
-          command: "session:terminate" as const,
-          agentId: frame.agentId as string,
-          chatId: frame.chatId as string,
-          applied: finalizeReceipt !== "refused",
-          phase: "finalized" as const,
-        };
-        if (finalizeReceipt === "durable") {
-          void storeSessionCommandRpcResult(app.db, admin.clientId, frame.ackRef, receipt, LOCAL_INSTANCE);
-          return;
-        }
-        resolveClientReply(admin.clientId, frame.ackRef, receipt);
-      }),
-      close: vi.fn(),
-    };
+    const ws = makeFakeClientSocket(app, admin.clientId, finalizeReceipt);
     if (localSocket) {
       setClientConnection(admin.clientId, ws as unknown as WebSocket, { wsSessionResetV1: true });
       bindAgentToClient(admin.clientId, agent.uuid);
@@ -1217,6 +1230,101 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.statusCode).toBe(503);
       expect(ws.send).not.toHaveBeenCalled();
       expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    } finally {
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fails 503 without sending when the same client reconnected as a legacy build after the preflight", async () => {
+    // The preflight's capability verdict is a DB snapshot. `client:register`
+    // replaces `wireCapabilities` wholesale, so the SAME clientId on the SAME
+    // instance can come back without v1 between preflight and send — identity
+    // checks alone still pass. Such a client would destroy its provider
+    // session on the terminate and then never answer the finalize, so no
+    // destructive frame may go out at all.
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
+      kind: "error",
+      payload: { source: "sdk", message: "must survive" },
+    });
+    const legacyWs = makeFakeClientSocket(app, admin.clientId);
+    setClientConnection(admin.clientId, legacyWs as unknown as WebSocket, { wsSessionTerminateApplyAck: true });
+    bindAgentToClient(admin.clientId, agent.uuid);
+    // A regression here sends the frame and then stalls on the ack waiter;
+    // keep that failure fast instead of pinning the suite for 25s.
+    setClientReplyTimeoutMsForTests(200);
+    try {
+      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      expect(res.statusCode).toBe(503);
+      expect(ws.send).not.toHaveBeenCalled();
+      expect(legacyWs.send).not.toHaveBeenCalled();
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+      expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+    } finally {
+      setClientReplyTimeoutMsForTests(null);
+      cleanup(admin, legacyWs);
+    }
+  });
+
+  it("still resets when the same client reconnects and keeps advertising the composite capability", async () => {
+    // Positive control for the delivery-time capability recheck: a same-id
+    // reconnect that is still v1 must not be punished for reconnecting.
+    const { app, admin, agent, chat } = await setup("suspended");
+    const reconnected = makeFakeClientSocket(app, admin.clientId);
+    setClientConnection(admin.clientId, reconnected as unknown as WebSocket, { wsSessionResetV1: true });
+    bindAgentToClient(admin.clientId, agent.uuid);
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(reconnected, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", applied: true });
+      expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+    } finally {
+      cleanup(admin, reconnected);
+    }
+  });
+
+  it("the durable apply-ack refuses a downgraded client while the finalized receipt stays identity-only", async () => {
+    // Apply is the destructive half — persisting it is what lets a waiter
+    // conclude the provider mapping is gone — so it re-reads the registered
+    // capability. The post-apply receipt must NOT: a client that already
+    // applied and then flipped metadata would otherwise stay fenced forever
+    // over an already-evicted session.
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    const { eq } = await import("drizzle-orm");
+    await app.db
+      .update(clients)
+      .set({ metadata: { wireCapabilities: { wsSessionTerminateApplyAck: true } } })
+      .where(eq(clients.id, admin.clientId));
+    const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+    try {
+      const appliedRef = crypto.randomUUID();
+      expect(
+        await storeSessionCommandRpcResult(
+          app.db,
+          admin.clientId,
+          appliedRef,
+          { command: "session:terminate", agentId: agent.uuid, chatId: chat.id, applied: true },
+          LOCAL_INSTANCE,
+        ),
+      ).toBe(false);
+      expect(await readSessionCommandRpcResult(app.db, admin.clientId, appliedRef)).toBeNull();
+
+      const finalizedRef = crypto.randomUUID();
+      expect(
+        await storeSessionCommandRpcResult(
+          app.db,
+          admin.clientId,
+          finalizedRef,
+          { command: "session:terminate", agentId: agent.uuid, chatId: chat.id, applied: true, phase: "finalized" },
+          LOCAL_INSTANCE,
+        ),
+      ).toBe(true);
+      expect(await readSessionCommandRpcResult(app.db, admin.clientId, finalizedRef, "finalized")).toMatchObject({
+        applied: true,
+        phase: "finalized",
+      });
     } finally {
       cleanup(admin, ws);
     }
