@@ -427,7 +427,8 @@ export class InboxDeliveryCoordinator {
    * Retain custody without asking the current socket to redeliver.
    * Callers keep distinct release boundaries: runtime-proof faults release on
    * `agent:bound` via {@link completeBindRecovery}; Reset-fence parks release
-   * only after server-confirmed Reset finalization.
+   * only after an exact receipted post-apply terminal disposition
+   * (`session:command:finalized` or `session:command:aborted`).
    */
   async parkTurnForDeferredRecovery(
     chatId: string,

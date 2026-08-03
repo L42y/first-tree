@@ -251,9 +251,11 @@ type ClientConnectionEvents = {
   "agent:pinned": [message: AgentPinnedMessage];
   "session:command": [command: SessionCommand];
   /**
-   * Server confirmed Reset finalization after `session:command:applied` —
-   * `finalizeTerminatedSession` has committed `evicted`. Parked Reset-fence
-   * recovery may release only after this frame.
+   * Success-side post-apply Reset disposition: server confirmed durable
+   * eviction after `session:command:applied` — `finalizeTerminatedSession`
+   * committed `evicted`. Parked Reset-fence recovery may release after this
+   * frame or the matching `session:command:aborted` disposition for the same
+   * generation; neither waits on the other.
    */
   "session:command:finalized": [frame: SessionCommandFinalizedFrame];
   /**
@@ -541,12 +543,14 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   private serverSupportsSessionEventConfirm = false;
   /**
    * Does the CURRENT server speak version 1 of the composite Reset protocol
-   * (ref'd terminate apply-ack + `session:command:finalized` + receipt)?
-   * Reset parks inbox recovery behind a fence only the finalize signal lifts,
-   * so a server without this capability must make the client refuse the ref'd
-   * terminate BEFORE applying it locally rather than tear the session down
-   * and park forever. Cleared on every new socket and re-learned from that
-   * connection's welcome, which the server sends ahead of `auth:ok`.
+   * (ref'd terminate apply-ack + receipted post-apply terminal dispositions
+   * `session:command:finalized` / `session:command:aborted` + matching
+   * receipts)? Reset parks inbox recovery behind a fence only an exact
+   * receipted terminal disposition lifts, so a server without this capability
+   * must make the client refuse the ref'd terminate BEFORE applying it locally
+   * rather than tear the session down and park forever. Cleared on every new
+   * socket and re-learned from that connection's welcome, which the server
+   * sends ahead of `auth:ok`.
    */
   private serverSupportsSessionResetV1 = false;
   /**
@@ -1226,10 +1230,10 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   /**
    * Did this connection negotiate version 1 of the composite Reset protocol?
    * The agent slot consults this BEFORE applying a ref'd terminate: on a
-   * server that speaks only the legacy apply-only flow the post-finalize
-   * signal never arrives, so the Reset must fail closed instead of destroying
-   * the local session and parking its queued work behind a fence nothing will
-   * lift.
+   * server that speaks only the legacy apply-only flow no post-apply terminal
+   * disposition (`finalized` / `aborted`) ever arrives, so the Reset must fail
+   * closed instead of destroying the local session and parking its queued work
+   * behind a fence nothing will lift.
    */
   get supportsSessionResetV1(): boolean {
     return this.serverSupportsSessionResetV1;
@@ -1609,15 +1613,17 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           os: platform(),
           sdkVersion: this.sdkVersion,
           // Two-sided, VERSIONED Reset negotiation. `wsSessionResetV1` is the
-          // whole protocol (apply-ack + parked-fence release + finalize
-          // receipt) and is declared ONLY when this connection's welcome
-          // (sent before auth:ok) advertised the same version. The legacy
-          // apply-only flag is deliberately never sent: an old server reads
-          // it as Reset consent, runs the pre-finalize flow, and answers the
-          // operator with a 200 while this client's inbox rows stay parked
-          // behind a fence that server will never lift. Withholding it makes
-          // both skew directions fail closed before anything destructive is
-          // applied locally. Old servers ignore the unknown v1 field.
+          // whole protocol (apply-ack + parked-fence release + BOTH receipted
+          // post-apply terminal dispositions: finalized for durable eviction
+          // and aborted when the server could not finalize) and is declared
+          // ONLY when this connection's welcome (sent before auth:ok)
+          // advertised the same version. The legacy apply-only flag is
+          // deliberately never sent: an old server reads it as Reset consent,
+          // runs the pre-disposition flow, and answers the operator with a 200
+          // while this client's inbox rows stay parked behind a fence that
+          // server will never lift. Withholding it makes both skew directions
+          // fail closed before anything destructive is applied locally. Old
+          // servers ignore the unknown v1 field.
           wireCapabilities: {
             ...(this.serverSupportsSessionResetV1 ? { wsSessionResetV1: true } : {}),
           },

@@ -169,8 +169,9 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
  * capability gate: the composite `wsSessionResetV1` flag is revalidated
  * again at command delivery (live socket here, live socket + DB route on the
  * cross-replica fan-out) and once more when the apply-ack is made durable.
- * Only the post-apply finalize half stays identity-only, so a client that
- * already applied can always be released.
+ * Only the post-apply terminal dispositions (`finalized` and `aborted`) stay
+ * identity-scoped — original applying Client identity, no live Reset-capability
+ * re-gate — so a client that already applied can always be released.
  *
  * Every failure — offline/incapable client, send failure,
  * disconnect/timeout while waiting, `applied:false`, or a state change

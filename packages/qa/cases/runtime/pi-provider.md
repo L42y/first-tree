@@ -79,15 +79,17 @@ surface, skills projection, or provider supervisor changes.
   `session:command:applied` and the server finishes Reset finalization (`session:command:finalized` / session
   `evicted`), that exact durable row recovers on the same socket (no reconnect, no HTTP conflict, no no-progress
   circuit) into one fresh nonce-derived Pi identity — apply/finalization precedes the single recovery.
-- Reset fence window: the window between `session:command:applied` and the matching `session:command:finalized` is
-  closed even for a clean Reset that had nothing queued when it applied. A message delivered inside that window must
-  park — no start/resume/inject, no ACK, no same-socket recovery — and must settle into one fresh nonce-derived Pi
-  identity only after that generation's exact `finalized` is accepted.
+- Reset fence window: the window between `session:command:applied` and that generation's exact receipted terminal
+  disposition (`session:command:finalized` or `session:command:aborted`) is closed even for a clean Reset that had
+  nothing queued when it applied. A message delivered inside that window must park — no start/resume/inject, no ACK,
+  no same-socket recovery — and must settle into one fresh nonce-derived Pi identity only after that exact disposition
+  is accepted. On the success path the clean post-apply/pre-finalized window still ends only on matching `finalized`.
 - Reset generation authority: refs that join one in-flight terminate are aliases of a single generation, so either
-  one's `finalized` releases the fence once and its duplicate is idempotent, while a superseded or unknown ref is
-  answered `released: false` and releases nothing. A stale-reconcile terminate carries no generation and must not
-  release an armed one. When a finalize path is lost, the operator's retried Reset (a NEW terminate ref) is what
-  releases the row parked by the abandoned attempt — exactly once, on the same socket.
+  one's exact receipted terminal disposition (`finalized` or `aborted`) releases the fence once and its duplicate is
+  idempotent, while a superseded or unknown ref is answered `released: false` and releases nothing. A stale-reconcile
+  terminate carries no generation and must not release an armed one. When a terminal disposition is lost after a
+  durable eviction, the operator's retried Reset (a NEW terminate ref) is what releases the row parked by the abandoned
+  attempt — exactly once, on the same socket.
 - Post-apply disposition boundary: once `session:command:applied` reports `applied: true`, the provider session is
   already gone, so every Server outcome for that terminate ref must reach a terminal wire disposition before the
   operator's HTTP result. A durable eviction sends `session:command:finalized`; a Server exit that does not commit the
@@ -106,8 +108,10 @@ surface, skills projection, or provider supervisor changes.
   advertises that legacy flag, so an older server cannot mistake it for a pre-v1 peer and start a Reset whose fence it
   will never lift. The capability is revalidated at command delivery and at apply-ACK, not only at the HTTP preflight:
   a same-client, same-instance reconnect that comes back without `wsSessionResetV1` receives no terminate frame (direct
-  or fanned out) and cannot persist or resolve the apply-ACK. Only the post-apply `finalized` delivery and receipt stay
-  identity-only, so a client that already applied still converges if its advertised capability changes afterwards.
+  or fanned out) and cannot persist or resolve the apply-ACK. Both post-apply terminal dispositions (`finalized` and
+  `aborted`) stay identity-scoped on delivery and receipt — original applying Client identity, not the current agent
+  route or live Reset capability — so a client that already applied still converges if its route or advertised
+  capability changes afterwards.
   Inject during streaming
   uses `steer`; non-streaming input starts the next prompt. Accepted steered messages keep DeliveryToken custody
   through `agent_settled`. A settle-vs-steer rejection queues the inbound message for the next prompt rather than

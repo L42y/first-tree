@@ -51,9 +51,10 @@ function wireCapabilities(metadata: unknown): Record<string, unknown> | undefine
 /**
  * The LEGACY apply-only flag out of a `clients.metadata` blob. It identifies
  * a pre-v1 client and is NOT a Reset verdict: such a client answers the
- * apply-ack and then waits for a post-finalize signal it does not understand.
- * Kept so this server can recognise old clients (and so the mixed-fleet
- * regression can prove a current client is not mistaken for one).
+ * apply-ack and then waits for a post-apply terminal disposition
+ * (`finalized` / `aborted`) it does not understand. Kept so this server can
+ * recognise old clients (and so the mixed-fleet regression can prove a current
+ * client is not mistaken for one).
  */
 export function metadataHasLegacyApplyAckCapability(metadata: unknown): boolean {
   return wireCapabilities(metadata)?.wsSessionTerminateApplyAck === true;
@@ -68,8 +69,9 @@ export function metadataHasSessionResetV1Capability(metadata: unknown): boolean 
  * The ONE capability verdict for chat-session Reset: the client declared the
  * composite `wsSessionResetV1` protocol. That single flag covers the whole
  * flow — apply-ack (the provider mapping is gone), parked-fence release on
- * the exact terminate ref, and the post-finalize receipt — so there is no way
- * to negotiate half of it.
+ * the exact terminate ref, and BOTH receipted post-apply terminal dispositions
+ * (`finalized` for a durable eviction and `aborted` when the server could not
+ * finalize) — so there is no way to negotiate half of it.
  *
  * The legacy apply-only flag deliberately does NOT count, in either
  * direction. An old client that declares it would park its intervening rows

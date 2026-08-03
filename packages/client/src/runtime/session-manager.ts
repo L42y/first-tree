@@ -611,9 +611,10 @@ export class SessionManager {
   /**
    * Chats with Reset-fence parked debt that must not admit a provider route
    * or same-socket recoverChat until {@link releaseParkedResetFenceRecovery}
-   * runs after server-confirmed Reset finalization. Survives a failed
-   * terminate attempt (teardown / quiesce / flush) so parked rows stay
-   * parked — clearing only `terminatingChats` must not release them.
+   * runs after an exact receipted post-apply terminal disposition
+   * (`finalized` or `aborted`). Survives a failed terminate attempt (teardown /
+   * quiesce / flush) so parked rows stay parked — clearing only
+   * `terminatingChats` must not release them.
    */
   private readonly awaitingResetFenceRelease = new Set<string>();
   /**
@@ -626,19 +627,19 @@ export class SessionManager {
    * termination, and every later ref that JOINS that same in-flight
    * termination is recorded as an alias of it (`refs`) rather than
    * superseding it: concurrent Resets A and B that share one termination
-   * promise share one local outcome, so either one's `finalized` is an
-   * honest release. A ref'd terminate that starts a fresh termination
-   * replaces the entry, which is what makes an older generation's aliases
-   * stale.
+   * promise share one local outcome, so either one's exact receipted terminal
+   * disposition (`finalized` or `aborted`) is an honest release. A ref'd
+   * terminate that starts a fresh termination replaces the entry, which is
+   * what makes an older generation's aliases stale.
    *
    * `released` keeps the entry as a tombstone after the accepted release so
-   * a duplicate `finalized` for the same generation answers `idempotent`
+   * a duplicate disposition for the same generation answers `idempotent`
    * (honest: this client did release that generation) without opening a
    * second recovery.
    */
   private readonly resetGenerations = new Map<string, { refs: Set<string>; released: boolean }>();
   /**
-   * Coalesce one post-finalization recovery per chat so duplicate or
+   * Coalesce one post-disposition recovery per chat so duplicate or
    * concurrent release calls cannot open repeated same-socket recoverChat
    * calls.
    */
@@ -993,7 +994,8 @@ export class SessionManager {
    * Handle a server-issued session command. Terminate drops all local state
    * without reporting back. `resetRef` is the ref'd Reset generation this
    * terminate belongs to — it arms the parked-fence release so only that
-   * generation's `session:command:finalized` can lift the fence.
+   * generation's exact receipted terminal disposition (`session:command:finalized`
+   * or `session:command:aborted`) can lift the fence.
    */
   async handleCommand(chatId: string, command: SessionCommandType, options?: { resetRef?: string }): Promise<void> {
     const inFlightTermination = this.terminatingChats.get(chatId);
@@ -1006,8 +1008,8 @@ export class SessionManager {
         // A joining ref'd Reset shares this one termination, so it becomes an
         // ALIAS of the generation that termination arms rather than
         // superseding it: both Resets have the same local outcome, so either
-        // one's `finalized` is an honest release, and neither may invalidate
-        // the other's.
+        // one's exact receipted terminal disposition is an honest release, and
+        // neither may invalidate the other's.
         if (options?.resetRef !== undefined) {
           const joiningRef = options.resetRef;
           return inFlightTermination.then(() => {
@@ -1176,9 +1178,9 @@ export class SessionManager {
         await termination;
         // Local terminate succeeded (flush included). A ref'd Reset arms a
         // fresh generation and keeps provider admission fenced until that
-        // generation's server-confirmed finalization, whether or not anything
-        // is parked yet — do NOT recover here (that races
-        // session:command:applied / finalize).
+        // generation's exact receipted terminal disposition (`finalized` or
+        // `aborted`), whether or not anything is parked yet — do NOT recover
+        // here (that races session:command:applied / the disposition).
         this.armParkedResetFenceRelease(chatId, options?.resetRef);
       } finally {
         // Drop the in-flight fence only if this run is still the current one —
@@ -1243,10 +1245,10 @@ export class SessionManager {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     // Unresolved Reset retirement (in-flight terminate, failed durable flush,
-    // or parked Reset-fence debt awaiting server-confirmed finalization)
-    // force-keeps the chat: the server must retain reconcile authority until
-    // mapping deletion + Reset nonce are durably written and parked debt is
-    // released.
+    // or parked Reset-fence debt awaiting an exact receipted terminal
+    // disposition) force-keeps the chat: the server must retain reconcile
+    // authority until mapping deletion + Reset nonce are durably written and
+    // parked debt is released.
     for (const id of this.terminatingChats.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
@@ -1257,8 +1259,9 @@ export class SessionManager {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     // An armed Reset generation holds the chat too: between `applied` and the
-    // exact accepted `finalized` the server must keep reconcile authority
-    // even when nothing is parked behind the fence yet.
+    // exact accepted terminal disposition (`finalized` or `aborted`) the server
+    // must keep reconcile authority even when nothing is parked behind the
+    // fence yet.
     for (const id of this.resetGenerations.keys()) {
       if (this.hasArmedResetGeneration(id) && this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
@@ -1281,7 +1284,8 @@ export class SessionManager {
       // A reconcile result is a SNAPSHOT of older server state: it carries no
       // Reset generation, so the unref'd release refuses while a generation is
       // armed rather than lifting a newer Reset's fence behind its back. That
-      // Reset's own `finalized` remains the only thing that releases it.
+      // Reset's own receipted terminal disposition remains the only thing that
+      // releases it.
       void this.handleCommand(id, "session:terminate")
         .then(() => {
           const verdict = this.releaseParkedResetFenceRecovery(id);
@@ -1578,11 +1582,11 @@ export class SessionManager {
    * Combined provider-route admission fence for Reset: an in-flight
    * `session:terminate` drain (`terminatingChats`), a prior Reset whose
    * durable registry flush failed (`terminatePersistFailures`), or parked
-   * Reset-fence debt still awaiting server-confirmed finalization
+   * Reset-fence debt still awaiting an exact receipted terminal disposition
    * (`awaitingResetFenceRelease`), or an armed Reset generation whose exact
-   * `finalized` has not been accepted yet (`resetGenerations`) — that last one
-   * fences the post-apply / pre-finalize window even when nothing was parked
-   * at apply time. Must NOT be used for the duplicate-terminate
+   * `finalized`/`aborted` has not been accepted yet (`resetGenerations`) — that
+   * last one fences the post-apply / pre-disposition window even when nothing
+   * was parked at apply time. Must NOT be used for the duplicate-terminate
    * join lookup — a genuine retry terminate must still execute and clear the
    * persistence failure.
    */
@@ -1601,7 +1605,7 @@ export class SessionManager {
    * `retryDeliveryTurn` would immediately recover, redeliver into the same
    * fence, and open the server's no-progress circuit after repeated identical
    * resets. Parked debt is released once by {@link releaseParkedResetFenceRecovery}
-   * after server-confirmed Reset finalization.
+   * after an exact receipted post-apply terminal disposition.
    */
   private async parkDeliveryBehindResetAdmissionFence(
     chatId: string,
@@ -1627,10 +1631,11 @@ export class SessionManager {
    * generation identified by `ref`.
    *
    * With a ref, the fence is armed UNCONDITIONALLY — even when nothing was
-   * parked at apply time. Between `applied:true` and the server's
-   * `finalized` the old session is already destroyed but the server has not
-   * finished evicting, so a row arriving in that window must park rather than
-   * start, resume, or inject; a zero-debt shortcut here reopened exactly that
+   * parked at apply time. Between `applied:true` and the server's exact
+   * receipted terminal disposition (`finalized` or `aborted`) the old session
+   * is already destroyed but the server has not finished its terminal branch,
+   * so a row arriving in that window must park rather than start, resume, or
+   * inject; a zero-debt shortcut here reopened exactly that
    * hole. Only the exact accepted release lifts it.
    *
    * `join` marks a ref that coalesced onto an in-flight termination: it
@@ -1664,28 +1669,29 @@ export class SessionManager {
   }
 
   /**
-   * Release parked Reset-fence debt after the truthful server-confirmed Reset
-   * finalization boundary (post-`finalizeTerminatedSession` / evicted). Must
-   * not run from terminate's `finally` or from local flush success alone.
+   * Release parked Reset-fence debt after an exact receipted post-apply
+   * terminal disposition — either durable eviction (`session:command:finalized`)
+   * or an abort/supersede (`session:command:aborted`) for the same generation.
+   * Must not run from terminate's `finally` or from local flush success alone.
    *
    * Returns this client's authoritative verdict for the caller's receipt:
    *
    *   - `accepted`   — `ref` is an alias of the current generation and this
    *                    call performed the release;
    *   - `idempotent` — that generation was already released here (duplicate
-   *                    or racing `finalized`), so the fence really is lifted
+   *                    or racing disposition), so the fence really is lifted
    *                    but nothing was recovered twice;
    *   - `stale`      — the ref belongs to no generation this client holds, a
    *                    newer generation has superseded it, or another
    *                    terminate boundary currently holds the chat closed.
-   *                    Nothing is released, so a delayed `finalized` cannot
+   *                    Nothing is released, so a delayed disposition cannot
    *                    lift a newer Reset's fence and the operator's Reset
    *                    fails closed instead of reporting a lifted fence.
    *
    * Without `ref` this is the legacy debt-scoped release for chats with no
    * armed generation; it refuses (`stale`) while a generation is armed, so
    * incidental cleanup such as a delayed stale reconcile can never release
-   * a Reset the server has not finalized. Authoritative unref'd callers use
+   * a Reset the server has not dispositioned. Authoritative unref'd callers use
    * {@link supersedeResetGeneration}.
    */
   releaseParkedResetFenceRecovery(chatId: string, ref?: string): ResetFenceReleaseVerdict {

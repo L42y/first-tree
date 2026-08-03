@@ -414,14 +414,15 @@ export class AgentSlot {
           // after handleCommand has fully resolved — handler stopped,
           // provider-session mapping dropped. A failed apply reports
           // applied:false so the operator can retry; never ack early.
-          // Parked Reset-fence recovery must wait for session:command:finalized
-          // (server post-finalize), not local success or the applied send alone.
+          // Parked Reset-fence recovery must wait for an exact receipted
+          // post-apply terminal disposition (`session:command:finalized` or
+          // `session:command:aborted`), not local success or the applied send alone.
           const ref = cmd.ref;
           if (!this.clientConnection.supportsSessionResetV1) {
-            // Old server, new client: nothing would ever send the finalized
-            // frame, so applying here would destroy the session and leave any
-            // intervening delivery parked behind a fence forever. Refuse
-            // BEFORE the destructive apply and let the Reset fail closed.
+            // Old server, new client: nothing would ever send a terminal
+            // disposition frame, so applying here would destroy the session and
+            // leave any intervening delivery parked behind a fence forever.
+            // Refuse BEFORE the destructive apply and let the Reset fail closed.
             this.logger.warn(
               { chatId: cmd.chatId, ref },
               "refusing ref'd Reset: this connection did not negotiate the v1 Reset protocol",
