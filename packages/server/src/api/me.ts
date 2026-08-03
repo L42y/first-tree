@@ -63,6 +63,12 @@ const onboardingTreeSetupStatusQuerySchema = z.object({
   organizationId: z.string().optional(),
 });
 
+const contextActivationRouteOptions = {
+  // `undefined` intentionally preserves @fastify/rate-limit's global shared
+  // actor bucket while exposing that inherited policy to CodeQL's Fastify model.
+  config: { otelRecordBody: false, rateLimit: undefined },
+};
+
 /**
  * `/me` and self-service organization routes (Class A — User-scoped).
  * Mounted under `requireUser` so the JWT only needs `sub = userId`.
@@ -73,7 +79,7 @@ const onboardingTreeSetupStatusQuerySchema = z.object({
  * fallback when localStorage is wiped).
  */
 export async function meRoutes(app: FastifyInstance): Promise<void> {
-  app.post("/me/context-activation/session-candidate/issue", { config: { otelRecordBody: false } }, async (request) => {
+  app.post("/me/context-activation/session-candidate/issue", contextActivationRouteOptions, async (request) => {
     const { userId } = requireUser(request);
     const input = contextSessionCandidateIssueRequestSchema.parse(request.body);
     const [membership] = await app.db
@@ -94,24 +100,17 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     return contextSessionCandidateIssueResponseSchema.parse({ schemaVersion: 1, receipt });
   });
 
-  app.post(
-    "/me/context-activation/session-candidate/validate",
-    { config: { otelRecordBody: false } },
-    async (request) => {
-      const { userId } = requireUser(request);
-      const input = contextSessionCandidateValidateRequestSchema.parse(request.body);
-      const candidate = await verifyContextSessionCandidate(app.config.secrets.jwtSecret, userId, input.receipt);
-      if (
-        candidate.provider !== input.provider ||
-        JSON.stringify(candidate.project) !== JSON.stringify(input.project)
-      ) {
-        throw new ForbiddenError("The Context session candidate does not match this provider/project handoff.");
-      }
-      return validateRouteCandidates(app, userId, [candidate.organizationId]);
-    },
-  );
+  app.post("/me/context-activation/session-candidate/validate", contextActivationRouteOptions, async (request) => {
+    const { userId } = requireUser(request);
+    const input = contextSessionCandidateValidateRequestSchema.parse(request.body);
+    const candidate = await verifyContextSessionCandidate(app.config.secrets.jwtSecret, userId, input.receipt);
+    if (candidate.provider !== input.provider || JSON.stringify(candidate.project) !== JSON.stringify(input.project)) {
+      throw new ForbiddenError("The Context session candidate does not match this provider/project handoff.");
+    }
+    return validateRouteCandidates(app, userId, [candidate.organizationId]);
+  });
 
-  app.post("/me/context-activation/candidates/validate", { config: { otelRecordBody: false } }, async (request) => {
+  app.post("/me/context-activation/candidates/validate", contextActivationRouteOptions, async (request) => {
     const { userId } = requireUser(request);
     const input = contextRouteCandidatesRequestSchema.parse(request.body);
     return validateRouteCandidates(app, userId, input.organizationIds);
