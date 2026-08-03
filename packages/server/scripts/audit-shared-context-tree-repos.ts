@@ -14,8 +14,10 @@
  * URL text: the binding contract accepts HTTPS, `ssh://`, and scp-like SSH
  * spellings with an optional `.git`, so two teams can share one repository
  * through two spellings and a text grouping would report them as unrelated.
- * That identity keeps a non-default port, so two self-managed forges on one
- * host are not reported as a shared tree.
+ * Each row resolves through its own team's GitLab connection origin, so an SSH
+ * binding and an HTTPS binding on one self-managed forge group together while
+ * two forges on one host stay apart. A row whose forge cannot be classified has
+ * no establishable authority and is skipped rather than guessed at.
  *
  * Read-only: it issues one SELECT and writes nothing. Repo URLs are printed so
  * an operator can act on them, so treat the output as customer data.
@@ -25,33 +27,36 @@
 
 import { sql } from "drizzle-orm";
 import { connectDatabase } from "../src/db/connection.js";
-import { contextTreeRepoOwnershipKey } from "../src/services/org-settings.js";
+import { contextTreeRepoOwnershipIdentity } from "../src/services/org-settings.js";
 
 type BindingRow = {
   organization_id: string;
   display_name: string | null;
   repo: string | null;
+  provider: string | null;
+  instance_origin: string | null;
 };
 
 type SharedRepo = {
-  canonical: string;
+  identity: string;
   teams: Array<{ organizationId: string; displayName: string; repo: string }>;
 };
 
-function groupByCanonicalRepo(rows: BindingRow[]): SharedRepo[] {
-  const byCanonical = new Map<string, SharedRepo>();
+function groupBySharedRepo(rows: BindingRow[]): SharedRepo[] {
+  const byIdentity = new Map<string, SharedRepo>();
   for (const row of rows) {
-    const canonical = contextTreeRepoOwnershipKey(row.repo);
-    if (!canonical || !row.repo) continue;
-    const entry = byCanonical.get(canonical) ?? { canonical, teams: [] };
+    const provider = row.provider === "github" || row.provider === "gitlab" ? row.provider : undefined;
+    const identity = contextTreeRepoOwnershipIdentity(row.repo, provider, row.instance_origin);
+    if (!identity || !row.repo) continue;
+    const entry = byIdentity.get(identity) ?? { identity, teams: [] };
     entry.teams.push({
       organizationId: row.organization_id,
       displayName: row.display_name ?? "",
       repo: row.repo,
     });
-    byCanonical.set(canonical, entry);
+    byIdentity.set(identity, entry);
   }
-  return [...byCanonical.values()]
+  return [...byIdentity.values()]
     .filter((entry) => entry.teams.length > 1)
     .sort((a, b) => b.teams.length - a.teams.length);
 }
@@ -70,15 +75,18 @@ async function main(): Promise<void> {
       SELECT
         s.organization_id     AS organization_id,
         o.display_name        AS display_name,
-        s.value->>'repo'      AS repo
+        s.value->>'repo'      AS repo,
+        s.value->>'provider'  AS provider,
+        g.instance_origin     AS instance_origin
       FROM organization_settings s
       JOIN organizations o ON o.id = s.organization_id
+      LEFT JOIN gitlab_connections g ON g.organization_id = s.organization_id
       WHERE s.namespace = 'context_tree'
         AND s.value->>'repo' IS NOT NULL
       ORDER BY s.organization_id
     `);
 
-    const shared = groupByCanonicalRepo([...rows]);
+    const shared = groupBySharedRepo([...rows]);
     if (shared.length === 0) {
       console.log("No Context Tree repo is bound to more than one team.");
       return;
@@ -86,7 +94,7 @@ async function main(): Promise<void> {
 
     console.log(`${shared.length} Context Tree repo(s) bound to more than one team:\n`);
     for (const entry of shared) {
-      console.log(`${entry.canonical}  (${entry.teams.length} teams)`);
+      console.log(`${entry.identity}  (${entry.teams.length} teams)`);
       for (const team of entry.teams) {
         console.log(`  - ${team.organizationId}  ${team.displayName}  ${team.repo}`);
       }

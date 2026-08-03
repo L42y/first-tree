@@ -255,23 +255,84 @@ describe("org-settings service", () => {
     });
   }
 
-  it("contextTreeRepoOwnershipKey treats only an HTTP(S) port as forge authority", () => {
-    const key = orgSettingsService.contextTreeRepoOwnershipKey;
+  it("contextTreeRepoOwnershipIdentity resolves GitLab references through the team's connection", () => {
+    const identity = orgSettingsService.contextTreeRepoOwnershipIdentity;
+    const origin = "https://git.internal:8443";
 
-    // A self-managed forge's Web port identifies which forge it is.
-    expect(key("https://git.internal:8443/group/tree.git")).toBe("git.internal:8443/group/tree");
-    expect(key("https://git.internal:9443/group/tree.git")).not.toBe(key("https://git.internal:8443/group/tree.git"));
+    // One repository reached three ways by teams on the same forge. The SSH
+    // transport port is not a web port, so only the connection origin can say
+    // which forge an SSH reference belongs to.
+    const https = identity("https://git.internal:8443/group/tree.git", "gitlab", origin);
+    expect(https).toBe("https://git.internal:8443/group/tree");
+    expect(identity("ssh://git@git.internal:2222/group/tree.git", "gitlab", origin)).toBe(https);
+    expect(identity("git@git.internal:group/tree.git", "gitlab", origin)).toBe(https);
 
-    // An ssh:// port is a transport detail of one checkout, not a forge, so it
-    // must not become authority — and both SSH spellings must agree.
-    expect(key("ssh://git@git.internal:2222/group/tree.git")).toBe("git.internal/group/tree");
-    expect(key("git@git.internal:group/tree.git")).toBe("git.internal/group/tree");
+    // A second instance on the same host is a different forge authority.
+    expect(identity("https://git.internal:9443/group/tree.git", "gitlab", "https://git.internal:9443")).not.toBe(https);
 
-    // GitHub carries no port in either spelling, so SSH and HTTPS match there.
-    expect(key("git@github.com:acme/tree.git")).toBe(key("https://github.com/acme/tree"));
+    // An HTTPS reference whose origin is not the team's connection has no
+    // establishable authority, and neither does an unclassifiable host.
+    expect(identity("https://git.internal:9443/group/tree.git", "gitlab", origin)).toBeNull();
+    expect(identity("https://git.elsewhere/group/tree.git", undefined, null)).toBeNull();
+
+    // GitHub has one fixed origin and no port, so both spellings agree without
+    // any connection at all.
+    expect(identity("git@github.com:acme/tree.git", "github", null)).toBe(
+      identity("https://github.com/acme/tree", "github", null),
+    );
+    expect(identity("https://github.com/acme/tree.git", undefined, null)).toBe("github.com/acme/tree");
   });
 
-  it("putOrgSetting treats self-managed forges on different ports as different repos", async () => {
+  // The maintainer decision on first-tree#2122: SSH and HTTPS references to one
+  // self-managed repository must resolve to the same owner, which only each
+  // team's own GitLab connection origin can establish.
+  for (const [spelling, alias] of [
+    ["ssh:// with a transport port", "ssh://git@git.internal:2222/group/tree.git"],
+    ["scp-like SSH", "git@git.internal:group/tree.git"],
+    ["HTTPS on the connection origin", "https://git.internal:8443/group/tree.git"],
+  ] as const) {
+    it(`putOrgSetting refuses a GitLab repo another team holds, given as ${spelling}`, async () => {
+      const app = getApp();
+      const holder = await createTestAdmin(app);
+      const claimant = await createTestAdmin(app);
+      const claimantOrgId = uuidv7();
+      await app.db
+        .insert(organizations)
+        .values({ id: claimantOrgId, name: `gl-${randomUUID().slice(0, 8)}`, displayName: "Claimant" });
+      // Both teams are connected to the same self-managed instance.
+      for (const [orgId, memberId] of [
+        [holder.organizationId, holder.memberId],
+        [claimantOrgId, claimant.memberId],
+      ] as const) {
+        await createGitlabConnection(app.db, {
+          organizationId: orgId,
+          memberId,
+          displayName: "GitLab",
+          instanceOrigin: "https://git.internal:8443",
+        });
+      }
+
+      await orgSettingsService.putOrgSetting(
+        app.db,
+        holder.organizationId,
+        "context_tree",
+        { provider: "gitlab", repo: "https://git.internal:8443/group/tree.git", branch: "main" },
+        { updatedBy: holder.userId },
+      );
+
+      await expect(
+        orgSettingsService.putOrgSetting(
+          app.db,
+          claimantOrgId,
+          "context_tree",
+          { provider: "gitlab", repo: alias, branch: "main" },
+          { updatedBy: claimant.userId },
+        ),
+      ).rejects.toThrow(/already another team's Context Tree/i);
+    });
+  }
+
+  it("putOrgSetting keeps two self-managed instances on one host apart", async () => {
     const app = getApp();
     const first = await createTestAdmin(app);
     const second = await createTestAdmin(app);
@@ -279,24 +340,34 @@ describe("org-settings service", () => {
     await app.db
       .insert(organizations)
       .values({ id: secondOrgId, name: `port-${randomUUID().slice(0, 8)}`, displayName: "Other Instance" });
+    await createGitlabConnection(app.db, {
+      organizationId: first.organizationId,
+      memberId: first.memberId,
+      displayName: "GitLab",
+      instanceOrigin: "https://git.internal:8443",
+    });
+    await createGitlabConnection(app.db, {
+      organizationId: secondOrgId,
+      memberId: second.memberId,
+      displayName: "GitLab",
+      instanceOrigin: "https://git.internal:9443",
+    });
 
     await orgSettingsService.putOrgSetting(
       app.db,
       first.organizationId,
       "context_tree",
-      { repo: "https://git.internal:8443/group/tree.git", branch: "main" },
+      { provider: "gitlab", repo: "https://git.internal:8443/group/tree.git", branch: "main" },
       { updatedBy: first.userId },
     );
 
-    // Same host, different port — two separate self-managed instances. The
-    // provider-neutral canonical key drops the port, so comparing on it would
-    // refuse this team its own tree and make the audit report a shared tree
-    // that does not exist.
+    // Same host and path, different forge — a shared web origin is what makes
+    // two references one repository, and these do not share one.
     const out = await orgSettingsService.putOrgSetting(
       app.db,
       secondOrgId,
       "context_tree",
-      { repo: "https://git.internal:9443/group/tree.git", branch: "main" },
+      { provider: "gitlab", repo: "https://git.internal:9443/group/tree.git", branch: "main" },
       { updatedBy: second.userId },
     );
     expect(out).toMatchObject({ repo: "https://git.internal:9443/group/tree.git" });

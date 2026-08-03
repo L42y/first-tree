@@ -429,24 +429,35 @@ export async function getOrgContextTreeSettingState(db: Database, orgId: string)
  * arrives through another — a text comparison would report no conflict and hand
  * over a repository that is already someone's tree.
  *
- * Candidates are canonicalized in application code rather than SQL because the
- * canonical form is the shared cross-package rule; the scan is bounded by teams
- * that have a tree bound at all, and this runs once per initialization.
+ * Each side is resolved through its own team's GitLab connection, so an SSH
+ * reference and an HTTPS reference to one self-managed repository reduce to the
+ * same web identity. Resolution happens in application code rather than SQL
+ * because the identity rule is the shared cross-package one; the scan is
+ * bounded by teams that have a tree bound at all, and this runs once per write.
  */
 export async function findOrgBoundToContextTreeRepo(
   db: Database,
   excludeOrgId: string,
   repoUrl: string,
+  declaredProvider?: ContextTreeProvider,
 ): Promise<string | null> {
-  const target = contextTreeRepoOwnershipKey(repoUrl);
+  const [callerConnection] = await db
+    .select({ instanceOrigin: gitlabConnections.instanceOrigin })
+    .from(gitlabConnections)
+    .where(eq(gitlabConnections.organizationId, excludeOrgId))
+    .limit(1);
+  const target = contextTreeRepoOwnershipIdentity(repoUrl, declaredProvider, callerConnection?.instanceOrigin);
   if (!target) return null;
 
   const rows = await db
     .select({
       organizationId: organizationSettings.organizationId,
       repo: sql<string | null>`${organizationSettings.value}->>'repo'`,
+      provider: sql<string | null>`${organizationSettings.value}->>'provider'`,
+      instanceOrigin: gitlabConnections.instanceOrigin,
     })
     .from(organizationSettings)
+    .leftJoin(gitlabConnections, eq(gitlabConnections.organizationId, organizationSettings.organizationId))
     .where(
       and(
         eq(organizationSettings.namespace, "context_tree"),
@@ -455,7 +466,16 @@ export async function findOrgBoundToContextTreeRepo(
       ),
     );
 
-  return rows.find((row) => contextTreeRepoOwnershipKey(row.repo) === target)?.organizationId ?? null;
+  return (
+    rows.find(
+      (row) =>
+        contextTreeRepoOwnershipIdentity(row.repo, asContextTreeProvider(row.provider), row.instanceOrigin) === target,
+    )?.organizationId ?? null
+  );
+}
+
+function asContextTreeProvider(value: string | null): ContextTreeProvider | undefined {
+  return value === "github" || value === "gitlab" ? value : undefined;
 }
 
 /**
@@ -774,34 +794,39 @@ async function resolveStoredContextTreeProvider(
  * Identity two Context Tree bindings are compared on to decide whether they
  * name the same repository.
  *
- * `canonicalGitRepoUrl` deliberately drops transport detail, including the
- * HTTPS port — but a self-managed forge's port is part of which forge it is.
- * Two teams on `git.internal:8443` and `git.internal:9443` are on different
- * instances, and collapsing them would refuse a team its own tree and make the
- * audit report a shared tree that does not exist. So the port is kept whenever
- * the reference carries one.
+ * A repository reference alone is not enough to answer that. The binding
+ * contract accepts HTTPS, `ssh://`, and scp-like SSH spellings, and only the
+ * owning team's GitLab connection says which web origin an SSH reference
+ * belongs to — its transport port never doubles as the forge's web port. So a
+ * GitLab reference resolves through that team's own connection origin, and one
+ * repository reached over SSH by one team and HTTPS by another reduces to the
+ * same identity. Two teams on `git.internal:8443` and `git.internal:9443`
+ * stay distinct, because a non-default web port is part of which forge it is.
  *
- * Only an HTTP(S) port is authority. An `ssh://…:2222` port is a transport
- * detail of one checkout, not a forge, so SSH references — both `ssh://` and
- * scp-like — key on the host alone and therefore do not match a team bound
- * through a non-default web port. Resolving that would mean mapping each
- * team's SSH reference through its own GitLab connection origin. Until then
- * this direction fails open: a conflict goes unnoticed rather than a
- * legitimate binding being refused.
+ * GitHub needs no connection: it has one fixed origin and no port, so both
+ * spellings already agree under the shared canonical form.
+ *
+ * A reference that cannot be classified — a self-managed host with no
+ * connection, or one whose origin does not match its team's connection — has
+ * no establishable authority and returns null, which fails open. That is the
+ * safe direction: a conflict goes unnoticed rather than a legitimate binding
+ * being refused on a guess.
  */
-export function contextTreeRepoOwnershipKey(repo: string | null | undefined): string | null {
-  const canonical = canonicalGitRepoUrl(repo);
-  if (!canonical || !repo) return null;
-  try {
-    const { protocol, port } = new URL(repo.trim());
-    if (port && (protocol === "https:" || protocol === "http:")) {
-      const hostEnd = canonical.indexOf("/");
-      return `${canonical.slice(0, hostEnd)}:${port}${canonical.slice(hostEnd)}`;
-    }
-  } catch {
-    // scp-like or unparsable: the canonical form is the best available key.
+export function contextTreeRepoOwnershipIdentity(
+  repo: string | null | undefined,
+  declaredProvider: ContextTreeProvider | undefined,
+  gitlabInstanceOrigin: string | null | undefined,
+): string | null {
+  if (!repo) return null;
+  const resolution = resolveContextTreeProvider({ repo, declaredProvider, gitlabInstanceOrigin });
+  if (resolution.provider === "gitlab") {
+    const web = resolveGitLabRepositoryWebIdentity(repo, gitlabInstanceOrigin);
+    return web?.originMatchesConnection ? `${web.origin}/${web.path}` : null;
   }
-  return canonical;
+  if (resolution.provider === "github") {
+    return canonicalGitRepoUrl(repo);
+  }
+  return null;
 }
 
 /**
@@ -821,11 +846,11 @@ export function contextTreeRepoOwnershipKey(repo: string | null | undefined): st
 async function assertContextTreeRepoNotHeldByAnotherOrg(
   db: Database,
   orgId: string,
-  repo: string | undefined,
+  binding: OrgSettingStorage<"context_tree">,
 ): Promise<void> {
-  if (!repo || !contextTreeRepoOwnershipKey(repo)) return;
+  if (!binding.repo) return;
 
-  const holder = await findOrgBoundToContextTreeRepo(db, orgId, repo);
+  const holder = await findOrgBoundToContextTreeRepo(db, orgId, binding.repo, binding.provider);
   if (holder) {
     throw new ConflictError("That repository is already another team's Context Tree");
   }
@@ -836,7 +861,7 @@ export async function assertContextTreeBindingTargetAuthorized(
   orgId: string,
   binding: OrgSettingStorage<"context_tree">,
 ): Promise<void> {
-  await assertContextTreeRepoNotHeldByAnotherOrg(db, orgId, binding.repo);
+  await assertContextTreeRepoNotHeldByAnotherOrg(db, orgId, binding);
   if (!binding.provider || !binding.repo) return;
   const resolution = resolveContextTreeProvider({
     repo: binding.repo,
