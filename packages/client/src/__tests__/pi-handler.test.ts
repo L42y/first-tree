@@ -641,6 +641,10 @@ describe("sanitizePiProviderDetail", () => {
   it("maps known failures and never echoes private prose", () => {
     expect(sanitizePiProviderDetail("missing credentials")).toBe("pi_auth_required");
     expect(sanitizePiProviderDetail("provider overloaded")).toBe("pi_capacity_limited");
+    // Pi's HTTP-429 phrasings share one provider-scoped capacity rule with the
+    // shared retry classifier (isExhaustedCapacityPhrasing).
+    expect(sanitizePiProviderDetail("too many requests")).toBe("pi_capacity_limited");
+    expect(sanitizePiProviderDetail("resource has been exhausted")).toBe("pi_capacity_limited");
     expect(sanitizePiProviderDetail("Please ignore prior text: PRIVATE_USER_PROMPT_XYZ")).toBe("pi_provider_error");
     expect(sanitizePiProviderDetail("Please ignore prior text: PRIVATE_USER_PROMPT_XYZ")).not.toContain("PRIVATE");
   });

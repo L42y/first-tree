@@ -5,6 +5,7 @@ import {
   buildProviderRetryEvent,
   classifyProviderFailure,
   decideProviderRetry,
+  isExhaustedCapacityPhrasing,
   MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "../runtime/provider-retry-policy.js";
@@ -269,13 +270,36 @@ describe("classifyProviderFailure", () => {
       expect(c, message).toMatchObject({ category: "provider_capacity", reasonCode: "provider_rate_limited" });
     }
     // "resource has been exhausted" is not reserved capacity-speak for other
-    // providers — the branch stays grok-only.
+    // providers — the branch stays provider-gated (grok/pi only).
     const other = classifyProviderFailure(new Error("resource has been exhausted"), {
       provider: "codex",
       scope: "provider_turn",
       source: "sdk",
     });
     expect(other.category).not.toBe("provider_capacity");
+  });
+
+  it("classifies Pi 429 / exhaustion phrasings as provider capacity via the shared provider-scoped rule", () => {
+    for (const message of ["too many requests", "resource has been exhausted"]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "sdk",
+      });
+      // The same provider-scoped rule the Pi sanitizer (pi_capacity_limited)
+      // uses must drive the shared classifier, so retry delay and the durable
+      // notice agree instead of falling through to unknown/unknown_exhausted.
+      expect(c, message).toMatchObject({ category: "provider_capacity", reasonCode: "provider_rate_limited" });
+      expect(
+        decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "retry" });
+    }
+    // One predicate, both consumers; still not reserved for other providers.
+    expect(isExhaustedCapacityPhrasing("pi", "too many requests")).toBe(true);
+    expect(isExhaustedCapacityPhrasing("pi", "resource has been exhausted")).toBe(true);
+    expect(isExhaustedCapacityPhrasing("grok", "too many requests")).toBe(true);
+    expect(isExhaustedCapacityPhrasing("codex", "too many requests")).toBe(false);
+    expect(isExhaustedCapacityPhrasing("kimi-code", "resource has been exhausted")).toBe(false);
   });
 
   it("a transient grok --version verify flake is retried at session start, NOT a terminal capability failure", () => {

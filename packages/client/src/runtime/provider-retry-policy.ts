@@ -626,6 +626,19 @@ function deterministicReason(base: Classification): string {
   return base.reasonCode === "unknown" ? "provider_deterministic_input" : base.reasonCode;
 }
 
+/**
+ * Providers whose raw error stream surfaces HTTP-429 phrasings such as "too
+ * many requests" / "resource has been exhausted" after internal retries are
+ * exhausted. This single provider-scoped predicate drives both the shared
+ * capacity classifier and provider-side error sanitizers (e.g. Pi's
+ * sanitizePiProviderDetail) so one rule selects the same capacity
+ * classification everywhere. Keep provider-gated: the words alone are not
+ * reserved capacity-speak for unrelated providers.
+ */
+export function isExhaustedCapacityPhrasing(provider: RuntimeProvider, text: string): boolean {
+  return (provider === "grok" || provider === "pi") && /too many requests|resource has been exhausted/.test(text);
+}
+
 function isCapacity(
   text: string,
   base: Classification,
@@ -636,10 +649,7 @@ function isCapacity(
     retryAfterMs !== undefined ||
     base.reasonCode.includes("rate_limit") ||
     /rate.?limit|usage limit|session limit|quota|insufficient_quota|overloaded|capacity/.test(text) ||
-    // Grok Build surfaces HTTP 429 with these phrasings after its internal
-    // retry budget is exhausted. Provider-gated like the cursor configuration
-    // branch: the words alone are not reserved capacity-speak elsewhere.
-    (provider === "grok" && /too many requests|resource has been exhausted/.test(text))
+    isExhaustedCapacityPhrasing(provider, text)
   );
 }
 

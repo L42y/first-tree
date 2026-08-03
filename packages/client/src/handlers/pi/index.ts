@@ -47,7 +47,7 @@ import {
   type ProviderProcessSupervisor,
   supportsDefaultProviderProcessSupervision,
 } from "../../runtime/provider-process-supervisor.js";
-import { maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
+import { isExhaustedCapacityPhrasing, maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -84,7 +84,10 @@ export function sanitizePiProviderDetail(raw: string): string {
   if (/missing credentials|no api key|\/login|not authenticated|auth required|unauthorized|forbidden/.test(lower)) {
     return "pi_auth_required";
   }
-  if (/overloaded|rate.?limit|capacity|too many requests|resource has been exhausted/.test(lower)) {
+  // One provider-scoped capacity rule with the shared retry classifier
+  // (isExhaustedCapacityPhrasing): Pi surfaces HTTP 429 with these phrasings
+  // after its own retry budget is exhausted.
+  if (/overloaded|rate.?limit|capacity/.test(lower) || isExhaustedCapacityPhrasing("pi", lower)) {
     return "pi_capacity_limited";
   }
   if (/timed out|timeout|etimedout/.test(lower)) return "pi_timeout";
