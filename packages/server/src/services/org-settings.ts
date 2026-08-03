@@ -3,6 +3,7 @@ import {
   type ContextTreeActiveBinding,
   type ContextTreeProvider,
   type ContextTreeSettingState,
+  canonicalGitRepoIdentity,
   classifyContextTreeSetting,
   contextTreeActiveBindingSchema,
   contextTreeBranchSchema,
@@ -413,6 +414,63 @@ export async function getOrgContextTreeSettingState(db: Database, orgId: string)
 }
 
 /**
+ * Find another organization already bound to `repoUrl`, if any.
+ *
+ * A Context Tree repo belongs to exactly one team. Provisioning derives a repo
+ * name and adopts an existing repo when GitHub reports the name is taken, so
+ * "the name matches" is only ever a guess about ownership — this is the fact.
+ * Without it, two teams whose names derive the same repo name end up sharing
+ * one tree, and the second team silently reads and writes the first team's
+ * decisions.
+ *
+ * Comparison is on repository identity, never on URL text. The binding contract
+ * accepts HTTPS, `ssh://`, and scp-like SSH spellings with an optional `.git`,
+ * so a team bound through one transport must still be found when the lookup
+ * arrives through another — a text comparison would report no conflict and hand
+ * over a repository that is already someone's tree.
+ *
+ * Each side is resolved through its own team's GitLab connection, so an SSH
+ * reference and an HTTPS reference to one self-managed repository reduce to the
+ * same web identity. Resolution happens in application code rather than SQL
+ * because the identity rule is the shared cross-package one; the scan is
+ * bounded by teams that have a tree bound at all, and this runs once per write.
+ */
+export async function findOrgBoundToContextTreeRepo(
+  db: Database,
+  excludeOrgId: string,
+  repoUrl: string,
+): Promise<string | null> {
+  const [callerConnection] = await db
+    .select({ instanceOrigin: gitlabConnections.instanceOrigin })
+    .from(gitlabConnections)
+    .where(eq(gitlabConnections.organizationId, excludeOrgId))
+    .limit(1);
+  const target = contextTreeRepoOwnershipIdentity(repoUrl, callerConnection?.instanceOrigin);
+  if (!target) return null;
+
+  const rows = await db
+    .select({
+      organizationId: organizationSettings.organizationId,
+      repo: sql<string | null>`${organizationSettings.value}->>'repo'`,
+      instanceOrigin: gitlabConnections.instanceOrigin,
+    })
+    .from(organizationSettings)
+    .leftJoin(gitlabConnections, eq(gitlabConnections.organizationId, organizationSettings.organizationId))
+    .where(
+      and(
+        eq(organizationSettings.namespace, "context_tree"),
+        ne(organizationSettings.organizationId, excludeOrgId),
+        sql`${organizationSettings.value}->>'repo' IS NOT NULL`,
+      ),
+    );
+
+  return (
+    rows.find((row) => contextTreeRepoOwnershipIdentity(row.repo, row.instanceOrigin) === target)?.organizationId ??
+    null
+  );
+}
+
+/**
  * Read the Context Tree binding plus row freshness. Onboarding recovery uses
  * `updatedAt` to distinguish a tree binding created after the user completed
  * the value-first work chat from an older, already-adopted team tree.
@@ -724,11 +782,95 @@ async function resolveStoredContextTreeProvider(
   return { ...storage, provider: undefined };
 }
 
+/**
+ * Identity two Context Tree bindings are compared on to decide whether they
+ * name the same repository.
+ *
+ * The identity is the repository's web origin and path. Where that origin comes
+ * from depends on the reference, because the binding contract accepts HTTPS,
+ * `ssh://`, and scp-like SSH spellings:
+ *
+ * - GitHub states it implicitly — one fixed origin, no port — so every
+ *   spelling already agrees under the shared canonical form.
+ * - An HTTP(S) reference states it outright, port included, and needs nothing
+ *   else. Asking for a connection here would discard the identity of a binding
+ *   whose team later deletes its connection, and that binding still owns its
+ *   repository.
+ * - An SSH or scp-like reference states no origin at all, and its transport
+ *   port is never the forge's, so only the owning team's GitLab connection can
+ *   supply one.
+ *
+ * All three land on the same string for one repository, so a team on HTTPS and
+ * a team on SSH are seen to hold the same tree. Two self-managed instances on
+ * one host stay distinct, because a non-default web port is part of which
+ * forge it is.
+ *
+ * An SSH reference whose team has no connection, or whose host does not match
+ * it, has no establishable origin and returns null. That fails open on the safe
+ * side: a conflict goes unnoticed rather than a legitimate binding being
+ * refused on a guess.
+ */
+export function contextTreeRepoOwnershipIdentity(
+  repo: string | null | undefined,
+  gitlabInstanceOrigin: string | null | undefined,
+): string | null {
+  const identity = canonicalGitRepoIdentity(repo);
+  if (!identity || !repo) return null;
+
+  // GitHub has one fixed origin and no port, so every spelling already agrees.
+  if (identity.host === "github.com") return identity.canonical;
+
+  // An HTTP(S) reference states its own web origin, port included. Requiring a
+  // connection to read it would drop the identity of a binding whose team later
+  // deletes its connection — and that binding still owns its repository.
+  try {
+    const url = new URL(repo.trim());
+    if (url.protocol === "https:" || url.protocol === "http:") {
+      return `${url.origin.toLowerCase()}/${identity.path}`;
+    }
+  } catch {
+    // Not a URL — scp-like SSH, handled below.
+  }
+
+  // SSH and scp-like references carry no web origin, and their transport port
+  // is never the forge's, so only the owning team's connection can supply one.
+  const web = resolveGitLabRepositoryWebIdentity(repo, gitlabInstanceOrigin);
+  return web?.originMatchesConnection ? `${web.origin}/${web.path}` : null;
+}
+
+/**
+ * Refuse a binding that would point this team at another team's Context Tree.
+ *
+ * A Context Tree repository backs one team: sharing one merges two teams'
+ * decisions, constraints, and ownership into a single tree. This runs on every
+ * binding write — Cloud provisioning, manual Settings binding, and the
+ * `tree init` callback alike — because the repository is the thing being
+ * claimed regardless of which surface names it.
+ *
+ * Two organizations binding the same repository at the same instant can still
+ * both pass this check: the caller holds its own organization row, which does
+ * not serialize a different organization's write. That window is left open
+ * rather than closed with a lock on the repository identity.
+ */
+async function assertContextTreeRepoNotHeldByAnotherOrg(
+  db: Database,
+  orgId: string,
+  binding: OrgSettingStorage<"context_tree">,
+): Promise<void> {
+  if (!binding.repo) return;
+
+  const holder = await findOrgBoundToContextTreeRepo(db, orgId, binding.repo);
+  if (holder) {
+    throw new ConflictError("That repository is already another team's Context Tree");
+  }
+}
+
 export async function assertContextTreeBindingTargetAuthorized(
   db: Database,
   orgId: string,
   binding: OrgSettingStorage<"context_tree">,
 ): Promise<void> {
+  await assertContextTreeRepoNotHeldByAnotherOrg(db, orgId, binding);
   if (!binding.provider || !binding.repo) return;
   const resolution = resolveContextTreeProvider({
     repo: binding.repo,

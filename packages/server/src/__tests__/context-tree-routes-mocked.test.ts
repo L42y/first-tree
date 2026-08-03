@@ -1,5 +1,13 @@
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { contextTreeRepoName } from "../services/context-tree-repo-provisioner.js";
+
+// The repo name carries a per-organization discriminator. Derive the expected
+// names from the real rule so these route tests keep asserting error mapping
+// rather than a stale copy of the naming rule.
+const ORG_ID = "org-test";
+const REPO_NAME = contextTreeRepoName("Acme", ORG_ID);
+const RESEARCH_REPO_NAME = contextTreeRepoName("Acme Research Team", ORG_ID);
 
 type RouteMocks = Awaited<ReturnType<typeof setupRoute>>;
 
@@ -8,7 +16,7 @@ async function setupRoute() {
 
   const scope = {
     userId: "user-test",
-    organizationId: "org-test",
+    organizationId: ORG_ID,
     memberId: "member-test",
     role: "admin",
     humanAgentId: "human-test",
@@ -21,10 +29,10 @@ async function setupRoute() {
   };
   const repo = {
     ownerLogin: "acme",
-    name: "acme-context-tree",
-    fullName: "acme/acme-context-tree",
-    cloneUrl: "https://github.com/acme/acme-context-tree.git",
-    htmlUrl: "https://github.com/acme/acme-context-tree",
+    name: REPO_NAME,
+    fullName: `acme/${REPO_NAME}`,
+    cloneUrl: `https://github.com/acme/${REPO_NAME}.git`,
+    htmlUrl: `https://github.com/acme/${REPO_NAME}`,
   };
 
   class ContextTreeRepoProvisionError extends Error {
@@ -85,6 +93,7 @@ async function setupRoute() {
   const createRepoFileWithToken = vi.fn().mockResolvedValue({ content: { path: "NODE.md" } });
   const getOrgContextTreeBinding = vi.fn().mockResolvedValue(null);
   const getOrgContextTreeSettingState = vi.fn().mockResolvedValue({ kind: "unbound", branch: "main" });
+  const findOrgBoundToContextTreeRepo = vi.fn().mockResolvedValue(null);
   const getOrgContextReviewRuntime = vi.fn().mockResolvedValue({
     bindingState: "unbound",
     provider: null,
@@ -109,8 +118,14 @@ async function setupRoute() {
   });
 
   vi.doMock("../scope/require-org.js", () => ({ requireOrgAdmin, requireOrgMembership }));
+  const actualProvisioner = await vi.importActual<typeof import("../services/context-tree-repo-provisioner.js")>(
+    "../services/context-tree-repo-provisioner.js",
+  );
   vi.doMock("../services/context-tree-repo-provisioner.js", () => ({
     ContextTreeRepoProvisionError,
+    // Real derivation: these edge tests assert route error mapping, not repo
+    // naming, and a stubbed name would hide a break in the real rule.
+    contextTreeRepoName: actualProvisioner.contextTreeRepoName,
     ensureInstallationOwnedContextTreeRepo,
   }));
   vi.doMock("../services/context-tree-write-preflight.js", () => ({
@@ -126,6 +141,7 @@ async function setupRoute() {
   vi.doMock("../services/github-app-token.js", () => ({ mintContextTreeInstallationToken }));
   vi.doMock("../services/github-user-token.js", () => ({ GithubUserTokenError, getFreshGithubUserToken }));
   vi.doMock("../services/org-settings.js", () => ({
+    findOrgBoundToContextTreeRepo,
     getOrgContextTreeBinding,
     getOrgContextTreeSettingState,
     getOrgContextReviewRuntime,
@@ -395,7 +411,7 @@ describe("org context tree routes with mocked service edges", () => {
     { field: "HTTP HTML URL", repoOverride: { htmlUrl: "http://github.com/acme/tree" } },
     { field: "credentialed HTML URL", repoOverride: { htmlUrl: "https://user:secret@github.com/acme/tree" } },
     { field: "off-host HTML URL", repoOverride: { htmlUrl: "https://example.com/acme/tree" } },
-    { field: "off-host clone URL", repoOverride: { cloneUrl: "https://example.com/acme/acme-context-tree.git" } },
+    { field: "off-host clone URL", repoOverride: { cloneUrl: `https://example.com/acme/${REPO_NAME}.git` } },
     { field: "mismatched clone URL", repoOverride: { cloneUrl: "https://github.com/acme/other-tree.git" } },
     { field: "mismatched HTML URL", repoOverride: { htmlUrl: "https://github.com/acme/other-tree" } },
     { field: "mismatched full name", repoOverride: { fullName: "acme/other-tree" } },
@@ -421,10 +437,10 @@ describe("org context tree routes with mocked service edges", () => {
       field: "owner",
       repo: {
         ownerLogin: "other",
-        name: "acme-context-tree",
-        fullName: "other/acme-context-tree",
-        cloneUrl: "https://github.com/other/acme-context-tree.git",
-        htmlUrl: "https://github.com/other/acme-context-tree",
+        name: REPO_NAME,
+        fullName: `other/${REPO_NAME}`,
+        cloneUrl: `https://github.com/other/${REPO_NAME}.git`,
+        htmlUrl: `https://github.com/other/${REPO_NAME}`,
       },
     },
     {
@@ -473,7 +489,7 @@ describe("org context tree routes with mocked service edges", () => {
 
     expect(res.statusCode).toBe(409);
     expect(res.json()).toEqual({
-      error: "GitHub repo acme/acme-context-tree is not accessible to this team's GitHub App installation.",
+      error: `GitHub repo acme/${REPO_NAME} is not accessible to this team's GitHub App installation.`,
       code: "repo_unavailable",
     });
     expect(ctx.mocks.getRepoFileWithToken).toHaveBeenCalledTimes(2);
@@ -565,10 +581,10 @@ describe("org context tree routes with mocked service edges", () => {
     const ctx = await setupRoute();
     const expectedRepo = {
       ...ctx.repo,
-      name: "acme-research-team-context-tree",
-      fullName: "acme/acme-research-team-context-tree",
-      cloneUrl: "https://github.com/acme/acme-research-team-context-tree.git",
-      htmlUrl: "https://github.com/acme/acme-research-team-context-tree",
+      name: RESEARCH_REPO_NAME,
+      fullName: `acme/${RESEARCH_REPO_NAME}`,
+      cloneUrl: `https://github.com/acme/${RESEARCH_REPO_NAME}.git`,
+      htmlUrl: `https://github.com/acme/${RESEARCH_REPO_NAME}`,
     };
     ctx.mocks.getOrganization.mockResolvedValueOnce({
       id: ctx.scope.organizationId,
@@ -595,7 +611,7 @@ describe("org context tree routes with mocked service edges", () => {
       nodePath: "NODE.md",
     });
     expect(ctx.mocks.ensureInstallationOwnedContextTreeRepo).toHaveBeenCalledWith(
-      expect.objectContaining({ repoName: "acme-research-team-context-tree", teamName: "Àcme Research Team" }),
+      expect.objectContaining({ repoName: RESEARCH_REPO_NAME, teamName: "Àcme Research Team" }),
     );
     expect(ctx.mocks.createRepoFileWithToken).toHaveBeenCalledTimes(2);
     expect(ctx.mocks.createRepoFileWithToken).toHaveBeenNthCalledWith(

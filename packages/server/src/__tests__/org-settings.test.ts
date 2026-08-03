@@ -6,6 +6,7 @@ import postgres from "postgres";
 import { describe, expect, it, vi } from "vitest";
 import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
+import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
@@ -215,6 +216,234 @@ describe("org-settings service", () => {
 
     const re = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree");
     expect(re).toEqual(out);
+  });
+
+  // A Context Tree repository backs one team, and the repository is the thing
+  // being claimed no matter which surface names it — so every binding write
+  // enforces exclusivity, not only the Cloud provisioner that derives a name.
+  for (const [spelling, alias] of [
+    ["clone URL", "https://github.com/example/shared-tree.git"],
+    ["HTTPS without .git", "https://github.com/example/shared-tree"],
+    ["ssh:// URL", "ssh://git@github.com/example/shared-tree.git"],
+    ["scp-like SSH", "git@github.com:example/shared-tree.git"],
+  ] as const) {
+    it(`putOrgSetting refuses a repo another team holds, given as a ${spelling}`, async () => {
+      const app = getApp();
+      const holder = await createTestAdmin(app);
+      const claimant = await createTestAdmin(app);
+      const claimantOrgId = uuidv7();
+      await app.db
+        .insert(organizations)
+        .values({ id: claimantOrgId, name: `claimant-${randomUUID().slice(0, 8)}`, displayName: "Claimant" });
+
+      await orgSettingsService.putOrgSetting(
+        app.db,
+        holder.organizationId,
+        "context_tree",
+        { repo: "https://github.com/example/shared-tree.git", branch: "main" },
+        { updatedBy: holder.userId },
+      );
+
+      await expect(
+        orgSettingsService.putOrgSetting(
+          app.db,
+          claimantOrgId,
+          "context_tree",
+          { repo: alias, branch: "main" },
+          { updatedBy: claimant.userId },
+        ),
+      ).rejects.toThrow(/already another team's Context Tree/i);
+    });
+  }
+
+  it("contextTreeRepoOwnershipIdentity takes the web origin from wherever the reference states it", () => {
+    const identity = orgSettingsService.contextTreeRepoOwnershipIdentity;
+    const origin = "https://git.internal:8443";
+    const expected = "https://git.internal:8443/group/tree";
+
+    // An HTTP(S) reference states its own origin and needs no connection — a
+    // team that deletes its connection still owns the repository it is bound to.
+    expect(identity("https://git.internal:8443/group/tree.git", null)).toBe(expected);
+    expect(identity("https://git.internal:8443/group/tree.git", origin)).toBe(expected);
+
+    // SSH states no origin, so the owning team's connection supplies it. Its
+    // transport port is not a web port.
+    expect(identity("ssh://git@git.internal:2222/group/tree.git", origin)).toBe(expected);
+    expect(identity("git@git.internal:group/tree.git", origin)).toBe(expected);
+
+    // Without a usable connection an SSH reference has no establishable origin.
+    expect(identity("git@git.internal:group/tree.git", null)).toBeNull();
+    expect(identity("git@git.internal:group/tree.git", "https://git.elsewhere")).toBeNull();
+
+    // A second instance on the same host is a different forge authority.
+    expect(identity("https://git.internal:9443/group/tree.git", null)).not.toBe(expected);
+
+    // GitHub has one fixed origin and no port, so its spellings agree with no
+    // connection at all.
+    expect(identity("git@github.com:acme/tree.git", null)).toBe(identity("https://github.com/acme/tree", null));
+    expect(identity("https://github.com/acme/tree.git", null)).toBe("github.com/acme/tree");
+  });
+
+  // The maintainer decision on first-tree#2122: SSH and HTTPS references to one
+  // self-managed repository must resolve to the same owner, which only each
+  // team's own GitLab connection origin can establish.
+  for (const [spelling, alias] of [
+    ["ssh:// with a transport port", "ssh://git@git.internal:2222/group/tree.git"],
+    ["scp-like SSH", "git@git.internal:group/tree.git"],
+    ["HTTPS on the connection origin", "https://git.internal:8443/group/tree.git"],
+  ] as const) {
+    it(`putOrgSetting refuses a GitLab repo another team holds, given as ${spelling}`, async () => {
+      const app = getApp();
+      const holder = await createTestAdmin(app);
+      const claimant = await createTestAdmin(app);
+      const claimantOrgId = uuidv7();
+      await app.db
+        .insert(organizations)
+        .values({ id: claimantOrgId, name: `gl-${randomUUID().slice(0, 8)}`, displayName: "Claimant" });
+      // Both teams are connected to the same self-managed instance.
+      for (const [orgId, memberId] of [
+        [holder.organizationId, holder.memberId],
+        [claimantOrgId, claimant.memberId],
+      ] as const) {
+        await createGitlabConnection(app.db, {
+          organizationId: orgId,
+          memberId,
+          displayName: "GitLab",
+          instanceOrigin: "https://git.internal:8443",
+        });
+      }
+
+      await orgSettingsService.putOrgSetting(
+        app.db,
+        holder.organizationId,
+        "context_tree",
+        { provider: "gitlab", repo: "https://git.internal:8443/group/tree.git", branch: "main" },
+        { updatedBy: holder.userId },
+      );
+
+      await expect(
+        orgSettingsService.putOrgSetting(
+          app.db,
+          claimantOrgId,
+          "context_tree",
+          { provider: "gitlab", repo: alias, branch: "main" },
+          { updatedBy: claimant.userId },
+        ),
+      ).rejects.toThrow(/already another team's Context Tree/i);
+    });
+  }
+
+  // Deleting a GitLab connection does not clear `context_tree`, so a holder can
+  // outlive its connection. Its HTTPS binding already states the full web
+  // origin, and that binding still owns the repository.
+  for (const [spelling, alias] of [
+    ["HTTPS", "https://git.internal:8443/group/tree.git"],
+    ["scp-like SSH", "git@git.internal:group/tree.git"],
+  ] as const) {
+    it(`putOrgSetting refuses a repo held by a team with no connection, claimed over ${spelling}`, async () => {
+      const app = getApp();
+      const holder = await createTestAdmin(app);
+      const claimant = await createTestAdmin(app);
+      const claimantOrgId = uuidv7();
+      await app.db
+        .insert(organizations)
+        .values({ id: claimantOrgId, name: `noconn-${randomUUID().slice(0, 8)}`, displayName: "Claimant" });
+      for (const [orgId, memberId] of [
+        [holder.organizationId, holder.memberId],
+        [claimantOrgId, claimant.memberId],
+      ] as const) {
+        await createGitlabConnection(app.db, {
+          organizationId: orgId,
+          memberId,
+          displayName: "GitLab",
+          instanceOrigin: "https://git.internal:8443",
+        });
+      }
+
+      // The holder binds while connected, then loses its connection entirely.
+      await orgSettingsService.putOrgSetting(
+        app.db,
+        holder.organizationId,
+        "context_tree",
+        { provider: "gitlab", repo: "https://git.internal:8443/group/tree.git", branch: "main" },
+        { updatedBy: holder.userId },
+      );
+      await app.db.delete(gitlabConnections).where(eq(gitlabConnections.organizationId, holder.organizationId));
+
+      await expect(
+        orgSettingsService.putOrgSetting(
+          app.db,
+          claimantOrgId,
+          "context_tree",
+          { provider: "gitlab", repo: alias, branch: "main" },
+          { updatedBy: claimant.userId },
+        ),
+      ).rejects.toThrow(/already another team's Context Tree/i);
+    });
+  }
+
+  it("putOrgSetting keeps two self-managed instances on one host apart", async () => {
+    const app = getApp();
+    const first = await createTestAdmin(app);
+    const second = await createTestAdmin(app);
+    const secondOrgId = uuidv7();
+    await app.db
+      .insert(organizations)
+      .values({ id: secondOrgId, name: `port-${randomUUID().slice(0, 8)}`, displayName: "Other Instance" });
+    await createGitlabConnection(app.db, {
+      organizationId: first.organizationId,
+      memberId: first.memberId,
+      displayName: "GitLab",
+      instanceOrigin: "https://git.internal:8443",
+    });
+    await createGitlabConnection(app.db, {
+      organizationId: secondOrgId,
+      memberId: second.memberId,
+      displayName: "GitLab",
+      instanceOrigin: "https://git.internal:9443",
+    });
+
+    await orgSettingsService.putOrgSetting(
+      app.db,
+      first.organizationId,
+      "context_tree",
+      { provider: "gitlab", repo: "https://git.internal:8443/group/tree.git", branch: "main" },
+      { updatedBy: first.userId },
+    );
+
+    // Same host and path, different forge — a shared web origin is what makes
+    // two references one repository, and these do not share one.
+    const out = await orgSettingsService.putOrgSetting(
+      app.db,
+      secondOrgId,
+      "context_tree",
+      { provider: "gitlab", repo: "https://git.internal:9443/group/tree.git", branch: "main" },
+      { updatedBy: second.userId },
+    );
+    expect(out).toMatchObject({ repo: "https://git.internal:9443/group/tree.git" });
+  });
+
+  it("putOrgSetting still lets a team rewrite its own binding", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+
+    await orgSettingsService.putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      { repo: "https://github.com/example/own-tree.git", branch: "main" },
+      { updatedBy: admin.userId },
+    );
+    // Same repository, different spelling: exclusivity is about *other* teams,
+    // so a team re-stating its own binding must not lock itself out.
+    const out = await orgSettingsService.putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      { repo: "git@github.com:example/own-tree.git", branch: "v2" },
+      { updatedBy: admin.userId },
+    );
+    expect(out).toMatchObject({ branch: "v2" });
   });
 
   it("putOrgSetting input semantics: undefined unchanged, null clears, value sets", async () => {

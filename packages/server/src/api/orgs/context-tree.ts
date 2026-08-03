@@ -17,6 +17,7 @@ import { ConflictError } from "../../errors.js";
 import { requireOrgAdmin, requireOrgMembership } from "../../scope/require-org.js";
 import {
   ContextTreeRepoProvisionError,
+  contextTreeRepoName,
   ensureInstallationOwnedContextTreeRepo,
 } from "../../services/context-tree-repo-provisioner.js";
 import {
@@ -45,6 +46,7 @@ import {
   type TreeSetupRecoveryMessage,
 } from "../../services/onboarding-kickoff.js";
 import {
+  findOrgBoundToContextTreeRepo,
   getOrgContextReviewRuntime,
   getOrgContextTreeBinding,
   getOrgContextTreeSettingState,
@@ -73,8 +75,6 @@ jobs:
       - name: Validate Context Tree
         run: npx -p first-tree first-tree tree verify
 `;
-const REPO_SUFFIX = "-context-tree";
-const GITHUB_REPO_NAME_MAX_LENGTH = 100;
 const TREE_SETUP_TOPIC = "Set up shared context";
 const writePreflightRouteOptions = {
   // `undefined` intentionally preserves @fastify/rate-limit's global shared
@@ -288,8 +288,35 @@ export async function orgContextTreeRoutes(app: FastifyInstance): Promise<void> 
 
     const org = await getOrganization(app.db, scope.organizationId);
     const teamName = normalizeInlineText(org.displayName) || org.name;
-    const repoName = contextTreeRepoName(teamName);
+    const repoName = contextTreeRepoName(teamName, scope.organizationId);
     const expectedRepoFingerprint = fingerprintGithubRepository(`${installation.accountLogin}/${repoName}`);
+
+    // Provisioning adopts an existing repo when GitHub reports the name is
+    // taken, and adoption is only ever meant to recover this team's own
+    // half-created repo. The derived name is per-organization, so another team
+    // should not be able to reach this point — but a name is a guess about
+    // ownership and the binding table is the fact, so refuse rather than adopt
+    // a tree that already belongs to someone else.
+    const conflictingOrgId = await findOrgBoundToContextTreeRepo(
+      app.db,
+      scope.organizationId,
+      `https://github.com/${installation.accountLogin}/${repoName}.git`,
+    );
+    if (conflictingOrgId) {
+      app.log.warn(
+        {
+          event: "context_tree.initialize.repo_owned_by_other_org",
+          organizationId: scope.organizationId,
+          repoFingerprint: expectedRepoFingerprint,
+        },
+        "context tree initialize: derived repo already bound to another team",
+      );
+      return reply.status(409).send({
+        error:
+          "That GitHub repo is already the Context Tree of another team. Rename this team, or connect an existing repo from Settings → Context Tree.",
+        code: "context_tree_repo_owned_by_other_org",
+      });
+    }
     app.log.info(
       {
         event: "context_tree.initialize.start",
@@ -732,22 +759,6 @@ function mapUpstreamError(err: unknown, message: string): ContextTreeInitializeE
     return err;
   }
   return new ContextTreeInitializeError(502, "upstream", message);
-}
-
-function contextTreeRepoName(teamName: string): string {
-  const maxBaseLength = GITHUB_REPO_NAME_MAX_LENGTH - REPO_SUFFIX.length;
-  const base = slugifyRepoBase(teamName).slice(0, maxBaseLength).replace(/-+$/g, "") || "team";
-  return `${base}${REPO_SUFFIX}`;
-}
-
-function slugifyRepoBase(value: string): string {
-  const ascii = value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
-  const slug = ascii
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-");
-  return slug || "team";
 }
 
 function initialRootNode(teamName: string, githubLogin: string): string {

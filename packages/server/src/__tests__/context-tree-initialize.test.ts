@@ -6,6 +6,7 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
+import { contextTreeRepoName } from "../services/context-tree-repo-provisioner.js";
 import { encryptValue } from "../services/crypto.js";
 import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/github-app-installations.js";
 import { createGitlabConnection } from "../services/gitlab-connections.js";
@@ -20,12 +21,16 @@ type FetchInit = Parameters<typeof globalThis.fetch>[1];
 const GITHUB_API_BASE = "https://api.github.com";
 const INSTALLATION_TOKEN = "ghs_installation_token";
 const ACCOUNT_LOGIN = "acme-github";
-const REPO_NAME = "acme-labs-context-tree";
-const CLONE_URL = `https://github.com/${ACCOUNT_LOGIN}/${REPO_NAME}.git`;
-const HTML_URL = `https://github.com/${ACCOUNT_LOGIN}/${REPO_NAME}`;
+// The repo name carries a per-organization discriminator, so it is only known
+// once a test has an org. `renameOrg` — which every test that reaches GitHub
+// already calls — recomputes these from the real derivation rather than
+// restating it here, so a change to the rule cannot pass by matching a copy.
+let REPO_NAME = "";
+let CLONE_URL = "";
+let HTML_URL = "";
 const USER_LOGIN = "octocat";
 const USER_GITHUB_ID = 4242;
-const USER_REPO_CLONE_URL = `https://github.com/${USER_LOGIN}/${REPO_NAME}.git`;
+let USER_REPO_CLONE_URL = "";
 const ROOT_NODE_PATH = "NODE.md";
 const VALIDATE_TREE_WORKFLOW_PATH = ".github/workflows/validate-tree.yml";
 const VALIDATE_TREE_WORKFLOW_CONTENT = `name: Validate Context Tree
@@ -642,6 +647,50 @@ owners: [${ACCOUNT_LOGIN}]
       branch: "main",
     });
   });
+
+  // A name only ever guesses at ownership; the binding table is the fact. The
+  // binding contract accepts HTTPS, ssh://, and scp-like SSH spellings with an
+  // optional `.git`, and every one of them names the same repository — so the
+  // conflict must be found through canonical identity, not URL text.
+  for (const spelling of ["clone URL", "HTTPS without .git", "ssh:// URL", "scp-like SSH"] as const) {
+    it(`refuses to adopt a derived repo another team holds as a ${spelling}`, async () => {
+      const app = getApp();
+      const admin = await createTestAdmin(app);
+      const installationId = await seedInstallation(app, admin.organizationId);
+      await renameOrg(app, admin.organizationId, "Acme Labs");
+
+      const alias = {
+        "clone URL": CLONE_URL,
+        "HTTPS without .git": HTML_URL,
+        "ssh:// URL": `ssh://git@github.com/${ACCOUNT_LOGIN}/${REPO_NAME}.git`,
+        "scp-like SSH": `git@github.com:${ACCOUNT_LOGIN}/${REPO_NAME}.git`,
+      }[spelling];
+
+      const otherOrgId = await createOrganization(app, `other-${crypto.randomUUID().slice(0, 8)}`);
+      await putOrgSetting(
+        app.db,
+        otherOrgId,
+        "context_tree",
+        { repo: alias, branch: "main" },
+        {
+          updatedBy: admin.userId,
+        },
+      );
+
+      const fetchSpy = mockFetch(async (url) => {
+        if (url === installationTokenUrl(installationId)) return installationTokenResponse();
+        return new Response(`unexpected fetch ${url}`, { status: 500 });
+      });
+
+      const res = await initialize(app, admin);
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: "context_tree_repo_owned_by_other_org" });
+      // Only the installation token was minted — no repo was created or adopted.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(await getOrgContextTreeBinding(app.db, admin.organizationId)).toBeNull();
+    });
+  }
 
   it("returns 409 repo_unavailable when an existing deterministic repo is not readable by the installation", async () => {
     const app = getApp();
@@ -1354,6 +1403,10 @@ async function getInstallation(app: FastifyInstance, admin: Pick<TestAdmin, "org
 
 async function renameOrg(app: FastifyInstance, organizationId: string, displayName: string): Promise<void> {
   await app.db.update(organizations).set({ displayName }).where(eq(organizations.id, organizationId));
+  REPO_NAME = contextTreeRepoName(displayName, organizationId);
+  CLONE_URL = `https://github.com/${ACCOUNT_LOGIN}/${REPO_NAME}.git`;
+  HTML_URL = `https://github.com/${ACCOUNT_LOGIN}/${REPO_NAME}`;
+  USER_REPO_CLONE_URL = `https://github.com/${USER_LOGIN}/${REPO_NAME}.git`;
 }
 
 async function createOrganization(app: FastifyInstance, name: string): Promise<string> {
