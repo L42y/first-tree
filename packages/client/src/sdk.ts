@@ -12,6 +12,7 @@ import {
   ATTACHMENT_MIME_HEADER,
   type Chat,
   type ChatDetail,
+  type ChatEngagementView,
   type ChatGithubEntityListResponse,
   type ChatGitlabEntityListResponse,
   type ChatParticipantDetail,
@@ -34,6 +35,7 @@ import {
   type CronJob,
   type CronPreviewRequest,
   type CronPreviewResponse,
+  chatDetailSchema,
   confirmTeamRepositoriesOutputSchema,
   confirmTeamRepositoriesSchema,
   contextActivationRequestSchema,
@@ -61,6 +63,7 @@ import {
   type ListDocCommentsResponse,
   type ListDocsResponse,
   legacyContextActivationResponseSchema,
+  listMeChatsResponseSchema,
   type Message,
   type OrgContextTreeFeaturesOutput,
   type OrgContextTreeFeaturesStorage,
@@ -76,6 +79,7 @@ import {
   type UpdateCronJobRequest,
   type UploadAttachmentResponse,
   uploadAttachmentResponseSchema,
+  type WorkspaceChatListResponse,
 } from "@first-tree/shared";
 import { createLogger } from "./observability/logger.js";
 
@@ -571,6 +575,44 @@ export class FirstTreeHubSDK {
     return orgContextTreeFeaturesOutputSchema.parse(response);
   }
 
+  /**
+   * Member-JWT Workspace conversation list (`GET /orgs/:orgId/chats`) for one
+   * engagement view, optionally restricted to chats where `withAgentId` is a
+   * speaker (server-side `with` filter). The response `rows` is the complete
+   * additive stream — pinned chats also appear in `rows` — so items are the
+   * rows with an `id` alias on `chatId`. Deleted rows are never included.
+   * Schema field defaults absorb version skew with older server builds.
+   */
+  async listWorkspaceChats(
+    organizationId: string,
+    options: { engagement: ChatEngagementView; withAgentId?: string; limit?: number; cursor?: string },
+  ): Promise<WorkspaceChatListResponse> {
+    const params = new URLSearchParams();
+    params.set("engagement", options.engagement);
+    if (options.withAgentId) params.set("with", options.withAgentId);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.cursor) params.set("cursor", options.cursor);
+    const response = await this.requestJson<unknown>(
+      `/api/v1/orgs/${encodeURIComponent(organizationId)}/chats?${params.toString()}`,
+    );
+    const parsed = listMeChatsResponseSchema.parse(response);
+    return {
+      items: parsed.rows.map((row) => ({ id: row.chatId, ...row })),
+      nextCursor: parsed.nextCursor,
+    };
+  }
+
+  /**
+   * Member-JWT chat detail (`GET /chats/:chatId`). The payload carries the
+   * raw chat `metadata` and the caller's own `engagementStatus`
+   * (server-defaulted to "active"), which powers the CLI's exact-chat
+   * archive preflight.
+   */
+  async getMemberChatDetail(chatId: string): Promise<ChatDetail> {
+    const response = await this.requestJson<unknown>(`/api/v1/chats/${encodeURIComponent(chatId)}`);
+    return chatDetailSchema.parse(response);
+  }
+
   async listChats(options?: { limit?: number; cursor?: string }): Promise<PaginatedResult<Chat>> {
     return this.requestJson(`/api/v1/agent/chats${this.queryString(options)}`);
   }
@@ -846,12 +888,13 @@ export class FirstTreeHubSDK {
     return this.requestJson<AgentContextTreeIoResponse>(`/api/v1/agent/context-tree/io${query ? `?${query}` : ""}`);
   }
 
-  /** Bind Context Tree configuration for this SDK's authenticated agent organization. */
-  public async setAgentContextTreeConfig(input: { repo: string; branch?: string }): Promise<ContextTreeConfig> {
-    this.logger.debug(
-      { agentId: this._agentId, stage: "resolve_agent_organization" },
-      "context tree binding update started",
-    );
+  /**
+   * Resolve the organization this SDK's authenticated agent belongs to via
+   * `GET /api/v1/agent/me`. Throws a SyntaxError when the payload carries no
+   * usable `organizationId`, matching the validation the context-tree binding
+   * path has always applied.
+   */
+  public async getAgentOrganizationId(): Promise<string> {
     const agent = await this.requestJson<unknown>("/api/v1/agent/me", { redirect: "manual" }, { logRetries: false });
     const organizationId =
       typeof agent === "object" &&
@@ -865,6 +908,16 @@ export class FirstTreeHubSDK {
         "Invalid response from GET /api/v1/agent/me: organizationId must be a non-empty, unpadded string",
       );
     }
+    return organizationId;
+  }
+
+  /** Bind Context Tree configuration for this SDK's authenticated agent organization. */
+  public async setAgentContextTreeConfig(input: { repo: string; branch?: string }): Promise<ContextTreeConfig> {
+    this.logger.debug(
+      { agentId: this._agentId, stage: "resolve_agent_organization" },
+      "context tree binding update started",
+    );
+    const organizationId = await this.getAgentOrganizationId();
 
     this.logger.debug(
       { agentId: this._agentId, organizationId, stage: "update_org_setting" },

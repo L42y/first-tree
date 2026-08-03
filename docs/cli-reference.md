@@ -513,6 +513,24 @@ first-tree chat send code-agent "now we can talk"
 first-tree chat list
 first-tree chat history <chatId>
 
+# Workspace engagement views — the signed-in user's Workspace projection
+# (the Active / Archived tabs), still restricted to chats where the selected
+# --agent is a speaker. Items carry the Workspace attention fields
+# (unreadMentionCount, openRequestCount, busyAgentIds, failedAgentIds,
+# liveActivity, pinnedAt, …) plus an `id` alias of `chatId`. Deleted rows are
+# never included; page via the server-returned opaque `nextCursor`.
+first-tree chat list --engagement active
+first-tree chat list --engagement archived --cursor <cursor>
+
+# Exact one-chat preflight — the read-only check to run immediately before
+# `chat archive`. Returns at most one item (with the raw chat `metadata`,
+# where the SCM entityKey/URL lives) and `nextCursor: null`, only when the
+# selected agent is a speaker in that chat AND your current engagement
+# matches the requested view; otherwise `items` is empty. Requires
+# --engagement and cannot be combined with --cursor.
+first-tree chat list --engagement active --chat <chatId>
+first-tree chat archive <chatId>
+
 # Archive a chat from the signed-in user's Active workspace view. The selected
 # agent must be a speaking participant, so the eligible set is exactly the
 # structural scope exposed by `chat list`. Omitting the id targets
@@ -565,10 +583,15 @@ environment. The recipient must be a participant of that chat; if not,
 `invite` first.
 
 `chat archive` also defaults to `FIRST_TREE_CHAT_ID`, but accepts an explicit
-chat id from `chat list`. The list is a structural membership inventory and may
-continue to include a chat after archival; archival changes the signed-in
-user's private Workspace engagement state, hiding the row from their default
-Active view until new chat activity revives it.
+chat id from `chat list`. The default list is a structural membership
+inventory and may continue to include a chat after archival; archival changes
+the signed-in user's private Workspace engagement state, hiding the row from
+their default Active view until new chat activity revives it. Pass
+`--engagement active|archived|all` to read that Workspace projection instead
+(Active excludes archived rows; Archived shows only them), and add
+`--chat <chatId>` for the exact read-only preflight that mirrors what
+`chat archive <chatId>` will see — it returns the chat only while it is
+still in the requested view for you.
 
 `chat create` is different: it creates a new task chat and writes the first
 message in one command. Use it to split genuinely new work into a fresh chat.
