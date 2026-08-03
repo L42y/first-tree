@@ -76,7 +76,9 @@
       "comment_id": 5163616862,
       "created_at": "2026-08-03T07:41:49Z",
       "repoId": 1186836943,
-      "pullRequestNo": 2140
+      "pullRequestNo": 2140,
+      "full_name": "Coooder",
+      "public_email": null
     }
   ]
 }
