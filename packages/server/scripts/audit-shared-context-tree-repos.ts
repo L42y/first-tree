@@ -14,10 +14,11 @@
  * URL text: the binding contract accepts HTTPS, `ssh://`, and scp-like SSH
  * spellings with an optional `.git`, so two teams can share one repository
  * through two spellings and a text grouping would report them as unrelated.
- * Each row resolves through its own team's GitLab connection origin, so an SSH
- * binding and an HTTPS binding on one self-managed forge group together while
- * two forges on one host stay apart. A row whose forge cannot be classified has
- * no establishable authority and is skipped rather than guessed at.
+ * An HTTP(S) row carries its own web origin; an SSH row resolves through its
+ * own team's GitLab connection, so an SSH binding and an HTTPS binding on one
+ * self-managed forge group together while two forges on one host stay apart. An
+ * SSH row whose team has no connection has no establishable origin and is
+ * skipped rather than guessed at.
  *
  * Read-only: it issues one SELECT and writes nothing. Repo URLs are printed so
  * an operator can act on them, so treat the output as customer data.
@@ -33,7 +34,6 @@ type BindingRow = {
   organization_id: string;
   display_name: string | null;
   repo: string | null;
-  provider: string | null;
   instance_origin: string | null;
 };
 
@@ -45,8 +45,7 @@ type SharedRepo = {
 function groupBySharedRepo(rows: BindingRow[]): SharedRepo[] {
   const byIdentity = new Map<string, SharedRepo>();
   for (const row of rows) {
-    const provider = row.provider === "github" || row.provider === "gitlab" ? row.provider : undefined;
-    const identity = contextTreeRepoOwnershipIdentity(row.repo, provider, row.instance_origin);
+    const identity = contextTreeRepoOwnershipIdentity(row.repo, row.instance_origin);
     if (!identity || !row.repo) continue;
     const entry = byIdentity.get(identity) ?? { identity, teams: [] };
     entry.teams.push({
@@ -76,7 +75,6 @@ async function main(): Promise<void> {
         s.organization_id     AS organization_id,
         o.display_name        AS display_name,
         s.value->>'repo'      AS repo,
-        s.value->>'provider'  AS provider,
         g.instance_origin     AS instance_origin
       FROM organization_settings s
       JOIN organizations o ON o.id = s.organization_id

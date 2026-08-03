@@ -6,6 +6,7 @@ import postgres from "postgres";
 import { describe, expect, it, vi } from "vitest";
 import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
+import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
@@ -255,32 +256,32 @@ describe("org-settings service", () => {
     });
   }
 
-  it("contextTreeRepoOwnershipIdentity resolves GitLab references through the team's connection", () => {
+  it("contextTreeRepoOwnershipIdentity takes the web origin from wherever the reference states it", () => {
     const identity = orgSettingsService.contextTreeRepoOwnershipIdentity;
     const origin = "https://git.internal:8443";
+    const expected = "https://git.internal:8443/group/tree";
 
-    // One repository reached three ways by teams on the same forge. The SSH
-    // transport port is not a web port, so only the connection origin can say
-    // which forge an SSH reference belongs to.
-    const https = identity("https://git.internal:8443/group/tree.git", "gitlab", origin);
-    expect(https).toBe("https://git.internal:8443/group/tree");
-    expect(identity("ssh://git@git.internal:2222/group/tree.git", "gitlab", origin)).toBe(https);
-    expect(identity("git@git.internal:group/tree.git", "gitlab", origin)).toBe(https);
+    // An HTTP(S) reference states its own origin and needs no connection — a
+    // team that deletes its connection still owns the repository it is bound to.
+    expect(identity("https://git.internal:8443/group/tree.git", null)).toBe(expected);
+    expect(identity("https://git.internal:8443/group/tree.git", origin)).toBe(expected);
+
+    // SSH states no origin, so the owning team's connection supplies it. Its
+    // transport port is not a web port.
+    expect(identity("ssh://git@git.internal:2222/group/tree.git", origin)).toBe(expected);
+    expect(identity("git@git.internal:group/tree.git", origin)).toBe(expected);
+
+    // Without a usable connection an SSH reference has no establishable origin.
+    expect(identity("git@git.internal:group/tree.git", null)).toBeNull();
+    expect(identity("git@git.internal:group/tree.git", "https://git.elsewhere")).toBeNull();
 
     // A second instance on the same host is a different forge authority.
-    expect(identity("https://git.internal:9443/group/tree.git", "gitlab", "https://git.internal:9443")).not.toBe(https);
+    expect(identity("https://git.internal:9443/group/tree.git", null)).not.toBe(expected);
 
-    // An HTTPS reference whose origin is not the team's connection has no
-    // establishable authority, and neither does an unclassifiable host.
-    expect(identity("https://git.internal:9443/group/tree.git", "gitlab", origin)).toBeNull();
-    expect(identity("https://git.elsewhere/group/tree.git", undefined, null)).toBeNull();
-
-    // GitHub has one fixed origin and no port, so both spellings agree without
-    // any connection at all.
-    expect(identity("git@github.com:acme/tree.git", "github", null)).toBe(
-      identity("https://github.com/acme/tree", "github", null),
-    );
-    expect(identity("https://github.com/acme/tree.git", undefined, null)).toBe("github.com/acme/tree");
+    // GitHub has one fixed origin and no port, so its spellings agree with no
+    // connection at all.
+    expect(identity("git@github.com:acme/tree.git", null)).toBe(identity("https://github.com/acme/tree", null));
+    expect(identity("https://github.com/acme/tree.git", null)).toBe("github.com/acme/tree");
   });
 
   // The maintainer decision on first-tree#2122: SSH and HTTPS references to one
@@ -319,6 +320,55 @@ describe("org-settings service", () => {
         { provider: "gitlab", repo: "https://git.internal:8443/group/tree.git", branch: "main" },
         { updatedBy: holder.userId },
       );
+
+      await expect(
+        orgSettingsService.putOrgSetting(
+          app.db,
+          claimantOrgId,
+          "context_tree",
+          { provider: "gitlab", repo: alias, branch: "main" },
+          { updatedBy: claimant.userId },
+        ),
+      ).rejects.toThrow(/already another team's Context Tree/i);
+    });
+  }
+
+  // Deleting a GitLab connection does not clear `context_tree`, so a holder can
+  // outlive its connection. Its HTTPS binding already states the full web
+  // origin, and that binding still owns the repository.
+  for (const [spelling, alias] of [
+    ["HTTPS", "https://git.internal:8443/group/tree.git"],
+    ["scp-like SSH", "git@git.internal:group/tree.git"],
+  ] as const) {
+    it(`putOrgSetting refuses a repo held by a team with no connection, claimed over ${spelling}`, async () => {
+      const app = getApp();
+      const holder = await createTestAdmin(app);
+      const claimant = await createTestAdmin(app);
+      const claimantOrgId = uuidv7();
+      await app.db
+        .insert(organizations)
+        .values({ id: claimantOrgId, name: `noconn-${randomUUID().slice(0, 8)}`, displayName: "Claimant" });
+      for (const [orgId, memberId] of [
+        [holder.organizationId, holder.memberId],
+        [claimantOrgId, claimant.memberId],
+      ] as const) {
+        await createGitlabConnection(app.db, {
+          organizationId: orgId,
+          memberId,
+          displayName: "GitLab",
+          instanceOrigin: "https://git.internal:8443",
+        });
+      }
+
+      // The holder binds while connected, then loses its connection entirely.
+      await orgSettingsService.putOrgSetting(
+        app.db,
+        holder.organizationId,
+        "context_tree",
+        { provider: "gitlab", repo: "https://git.internal:8443/group/tree.git", branch: "main" },
+        { updatedBy: holder.userId },
+      );
+      await app.db.delete(gitlabConnections).where(eq(gitlabConnections.organizationId, holder.organizationId));
 
       await expect(
         orgSettingsService.putOrgSetting(
