@@ -136,7 +136,10 @@ export type DaemonClientCommandPayload =
       clientId: string;
       agentId: string;
       chatId: string;
+      /** Terminate ref — scopes the client's release to that Reset generation. */
       ref: string;
+      /** Separate rendezvous ref the client echoes in its finalized receipt. */
+      ackRef: string;
       targetInstanceId: string;
     };
 export type DaemonClientCommandHandler = (payload: DaemonClientCommandPayload) => void;
@@ -717,8 +720,11 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
           // fields; anything else (unknown type, missing discriminator
           // fields) is malformed and must not reach handlers.
           if (parsed.type === "session:terminate" || parsed.type === "session:command:finalized") {
-            const sessionPayload = parsed as { agentId?: unknown; chatId?: unknown };
+            const sessionPayload = parsed as { agentId?: unknown; chatId?: unknown; ackRef?: unknown };
             if (typeof sessionPayload.agentId !== "string" || typeof sessionPayload.chatId !== "string") return;
+            // The finalized signal is only actionable with its rendezvous ref:
+            // without it the client cannot address its receipt.
+            if (parsed.type === "session:command:finalized" && typeof sessionPayload.ackRef !== "string") return;
           } else if (parsed.type === PROVIDER_MODELS_LIST_TYPE) {
             if (typeof (parsed as { provider?: unknown }).provider !== "string") return;
           } else {

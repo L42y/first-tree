@@ -5667,6 +5667,117 @@ describe("SessionManager edge coverage", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("releases parked Reset debt only for the armed generation's ref", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-reset-ref-scope-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-reset-ref-scope";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const start = vi.fn().mockImplementation(async (message: SessionMessage, ctx: SessionContext, token) => {
+      token?.processingStarted(message);
+      await token?.complete(message, { status: "success", terminal: true });
+      await ctx.finishTurn(message, { status: "success", terminal: true });
+      return `fresh-${message.id}`;
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(id: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ registryPath, handlers: [handler({ start }), handler({ start })], recoverChat, ackEntry });
+    const i = internals(sm);
+
+    // Park intervening debt behind a failed flush, exactly as a real Reset
+    // failure does, then arm generation A with a successful retry.
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" })).rejects.toBe(boom);
+    await sm.dispatch(mockEntry({ id: 601, chatId, messageId: "msg-ref-scope" }));
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
+
+    // A ref that is not the armed generation may not lift the fence.
+    sm.releaseParkedResetFenceRecovery(chatId, "ref-not-armed");
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    sm.releaseParkedResetFenceRecovery(chatId, "ref-a");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+
+    // Generation B parks new debt and arms over A; A's delayed duplicate is
+    // inert, and only the exact B ref releases — once.
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" })).rejects.toBe(boom);
+    await sm.dispatch(mockEntry({ id: 602, chatId, messageId: "msg-ref-scope-b" }));
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    sm.releaseParkedResetFenceRecovery(chatId, "ref-a");
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    sm.releaseParkedResetFenceRecovery(chatId, "ref-b");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(2));
+    sm.releaseParkedResetFenceRecovery(chatId, "ref-b");
+    expect(recoverChat).toHaveBeenCalledTimes(2);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("arms the joining ref'd terminate's generation when it coalesces onto an in-flight apply", async () => {
+    let signalShutdownStarted: (() => void) | undefined;
+    let resolveShutdown: (() => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    });
+    const terminatingHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalShutdownStarted?.();
+        await shutdownGate;
+      }),
+    });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [terminatingHandler], recoverChat });
+    const i = internals(sm);
+    const chatId = "chat-reset-ref-join";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    i._activeCount = 1;
+
+    const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-first" });
+    await shutdownStarted;
+    await sm.dispatch(mockEntry({ id: 610, chatId, messageId: "msg-ref-join" }));
+    const second = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-second" });
+
+    resolveShutdown?.();
+    await first;
+    await second;
+
+    // The joining generation owns the park: the superseded ref cannot lift it.
+    sm.releaseParkedResetFenceRecovery(chatId, "ref-first");
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId, "ref-second");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+
+    await sm.shutdown();
+  });
+
   it("cancels admitted delivery when terminate arrives before SessionEntry creation", async () => {
     let signalBindingStarted: (() => void) | undefined;
     let resolveBinding: (() => void) | undefined;

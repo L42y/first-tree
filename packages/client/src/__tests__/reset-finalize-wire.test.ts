@@ -1,0 +1,573 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer, type WebSocket as WsSocket } from "ws";
+import { ClientConnection } from "../client-connection.js";
+import { AgentSlot } from "../runtime/agent-slot.js";
+import type { AgentHandler, SessionContext, SessionMessage } from "../runtime/handler.js";
+import { SessionRegistry } from "../runtime/session-registry.js";
+
+/**
+ * Production-shaped Reset regression: real `ClientConnection` frames on a real
+ * socket, a real `AgentSlot` + `SessionManager` + inbox delivery coordinator,
+ * and a server model that owns the terminate/finalize handshake and the
+ * inbox recover / redelivery / no-progress path.
+ *
+ * The unit-level tests emit `session:command:finalized` straight into an
+ * emitter or call `releaseParkedResetFenceRecovery` directly, which cannot
+ * catch a wire-shape or negotiation regression. This one drives the whole
+ * chain end to end:
+ *
+ *  1. a failed Reset flush plus repeated intervening delivery makes zero
+ *     recover / provider / ACK traffic and never opens the no-progress circuit;
+ *  2. a genuine same-socket Reset retry acks `applied` BEFORE the server
+ *     finalizes, and the exact `finalized` arrives only after that commit;
+ *  3. exactly one recovery follows, and the intervening row enters a fresh
+ *     nonce-derived session and ACKs once — on the same socket, no reconnect;
+ *  4. a stale/duplicate ref, a foreign-agent ref, and a lost first finalized
+ *     signal can neither release early nor stall the chat permanently.
+ */
+
+const AGENT_ID = "11111111-2222-4333-8444-555555555555";
+const INBOX_ID = `inbox_${AGENT_ID}`;
+const CHAT_ID = "chat-reset-wire";
+/** Same shape as the server's inbox recovery circuit breaker. */
+const NO_PROGRESS_LIMIT = 2;
+
+type InboxRow = {
+  entryId: number;
+  messageId: string;
+  content: string;
+  status: "pending" | "delivered" | "acked";
+};
+
+type AppliedFrame = { ref: string; applied: boolean };
+type ReceiptFrame = { ref: string; ackRef: string; released: boolean };
+
+/**
+ * Minimal but route-faithful First Tree server: the HTTP surface `AgentSlot`
+ * needs for bring-up, plus the client WS data plane. Terminate/finalize is
+ * driven explicitly by the test so delivery loss and ordering are exact.
+ */
+class FakeServer {
+  readonly rows = new Map<number, InboxRow>();
+  /** Ordered trace of the Reset handshake as the SERVER observed it. */
+  readonly trace: string[] = [];
+  readonly applied: AppliedFrame[] = [];
+  readonly receipts: ReceiptFrame[] = [];
+  readonly recovers: string[] = [];
+  registerCapabilities: Record<string, unknown> = {};
+  connections = 0;
+  noProgressCircuitOpen = false;
+  /** Flip off to model a server build that predates the finalize handshake. */
+  advertiseFinalizeHandshake = true;
+
+  private http!: Server;
+  private wss!: WebSocketServer;
+  private socket: WsSocket | null = null;
+  private lastResetSignature: string | null = null;
+  private consecutiveNoProgressResets = 0;
+
+  baseUrl = "";
+
+  async listen(): Promise<void> {
+    this.http = createServer((req, res) => this.handleHttp(req, res));
+    await new Promise<void>((resolve) => this.http.listen(0, "127.0.0.1", () => resolve()));
+    const address = this.http.address();
+    if (!address || typeof address === "string") throw new Error("expected tcp address");
+    this.baseUrl = `http://127.0.0.1:${address.port}`;
+    this.wss = new WebSocketServer({ server: this.http, path: "/api/v1/agent/ws/client" });
+    this.wss.on("connection", (socket) => {
+      this.connections++;
+      this.socket = socket;
+      socket.on("message", (raw) => this.handleFrame(socket, String(raw)));
+    });
+  }
+
+  async close(): Promise<void> {
+    for (const client of this.wss.clients) client.terminate();
+    await new Promise<void>((resolve) => this.wss.close(() => resolve()));
+    await new Promise<void>((resolve) => this.http.close(() => resolve()));
+  }
+
+  send(frame: Record<string, unknown>): void {
+    this.socket?.send(JSON.stringify(frame));
+  }
+
+  seed(row: Omit<InboxRow, "status">): void {
+    this.rows.set(row.entryId, { ...row, status: "pending" });
+  }
+
+  /** Push a pending/delivered row to the client (redelivery keeps the id). */
+  deliver(entryId: number): void {
+    const row = this.rows.get(entryId);
+    if (!row) throw new Error(`unknown row ${entryId}`);
+    row.status = "delivered";
+    this.send({
+      type: "inbox:deliver",
+      entryId: row.entryId,
+      inboxId: INBOX_ID,
+      chatId: CHAT_ID,
+      message: {
+        id: row.messageId,
+        chatId: CHAT_ID,
+        senderId: "user-1",
+        format: "text",
+        content: row.content,
+        metadata: {},
+        inReplyTo: null,
+        source: null,
+        createdAt: new Date().toISOString(),
+        configVersion: 1,
+        recipientMode: "full",
+        precedingMessages: [],
+      },
+    });
+  }
+
+  sendTerminate(ref?: string): void {
+    this.send({ type: "session:terminate", agentId: AGENT_ID, chatId: CHAT_ID, ...(ref ? { ref } : {}) });
+  }
+
+  /** Post-`finalizeTerminatedSession` signal on the exact client route. */
+  sendFinalized(ref: string, ackRef: string, agentId: string = AGENT_ID): void {
+    this.trace.push("finalized:sent");
+    this.send({
+      type: "session:command:finalized",
+      ref,
+      ackRef,
+      agentId,
+      chatId: CHAT_ID,
+      command: "session:terminate",
+      state: "evicted",
+    });
+  }
+
+  ackedRows(): number[] {
+    return [...this.rows.values()].filter((row) => row.status === "acked").map((row) => row.entryId);
+  }
+
+  private handleHttp(req: IncomingMessage, res: ServerResponse): void {
+    const url = req.url ?? "";
+    const json = (body: unknown) => {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify(body));
+    };
+    if (url.startsWith("/api/v1/agent/me")) {
+      json({
+        uuid: AGENT_ID,
+        inboxId: INBOX_ID,
+        status: "online",
+        displayName: "Wire Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      });
+      return;
+    }
+    if (url.startsWith("/api/v1/agent/config")) {
+      json({
+        agentId: AGENT_ID,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        updatedBy: "tester",
+        payload: {
+          kind: "claude-code",
+          prompt: { append: "" },
+          model: "opus",
+          mcpServers: [],
+          env: [],
+          gitRepos: [],
+          resourceSkills: [],
+          reasoningEffort: "",
+        },
+      });
+      return;
+    }
+    if (url.startsWith("/api/v1/agent/chats/active-runtime-ids")) {
+      json({ chatIds: [CHAT_ID] });
+      return;
+    }
+    if (url.startsWith("/api/v1/agent/context-tree/info")) {
+      json({ repo: null });
+      return;
+    }
+    res.statusCode = 404;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ error: { code: "NOT_FOUND", message: url } }));
+  }
+
+  private handleFrame(socket: WsSocket, raw: string): void {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const type = msg.type as string;
+    switch (type) {
+      case "auth":
+        // Welcome BEFORE auth:ok — the client answers auth:ok with
+        // client:register and can only declare the finalize half honestly
+        // once it has seen this advertisement.
+        socket.send(
+          JSON.stringify({
+            type: "server:welcome",
+            serverCommandVersion: "1.0.0",
+            serverTimeMs: Date.now(),
+            capabilities: {
+              wsInboxDeliver: true,
+              wsInboxAckConfirm: true,
+              wsSessionEventConfirm: true,
+              ...(this.advertiseFinalizeHandshake ? { wsSessionResetFinalizeHandshake: true } : {}),
+            },
+          }),
+        );
+        socket.send(JSON.stringify({ type: "auth:ok" }));
+        return;
+      case "client:register":
+        this.registerCapabilities = (msg.wireCapabilities as Record<string, unknown>) ?? {};
+        socket.send(JSON.stringify({ type: "client:registered" }));
+        return;
+      case "agent:bind":
+        socket.send(
+          JSON.stringify({
+            type: "agent:bound",
+            ref: msg.ref,
+            agentId: msg.agentId,
+            displayName: "Wire Agent",
+            agentType: "agent",
+            runtimeSessionToken: "runtime-token-wire",
+          }),
+        );
+        return;
+      case "inbox:ack": {
+        const entryId = msg.entryId as number;
+        const row = this.rows.get(entryId);
+        if (row) row.status = "acked";
+        this.trace.push(`ack:${entryId}`);
+        if (typeof msg.ref === "string") {
+          socket.send(JSON.stringify({ type: "inbox:ack:accepted", entryId, ref: msg.ref, disposition: "acked" }));
+        }
+        return;
+      }
+      case "inbox:recover": {
+        this.trace.push("recover");
+        this.recovers.push(String(msg.ref));
+        const stuck = [...this.rows.values()].filter((row) => row.status === "delivered");
+        const signature = stuck.map((row) => row.entryId).join(",");
+        this.consecutiveNoProgressResets =
+          this.lastResetSignature === signature ? this.consecutiveNoProgressResets + 1 : 1;
+        this.lastResetSignature = signature;
+        if (this.consecutiveNoProgressResets > NO_PROGRESS_LIMIT) {
+          this.noProgressCircuitOpen = true;
+          socket.send(
+            JSON.stringify({
+              type: "inbox:recover:rejected",
+              ref: msg.ref,
+              agentId: msg.agentId,
+              chatId: msg.chatId,
+              reason: "no_progress",
+            }),
+          );
+          return;
+        }
+        for (const row of stuck) row.status = "pending";
+        socket.send(
+          JSON.stringify({
+            type: "inbox:recover:accepted",
+            ref: msg.ref,
+            agentId: msg.agentId,
+            chatId: msg.chatId,
+            resetCount: stuck.length,
+            unackedOutstanding: [...this.rows.values()].filter((row) => row.status !== "acked").length,
+          }),
+        );
+        // Redelivery rides the notify loop after the reset transaction
+        // commits, so it lands on a later tick than the confirmation.
+        setTimeout(() => {
+          for (const row of stuck) this.deliver(row.entryId);
+        }, 20);
+        return;
+      }
+      case "inbox:fence-probe":
+        socket.send(
+          JSON.stringify({
+            type: "inbox:fence-probe:accepted",
+            ref: msg.ref,
+            agentId: msg.agentId,
+            chatId: msg.chatId,
+            settledMessageIds: [],
+          }),
+        );
+        return;
+      case "session:event":
+        if (typeof msg.ref === "string") {
+          socket.send(JSON.stringify({ type: "session:event:accepted", ref: msg.ref, agentId: msg.agentId }));
+        }
+        return;
+      case "session:command:applied":
+        this.trace.push(`applied:${msg.applied === true}`);
+        this.applied.push({ ref: msg.ref as string, applied: msg.applied === true });
+        return;
+      case "session:command:finalized:ack":
+        this.trace.push(`receipt:${msg.released === true}`);
+        this.receipts.push({
+          ref: msg.ref as string,
+          ackRef: msg.ackRef as string,
+          released: msg.released === true,
+        });
+        return;
+      default:
+        return;
+    }
+  }
+}
+
+describe("Reset finalize handshake — wire level", () => {
+  const cleanups: Array<() => Promise<void> | void> = [];
+
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+    vi.restoreAllMocks();
+  });
+
+  type Harness = {
+    server: FakeServer;
+    home: string;
+    starts: Array<{ messageId: string; freshStartNonce: string | undefined }>;
+    /** Messages queued into an already-live provider session. */
+    injects: string[];
+    /** Gate the handler's shutdown so a delivery can land mid-drain. */
+    setShutdownGate: (gate: Promise<void> | null) => void;
+  };
+
+  async function bootWireHarness(options: { advertiseFinalizeHandshake?: boolean } = {}): Promise<Harness> {
+    const home = mkdtempSync(join(tmpdir(), "ft-reset-wire-"));
+    const previousHome = process.env.FIRST_TREE_HOME;
+    process.env.FIRST_TREE_HOME = home;
+    cleanups.push(() => {
+      if (previousHome === undefined) delete process.env.FIRST_TREE_HOME;
+      else process.env.FIRST_TREE_HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    const server = new FakeServer();
+    server.advertiseFinalizeHandshake = options.advertiseFinalizeHandshake ?? true;
+    await server.listen();
+    cleanups.push(() => server.close());
+
+    const starts: Array<{ messageId: string; freshStartNonce: string | undefined }> = [];
+    const injects: string[] = [];
+    let shutdownGate: Promise<void> | null = null;
+    const handler: AgentHandler = {
+      start: async (message: SessionMessage, ctx: SessionContext, token) => {
+        starts.push({ messageId: message.id, freshStartNonce: ctx.freshStartNonce?.() });
+        token?.processingStarted(message);
+        await token?.complete(message, { status: "success", terminal: true });
+        await ctx.finishTurn(message, { status: "success", terminal: true });
+        return `session-${message.id}`;
+      },
+      resume: async (message: SessionMessage | undefined, sessionId: string, ctx: SessionContext, token) => {
+        if (!message) return sessionId;
+        token?.processingStarted(message);
+        await token?.complete(message, { status: "success", terminal: true });
+        await ctx.finishTurn(message, { status: "success", terminal: true });
+        return sessionId;
+      },
+      inject: (messages) => {
+        for (const message of Array.isArray(messages) ? messages : [messages]) injects.push(message.id);
+        return { kind: "owned", mode: "queued" };
+      },
+      suspend: async () => {},
+      shutdown: async () => {
+        if (shutdownGate) await shutdownGate;
+      },
+    };
+
+    const connection = new ClientConnection({
+      serverUrl: server.baseUrl,
+      clientId: "client-reset-wire",
+      getAccessToken: async () => "access-token",
+    });
+    await connection.connect();
+    cleanups.push(() => connection.disconnect());
+
+    const slot = new AgentSlot({
+      name: "wire-agent",
+      agentId: AGENT_ID,
+      serverUrl: server.baseUrl,
+      type: "codex",
+      handlerFactory: () => handler,
+      session: {
+        idle_timeout: 3600,
+        max_sessions: 10,
+        working_grace_seconds: 3600,
+        reconcile_interval_seconds: 86_400,
+        defer_suspend_on_subprocess: false,
+      },
+      concurrency: 2,
+      clientConnection: connection,
+    });
+    await slot.start();
+    cleanups.push(() => slot.stop("test end"));
+
+    return {
+      server,
+      home,
+      starts,
+      injects,
+      setShutdownGate: (gate) => {
+        shutdownGate = gate;
+      },
+    };
+  }
+
+  it("drives park → applied → finalized → receipt → one recovery over a real socket", async () => {
+    const { server, home, starts, setShutdownGate } = await bootWireHarness();
+
+    // Both halves of the Reset contract were negotiated on this socket.
+    expect(server.registerCapabilities).toEqual({
+      wsSessionTerminateApplyAck: true,
+      wsSessionResetFinalizeHandshake: true,
+    });
+
+    // ── Baseline turn: the chat has a live provider session ────────────────
+    server.seed({ entryId: 1, messageId: "msg-baseline", content: "hello" });
+    server.deliver(1);
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(1), { timeout: 5_000 });
+    expect(starts).toHaveLength(1);
+
+    // ── 1. Failed Reset flush + repeated intervening delivery ──────────────
+    const flushBoom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw flushBoom;
+    });
+    server.sendTerminate("ref-a");
+    await vi.waitFor(() => expect(server.applied).toHaveLength(1), { timeout: 5_000 });
+    expect(server.applied[0]).toEqual({ ref: "ref-a", applied: false });
+
+    // The server would answer that HTTP Reset with 503 — no finalize, so the
+    // client must hold everything that arrives behind the fence.
+    server.seed({ entryId: 2, messageId: "msg-intervening", content: "queued during reset" });
+    server.deliver(2);
+    server.deliver(2);
+    server.deliver(2);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(server.recovers).toHaveLength(0);
+    expect(server.ackedRows()).toEqual([1]);
+    expect(starts).toHaveLength(1);
+    expect(server.noProgressCircuitOpen).toBe(false);
+
+    // ── 2. Genuine same-socket retry: applied BEFORE the server finalizes ──
+    server.send({ type: "session:suspend", agentId: AGENT_ID, chatId: CHAT_ID });
+    server.sendTerminate("ref-b");
+    await vi.waitFor(() => expect(server.applied).toHaveLength(2), { timeout: 5_000 });
+    expect(server.applied[1]).toEqual({ ref: "ref-b", applied: true });
+    expect(server.recovers).toHaveLength(0);
+
+    server.trace.push("finalize-commit");
+    server.sendFinalized("ref-b", "ack-b");
+
+    // ── 3. Receipt, then exactly one recovery into a fresh session ─────────
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(2), { timeout: 5_000 });
+    expect(server.receipts).toEqual([{ ref: "ref-b", ackRef: "ack-b", released: true }]);
+    expect(server.recovers).toHaveLength(1);
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.messageId).toBe("msg-intervening");
+    expect(server.noProgressCircuitOpen).toBe(false);
+    // Same socket throughout — recovery must not need a reconnect.
+    expect(server.connections).toBe(1);
+    // The recovered row entered a fresh nonce-derived session.
+    const registry = JSON.parse(readFileSync(join(home, "data", "sessions", "wire-agent.json"), "utf-8")) as {
+      entries: Record<string, { claudeSessionId: string }>;
+      freshStartNonces?: Record<string, string>;
+    };
+    const nonce = registry.freshStartNonces?.[CHAT_ID];
+    expect(nonce).toBeTruthy();
+    expect(starts[1]?.freshStartNonce).toBe(nonce);
+    expect(starts[0]?.freshStartNonce).not.toBe(nonce);
+    // The Reset dropped the old mapping durably before the fresh start.
+    expect(registry.entries[CHAT_ID]).toBeUndefined();
+
+    const traceAfterReset = server.trace.filter((event) => !event.startsWith("ack:") && event !== "applied:false");
+    // The apply-ack precedes the server's finalize commit; recovery and the
+    // receipt both follow the finalized frame, never the local apply alone.
+    expect(traceAfterReset).toEqual(["applied:true", "finalize-commit", "finalized:sent", "recover", "receipt:true"]);
+
+    // ── 4a. Duplicate + foreign finalized frames ───────────────────────────
+    server.sendFinalized("ref-b", "ack-b-late");
+    server.sendFinalized("ref-b", "ack-foreign", "99999999-2222-4333-8444-555555555555");
+    await vi.waitFor(() => expect(server.receipts).toHaveLength(2), { timeout: 5_000 });
+    expect(server.receipts[1]).toEqual({ ref: "ref-b", ackRef: "ack-b-late", released: false });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The foreign agent's frame is not this slot's to answer, and neither
+    // stale frame may drive another recovery.
+    expect(server.receipts).toHaveLength(2);
+    expect(server.recovers).toHaveLength(1);
+
+    // ── 4b. Lost first finalized signal: parked, not released, not stalled ─
+    let releaseShutdown: (() => void) | undefined;
+    setShutdownGate(
+      new Promise<void>((resolve) => {
+        releaseShutdown = resolve;
+      }),
+    );
+    server.sendTerminate("ref-c");
+    // Land an intervening delivery inside the drain so the fence has debt.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    server.seed({ entryId: 4, messageId: "msg-after-lost-signal", content: "queued behind lost signal" });
+    server.deliver(4);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseShutdown?.();
+    setShutdownGate(null);
+    await vi.waitFor(() => expect(server.applied).toHaveLength(3), { timeout: 5_000 });
+    expect(server.applied[2]).toEqual({ ref: "ref-c", applied: true });
+
+    // The finalized frame is dropped in transit: the row stays parked, and the
+    // client must NOT recover, ACK, or start a provider session on its own.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(server.recovers).toHaveLength(1);
+    expect(server.ackedRows()).not.toContain(4);
+    expect(server.noProgressCircuitOpen).toBe(false);
+
+    // The server's retry (or its durable fallback) converges on the same socket.
+    server.sendFinalized("ref-c", "ack-c");
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(4), { timeout: 5_000 });
+    expect(server.receipts.at(-1)).toEqual({ ref: "ref-c", ackRef: "ack-c", released: true });
+    expect(server.recovers).toHaveLength(2);
+    expect(server.noProgressCircuitOpen).toBe(false);
+    expect(server.connections).toBe(1);
+  }, 30_000);
+
+  it("fails a ref'd Reset closed against a server without the finalize handshake", async () => {
+    const { server, starts, injects } = await bootWireHarness({ advertiseFinalizeHandshake: false });
+
+    // The client withheld the finalize half, so a correctly-gated server would
+    // not even offer Reset here.
+    expect(server.registerCapabilities).toEqual({ wsSessionTerminateApplyAck: true });
+
+    server.seed({ entryId: 1, messageId: "msg-skew-baseline", content: "hello" });
+    server.deliver(1);
+    await vi.waitFor(() => expect(server.ackedRows()).toContain(1), { timeout: 5_000 });
+
+    // An old server that offers it anyway must be refused BEFORE the local
+    // teardown — otherwise the session dies behind a fence nothing will lift.
+    server.sendTerminate("ref-skew");
+    await vi.waitFor(() => expect(server.applied).toHaveLength(1), { timeout: 5_000 });
+    expect(server.applied[0]).toEqual({ ref: "ref-skew", applied: false });
+
+    // Nothing was destroyed or parked: the next delivery still reaches the
+    // same live provider session instead of sitting behind a Reset fence.
+    server.seed({ entryId: 2, messageId: "msg-skew-after", content: "still working" });
+    server.deliver(2);
+    await vi.waitFor(() => expect(injects).toContain("msg-skew-after"), { timeout: 5_000 });
+    expect(server.recovers).toHaveLength(0);
+    expect(server.receipts).toHaveLength(0);
+    expect(starts.map((entry) => entry.messageId)).toEqual(["msg-skew-baseline"]);
+  }, 30_000);
+});

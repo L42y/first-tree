@@ -78,6 +78,16 @@ export const clientWireCapabilitiesSchema = z
      * a queued WS frame cannot prove the old mapping is gone.
      */
     wsSessionTerminateApplyAck: z.boolean().default(false),
+    /**
+     * The client parks Reset-fence inbox recovery until the server's
+     * `session:command:finalized` frame arrives for the exact terminate ref it
+     * armed, then answers with `session:command:finalized:ack`. Declared ONLY
+     * when the server advertised `wsSessionResetFinalizeHandshake` in its
+     * welcome, so this flag proves both halves of the handshake exist. The
+     * server requires it (together with `wsSessionTerminateApplyAck`) before
+     * offering or accepting `terminate?waitForApply=true`.
+     */
+    wsSessionResetFinalizeHandshake: z.boolean().default(false),
   })
   .partial();
 export type ClientWireCapabilities = z.infer<typeof clientWireCapabilitiesSchema>;

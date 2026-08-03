@@ -26,11 +26,13 @@ type FakeSessionState = {
   heldChatIds: string[];
   dispatch: ReturnType<typeof vi.fn<(entry: unknown) => Promise<void>>>;
   handleCommand: ReturnType<
-    typeof vi.fn<(chatId: string, type: "session:suspend" | "session:terminate") => Promise<void>>
+    typeof vi.fn<
+      (chatId: string, type: "session:suspend" | "session:terminate", options?: { resetRef?: string }) => Promise<void>
+    >
   >;
   applyStaleChatIds: ReturnType<typeof vi.fn<(chatIds: string[]) => void>>;
   noteBindRecoveryComplete: ReturnType<typeof vi.fn<() => void>>;
-  releaseParkedResetFenceRecovery: ReturnType<typeof vi.fn<(chatId: string) => void>>;
+  releaseParkedResetFenceRecovery: ReturnType<typeof vi.fn<(chatId: string, ref?: string) => void>>;
   reconcileReplayFencesWithServer: ReturnType<typeof vi.fn<() => Promise<void>>>;
   updateTransport: ReturnType<typeof vi.fn<(sdk: unknown, agentConfigCache?: unknown) => void>>;
   shutdown: ReturnType<typeof vi.fn<(reason?: string, opts?: unknown) => Promise<void>>>;
@@ -77,7 +79,10 @@ class FakeClientConnection extends EventEmitter {
   reportSessionEventConfirmed = vi.fn(async () => {});
   reportSessionRuntime = vi.fn();
   reportSessionCommandApplied = vi.fn();
+  reportSessionCommandFinalizedAck = vi.fn();
   sendSessionReconcile = vi.fn();
+  /** Negotiated per connection; flip to false to model an old server. */
+  supportsResetFinalizeHandshake = true;
 
   constructor(private readonly sdk: unknown) {
     super();
@@ -282,8 +287,16 @@ function installMocks(
         return this.state.dispatch(entry);
       }
 
-      handleCommand(chatId: string, type: "session:suspend" | "session:terminate"): Promise<void> {
-        return this.state.handleCommand(chatId, type);
+      handleCommand(
+        chatId: string,
+        type: "session:suspend" | "session:terminate",
+        options?: { resetRef?: string },
+      ): Promise<void> {
+        // Forward the arity the caller used so assertions stay readable for
+        // the legacy unref'd path.
+        return options === undefined
+          ? this.state.handleCommand(chatId, type)
+          : this.state.handleCommand(chatId, type, options);
       }
 
       applyStaleChatIds(chatIds: string[]): void {
@@ -294,8 +307,9 @@ function installMocks(
         this.state.noteBindRecoveryComplete();
       }
 
-      releaseParkedResetFenceRecovery(chatId: string): void {
-        this.state.releaseParkedResetFenceRecovery(chatId);
+      releaseParkedResetFenceRecovery(chatId: string, ref?: string): void {
+        if (ref === undefined) this.state.releaseParkedResetFenceRecovery(chatId);
+        else this.state.releaseParkedResetFenceRecovery(chatId, ref);
       }
 
       reconcileReplayFencesWithServer(): Promise<void> {
@@ -695,7 +709,7 @@ describe("AgentSlot", () => {
     });
     await Promise.resolve();
     await Promise.resolve();
-    expect(session.handleCommand).toHaveBeenCalledWith("chat-2", "session:terminate");
+    expect(session.handleCommand).toHaveBeenCalledWith("chat-2", "session:terminate", { resetRef: "ref-1" });
     expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
 
     pending.resolve();
@@ -757,13 +771,193 @@ describe("AgentSlot", () => {
     connection.emit("session:command:finalized", {
       type: "session:command:finalized",
       ref: "ref-finalize-1",
+      ackRef: "ack-finalize-1",
       agentId: "agent-1",
       chatId: "chat-finalize",
       command: "session:terminate",
       state: "evicted",
     });
-    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-finalize");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-finalize", "ref-finalize-1");
     expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(1);
+    // The server holds the Reset request open until this receipt lands.
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith({
+      ref: "ref-finalize-1",
+      ackRef: "ack-finalize-1",
+      agentId: "agent-1",
+      chatId: "chat-finalize",
+      command: "session:terminate",
+      released: true,
+    });
+
+    await slot.stop();
+  });
+
+  it("releases only the armed Reset generation and answers stale finalized frames honestly", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const applyAndFinalize = async (ref: string, ackRef: string) => {
+      connection.emit("session:command", {
+        agentId: "agent-1",
+        chatId: "chat-gen",
+        type: "session:terminate",
+        ref,
+      });
+      await vi.waitFor(() =>
+        expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith(
+          expect.objectContaining({ ref, applied: true }),
+        ),
+      );
+      connection.emit("session:command:finalized", {
+        type: "session:command:finalized",
+        ref,
+        ackRef,
+        agentId: "agent-1",
+        chatId: "chat-gen",
+        command: "session:terminate",
+        state: "evicted",
+      });
+    };
+
+    // Reset A: applied, finalized, released once.
+    await applyAndFinalize("ref-a", "ack-a");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(1);
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-gen", "ref-a");
+
+    // Reset B arms a newer generation for the same chat.
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-gen",
+      type: "session:terminate",
+      ref: "ref-b",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: "ref-b", applied: true }),
+      ),
+    );
+
+    // A duplicate/delayed finalized for the superseded generation must not
+    // lift B's fence — but still owes the server an honest receipt.
+    connection.emit("session:command:finalized", {
+      type: "session:command:finalized",
+      ref: "ref-a",
+      ackRef: "ack-a-late",
+      agentId: "agent-1",
+      chatId: "chat-gen",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(1);
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-a", ackRef: "ack-a-late", released: false }),
+    );
+
+    // A finalized for another agent is not ours to answer at all.
+    connection.emit("session:command:finalized", {
+      type: "session:command:finalized",
+      ref: "ref-b",
+      ackRef: "ack-foreign",
+      agentId: "other-agent",
+      chatId: "chat-gen",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(connection.reportSessionCommandFinalizedAck).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ackRef: "ack-foreign" }),
+    );
+
+    // The exact B finalized releases exactly once.
+    connection.emit("session:command:finalized", {
+      type: "session:command:finalized",
+      ref: "ref-b",
+      ackRef: "ack-b",
+      agentId: "agent-1",
+      chatId: "chat-gen",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(2);
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenLastCalledWith("chat-gen", "ref-b");
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-b", ackRef: "ack-b", released: true }),
+    );
+
+    await slot.stop();
+  });
+
+  it("an unref'd terminate retires the armed ref so its late finalized cannot release", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-mixed",
+      type: "session:terminate",
+      ref: "ref-armed",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: "ref-armed", applied: true }),
+      ),
+    );
+
+    // Legacy path: the server finalized before sending, so this releases now
+    // and invalidates the armed generation.
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-mixed", type: "session:terminate" });
+    await vi.waitFor(() => expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-mixed"));
+
+    connection.emit("session:command:finalized", {
+      type: "session:command:finalized",
+      ref: "ref-armed",
+      ackRef: "ack-armed",
+      agentId: "agent-1",
+      chatId: "chat-mixed",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(1);
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-armed", released: false }),
+    );
+
+    await slot.stop();
+  });
+
+  it("refuses a ref'd Reset before applying it when the server has no finalize handshake", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+    // Old server: welcome never advertised the finalize handshake.
+    connection.supportsResetFinalizeHandshake = false;
+
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-skew",
+      type: "session:terminate",
+      ref: "ref-skew",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-skew",
+        agentId: "agent-1",
+        chatId: "chat-skew",
+        command: "session:terminate",
+        applied: false,
+      }),
+    );
+    // Nothing destructive ran: no local terminate, no park to release.
+    expect(session.handleCommand).not.toHaveBeenCalledWith("chat-skew", "session:terminate", expect.anything());
+    expect(session.releaseParkedResetFenceRecovery).not.toHaveBeenCalled();
+
+    // A legacy unref'd terminate is still honoured on an old server.
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-skew", type: "session:terminate" });
+    await vi.waitFor(() => expect(session.handleCommand).toHaveBeenCalledWith("chat-skew", "session:terminate"));
 
     await slot.stop();
   });

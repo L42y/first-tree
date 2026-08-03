@@ -227,16 +227,43 @@ export type SessionCommandAppliedFrame = z.infer<typeof sessionCommandAppliedFra
  * `finalizeTerminatedSession` (session row is `evicted`). The client must not
  * release parked Reset-fence inbox recovery until this frame arrives — otherwise
  * `inbox:recover` can race the HTTP finalize path.
+ *
+ * `ref` is the terminate ref, so the client can scope the release to the Reset
+ * generation it actually armed. `ackRef` is a SEPARATE rendezvous id the client
+ * echoes in {@link sessionCommandFinalizedAckFrameSchema}: the apply-ack wake
+ * for `ref` may still be in flight across replicas when the finalize waiter is
+ * registered, and a same-ref waiter would consume that stale wake.
  */
 export const sessionCommandFinalizedFrameSchema = z.object({
   type: z.literal("session:command:finalized"),
   ref: z.string().min(1),
+  ackRef: z.string().min(1),
   agentId: z.string().min(1),
   chatId: z.string().min(1),
   command: z.literal("session:terminate"),
   state: z.literal("evicted"),
 });
 export type SessionCommandFinalizedFrame = z.infer<typeof sessionCommandFinalizedFrameSchema>;
+
+/**
+ * Client→Server receipt for {@link sessionCommandFinalizedFrameSchema}, sent
+ * after the client released (or knowingly declined to release) parked
+ * Reset-fence recovery for that exact generation. The Reset HTTP request stays
+ * open until this receipt lands on the exact client route, so a lost
+ * post-finalize signal fails the request closed instead of leaving the client
+ * parked forever behind a fence nobody will lift.
+ */
+export const sessionCommandFinalizedAckFrameSchema = z.object({
+  type: z.literal("session:command:finalized:ack"),
+  ref: z.string().min(1),
+  ackRef: z.string().min(1),
+  agentId: z.string().min(1),
+  chatId: z.string().min(1),
+  command: z.literal("session:terminate"),
+  /** False when the ref did not match a locally armed Reset generation. */
+  released: z.boolean(),
+});
+export type SessionCommandFinalizedAckFrame = z.infer<typeof sessionCommandFinalizedAckFrameSchema>;
 
 export const sessionEventAcceptedFrameSchema = z.object({
   type: z.literal("session:event:accepted"),

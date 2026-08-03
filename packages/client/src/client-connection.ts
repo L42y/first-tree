@@ -529,6 +529,16 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   private serverSupportsInboxAckConfirm = false;
   private serverSupportsSessionEventConfirm = false;
   /**
+   * Does the CURRENT server complete the Reset finalize handshake
+   * (`session:command:finalized` + receipt)? Reset parks inbox recovery
+   * behind a fence only this signal lifts, so an unsupported server must make
+   * the client refuse the ref'd terminate BEFORE applying it locally rather
+   * than tear the session down and park forever. Cleared on every new socket
+   * and re-learned from that connection's welcome, which the server sends
+   * ahead of `auth:ok`.
+   */
+  private serverSupportsResetFinalizeHandshake = false;
+  /**
    * Last handshake error, stashed for the `close` handler to surface a typed
    * reason (e.g. {@link ClientOrgMismatchError}) instead of a generic
    * "closed before ready" when `connect()` is pending.
@@ -1202,6 +1212,46 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     );
   }
 
+  /**
+   * Does the connected server complete the Reset finalize handshake? The
+   * agent slot consults this BEFORE applying a ref'd terminate: on an older
+   * server the post-finalize signal never arrives, so the Reset must fail
+   * closed instead of destroying the local session and parking its queued
+   * work behind a fence nothing will lift.
+   */
+  get supportsResetFinalizeHandshake(): boolean {
+    return this.serverSupportsResetFinalizeHandshake;
+  }
+
+  /**
+   * Receipt for `session:command:finalized`. The server holds the Reset HTTP
+   * request open until this lands on the exact client route, so it is sent
+   * after the parked-fence release decision for that ref is made — including
+   * `released: false` when the ref did not match a locally armed generation,
+   * which is still an honest answer about this client's state.
+   */
+  reportSessionCommandFinalizedAck(input: {
+    ref: string;
+    ackRef: string;
+    agentId: string;
+    chatId: string;
+    command: "session:terminate";
+    released: boolean;
+  }): void {
+    if (!this.canSendAgentFrame(input.agentId) || !this.ws) return;
+    this.ws.send(
+      JSON.stringify({
+        type: "session:command:finalized:ack",
+        ref: input.ref,
+        ackRef: input.ackRef,
+        agentId: input.agentId,
+        chatId: input.chatId,
+        command: input.command,
+        released: input.released,
+      }),
+    );
+  }
+
   reportRuntimeState(agentId: string, runtimeState: RuntimeState): void {
     if (!this.canSendAgentFrame(agentId) || !this.ws) return;
     this.ws.send(JSON.stringify({ type: "runtime:state", agentId, runtimeState }));
@@ -1364,6 +1414,10 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
 
       ws.on("open", async () => {
         this.ws = ws;
+        // Capability negotiation is per-connection: never carry a previous
+        // server's Reset support into the register frame of a socket that may
+        // have landed on a rolled-back replica.
+        this.serverSupportsResetFinalizeHandshake = false;
         // Don't reset reconnectAttempt here — a TCP/WS handshake succeeding
         // but the auth phase failing is exactly the loop the client.log
         // captured at 19:40 (1 Hz reconnect storm with `failed to obtain
@@ -1510,11 +1564,18 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           hostname: getHostname(),
           os: platform(),
           sdkVersion: this.sdkVersion,
-          // Static capability declaration: this client answers a ref'd
-          // session:terminate with a session:command:applied apply-ack once
-          // the local mapping is dropped. Old servers ignore unknown
-          // wireCapabilities fields, so this is safe on every server build.
-          wireCapabilities: { wsSessionTerminateApplyAck: true },
+          // Two-sided Reset negotiation. The apply-ack half is static: this
+          // client always answers a ref'd session:terminate with a
+          // session:command:applied once the local mapping is dropped. The
+          // finalize half is declared ONLY when this connection's welcome
+          // (sent before auth:ok) advertised server support — otherwise the
+          // server would offer a Reset whose post-finalize signal never
+          // arrives, and the client's parked inbox rows would never be
+          // released. Old servers ignore unknown wireCapabilities fields.
+          wireCapabilities: {
+            wsSessionTerminateApplyAck: true,
+            ...(this.serverSupportsResetFinalizeHandshake ? { wsSessionResetFinalizeHandshake: true } : {}),
+          },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),
         }),
       );
@@ -1537,6 +1598,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       this.welcomeFramesReceived++;
       this.serverSupportsInboxAckConfirm = parsed.data.capabilities?.wsInboxAckConfirm === true;
       this.serverSupportsSessionEventConfirm = parsed.data.capabilities?.wsSessionEventConfirm === true;
+      this.serverSupportsResetFinalizeHandshake = parsed.data.capabilities?.wsSessionResetFinalizeHandshake === true;
       this.emit("server:welcome", { frame: parsed.data, isReconnect });
       return;
     }

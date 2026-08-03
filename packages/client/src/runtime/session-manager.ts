@@ -609,6 +609,12 @@ export class SessionManager {
    */
   private readonly awaitingResetFenceRelease = new Set<string>();
   /**
+   * Reset generation currently armed per chat: `chatId → terminate ref` for
+   * the last ref'd Reset whose local apply succeeded. Only a `finalized`
+   * carrying this exact ref may release that chat's parked debt.
+   */
+  private readonly armedResetFenceRefs = new Map<string, string>();
+  /**
    * Coalesce one post-finalization recovery per chat so duplicate finalized
    * signals cannot open repeated same-socket recoverChat calls.
    */
@@ -959,15 +965,31 @@ export class SessionManager {
     );
   }
 
-  /** Handle a server-issued session command. Terminate drops all local state without reporting back. */
-  async handleCommand(chatId: string, command: SessionCommandType): Promise<void> {
+  /**
+   * Handle a server-issued session command. Terminate drops all local state
+   * without reporting back. `resetRef` is the ref'd Reset generation this
+   * terminate belongs to — it arms the parked-fence release so only that
+   * generation's `session:command:finalized` can lift the fence.
+   */
+  async handleCommand(chatId: string, command: SessionCommandType, options?: { resetRef?: string }): Promise<void> {
     const inFlightTermination = this.terminatingChats.get(chatId);
     if (inFlightTermination) {
       // A duplicate terminate joins the in-flight cleanup instead of
       // returning early: a ref'd caller (Reset apply-ack) must only resolve
       // after the shared work settles, and must reject if it rejects.
       // Suspend/resume keep the early-return admission fence.
-      if (command === "session:terminate") return inFlightTermination;
+      if (command === "session:terminate") {
+        // A joining ref'd Reset still owns the parked-fence generation once
+        // the shared work succeeds — otherwise its finalized frame would find
+        // the earlier ref armed and could never lift the fence.
+        if (options?.resetRef !== undefined) {
+          const joiningRef = options.resetRef;
+          return inFlightTermination.then(() => {
+            this.armParkedResetFenceRelease(chatId, joiningRef);
+          });
+        }
+        return inFlightTermination;
+      }
       return;
     }
 
@@ -1129,7 +1151,7 @@ export class SessionManager {
         // Local terminate succeeded (flush included). Keep provider admission
         // fenced while parked Reset debt awaits server-confirmed finalization
         // — do NOT recover here (that races session:command:applied / finalize).
-        this.armParkedResetFenceRelease(chatId);
+        this.armParkedResetFenceRelease(chatId, options?.resetRef);
       } finally {
         // Drop the in-flight fence only if this run is still the current one —
         // a failure leaves room for a genuine later retry without clobbering a
@@ -1394,6 +1416,7 @@ export class SessionManager {
     this.evictedMappings.clear();
     this.runtimeProofRecoveryChats.clear();
     this.awaitingResetFenceRelease.clear();
+    this.armedResetFenceRefs.clear();
     this.postResetFenceRecoveryScheduled.clear();
     this.lastReportedStates.clear();
     this.sessionRuntimeStates.clear();
@@ -1547,10 +1570,18 @@ export class SessionManager {
 
   /**
    * After a successful local terminate flush, keep parked Reset debt armed
-   * until {@link releaseParkedResetFenceRecovery}. No-op when there is nothing
-   * to recover.
+   * until {@link releaseParkedResetFenceRecovery}. `ref` records WHICH Reset
+   * generation owns the park; a later ref'd terminate for the same chat
+   * supersedes it, so the previous generation's late `finalized` can no
+   * longer release. Arming is recorded even with nothing parked, so a
+   * ref-scoped release stays a no-op instead of an unmatched ref.
    */
-  private armParkedResetFenceRelease(chatId: string): void {
+  armParkedResetFenceRelease(chatId: string, ref?: string): void {
+    if (ref === undefined) {
+      this.armedResetFenceRefs.delete(chatId);
+    } else {
+      this.armedResetFenceRefs.set(chatId, ref);
+    }
     if (this.terminatePersistFailures.has(chatId)) return;
     if (!this.inboxDelivery.hasRecoveryDebt(chatId) && !this.inboxDelivery.hasUnsettledWork(chatId)) {
       this.awaitingResetFenceRelease.delete(chatId);
@@ -1564,8 +1595,24 @@ export class SessionManager {
    * finalization boundary (post-`finalizeTerminatedSession` / evicted). Safe to
    * call more than once per chat — coalesces to one recoverChat. Must not run
    * from terminate's `finally` or from local flush success alone.
+   *
+   * With `ref`, the release applies only to the generation currently armed
+   * for this chat: a duplicate, superseded, or never-armed ref does nothing,
+   * so a delayed `finalized` for an already-released Reset cannot lift a
+   * newer Reset's fence. Without `ref` (unref'd terminate, stale-reconcile
+   * terminate — the server finalized those before sending the command) the
+   * release proceeds and invalidates whatever ref was armed, so an obsolete
+   * finalized arriving afterwards is ignored.
    */
-  releaseParkedResetFenceRecovery(chatId: string): void {
+  releaseParkedResetFenceRecovery(chatId: string, ref?: string): void {
+    if (ref !== undefined && this.armedResetFenceRefs.get(chatId) !== ref) {
+      this.config.log.debug(
+        { chatId, ref, armedRef: this.armedResetFenceRefs.get(chatId) ?? null },
+        "ignoring Reset finalization for a ref that is not the armed generation",
+      );
+      return;
+    }
+    this.armedResetFenceRefs.delete(chatId);
     if (this.terminatingChats.has(chatId) || this.terminatePersistFailures.has(chatId)) return;
     if (!this.awaitingResetFenceRelease.has(chatId)) {
       // Unref'd / direct callers may release after success without a prior park

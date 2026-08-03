@@ -76,17 +76,21 @@ describe("Client ownership — WS mismatch refusal, no transfer endpoint", () =>
     ws.send(JSON.stringify({ type: "auth", token: s.bob.accessToken }));
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("auth timeout")), 5000);
-      ws.once("message", (raw) => {
+      // `server:welcome` arrives first, so scan the stream rather than
+      // inspecting only the first frame.
+      const onMessage = (raw: WebSocket.RawData) => {
         try {
           const m = JSON.parse(raw.toString()) as { type?: string };
           if (m.type === "auth:ok") {
             clearTimeout(timer);
+            ws.off("message", onMessage);
             resolve();
           }
         } catch {
           // ignore
         }
-      });
+      };
+      ws.on("message", onMessage);
     });
 
     // Now register with Alice's clientId — server must reject.

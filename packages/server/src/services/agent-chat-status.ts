@@ -22,7 +22,7 @@ import { agentPresence } from "../db/schema/agent-presence.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { clients } from "../db/schema/clients.js";
-import { isConsistentAgentRoute, metadataHasApplyAckCapability } from "./session-command-rpc.js";
+import { isConsistentAgentRoute, metadataSupportsSessionReset } from "./session-command-rpc.js";
 
 /**
  * Single source of truth for per-(agent,chat) composite status.
@@ -481,8 +481,9 @@ export async function resolveAgentChatStatuses(
   //    route predicate as the Reset preflight / fan-out / ack store
   //    (see session-command-rpc): durable agent binding + online presence +
   //    connected client must agree on client/instance, and the client must
-  //    have registered `wsSessionTerminateApplyAck`. Never derived from this
-  //    process's socket ownership, so every replica projects the same answer.
+  //    have registered BOTH Reset wire capabilities (apply-ack and finalize
+  //    handshake). Never derived from this process's socket ownership, so
+  //    every replica projects the same answer.
   const routeRows =
     allAgentIds.length > 0
       ? await db
@@ -504,7 +505,7 @@ export async function resolveAgentChatStatuses(
       : [];
   const applyAckCapableAgents = new Set(
     routeRows
-      .filter((r) => isConsistentAgentRoute(r) && metadataHasApplyAckCapability(r.clientMetadata))
+      .filter((r) => isConsistentAgentRoute(r) && metadataSupportsSessionReset(r.clientMetadata))
       .map((r) => r.agentId),
   );
 

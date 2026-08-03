@@ -217,7 +217,10 @@ describe("Agent client WS branch fakes", () => {
     await emitMessage(socket, { type: "auth", token: await signAccess() });
     await waitUntil(() => socket.closes.length > 0);
 
-    expect(socket.sent).toContainEqual({ type: "auth:ok" });
+    // Second send fails: that is `auth:ok`, since `server:welcome` now leads
+    // the post-auth handshake. The half-done handshake is retryable.
+    expect(socket.sent.some((frame) => (frame as { type?: string }).type === "server:welcome")).toBe(true);
+    expect(socket.sent).not.toContainEqual({ type: "auth:ok" });
     expect(socket.sent).toContainEqual({
       type: "auth:retryable",
       code: "handshake_internal_error",

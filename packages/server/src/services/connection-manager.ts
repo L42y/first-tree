@@ -214,16 +214,24 @@ export function sendToAgent(agentId: string, message: Record<string, unknown>): 
 }
 
 /**
- * Does the agent's CURRENT live client connection support the terminate
- * apply-ack (`wsSessionTerminateApplyAck`)? Gates the Web chat-session
- * Reset: without it the server cannot prove the client dropped the old
- * provider-session mapping, so Reset must stay hidden.
+ * Does the agent's CURRENT live client connection support the whole Web
+ * chat-session Reset handshake — the terminate apply-ack
+ * (`wsSessionTerminateApplyAck`) AND the post-finalize handshake
+ * (`wsSessionResetFinalizeHandshake`)? Without the apply-ack the server
+ * cannot prove the client dropped the old provider-session mapping; without
+ * the finalize handshake the client would park its intervening inbox rows
+ * behind a fence it never lifts. Either gap hides Reset.
  */
 export function agentSupportsTerminateApplyAck(agentId: string): boolean {
   const clientId = agentToClient.get(agentId);
   if (!clientId) return false;
   const entry = clientConnections.get(clientId);
-  return entry !== undefined && entry.ws.readyState === 1 && entry.capabilities?.wsSessionTerminateApplyAck === true;
+  return (
+    entry !== undefined &&
+    entry.ws.readyState === 1 &&
+    entry.capabilities?.wsSessionTerminateApplyAck === true &&
+    entry.capabilities?.wsSessionResetFinalizeHandshake === true
+  );
 }
 
 /** The clientId of the agent's current live connection, if any. */

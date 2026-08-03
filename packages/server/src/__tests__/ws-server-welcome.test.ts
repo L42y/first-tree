@@ -5,10 +5,11 @@ import WebSocket from "ws";
 import { createTestAdmin, createTestApp } from "./helpers.js";
 
 /**
- * End-to-end wire check: the server must send `server:welcome` right after
- * `auth:ok` so clients can detect version drift on connect / reconnect.
+ * End-to-end wire check: the server must send `server:welcome` right BEFORE
+ * `auth:ok` so clients can detect version drift on connect / reconnect and
+ * declare only the wire capabilities this server can actually complete.
  */
-describe("WS server:welcome — wire-additive frame after auth:ok", () => {
+describe("WS server:welcome — wire-additive frame before auth:ok", () => {
   let app: FastifyInstance;
   let wsUrl: string;
   let adminUserId: string;
@@ -57,7 +58,7 @@ describe("WS server:welcome — wire-additive frame after auth:ok", () => {
     await app.close();
   });
 
-  it("sends server:welcome immediately after auth:ok", async () => {
+  it("sends server:welcome immediately before auth:ok", async () => {
     const token = await signJwt();
     const ws = new WebSocket(wsUrl);
     const frames: unknown[] = [];
@@ -68,7 +69,7 @@ describe("WS server:welcome — wire-additive frame after auth:ok", () => {
       ws.on("message", (raw) => {
         const msg = JSON.parse(raw.toString());
         frames.push(msg);
-        // Stop once we have at least auth:ok + server:welcome.
+        // Stop once we have at least server:welcome + auth:ok.
         if (frames.length >= 2) {
           clearTimeout(timer);
           resolve();
@@ -81,14 +82,22 @@ describe("WS server:welcome — wire-additive frame after auth:ok", () => {
     });
     ws.close();
 
-    expect(frames[0]).toEqual({ type: "auth:ok" });
-    const welcome = frames[1] as {
+    // Welcome leads: `client:register` answers `auth:ok`, and the client's
+    // Reset capability declaration is only honest once it has seen the
+    // server's own advertisement.
+    const welcome = frames[0] as {
       type: string;
       serverCommandVersion: string;
       serverTimeMs: number;
-      capabilities?: { wsInboxDeliver?: boolean; wsInboxAckConfirm?: boolean; wsSessionEventConfirm?: boolean };
+      capabilities?: {
+        wsInboxDeliver?: boolean;
+        wsInboxAckConfirm?: boolean;
+        wsSessionEventConfirm?: boolean;
+        wsSessionResetFinalizeHandshake?: boolean;
+      };
     };
     expect(welcome.type).toBe("server:welcome");
+    expect(frames[1]).toEqual({ type: "auth:ok" });
     expect(typeof welcome.serverCommandVersion).toBe("string");
     expect(welcome.serverCommandVersion.length).toBeGreaterThan(0);
     expect(typeof welcome.serverTimeMs).toBe("number");
@@ -96,5 +105,6 @@ describe("WS server:welcome — wire-additive frame after auth:ok", () => {
     expect(welcome.capabilities?.wsInboxDeliver).toBe(true);
     expect(welcome.capabilities?.wsInboxAckConfirm).toBe(true);
     expect(welcome.capabilities?.wsSessionEventConfirm).toBe(true);
+    expect(welcome.capabilities?.wsSessionResetFinalizeHandshake).toBe(true);
   });
 });

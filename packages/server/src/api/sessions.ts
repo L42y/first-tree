@@ -149,7 +149,8 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
  * `session:terminate` (direct when this replica owns the daemon socket, PG
  * NOTIFY fan-out otherwise), wait for the matching `session:command:applied`
  * ack, and only then atomically evict + clear traces
- * (`finalizeTerminatedSession`). The ack is also persisted by the
+ * (`finalizeTerminatedSession`), then confirm that finalization with the
+ * client (see {@link confirmResetFinalization}) before reporting success. The ack is also persisted by the
  * socket-owning replica, so a lost result wake falls back to one durable
  * read. Every failure — offline/incapable client, send failure,
  * disconnect/timeout while waiting, `applied:false`, or a state change
@@ -201,6 +202,9 @@ async function terminateWithApplyAck(
       connectionManager.getAgentClientId(agentId) !== clientId ||
       !sendToAgent(agentId, { type: "session:terminate", chatId, ref })
     ) {
+      // Nobody will `await` this waiter on the failure path, so absorb the
+      // cancellation before rejecting it.
+      waiter.catch(() => undefined);
       connectionManager.cancelClientReply(clientId, ref, new Error("send failed"));
       throw new ServiceUnavailableError("The terminate command could not be delivered to the agent's client");
     }
@@ -249,29 +253,102 @@ async function terminateWithApplyAck(
     throw new ConflictError("The session became active again while waiting for the client; nothing was reset");
   }
 
-  // Tell the daemon client Reset finalization is durable so it may release
-  // parked Reset-fence inbox recovery. Same-replica send first; otherwise fan
-  // out to the socket-owning replica (mirrors ref'd terminate delivery).
-  const finalizedFrame = {
-    type: "session:command:finalized" as const,
-    ref,
-    agentId,
-    chatId,
-    command: "session:terminate" as const,
-    state: "evicted" as const,
-  };
-  if (!sendToAgent(agentId, finalizedFrame)) {
+  await confirmResetFinalization(app, { agentId, chatId, ref, clientId, targetInstanceId });
+
+  return reply
+    .status(200)
+    .send({ agentId, chatId, state: "evicted", transitioned: result.transitioned, delivered: true, applied: true });
+}
+
+/**
+ * Second half of the Reset handshake: tell the daemon client that
+ * finalization is durable, and hold the request until that exact client route
+ * confirms it.
+ *
+ * A fire-and-forget frame is not enough. The client keeps intervening inbox
+ * rows parked behind its Reset admission fence until this signal arrives, so a
+ * dropped frame (or a dropped PG wake) would leave the operator with an HTTP
+ * 200 over a chat that can no longer make progress. Delivery therefore mirrors
+ * the ref'd terminate exactly — the owning replica sends to the one agent/
+ * client pair the preflight resolved, everything else fans out through PG —
+ * and the receipt uses the same correlated waiter plus durable rendezvous
+ * fallback as the apply-ack, because `notifyDaemonClientCommand` still
+ * swallows publish failures.
+ *
+ * The receipt is correlated on a FRESH `ackRef`, not the terminate `ref`: the
+ * apply-ack's cross-replica result wake for `ref` can still be in flight and
+ * would otherwise resolve this waiter with the wrong phase.
+ */
+async function confirmResetFinalization(
+  app: FastifyInstance,
+  route: { agentId: string; chatId: string; ref: string; clientId: string; targetInstanceId: string },
+): Promise<void> {
+  const { agentId, chatId, ref, clientId, targetInstanceId } = route;
+  const ackRef = crypto.randomUUID();
+  const waiter = connectionManager.waitForClientReply(clientId, ackRef);
+
+  if (targetInstanceId === app.config.instanceId) {
+    // Exact route only: `sendToAgent` follows the process-local binding, so a
+    // route move since the preflight could otherwise return true after
+    // delivering to a different client. Fail closed instead of fanning out
+    // after a wrong local send already "succeeded".
+    if (
+      connectionManager.getAgentClientId(agentId) !== clientId ||
+      !sendToAgent(agentId, {
+        type: "session:command:finalized",
+        ref,
+        ackRef,
+        agentId,
+        chatId,
+        command: "session:terminate",
+        state: "evicted",
+      })
+    ) {
+      waiter.catch(() => undefined);
+      connectionManager.cancelClientReply(clientId, ackRef, new Error("send failed"));
+      throw new ServiceUnavailableError(
+        "The session was reset but the client could not be told; it may still be holding queued work",
+      );
+    }
+  } else {
     await app.notifier.notifyDaemonClientCommand({
       type: "session:command:finalized",
       clientId,
       agentId,
       chatId,
       ref,
+      ackRef,
       targetInstanceId,
     });
   }
 
-  return reply
-    .status(200)
-    .send({ agentId, chatId, state: "evicted", transitioned: result.transitioned, delivered: true, applied: true });
+  let receipt: unknown;
+  try {
+    receipt = await waiter;
+  } catch (err) {
+    const stored = await readSessionCommandRpcResult(app.db, clientId, ackRef, "finalized").catch(() => null);
+    if (stored) {
+      receipt = stored;
+    } else {
+      throw new ServiceUnavailableError(
+        `The session was reset but the client did not confirm it: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  const receiptFrame = receipt as {
+    command?: string;
+    agentId?: string;
+    chatId?: string;
+    phase?: string;
+    applied?: boolean;
+  };
+  if (
+    receiptFrame.command !== "session:terminate" ||
+    receiptFrame.agentId !== agentId ||
+    receiptFrame.chatId !== chatId ||
+    receiptFrame.phase !== "finalized" ||
+    receiptFrame.applied !== true
+  ) {
+    throw new ServiceUnavailableError("The session was reset but the client's confirmation did not match");
+  }
 }

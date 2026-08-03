@@ -108,14 +108,30 @@ export const serverCapabilitiesSchema = z
      * path; ordinary event streaming may remain fire-and-forget.
      */
     wsSessionEventConfirm: z.boolean().default(false),
+    /**
+     * Server completes the chat-session Reset handshake past the apply-ack:
+     * after `finalizeTerminatedSession` it sends `session:command:finalized`
+     * on the exact client route and holds the Reset request open until the
+     * client's `session:command:finalized:ack` receipt lands.
+     *
+     * This is the server half of a two-sided negotiation. A client that parks
+     * inbox recovery behind the Reset fence must NOT declare
+     * `wsSessionResetFinalizeHandshake` unless it saw this flag, because an
+     * older server never sends the finalize frame and the park would never be
+     * released. The welcome frame is therefore emitted BEFORE `auth:ok` so the
+     * client can answer with an accurate `client:register`.
+     */
+    wsSessionResetFinalizeHandshake: z.boolean().default(false),
   })
   .partial();
 export type ServerCapabilities = z.infer<typeof serverCapabilitiesSchema>;
 
 /**
- * Advisory frame sent server → client immediately after `auth:ok`. It carries
- * the Command-package version the server was bundled with, so the client can
- * detect version drift on startup and on each reconnect. `.passthrough()` so
+ * Advisory frame sent server → client on the post-auth handshake, immediately
+ * BEFORE `auth:ok` so its capabilities are known by the time the client
+ * answers with `client:register`. It carries the Command-package version the
+ * server was bundled with, so the client can detect version drift on startup
+ * and on each reconnect. `.passthrough()` so
  * future server versions may add fields without breaking older clients that
  * validate this frame.
  */

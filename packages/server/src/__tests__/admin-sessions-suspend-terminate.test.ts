@@ -707,10 +707,24 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
    */
   async function setup(
     state: string,
-    opts: { capable?: boolean; connected?: boolean; remote?: boolean; localSocket?: boolean } = {},
+    opts: {
+      /** `"apply-ack-only"` models a client that predates the finalize handshake. */
+      capable?: boolean | "apply-ack-only";
+      connected?: boolean;
+      remote?: boolean;
+      localSocket?: boolean;
+      /**
+       * How the fake client answers `session:command:finalized`:
+       * `"released"` — immediate receipt (compliant client);
+       * `"refused"` — receipt saying the ref was not the armed generation;
+       * `"durable"` — receipt persisted but the wake is lost;
+       * `"drop"` — nothing comes back at all.
+       */
+      finalizeReceipt?: "released" | "refused" | "durable" | "drop";
+    } = {},
   ) {
     const app = getApp();
-    const { capable = true, connected = true, remote = false, localSocket = true } = opts;
+    const { capable = true, connected = true, remote = false, localSocket = true, finalizeReceipt = "released" } = opts;
     const admin = await createAdminContext(app, { username: `apply-${crypto.randomUUID().slice(0, 6)}` });
     const agent = await createAgent(app.db, {
       name: `apply-agent-${crypto.randomUUID().slice(0, 6)}`,
@@ -729,7 +743,14 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       .set({
         status: connected ? "connected" : "disconnected",
         instanceId: connected ? instanceId : null,
-        metadata: { wireCapabilities: capable ? { wsSessionTerminateApplyAck: true } : {} },
+        metadata: {
+          wireCapabilities:
+            capable === true
+              ? { wsSessionTerminateApplyAck: true, wsSessionResetFinalizeHandshake: true }
+              : capable === "apply-ack-only"
+                ? { wsSessionTerminateApplyAck: true }
+                : {},
+        },
       })
       .where(eq(clients.id, admin.clientId));
     await app.db
@@ -746,9 +767,39 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
         set: { status: "online", clientId: admin.clientId, instanceId, runtimeState: "idle" },
       });
 
-    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    // The fake socket answers the post-finalize signal the way a compliant
+    // client does, so the Reset request can complete past `finalizeTerminatedSession`.
+    const ws = {
+      readyState: 1,
+      send: vi.fn((raw: string) => {
+        if (finalizeReceipt === "drop") return;
+        let frame: { type?: string; ackRef?: string; agentId?: string; chatId?: string };
+        try {
+          frame = JSON.parse(raw) as typeof frame;
+        } catch {
+          return;
+        }
+        if (frame.type !== "session:command:finalized" || !frame.ackRef) return;
+        const receipt = {
+          command: "session:terminate" as const,
+          agentId: frame.agentId as string,
+          chatId: frame.chatId as string,
+          applied: finalizeReceipt !== "refused",
+          phase: "finalized" as const,
+        };
+        if (finalizeReceipt === "durable") {
+          void storeSessionCommandRpcResult(app.db, admin.clientId, frame.ackRef, receipt, LOCAL_INSTANCE);
+          return;
+        }
+        resolveClientReply(admin.clientId, frame.ackRef, receipt);
+      }),
+      close: vi.fn(),
+    };
     if (localSocket) {
-      setClientConnection(admin.clientId, ws as unknown as WebSocket, { wsSessionTerminateApplyAck: true });
+      setClientConnection(admin.clientId, ws as unknown as WebSocket, {
+        wsSessionTerminateApplyAck: true,
+        wsSessionResetFinalizeHandshake: true,
+      });
       bindAgentToClient(admin.clientId, agent.uuid);
     }
     return { app, admin, agent, chat, ws };
@@ -922,6 +973,39 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
         REMOTE_INSTANCE,
       );
       await app.notifier.notifyDaemonClientCommandResult({ clientId: admin.clientId, ref: payload.ref });
+
+      // The post-finalize signal takes the SAME exact route — never a local
+      // send attempt — and carries its own rendezvous ref for the receipt.
+      await vi.waitFor(() => expect(notifySpy).toHaveBeenCalledTimes(2));
+      const finalizedPayload = notifySpy.mock.calls[1]?.[0] as {
+        type: string;
+        clientId: string;
+        agentId?: string;
+        chatId?: string;
+        ref: string;
+        ackRef?: string;
+        targetInstanceId: string;
+      };
+      expect(finalizedPayload).toMatchObject({
+        type: "session:command:finalized",
+        clientId: admin.clientId,
+        agentId: agent.uuid,
+        chatId: chat.id,
+        ref: payload.ref,
+        targetInstanceId: REMOTE_INSTANCE,
+      });
+      expect(finalizedPayload.ackRef).not.toBe(payload.ref);
+      await storeSessionCommandRpcResult(
+        app.db,
+        admin.clientId,
+        finalizedPayload.ackRef as string,
+        { command: "session:terminate", agentId: agent.uuid, chatId: chat.id, applied: true, phase: "finalized" },
+        REMOTE_INSTANCE,
+      );
+      await app.notifier.notifyDaemonClientCommandResult({
+        clientId: admin.clientId,
+        ref: finalizedPayload.ackRef as string,
+      });
 
       const res = await pending;
       expect(res.statusCode).toBe(200);
@@ -1120,6 +1204,87 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.statusCode).toBe(409);
       expect(await readState(app, agent.uuid, chat.id)).toBe("active");
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toHaveLength(1);
+    } finally {
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fails 503 when the client declares the apply-ack but not the finalize handshake", async () => {
+    // Half a handshake is worse than none: the client would park its
+    // intervening inbox rows behind a Reset fence and never answer the
+    // post-finalize signal, so Reset must fail before anything is applied.
+    const { app, admin, agent, chat, ws } = await setup("suspended", { capable: "apply-ack-only" });
+    try {
+      const res = await terminateReq(app, admin, agent.uuid, chat.id);
+      expect(res.statusCode).toBe(503);
+      expect(ws.send).not.toHaveBeenCalled();
+      expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    } finally {
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fails closed instead of fanning out when the local agent route moved before the finalized send", async () => {
+    // `sendToAgent` follows the process-local binding, so a takeover between
+    // the ack and the post-finalize signal would otherwise deliver to the
+    // wrong client and report success.
+    const { app, admin, agent, chat, ws } = await setup("suspended");
+    const notifySpy = vi.spyOn(app.notifier, "notifyDaemonClientCommand");
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId);
+      bindAgentToClient("cli-someone-else", agent.uuid);
+      const res = await pending;
+      expect(res.statusCode).toBe(503);
+      // The eviction itself committed; only the client hand-off failed.
+      expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+      // Never a blind fan-out after a wrong local send.
+      expect(notifySpy).not.toHaveBeenCalled();
+      expect(ws.send.mock.calls.some((call) => String(call[0]).includes("session:command:finalized"))).toBe(false);
+    } finally {
+      notifySpy.mockRestore();
+      cleanup(admin, ws);
+    }
+  });
+
+  it("falls back to the durable finalized receipt when its result wake is lost", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended", { finalizeReceipt: "durable" });
+    setClientReplyTimeoutMsForTests(300);
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ state: "evicted", applied: true });
+    } finally {
+      setClientReplyTimeoutMsForTests(null);
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fails 503 when the client never answers the post-finalize signal", async () => {
+    // Fire-and-forget would have returned 200 over a chat whose queued work
+    // is still fenced on the client.
+    const { app, admin, agent, chat, ws } = await setup("suspended", { finalizeReceipt: "drop" });
+    setClientReplyTimeoutMsForTests(80);
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(503);
+    } finally {
+      setClientReplyTimeoutMsForTests(null);
+      cleanup(admin, ws);
+    }
+  });
+
+  it("fails 503 when the client answers that it did not release the parked fence", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended", { finalizeReceipt: "refused" });
+    try {
+      const pending = terminateReq(app, admin, agent.uuid, chat.id);
+      await ackSentCommand(ws, admin.clientId);
+      const res = await pending;
+      expect(res.statusCode).toBe(503);
     } finally {
       cleanup(admin, ws);
     }

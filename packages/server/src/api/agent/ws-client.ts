@@ -18,6 +18,7 @@ import {
   providerModelsResultFrameSchema,
   runtimeStateMessageSchema,
   sessionCommandAppliedFrameSchema,
+  sessionCommandFinalizedAckFrameSchema,
   sessionEventMessageSchema,
   sessionEventRejectedReasonSchema,
   sessionReconcileRequestSchema,
@@ -325,6 +326,9 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         return;
       }
       if (payload.type === "session:command:finalized") {
+        // Same revalidation as the ref'd terminate: a takeover between the
+        // HTTP finalize and this fan-out must not lift another socket's Reset
+        // fence or let a stale route answer the receipt waiter.
         void (async () => {
           const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId);
           if (!routed) return;
@@ -332,6 +336,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
           connectionManager.sendToClient(payload.clientId, {
             type: "session:command:finalized",
             ref: payload.ref,
+            ackRef: payload.ackRef,
             agentId: payload.agentId,
             chatId: payload.chatId,
             command: "session:terminate",
@@ -1049,7 +1054,10 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
           scheduleAuthExpiry(payload.exp);
 
           try {
-            sendJsonOrThrow(socket, { type: "auth:ok" });
+            // Welcome goes out BEFORE `auth:ok`. The client answers `auth:ok`
+            // with `client:register`, and its Reset capability declaration is
+            // only honest once it knows whether this server completes the
+            // finalize handshake — so the advertisement must arrive first.
             // Wire-additive: older clients drop the unknown type; newer ones
             // use it to detect version drift. `capabilities.wsInboxDeliver`
             // must stay `true` here so 0.10.4 ~ 0.14.2 clients suppress
@@ -1061,8 +1069,14 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               type: "server:welcome",
               serverCommandVersion: app.commandVersion(),
               serverTimeMs: Date.now(),
-              capabilities: { wsInboxDeliver: true, wsInboxAckConfirm: true, wsSessionEventConfirm: true },
+              capabilities: {
+                wsInboxDeliver: true,
+                wsInboxAckConfirm: true,
+                wsSessionEventConfirm: true,
+                wsSessionResetFinalizeHandshake: true,
+              },
             });
+            sendJsonOrThrow(socket, { type: "auth:ok" });
             setAuthWsAttrs(socket, {
               phase: "post_auth_welcome",
               outcome: "accepted",
@@ -1790,6 +1804,67 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               }
               connectionManager.resolveClientReply(clientId, parsedAck.data.ref, parsedAck.data);
               await notifier.notifyDaemonClientCommandResult({ clientId, ref: parsedAck.data.ref });
+            } else if (type === "session:command:finalized:ack") {
+              // Post-finalize receipt: the client released (or refused to
+              // release) parked Reset-fence recovery for this exact
+              // generation. Correlated on its own `ackRef` so a late
+              // apply-ack wake for the terminate ref cannot satisfy the
+              // finalize waiter. Same route guards and durable rendezvous as
+              // the apply-ack, so a lost PG wake still converges.
+              const parsedReceipt = sessionCommandFinalizedAckFrameSchema.safeParse(msg);
+              if (!parsedReceipt.success) {
+                app.log.warn(
+                  { clientId, issues: parsedReceipt.error.issues.map((i) => i.message) },
+                  "malformed session:command:finalized:ack frame — dropping",
+                );
+                return;
+              }
+              if (!clientId) return;
+              if (!connectionManager.isActiveClientConnection(clientId, socket)) {
+                app.log.debug(
+                  { clientId, ref: parsedReceipt.data.ackRef },
+                  "ignoring session:command:finalized:ack from replaced local socket",
+                );
+                return;
+              }
+              if (
+                !boundAgents.has(parsedReceipt.data.agentId) ||
+                connectionManager.getAgentClientId(parsedReceipt.data.agentId) !== clientId
+              ) {
+                app.log.debug(
+                  { clientId, agentId: parsedReceipt.data.agentId, ref: parsedReceipt.data.ackRef },
+                  "ignoring session:command:finalized:ack from an agent not routed to this client",
+                );
+                return;
+              }
+              const receiptStored = await storeSessionCommandRpcResult(
+                app.db,
+                clientId,
+                parsedReceipt.data.ackRef,
+                {
+                  command: "session:terminate",
+                  agentId: parsedReceipt.data.agentId,
+                  chatId: parsedReceipt.data.chatId,
+                  applied: parsedReceipt.data.released,
+                  phase: "finalized",
+                },
+                instanceId,
+              );
+              if (!receiptStored) {
+                app.log.debug(
+                  { clientId, ref: parsedReceipt.data.ackRef, instanceId },
+                  "ignoring session:command:finalized:ack; client ownership moved before durable write",
+                );
+                return;
+              }
+              connectionManager.resolveClientReply(clientId, parsedReceipt.data.ackRef, {
+                command: "session:terminate",
+                agentId: parsedReceipt.data.agentId,
+                chatId: parsedReceipt.data.chatId,
+                applied: parsedReceipt.data.released,
+                phase: "finalized",
+              });
+              await notifier.notifyDaemonClientCommandResult({ clientId, ref: parsedReceipt.data.ackRef });
             } else if (type === "inbox:ack") {
               const payloadResult = inboxAckFrameSchema.safeParse(msg);
               if (!payloadResult.success) {

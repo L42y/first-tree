@@ -44,10 +44,31 @@ export function isConsistentAgentRoute(row: ApplyAckRouteRow): row is ApplyAckRo
   );
 }
 
+function wireCapabilities(metadata: unknown): Record<string, unknown> | undefined {
+  return (metadata as Record<string, unknown> | null)?.wireCapabilities as Record<string, unknown> | undefined;
+}
+
 /** The `wsSessionTerminateApplyAck` flag out of a `clients.metadata` blob. */
 export function metadataHasApplyAckCapability(metadata: unknown): boolean {
-  const caps = (metadata as Record<string, unknown> | null)?.wireCapabilities as Record<string, unknown> | undefined;
-  return caps?.wsSessionTerminateApplyAck === true;
+  return wireCapabilities(metadata)?.wsSessionTerminateApplyAck === true;
+}
+
+/** The `wsSessionResetFinalizeHandshake` flag out of a `clients.metadata` blob. */
+export function metadataHasResetFinalizeHandshakeCapability(metadata: unknown): boolean {
+  return wireCapabilities(metadata)?.wsSessionResetFinalizeHandshake === true;
+}
+
+/**
+ * The ONE capability verdict for chat-session Reset. Both halves are
+ * required: the apply-ack proves the client dropped the provider mapping, and
+ * the finalize handshake proves it will release its parked inbox recovery and
+ * answer the post-finalize signal. A client that declares only the apply-ack
+ * would park its intervening rows behind a fence this server lifts with a
+ * frame the client never answers, so Reset must stay hidden and fail closed
+ * BEFORE anything destructive is applied locally.
+ */
+export function metadataSupportsSessionReset(metadata: unknown): boolean {
+  return metadataHasApplyAckCapability(metadata) && metadataHasResetFinalizeHandshakeCapability(metadata);
 }
 
 /**
@@ -79,7 +100,7 @@ export async function resolveAgentApplyAckRoute(
   return {
     clientId: row.presenceClientId,
     instanceId: row.clientInstanceId,
-    capable: metadataHasApplyAckCapability(row.clientMetadata),
+    capable: metadataSupportsSessionReset(row.clientMetadata),
   };
 }
 
@@ -146,14 +167,23 @@ export const SESSION_COMMAND_RPC_MAX_ENTRIES = 20;
 
 const REF_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Which half of the Reset handshake an entry records. `applied` is the
+ * pre-finalize apply-ack; `finalized` is the client's post-finalize receipt,
+ * stored under its own rendezvous ref so the two can never satisfy each
+ * other's waiter. Legacy entries without the field read back as `applied`.
+ */
+export type SessionCommandRpcPhase = "applied" | "finalized";
+
 export type SessionCommandRpcResult = {
   command: "session:terminate";
   agentId: string;
   chatId: string;
   applied: boolean;
+  phase?: SessionCommandRpcPhase;
 };
 
-type RpcEntry = SessionCommandRpcResult & { storedAt: string };
+type RpcEntry = SessionCommandRpcResult & { phase: SessionCommandRpcPhase; storedAt: string };
 
 function asRpcEntry(raw: unknown): RpcEntry | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -167,6 +197,7 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
   ) {
     return null;
   }
+  if (row.phase !== undefined && row.phase !== "applied" && row.phase !== "finalized") return null;
   const storedMs = Date.parse(row.storedAt);
   if (!Number.isFinite(storedMs) || Date.now() - storedMs >= SESSION_COMMAND_RPC_MAX_AGE_MS) return null;
   return {
@@ -174,6 +205,7 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
     agentId: row.agentId,
     chatId: row.chatId,
     applied: row.applied,
+    phase: (row.phase as SessionCommandRpcPhase | undefined) ?? "applied",
     storedAt: row.storedAt,
   };
 }
@@ -195,7 +227,7 @@ export async function storeSessionCommandRpcResult(
   if (!REF_RE.test(ref)) {
     throw new Error(`Invalid session-command RPC ref: ${ref}`);
   }
-  const entry = { ...result, storedAt: new Date().toISOString() };
+  const entry = { ...result, phase: result.phase ?? "applied", storedAt: new Date().toISOString() };
   const maxAgeSeconds = Math.floor(SESSION_COMMAND_RPC_MAX_AGE_MS / 1000);
   // One UPDATE: ownership + agent-route guards + merge ref + physical prune
   // (age then newest N). Column refs in SET are the pre-update row;
@@ -234,11 +266,16 @@ export async function storeSessionCommandRpcResult(
   return returned.length > 0;
 }
 
-/** Load a previously stored apply-ack when still within the logical TTL. */
+/**
+ * Load a previously stored handshake result when still within the logical
+ * TTL. `expectedPhase` fails closed on a phase mismatch so a finalize waiter
+ * can never settle on a leftover apply-ack.
+ */
 export async function readSessionCommandRpcResult(
   db: Database,
   clientId: string,
   ref: string,
+  expectedPhase?: SessionCommandRpcPhase,
 ): Promise<SessionCommandRpcResult | null> {
   const [client] = await db
     .select({ metadata: clients.metadata })
@@ -251,8 +288,9 @@ export async function readSessionCommandRpcResult(
   if (!map || typeof map !== "object" || Array.isArray(map)) return null;
   const entry = asRpcEntry((map as Record<string, unknown>)[ref]);
   if (!entry) return null;
-  const { command, agentId, chatId, applied } = entry;
-  return { command, agentId, chatId, applied };
+  if (expectedPhase !== undefined && entry.phase !== expectedPhase) return null;
+  const { command, agentId, chatId, applied, phase } = entry;
+  return { command, agentId, chatId, applied, phase };
 }
 
 /** Raw rendezvous key count (including aged entries) — test/observability seam. */

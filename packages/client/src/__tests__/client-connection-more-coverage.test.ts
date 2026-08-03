@@ -734,14 +734,18 @@ describe("ClientConnection — additional branch coverage", () => {
     priv(connection).clearTimers();
   });
 
-  it("declares the terminate apply-ack capability and forwards command refs", async () => {
+  it("withholds the Reset finalize capability from a server that never advertised it", async () => {
     const connection = await makeConnection();
+    // This harness emits `auth:ok` before `server:welcome` and advertises
+    // nothing — an old server. The client must not promise a handshake half
+    // that server cannot complete.
     const socket = await openRegisteredConnection(connection);
 
     const registerFrame = socket.sent
       .map((raw) => JSON.parse(raw) as Record<string, unknown>)
       .find((message) => message.type === "client:register");
     expect(registerFrame?.wireCapabilities).toEqual({ wsSessionTerminateApplyAck: true });
+    expect(connection.supportsResetFinalizeHandshake).toBe(false);
 
     const commands: unknown[] = [];
     connection.on("session:command", (command) => commands.push(command));
@@ -751,6 +755,100 @@ describe("ClientConnection — additional branch coverage", () => {
       { type: "session:terminate", agentId: "agent-1", chatId: "chat-9", ref: "reset-1" },
       { type: "session:terminate", agentId: "agent-1", chatId: "chat-9" },
     ]);
+
+    priv(connection).clearTimers();
+  });
+
+  it("declares the Reset finalize capability to a server that advertises it and answers finalized frames", async () => {
+    const connection = await makeConnection();
+    const internal = priv(connection);
+    const openPromise = internal.openWebSocket();
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) throw new Error("missing fake socket");
+    socket.emitOpen();
+    await flushMicrotasks();
+    // New server ordering: welcome first, so `client:register` can answer it.
+    socket.emitMessage({
+      type: "server:welcome",
+      serverCommandVersion: "1.0.0",
+      serverTimeMs: Date.now(),
+      capabilities: { wsSessionResetFinalizeHandshake: true },
+    });
+    socket.emitMessage({ type: "auth:ok" });
+    socket.emitMessage({ type: "client:registered" });
+    await openPromise;
+
+    const registerFrame = socket.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .find((message) => message.type === "client:register");
+    expect(registerFrame?.wireCapabilities).toEqual({
+      wsSessionTerminateApplyAck: true,
+      wsSessionResetFinalizeHandshake: true,
+    });
+    expect(connection.supportsResetFinalizeHandshake).toBe(true);
+
+    await bindAgent(connection, socket);
+    const finalized: unknown[] = [];
+    connection.on("session:command:finalized", (frame) => finalized.push(frame));
+
+    // A finalized frame without its rendezvous ref is unanswerable — dropped.
+    socket.emitMessage({
+      type: "session:command:finalized",
+      ref: "reset-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(finalized).toEqual([]);
+
+    socket.emitMessage({
+      type: "session:command:finalized",
+      ref: "reset-1",
+      ackRef: "ack-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(finalized).toEqual([
+      {
+        type: "session:command:finalized",
+        ref: "reset-1",
+        ackRef: "ack-1",
+        agentId: "agent-1",
+        chatId: "chat-9",
+        command: "session:terminate",
+        state: "evicted",
+      },
+    ]);
+
+    connection.reportSessionCommandFinalizedAck({
+      ref: "reset-1",
+      ackRef: "ack-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      released: true,
+    });
+    expect(parseSent(socket, socket.sent.length - 1)).toEqual({
+      type: "session:command:finalized:ack",
+      ref: "reset-1",
+      ackRef: "ack-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      released: true,
+    });
+
+    // A new socket must re-learn support rather than trust the last server —
+    // the next connection may land on a rolled-back replica.
+    void internal.openWebSocket().catch(() => {});
+    const reconnected = FakeWebSocket.instances.at(-1);
+    if (!reconnected || reconnected === socket) throw new Error("missing reconnect socket");
+    reconnected.emitOpen();
+    await flushMicrotasks();
+    expect(connection.supportsResetFinalizeHandshake).toBe(false);
 
     priv(connection).clearTimers();
   });

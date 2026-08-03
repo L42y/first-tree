@@ -165,4 +165,32 @@ describe("serverWelcomeFrameSchema", () => {
       expect(res.data.capabilities).toBeUndefined();
     }
   });
+
+  it("reads the Reset finalize handshake as absent on both legacy server shapes", () => {
+    // The client only declares its own finalize capability when this reads
+    // true, so an old server — whether it omits `capabilities` entirely or
+    // sends a block that predates the flag — must never look supported.
+    const noBlock = serverWelcomeFrameSchema.parse({
+      type: "server:welcome",
+      serverCommandVersion: "0.9.2",
+      serverTimeMs: 0,
+    });
+    expect(noBlock.capabilities?.wsSessionResetFinalizeHandshake).toBeUndefined();
+
+    const olderBlock = serverWelcomeFrameSchema.parse({
+      type: "server:welcome",
+      serverCommandVersion: "0.14.2",
+      serverTimeMs: 0,
+      capabilities: { wsInboxDeliver: true, wsInboxAckConfirm: true },
+    });
+    expect(olderBlock.capabilities?.wsSessionResetFinalizeHandshake).toBe(false);
+
+    const current = serverWelcomeFrameSchema.parse({
+      type: "server:welcome",
+      serverCommandVersion: "1.0.0",
+      serverTimeMs: 0,
+      capabilities: { wsInboxDeliver: true, wsSessionResetFinalizeHandshake: true },
+    });
+    expect(current.capabilities?.wsSessionResetFinalizeHandshake).toBe(true);
+  });
 });
