@@ -40,6 +40,14 @@ export type WorkspaceChatExactListResponse = {
 const EXACT_SCAN_PAGE_SIZE = 100;
 
 /**
+ * Hard page bound for the exact-mode scan: 100 pages × 100 rows covers
+ * 10,000 conversations. A server that keeps emitting distinct non-null
+ * cursors past this bound is feeding an unbounded stream, so the preflight
+ * fails closed instead of looping forever.
+ */
+const EXACT_SCAN_MAX_PAGES = 100;
+
+/**
  * Fail closed when no agent is selected: without `withAgentId` the Workspace
  * list would expose the signed-in human's whole Workspace instead of the
  * agent-scoped subset.
@@ -98,6 +106,12 @@ function engagementMatchesView(status: ChatEngagementStatus, view: ChatEngagemen
  * covers the race between the list read and the archive. Anything else —
  * chat absent from the view, agent not a speaker, detail engagement drift —
  * yields an empty item list: the caller archives nothing.
+ *
+ * The scan is bounded and fails closed on abnormal pagination: a repeated
+ * `nextCursor` (immediate repeat or a longer A→B→A cycle) or more than
+ * {@link EXACT_SCAN_MAX_PAGES} pages throws instead of looping forever, so a
+ * misbehaving server can never produce an archivable row nor reach the
+ * detail read.
  */
 export async function getWorkspaceChatExactForAgent(
   sdk: FirstTreeHubSDK,
@@ -109,7 +123,8 @@ export async function getWorkspaceChatExactForAgent(
 
   let row: WorkspaceChatListItem | undefined;
   let cursor: string | undefined;
-  for (;;) {
+  const seenCursors = new Set<string>();
+  for (let pageCount = 1; ; pageCount += 1) {
     const page = await sdk.listWorkspaceChats(organizationId, {
       engagement,
       withAgentId: agentId,
@@ -118,6 +133,19 @@ export async function getWorkspaceChatExactForAgent(
     });
     row = page.items.find((item) => item.chatId === chatId);
     if (row !== undefined || page.nextCursor === null) break;
+    if (seenCursors.has(page.nextCursor)) {
+      throw new Error(
+        `Workspace exact scan aborted: the server repeated pagination cursor "${page.nextCursor}" ` +
+          `before chat ${chatId} was found. Failing closed — no archivable row, no detail read.`,
+      );
+    }
+    seenCursors.add(page.nextCursor);
+    if (pageCount >= EXACT_SCAN_MAX_PAGES) {
+      throw new Error(
+        `Workspace exact scan aborted: chat ${chatId} not found within ${EXACT_SCAN_MAX_PAGES} pages ` +
+          `(page size ${EXACT_SCAN_PAGE_SIZE}). Failing closed — no archivable row, no detail read.`,
+      );
+    }
     cursor = page.nextCursor;
   }
   if (row === undefined) {

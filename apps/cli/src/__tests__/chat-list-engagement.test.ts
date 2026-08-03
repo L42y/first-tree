@@ -314,6 +314,59 @@ describe("chat list --engagement", () => {
     expect(outputMocks.success).not.toHaveBeenCalled();
   });
 
+  it("exact chat fails closed on an immediately repeated cursor", async () => {
+    const other = makeWorkspaceItem({ id: "chat-other", chatId: "chat-other" });
+    const listWorkspaceChats = vi.fn(async () => ({ items: [other], nextCursor: "cursor-x" }));
+    const sdk = makeMockSdk({ listWorkspaceChats });
+    localAgentMocks.createSdk.mockReturnValue(sdk);
+
+    await expect(runChatList(["--engagement", "active", "--chat", "chat-1"])).rejects.toThrow(
+      'repeated pagination cursor "cursor-x"',
+    );
+
+    expect(listWorkspaceChats).toHaveBeenCalledTimes(2);
+    expect(sdk.getMemberChatDetail).not.toHaveBeenCalled();
+    expect(outputMocks.success).not.toHaveBeenCalled();
+  });
+
+  it("exact chat fails closed on a multi-node cursor cycle (A→B→A)", async () => {
+    const other = makeWorkspaceItem({ id: "chat-other", chatId: "chat-other" });
+    const listWorkspaceChats = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [other], nextCursor: "cursor-a" })
+      .mockResolvedValueOnce({ items: [other], nextCursor: "cursor-b" })
+      .mockResolvedValueOnce({ items: [other], nextCursor: "cursor-a" });
+    const sdk = makeMockSdk({ listWorkspaceChats });
+    localAgentMocks.createSdk.mockReturnValue(sdk);
+
+    await expect(runChatList(["--engagement", "active", "--chat", "chat-1"])).rejects.toThrow(
+      'repeated pagination cursor "cursor-a"',
+    );
+
+    expect(listWorkspaceChats).toHaveBeenCalledTimes(3);
+    expect(sdk.getMemberChatDetail).not.toHaveBeenCalled();
+    expect(outputMocks.success).not.toHaveBeenCalled();
+  });
+
+  it("exact chat fails closed when distinct cursors exceed the 100-page bound", async () => {
+    const other = makeWorkspaceItem({ id: "chat-other", chatId: "chat-other" });
+    let calls = 0;
+    const listWorkspaceChats = vi.fn(async () => {
+      calls += 1;
+      return { items: [other], nextCursor: `cursor-${calls}` };
+    });
+    const sdk = makeMockSdk({ listWorkspaceChats });
+    localAgentMocks.createSdk.mockReturnValue(sdk);
+
+    await expect(runChatList(["--engagement", "active", "--chat", "chat-1"])).rejects.toThrow(
+      "not found within 100 pages",
+    );
+
+    expect(listWorkspaceChats).toHaveBeenCalledTimes(100);
+    expect(sdk.getMemberChatDetail).not.toHaveBeenCalled();
+    expect(outputMocks.success).not.toHaveBeenCalled();
+  });
+
   it("exact chat returns empty items when the detail engagement drifted from the requested view", async () => {
     // Row still matches the view filter (active), but the fresher detail read
     // says archived — the race the detail re-check exists to cover.

@@ -531,8 +531,11 @@ first-tree chat list --engagement archived --cursor <cursor>
 # lastReadAt, descriptionUpdatedAt, …). The detail's `engagementStatus` is
 # the current-state verdict. Returns at most one item and `nextCursor: null`,
 # only when the chat appears in the requested view AND the selected agent is
-# a speaker in it; otherwise `items` is empty. Requires --engagement and
-# cannot be combined with --cursor.
+# a speaker in it; otherwise `items` is empty. The scan is bounded and fails
+# closed on abnormal pagination: a repeated `nextCursor` (immediate or an
+# A→B→A cycle) or more than 100 pages aborts the preflight with an error —
+# no archivable row, no detail read. Requires --engagement and cannot be
+# combined with --cursor.
 first-tree chat list --engagement active --chat <chatId>
 first-tree chat archive <chatId>
 
