@@ -594,7 +594,10 @@ export class SessionManager {
    * synchronous registry flush failed. Counted as "work to do" by the
    * terminate admission guard so a retry re-executes the full termination
    * (and re-attempts the flush) instead of early-returning a false
-   * applied:true while the stale mapping is still on disk.
+   * applied:true while the stale mapping is still on disk. Also fences
+   * every provider route admission until that retry succeeds — otherwise an
+   * intervening start can consume the pending Reset nonce that the retry
+   * later records as the durable retirement tombstone.
    */
   private readonly terminatePersistFailures = new Set<string>();
   /**
@@ -729,7 +732,7 @@ export class SessionManager {
     const admissionValid = () =>
       !this.shuttingDown &&
       (this.admissionGenerations.get(chatId) ?? 0) === admissionGeneration &&
-      !this.terminatingChats.has(chatId);
+      !this.isProviderRouteAdmissionFenced(chatId);
     const suspending = this.sessions.get(chatId)?.suspending;
     if (suspending) await suspending;
     const isRecoveryRedelivery = this.inboxDelivery.takeRecoveryActivationReady(chatId);
@@ -1161,6 +1164,15 @@ export class SessionManager {
     for (const id of this.routeProducers.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
+    // Unresolved Reset retirement (in-flight terminate OR failed durable
+    // flush) force-keeps the chat: the server must retain reconcile authority
+    // until mapping deletion + Reset nonce are durably written.
+    for (const id of this.terminatingChats.keys()) {
+      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+    }
+    for (const id of this.terminatePersistFailures) {
+      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+    }
     return [...ids];
   }
 
@@ -1442,6 +1454,9 @@ export class SessionManager {
     // start/resume can still materialize late, and the reconcile channel is
     // what retries its teardown if the stop fails.
     if ((this.routeProducers.get(chatId)?.size ?? 0) > 0) return true;
+    // In-flight Reset drain or failed durable Reset flush: keep reconcile
+    // authority until the successful terminate retry clears the fence.
+    if (this.isProviderRouteAdmissionFenced(chatId)) return true;
     if (this.pendingQueue.some((queued) => queued.chatId === chatId)) return true;
     if (this.hasPendingTransientRetry(chatId)) return true;
     return this.inboxDelivery.hasUnsettledWork(chatId);
@@ -1449,6 +1464,17 @@ export class SessionManager {
 
   private invalidateDeliveryAdmission(chatId: string): void {
     this.admissionGenerations.set(chatId, (this.admissionGenerations.get(chatId) ?? 0) + 1);
+  }
+
+  /**
+   * Combined provider-route admission fence for Reset: either an in-flight
+   * `session:terminate` drain (`terminatingChats`) or a prior Reset whose
+   * durable registry flush failed (`terminatePersistFailures`). Must NOT be
+   * used for the duplicate-terminate join lookup — a genuine retry terminate
+   * must still execute and clear the persistence failure.
+   */
+  private isProviderRouteAdmissionFenced(chatId: string): boolean {
+    return this.terminatingChats.has(chatId) || this.terminatePersistFailures.has(chatId);
   }
 
   private clearRetryAttemptState(entry: SessionEntry): void {
@@ -2492,8 +2518,11 @@ export class SessionManager {
       this.retryDeliveryTurn(chatId, message, "manager_shutdown");
       return;
     }
-    if (this.terminatingChats.has(chatId)) {
-      this.config.log.info({ chatId, messageId: message.id }, "delivery held while session termination is pending");
+    if (this.isProviderRouteAdmissionFenced(chatId)) {
+      this.config.log.info(
+        { chatId, messageId: message.id },
+        "delivery held while session Reset retirement is pending",
+      );
       return;
     }
     if (this.isChatReplayFenced(chatId)) {
@@ -2648,9 +2677,10 @@ export class SessionManager {
       this.retryDeliveryTurn(chatId, message, "manager_shutdown");
       return;
     }
-    // The settle awaited: a terminate may have started meanwhile — it owns
-    // the chat's delivery state now, so hold instead of installing a route.
-    if (this.terminatingChats.has(chatId)) return;
+    // The settle awaited: a terminate may have started meanwhile — or a prior
+    // Reset flush may have failed — either owns the chat's delivery state now,
+    // so hold instead of installing a route.
+    if (this.isProviderRouteAdmissionFenced(chatId)) return;
     // The settle also made the route selection stale: another path may have
     // created the session meanwhile. Re-dispatch through routeMessage's
     // selection instead of creating a duplicate entry (or overwriting one).
@@ -2845,8 +2875,8 @@ export class SessionManager {
       if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_entry_replaced");
       return;
     }
-    if (this.terminatingChats.has(entry.chatId)) {
-      throw new Error("session resume fenced: terminate in flight for chat");
+    if (this.isProviderRouteAdmissionFenced(entry.chatId)) {
+      throw new Error("session resume fenced: Reset retirement pending for chat");
     }
     // Full route-selection re-validation, acting as the CAS against
     // concurrent waiters: another dispatch may have won the route while
@@ -3206,7 +3236,7 @@ export class SessionManager {
    */
   private rearmRetryTimer(chatId: string, entry: SessionEntry, delayMs = 5_000): void {
     if (this.shuttingDown) return;
-    if (this.terminatingChats.has(chatId)) return;
+    if (this.isProviderRouteAdmissionFenced(chatId)) return;
     if (this.sessions.get(chatId) !== entry) return;
     if (
       entry.status !== "suspended" ||
@@ -3252,6 +3282,7 @@ export class SessionManager {
 
   private async executeRetry(chatId: string): Promise<void> {
     if (this.shuttingDown) return;
+    if (this.isProviderRouteAdmissionFenced(chatId)) return;
     const entry = this.sessions.get(chatId);
     if (!entry) return;
     if (
@@ -3354,7 +3385,7 @@ export class SessionManager {
     // and the retry choreography is left to whoever now owns the chat
     // (terminate clears the entry; shutdown clears the timers).
     if (this.shuttingDown) return;
-    if (this.terminatingChats.has(chatId)) return;
+    if (this.isProviderRouteAdmissionFenced(chatId)) return;
     if (
       this.sessions.get(chatId) !== entry ||
       entry.status !== "suspended" ||
@@ -3392,7 +3423,7 @@ export class SessionManager {
     // the winner's route owns the head's custody.
     if (
       this.shuttingDown ||
-      this.terminatingChats.has(chatId) ||
+      this.isProviderRouteAdmissionFenced(chatId) ||
       this.sessions.get(chatId) !== entry ||
       entry.status !== "suspended" ||
       entry.activeSlotHeld ||

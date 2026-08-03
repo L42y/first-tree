@@ -70,10 +70,12 @@ surface, skills projection, or provider supervisor changes.
   A successful `session:terminate` / Reset retires the provider session at a durable mapping+tombstone boundary: the
   next addressed message — including same-row redelivery after Client restart when the first turn settled but ACK
   never committed — must start a fresh Pi session identity with no access to the discarded transcript/model state,
-  while crash-redelivery of the same uncommitted first message *before* any Reset keeps the same identity. Inject
-  during streaming uses `steer`; non-streaming input starts the next prompt. Accepted steered messages keep
-  DeliveryToken custody through `agent_settled`. A settle-vs-steer rejection queues the inbound message for the next
-  prompt rather than fabricating terminal-rejection evidence.
+  while crash-redelivery of the same uncommitted first message *before* any Reset keeps the same identity. When a
+  Reset registry flush fails, provider route admission stays fenced until a successful terminate retry; an intervening
+  delivery must not start/resume/inject or ACK, and cannot consume the pending Reset nonce. Inject during streaming
+  uses `steer`; non-streaming input starts the next prompt. Accepted steered messages keep DeliveryToken custody
+  through `agent_settled`. A settle-vs-steer rejection queues the inbound message for the next prompt rather than
+  fabricating terminal-rejection evidence.
 - Abort / suspend: abort mid-stream, wait for both the abort response and `agent_settled` in either order, then close
   stdin/process cleanly without orphaning the RPC child.
 - Managed Skills: projected Skills live under `.agents/skills` (shared Codex native root). Confirm `--no-skills --skill

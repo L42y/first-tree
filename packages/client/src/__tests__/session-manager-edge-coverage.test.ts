@@ -5330,6 +5330,65 @@ describe("SessionManager edge coverage", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("fences provider route admission and force-keeps held-chat sync after a failed Reset flush", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-terminate-persist-fence-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-terminate-persist-fence";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const start = vi.fn().mockResolvedValue({
+      sessionId: "should-not-start",
+      route: { kind: "owned", mode: "processing" },
+    });
+    const resume = vi.fn().mockResolvedValue({
+      sessionId: "should-not-resume",
+      route: { kind: "owned", mode: "processing" },
+    });
+    const inject = vi.fn().mockReturnValue({ kind: "owned", mode: "processing" });
+    const sm = makeManager({
+      registryPath,
+      handlers: [handler({ start, resume, inject })],
+    });
+    const i = internals(sm);
+    expect(i.evictedMappings.has(chatId)).toBe(true);
+
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+    // Empty active set still force-keeps the unresolved Reset persistence boundary.
+    expect(sm.getHeldChatIds(new Set())).toContain(chatId);
+
+    await sm.dispatch(mockEntry({ id: 80, chatId, messageId: "msg-fenced-while-persist-failed" }));
+    expect(start).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(inject).not.toHaveBeenCalled();
+    expect(i.sessions.has(chatId)).toBe(false);
+
+    // Genuine terminate retry clears the fence after a successful flush.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(sm.getHeldChatIds(new Set())).not.toContain(chatId);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("cancels admitted delivery when terminate arrives before SessionEntry creation", async () => {
     let signalBindingStarted: (() => void) | undefined;
     let resolveBinding: (() => void) | undefined;

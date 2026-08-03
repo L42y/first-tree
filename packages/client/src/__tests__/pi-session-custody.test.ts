@@ -2164,4 +2164,97 @@ describe("Pi handler → SessionManager custody", () => {
     expect(allIds[1]).not.toBe(freshStartPiSessionId("agent-1", chatId, messageId));
     await sm2.shutdown();
   });
+
+  it("failed Reset flush fences intervening start until retry; same-row redelivery uses durable nonce only", async () => {
+    const registryPath = join(workspaceRoot, "sessions-reset-fence.json");
+    const specs: ProviderProcessSpec[] = [];
+    const ackEntry = mockAckEntry();
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm1 = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+    const chatId = "chat-pi-reset-fence";
+
+    await sm1.dispatch(mockEntry({ id: 351, chatId, messageId: "msg-fence-old", content: "establish identity" }));
+    expect(ackEntry).toHaveBeenCalledWith(351);
+    const oldId = freshStartPiSessionId("agent-1", chatId, "msg-fence-old");
+    expect(rpcSessionIds(specs)).toEqual([oldId]);
+    expect(readCount(promptCountFile)).toBe(1);
+
+    const rotateSpy = vi.spyOn(SessionRegistry.prototype, "rotateFreshStartNonce");
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm1.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    const pendingNonce = rotateSpy.mock.results[0]?.value as string;
+    expect(typeof pendingNonce).toBe("string");
+    expect(pendingNonce.length).toBeGreaterThan(0);
+    const sm1Internals = sm1 as unknown as {
+      terminatePersistFailures: Set<string>;
+      terminatingChats: Map<string, Promise<void>>;
+    };
+    expect(sm1Internals.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(sm1Internals.terminatingChats.has(chatId)).toBe(false);
+    // Unresolved Reset flush must stay in held-chat force-keep reporting.
+    expect(sm1.getHeldChatIds(new Set())).toContain(chatId);
+
+    const interveningEntryId = 352;
+    const interveningMessageId = "msg-fence-intervening";
+    const interveningAckCallsBefore = ackEntry.mock.calls.filter((call) => call[0] === interveningEntryId).length;
+    const promptsBefore = readCount(promptCountFile);
+    const spawnsBefore = rpcSessionIds(specs).length;
+
+    // Intervening durable row while Reset is failed: must not enter Pi or ACK.
+    await sm1.dispatch(
+      mockEntry({
+        id: interveningEntryId,
+        chatId,
+        messageId: interveningMessageId,
+        content: "must not consume pending nonce",
+      }),
+    );
+    expect(rpcSessionIds(specs)).toHaveLength(spawnsBefore);
+    expect(readCount(promptCountFile)).toBe(promptsBefore);
+    expect(readCount(steerCountFile)).toBe(0);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === interveningEntryId)).toHaveLength(
+      interveningAckCallsBefore,
+    );
+    // Pending nonce must not have been consumed by an intervening start identity.
+    expect(rpcSessionIds(specs)).not.toContain(
+      freshStartPiSessionId("agent-1", chatId, interveningMessageId, pendingNonce),
+    );
+
+    await sm1.handleCommand(chatId, "session:suspend");
+    await sm1.handleCommand(chatId, "session:terminate");
+    expect(sm1Internals.terminatePersistFailures.has(chatId)).toBe(false);
+    const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as {
+      entries: Record<string, unknown>;
+      freshStartNonces: Record<string, string>;
+    };
+    expect(persisted.entries).toEqual({});
+    expect(persisted.freshStartNonces[chatId]).toBe(pendingNonce);
+    expect(new Set(rotateSpy.mock.results.map((r) => r.value))).toEqual(new Set([pendingNonce]));
+
+    await sm1.shutdown();
+
+    const ackEntry2 = mockAckEntry();
+    const sm2 = makePiSessionManager({ specs, ackEntry: ackEntry2, sendMessage, registryPath });
+    await sm2.dispatch(
+      mockEntry({
+        id: interveningEntryId,
+        chatId,
+        messageId: interveningMessageId,
+        content: "must not consume pending nonce",
+      }),
+    );
+    expect(ackEntry2).toHaveBeenCalledWith(interveningEntryId);
+    expect(ackEntry2.mock.calls.filter((call) => call[0] === interveningEntryId)).toHaveLength(1);
+
+    const allIds = rpcSessionIds(specs);
+    expect(allIds).toHaveLength(2);
+    const expectedFresh = freshStartPiSessionId("agent-1", chatId, interveningMessageId, pendingNonce);
+    expect(allIds[1]).toBe(expectedFresh);
+    expect(allIds[1]).not.toBe(oldId);
+    expect(allIds[1]).not.toBe(freshStartPiSessionId("agent-1", chatId, interveningMessageId));
+    await sm2.shutdown();
+  });
 });
