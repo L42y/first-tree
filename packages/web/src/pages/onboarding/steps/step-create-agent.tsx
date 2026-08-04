@@ -1,7 +1,7 @@
 import {
   type AgentTemplatePublicTemplate,
   type AgentVisibility,
-  orderRuntimeProvidersBySelection,
+  orderRuntimeProvidersByPreference,
   runtimeProviderLabel,
 } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
@@ -157,7 +157,7 @@ export function StepCreateAgent() {
   // a list — even for one. Selection and option order come from the shared
   // Codex-first catalog preference in `useComputerConnection`.
   const { okRuntimes, selectedRuntime, setSelectedRuntime } = computer;
-  const orderedOkRuntimes = useMemo(() => orderRuntimeProvidersBySelection(okRuntimes), [okRuntimes]);
+  const orderedOkRuntimes = useMemo(() => orderRuntimeProvidersByPreference(okRuntimes), [okRuntimes]);
   useEffect(() => {
     if (selectedRuntime && orderedOkRuntimes.includes(selectedRuntime)) return;
     const next = orderedOkRuntimes[0];

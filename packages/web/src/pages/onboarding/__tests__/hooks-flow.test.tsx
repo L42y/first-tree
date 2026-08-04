@@ -234,7 +234,7 @@ describe("onboarding hooks and flow", () => {
     expect(expectHookValue(latest.current).tokenError).toBe("token failed");
   }, 10_000);
 
-  it("orders and prefers okRuntimes by selectionPriority under shuffled caps", async () => {
+  it("orders okRuntimes by preference prefix, then preserves Client report order", async () => {
     const latest = { current: null as ComputerConnection | null };
     const client = {
       id: "client-shuffle",
@@ -257,7 +257,7 @@ describe("onboarding hooks and flow", () => {
       authMethod: "api_key" as const,
       detectedAt: "2026-05-28T12:00:00.000Z",
     };
-    // Insertion order deliberately differs from catalog selection order.
+    // No explicit preference is ready; remaining providers must keep this order.
     const shuffledCaps = {
       pi: ok,
       "kimi-code": ok,
@@ -284,10 +284,9 @@ describe("onboarding hooks and flow", () => {
     await flush();
     await flush();
 
-    // Selection order: Grok → OpenCode → Pi → Kimi (TUI disabled, others not ok).
-    expect(expectHookValue(latest.current).okRuntimes).toEqual(["grok", "opencode", "pi", "kimi-code"]);
-    // Selection priority: Grok → OpenCode → Pi → Kimi → first ok is grok.
-    expect(expectHookValue(latest.current).selectedRuntime).toBe("grok");
+    // TUI is disabled and unknown providers are filtered without reordering the rest.
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["pi", "kimi-code", "grok", "opencode"]);
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("pi");
     expect(expectHookValue(latest.current).okRuntimes).not.toContain("claude-code-tui");
     expect(expectHookValue(latest.current).okRuntimes).not.toContain("future");
   });

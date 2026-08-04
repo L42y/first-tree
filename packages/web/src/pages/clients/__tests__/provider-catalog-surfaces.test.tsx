@@ -5,7 +5,6 @@ import {
   enabledOkRuntimeProviders,
   pickPreferredRuntimeProvider,
   RUNTIME_PROVIDER_IDS,
-  RUNTIME_PROVIDER_SELECTION_ORDER,
   type RuntimeProvider,
   runtimeProviderComputerSetupCommand,
   runtimeProviderLabel as sharedRuntimeProviderLabel,
@@ -82,7 +81,7 @@ describe("web provider surfaces derived from shared catalog", () => {
     expect(sharedRuntimeProviderLabel("codex")).toBe(PROVIDER_LABEL.codex);
   });
 
-  it("picks preferred runtime from catalog selectionPriority (not display order)", () => {
+  it("picks Codex then Claude, otherwise the first Client-reported ready provider", () => {
     expect(
       pickPreferredRuntimeProvider({
         "claude-code-tui": { state: "ok" },
@@ -95,28 +94,25 @@ describe("web provider surfaces derived from shared catalog", () => {
         codex: { state: "ok" },
       }),
     ).toBe("codex");
-    // Display order places Kimi before OpenCode/Pi; selection keeps OpenCode → Pi → Kimi.
+    // No explicit preference is ready, so the selected Client's order wins.
     expect(
       pickPreferredRuntimeProvider({
         "kimi-code": { state: "ok" },
         opencode: { state: "ok" },
         pi: { state: "ok" },
       }),
-    ).toBe("opencode");
+    ).toBe("kimi-code");
     expect(pickPreferredRuntimeProvider({ "future-provider": { state: "ok" } })).toBeNull();
   });
 
-  it("orders NewAgentDialog-style ok options by catalog selection order, not cap key insertion", () => {
+  it("orders NewAgentDialog-style options by preference prefix, then Client report order", () => {
     const shuffled = {
       pi: { state: "ok" as const },
       "kimi-code": { state: "ok" as const },
       grok: { state: "ok" as const },
       "claude-code": { state: "ok" as const },
     };
-    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["claude-code", "grok", "pi", "kimi-code"]);
-    expect(enabledOkRuntimeProviders(shuffled)).toEqual(
-      RUNTIME_PROVIDER_SELECTION_ORDER.filter((id) => shuffled[id as keyof typeof shuffled]?.state === "ok"),
-    );
+    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["claude-code", "pi", "kimi-code", "grok"]);
   });
 
   it("locks install/login copy that cards and onboarding render", () => {

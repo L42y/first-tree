@@ -58,11 +58,10 @@ export type RuntimeProviderCatalogEntry = {
   /** Ascending order for setup-card / matrix display. */
   displayOrder: number;
   /**
-   * Ascending order for preferred-runtime auto-pick (may differ from display).
-   * Locked to the agent-creation priority: Codex → Claude → TUI → Cursor → Grok
-   * → OpenCode → Pi → Kimi.
+   * Ascending priority for the explicit agent-creation preference prefix.
+   * `null` preserves the selected Client's reported order after that prefix.
    */
-  selectionPriority: number;
+  selectionPriority: number | null;
   install: RuntimeProviderInstall;
   loginSteps: RuntimeProviderLoginSteps;
   authRecovery: RuntimeProviderAuthRecovery;
@@ -88,7 +87,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "claude-code-tui",
     label: "Claude Code CLI",
     displayOrder: 20,
-    selectionPriority: 30,
+    selectionPriority: null,
     install: { kind: "npm", package: "@anthropic-ai/claude-code", args: [] },
     loginSteps: ["claude auth login"],
     // Shares Claude Code keychain; Connect targets `claude-code`, not a TUI CLI login.
@@ -109,7 +108,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "cursor",
     label: "Cursor",
     displayOrder: 40,
-    selectionPriority: 40,
+    selectionPriority: null,
     install: { kind: "script", command: CURSOR_INSTALL_COMMAND },
     loginSteps: ["cursor-agent login"],
     authRecovery: { kind: "in-product", target: "cursor" },
@@ -119,7 +118,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "grok",
     label: "Grok Build",
     displayOrder: 50,
-    selectionPriority: 50,
+    selectionPriority: null,
     install: { kind: "script", command: GROK_INSTALL_COMMAND },
     loginSteps: ["grok login"],
     authRecovery: { kind: "in-product", target: "grok" },
@@ -128,10 +127,10 @@ export const RUNTIME_PROVIDER_CATALOG = {
   "kimi-code": {
     id: "kimi-code",
     label: "Kimi Code",
-    // Display sits with other npm CLIs after Grok; selection stays last among
-    // known providers (phase-1 new-agent priority).
+    // Display sits with other npm CLIs after Grok. Agent creation preserves the
+    // Client-reported order for providers outside the Codex/Claude prefix.
     displayOrder: 60,
-    selectionPriority: 80,
+    selectionPriority: null,
     install: { kind: "npm", package: KIMI_NPM_PACKAGE, args: [] },
     loginSteps: ["kimi", "/login"],
     authRecovery: { kind: "host" },
@@ -141,7 +140,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "opencode",
     label: "OpenCode",
     displayOrder: 70,
-    selectionPriority: 60,
+    selectionPriority: null,
     install: { kind: "npm", package: OPENCODE_NPM_PACKAGE, args: [] },
     loginSteps: ["opencode auth login"],
     authRecovery: { kind: "host" },
@@ -151,7 +150,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "pi",
     label: "Pi",
     displayOrder: 80,
-    selectionPriority: 70,
+    selectionPriority: null,
     install: { kind: "npm", package: PI_NPM_PACKAGE, args: ["--ignore-scripts"] },
     loginSteps: ["pi", "/login"],
     authRecovery: { kind: "host" },
@@ -164,19 +163,29 @@ export const RUNTIME_PROVIDER_DISPLAY_ORDER: readonly RuntimeProvider[] = [...RU
   (a, b) => RUNTIME_PROVIDER_CATALOG[a].displayOrder - RUNTIME_PROVIDER_CATALOG[b].displayOrder,
 );
 
-/** All known providers sorted by selection priority (includes disabled). */
-export const RUNTIME_PROVIDER_SELECTION_ORDER: readonly RuntimeProvider[] = [...RUNTIME_PROVIDER_IDS].sort(
-  (a, b) => RUNTIME_PROVIDER_CATALOG[a].selectionPriority - RUNTIME_PROVIDER_CATALOG[b].selectionPriority,
+/** Explicit agent-creation preference prefix; remaining providers keep input order. */
+export const RUNTIME_PROVIDER_PREFERRED_ORDER: readonly RuntimeProvider[] = RUNTIME_PROVIDER_IDS.filter(
+  (provider) => RUNTIME_PROVIDER_CATALOG[provider].selectionPriority !== null,
+).sort(
+  (a, b) =>
+    // Filter above narrows the runtime values, not indexed entry fields.
+    (RUNTIME_PROVIDER_CATALOG[a].selectionPriority ?? Number.POSITIVE_INFINITY) -
+    (RUNTIME_PROVIDER_CATALOG[b].selectionPriority ?? Number.POSITIVE_INFINITY),
 );
 
-/** First enabled provider in catalog selection order for pre-capability UI state. */
+/** First enabled explicit preference for pre-capability UI state. */
 export const PREFERRED_RUNTIME_PROVIDER: RuntimeProvider =
-  RUNTIME_PROVIDER_SELECTION_ORDER.find((provider) => isRuntimeProviderEnabled(provider)) ?? DEFAULT_RUNTIME_PROVIDER;
+  RUNTIME_PROVIDER_PREFERRED_ORDER.find((provider) => isRuntimeProviderEnabled(provider)) ??
+  enabledRuntimeProviders()[0] ??
+  DEFAULT_RUNTIME_PROVIDER;
 
-/** Deterministically order a known-provider subset by catalog selection priority. */
-export function orderRuntimeProvidersBySelection(providers: readonly RuntimeProvider[]): RuntimeProvider[] {
-  const included = new Set(providers);
-  return RUNTIME_PROVIDER_SELECTION_ORDER.filter((provider) => included.has(provider));
+/** Move explicit preferences first while preserving every remaining provider's input order. */
+export function orderRuntimeProvidersByPreference(providers: readonly RuntimeProvider[]): RuntimeProvider[] {
+  const uniqueProviders = [...new Set(providers)];
+  const included = new Set(uniqueProviders);
+  const preferred = RUNTIME_PROVIDER_PREFERRED_ORDER.filter((provider) => included.has(provider));
+  const preferredSet = new Set(preferred);
+  return [...preferred, ...uniqueProviders.filter((provider) => !preferredSet.has(provider))];
 }
 
 /** Enabled providers only, in display order — drives setup / matrix UIs. */
@@ -289,30 +298,29 @@ export function runtimeProviderComputerSetupCommand(
 }
 
 /**
- * First enabled provider whose capability entry is `ok`, following catalog
- * selection priority (not display order). Returns null when none are ready.
+ * First enabled provider whose capability entry is `ok`, following the
+ * explicit preference prefix and then the selected Client's reported order.
  */
 export function pickPreferredRuntimeProvider(
   caps: Readonly<Partial<Record<string, { state?: string } | null | undefined>>>,
 ): RuntimeProvider | null {
-  for (const provider of RUNTIME_PROVIDER_SELECTION_ORDER) {
-    if (!isRuntimeProviderEnabled(provider)) continue;
-    if (caps[provider]?.state === "ok") return provider;
-  }
-  return null;
+  return enabledOkRuntimeProviders(caps)[0] ?? null;
 }
 
 /**
- * Enabled providers in catalog **selection** order whose capability state is `ok`.
+ * Enabled providers whose capability state is `ok`: explicit catalog
+ * preferences first, then the selected Client's reported order.
  *
- * Agent-creation surfaces use one Codex-first preference for both the default
- * and option order. Never use `Object.entries(caps)`, which follows
- * probe-completion insertion order and is nondeterministic.
+ * The shared helper is the only layer that interprets capability-map order;
+ * Web consumers must not rebuild this rule locally.
  */
 export function enabledOkRuntimeProviders(
   caps: Readonly<Partial<Record<string, { state?: string } | null | undefined>>>,
 ): RuntimeProvider[] {
-  return orderRuntimeProvidersBySelection(
-    enabledRuntimeProviders().filter((provider) => caps[provider]?.state === "ok"),
-  );
+  const reportedReady: RuntimeProvider[] = [];
+  for (const [provider, entry] of Object.entries(caps)) {
+    const known = asRuntimeProvider(provider);
+    if (known && isRuntimeProviderEnabled(known) && entry?.state === "ok") reportedReady.push(known);
+  }
+  return orderRuntimeProvidersByPreference(reportedReady);
 }

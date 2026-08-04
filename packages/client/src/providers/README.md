@@ -11,7 +11,7 @@ ACK / Reset / auth / model / persistence protocol into shared catalog.
 | Layer | Owns |
 | --- | --- |
 | Zod `runtimeProviderSchema` | Wire IDs → `RuntimeProvider` / `RUNTIME_PROVIDER_IDS` / generated `RUNTIME_PROVIDERS.*` |
-| Shared `RUNTIME_PROVIDER_CATALOG` | Labels, `displayOrder`, `selectionPriority`, install/login, auth-owner copy |
+| Shared `RUNTIME_PROVIDER_CATALOG` | Labels, display order, creation-time preference prefix, install/login, auth-owner copy |
 | `createBuiltinHandlerRegistry` | Frozen `Record<RuntimeProvider, HandlerFactory>` (consumed once by `registerBuiltinHandlers`) |
 | `BUILTIN_PROVIDER_PROBES` | Frozen install-only capability probes |
 | `PROVIDER_SKILL_ROOTS` | Frozen native managed-skill roots |
@@ -28,7 +28,10 @@ Probe/skills paths do **not** consume a full installed handler registry.
 
 Add an exhaustive catalog entry:
 
-- `label`, unique `displayOrder`, unique `selectionPriority` (may differ — both locked in tests)
+- `label` and unique `displayOrder`
+- nullable `selectionPriority`: use a unique number only for an explicit
+  creation-time preference (Codex then Claude Code today); use `null` to keep
+  the selected Client's reported order after that prefix
 - `install`: `{ kind: "npm", package, args }` (`args` required, use `[]` when none) or `{ kind: "script", command }`
 - `loginSteps`: one shell step, or two for interactive (`kimi` + `/login`)
 - `authOwnerLabel` for chat auth-recovery
@@ -79,7 +82,8 @@ fallback to another provider or default config is forbidden.
 ## 7. Minimum test gates
 
 - Identity / catalog / composition projections exhaustive (and frozen).
-- Unique `displayOrder` + unique `selectionPriority`.
+- Unique `displayOrder` + unique non-null preference priorities; unprioritized
+  providers preserve the selected Client's reported order.
 - Handler lifecycle methods present for every known id.
 - Probe isolation (no launch / auth / credential read).
 - Managed-skill root safety (fixed projection only).

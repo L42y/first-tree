@@ -145,7 +145,8 @@ async function resolveAvailableHandle(base: string, isStale: () => boolean): Pro
 
 /**
  * Pick the preferred runtime among the ones in `ok` state on a given client.
- * Uses catalog `selectionPriority` (may differ from display order).
+ * Uses the catalog-owned Codex/Claude preference prefix, then preserves the
+ * selected Client's reported order (which may differ from display order).
  */
 function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null {
   return pickPreferredRuntimeProvider(caps);

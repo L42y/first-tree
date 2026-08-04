@@ -213,7 +213,8 @@ export function useComputerConnection(
     [activeCapabilities],
   );
 
-  // Auto-pick via catalog selectionPriority; keep a still-valid prior choice.
+  // Auto-pick via the catalog preference prefix while preserving Client order;
+  // keep a still-valid prior choice.
   useEffect(() => {
     setSelectedRuntime((prev) => {
       if (!activeCapabilities) return prev;

@@ -114,7 +114,7 @@ afterEach(async () => {
 });
 
 describe("shared setup hooks", () => {
-  it("uses one Codex-first runtime preference across setup surfaces", () => {
+  it("uses one Codex/Claude preference prefix and otherwise keeps Client order", () => {
     const ok = { state: "ok" as const };
     expect(enabledOkRuntimeProviders({ opencode: ok, "claude-code": ok, "future-provider": ok, codex: ok })).toEqual([
       "codex",
@@ -304,8 +304,8 @@ describe("shared setup hooks", () => {
     });
     await flush();
 
-    expect(expectHookValue(latest.current).okRuntimes).toEqual(["grok", "pi", "kimi-code"]);
-    expect(expectHookValue(latest.current).selectedRuntime).toBe("grok");
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["pi", "kimi-code", "grok"]);
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("pi");
 
     await act(async () => expectHookValue(latest.current).setSelectedRuntime("kimi-code"));
     activityMocks.getClientCapabilities.mockResolvedValueOnce({
@@ -324,7 +324,7 @@ describe("shared setup hooks", () => {
 
     // Still-valid manual pick is preserved even when a higher-priority runtime appears.
     expect(expectHookValue(latest.current).selectedRuntime).toBe("kimi-code");
-    expect(expectHookValue(latest.current).okRuntimes).toEqual(["codex", "grok", "pi", "kimi-code"]);
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["codex", "pi", "kimi-code", "grok"]);
   });
 
   it("mints connect commands, surfaces final token failures, and retries manually", async () => {

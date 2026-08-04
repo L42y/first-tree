@@ -433,9 +433,9 @@ describe("NewAgentDialog extra branches", () => {
     expect(agentMocks.createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: "probe-bot" }));
   });
 
-  it("renders runtime chips in catalog selectionPriority despite shuffled capability keys", async () => {
+  it("renders preferred runtime chips first, then preserves Client capability order", async () => {
     const { NewAgentDialog } = await import("../new-agent-dialog.js");
-    // Insertion order deliberately differs from selection order (probe races).
+    // Claude is preferred; all remaining providers keep this reported order.
     const shuffledCaps = {
       pi: capability("ok"),
       "kimi-code": capability("ok"),
@@ -454,6 +454,6 @@ describe("NewAgentDialog extra branches", () => {
     const labels = [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].map(
       (input) => input.closest("label")?.querySelector(".text-body")?.textContent?.trim() ?? "",
     );
-    expect(labels).toEqual(["Claude Code", "Grok Build", "Pi", "Kimi Code"]);
+    expect(labels).toEqual(["Claude Code", "Pi", "Kimi Code", "Grok Build"]);
   });
 });

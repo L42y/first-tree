@@ -1,4 +1,4 @@
-import { orderRuntimeProvidersBySelection, runtimeProviderLabel } from "@first-tree/shared";
+import { orderRuntimeProvidersByPreference, runtimeProviderLabel } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { COPY } from "../copy.js";
@@ -20,7 +20,7 @@ export function StepConnectComputer() {
 
   const noRuntime = !!connectedClient && capabilitiesLoaded && okRuntimes.length === 0;
   const ready = !!connectedClient && okRuntimes.length > 0;
-  const orderedRuntimes = orderRuntimeProvidersBySelection(okRuntimes);
+  const orderedRuntimes = orderRuntimeProvidersByPreference(okRuntimes);
   const stepBody = connectedClient ? COPY.connectComputer.whyConnected : COPY.connectComputer.whyWaiting;
 
   return (

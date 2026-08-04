@@ -36,9 +36,9 @@ records the human cross-surface checks those tests cannot fully cover.
 2. **Web catalog derivation**
    - Open Computers / client setup cards and confirm provider labels, display
      order, and install/login commands match the shared catalog.
-   - Confirm New Agent preferred-runtime order follows `selectionPriority`
-     (Codex before Claude Code; OpenCode before Pi before Kimi), which may
-     differ from display order.
+   - Confirm New Agent always puts Codex before Claude Code, then preserves the
+     selected Client's reported order for every other ready provider; this may
+     differ from setup-card display order.
    - Confirm the final RuntimeInstallBox output is install-only for all five
      in-product entries (Claude Code, Claude Code CLI, Codex, Cursor, Grok
      Build), while Kimi, OpenCode, and Pi include their provider-owned
