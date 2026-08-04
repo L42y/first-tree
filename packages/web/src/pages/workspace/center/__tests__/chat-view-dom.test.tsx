@@ -841,7 +841,7 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Skip introduction and start");
+    await waitForText(container, "Continue with Nova");
     const composer = container.querySelector<HTMLTextAreaElement>("textarea");
     if (!composer) throw new Error("Composer textarea missing");
     await setValue(composer, "A draft I still want to send");
@@ -857,14 +857,14 @@ describe("ChatView", () => {
         }),
       ]),
     );
-    await click(buttonByText(container, "Skip introduction and start"));
+    await click(buttonByText(container, "Continue with Nova"));
     expect(chatMocks.sendChatMessage).toHaveBeenCalledWith(
       "chat-1",
       "I'm ready. Please help me get started with First Tree.",
       ["agent-1"],
     );
     expect(composer.value).toBe("A draft I still want to send");
-    await waitForText(container, "Watch again");
+    await waitForText(container, "Watch");
     expect(container.querySelectorAll('[data-onboarding-orientation="pending"]')).toHaveLength(0);
 
     await act(async () => root.unmount());
@@ -898,9 +898,9 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Watch again");
+    await waitForText(container, "Watch");
     expect(container.textContent).toContain("Start by reading /projects/acme.");
-    expect(container.textContent).not.toContain("Skip introduction and start");
+    expect(container.textContent).not.toContain("Continue with Nova");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
@@ -934,9 +934,9 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Skip introduction and start");
+    await waitForText(container, "Continue with Nova");
     expect(container.querySelectorAll('[data-onboarding-orientation="pending"]')).toHaveLength(1);
-    expect(container.textContent).not.toContain("Watch again");
+    expect(container.textContent).not.toContain("First Tree introduction");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
@@ -966,8 +966,8 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Watch again");
-    expect(container.textContent).not.toContain("Skip introduction and start");
+    await waitForText(container, "Watch");
+    expect(container.textContent).not.toContain("Continue with Nova");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
