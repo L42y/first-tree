@@ -1,14 +1,23 @@
-import { BROWSER_LOGIN_TIMEOUT_MS, type CodexBrowserLoginOptions, type LoginOutcome } from "@first-tree/client";
-import type { CapabilityEntry } from "@first-tree/shared";
+import {
+  BROWSER_LOGIN_TIMEOUT_MS,
+  type LoginOutcome,
+  type RuntimeAuthDriver,
+  type RuntimeAuthDriverTable,
+  type RuntimeAuthProbeResult,
+} from "@first-tree/client";
+import type { CapabilityEntry, RuntimeAuthProvider } from "@first-tree/shared";
+import { runtimeAuthProviderSchema } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
-import { runRuntimeAuthLogin } from "../core/runtime-auth-login.js";
+import {
+  RUNTIME_AUTH_ERROR_MAX_LEN,
+  type RuntimeAuthLoginDeps,
+  runRuntimeAuthLogin,
+} from "../core/runtime-auth-login.js";
 
 const NOW = Date.parse("2026-06-22T12:00:00.000Z");
 
-// Detection is install-only: a re-probed installed provider is always `ok`
-// (no auth state). Both helpers build that install entry; `installedEntry` is
-// the marker-free re-probe result, and tests override `state`/`available` for
-// the binary-vanished (`missing`) case.
+// Detection is install-only: a re-probed installed provider is always `ok` (no
+// auth state). Tests override `state`/`available` for the binary-vanished case.
 const okEntry = (over: Partial<CapabilityEntry> = {}): CapabilityEntry => ({
   state: "ok",
   available: true,
@@ -17,57 +26,131 @@ const okEntry = (over: Partial<CapabilityEntry> = {}): CapabilityEntry => ({
   ...over,
 });
 
-const installedEntry = (over: Partial<CapabilityEntry> = {}): CapabilityEntry => okEntry(over);
-
 type Recorded = { provider: string; entry: CapabilityEntry };
 
-function harness(opts: {
-  resolveOk?: boolean;
+type FakeDriverOptions = {
+  provider: RuntimeAuthProvider;
+  logLabel?: string;
+  loginLabel?: string;
+  artifactLabel?: string;
+  resolveError?: string;
   outcome?: LoginOutcome;
   fireAuthUrl?: string;
-  probeResult?: CapabilityEntry;
-  current?: CapabilityEntry;
   throwLogin?: unknown;
   probeThrows?: unknown;
-}) {
+  probeResult?: CapabilityEntry;
+  /** Extra rows a shared-credential provider republishes alongside its own. */
+  extraRows?: readonly RuntimeAuthProbeResult[];
+};
+
+function fakeDriver(opts: FakeDriverOptions) {
+  const loginCalls: number[] = [];
+  const driver: RuntimeAuthDriver = {
+    logLabel: opts.logLabel ?? opts.provider,
+    loginLabel: opts.loginLabel ?? `${opts.provider} login`,
+    artifactLabel: opts.artifactLabel ?? "binary",
+    async resolveLogin() {
+      if (opts.resolveError) return { ok: false, error: opts.resolveError };
+      return {
+        ok: true,
+        login: async ({ onAuthUrl }) => {
+          loginCalls.push(1);
+          if (opts.fireAuthUrl) onAuthUrl(opts.fireAuthUrl);
+          if (opts.throwLogin !== undefined) throw opts.throwLogin;
+          await new Promise((r) => setTimeout(r, 0));
+          return opts.outcome ?? { ok: true };
+        },
+      };
+    },
+    async reprobe() {
+      if (opts.probeThrows !== undefined) throw opts.probeThrows;
+      return [{ provider: opts.provider, entry: opts.probeResult ?? okEntry() }, ...(opts.extraRows ?? [])];
+    },
+  };
+  return { driver, loginCalls };
+}
+
+function harness(driver: RuntimeAuthDriver, provider: RuntimeAuthProvider, current?: CapabilityEntry) {
   const calls: Recorded[] = [];
   const logs: string[] = [];
-  const deps = {
-    currentEntry: (): CapabilityEntry | undefined => opts.current,
-    setProviderEntry: async (provider: string, entry: CapabilityEntry): Promise<void> => {
-      calls.push({ provider, entry });
+  const drivers = { [provider]: driver } as unknown as RuntimeAuthDriverTable;
+  const deps: RuntimeAuthLoginDeps = {
+    currentEntry: () => current,
+    setProviderEntry: async (p, entry) => {
+      calls.push({ provider: p, entry });
     },
-    log: (_symbol: string, msg: string): void => {
+    log: (_symbol, msg) => {
       logs.push(msg);
     },
-    now: (): number => NOW,
-    resolveCodexBinary: async () =>
-      opts.resolveOk === false
-        ? ({ ok: false, error: "codex binary missing" } as const)
-        : ({
-            ok: true,
-            binary: "/bundled/codex",
-            runtimeSource: "bundled" as const,
-            runtimePath: null,
-            version: "0.130.0",
-          } as const),
-    runBrowserLogin: async (o: CodexBrowserLoginOptions): Promise<LoginOutcome> => {
-      if (opts.fireAuthUrl) o.onAuthUrl?.(opts.fireAuthUrl);
-      if (opts.throwLogin !== undefined) throw opts.throwLogin;
-      await new Promise((r) => setTimeout(r, 0));
-      return opts.outcome ?? ({ ok: true } as const);
-    },
-    probeCodex: async (): Promise<CapabilityEntry> => {
-      if (opts.probeThrows !== undefined) throw opts.probeThrows;
-      return opts.probeResult ?? installedEntry();
-    },
+    now: () => NOW,
+    drivers,
   };
   return { calls, logs, deps };
 }
 
-describe("runRuntimeAuthLogin — primary browser OAuth", () => {
+describe("runRuntimeAuthLogin — generic dispatch", () => {
+  it("dispatches by typed key into the supplied registry", async () => {
+    const seen: RuntimeAuthProvider[] = [];
+    const drivers = {} as Record<RuntimeAuthProvider, RuntimeAuthDriver>;
+    for (const provider of runtimeAuthProviderSchema.options) {
+      drivers[provider] = {
+        logLabel: provider,
+        loginLabel: `${provider} login`,
+        artifactLabel: "binary",
+        resolveLogin: async () => {
+          seen.push(provider);
+          return { ok: false, error: `${provider} not installed` };
+        },
+        reprobe: async () => [{ provider, entry: okEntry() }],
+      };
+    }
+
+    const calls: Recorded[] = [];
+    for (const provider of runtimeAuthProviderSchema.options) {
+      await runRuntimeAuthLogin(
+        { provider, ref: `dispatch-${provider}` },
+        {
+          currentEntry: () => undefined,
+          setProviderEntry: async (p, entry) => {
+            calls.push({ provider: p, entry });
+          },
+          log: vi.fn(),
+          now: () => NOW,
+          drivers,
+        },
+      );
+    }
+
+    expect(seen).toEqual([...runtimeAuthProviderSchema.options]);
+    expect(calls.map((c) => c.provider)).toEqual([...runtimeAuthProviderSchema.options]);
+  });
+
+  it("logs and stops when the registry has no driver for the provider", async () => {
+    const logs: string[] = [];
+    const calls: Recorded[] = [];
+    await runRuntimeAuthLogin(
+      { provider: "codex", ref: "r4" },
+      {
+        currentEntry: () => undefined,
+        setProviderEntry: async (provider, entry) => {
+          calls.push({ provider, entry });
+        },
+        log: (_s, msg) => {
+          logs.push(msg);
+        },
+        drivers: {} as RuntimeAuthDriverTable,
+      },
+    );
+
+    expect(calls).toHaveLength(0);
+    expect(logs.some((l) => l.includes("not supported yet"))).toBe(true);
+  });
+});
+
+describe("runRuntimeAuthLogin — browser OAuth lifecycle", () => {
   it("publishes a browser pending then the re-probed ok entry", async () => {
-    const h = harness({ outcome: { ok: true }, probeResult: okEntry() });
+    const { driver } = fakeDriver({ provider: "codex", outcome: { ok: true } });
+    const h = harness(driver, "codex");
     await runRuntimeAuthLogin({ provider: "codex", ref: "r1" }, h.deps);
 
     expect(h.calls).toHaveLength(2);
@@ -83,8 +166,9 @@ describe("runRuntimeAuthLogin — primary browser OAuth", () => {
     expect(h.calls[1]?.entry.pendingAuth).toBeUndefined();
   });
 
-  it("surfaces the browser auth URL into pendingAuth when the login emits it (no-auto-open recovery)", async () => {
-    const h = harness({ outcome: { ok: true }, probeResult: okEntry(), fireAuthUrl: "https://auth.openai.com/x" });
+  it("surfaces the browser auth URL into pendingAuth (no-auto-open recovery)", async () => {
+    const { driver } = fakeDriver({ provider: "codex", fireAuthUrl: "https://auth.openai.com/x" });
+    const h = harness(driver, "codex");
     await runRuntimeAuthLogin({ provider: "codex", ref: "u1" }, h.deps);
 
     const withUrl = h.calls.find((c) => c.entry.pendingAuth?.authUrl);
@@ -92,37 +176,51 @@ describe("runRuntimeAuthLogin — primary browser OAuth", () => {
   });
 
   it("preserves the prior entry's runtimeSource/version on the pending entry", async () => {
-    const h = harness({
-      outcome: { ok: true },
-      probeResult: okEntry(),
-      current: okEntry({ runtimeSource: "bundled" }),
-    });
+    const { driver } = fakeDriver({ provider: "codex" });
+    const h = harness(driver, "codex", okEntry({ runtimeSource: "bundled" }));
     await runRuntimeAuthLogin({ provider: "codex", ref: "r2" }, h.deps);
+
     expect(h.calls[0]?.entry.runtimeSource).toBe("bundled");
     expect(h.calls[0]?.entry.sdkVersion).toBe("0.130.0");
   });
 
-  it("on unresolved binary, reflects the real (missing) state and never logs in", async () => {
-    const h = harness({ resolveOk: false, probeResult: { ...installedEntry(), state: "missing", available: false } });
+  it("on an unresolved artifact, reflects the real state and never logs in", async () => {
+    const { driver, loginCalls } = fakeDriver({
+      provider: "codex",
+      resolveError: "codex binary missing",
+      probeResult: okEntry({ state: "missing", available: false }),
+    });
+    const h = harness(driver, "codex");
     await runRuntimeAuthLogin({ provider: "codex", ref: "r3" }, h.deps);
 
+    expect(loginCalls).toHaveLength(0);
     expect(h.calls).toHaveLength(1);
     expect(h.calls[0]?.entry.state).toBe("missing");
-    expect(h.logs.some((l) => l.includes("binary unavailable"))).toBe(true);
+    expect(h.logs.some((l) => l.includes("codex binary unavailable"))).toBe(true);
   });
 
-  it("ignores providers that are not yet supported", async () => {
-    const h = harness({});
-    await runRuntimeAuthLogin({ provider: "claude-code-tui", ref: "r4" }, h.deps);
-    expect(h.calls).toHaveLength(0);
-    expect(h.logs.some((l) => l.includes("not supported yet"))).toBe(true);
-  });
-
-  it("stamps lastAuthError on the re-probed entry when the login fails (so the web shows 'retry')", async () => {
-    const h = harness({
-      outcome: { ok: false, reason: "exit-nonzero", error: "account not authorized" },
-      probeResult: installedEntry(),
+  it("uses the driver's artifact wording for a CLI-backed provider", async () => {
+    const { driver } = fakeDriver({
+      provider: "claude-code",
+      logLabel: "claude",
+      loginLabel: "claude auth login",
+      artifactLabel: "CLI",
+      resolveError: "no claude CLI",
+      probeThrows: "probe crashed",
     });
+    const h = harness(driver, "claude-code");
+    await runRuntimeAuthLogin({ provider: "claude-code", ref: "c2" }, h.deps);
+
+    expect(h.logs.some((l) => l.includes("claude CLI unavailable: no claude CLI"))).toBe(true);
+    expect(h.logs.some((l) => l.includes("claude re-probe after unresolved CLI failed: probe crashed"))).toBe(true);
+  });
+
+  it("stamps lastAuthError on the re-probed entry when the login fails", async () => {
+    const { driver } = fakeDriver({
+      provider: "codex",
+      outcome: { ok: false, reason: "exit-nonzero", error: "account not authorized" },
+    });
+    const h = harness(driver, "codex");
     await runRuntimeAuthLogin({ provider: "codex", ref: "f1" }, h.deps);
 
     const last = h.calls.at(-1)?.entry;
@@ -135,23 +233,27 @@ describe("runRuntimeAuthLogin — primary browser OAuth", () => {
   });
 
   it("leaves no lastAuthError after a successful login", async () => {
-    const h = harness({ outcome: { ok: true }, probeResult: okEntry() });
+    const { driver } = fakeDriver({ provider: "codex", outcome: { ok: true } });
+    const h = harness(driver, "codex");
     await runRuntimeAuthLogin({ provider: "codex", ref: "f2" }, h.deps);
     expect(h.calls.at(-1)?.entry.lastAuthError).toBeUndefined();
   });
 
-  it("stamps lastAuthError even when the re-probe lands `missing` (failure is no longer state-gated)", async () => {
-    // Binary vanished mid-flight → re-probe lands `missing`. `attachAuthError`
-    // now stamps the failure whenever one is present, independent of state (the
-    // old "only when unauthenticated" gate is gone with install-only detection).
-    const h = harness({ resolveOk: false, probeResult: { ...installedEntry(), state: "missing", available: false } });
+  it("stamps lastAuthError even when the re-probe lands `missing`", async () => {
+    const { driver } = fakeDriver({
+      provider: "codex",
+      resolveError: "codex binary missing",
+      probeResult: okEntry({ state: "missing", available: false }),
+    });
+    const h = harness(driver, "codex");
     await runRuntimeAuthLogin({ provider: "codex", ref: "f3" }, h.deps);
+
     expect(h.calls.at(-1)?.entry.state).toBe("missing");
     expect(h.calls.at(-1)?.entry.lastAuthError).toMatchObject({ reason: "spawn-error" });
   });
 
-  it("logs thrown browser login errors and re-probe failures without throwing", async () => {
-    const loginThrows = harness({ throwLogin: "browser crashed", probeResult: installedEntry() });
+  it("logs thrown login errors and re-probe failures without throwing", async () => {
+    const loginThrows = harness(fakeDriver({ provider: "codex", throwLogin: "browser crashed" }).driver, "codex");
     await runRuntimeAuthLogin({ provider: "codex", ref: "throw-login" }, loginThrows.deps);
     expect(loginThrows.logs.some((l) => l.includes("codex login threw: browser crashed"))).toBe(true);
     expect(loginThrows.calls.at(-1)?.entry.lastAuthError).toMatchObject({
@@ -159,7 +261,10 @@ describe("runRuntimeAuthLogin — primary browser OAuth", () => {
       message: "browser crashed",
     });
 
-    const probeThrows = harness({ resolveOk: false, probeThrows: "probe crashed" });
+    const probeThrows = harness(
+      fakeDriver({ provider: "codex", resolveError: "codex binary missing", probeThrows: "probe crashed" }).driver,
+      "codex",
+    );
     await runRuntimeAuthLogin({ provider: "codex", ref: "throw-probe" }, probeThrows.deps);
     expect(
       probeThrows.logs.some((l) => l.includes("codex re-probe after unresolved binary failed: probe crashed")),
@@ -167,254 +272,77 @@ describe("runRuntimeAuthLogin — primary browser OAuth", () => {
   });
 });
 
-describe("runRuntimeAuthLogin — claude-code browser OAuth (cc/codex parity)", () => {
-  function claudeHarness(opts: {
-    resolveOk?: boolean;
-    outcome?: LoginOutcome;
-    fireAuthUrl?: string;
-    probeResult?: CapabilityEntry;
-    throwLogin?: unknown;
-    probeThrows?: unknown;
-  }) {
-    const calls: Recorded[] = [];
-    const logs: string[] = [];
-    // Spy so a test can assert the TUI probe is NOT spawned while claude-code-tui
-    // is disabled (it shares the Claude keychain, but "stop probing it" must hold
-    // on this login-reflection path too).
-    const probeClaudeTui = vi.fn(async (): Promise<CapabilityEntry> => opts.probeResult ?? installedEntry());
-    const deps = {
-      currentEntry: (): CapabilityEntry | undefined => undefined,
-      setProviderEntry: async (provider: string, entry: CapabilityEntry): Promise<void> => {
-        calls.push({ provider, entry });
-      },
-      log: (_s: string, msg: string): void => {
-        logs.push(msg);
-      },
-      now: (): number => NOW,
-      resolveClaudeLogin: () =>
-        opts.resolveOk === false
-          ? ({ ok: false, error: "no claude CLI" } as const)
-          : ({ ok: true, command: "/usr/local/bin/claude", baseArgs: [] as string[] } as const),
-      runClaudeBrowser: async (options: { onAuthUrl?: (url: string) => void }): Promise<LoginOutcome> => {
-        if (opts.fireAuthUrl) options.onAuthUrl?.(opts.fireAuthUrl);
-        if (opts.throwLogin !== undefined) throw opts.throwLogin;
-        return opts.outcome ?? ({ ok: true } as const);
-      },
-      probeClaude: async (): Promise<CapabilityEntry> => {
-        if (opts.probeThrows !== undefined) throw opts.probeThrows;
-        return opts.probeResult ?? installedEntry();
-      },
-      probeClaudeTui,
-    };
-    return { calls, logs, deps, probeClaudeTui };
-  }
-
-  // claude-code-tui is in DISABLED_RUNTIME_PROVIDERS, so a claude-code login
-  // reflects claude-code ONLY — the shared-keychain TUI re-probe is suppressed
-  // here exactly as it is in the capability aggregator (no `claude` / tmux spawn,
-  // no tui entry written). If TUI is ever re-enabled, the both-providers path
-  // (Promise.all) takes over again.
-  it("browser pending, then re-probes claude-code only while TUI is disabled (no TUI spawn)", async () => {
-    const h = claudeHarness({ outcome: { ok: true }, probeResult: okEntry() });
-    await runRuntimeAuthLogin({ provider: "claude-code", ref: "c1" }, h.deps);
-
-    // pending(claude-code) → ok(claude-code); no claude-code-tui write.
-    expect(h.calls).toHaveLength(2);
-    expect(h.calls.map((c) => c.provider)).toEqual(["claude-code", "claude-code"]);
-    expect(h.calls[0]?.entry.pendingAuth).toEqual({
-      method: "browser",
-      expiresAt: new Date(NOW + BROWSER_LOGIN_TIMEOUT_MS).toISOString(),
+describe("runRuntimeAuthLogin — shared-credential providers", () => {
+  it("republishes every row the driver returns, stamping only the login target", async () => {
+    const { driver } = fakeDriver({
+      provider: "claude-code",
+      logLabel: "claude",
+      loginLabel: "claude auth login",
+      artifactLabel: "CLI",
+      outcome: { ok: false, reason: "timeout", error: "claude auth login timed out" },
+      probeResult: okEntry({ sdkVersion: "sdk" }),
+      extraRows: [{ provider: "claude-code-tui", entry: okEntry({ sdkVersion: "tui" }) }],
     });
-    expect(h.calls[1]?.entry.state).toBe("ok");
-    expect(h.calls[1]?.entry.pendingAuth).toBeUndefined();
-    expect(h.calls.some((c) => c.provider === "claude-code-tui")).toBe(false);
-    expect(h.probeClaudeTui).not.toHaveBeenCalled();
-  });
-
-  it("surfaces the Claude browser auth URL into pendingAuth", async () => {
-    const h = claudeHarness({ outcome: { ok: true }, probeResult: okEntry(), fireAuthUrl: "https://claude.ai/login" });
-    await runRuntimeAuthLogin({ provider: "claude-code", ref: "c-url" }, h.deps);
-
-    const withUrl = h.calls.find((c) => c.entry.pendingAuth?.authUrl);
-    expect(withUrl?.entry.pendingAuth).toMatchObject({ method: "browser", authUrl: "https://claude.ai/login" });
-  });
-
-  it("on unresolved CLI, reflects claude-code real state and never logs in (TUI untouched)", async () => {
-    const h = claudeHarness({
-      resolveOk: false,
-      probeResult: { ...installedEntry(), state: "missing", available: false },
-    });
-    await runRuntimeAuthLogin({ provider: "claude-code", ref: "c2" }, h.deps);
-
-    expect(h.calls.map((c) => c.provider)).toEqual(["claude-code"]);
-    expect(h.calls.every((c) => c.entry.state === "missing")).toBe(true);
-    expect(h.probeClaudeTui).not.toHaveBeenCalled();
-    expect(h.logs.some((l) => l.includes("claude CLI unavailable"))).toBe(true);
-  });
-
-  it("on login failure, stamps lastAuthError on claude-code (TUI not re-probed while disabled)", async () => {
-    const h = claudeHarness({ outcome: { ok: false, reason: "timeout", error: "claude auth login timed out" } });
+    const h = harness(driver, "claude-code");
     await runRuntimeAuthLogin({ provider: "claude-code", ref: "c3" }, h.deps);
 
+    expect(h.calls.map((c) => c.provider)).toEqual(["claude-code", "claude-code", "claude-code-tui"]);
     const cc = h.calls.filter((c) => c.provider === "claude-code").at(-1)?.entry;
     expect(cc?.lastAuthError).toMatchObject({ reason: "timeout", message: "claude auth login timed out" });
-    expect(h.calls.some((c) => c.provider === "claude-code-tui")).toBe(false);
-    expect(h.probeClaudeTui).not.toHaveBeenCalled();
+    // The shared-keychain row reflects the re-probe only; the failure belongs to
+    // the row the operator actually tried to log in.
+    expect(h.calls.at(-1)?.entry.lastAuthError).toBeUndefined();
+  });
+});
+
+describe("runRuntimeAuthLogin — published failure text is redacted and bounded (#1720)", () => {
+  it("redacts credential shapes before they reach the capability snapshot", async () => {
+    const { driver } = fakeDriver({
+      provider: "codex",
+      outcome: {
+        ok: false,
+        reason: "exit-nonzero",
+        error:
+          "refresh failed for https://user:hunter2pwd@auth.example/cb (Authorization: Bearer sk-ant-abcdefghijklmnopqrstuvwx)",
+      },
+    });
+    const h = harness(driver, "codex");
+    await runRuntimeAuthLogin({ provider: "codex", ref: "redact" }, h.deps);
+
+    const published = h.calls.at(-1)?.entry.lastAuthError?.message ?? "";
+    expect(published).not.toContain("hunter2pwd");
+    expect(published).not.toContain("sk-ant-abcdefghijklmnopqrstuvwx");
+    expect(published).toContain("[REDACTED]");
   });
 
-  it("logs thrown Claude login errors and re-probe failures without throwing", async () => {
-    const loginThrows = claudeHarness({ throwLogin: "browser crashed" });
-    await runRuntimeAuthLogin({ provider: "claude-code", ref: "c4" }, loginThrows.deps);
-    expect(loginThrows.logs.some((l) => l.includes("claude auth login threw: browser crashed"))).toBe(true);
-    expect(loginThrows.calls.at(-1)?.entry.lastAuthError).toMatchObject({
-      reason: "spawn-error",
-      message: "browser crashed",
+  it("hard-caps an over-long provider failure at the capability error budget", async () => {
+    const { driver } = fakeDriver({
+      provider: "codex",
+      outcome: { ok: false, reason: "exit-nonzero", error: "boom ".repeat(1_000) },
     });
+    const h = harness(driver, "codex");
+    await runRuntimeAuthLogin({ provider: "codex", ref: "cap" }, h.deps);
 
-    const probeThrows = claudeHarness({ resolveOk: false, probeThrows: "probe crashed" });
-    await runRuntimeAuthLogin({ provider: "claude-code", ref: "c5" }, probeThrows.deps);
-    expect(probeThrows.logs.some((l) => l.includes("claude re-probe after unresolved CLI failed: probe crashed"))).toBe(
-      true,
+    const published = h.calls.at(-1)?.entry.lastAuthError?.message ?? "";
+    // Truncation appends a single ellipsis marker past the budget.
+    expect(published.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN + 1);
+  });
+
+  it("caps a thrown error and an unresolved-artifact error too", async () => {
+    const thrown = harness(
+      fakeDriver({ provider: "codex", throwLogin: new Error(`token=${"a".repeat(2_000)}`) }).driver,
+      "codex",
     );
-  });
-});
+    await runRuntimeAuthLogin({ provider: "codex", ref: "cap-throw" }, thrown.deps);
+    const thrownMessage = thrown.calls.at(-1)?.entry.lastAuthError?.message ?? "";
+    expect(thrownMessage.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN + 1);
+    expect(thrownMessage).toContain("[REDACTED]");
 
-describe("runRuntimeAuthLogin — cursor (external-only binary)", () => {
-  function cursorHarness(opts: {
-    resolveOk?: boolean;
-    outcome?: LoginOutcome;
-    fireAuthUrl?: string;
-    probeResult?: CapabilityEntry;
-  }) {
-    const calls: Recorded2[] = [];
-    const logs: string[] = [];
-    const loginCalls: string[] = [];
-    const deps = {
-      currentEntry: (): CapabilityEntry | undefined => undefined,
-      setProviderEntry: async (provider: string, entry: CapabilityEntry): Promise<void> => {
-        calls.push({ provider, entry });
-      },
-      log: (_symbol: string, msg: string): void => {
-        logs.push(msg);
-      },
-      now: (): number => NOW,
-      resolveCursorBinary: () =>
-        opts.resolveOk === false
-          ? ({ ok: false, error: "Cursor Agent CLI is missing on this machine.", transient: false } as const)
-          : ({ ok: true, binary: "/home/op/.local/bin/cursor-agent", version: "2026.07.09" } as const),
-      runCursorBrowser: async (o: { binary: string; onAuthUrl?: (url: string) => void }): Promise<LoginOutcome> => {
-        loginCalls.push(o.binary);
-        if (opts.fireAuthUrl) o.onAuthUrl?.(opts.fireAuthUrl);
-        await new Promise((r) => setTimeout(r, 0));
-        return opts.outcome ?? ({ ok: true } as const);
-      },
-      probeCursor: async (): Promise<CapabilityEntry> => opts.probeResult ?? installedEntry(),
-    };
-    return { calls, logs, loginCalls, deps };
-  }
-  type Recorded2 = { provider: string; entry: CapabilityEntry };
-
-  it("drives <resolved-binary> login and publishes pending → re-probed ok", async () => {
-    const h = cursorHarness({ outcome: { ok: true }, probeResult: okEntry() });
-    await runRuntimeAuthLogin({ provider: "cursor", ref: "rc1" }, h.deps);
-
-    expect(h.loginCalls).toEqual(["/home/op/.local/bin/cursor-agent"]);
-    expect(h.calls[0]?.provider).toBe("cursor");
-    expect(h.calls[0]?.entry.pendingAuth).toMatchObject({ method: "browser" });
-    expect(h.calls.at(-1)?.entry.state).toBe("ok");
-    expect(h.calls.at(-1)?.entry.lastAuthError).toBeUndefined();
-  });
-
-  it("on unresolved/unverified binary, reflects a spawn-error lastAuthError and never logs in", async () => {
-    const h = cursorHarness({
-      resolveOk: false,
-      probeResult: { ...installedEntry(), state: "missing", available: false },
-    });
-    await runRuntimeAuthLogin({ provider: "cursor", ref: "rc2" }, h.deps);
-
-    expect(h.loginCalls).toEqual([]);
-    expect(h.calls).toHaveLength(1);
-    expect(h.calls[0]?.entry.state).toBe("missing");
-    expect(h.calls[0]?.entry.lastAuthError).toMatchObject({ reason: "spawn-error" });
-    expect(h.logs.some((l) => l.includes("cursor binary unavailable"))).toBe(true);
-  });
-
-  it("stamps lastAuthError when the cursor login fails", async () => {
-    const h = cursorHarness({
-      outcome: { ok: false, reason: "exit-nonzero", error: "login failed" },
-      probeResult: installedEntry(),
-    });
-    await runRuntimeAuthLogin({ provider: "cursor", ref: "rc3" }, h.deps);
-    expect(h.calls.at(-1)?.entry.lastAuthError).toMatchObject({ reason: "exit-nonzero", message: "login failed" });
-  });
-});
-
-describe("runRuntimeAuthLogin — grok (external-only binary)", () => {
-  function grokHarness(opts: {
-    resolveOk?: boolean;
-    outcome?: LoginOutcome;
-    fireAuthUrl?: string;
-    probeResult?: CapabilityEntry;
-  }) {
-    const calls: Recorded2[] = [];
-    const logs: string[] = [];
-    const loginCalls: string[] = [];
-    const deps = {
-      currentEntry: (): CapabilityEntry | undefined => undefined,
-      setProviderEntry: async (provider: string, entry: CapabilityEntry): Promise<void> => {
-        calls.push({ provider, entry });
-      },
-      log: (_symbol: string, msg: string): void => {
-        logs.push(msg);
-      },
-      now: (): number => NOW,
-      resolveGrokBinary: () =>
-        opts.resolveOk === false
-          ? ({ ok: false, error: "Grok Build CLI is missing on this machine.", transient: false } as const)
-          : ({ ok: true, binary: "/home/op/.local/bin/grok", version: "2026.07.09" } as const),
-      runGrokBrowser: async (o: { binary: string; onAuthUrl?: (url: string) => void }): Promise<LoginOutcome> => {
-        loginCalls.push(o.binary);
-        if (opts.fireAuthUrl) o.onAuthUrl?.(opts.fireAuthUrl);
-        await new Promise((r) => setTimeout(r, 0));
-        return opts.outcome ?? ({ ok: true } as const);
-      },
-      probeGrok: async (): Promise<CapabilityEntry> => opts.probeResult ?? installedEntry(),
-    };
-    return { calls, logs, loginCalls, deps };
-  }
-  type Recorded2 = { provider: string; entry: CapabilityEntry };
-
-  it("drives <resolved-binary> login and publishes pending → re-probed ok", async () => {
-    const h = grokHarness({ outcome: { ok: true }, probeResult: okEntry() });
-    await runRuntimeAuthLogin({ provider: "grok", ref: "rg1" }, h.deps);
-
-    expect(h.loginCalls).toEqual(["/home/op/.local/bin/grok"]);
-    expect(h.calls[0]?.provider).toBe("grok");
-    expect(h.calls[0]?.entry.pendingAuth).toMatchObject({ method: "browser" });
-    expect(h.calls.at(-1)?.entry.state).toBe("ok");
-    expect(h.calls.at(-1)?.entry.lastAuthError).toBeUndefined();
-  });
-
-  it("on unresolved/unverified binary, reflects a spawn-error lastAuthError and never logs in", async () => {
-    const h = grokHarness({
-      resolveOk: false,
-      probeResult: { ...installedEntry(), state: "missing", available: false },
-    });
-    await runRuntimeAuthLogin({ provider: "grok", ref: "rg2" }, h.deps);
-
-    expect(h.loginCalls).toEqual([]);
-    expect(h.calls).toHaveLength(1);
-    expect(h.calls[0]?.entry.state).toBe("missing");
-    expect(h.calls[0]?.entry.lastAuthError).toMatchObject({ reason: "spawn-error" });
-    expect(h.logs.some((l) => l.includes("grok binary unavailable"))).toBe(true);
-  });
-
-  it("stamps lastAuthError when the grok login fails", async () => {
-    const h = grokHarness({
-      outcome: { ok: false, reason: "exit-nonzero", error: "login failed" },
-      probeResult: installedEntry(),
-    });
-    await runRuntimeAuthLogin({ provider: "grok", ref: "rg3" }, h.deps);
-    expect(h.calls.at(-1)?.entry.lastAuthError).toMatchObject({ reason: "exit-nonzero", message: "login failed" });
+    const unresolved = harness(
+      fakeDriver({ provider: "codex", resolveError: `no codex at https://svc:pw_abcdef@registry.example/x` }).driver,
+      "codex",
+    );
+    await runRuntimeAuthLogin({ provider: "codex", ref: "cap-resolve" }, unresolved.deps);
+    expect(unresolved.calls.at(-1)?.entry.lastAuthError?.message).not.toContain("pw_abcdef");
   });
 });

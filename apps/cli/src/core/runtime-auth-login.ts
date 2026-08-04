@@ -1,31 +1,13 @@
 import {
   BROWSER_LOGIN_TIMEOUT_MS,
-  type ClaudeLoginInvocation,
-  type CodexBinaryResolution,
-  type CursorRuntimeBinaryResolution,
-  type GrokRuntimeBinaryResolution,
   type LoginOutcome,
-  probeClaudeCodeCapability,
-  probeClaudeCodeTuiCapability,
-  probeCodexCapability,
-  probeCursorCapability,
-  probeGrokCapability,
+  RUNTIME_AUTH_DRIVERS,
   type RuntimeAuthCommand,
-  resolveClaudeLoginInvocation,
-  resolveCodexRuntimeBinary,
-  resolveCursorRuntimeBinary,
-  resolveGrokRuntimeBinary,
-  runClaudeBrowserLogin,
-  runCodexBrowserLogin,
-  runCursorBrowserLogin,
-  runGrokBrowserLogin,
+  type RuntimeAuthDriver,
+  type RuntimeAuthDriverTable,
+  redactErrorPreview,
 } from "@first-tree/client";
-import {
-  type CapabilityEntry,
-  isRuntimeProviderEnabled,
-  type PendingAuth,
-  type RuntimeAuthFailureReason,
-} from "@first-tree/shared";
+import type { CapabilityEntry, PendingAuth, RuntimeAuthFailureReason } from "@first-tree/shared";
 
 /**
  * Daemon-side orchestrator for an in-product runtime-auth login.
@@ -37,9 +19,11 @@ import {
  * screen with no bespoke realtime channel, and the capability probe stays the
  * single source of truth. The OAuth token never transits First Tree.
  *
- * Browser OAuth across both providers:
- *   - codex: bare `codex login` → writes `~/.codex/auth.json`.
- *   - claude-code: `claude auth login` → writes keychain `Claude Code-credentials`.
+ * This module is provider-neutral on purpose: it owns the part of the flow that
+ * is identical for every browser-OAuth provider, and dispatches by typed key
+ * into the Client's `RUNTIME_AUTH_DRIVERS` composition root for the three steps
+ * that differ (resolve the artifact, spawn the login, re-probe the affected
+ * capability rows). Adding a provider must not add a branch here.
  */
 
 export type RuntimeAuthLoginDeps = {
@@ -49,22 +33,20 @@ export type RuntimeAuthLoginDeps = {
   setProviderEntry: (provider: string, entry: CapabilityEntry) => Promise<void>;
   /** Status logger (symbol + message). */
   log: (symbol: string, message: string) => void;
-  /** Seams for tests — production callers omit these. */
-  resolveCodexBinary?: () => Promise<CodexBinaryResolution>;
-  runBrowserLogin?: typeof runCodexBrowserLogin;
-  probeCodex?: () => Promise<CapabilityEntry>;
-  resolveClaudeLogin?: () => ClaudeLoginInvocation;
-  runClaudeBrowser?: typeof runClaudeBrowserLogin;
-  probeClaude?: () => Promise<CapabilityEntry>;
-  probeClaudeTui?: () => Promise<CapabilityEntry>;
-  resolveCursorBinary?: () => CursorRuntimeBinaryResolution;
-  runCursorBrowser?: typeof runCursorBrowserLogin;
-  probeCursor?: () => Promise<CapabilityEntry>;
-  resolveGrokBinary?: () => GrokRuntimeBinaryResolution;
-  runGrokBrowser?: typeof runGrokBrowserLogin;
-  probeGrok?: () => Promise<CapabilityEntry>;
+  /** Seam for tests — production callers omit this and get the frozen table. */
+  drivers?: RuntimeAuthDriverTable;
   now?: () => number;
 };
+
+/**
+ * Budget for a login failure republished on a capability entry. Matched to the
+ * probe's own error budget so a provider that streams a huge stack trace, or a
+ * resolver that echoes a credential-bearing path, cannot grow the snapshot the
+ * daemon PATCHes. The cap lives here rather than on the shared wire schema: a
+ * `.max()` there would make a new server reject an older daemon's payload and
+ * break the rolling-upgrade contract the capability map depends on.
+ */
+export const RUNTIME_AUTH_ERROR_MAX_LEN = 500;
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -84,14 +66,20 @@ type AuthFailure = { reason: RuntimeAuthFailureReason; message?: string };
  * (success passes `null`, which leaves the re-probed entry marker-free and thus
  * clears any prior failure). The in-chat "needs login" entry point reads these
  * markers, the same way the prior card-side Connect control did.
+ *
+ * This is the single boundary where provider, resolver, spawn and thrown text
+ * becomes published state, so it is also where redaction and truncation happen:
+ * a provider's stderr tail can carry a token or an authenticated URL, and it
+ * must not reach the snapshot verbatim or unbounded.
  */
 function attachAuthError(entry: CapabilityEntry, failure: AuthFailure | null, nowMs: number): CapabilityEntry {
   if (!failure) return entry;
+  const preview = failure.message ? redactErrorPreview(failure.message, RUNTIME_AUTH_ERROR_MAX_LEN) : "";
   return {
     ...entry,
     lastAuthError: {
       reason: failure.reason,
-      ...(failure.message ? { message: failure.message } : {}),
+      ...(preview ? { message: preview } : {}),
       at: new Date(nowMs).toISOString(),
     },
   };
@@ -138,230 +126,76 @@ function browserPending(nowMs: number, authUrl?: string): PendingAuth {
   };
 }
 
-/** Dispatch on provider. Never throws — failures are logged + reflected in caps. */
+/**
+ * Dispatch on the typed auth provider. Never throws — failures are logged and
+ * reflected in capabilities.
+ */
 export async function runRuntimeAuthLogin(command: RuntimeAuthCommand, deps: RuntimeAuthLoginDeps): Promise<void> {
-  if (command.provider === "codex") {
-    await runCodexRuntimeAuth(command, deps);
+  const driver: RuntimeAuthDriver | undefined = (deps.drivers ?? RUNTIME_AUTH_DRIVERS)[command.provider];
+  // Unreachable through the Zod-parsed reverse command, which only yields keys
+  // of the table. Kept because this orchestrator is exported and a table built
+  // elsewhere could still be short an entry.
+  if (!driver) {
+    deps.log("⚠️", `runtime-auth: provider "${command.provider}" is not supported yet (ref ${command.ref})`);
     return;
   }
-  if (command.provider === "claude-code") {
-    await runClaudeRuntimeAuth(command, deps);
-    return;
-  }
-  if (command.provider === "cursor") {
-    await runCursorRuntimeAuth(command, deps);
-    return;
-  }
-  if (command.provider === "grok") {
-    await runGrokRuntimeAuth(command, deps);
-    return;
-  }
-  deps.log("⚠️", `runtime-auth: provider "${command.provider}" is not supported yet (ref ${command.ref})`);
+  await driveRuntimeAuthLogin(command, driver, deps);
 }
 
-/** cursor: `<cursor-binary> login` (official browser OAuth on the host). */
-async function runCursorRuntimeAuth(command: RuntimeAuthCommand, deps: RuntimeAuthLoginDeps): Promise<void> {
+async function driveRuntimeAuthLogin(
+  command: RuntimeAuthCommand,
+  driver: RuntimeAuthDriver,
+  deps: RuntimeAuthLoginDeps,
+): Promise<void> {
   const now = deps.now ?? Date.now;
-  const resolveBinary = deps.resolveCursorBinary ?? resolveCursorRuntimeBinary;
-  const probeCursor = deps.probeCursor ?? probeCursorCapability;
-  const runCursorBrowser = deps.runCursorBrowser ?? runCursorBrowserLogin;
-
-  const reflect = async (label: string, failure: AuthFailure | null): Promise<void> => {
-    try {
-      await deps.setProviderEntry("cursor", attachAuthError(await probeCursor(), failure, now()));
-    } catch (err) {
-      deps.log("⚠️", `runtime-auth: cursor re-probe ${label} failed: ${message(err)}`);
-    }
-  };
-
-  deps.log("•", `runtime-auth: starting cursor login (method=browser, ref ${command.ref})`);
-
-  // Login drives the SAME resolved binary the handler spawns (external-only),
-  // including its bounded `--version` smoke check — the first real use.
-  const resolved = resolveBinary();
-  if (!resolved.ok) {
-    deps.log("⚠️", `runtime-auth: cursor binary unavailable: ${resolved.error}`);
-    await reflect("after unresolved binary", { reason: "spawn-error", message: resolved.error });
-    return;
-  }
-
-  const setPending = (authUrl?: string): Promise<void> =>
-    deps.setProviderEntry("cursor", pendingEntry(deps.currentEntry("cursor"), browserPending(now(), authUrl), now()));
-  await setPending();
-  deps.log("•", "runtime-auth: cursor browser sign-in opened on this host");
-
-  let outcome: LoginOutcome;
-  try {
-    outcome = await runCursorBrowser({ binary: resolved.binary, onAuthUrl: (url) => void setPending(url) });
-  } catch (err) {
-    deps.log("⚠️", `runtime-auth: cursor login threw: ${message(err)}`);
-    await reflect("after login threw", { reason: "spawn-error", message: message(err) });
-    return;
-  }
-
-  await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
-  logOutcome("cursor", command.ref, outcome, deps);
-}
-
-/** grok: `<grok-binary> login` (official browser OAuth on the host). */
-async function runGrokRuntimeAuth(command: RuntimeAuthCommand, deps: RuntimeAuthLoginDeps): Promise<void> {
-  const now = deps.now ?? Date.now;
-  const resolveBinary = deps.resolveGrokBinary ?? resolveGrokRuntimeBinary;
-  const probeGrok = deps.probeGrok ?? probeGrokCapability;
-  const runGrokBrowser = deps.runGrokBrowser ?? runGrokBrowserLogin;
-
-  const reflect = async (label: string, failure: AuthFailure | null): Promise<void> => {
-    try {
-      await deps.setProviderEntry("grok", attachAuthError(await probeGrok(), failure, now()));
-    } catch (err) {
-      deps.log("⚠️", `runtime-auth: grok re-probe ${label} failed: ${message(err)}`);
-    }
-  };
-
-  deps.log("•", `runtime-auth: starting grok login (method=browser, ref ${command.ref})`);
-
-  // Login drives the SAME resolved binary the handler spawns (external-only),
-  // including its bounded `--version` smoke check — the first real use.
-  const resolved = resolveBinary();
-  if (!resolved.ok) {
-    deps.log("⚠️", `runtime-auth: grok binary unavailable: ${resolved.error}`);
-    await reflect("after unresolved binary", { reason: "spawn-error", message: resolved.error });
-    return;
-  }
-
-  const setPending = (authUrl?: string): Promise<void> =>
-    deps.setProviderEntry("grok", pendingEntry(deps.currentEntry("grok"), browserPending(now(), authUrl), now()));
-  await setPending();
-  deps.log("•", "runtime-auth: grok browser sign-in opened on this host");
-
-  let outcome: LoginOutcome;
-  try {
-    // `url` is annotated explicitly (unlike the cursor twin) because the
-    // `runGrokBrowserLogin` export has not landed in @first-tree/client yet,
-    // so there is no options type to infer from until it does.
-    outcome = await runGrokBrowser({ binary: resolved.binary, onAuthUrl: (url: string) => void setPending(url) });
-  } catch (err) {
-    deps.log("⚠️", `runtime-auth: grok login threw: ${message(err)}`);
-    await reflect("after login threw", { reason: "spawn-error", message: message(err) });
-    return;
-  }
-
-  await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
-  logOutcome("grok", command.ref, outcome, deps);
-}
-
-async function runCodexRuntimeAuth(command: RuntimeAuthCommand, deps: RuntimeAuthLoginDeps): Promise<void> {
-  const now = deps.now ?? Date.now;
-  const resolveBinary = deps.resolveCodexBinary ?? resolveCodexRuntimeBinary;
-  const probeCodex = deps.probeCodex ?? probeCodexCapability;
-  const runBrowserLogin = deps.runBrowserLogin ?? runCodexBrowserLogin;
+  const { logLabel, loginLabel, artifactLabel } = driver;
 
   // Re-probe the real state and, on a terminal failure, stamp `lastAuthError`
-  // onto the entry so the web shows "sign-in failed — retry" instead of silently
-  // resetting to a fresh Connect button.
+  // onto the login target's entry so the web shows "sign-in failed — retry"
+  // instead of silently resetting to a fresh Connect button. A driver may
+  // return more than one row when providers share a credential; only the
+  // target row carries the failure.
   const reflect = async (label: string, failure: AuthFailure | null): Promise<void> => {
     try {
-      await deps.setProviderEntry("codex", attachAuthError(await probeCodex(), failure, now()));
-    } catch (err) {
-      deps.log("⚠️", `runtime-auth: codex re-probe ${label} failed: ${message(err)}`);
-    }
-  };
-
-  deps.log("•", `runtime-auth: starting codex login (method=browser, ref ${command.ref})`);
-
-  const resolved = await resolveBinary();
-  if (!resolved.ok) {
-    deps.log("⚠️", `runtime-auth: codex binary unavailable: ${resolved.error}`);
-    await reflect("after unresolved binary", { reason: "spawn-error", message: resolved.error });
-    return;
-  }
-
-  const setPending = (authUrl?: string): Promise<void> =>
-    deps.setProviderEntry("codex", pendingEntry(deps.currentEntry("codex"), browserPending(now(), authUrl), now()));
-  await setPending();
-  deps.log("•", "runtime-auth: codex browser sign-in opened on this host");
-
-  let outcome: LoginOutcome;
-  try {
-    // Surface the sign-in URL into the pending marker once codex prints it, so
-    // the web can offer a fallback link when the host browser does not auto-open.
-    outcome = await runBrowserLogin({ binary: resolved.binary, onAuthUrl: (url) => void setPending(url) });
-  } catch (err) {
-    deps.log("⚠️", `runtime-auth: codex login threw: ${message(err)}`);
-    await reflect("after login threw", { reason: "spawn-error", message: message(err) });
-    return;
-  }
-
-  await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
-  logOutcome("codex", command.ref, outcome, deps);
-}
-
-/** claude-code: `claude auth login` (browser OAuth → keychain). */
-async function runClaudeRuntimeAuth(command: RuntimeAuthCommand, deps: RuntimeAuthLoginDeps): Promise<void> {
-  const now = deps.now ?? Date.now;
-  const resolveLogin = deps.resolveClaudeLogin ?? resolveClaudeLoginInvocation;
-  const runClaudeBrowser = deps.runClaudeBrowser ?? runClaudeBrowserLogin;
-  const probeClaude = deps.probeClaude ?? probeClaudeCodeCapability;
-  const probeClaudeTui = deps.probeClaudeTui ?? probeClaudeCodeTuiCapability;
-
-  // Claude auth is a single keychain credential shared by the SDK (claude-code)
-  // AND the TUI runtime (claude-code-tui). So a Claude login authenticates both;
-  // re-probe both here, otherwise the TUI row stays a stale "needs login" until
-  // the next background poll (the QA finding) and reads as a second, separate
-  // Claude login the user must do — it isn't.
-  // A failure stamps `lastAuthError` on the claude-code entry only (the login
-  // target); the shared-keychain tui entry just reflects the re-probed state.
-  // While claude-code-tui is disabled (DISABLED_RUNTIME_PROVIDERS), this path
-  // honours the same central switch as the capability aggregator: it must not
-  // spawn the TUI probe (`claude` / tmux) or write a tui entry — a claude-code
-  // login then reflects claude-code only.
-  const reflect = async (label: string, failure: AuthFailure | null): Promise<void> => {
-    try {
-      if (isRuntimeProviderEnabled("claude-code-tui")) {
-        const [cc, tui] = await Promise.all([probeClaude(), probeClaudeTui()]);
-        await deps.setProviderEntry("claude-code", attachAuthError(cc, failure, now()));
-        await deps.setProviderEntry("claude-code-tui", tui);
-      } else {
-        const cc = await probeClaude();
-        await deps.setProviderEntry("claude-code", attachAuthError(cc, failure, now()));
+      for (const { provider, entry } of await driver.reprobe()) {
+        const published = provider === command.provider ? attachAuthError(entry, failure, now()) : entry;
+        await deps.setProviderEntry(provider, published);
       }
     } catch (err) {
-      deps.log("⚠️", `runtime-auth: claude re-probe ${label} failed: ${message(err)}`);
+      deps.log("⚠️", `runtime-auth: ${logLabel} re-probe ${label} failed: ${message(err)}`);
     }
   };
 
-  deps.log("•", `runtime-auth: starting claude auth login (method=browser, ref ${command.ref})`);
+  deps.log("•", `runtime-auth: starting ${loginLabel} (method=browser, ref ${command.ref})`);
 
-  const invocation = resolveLogin();
-  if (!invocation.ok) {
-    deps.log("⚠️", `runtime-auth: claude CLI unavailable: ${invocation.error}`);
-    await reflect("after unresolved CLI", { reason: "spawn-error", message: invocation.error });
+  const resolution = await driver.resolveLogin();
+  if (!resolution.ok) {
+    deps.log("⚠️", `runtime-auth: ${logLabel} ${artifactLabel} unavailable: ${resolution.error}`);
+    await reflect(`after unresolved ${artifactLabel}`, { reason: "spawn-error", message: resolution.error });
     return;
   }
 
   const setPending = (authUrl?: string): Promise<void> =>
     deps.setProviderEntry(
-      "claude-code",
-      pendingEntry(deps.currentEntry("claude-code"), browserPending(now(), authUrl), now()),
+      command.provider,
+      pendingEntry(deps.currentEntry(command.provider), browserPending(now(), authUrl), now()),
     );
   await setPending();
-  deps.log("•", "runtime-auth: claude browser sign-in opened on this host");
+  deps.log("•", `runtime-auth: ${logLabel} browser sign-in opened on this host`);
 
   let outcome: LoginOutcome;
   try {
-    outcome = await runClaudeBrowser({
-      command: invocation.command,
-      baseArgs: invocation.baseArgs,
-      onAuthUrl: (url) => void setPending(url),
-    });
+    // Surface the sign-in URL into the pending marker once the login prints it,
+    // so the web can offer a fallback link when the host browser does not open.
+    outcome = await resolution.login({ onAuthUrl: (url) => void setPending(url) });
   } catch (err) {
-    deps.log("⚠️", `runtime-auth: claude auth login threw: ${message(err)}`);
+    deps.log("⚠️", `runtime-auth: ${loginLabel} threw: ${message(err)}`);
     await reflect("after login threw", { reason: "spawn-error", message: message(err) });
     return;
   }
 
   await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
-  logOutcome("claude", command.ref, outcome, deps);
+  logOutcome(logLabel, command.ref, outcome, deps);
 }
 
 function logOutcome(provider: string, ref: string, outcome: LoginOutcome, deps: RuntimeAuthLoginDeps): void {

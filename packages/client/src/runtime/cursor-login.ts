@@ -1,4 +1,12 @@
 import type { spawn } from "node:child_process";
+import { RUNTIME_PROVIDERS } from "@first-tree/shared";
+import type {
+  RuntimeAuthDriver,
+  RuntimeAuthLoginResolution,
+  RuntimeAuthProbeResult,
+} from "../providers/auth-driver.js";
+import { probeCursorCapability } from "./capabilities/cursor.js";
+import { type CursorRuntimeBinaryResolution, resolveCursorRuntimeBinary } from "./cursor-binary.js";
 import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "./runtime-login.js";
 
 /**
@@ -36,4 +44,36 @@ export function runCursorBrowserLogin(options: CursorBrowserLoginOptions): Promi
     timeoutMs: options.timeoutMs ?? BROWSER_LOGIN_TIMEOUT_MS,
     spawnFn: options.spawnFn,
   });
+}
+
+/** Test seams; production composition passes nothing. */
+export type CursorAuthDriverDeps = {
+  resolveBinary?: () => CursorRuntimeBinaryResolution;
+  runBrowserLogin?: typeof runCursorBrowserLogin;
+  probe?: typeof probeCursorCapability;
+};
+
+/**
+ * Cursor's in-product auth driver. Cursor is external-only, so login drives the
+ * SAME resolved binary the handler spawns, including its bounded `--version`
+ * smoke check.
+ */
+export function createCursorAuthDriver(deps: CursorAuthDriverDeps = {}): RuntimeAuthDriver {
+  const resolveBinary = deps.resolveBinary ?? resolveCursorRuntimeBinary;
+  const browserLogin = deps.runBrowserLogin ?? runCursorBrowserLogin;
+  const probe = deps.probe ?? probeCursorCapability;
+
+  return {
+    logLabel: "cursor",
+    loginLabel: "cursor login",
+    artifactLabel: "binary",
+    async resolveLogin(): Promise<RuntimeAuthLoginResolution> {
+      const resolved = resolveBinary();
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      return { ok: true, login: ({ onAuthUrl }) => browserLogin({ binary: resolved.binary, onAuthUrl }) };
+    },
+    async reprobe(): Promise<readonly RuntimeAuthProbeResult[]> {
+      return [{ provider: RUNTIME_PROVIDERS.CURSOR, entry: await probe() }];
+    },
+  };
 }

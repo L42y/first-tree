@@ -1,4 +1,11 @@
 import type { spawn } from "node:child_process";
+import { RUNTIME_PROVIDERS } from "@first-tree/shared";
+import type {
+  RuntimeAuthDriver,
+  RuntimeAuthLoginResolution,
+  RuntimeAuthProbeResult,
+} from "../providers/auth-driver.js";
+import { type CodexBinaryResolution, probeCodexCapability, resolveCodexRuntimeBinary } from "./capabilities/codex.js";
 import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "./runtime-login.js";
 
 /**
@@ -38,4 +45,36 @@ export function runCodexBrowserLogin(options: CodexBrowserLoginOptions): Promise
     timeoutMs: options.timeoutMs ?? BROWSER_LOGIN_TIMEOUT_MS,
     spawnFn: options.spawnFn,
   });
+}
+
+/** Test seams; production composition passes nothing. */
+export type CodexAuthDriverDeps = {
+  resolveBinary?: () => Promise<CodexBinaryResolution>;
+  runBrowserLogin?: typeof runCodexBrowserLogin;
+  probe?: typeof probeCodexCapability;
+};
+
+/**
+ * Codex's in-product auth driver. Login drives the SAME resolved binary the
+ * handler spawns, including its bounded `--version` smoke check, so a login
+ * cannot succeed against an artifact the runtime would not use.
+ */
+export function createCodexAuthDriver(deps: CodexAuthDriverDeps = {}): RuntimeAuthDriver {
+  const resolveBinary = deps.resolveBinary ?? resolveCodexRuntimeBinary;
+  const browserLogin = deps.runBrowserLogin ?? runCodexBrowserLogin;
+  const probe = deps.probe ?? probeCodexCapability;
+
+  return {
+    logLabel: "codex",
+    loginLabel: "codex login",
+    artifactLabel: "binary",
+    async resolveLogin(): Promise<RuntimeAuthLoginResolution> {
+      const resolved = await resolveBinary();
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      return { ok: true, login: ({ onAuthUrl }) => browserLogin({ binary: resolved.binary, onAuthUrl }) };
+    },
+    async reprobe(): Promise<readonly RuntimeAuthProbeResult[]> {
+      return [{ provider: RUNTIME_PROVIDERS.CODEX, entry: await probe() }];
+    },
+  };
 }

@@ -31,6 +31,14 @@ export {
   initClientSentry,
   rootLogger,
 } from "./observability/index.js";
+export type {
+  RuntimeAuthDriver,
+  RuntimeAuthLoginResolution,
+  RuntimeAuthLoginStart,
+  RuntimeAuthProbeResult,
+} from "./providers/auth-driver.js";
+export type { RuntimeAuthDriverTable } from "./providers/auth-drivers.js";
+export { RUNTIME_AUTH_DRIVERS } from "./providers/auth-drivers.js";
 export type { BuiltinProviderProbeTable, CapabilityProbe } from "./providers/builtin-probes.js";
 export { BUILTIN_PROVIDER_PROBES, probedRuntimeProviders } from "./providers/builtin-probes.js";
 export type { BuiltinHandlerRegistry, BuiltinHandlerRegistryDeps } from "./providers/builtin-registry.js";
@@ -87,14 +95,21 @@ export type {
 } from "./runtime/child-process-registry.js";
 export { CHILD_CATEGORIES, getChildProcessRegistry } from "./runtime/child-process-registry.js";
 export {
+  type ClaudeAuthDriverDeps,
   type ClaudeBrowserLoginOptions,
   type ClaudeLoginInvocation,
+  createClaudeAuthDriver,
   resolveClaudeLoginInvocation,
   runClaudeBrowserLogin,
 } from "./runtime/claude-login.js";
 export type { CliBinding } from "./runtime/cli-binding.js";
 export { setCliBinding } from "./runtime/cli-binding.js";
-export { type CodexBrowserLoginOptions, runCodexBrowserLogin } from "./runtime/codex-login.js";
+export {
+  type CodexAuthDriverDeps,
+  type CodexBrowserLoginOptions,
+  createCodexAuthDriver,
+  runCodexBrowserLogin,
+} from "./runtime/codex-login.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./runtime/config.js";
 export { loadRuntimeConfig } from "./runtime/config.js";
 export {
@@ -104,7 +119,12 @@ export {
   formatCursorBinaryMissingMessage,
   resolveCursorRuntimeBinary,
 } from "./runtime/cursor-binary.js";
-export { type CursorBrowserLoginOptions, runCursorBrowserLogin } from "./runtime/cursor-login.js";
+export {
+  type CursorAuthDriverDeps,
+  type CursorBrowserLoginOptions,
+  createCursorAuthDriver,
+  runCursorBrowserLogin,
+} from "./runtime/cursor-login.js";
 export { Deduplicator } from "./runtime/deduplicator.js";
 export type { AttachmentUploader, SelfFence, WorkspaceFence } from "./runtime/doc-snapshots.js";
 export { buildMessageDocumentSnapshots } from "./runtime/doc-snapshots.js";
@@ -117,7 +137,12 @@ export {
   type GrokRuntimeBinaryResolution,
   resolveGrokRuntimeBinary,
 } from "./runtime/grok-binary.js";
-export { type GrokBrowserLoginOptions, runGrokBrowserLogin } from "./runtime/grok-login.js";
+export {
+  createGrokAuthDriver,
+  type GrokAuthDriverDeps,
+  type GrokBrowserLoginOptions,
+  runGrokBrowserLogin,
+} from "./runtime/grok-login.js";
 export type {
   AgentHandler,
   HandlerConfig,
@@ -159,10 +184,20 @@ export {
   type ProviderProcessSupervisor,
   type SupervisedProviderProcess,
 } from "./runtime/provider-process-supervisor.js";
+export { redactErrorPreview } from "./runtime/redact-error-preview.js";
 export type { AgentRuntimeOptions } from "./runtime/runtime.js";
 export { AgentRuntime } from "./runtime/runtime.js";
 // Runtime-auth (browser OAuth)
-export { BROWSER_LOGIN_TIMEOUT_MS, extractAuthUrl, type LoginOutcome, stripAnsi } from "./runtime/runtime-login.js";
+export {
+  AUTH_URL_TOKEN_MAX,
+  type AuthUrlScanner,
+  BROWSER_LOGIN_TIMEOUT_MS,
+  createAuthUrlScanner,
+  extractAuthUrl,
+  LOGIN_STDERR_TAIL_MAX,
+  type LoginOutcome,
+  stripAnsi,
+} from "./runtime/runtime-login.js";
 export { SessionManager } from "./runtime/session-manager.js";
 export { SessionRegistry } from "./runtime/session-registry.js";
 // Skills (slash-command discovery)

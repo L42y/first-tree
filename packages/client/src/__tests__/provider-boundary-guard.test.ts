@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
+import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -20,6 +20,7 @@ const THIRD_PARTY_SDK_IMPORTS = [
 
 /** Unique composition roots allowed to name concrete providers / import adapters. */
 const COMPOSITION_ALLOWLIST = new Set([
+  "providers/auth-drivers.ts",
   "providers/builtin-registry.ts",
   "providers/builtin-probes.ts",
   "providers/skill-roots.ts",
@@ -161,6 +162,49 @@ describe("runtime provider architecture guard", () => {
     expect(probes).not.toContain("builtinProbeProviderIds");
     expect(skills).toContain("Object.freeze");
     expect(skills).not.toContain("assertSkillRootsComplete");
+  });
+
+  it("keeps the runtime-auth driver projection in one frozen, schema-exhaustive composition root", () => {
+    const drivers = readFileSync(join(clientSrc, "providers/auth-drivers.ts"), "utf8");
+    expect(drivers).toContain("Object.freeze");
+    // The key set is a projection of the narrow server-accepted auth enum, not
+    // a second handwritten known-provider list.
+    expect(drivers).toContain("satisfies Record<RuntimeAuthProvider, RuntimeAuthDriver>");
+    for (const provider of runtimeAuthProviderSchema.options) {
+      expect(drivers, `auth-drivers must register ${provider}`).toContain(provider);
+    }
+    // The contract itself stays provider-neutral.
+    const contract = readFileSync(join(clientSrc, "providers/auth-driver.ts"), "utf8");
+    expect(containsAnyProviderLiteral(contract)).toBeNull();
+  });
+
+  it("keeps the daemon runtime-auth dispatcher free of provider literals, imports and branches", () => {
+    const rel = "apps/cli/src/core/runtime-auth-login.ts";
+    const source = readFileSync(join(repoRoot, rel), "utf8");
+
+    expect(source).toContain("RUNTIME_AUTH_DRIVERS");
+    const hit = containsAnyProviderLiteral(source);
+    expect(hit, `${rel} must not contain provider literal ${hit}`).toBeNull();
+    for (const provider of runtimeAuthProviderSchema.options) {
+      expect(source, `${rel} must not branch on ${provider}`).not.toMatch(
+        new RegExp(`(===|case)\\s*["']${provider}["']`),
+      );
+    }
+    // No provider-specific resolver / probe / browser-login imports remain.
+    expect(source).not.toMatch(/\b(resolve|probe|run)(Codex|Claude|Cursor|Grok)\w*/);
+    // Published failure text goes through the shared redaction boundary.
+    expect(source).toContain("redactErrorPreview");
+    expect(source).toContain("RUNTIME_AUTH_ERROR_MAX_LEN");
+  });
+
+  it("keeps provider login output bounded and incrementally scanned", () => {
+    const source = readFileSync(join(clientSrc, "runtime/runtime-login.ts"), "utf8");
+    expect(source).toContain("createAuthUrlScanner");
+    expect(source).toContain("AUTH_URL_TOKEN_MAX");
+    expect(source).toContain("LOGIN_STDERR_TAIL_MAX");
+    // No full-output accumulation, and no full-buffer handoff to consumers.
+    expect(source).not.toMatch(/\bbuffer\s*\+=/);
+    expect(source).not.toMatch(/onOutput\?\.\([^)]*,/);
   });
 
   it("keeps third-party provider SDKs out of shared and web packages", () => {

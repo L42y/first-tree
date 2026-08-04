@@ -1,4 +1,12 @@
 import type { spawn } from "node:child_process";
+import { RUNTIME_PROVIDERS } from "@first-tree/shared";
+import type {
+  RuntimeAuthDriver,
+  RuntimeAuthLoginResolution,
+  RuntimeAuthProbeResult,
+} from "../providers/auth-driver.js";
+import { probeGrokCapability } from "./capabilities/grok.js";
+import { type GrokRuntimeBinaryResolution, resolveGrokRuntimeBinary } from "./grok-binary.js";
 import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "./runtime-login.js";
 
 /**
@@ -49,4 +57,37 @@ export function runGrokBrowserLogin(options: GrokBrowserLoginOptions): Promise<L
     timeoutMs: options.timeoutMs ?? BROWSER_LOGIN_TIMEOUT_MS,
     spawnFn: options.spawnFn,
   });
+}
+
+/** Test seams; production composition passes nothing. */
+export type GrokAuthDriverDeps = {
+  resolveBinary?: () => GrokRuntimeBinaryResolution;
+  runBrowserLogin?: typeof runGrokBrowserLogin;
+  probe?: typeof probeGrokCapability;
+};
+
+/**
+ * Grok Build's in-product auth driver. Grok is external-only, so login drives
+ * the SAME resolved binary the handler spawns, including its bounded
+ * `--version` smoke check; the Windows fail-closed gate lives in the resolver
+ * and in {@link runGrokBrowserLogin}.
+ */
+export function createGrokAuthDriver(deps: GrokAuthDriverDeps = {}): RuntimeAuthDriver {
+  const resolveBinary = deps.resolveBinary ?? resolveGrokRuntimeBinary;
+  const browserLogin = deps.runBrowserLogin ?? runGrokBrowserLogin;
+  const probe = deps.probe ?? probeGrokCapability;
+
+  return {
+    logLabel: "grok",
+    loginLabel: "grok login",
+    artifactLabel: "binary",
+    async resolveLogin(): Promise<RuntimeAuthLoginResolution> {
+      const resolved = resolveBinary();
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      return { ok: true, login: ({ onAuthUrl }) => browserLogin({ binary: resolved.binary, onAuthUrl }) };
+    },
+    async reprobe(): Promise<readonly RuntimeAuthProbeResult[]> {
+      return [{ provider: RUNTIME_PROVIDERS.GROK, entry: await probe() }];
+    },
+  };
 }

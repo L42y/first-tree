@@ -23,6 +23,14 @@ export type LoginOutcome =
 /** Default ceiling for the browser-OAuth flow: the user signs in interactively. */
 export const BROWSER_LOGIN_TIMEOUT_MS = 5 * 60_000;
 
+/**
+ * Upper bound on the stderr we keep for a failure message. The login can stream
+ * for the whole {@link BROWSER_LOGIN_TIMEOUT_MS} window, so only a tail is
+ * retained; it also matches the budget the daemon publishes onto a capability
+ * entry, so a bounded tail cannot become an unbounded `lastAuthError.message`.
+ */
+export const LOGIN_STDERR_TAIL_MAX = 500;
+
 export type LoginSubprocessOptions = {
   command: string;
   args: string[];
@@ -32,8 +40,12 @@ export type LoginSubprocessOptions = {
   spawnFn: typeof spawn;
   /** Human label for error messages, e.g. `codex login` / `claude auth login`. */
   label: string;
-  /** Called for every ANSI-stripped output chunk plus the full buffer so far. */
-  onOutput?: (cleanChunk: string, fullBuffer: string) => void;
+  /**
+   * Called for every ANSI-stripped output chunk. Deliberately chunk-only: the
+   * subprocess must not retain the whole stream so a chatty provider cannot
+   * accumulate minutes of output in memory.
+   */
+  onOutput?: (cleanChunk: string) => void;
   /** Map a non-zero exit to a failure outcome (exit 0 is always success). */
   classifyExit: (info: { code: number | null; stderrTail: string }) => Extract<LoginOutcome, { ok: false }>;
 };
@@ -61,7 +73,6 @@ export function runLoginSubprocess(opts: LoginSubprocessOptions): Promise<LoginO
       return;
     }
 
-    let buffer = "";
     let stderrTail = "";
     let settled = false;
 
@@ -83,15 +94,13 @@ export function runLoginSubprocess(opts: LoginSubprocessOptions): Promise<LoginO
     }
 
     function ingest(chunk: string): void {
-      const clean = stripAnsi(chunk);
-      buffer += clean;
-      onOutput?.(clean, buffer);
+      onOutput?.(stripAnsi(chunk));
     }
 
     child.stdout?.on("data", (data: Buffer) => ingest(data.toString("utf-8")));
     child.stderr?.on("data", (data: Buffer) => {
       const text = data.toString("utf-8");
-      stderrTail = stripAnsi(stderrTail + text).slice(-500);
+      stderrTail = stripAnsi(stderrTail + text).slice(-LOGIN_STDERR_TAIL_MAX);
       ingest(text);
     });
 
@@ -141,32 +150,93 @@ function isLoopbackHost(host: string): boolean {
  * URL" capture surfaces a link whose root 404s). We therefore:
  *   - only treat a whitespace-terminated token as complete (a trailing,
  *     unterminated token may still be streaming in across a stdout chunk
- *     boundary, so we skip it),
+ *     boundary, so it is held back until the next chunk completes it),
  *   - strip trailing sentence punctuation (so the result parses), and
- *   - skip loopback origins, returning the first external URL (or `null`).
- * Tokenising on whitespace keeps this linear in the buffer length. Exported for
- * unit tests.
+ *   - skip loopback origins.
+ * Tokenising on whitespace keeps this linear in the output length.
+ */
+function authUrlFromToken(token: string): string | null {
+  if (!token || !URL_PREFIX.test(token)) return null;
+  const url = stripTrailingPunct(token);
+  if (!url) return null;
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  return isLoopbackHost(hostname) ? null : url;
+}
+
+const WHITESPACE = /\s/;
+
+/**
+ * Ceiling on the partial token carried across chunk boundaries. A sign-in URL
+ * that does not fit is not a link worth handing to a browser anyway, so an
+ * over-long run of non-whitespace is discarded instead of retained. This is
+ * what keeps scanner state constant no matter how much a provider prints
+ * during the five-minute login window.
+ */
+export const AUTH_URL_TOKEN_MAX = 2048;
+
+/**
+ * Incremental scanner for the fallback sign-in URL.
+ *
+ * Output is consumed chunk by chunk, and each complete token is judged exactly
+ * once, so a chatty login never re-scans text it has already seen. The only
+ * state kept between chunks is the trailing partial token, capped at
+ * {@link AUTH_URL_TOKEN_MAX}; a URL split across two chunks is still
+ * recognised, and once one is found the scanner retains nothing further.
+ */
+export type AuthUrlScanner = {
+  /** Feed one ANSI-stripped chunk; returns the URL the moment one completes. */
+  push(chunk: string): string | null;
+  /** Characters currently held between chunks (diagnostics and tests). */
+  retainedChars(): number;
+};
+
+export function createAuthUrlScanner(): AuthUrlScanner {
+  let carry = "";
+  /** The in-progress token blew the cap: drop it until the next whitespace. */
+  let discarding = false;
+  let found = false;
+
+  return {
+    push(chunk: string): string | null {
+      if (found) return null;
+      let start = 0;
+      for (let i = 0; i < chunk.length; i++) {
+        if (!WHITESPACE.test(chunk[i] as string)) continue;
+        const token = discarding ? "" : carry + chunk.slice(start, i);
+        carry = "";
+        discarding = false;
+        start = i + 1;
+        const url = authUrlFromToken(token);
+        if (url) {
+          found = true;
+          return url;
+        }
+      }
+      const tail = chunk.slice(start);
+      if (!tail) return null;
+      if (discarding || carry.length + tail.length > AUTH_URL_TOKEN_MAX) {
+        discarding = true;
+        carry = "";
+      } else {
+        carry += tail;
+      }
+      return null;
+    },
+    retainedChars: () => carry.length,
+  };
+}
+
+/**
+ * One-shot form of {@link createAuthUrlScanner} for callers and tests that
+ * already hold the whole output as a single string.
  */
 export function extractAuthUrl(buffer: string): string | null {
-  const terminated = /\s$/.test(buffer);
-  const tokens = buffer.split(/\s+/);
-  // The last token is only known-complete if the buffer ended on whitespace.
-  const completeCount = terminated ? tokens.length : tokens.length - 1;
-  for (let i = 0; i < completeCount; i++) {
-    const token = tokens[i];
-    if (!token || !URL_PREFIX.test(token)) continue;
-    const url = stripTrailingPunct(token);
-    if (!url) continue;
-    let hostname: string;
-    try {
-      hostname = new URL(url).hostname;
-    } catch {
-      continue;
-    }
-    if (isLoopbackHost(hostname)) continue;
-    return url;
-  }
-  return null;
+  return createAuthUrlScanner().push(buffer);
 }
 
 export type BrowserLoginOptions = {
@@ -194,6 +264,9 @@ export type BrowserLoginOptions = {
  */
 export function runBrowserLogin(options: BrowserLoginOptions): Promise<LoginOutcome> {
   const { command, args, label, onAuthUrl, onRawOutput, signal } = options;
+  // Built only when a caller wants the URL, and inert once it has produced one,
+  // so the fallback-link feature never becomes a reason to retain login output.
+  const scanner = onAuthUrl ? createAuthUrlScanner() : null;
   let urlFired = false;
   return runLoginSubprocess({
     command,
@@ -203,10 +276,10 @@ export function runBrowserLogin(options: BrowserLoginOptions): Promise<LoginOutc
     timeoutMs: options.timeoutMs ?? BROWSER_LOGIN_TIMEOUT_MS,
     spawnFn: options.spawnFn ?? spawn,
     label,
-    onOutput: (clean, full) => {
+    onOutput: (clean) => {
       onRawOutput?.(clean);
-      if (urlFired || !onAuthUrl) return;
-      const url = extractAuthUrl(full);
+      if (urlFired || !onAuthUrl || !scanner) return;
+      const url = scanner.push(clean);
       if (url) {
         urlFired = true;
         onAuthUrl(url);

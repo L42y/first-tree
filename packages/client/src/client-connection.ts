@@ -24,6 +24,7 @@ import {
   providerModelsListCommandSchema,
   RUNTIME_AUTH_START_TYPE,
   type RuntimeAuthMethod,
+  type RuntimeAuthProvider,
   type RuntimeProvider,
   type RuntimeState,
   runtimeAuthStartCommandSchema,
@@ -205,7 +206,14 @@ export type SessionReconcileResult = {
  * re-PATCHing capabilities. See `runtimeAuthStartCommandSchema` in shared.
  */
 export type RuntimeAuthCommand = {
-  provider: RuntimeProvider;
+  /**
+   * Narrower than `RuntimeProvider`: only the server-accepted in-product auth
+   * targets can start a login. The wire shape is unchanged - this is the same
+   * set `runtimeAuthStartCommandSchema` already parses, now visible in the
+   * type so the daemon dispatches by a key that cannot be a host-login-only
+   * provider.
+   */
+  provider: RuntimeAuthProvider;
   method?: RuntimeAuthMethod;
   ref: string;
 };
