@@ -114,4 +114,35 @@ describe("builtin provider registry", () => {
     expect(installHandlers).toHaveBeenCalledTimes(1);
     expect(hasHandler("claude-code" satisfies RuntimeProvider)).toBe(true);
   });
+
+  it("syncs probe and skill-root consumers when a registry is installed", async () => {
+    const { getBuiltinProviderProbes } = await import("../providers/builtin-probes.js");
+    const { getProviderSkillRoots } = await import("../providers/skill-roots.js");
+    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const { providerSkillRoot } = await import("../runtime/managed-skills.js");
+
+    const customProbe = vi.fn().mockResolvedValue({
+      state: "ok",
+      available: true,
+      sdkVersion: null,
+      detectedAt: new Date().toISOString(),
+      latencyMs: 1,
+    });
+    const base = createBuiltinProviderRegistry({
+      resolveExecutable: () => ({ path: undefined, source: "default" }),
+    });
+    const custom = {
+      ...base,
+      codex: { ...base.codex, probe: customProbe, skillRoot: ".custom/codex-skills" },
+    } satisfies typeof base;
+
+    installBuiltinProviderRegistry(custom);
+
+    expect(getBuiltinProviderProbes().codex).toBe(customProbe);
+    expect(getProviderSkillRoots().codex).toBe(".custom/codex-skills");
+    expect(providerSkillRoot("codex")).toBe(".custom/codex-skills");
+
+    await probeCapabilities();
+    expect(customProbe).toHaveBeenCalled();
+  });
 });

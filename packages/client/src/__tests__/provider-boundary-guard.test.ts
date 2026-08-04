@@ -68,14 +68,14 @@ describe("runtime provider architecture guard", () => {
       }
 
       if (relPosix === "runtime/managed-skills.ts") {
-        // Skill roots come from the shared client skill-roots table.
-        expect(source).toContain('from "../providers/skill-roots.js"');
+        // Skill roots come from the active table synced off the installed registry.
+        expect(source).toContain("getProviderSkillRoots");
         expect(source).not.toMatch(/"claude-code"\s*:\s*"\.claude\/skills"/);
         continue;
       }
 
       if (relPosix === "runtime/capabilities/index.ts") {
-        expect(source).toContain("getBuiltinProviderProbes");
+        expect(source).toContain("peekInstalledBuiltinProviderRegistry");
         expect(source).toContain("RUNTIME_PROVIDER_IDS");
         for (const literal of PROVIDER_LITERALS) {
           expect(source, `${rel} must not contain ${literal}`).not.toContain(literal);
@@ -127,5 +127,23 @@ describe("runtime provider architecture guard", () => {
     expect(providersTs).not.toMatch(
       /export const PROVIDER_LABEL: Record<RuntimeProvider, string> = \{\s*"claude-code":/,
     );
+
+    const newAgent = readFileSync(join(repoRoot, "packages/web/src/components/new-agent-dialog.tsx"), "utf8");
+    expect(newAgent).toContain("pickPreferredRuntimeProvider");
+    expect(newAgent).toContain("runtimeProviderLabel");
+    expect(newAgent).not.toContain('provider === "claude-code"');
+    expect(newAgent).not.toMatch(/function prettyRuntimeLabel/);
+
+    const runtimeSection = readFileSync(
+      join(repoRoot, "packages/web/src/pages/agent-detail/runtime-section.tsx"),
+      "utf8",
+    );
+    expect(runtimeSection).toContain("runtimeProviderLabel");
+    expect(runtimeSection).not.toMatch(/const RUNTIME_NAME/);
+
+    const authHint = readFileSync(join(clientSrc, "handlers/auth-error-hint.ts"), "utf8");
+    expect(authHint).toContain("runtimeProviderChatAuthLoginPhrase");
+    expect(authHint).toContain("runtimeProviderAuthOwnerLabel");
+    expect(authHint).not.toContain('runtime === "codex"');
   });
 });

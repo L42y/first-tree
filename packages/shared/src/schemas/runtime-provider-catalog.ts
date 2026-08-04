@@ -9,13 +9,14 @@ import {
  * Cross-package pure-data catalog for runtime providers.
  *
  * Owns labels, display order, and install/login metadata shared by web/CLI
- * surfaces. Must not contain executable client code (handler factories, probes,
- * binary resolvers, or third-party SDK imports).
+ * surfaces (Computers cards, new-agent dialog, agent detail, chat auth hints).
+ * Must not contain executable client code (handler factories, probes, binary
+ * resolvers, or third-party SDK imports).
  */
 export type RuntimeProviderCatalogEntry = {
   id: RuntimeProvider;
   label: string;
-  /** Ascending display order for selection/setup UIs. */
+  /** Ascending display order for selection/setup UIs and preferred-runtime pick. */
   displayOrder: number;
   /** npm package for `npm install -g`, or `null` when install is script-only. */
   npmPackage: string | null;
@@ -25,6 +26,13 @@ export type RuntimeProviderCatalogEntry = {
   scriptInstallCommand: string | null;
   /** Default host-local login / recovery command shown after install. */
   loginCommand: string;
+  /**
+   * Markdown fragment embedded in chat auth-failure hints (includes backticks).
+   * May differ slightly from {@link loginCommand} for interactive `/login` flows.
+   */
+  chatAuthLoginPhrase: string;
+  /** Vendor / credential owner named in chat auth-failure hints. */
+  authOwnerLabel: string;
 };
 
 const CURSOR_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
@@ -43,6 +51,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: [],
     scriptInstallCommand: null,
     loginCommand: "claude auth login",
+    chatAuthLoginPhrase: "`claude auth login`",
+    authOwnerLabel: "Anthropic",
   },
   "claude-code-tui": {
     id: "claude-code-tui",
@@ -52,6 +62,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: [],
     scriptInstallCommand: null,
     loginCommand: "claude auth login",
+    chatAuthLoginPhrase: "`claude auth login`",
+    authOwnerLabel: "Anthropic",
   },
   codex: {
     id: "codex",
@@ -61,6 +73,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: [],
     scriptInstallCommand: null,
     loginCommand: "codex login",
+    chatAuthLoginPhrase: "`codex login`",
+    authOwnerLabel: "OpenAI",
   },
   cursor: {
     id: "cursor",
@@ -70,6 +84,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: [],
     scriptInstallCommand: CURSOR_INSTALL_COMMAND,
     loginCommand: "cursor-agent login",
+    chatAuthLoginPhrase: "`cursor-agent login`",
+    authOwnerLabel: "Cursor",
   },
   grok: {
     id: "grok",
@@ -79,6 +95,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: [],
     scriptInstallCommand: GROK_INSTALL_COMMAND,
     loginCommand: "grok login",
+    chatAuthLoginPhrase: "`grok login`",
+    authOwnerLabel: "Grok Build",
   },
   "kimi-code": {
     id: "kimi-code",
@@ -88,6 +106,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: [],
     scriptInstallCommand: null,
     loginCommand: "kimi # then run /login",
+    chatAuthLoginPhrase: "`kimi` and then `/login`",
+    authOwnerLabel: "Kimi",
   },
   opencode: {
     id: "opencode",
@@ -97,6 +117,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: [],
     scriptInstallCommand: null,
     loginCommand: "opencode auth login",
+    chatAuthLoginPhrase: "`opencode auth login`",
+    authOwnerLabel: "OpenCode's selected provider",
   },
   pi: {
     id: "pi",
@@ -106,6 +128,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     npmInstallArgs: ["--ignore-scripts"],
     scriptInstallCommand: null,
     loginCommand: "pi # then run /login",
+    chatAuthLoginPhrase: "`pi` and then `/login`",
+    authOwnerLabel: "Pi",
   },
 } as const satisfies Record<RuntimeProvider, RuntimeProviderCatalogEntry>;
 
@@ -148,6 +172,16 @@ export function runtimeProviderLoginCommand(provider: RuntimeProvider): string {
   return RUNTIME_PROVIDER_CATALOG[provider].loginCommand;
 }
 
+/** Chat-timeline auth recovery phrase (includes markdown backticks). */
+export function runtimeProviderChatAuthLoginPhrase(provider: RuntimeProvider): string {
+  return RUNTIME_PROVIDER_CATALOG[provider].chatAuthLoginPhrase;
+}
+
+/** Credential-owner label used in chat auth-failure hints. */
+export function runtimeProviderAuthOwnerLabel(provider: RuntimeProvider): string {
+  return RUNTIME_PROVIDER_CATALOG[provider].authOwnerLabel;
+}
+
 /**
  * Install + login two-liner for setup surfaces. Optional `extraLines` lets a
  * presentation layer append host-specific requirements (e.g. tmux).
@@ -158,6 +192,20 @@ export function runtimeProviderInstallLoginCommand(
 ): string {
   const lines = [runtimeProviderInstallCommand(provider), runtimeProviderLoginCommand(provider), ...extraLines];
   return lines.join("\n");
+}
+
+/**
+ * First enabled provider whose capability entry is `ok`, following catalog
+ * display order (Claude Code → …). Returns null when none are ready.
+ */
+export function pickPreferredRuntimeProvider(
+  caps: Readonly<Partial<Record<string, { state?: string } | null | undefined>>>,
+): RuntimeProvider | null {
+  for (const provider of RUNTIME_PROVIDER_DISPLAY_ORDER) {
+    if (!isRuntimeProviderEnabled(provider)) continue;
+    if (caps[provider]?.state === "ok") return provider;
+  }
+  return null;
 }
 
 export { CURSOR_INSTALL_COMMAND, GROK_INSTALL_COMMAND };

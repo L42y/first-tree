@@ -16,11 +16,11 @@ import { probePiCapability } from "../runtime/capabilities/pi.js";
 export type CapabilityProbe = () => Promise<CapabilityEntry>;
 
 /**
- * Exhaustive install-probe table for built-in providers.
+ * Default install-probe table for built-in providers.
  *
- * Kept separate from handler factories so capability aggregation can stay free
- * of concrete handler / SDK imports while still sharing the same provider set
- * as the composition registry.
+ * Seed data for {@link createBuiltinProviderRegistry}. After registry install,
+ * {@link getBuiltinProviderProbes} returns the probes synced from that registry
+ * so capability aggregation cannot drift from composition.
  */
 export const BUILTIN_PROVIDER_PROBES = {
   "claude-code": probeClaudeCodeCapability,
@@ -35,7 +35,7 @@ export const BUILTIN_PROVIDER_PROBES = {
 
 export type BuiltinProviderProbeTable = Readonly<Record<RuntimeProvider, CapabilityProbe>>;
 
-/** Optional process-wide probe-table override for tests. */
+/** Optional process-wide probe-table override (synced from registry install). */
 let installedProbes: BuiltinProviderProbeTable | null = null;
 
 export function installBuiltinProviderProbes(probes: BuiltinProviderProbeTable): void {

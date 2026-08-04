@@ -1,11 +1,11 @@
 import { RUNTIME_PROVIDER_IDS, type RuntimeProvider } from "@first-tree/shared";
 
 /**
- * Native managed-skill projection roots per runtime provider.
+ * Default native managed-skill projection roots per runtime provider.
  *
- * Pure data shared by the built-in registry and `managed-skills` lookup so
- * generic aggregation never hard-codes provider branches. Keep this module free
- * of handler / probe imports to avoid composition cycles.
+ * Seed data for {@link createBuiltinProviderRegistry}. After
+ * `installBuiltinProviderRegistry`, active lookups use the installed registry's
+ * `skillRoot` values so probe/skill consumers cannot drift from composition.
  */
 export const PROVIDER_SKILL_ROOTS = {
   "claude-code": ".claude/skills",
@@ -18,8 +18,23 @@ export const PROVIDER_SKILL_ROOTS = {
   pi: ".agents/skills",
 } as const satisfies Record<RuntimeProvider, string>;
 
+let installedSkillRoots: Readonly<Record<RuntimeProvider, string>> | null = null;
+
+/** Sync active skill-root table from an installed builtin registry. */
+export function installProviderSkillRoots(roots: Readonly<Record<RuntimeProvider, string>>): void {
+  installedSkillRoots = roots;
+}
+
+export function getProviderSkillRoots(): Readonly<Record<RuntimeProvider, string>> {
+  return installedSkillRoots ?? PROVIDER_SKILL_ROOTS;
+}
+
 export function providerSkillRootFromRegistry(provider: RuntimeProvider): string {
-  return PROVIDER_SKILL_ROOTS[provider];
+  return getProviderSkillRoots()[provider];
+}
+
+export function resetProviderSkillRootsForTests(): void {
+  installedSkillRoots = null;
 }
 
 /** Exhaustiveness helper: every known provider has a skill root. */

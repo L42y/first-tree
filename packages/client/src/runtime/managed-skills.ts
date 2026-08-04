@@ -32,7 +32,7 @@ import {
 } from "@first-tree/shared";
 import { parseDocument } from "yaml";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
-import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
+import { getProviderSkillRoots, PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
 import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
 import {
   clearManagedSkillsJournal,
@@ -218,7 +218,9 @@ export function isManagedSkillsUnsafeDiscoveryError(error: unknown): error is Ma
 const processMutexTails = new Map<string, Promise<void>>();
 
 export function providerSkillRoot(provider: RuntimeProvider): string {
-  return PROVIDER_SKILL_ROOTS[provider];
+  // Active table is synced from the installed builtin registry on composition
+  // install, so skill-root lookup cannot drift from registry.skillRoot.
+  return getProviderSkillRoots()[provider];
 }
 
 export function authoritativeTeamSkillSnapshot(

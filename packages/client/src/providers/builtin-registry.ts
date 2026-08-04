@@ -10,8 +10,14 @@ import { createOpenCodeHandler } from "../handlers/opencode/index.js";
 import { createPiHandler } from "../handlers/pi/index.js";
 import { createLogger } from "../observability/logger.js";
 import type { HandlerFactory } from "../runtime/handler.js";
-import { type CapabilityProbe, getBuiltinProviderProbes, probedRuntimeProviders } from "./builtin-probes.js";
-import { PROVIDER_SKILL_ROOTS } from "./skill-roots.js";
+import {
+  BUILTIN_PROVIDER_PROBES,
+  type CapabilityProbe,
+  installBuiltinProviderProbes,
+  probedRuntimeProviders,
+  resetBuiltinProviderProbesForTests,
+} from "./builtin-probes.js";
+import { installProviderSkillRoots, PROVIDER_SKILL_ROOTS, resetProviderSkillRootsForTests } from "./skill-roots.js";
 
 export { probedRuntimeProviders };
 
@@ -32,57 +38,77 @@ export type BuiltinProviderEntry = {
 
 export type BuiltinProviderRegistry = Readonly<Record<RuntimeProvider, BuiltinProviderEntry>>;
 
+function probesFromRegistry(registry: BuiltinProviderRegistry): Record<RuntimeProvider, CapabilityProbe> {
+  const out = {} as Record<RuntimeProvider, CapabilityProbe>;
+  for (const id of RUNTIME_PROVIDER_IDS) {
+    out[id] = registry[id].probe;
+  }
+  return out;
+}
+
+function skillRootsFromRegistry(registry: BuiltinProviderRegistry): Record<RuntimeProvider, string> {
+  const out = {} as Record<RuntimeProvider, string>;
+  for (const id of RUNTIME_PROVIDER_IDS) {
+    out[id] = registry[id].skillRoot;
+  }
+  return out;
+}
+
 /**
  * Build the immutable, exhaustive built-in provider registry.
  *
  * This is the single composition root for handler factories, install probes,
- * and native skill roots. Generic runtime / CLI / web dispatchers must consume
- * this registry (or a test double) instead of listing providers themselves.
+ * and native skill roots. Seeded from the default probe/skill-root tables;
+ * {@link installBuiltinProviderRegistry} then syncs those active tables from
+ * the installed registry so generic consumers cannot drift.
  */
 export function createBuiltinProviderRegistry(deps: BuiltinRegistryDeps = {}): BuiltinProviderRegistry {
   const resolution = (deps.resolveExecutable ?? (() => resolveClaudeCodeExecutable({ includeLoginShell: false })))();
-  const probes = getBuiltinProviderProbes();
+  // Always seed from the default tables — not from any previously installed
+  // override — so composition stays deterministic.
+  const probes = BUILTIN_PROVIDER_PROBES;
+  const skillRoots = PROVIDER_SKILL_ROOTS;
 
   return {
     "claude-code": {
       factory: (config) => createClaudeCodeHandler({ ...config, claudeCodeExecutable: resolution.path }),
       probe: probes["claude-code"],
-      skillRoot: PROVIDER_SKILL_ROOTS["claude-code"],
+      skillRoot: skillRoots["claude-code"],
     },
     "claude-code-tui": {
       factory: (config) => createClaudeCodeTuiHandler({ ...config, claudeCodeExecutable: resolution.path }),
       probe: probes["claude-code-tui"],
-      skillRoot: PROVIDER_SKILL_ROOTS["claude-code-tui"],
+      skillRoot: skillRoots["claude-code-tui"],
     },
     codex: {
       factory: (config) => createCodexHandler(config),
       probe: probes.codex,
-      skillRoot: PROVIDER_SKILL_ROOTS.codex,
+      skillRoot: skillRoots.codex,
     },
     cursor: {
       factory: (config) => createCursorHandler(config),
       probe: probes.cursor,
-      skillRoot: PROVIDER_SKILL_ROOTS.cursor,
+      skillRoot: skillRoots.cursor,
     },
     grok: {
       factory: (config) => createGrokHandler(config),
       probe: probes.grok,
-      skillRoot: PROVIDER_SKILL_ROOTS.grok,
+      skillRoot: skillRoots.grok,
     },
     "kimi-code": {
       factory: (config) => createKimiCodeHandler(config),
       probe: probes["kimi-code"],
-      skillRoot: PROVIDER_SKILL_ROOTS["kimi-code"],
+      skillRoot: skillRoots["kimi-code"],
     },
     opencode: {
       factory: (config) => createOpenCodeHandler(config),
       probe: probes.opencode,
-      skillRoot: PROVIDER_SKILL_ROOTS.opencode,
+      skillRoot: skillRoots.opencode,
     },
     pi: {
       factory: (config) => createPiHandler(config),
       probe: probes.pi,
-      skillRoot: PROVIDER_SKILL_ROOTS.pi,
+      skillRoot: skillRoots.pi,
     },
   } as const satisfies BuiltinProviderRegistry;
 }
@@ -90,9 +116,20 @@ export function createBuiltinProviderRegistry(deps: BuiltinRegistryDeps = {}): B
 /** Process-wide installed registry used after `registerBuiltinHandlers`. */
 let installedRegistry: BuiltinProviderRegistry | null = null;
 
-/** Install (or replace) the process-wide built-in registry reference. */
+/**
+ * Install (or replace) the process-wide built-in registry and sync the active
+ * probe + skill-root tables from it. Capability aggregation and managed-skills
+ * lookup read those synced tables so they cannot disagree with the registry.
+ */
 export function installBuiltinProviderRegistry(registry: BuiltinProviderRegistry): void {
   installedRegistry = registry;
+  installBuiltinProviderProbes(probesFromRegistry(registry));
+  installProviderSkillRoots(skillRootsFromRegistry(registry));
+}
+
+/** Peek at the installed registry without lazily creating one. */
+export function peekInstalledBuiltinProviderRegistry(): BuiltinProviderRegistry | null {
+  return installedRegistry;
 }
 
 /**
@@ -101,14 +138,20 @@ export function installBuiltinProviderRegistry(registry: BuiltinProviderRegistry
  */
 export function getBuiltinProviderRegistry(): BuiltinProviderRegistry {
   if (!installedRegistry) {
-    installedRegistry = createBuiltinProviderRegistry();
+    installBuiltinProviderRegistry(createBuiltinProviderRegistry());
   }
-  return installedRegistry;
+  const registry = installedRegistry;
+  if (!registry) {
+    throw new Error("builtin provider registry failed to install");
+  }
+  return registry;
 }
 
-/** Test helper — clears the process-wide registry install. */
+/** Test helper — clears the process-wide registry install and synced tables. */
 export function resetBuiltinProviderRegistryForTests(): void {
   installedRegistry = null;
+  resetBuiltinProviderProbesForTests();
+  resetProviderSkillRootsForTests();
 }
 
 /** Log Claude executable resolution the same way the previous registerBuiltinHandlers did. */

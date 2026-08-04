@@ -1,4 +1,9 @@
-import { DISABLED_RUNTIME_PROVIDERS, RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
+import {
+  DISABLED_RUNTIME_PROVIDERS,
+  pickPreferredRuntimeProvider,
+  RUNTIME_PROVIDER_IDS,
+  runtimeProviderLabel as sharedRuntimeProviderLabel,
+} from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import {
   asRuntimeProvider,
@@ -19,10 +24,28 @@ describe("web provider surfaces derived from shared catalog", () => {
     expect(PROVIDER_ORDER.length).toBe(RUNTIME_PROVIDER_IDS.length - DISABLED_RUNTIME_PROVIDERS.length);
   });
 
-  it("preserves unknown-provider fallback labeling", () => {
+  it("preserves unknown-provider fallback labeling across shared helpers", () => {
     expect(asRuntimeProvider("future-provider")).toBeNull();
     expect(runtimeProviderLabel("future-provider")).toBe("future-provider");
+    expect(sharedRuntimeProviderLabel("future-provider")).toBe("future-provider");
     expect(runtimeProviderLabel("codex")).toBe("Codex");
+    expect(sharedRuntimeProviderLabel("codex")).toBe(PROVIDER_LABEL.codex);
+  });
+
+  it("picks preferred runtime from catalog display order and skips disabled providers", () => {
+    expect(
+      pickPreferredRuntimeProvider({
+        "claude-code-tui": { state: "ok" },
+        codex: { state: "ok" },
+      }),
+    ).toBe("codex");
+    expect(
+      pickPreferredRuntimeProvider({
+        "claude-code": { state: "ok" },
+        codex: { state: "ok" },
+      }),
+    ).toBe("claude-code");
+    expect(pickPreferredRuntimeProvider({ "future-provider": { state: "ok" } })).toBeNull();
   });
 
   it("locks install/login copy that cards and onboarding render", () => {

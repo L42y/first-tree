@@ -5,11 +5,14 @@ import {
   type Agent,
   type AgentTemplatePublicTemplate,
   type AgentVisibility,
+  asRuntimeProvider,
   type ClientCapabilities,
   isReservedAgentName,
   isRuntimeProviderEnabled,
   MAX_AGENT_TEMPLATE_IDS,
+  pickPreferredRuntimeProvider,
   type RuntimeProvider,
+  runtimeProviderLabel,
 } from "@first-tree/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -141,67 +144,12 @@ async function resolveAvailableHandle(base: string, isStale: () => boolean): Pro
 }
 
 /**
- * Narrow an arbitrary capability key to a `RuntimeProvider`. Capability
- * blobs are `Record<string, ...>` so old clients can ship runtimes the UI
- * doesn't know about yet — the UI just ignores anything it can't render.
- */
-function asRuntimeProvider(provider: string): RuntimeProvider | null {
-  if (
-    provider === "claude-code" ||
-    provider === "claude-code-tui" ||
-    provider === "codex" ||
-    provider === "cursor" ||
-    provider === "grok" ||
-    provider === "kimi-code" ||
-    provider === "opencode" ||
-    provider === "pi"
-  ) {
-    return provider;
-  }
-  return null;
-}
-
-/**
- * Pick the preferred runtime among the ones in `ok` state on a given
- * client. Claude Code wins over Claude Code CLI which wins over Codex;
- * if none of those is ok we fall back to whatever else the client reports
- * as ok (still narrowed to a known RuntimeProvider), then `null`.
+ * Pick the preferred runtime among the ones in `ok` state on a given client.
+ * Order and disabled filtering come from the shared provider catalog
+ * (`RUNTIME_PROVIDER_DISPLAY_ORDER` + `DISABLED_RUNTIME_PROVIDERS`).
  */
 function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null {
-  if (caps["claude-code"]?.state === "ok") return "claude-code";
-  // Keep the documented Claude Code → Claude Code CLI → Codex priority, but guard
-  // the TUI branch on the central switch: disabled today (short-circuits, so a
-  // stale `ok` snapshot is skipped and Codex wins), yet removing it from
-  // DISABLED_RUNTIME_PROVIDERS restores its priority over Codex in one line.
-  if (isRuntimeProviderEnabled("claude-code-tui") && caps["claude-code-tui"]?.state === "ok") return "claude-code-tui";
-  if (caps.codex?.state === "ok") return "codex";
-  // Same central-switch guard as the TUI line: a stale `ok` snapshot from a
-  // daemon must not auto-pick a provider that has since been disabled.
-  if (isRuntimeProviderEnabled("cursor") && caps.cursor?.state === "ok") return "cursor";
-  if (isRuntimeProviderEnabled("grok") && caps.grok?.state === "ok") return "grok";
-  if (isRuntimeProviderEnabled("opencode") && caps.opencode?.state === "ok") return "opencode";
-  if (isRuntimeProviderEnabled("pi") && caps.pi?.state === "ok") return "pi";
-  // Any other provider (incl. one still disabled in a stale snapshot) is only
-  // auto-picked when enabled.
-  for (const [provider, entry] of Object.entries(caps)) {
-    if (entry.state === "ok") {
-      const rt = asRuntimeProvider(provider);
-      if (rt && isRuntimeProviderEnabled(rt)) return rt;
-    }
-  }
-  return null;
-}
-
-function prettyRuntimeLabel(provider: RuntimeProvider): string {
-  if (provider === "claude-code") return "Claude Code";
-  if (provider === "claude-code-tui") return "Claude Code CLI";
-  if (provider === "codex") return "Codex";
-  if (provider === "cursor") return "Cursor";
-  if (provider === "grok") return "Grok Build";
-  if (provider === "kimi-code") return "Kimi Code";
-  if (provider === "opencode") return "OpenCode";
-  if (provider === "pi") return "Pi";
-  return provider;
+  return pickPreferredRuntimeProvider(caps);
 }
 
 function availabilityReasonMessage(reason: "invalid" | "reserved" | "taken"): string {
@@ -1089,7 +1037,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                         checked={runtime === provider}
                         onSelect={() => setRuntime(provider)}
                       >
-                        <span className="text-body">{prettyRuntimeLabel(provider)}</span>
+                        <span className="text-body">{runtimeProviderLabel(provider)}</span>
                       </OptionCard>
                     ))}
                   </div>
