@@ -1,6 +1,11 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
+import {
+  KIMI_NPM_PACKAGE,
+  runtimeProviderInstallCommand,
+  runtimeProviderInteractiveLoginCue,
+} from "@first-tree/shared";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
@@ -13,8 +18,8 @@ import { getLoginShellPathDirs } from "./login-shell-path.js";
  * launches the binary and never reads credentials.
  */
 
-/** Package name surfaced in missing-binary copy and setup UI. */
-export const KIMI_CLI_PACKAGE = "@moonshot-ai/kimi-code";
+/** Compatible re-export of the shared catalog npm package constant. */
+export const KIMI_CLI_PACKAGE = KIMI_NPM_PACKAGE;
 
 const KIMI_BINARY_MISSING_PATTERNS: readonly RegExp[] = [
   /kimi (?:code )?cli is missing/i,
@@ -33,7 +38,7 @@ export function formatKimiBinaryMissingMessage(input: unknown): string {
   return (
     "Official Kimi CLI is missing on this machine. " +
     "First Tree runs Kimi through its bundled SDK, but Computer availability requires the official `kimi` CLI so you can complete provider-owned login and recovery locally. " +
-    `Install it with \`npm install -g ${KIMI_CLI_PACKAGE}\`, then run \`kimi\` and enter \`/login\`.` +
+    `Install it with \`${runtimeProviderInstallCommand("kimi-code")}\`, then ${runtimeProviderInteractiveLoginCue("kimi-code")}.` +
     suffix
   );
 }

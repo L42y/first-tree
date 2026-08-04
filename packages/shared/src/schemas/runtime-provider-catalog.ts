@@ -19,6 +19,7 @@ export const OPENCODE_MINIMUM_VERSION = "1.18.7";
 export const OPENCODE_NPM_PACKAGE = `opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
 
 export const PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent";
+export const KIMI_NPM_PACKAGE = "@moonshot-ai/kimi-code";
 
 /** Provider-owned install metadata — npm package or official installer script. */
 export type RuntimeProviderInstall =
@@ -112,7 +113,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     // known providers (phase-1 new-agent priority).
     displayOrder: 60,
     selectionPriority: 80,
-    install: { kind: "npm", package: "@moonshot-ai/kimi-code", args: [] },
+    install: { kind: "npm", package: KIMI_NPM_PACKAGE, args: [] },
     loginSteps: ["kimi", "/login"],
     authOwnerLabel: "Kimi",
   },
@@ -200,6 +201,17 @@ export function runtimeProviderChatAuthLoginPhrase(provider: RuntimeProvider): s
   if (steps.length === 1) return `\`${steps[0]}\``;
   const [program, slashCommand] = steps;
   return `\`${program}\` and then \`${slashCommand}\``;
+}
+
+/**
+ * Natural-language login cue for missing-binary / install hints
+ * (`run \`kimi\` and enter \`/login\``).
+ */
+export function runtimeProviderInteractiveLoginCue(provider: RuntimeProvider): string {
+  const steps = runtimeProviderLoginSteps(provider);
+  if (steps.length === 1) return `run \`${steps[0]}\``;
+  const [program, slashCommand] = steps;
+  return `run \`${program}\` and enter \`${slashCommand}\``;
 }
 
 /** Credential-owner label used in chat auth-failure hints. */

@@ -224,6 +224,7 @@ describe("formatClaudeBinaryMissingMessage", () => {
     // Guard against the login-command drift codex-assistant caught: the
     // remediation must match the command the runtime-auth orchestrator runs.
     expect(msg).toContain("claude auth login");
+    expect(msg).toContain("npm install -g @anthropic-ai/claude-code");
     expect(msg).not.toContain("claude /login");
     expect(msg).toContain("daemon install-claude");
     expect(msg).toContain("Native CLI binary for darwin-arm64 not found");

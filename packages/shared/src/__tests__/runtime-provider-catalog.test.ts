@@ -5,6 +5,7 @@ import {
   enabledOkRuntimeProviders,
   enabledRuntimeProviders,
   isRuntimeProviderEnabled,
+  KIMI_NPM_PACKAGE,
   OPENCODE_MINIMUM_VERSION,
   OPENCODE_NPM_PACKAGE,
   pickPreferredRuntimeProvider,
@@ -18,6 +19,7 @@ import {
   runtimeProviderChatAuthLoginPhrase,
   runtimeProviderInstallCommand,
   runtimeProviderInstallLoginCommand,
+  runtimeProviderInteractiveLoginCue,
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
   runtimeProviderLoginSteps,
@@ -108,10 +110,20 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderInstallCommand("opencode")).toBe(`npm install -g ${OPENCODE_NPM_PACKAGE}`);
     expect(runtimeProviderInstallCommand("cursor")).toBe("curl https://cursor.com/install -fsS | bash");
     expect(runtimeProviderInstallCommand("grok")).toBe("curl -fsSL https://x.ai/cli/install.sh | bash");
+    expect(KIMI_NPM_PACKAGE).toBe("@moonshot-ai/kimi-code");
+    expect(RUNTIME_PROVIDER_CATALOG["kimi-code"].install).toEqual({
+      kind: "npm",
+      package: KIMI_NPM_PACKAGE,
+      args: [],
+    });
     expect(runtimeProviderLoginCommand("kimi-code")).toBe("kimi # then run /login");
     expect(runtimeProviderLoginCommand("pi")).toBe("pi # then run /login");
     expect(runtimeProviderChatAuthLoginPhrase("kimi-code")).toBe("`kimi` and then `/login`");
     expect(runtimeProviderChatAuthLoginPhrase("codex")).toBe("`codex login`");
+    expect(runtimeProviderInteractiveLoginCue("kimi-code")).toBe("run `kimi` and enter `/login`");
+    expect(runtimeProviderInteractiveLoginCue("pi")).toBe("run `pi` and enter `/login`");
+    expect(runtimeProviderInteractiveLoginCue("codex")).toBe("run `codex login`");
+    expect(runtimeProviderInteractiveLoginCue("claude-code")).toBe("run `claude auth login`");
     expect(RUNTIME_PROVIDER_CATALOG["claude-code-tui"].install).toEqual({
       kind: "npm",
       package: "@anthropic-ai/claude-code",

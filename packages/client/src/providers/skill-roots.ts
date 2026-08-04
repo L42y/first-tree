@@ -1,4 +1,4 @@
-import { RUNTIME_PROVIDER_IDS, type RuntimeProvider } from "@first-tree/shared";
+import type { RuntimeProvider } from "@first-tree/shared";
 
 /**
  * Frozen native managed-skill projection roots per runtime provider.
@@ -16,11 +16,3 @@ export const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = O
   opencode: ".opencode/skills",
   pi: ".agents/skills",
 } satisfies Record<RuntimeProvider, string>);
-
-export function assertSkillRootsComplete(): void {
-  for (const id of RUNTIME_PROVIDER_IDS) {
-    if (!(id in PROVIDER_SKILL_ROOTS)) {
-      throw new Error(`Missing skill root for runtime provider "${id}"`);
-    }
-  }
-}

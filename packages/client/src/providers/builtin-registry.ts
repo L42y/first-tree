@@ -1,4 +1,4 @@
-import { RUNTIME_PROVIDER_IDS, type RuntimeProvider } from "@first-tree/shared";
+import type { RuntimeProvider } from "@first-tree/shared";
 import { createClaudeCodeHandler } from "../handlers/claude-code.js";
 import { createClaudeCodeTuiHandler } from "../handlers/claude-code-tui/index.js";
 import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "../handlers/claude-executable.js";
@@ -63,9 +63,4 @@ export function resolveAndLogClaudeExecutable(deps: BuiltinHandlerRegistryDeps =
   const resolution = (deps.resolveExecutable ?? (() => resolveClaudeCodeExecutable({ includeLoginShell: false })))();
   logClaudeExecutableResolution(resolution);
   return resolution;
-}
-
-/** All registry keys — must equal {@link RUNTIME_PROVIDER_IDS}. */
-export function builtinRegistryProviderIds(registry: BuiltinHandlerRegistry): RuntimeProvider[] {
-  return [...RUNTIME_PROVIDER_IDS].filter((id) => id in registry);
 }

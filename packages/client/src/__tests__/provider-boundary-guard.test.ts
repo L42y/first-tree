@@ -45,8 +45,11 @@ const CATALOG_CONSUMER_FILES = [
   "packages/web/src/pages/clients/cards/shared/providers.ts",
   "packages/client/src/handlers/auth-error-hint.ts",
   "packages/client/src/runtime/runtime-notice.ts",
+  "packages/client/src/runtime/capabilities/claude-code.ts",
+  "packages/client/src/runtime/codex-binary.ts",
   "packages/client/src/runtime/cursor-binary.ts",
   "packages/client/src/runtime/grok-binary.ts",
+  "packages/client/src/runtime/kimi-binary.ts",
   "packages/client/src/runtime/opencode-binary.ts",
   "packages/client/src/runtime/pi-binary.ts",
 ] as const;
@@ -134,22 +137,27 @@ describe("runtime provider architecture guard", () => {
   it("names only the concrete composition files as registration roots", () => {
     for (const rel of ["handlers/index.ts", "providers/builtin-registry.ts"] as const) {
       const source = readFileSync(join(clientSrc, rel), "utf8");
-      expect(source).toContain("RUNTIME_PROVIDER_IDS");
       expect(source).toContain("createBuiltinHandlerRegistry");
       expect(source).not.toContain("installBuiltinProviderRegistry");
       expect(source).not.toContain("installedRegistry");
       expect(source).not.toContain("createBuiltinProviderRegistry");
       expect(source).not.toContain("BuiltinProviderRegistry");
+      expect(source).not.toContain("builtinRegistryProviderIds");
       expect(source).not.toMatch(/probe\s*:/);
       expect(source).not.toMatch(/skillRoot\s*:/);
       expect(source).not.toMatch(/\{\s*factory\s*:/);
     }
+    const handlersIndex = readFileSync(join(clientSrc, "handlers/index.ts"), "utf8");
+    expect(handlersIndex).toContain("RUNTIME_PROVIDER_IDS");
     const registry = readFileSync(join(clientSrc, "providers/builtin-registry.ts"), "utf8");
     const probes = readFileSync(join(clientSrc, "providers/builtin-probes.ts"), "utf8");
     const skills = readFileSync(join(clientSrc, "providers/skill-roots.ts"), "utf8");
     expect(registry).toContain("Object.freeze");
+    expect(registry).toContain("satisfies Record<RuntimeProvider, HandlerFactory>");
     expect(probes).toContain("Object.freeze");
+    expect(probes).not.toContain("builtinProbeProviderIds");
     expect(skills).toContain("Object.freeze");
+    expect(skills).not.toContain("assertSkillRootsComplete");
   });
 
   it("keeps third-party provider SDKs out of shared and web packages", () => {
@@ -177,7 +185,11 @@ describe("runtime provider architecture guard", () => {
     expect(providersTs).toContain("RUNTIME_PROVIDER_CATALOG");
     expect(providersTs).toContain("enabledRuntimeProviders");
     expect(providersTs).toContain("runtimeProviderInstallCommand");
+    expect(providersTs).toContain("runtimeProviderInteractiveLoginCue");
     expect(providersTs).toContain("recordByRuntimeProvider");
+    expect(providersTs).toContain('case "codex"');
+    expect(providersTs).toContain("const _exhaustive: never = provider");
+    expect(providersTs).not.toContain("Install the OpenAI Codex CLI");
     expect(providersTs).not.toMatch(
       /export const PROVIDER_LABEL: Record<RuntimeProvider, string> = \{\s*"claude-code":/,
     );
@@ -231,7 +243,38 @@ describe("runtime provider architecture guard", () => {
       }
       if (rel.endsWith("pi-binary.ts")) {
         expect(source).toContain("runtimeProviderInstallCommand");
+        expect(source).toContain("runtimeProviderInteractiveLoginCue");
+        expect(source).not.toContain("running `pi` and entering `/login`");
+        expect(source).not.toContain("`pi` and enter `/login`");
+      }
+      if (rel.endsWith("claude-code.ts")) {
+        expect(source).toContain("runtimeProviderInstallCommand");
         expect(source).toContain("runtimeProviderLoginCommand");
+        expect(source).toContain("daemon install-claude");
+        expect(source).not.toContain("npm install -g @anthropic-ai/claude-code");
+        expect(source).not.toContain("then run `claude auth login`");
+      }
+      if (rel.endsWith("codex-binary.ts")) {
+        expect(source).toContain("runtimeProviderInstallCommand");
+        expect(source).toContain("runtimeProviderLoginCommand");
+        expect(source).toContain("daemon install-codex");
+        expect(source).not.toContain("npm install -g @openai/codex");
+        expect(source).not.toContain("then run `codex login`");
+      }
+      if (rel.endsWith("kimi-binary.ts")) {
+        expect(source).toContain("KIMI_NPM_PACKAGE");
+        expect(source).toContain("runtimeProviderInstallCommand");
+        expect(source).toContain("runtimeProviderInteractiveLoginCue");
+        expect(source).not.toContain('KIMI_CLI_PACKAGE = "@moonshot-ai/kimi-code"');
+        expect(source).not.toMatch(/npm install -g \$\{KIMI_CLI_PACKAGE\}/);
+        expect(source).not.toContain("then run `kimi` and enter `/login`");
+      }
+      if (rel.endsWith("providers.ts")) {
+        expect(source).not.toContain("@moonshot-ai/kimi-code");
+        expect(source).not.toContain("@earendil-works/pi-coding-agent");
+        expect(source).not.toContain("Install the OpenAI Codex CLI");
+        expect(source).not.toContain("run `kimi`, then `/login`");
+        expect(source).not.toContain("run `pi` and enter `/login`");
       }
     }
   });

@@ -35,12 +35,6 @@ export const BUILTIN_PROVIDER_PROBES: BuiltinProviderProbeTable = Object.freeze(
   pi: probePiCapability,
 } satisfies Record<RuntimeProvider, CapabilityProbe>);
 
-export function builtinProbeProviderIds(
-  probes: BuiltinProviderProbeTable = BUILTIN_PROVIDER_PROBES,
-): RuntimeProvider[] {
-  return RUNTIME_PROVIDER_IDS.filter((id) => id in probes);
-}
-
 /** Enabled providers that have a built-in probe (drives daemon re-probe loops). */
 export function probedRuntimeProviders(): RuntimeProvider[] {
   return RUNTIME_PROVIDER_IDS.filter((id) => isRuntimeProviderEnabled(id));

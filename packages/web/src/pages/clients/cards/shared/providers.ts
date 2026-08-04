@@ -10,6 +10,7 @@ import {
   recordByRuntimeProvider,
   runtimeProviderInstallCommand,
   runtimeProviderInstallLoginCommand,
+  runtimeProviderInteractiveLoginCue,
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
 } from "@first-tree/shared";
@@ -146,45 +147,47 @@ export function providerInstallHint(
   const device = osDeviceName(os);
   const installCmd = runtimeProviderInstallCommand(provider);
   const loginCmd = runtimeProviderLoginCommand(provider);
+  const loginCue = runtimeProviderInteractiveLoginCue(provider);
 
-  if (provider === "claude-code") {
-    return `Run \`${installCmd}\` on this ${device}.`;
-  }
-  if (provider === "claude-code-tui") {
-    // The probe joins per-requirement reasons (claude + tmux) into one string;
-    // match on each so we can tailor the hint to what's genuinely missing. The
-    // tmux command is keyed to the host OS (brew / apt / WSL).
-    const claudeMissing = error == null || /claude/i.test(error);
-    const tmuxMissing = error == null || /tmux/i.test(error);
-    // OS-keyed tmux command (brew / apt / WSL), or null for an unknown OS — then
-    // name the requirement without assuming a package manager.
-    const tmuxCmd = tmuxInstallCommand(os);
-    if (tmuxMissing && !claudeMissing) {
-      return tmuxCmd
-        ? `Run \`${tmuxCmd}\` on this ${device} (tmux >= 3.0).`
-        : `Install tmux (>= 3.0) on this ${device} with your package manager.`;
-    }
-    if (claudeMissing && !tmuxMissing) {
+  switch (provider) {
+    case "claude-code":
       return `Run \`${installCmd}\` on this ${device}.`;
+    case "claude-code-tui": {
+      // The probe joins per-requirement reasons (claude + tmux) into one string;
+      // match on each so we can tailor the hint to what's genuinely missing. The
+      // tmux command is keyed to the host OS (brew / apt / WSL).
+      const claudeMissing = error == null || /claude/i.test(error);
+      const tmuxMissing = error == null || /tmux/i.test(error);
+      // OS-keyed tmux command (brew / apt / WSL), or null for an unknown OS — then
+      // name the requirement without assuming a package manager.
+      const tmuxCmd = tmuxInstallCommand(os);
+      if (tmuxMissing && !claudeMissing) {
+        return tmuxCmd
+          ? `Run \`${tmuxCmd}\` on this ${device} (tmux >= 3.0).`
+          : `Install tmux (>= 3.0) on this ${device} with your package manager.`;
+      }
+      if (claudeMissing && !tmuxMissing) {
+        return `Run \`${installCmd}\` on this ${device}.`;
+      }
+      return tmuxCmd
+        ? `Run \`${installCmd}\` and \`${tmuxCmd}\` (tmux >= 3.0) on this ${device}.`
+        : `Run \`${installCmd}\`, then install tmux (>= 3.0) with your package manager, on this ${device}.`;
     }
-    return tmuxCmd
-      ? `Run \`${installCmd}\` and \`${tmuxCmd}\` (tmux >= 3.0) on this ${device}.`
-      : `Run \`${installCmd}\`, then install tmux (>= 3.0) with your package manager, on this ${device}.`;
+    case "cursor":
+      return `Run \`${CURSOR_INSTALL_COMMAND}\` on this ${device} (official Cursor installer).`;
+    case "grok":
+      return `Run \`${GROK_INSTALL_COMMAND}\` on this ${device} (official Grok Build installer).`;
+    case "kimi-code":
+      return `Install the official Kimi CLI with \`${installCmd}\` on this ${device}, ${loginCue}. First Tree still executes through its bundled Kimi SDK.`;
+    case "opencode":
+      return `Run \`${installCmd}\` on this ${device}, then complete provider-owned setup with \`${loginCmd}\`.`;
+    case "pi":
+      return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
+    case "codex":
+      return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
+    default: {
+      const _exhaustive: never = provider;
+      return `Run \`${runtimeProviderInstallCommand(_exhaustive)}\` on this ${device}, then ${runtimeProviderInteractiveLoginCue(_exhaustive)}.`;
+    }
   }
-  if (provider === "cursor") {
-    return `Run \`${CURSOR_INSTALL_COMMAND}\` on this ${device} (official Cursor installer).`;
-  }
-  if (provider === "grok") {
-    return `Run \`${GROK_INSTALL_COMMAND}\` on this ${device} (official Grok Build installer).`;
-  }
-  if (provider === "kimi-code") {
-    return `Install the official Kimi CLI with \`${installCmd}\` on this ${device}, run \`kimi\`, then \`/login\`. First Tree still executes through its bundled Kimi SDK.`;
-  }
-  if (provider === "opencode") {
-    return `Run \`${installCmd}\` on this ${device}, then complete provider-owned setup with \`${loginCmd}\`.`;
-  }
-  if (provider === "pi") {
-    return `Run \`${installCmd}\` on this ${device}, then run \`pi\` and enter \`/login\`.`;
-  }
-  return `Install the OpenAI Codex CLI on this ${device}.`;
 }

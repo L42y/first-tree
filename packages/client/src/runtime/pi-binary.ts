@@ -1,7 +1,11 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
-import { runtimeProviderInstallCommand, runtimeProviderLoginCommand } from "@first-tree/shared";
+import {
+  runtimeProviderInstallCommand,
+  runtimeProviderInteractiveLoginCue,
+  runtimeProviderLoginCommand,
+} from "@first-tree/shared";
 import { prerelease, satisfies, valid } from "semver";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
@@ -19,8 +23,8 @@ export function formatPiBinaryMissingMessage(input: unknown): string {
   return (
     "Pi CLI is missing on this machine. " +
     "First Tree does not bundle or install Pi and never reads its provider authentication state. " +
-    `Install it with \`${PI_INSTALL_COMMAND}\`, then complete provider-owned setup by running ` +
-    `\`pi\` and entering \`/login\`, then retry.` +
+    `Install it with \`${PI_INSTALL_COMMAND}\`, then complete provider-owned setup — ` +
+    `${runtimeProviderInteractiveLoginCue("pi")}, then retry.` +
     suffix
   );
 }

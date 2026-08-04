@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CapabilityEntry } from "@first-tree/shared";
+import { type CapabilityEntry, runtimeProviderInstallCommand, runtimeProviderLoginCommand } from "@first-tree/shared";
 import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "../../handlers/claude-executable.js";
 import { type DetectOutcome, runDetect } from "./detect.js";
 
@@ -122,7 +122,7 @@ export function resolveBundledClaudeBinary(deps: ResolveBundledClaudeDeps = {}):
 export function formatClaudeBinaryMissingMessage(originalError: string): string {
   return (
     "Claude runtime binary is missing on this machine. First Tree does not bundle the native Claude engine by default — it resolves a system `claude` (env override / PATH / well-known install dirs). " +
-    "Install it with the daemon's one-click `daemon install-claude` (or `npm install -g @anthropic-ai/claude-code`), then run `claude auth login` and retry. " +
+    `Install it with the daemon's one-click \`daemon install-claude\` (or \`${runtimeProviderInstallCommand("claude-code")}\`), then run \`${runtimeProviderLoginCommand("claude-code")}\` and retry. ` +
     `Original error: ${originalError}`
   );
 }

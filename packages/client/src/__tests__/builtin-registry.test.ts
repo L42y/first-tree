@@ -2,7 +2,7 @@ import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerBuiltinHandlers } from "../handlers/index.js";
 import { BUILTIN_PROVIDER_PROBES } from "../providers/builtin-probes.js";
-import { builtinRegistryProviderIds, createBuiltinHandlerRegistry } from "../providers/builtin-registry.js";
+import { createBuiltinHandlerRegistry } from "../providers/builtin-registry.js";
 import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
 import { probeCapabilities } from "../runtime/capabilities/index.js";
 import { getHandlerFactory, hasHandler, registerHandler } from "../runtime/handler.js";
@@ -24,7 +24,7 @@ describe("builtin handler registry", () => {
     expect(Object.isFrozen(BUILTIN_PROVIDER_PROBES)).toBe(true);
     expect(Object.isFrozen(PROVIDER_SKILL_ROOTS)).toBe(true);
 
-    expect(builtinRegistryProviderIds(registry).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
+    expect(Object.keys(registry).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     expect(Object.keys(BUILTIN_PROVIDER_PROBES).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     expect(Object.keys(PROVIDER_SKILL_ROOTS).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     for (const id of RUNTIME_PROVIDER_IDS) {
@@ -66,12 +66,12 @@ describe("builtin handler registry", () => {
     const builtinIds = new Set<string>(RUNTIME_PROVIDER_IDS);
     expect(builtinIds.has("custom-echo")).toBe(false);
     expect(
-      builtinRegistryProviderIds(
+      Object.keys(
         createBuiltinHandlerRegistry({
           resolveExecutable: () => ({ path: undefined, source: "default" }),
         }),
-      ),
-    ).toEqual([...RUNTIME_PROVIDER_IDS]);
+      ).sort(),
+    ).toEqual([...RUNTIME_PROVIDER_IDS].sort());
   });
 
   it("binds independent registry instances to distinct Claude closures", () => {

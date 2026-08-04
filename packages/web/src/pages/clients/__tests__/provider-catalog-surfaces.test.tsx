@@ -113,6 +113,11 @@ describe("web provider surfaces derived from shared catalog", () => {
     expect(buildInstallCommand("kimi-code")).toContain("kimi # then run /login");
     expect(buildInstallCommand("claude-code-tui", "darwin")).toContain("brew install tmux");
     expect(providerInstallHint("pi", "darwin")).toContain("--ignore-scripts");
+    expect(providerInstallHint("pi", "darwin")).toContain("run `pi` and enter `/login`");
+    expect(providerInstallHint("kimi-code", "linux")).toContain("run `kimi` and enter `/login`");
+    expect(providerInstallHint("codex", "darwin")).toContain("npm install -g @openai/codex");
+    expect(providerInstallHint("codex", "darwin")).toContain("codex login");
+    expect(providerInstallHint("codex", "darwin")).not.toContain("Install the OpenAI Codex CLI");
     expect(providerInstallHint("opencode", "linux")).toContain("opencode-ai@^1.18.7");
     expect(providerInstallHint("claude-code-tui", "darwin", "tmux not found")).toContain("brew install tmux");
     expect(providerInstallHint("claude-code-tui", "darwin", "tmux not found")).not.toContain(
