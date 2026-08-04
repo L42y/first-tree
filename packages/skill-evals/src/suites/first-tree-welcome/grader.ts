@@ -379,7 +379,10 @@ function microtaskMenuObserved(metrics: EvalMetrics): boolean {
 }
 
 function isReadOnlyOption(text: string): boolean {
-  return /read[- ]?only|只读/iu.test(text);
+  if (isMutationOption(text)) return false;
+  return /read[- ]?only|\b(?:analy[sz]e|assess|audit|check|compare|explain|inspect|investigate|map|review|test|trace|verify)\b|只读|分析|评估|审计|检查|比较|解释|查看|调查|梳理|映射|测试|追踪|验证/iu.test(
+    text,
+  );
 }
 
 function isMutationOption(text: string): boolean {

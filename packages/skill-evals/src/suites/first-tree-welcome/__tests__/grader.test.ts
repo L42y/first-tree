@@ -786,6 +786,55 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("recognizes structured trace and verification options as read-only", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-structured-read-only-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-invitee-ready-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the small support dashboard through README.md, package.json, and src/checkout/recovery.ts. Checkout recovery is the clearest seam because it joins session loading to retry-response construction.\n\nChoose one, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Map the checkout recovery call chain with file evidence.",
+                  label: "Trace recovery",
+                },
+                {
+                  description: "Check expired-session behavior with file and command evidence.",
+                  label: "Verify expiry",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.readOnlyOptionCount).toBe(2);
+      expect(metrics.mutationOptionCount).toBe(0);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("qualifies one structured mutation from its detailed tracked body", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-structured-mutation-body-"));
     try {
