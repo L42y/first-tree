@@ -419,6 +419,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       organizationId,
       targetAgentId: body.agentUuid,
       bootstrap: body.bootstrap,
+      orientationVersion: body.orientation,
       topic: body.topic ?? "Get started with First Tree",
       // Campaign actions key on campaign + repo so the direct and onboarding
       // launchers converge; a normal kickoff remains per-(human, agent).

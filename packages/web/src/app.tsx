@@ -107,6 +107,14 @@ const OnboardingPreviewPage = import.meta.env.DEV
   ? lazy(() => import("./pages/onboarding-preview.js").then((module) => ({ default: module.OnboardingPreviewPage })))
   : null;
 
+const OnboardingOrientationPreviewPage = import.meta.env.DEV
+  ? lazy(() =>
+      import("./pages/onboarding-orientation-preview.js").then((module) => ({
+        default: module.OnboardingOrientationPreviewPage,
+      })),
+    )
+  : null;
+
 const TeamPreviewPage = import.meta.env.DEV
   ? lazy(() => import("./pages/team-preview.js").then((module) => ({ default: module.TeamPreviewPage })))
   : null;
@@ -391,6 +399,16 @@ export function App() {
                   element={
                     <Suspense fallback={null}>
                       <OnboardingPreviewPage />
+                    </Suspense>
+                  }
+                />
+              ) : null}
+              {OnboardingOrientationPreviewPage ? (
+                <Route
+                  path="/preview/onboarding-orientation"
+                  element={
+                    <Suspense fallback={null}>
+                      <OnboardingOrientationPreviewPage />
                     </Suspense>
                   }
                 />
