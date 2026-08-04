@@ -562,7 +562,7 @@ function FixtureGitHubSection({ visible }: { visible: number }) {
           <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
             <div className="text-body text-foreground">Add chat-title search</div>
             <div className="mono flex items-center text-label text-fg-3" style={{ gap: "var(--sp-1_5)" }}>
-              <span className="truncate">first-tree-hub{"#"}128</span>
+              <span className="truncate">first-tree{"#"}128</span>
               <DenseBadge tone="accent">Open</DenseBadge>
             </div>
           </div>
