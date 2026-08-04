@@ -182,57 +182,85 @@ describe("Claude provider-family boundary", () => {
   describe("specifier-matching helpers stay precise", () => {
     const spec = "../claude-code.js";
 
-    it('detects a static binding import (`import { x } from "spec"`)', () => {
-      const snippet = 'import { createToolCallProcessor } from "../claude-code.js";';
-      expect(referencesModuleSpecifier(snippet, spec)).toBe(true);
-      expect(fromImportOrExportOf(spec).test(snippet)).toBe(true);
+    /**
+     * Table-driven characterization of `referencesModuleSpecifier()` against
+     * every real ESM form that could re-introduce the forbidden dependency,
+     * plus the near-miss shapes (comments, doc-strings, string literals, a
+     * similar-but-unequal specifier) that must never trip a false positive.
+     * This is what proves the detection logic itself — the guard elsewhere
+     * in this file only proves today's real source happens to satisfy it.
+     */
+    const SPECIFIER_CASES: ReadonlyArray<{ label: string; snippet: string; expected: boolean }> = [
+      {
+        label: "static named import",
+        snippet: 'import { createToolCallProcessor } from "../claude-code.js";',
+        expected: true,
+      },
+      { label: "static default import", snippet: 'import ClaudeCode from "../claude-code.js";', expected: true },
+      { label: "static namespace import", snippet: 'import * as claudeCode from "../claude-code.js";', expected: true },
+      {
+        label: "multi-line static named import",
+        snippet: 'import {\n  createToolCallProcessor,\n  mapMcpServers,\n} from "../claude-code.js";',
+        expected: true,
+      },
+      {
+        label: "bare side-effect import (no bindings, no `from`)",
+        snippet: 'import "../claude-code.js";',
+        expected: true,
+      },
+      {
+        label: "re-export-from",
+        snippet: 'export { createToolCallProcessor } from "../claude-code.js";',
+        expected: true,
+      },
+      {
+        label: "dynamic import(), awaited",
+        snippet: 'const m = await import("../claude-code.js");',
+        expected: true,
+      },
+      {
+        label: "dynamic import(), chained .then()",
+        snippet: 'import("../claude-code.js").then((m) => m);',
+        expected: true,
+      },
+      { label: "dynamic import(), single-quoted", snippet: "import('../claude-code.js');", expected: true },
+      {
+        label: "comment-only mention",
+        snippet:
+          '// see ../claude-code.js for the pre-split behaviour\nimport { mapMcpServers } from "./mcp-config.js";',
+        expected: false,
+      },
+      {
+        label: "doc-string mention",
+        snippet: '/**\n * Used to import from "../claude-code.js" before this split.\n */\nexport const x = 1;',
+        expected: false,
+      },
+      {
+        label: "string-literal mention",
+        snippet: 'const message = "this string contains ../claude-code.js but is not an import";',
+        expected: false,
+      },
+      {
+        label: "similar-but-unequal specifier (shares a suffix)",
+        snippet: 'import { x } from "../not-claude-code.js";',
+        expected: false,
+      },
+    ];
+
+    it.each(SPECIFIER_CASES)("$label -> referencesModuleSpecifier === $expected", ({ snippet, expected }) => {
+      expect(referencesModuleSpecifier(snippet, spec)).toBe(expected);
     });
 
-    it("detects a multi-line static binding import", () => {
-      const snippet = 'import {\n  createToolCallProcessor,\n  mapMcpServers,\n} from "../claude-code.js";';
-      expect(referencesModuleSpecifier(snippet, spec)).toBe(true);
-    });
-
-    it('detects a re-export-from (`export { x } from "spec"`)', () => {
-      const snippet = 'export { createToolCallProcessor } from "../claude-code.js";';
-      expect(referencesModuleSpecifier(snippet, spec)).toBe(true);
-      expect(fromImportOrExportOf(spec).test(snippet)).toBe(true);
-    });
-
-    it('detects a bare side-effect import (`import "spec"`, no bindings)', () => {
-      const snippet = 'import "../claude-code.js";';
-      expect(referencesModuleSpecifier(snippet, spec)).toBe(true);
-      expect(sideEffectImportOf(spec).test(snippet)).toBe(true);
-      // The `from`-anchored and dynamic-import checks are correctly blind to
-      // this form on their own — it's the combinator that must catch it.
-      expect(fromImportOrExportOf(spec).test(snippet)).toBe(false);
-      expect(dynamicImportOf(spec).test(snippet)).toBe(false);
-    });
-
-    it('detects a dynamic import (`import("spec")`), including when awaited', () => {
-      for (const snippet of [
-        'const m = await import("../claude-code.js");',
-        'import("../claude-code.js").then((m) => m);',
-        "import('../claude-code.js');",
-      ]) {
-        expect(referencesModuleSpecifier(snippet, spec)).toBe(true);
-        expect(dynamicImportOf(spec).test(snippet)).toBe(true);
-      }
-    });
-
-    it("does NOT flag a comment or doc-string merely mentioning the specifier", () => {
-      for (const snippet of [
-        '// see ../claude-code.js for the pre-split behaviour\nimport { mapMcpServers } from "./mcp-config.js";',
-        '/**\n * Used to import from "../claude-code.js" before this split.\n */\nexport const x = 1;',
-        'const message = "this string contains ../claude-code.js but is not an import";',
-      ]) {
-        expect(referencesModuleSpecifier(snippet, spec)).toBe(false);
-      }
-    });
-
-    it("does NOT flag an import from an unrelated specifier that merely shares a suffix", () => {
-      const snippet = 'import { x } from "../not-claude-code.js";';
-      expect(referencesModuleSpecifier(snippet, spec)).toBe(false);
+    it("the side-effect-import case is exactly the regression the guard used to miss: the pre-fix from-anchored matcher alone stays blind to it, and the dynamic-import matcher alone stays blind to it too — only the combinator catches it", () => {
+      const sideEffectSnippet = 'import "../claude-code.js";';
+      // `fromImportOrExportOf` is the pre-fix matcher (it required a `from`
+      // clause): it correctly does NOT see a bare side-effect import, which
+      // is exactly why relying on it alone let this reverse-dependency form
+      // through undetected before this test file added `sideEffectImportOf`.
+      expect(fromImportOrExportOf(spec).test(sideEffectSnippet)).toBe(false);
+      expect(dynamicImportOf(spec).test(sideEffectSnippet)).toBe(false);
+      // The combined predicate closes the gap.
+      expect(referencesModuleSpecifier(sideEffectSnippet, spec)).toBe(true);
     });
   });
 });
