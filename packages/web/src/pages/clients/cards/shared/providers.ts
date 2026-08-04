@@ -13,6 +13,7 @@ import {
   runtimeProviderInteractiveLoginCue,
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
+  runtimeProviderShowsHostLoginOnSetup,
 } from "@first-tree/shared";
 
 /**
@@ -184,10 +185,15 @@ export function providerInstallHint(
     case "pi":
       return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
     case "codex":
-      return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
+      // In-product browser-OAuth — computer row stays install-only.
+      return `Run \`${installCmd}\` on this ${device}.`;
     default: {
       const _exhaustive: never = provider;
-      return `Run \`${runtimeProviderInstallCommand(_exhaustive)}\` on this ${device}, then ${runtimeProviderInteractiveLoginCue(_exhaustive)}.`;
+      const cmd = runtimeProviderInstallCommand(_exhaustive);
+      if (!runtimeProviderShowsHostLoginOnSetup(_exhaustive)) {
+        return `Run \`${cmd}\` on this ${device}.`;
+      }
+      return `Run \`${cmd}\` on this ${device}, then ${runtimeProviderInteractiveLoginCue(_exhaustive)}.`;
     }
   }
 }

@@ -45,9 +45,10 @@ describe("grok provider — setup card surfaces", () => {
     expect(runtimeProviderLabel("grok")).toBe("Grok Build");
   });
 
-  it("install command is the official installer script + login, never npm", () => {
+  it("install command is the official installer script only (in-product auth), never npm", () => {
     const command = buildInstallCommand("grok", "darwin");
-    expect(command).toBe(`${GROK_INSTALL_COMMAND}\ngrok login`);
+    expect(command).toBe(GROK_INSTALL_COMMAND);
+    expect(command).not.toContain("grok login");
     expect(command).not.toContain("npm install");
   });
 
@@ -55,6 +56,7 @@ describe("grok provider — setup card surfaces", () => {
     const hint = providerInstallHint("grok", "darwin");
     expect(hint).toContain(GROK_INSTALL_COMMAND);
     expect(hint).toContain("Mac");
+    expect(hint).not.toContain("grok login");
   });
 
   it("probe-error install box falls back to the official installer, not an npm spec", () => {

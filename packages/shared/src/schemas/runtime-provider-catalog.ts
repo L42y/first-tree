@@ -27,11 +27,20 @@ export type RuntimeProviderInstall =
   | { kind: "script"; command: string };
 
 /**
- * Ordered login steps for setup / auth-recovery surfaces.
+ * Ordered login steps for chat auth-recovery / host-local surfaces.
  * Shell providers have exactly one step; interactive providers (Kimi / Pi)
  * have exactly two (`program`, slash-command).
  */
 export type RuntimeProviderLoginSteps = readonly [string] | readonly [string, string];
+
+/**
+ * Where operators recover credentials.
+ * - `in-product`: browser-OAuth / Connect from a failing chat. Computer and
+ *   setup-incomplete cards stay **install-only** (no terminal login copy).
+ * - `host`: provider-owned CLI / interactive login on the machine; computer and
+ *   setup surfaces may include those host-local login steps.
+ */
+export type RuntimeProviderAuthRecovery = "in-product" | "host";
 
 /**
  * Cross-package pure-data catalog for runtime providers.
@@ -53,6 +62,7 @@ export type RuntimeProviderCatalogEntry = {
   selectionPriority: number;
   install: RuntimeProviderInstall;
   loginSteps: RuntimeProviderLoginSteps;
+  authRecovery: RuntimeProviderAuthRecovery;
   /** Credential owner named in chat auth-failure hints. */
   authOwnerLabel: string;
 };
@@ -68,6 +78,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 10,
     install: { kind: "npm", package: "@anthropic-ai/claude-code", args: [] },
     loginSteps: ["claude auth login"],
+    authRecovery: "in-product",
     authOwnerLabel: "Anthropic",
   },
   "claude-code-tui": {
@@ -77,6 +88,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 20,
     install: { kind: "npm", package: "@anthropic-ai/claude-code", args: [] },
     loginSteps: ["claude auth login"],
+    // Shares Claude Code keychain; Connect targets `claude-code`, not a TUI CLI login.
+    authRecovery: "in-product",
     authOwnerLabel: "Anthropic",
   },
   codex: {
@@ -86,6 +99,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 30,
     install: { kind: "npm", package: "@openai/codex", args: [] },
     loginSteps: ["codex login"],
+    authRecovery: "in-product",
     authOwnerLabel: "OpenAI",
   },
   cursor: {
@@ -95,6 +109,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 40,
     install: { kind: "script", command: CURSOR_INSTALL_COMMAND },
     loginSteps: ["cursor-agent login"],
+    authRecovery: "in-product",
     authOwnerLabel: "Cursor",
   },
   grok: {
@@ -104,6 +119,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 50,
     install: { kind: "script", command: GROK_INSTALL_COMMAND },
     loginSteps: ["grok login"],
+    authRecovery: "in-product",
     authOwnerLabel: "Grok Build",
   },
   "kimi-code": {
@@ -115,6 +131,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 80,
     install: { kind: "npm", package: KIMI_NPM_PACKAGE, args: [] },
     loginSteps: ["kimi", "/login"],
+    authRecovery: "host",
     authOwnerLabel: "Kimi",
   },
   opencode: {
@@ -124,6 +141,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 60,
     install: { kind: "npm", package: OPENCODE_NPM_PACKAGE, args: [] },
     loginSteps: ["opencode auth login"],
+    authRecovery: "host",
     authOwnerLabel: "OpenCode's selected provider",
   },
   pi: {
@@ -133,6 +151,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     selectionPriority: 70,
     install: { kind: "npm", package: PI_NPM_PACKAGE, args: ["--ignore-scripts"] },
     loginSteps: ["pi", "/login"],
+    authRecovery: "host",
     authOwnerLabel: "Pi",
   },
 } as const satisfies Record<RuntimeProvider, RuntimeProviderCatalogEntry>;
@@ -182,7 +201,7 @@ export function runtimeProviderInstallCommand(provider: RuntimeProvider): string
 }
 
 /**
- * Shell / comment-form login line for setup cards.
+ * Shell / comment-form login line for host-local recovery.
  * One-step → command; two-step → `program # then run /login`.
  */
 export function runtimeProviderLoginCommand(provider: RuntimeProvider): string {
@@ -190,6 +209,19 @@ export function runtimeProviderLoginCommand(provider: RuntimeProvider): string {
   if (steps.length === 1) return steps[0];
   const [program, slashCommand] = steps;
   return `${program} # then run ${slashCommand}`;
+}
+
+/** Catalog auth-recovery path (`in-product` vs host-local). */
+export function runtimeProviderAuthRecovery(provider: RuntimeProvider): RuntimeProviderAuthRecovery {
+  return RUNTIME_PROVIDER_CATALOG[provider].authRecovery;
+}
+
+/**
+ * True when computer / setup-incomplete surfaces may show host-local login
+ * steps. In-product OAuth providers stay install-only on those surfaces.
+ */
+export function runtimeProviderShowsHostLoginOnSetup(provider: RuntimeProvider): boolean {
+  return runtimeProviderAuthRecovery(provider) === "host";
 }
 
 /**
@@ -220,14 +252,20 @@ export function runtimeProviderAuthOwnerLabel(provider: RuntimeProvider): string
 }
 
 /**
- * Install + login two-liner for setup surfaces. Optional `extraLines` lets a
- * presentation layer append host-specific requirements (e.g. tmux).
+ * Setup-surface command block: always includes install; appends host-local
+ * login only when {@link runtimeProviderShowsHostLoginOnSetup} is true.
+ * Optional `extraLines` lets a presentation layer append host-specific
+ * requirements (e.g. tmux).
  */
 export function runtimeProviderInstallLoginCommand(
   provider: RuntimeProvider,
   extraLines: readonly string[] = [],
 ): string {
-  const lines = [runtimeProviderInstallCommand(provider), runtimeProviderLoginCommand(provider), ...extraLines];
+  const lines = [runtimeProviderInstallCommand(provider)];
+  if (runtimeProviderShowsHostLoginOnSetup(provider)) {
+    lines.push(runtimeProviderLoginCommand(provider));
+  }
+  lines.push(...extraLines);
   return lines.join("\n");
 }
 

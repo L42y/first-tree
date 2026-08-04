@@ -108,15 +108,20 @@ describe("web provider surfaces derived from shared catalog", () => {
       "npm install -g --ignore-scripts @earendil-works/pi-coding-agent\npi # then run /login",
     );
     expect(buildInstallCommand("opencode")).toBe("npm install -g opencode-ai@^1.18.7\nopencode auth login");
-    expect(buildInstallCommand("cursor")).toContain("curl https://cursor.com/install -fsS | bash");
-    expect(buildInstallCommand("grok")).toContain("curl -fsSL https://x.ai/cli/install.sh | bash");
+    expect(buildInstallCommand("cursor")).toBe("curl https://cursor.com/install -fsS | bash");
+    expect(buildInstallCommand("grok")).toBe("curl -fsSL https://x.ai/cli/install.sh | bash");
+    expect(buildInstallCommand("cursor")).not.toContain("cursor-agent login");
+    expect(buildInstallCommand("grok")).not.toContain("grok login");
+    expect(buildInstallCommand("codex")).toBe("npm install -g @openai/codex");
+    expect(buildInstallCommand("codex")).not.toContain("codex login");
     expect(buildInstallCommand("kimi-code")).toContain("kimi # then run /login");
     expect(buildInstallCommand("claude-code-tui", "darwin")).toContain("brew install tmux");
+    expect(buildInstallCommand("claude-code-tui", "darwin")).not.toContain("claude auth login");
     expect(providerInstallHint("pi", "darwin")).toContain("--ignore-scripts");
     expect(providerInstallHint("pi", "darwin")).toContain("run `pi` and enter `/login`");
     expect(providerInstallHint("kimi-code", "linux")).toContain("run `kimi` and enter `/login`");
     expect(providerInstallHint("codex", "darwin")).toContain("npm install -g @openai/codex");
-    expect(providerInstallHint("codex", "darwin")).toContain("codex login");
+    expect(providerInstallHint("codex", "darwin")).not.toContain("codex login");
     expect(providerInstallHint("codex", "darwin")).not.toContain("Install the OpenAI Codex CLI");
     expect(providerInstallHint("opencode", "linux")).toContain("opencode-ai@^1.18.7");
     expect(providerInstallHint("claude-code-tui", "darwin", "tmux not found")).toContain("brew install tmux");
@@ -125,17 +130,15 @@ describe("web provider surfaces derived from shared catalog", () => {
     );
   });
 
-  it("renders RuntimeInstallBox label + catalog install/login command into the DOM", async () => {
+  it("renders RuntimeInstallBox install-only for in-product auth providers", async () => {
     const expected = runtimeProviderInstallLoginCommand("codex");
-    const [installLine = ""] = expected.split("\n");
+    expect(expected).toBe("npm install -g @openai/codex");
     const el = await render(<RuntimeInstallBox provider="codex" entry={null} hostname="devbox" os="darwin" />);
     const text = el.textContent ?? "";
     expect(text).toContain("Codex");
-    expect(installLine.length).toBeGreaterThan(0);
-    expect(text).toContain(installLine);
-    expect(text).toContain("codex login");
+    expect(text).toContain(expected);
+    expect(text).not.toContain("codex login");
     const pre = el.querySelector("pre");
-    expect(pre?.textContent).toContain("npm install -g @openai/codex");
-    expect(pre?.textContent).toContain("codex login");
+    expect(pre?.textContent).toBe("npm install -g @openai/codex");
   });
 });

@@ -24,6 +24,7 @@ import {
   runtimeProviderLoginCommand,
   runtimeProviderLoginSteps,
   runtimeProviderSchema,
+  runtimeProviderShowsHostLoginOnSetup,
 } from "../index.js";
 
 describe("runtime provider identity + catalog completeness", () => {
@@ -101,10 +102,24 @@ describe("runtime provider identity + catalog completeness", () => {
       } else {
         expect(install).toBe(entry.install.command);
       }
-      expect(runtimeProviderInstallLoginCommand(id)).toBe(`${install}\n${runtimeProviderLoginCommand(id)}`);
+      if (runtimeProviderShowsHostLoginOnSetup(id)) {
+        expect(entry.authRecovery).toBe("host");
+        expect(runtimeProviderInstallLoginCommand(id)).toBe(`${install}\n${runtimeProviderLoginCommand(id)}`);
+      } else {
+        expect(entry.authRecovery).toBe("in-product");
+        expect(runtimeProviderInstallLoginCommand(id)).toBe(install);
+      }
       expect(runtimeProviderAuthOwnerLabel(id).length).toBeGreaterThan(0);
       expect(runtimeProviderChatAuthLoginPhrase(id)).toContain("`");
     }
+    expect(runtimeProviderShowsHostLoginOnSetup("kimi-code")).toBe(true);
+    expect(runtimeProviderShowsHostLoginOnSetup("opencode")).toBe(true);
+    expect(runtimeProviderShowsHostLoginOnSetup("pi")).toBe(true);
+    expect(runtimeProviderShowsHostLoginOnSetup("codex")).toBe(false);
+    expect(runtimeProviderShowsHostLoginOnSetup("claude-code")).toBe(false);
+    expect(runtimeProviderShowsHostLoginOnSetup("claude-code-tui")).toBe(false);
+    expect(runtimeProviderShowsHostLoginOnSetup("cursor")).toBe(false);
+    expect(runtimeProviderShowsHostLoginOnSetup("grok")).toBe(false);
   });
 
   it("narrows wire strings via safeParse and leaves unknown ids unlabeled", () => {

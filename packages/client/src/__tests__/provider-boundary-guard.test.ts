@@ -188,6 +188,7 @@ describe("runtime provider architecture guard", () => {
     expect(providersTs).toContain("enabledRuntimeProviders");
     expect(providersTs).toContain("runtimeProviderInstallCommand");
     expect(providersTs).toContain("runtimeProviderInteractiveLoginCue");
+    expect(providersTs).toContain("runtimeProviderShowsHostLoginOnSetup");
     expect(providersTs).toContain("recordByRuntimeProvider");
     expect(providersTs).toContain('case "codex"');
     expect(providersTs).toContain("const _exhaustive: never = provider");

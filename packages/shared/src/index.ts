@@ -1382,10 +1382,12 @@ export {
   RUNTIME_PROVIDER_DISPLAY_ORDER,
   RUNTIME_PROVIDER_LABELS,
   RUNTIME_PROVIDER_SELECTION_ORDER,
+  type RuntimeProviderAuthRecovery,
   type RuntimeProviderCatalogEntry,
   type RuntimeProviderInstall,
   type RuntimeProviderLoginSteps,
   runtimeProviderAuthOwnerLabel,
+  runtimeProviderAuthRecovery,
   runtimeProviderChatAuthLoginPhrase,
   runtimeProviderInstallCommand,
   runtimeProviderInstallLoginCommand,
@@ -1393,6 +1395,7 @@ export {
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
   runtimeProviderLoginSteps,
+  runtimeProviderShowsHostLoginOnSetup,
 } from "./schemas/runtime-provider-catalog.js";
 export {
   type ScmAttentionLine,

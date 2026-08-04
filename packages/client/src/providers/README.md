@@ -36,9 +36,13 @@ Add an exhaustive catalog entry:
 Helpers derive install/login/chat phrases. Share version constants with
 capability gates — do not reverse-parse package strings.
 
-**Login default:** new providers are provider-owned login (CLI / interactive
-steps from the catalog). Adding in-product OAuth requires a separate
-runtime-auth contract + tests — do not sneak OAuth into the catalog entry.
+**Auth recovery (`authRecovery`):**
+- `host` — provider-owned CLI / interactive login may appear on computer and
+  setup-incomplete surfaces (Kimi / OpenCode / Pi today).
+- `in-product` — browser-OAuth / Connect from a failing chat. Computer and
+  setup cards stay **install-only** (no terminal login copy). Adding in-product
+  OAuth requires a separate runtime-auth contract + tests — set
+  `authRecovery: "in-product"` and do not teach terminal login on setup cards.
 
 ## 3. Handler V1 contract
 

@@ -45,9 +45,10 @@ describe("cursor provider — setup card surfaces", () => {
     expect(runtimeProviderLabel("cursor")).toBe("Cursor");
   });
 
-  it("install command is the official installer script + login, never npm", () => {
+  it("install command is the official installer script only (in-product auth), never npm", () => {
     const command = buildInstallCommand("cursor", "darwin");
-    expect(command).toBe(`${CURSOR_INSTALL_COMMAND}\ncursor-agent login`);
+    expect(command).toBe(CURSOR_INSTALL_COMMAND);
+    expect(command).not.toContain("cursor-agent login");
     expect(command).not.toContain("npm install");
   });
 
@@ -55,6 +56,7 @@ describe("cursor provider — setup card surfaces", () => {
     const hint = providerInstallHint("cursor", "darwin");
     expect(hint).toContain(CURSOR_INSTALL_COMMAND);
     expect(hint).toContain("Mac");
+    expect(hint).not.toContain("cursor-agent login");
   });
 
   it("probe-error install box falls back to the official installer, not an npm spec", () => {
