@@ -3,7 +3,7 @@ import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
 export type WelcomeRole = "admin" | "invitee";
-export type WelcomeChatScenario = "onboarding" | "selected-task" | "team-onboarding" | "tree-setup";
+export type WelcomeChatScenario = "onboarding" | "post-result" | "selected-task" | "team-onboarding" | "tree-setup";
 export type WelcomeRepoState = "none" | "local-readable" | "selected-readable" | "selected-auth-fails" | "unknown";
 export type WelcomeTreeState = "none" | "empty" | "populated" | "unknown";
 export type WelcomeGithubAppState = "installed" | "missing" | "unknown";
@@ -14,13 +14,9 @@ export type WelcomeExpectedAction =
   | "invitee_waits_for_team_readiness"
   | "ask_for_repo_path_or_url"
   | "report_auth_failure_without_claiming_repo_read"
-  | "value_first_then_setup_handoff"
-  | "guide_repo_selection_without_claiming_repo_read"
-  | "offer_task_ladder_before_tree_handoff"
-  | "offer_bounded_first_tasks_from_repo_and_tree"
-  | "offer_repo_value_without_claiming_tree_ready"
-  | "offer_invitee_value_without_admin_setup"
-  | "spawn_selected_task_chat"
+  | "offer_single_select_microtasks"
+  | "complete_first_task_in_current_chat"
+  | "offer_one_contextual_bridge"
   | "give_evidence_value_or_ask_for_input";
 
 export type FirstTreeWelcomeFixture = {
@@ -77,9 +73,14 @@ export type FixtureValidation = {
 };
 
 export type EvalMetrics = {
+  boundedReadObserved: boolean;
+  bridgeCount: number;
+  broadRepoScanObserved: boolean;
   capabilitySetupOptionObserved: boolean;
   chatAskCount: number;
+  chatMultiSelectObserved: boolean;
   chatOptionCount: number | null;
+  chatSendCount: number;
   chatText: string;
   contextTreeChanged: boolean;
   contextTreeStatus: string;
@@ -91,17 +92,22 @@ export type EvalMetrics = {
   forbiddenSideEffectHits: readonly string[];
   firstTreeArgv: readonly (readonly string[])[];
   fixtureValidationOk: boolean;
-  longerTaskOptionCount: number;
-  progressContractObserved: boolean;
-  quickWinOptionCount: number;
+  freeInputObserved: boolean;
+  microtaskOptionCount: number;
+  mutationOptionCount: number;
+  projectReceiptObserved: boolean;
+  qualifiedMutationOptionCount: number;
+  readOnlyOptionCount: number;
   repoEvidenceReadObserved: boolean;
+  resultArtifactObserved: boolean;
   runnerExitCode: number | null;
   skillFileReadObserved: boolean;
   sourceRepoChanged: boolean;
-  selfContainedTaskBriefObserved: boolean;
   taskChatCreateCount: number;
   taskOptionsObserved: boolean;
+  timeEstimateObserved: boolean;
   treeEvidenceReadObserved: boolean;
+  workingStatusObserved: boolean;
 };
 
 export type CaseRunSummary = {

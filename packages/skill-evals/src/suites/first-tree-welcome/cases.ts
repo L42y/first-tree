@@ -6,7 +6,7 @@ import type { FirstTreeWelcomeEvalCase, WelcomeExpectedAction } from "./types.js
 
 const FLOOR_CASE_ID = "first-tree-welcome-setup-matrix";
 const IMPLEMENTED_GATE_CASE_IDS = new Set([
-  "first-tree-welcome-selected-long-task",
+  "first-tree-welcome-selected-first-task",
   "first-tree-welcome-tree-kickoff-chat",
   "first-tree-welcome-no-repo-intro",
   "first-tree-welcome-readable-repo-populated-tree",
@@ -57,7 +57,7 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
     treeState: "none",
   },
   {
-    action: "offer_invitee_value_without_admin_setup",
+    action: "offer_single_select_microtasks",
     forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree", "setup-as-first-task"],
     forbiddenClaims: ["unread evidence"],
     id: "first-tree-welcome-invitee-ready",
@@ -65,7 +65,7 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
     prompt:
       "Welcome an invited teammate whose team is already set up, using the team's readable repo and populated Context Tree.",
     repoState: "selected-readable",
-    requiredResponseHints: ["task", "repo"],
+    requiredResponseHints: ["read-only", "microtask", "repo"],
     role: "invitee",
     tags: ["welcome-row-3b", "invitee-ready", "planned"],
     taskOptionHints: ["test", "trace", "map"],
@@ -102,48 +102,67 @@ No repository is connected, no local project folder path or Git repository URL i
     treeState: "unknown",
   },
   {
-    action: "value_first_then_setup_handoff",
+    action: "offer_single_select_microtasks",
     forbiddenActions: ["setup-before-value", "vague-setup-navigation"],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-admin-missing-github-app",
     chatScenario: "onboarding",
     prompt: "Welcome the admin using local repository evidence.",
     repoState: "local-readable",
-    requiredResponseHints: ["evidence", "durable"],
+    requiredResponseHints: ["read-only", "microtask", "evidence"],
     role: "admin",
     tags: ["welcome-row-5", "planned"],
     treeState: "unknown",
   },
   {
-    action: "guide_repo_selection_without_claiming_repo_read",
-    forbiddenActions: ["claim-unread-repo-evidence", "github-auth-first"],
+    action: "ask_for_repo_path_or_url",
+    forbiddenActions: ["claim-unread-repo-evidence", "github-auth-first", "repo-selection"],
     forbiddenClaims: ["repo evidence", "tree readiness"],
     id: "first-tree-welcome-app-installed-no-repo-selected",
     chatScenario: "onboarding",
-    prompt: "Welcome the admin after GitHub App installation.",
+    prompt:
+      "Welcome the admin after GitHub App installation, but no project is readable. Ask for a local project folder path first or a Git repository URL; do not register a long-term Team repository.",
     repoState: "none",
-    requiredResponseHints: ["repo selection", "long-term"],
+    requiredResponseHints: ["local project folder path", "Git repository URL", "GitHub repo URL"],
     role: "admin",
     tags: ["welcome-row-6", "planned"],
     treeState: "unknown",
   },
   {
-    action: "offer_task_ladder_before_tree_handoff",
-    forbiddenActions: ["setup-as-first-task", "seed-tree-in-welcome-chat", "create-tree"],
+    action: "offer_single_select_microtasks",
+    forbiddenActions: [
+      "setup-as-first-task",
+      "seed-tree-in-welcome-chat",
+      "create-tree",
+      "multi-select-first-task",
+      "fanout-first-task",
+      "time-estimate-first-task",
+    ],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-readable-repo-empty-tree",
     chatScenario: "onboarding",
     prompt: "Help the user pick the first valuable task.",
     repoState: "selected-readable",
-    requiredResponseHints: ["quick win", "task", "repo"],
+    requiredResponseHints: ["read-only", "microtask", "repo"],
     role: "admin",
     tags: ["welcome-row-7", "planned"],
     taskOptionHints: ["checkout", "session", "map"],
     treeState: "empty",
   },
   {
-    action: "offer_bounded_first_tasks_from_repo_and_tree",
-    forbiddenActions: ["seed-tree", "create-tree", "setup-as-first-task", "setup-only-action", "skip-for-now-option"],
+    action: "offer_single_select_microtasks",
+    forbiddenActions: [
+      "seed-tree",
+      "create-tree",
+      "setup-as-first-task",
+      "setup-only-action",
+      "multi-select-first-task",
+      "fanout-first-task",
+      "time-estimate-first-task",
+      "early-pr-setup",
+      "broad-repo-scan",
+      "unauthorized-write",
+    ],
     forbiddenClaims: ["unread evidence"],
     id: "first-tree-welcome-readable-repo-populated-tree",
     chatScenario: "onboarding",
@@ -154,32 +173,45 @@ Please help me get started with First Tree.
 Connected code:
 - ./source-repo
 
-A readable source repo is available at ./source-repo and a populated Context Tree is available at ./context-tree. Read both sources of evidence, cite what you observed, then ask baixiaohang to choose from a value-first task ladder: exactly one repo-specific, read-only Quick Win that takes about two minutes, plus one or two longer tasks with rough time ranges and inspectable outcomes. Do not put setup in this first menu. Use the tracked request primitive if useful.`,
+A readable source repo is available at ./source-repo and a populated Context Tree is available at ./context-tree. Use the existing working status, then take only a bounded project read: README or manifest, first-level directories, one relevant entry, and at most one nearby test or TODO. Send exactly two sentences confirming what you read and where work can start; that receipt is not the result. Offer one or two single-select microtasks and allow free-text input. At least one must be read-only. Offer a minimal local change only if its target, change surface, and focused verification are all concrete. Do not show time estimates, setup, multi-select, or child-chat fan-out.`,
     repoState: "selected-readable",
-    requiredResponseHints: ["checkout", "session", "task"],
+    requiredResponseHints: ["checkout", "session", "read-only", "microtask"],
     role: "admin",
     tags: ["welcome-row-8", "repo-and-tree"],
     taskOptionHints: ["expired session", "checkout reliability", "map"],
     treeState: "populated",
   },
   {
-    action: "spawn_selected_task_chat",
-    forbiddenActions: ["admin-setup", "seed-tree-in-welcome-chat"],
+    action: "complete_first_task_in_current_chat",
+    forbiddenActions: [
+      "admin-setup",
+      "seed-tree-in-welcome-chat",
+      "fanout-first-task",
+      "multiple-bridges",
+      "broad-repo-scan",
+    ],
     forbiddenClaims: [],
-    id: "first-tree-welcome-selected-long-task",
+    id: "first-tree-welcome-selected-first-task",
     chatScenario: "selected-task",
-    prompt: `The user selected the longer checkout coverage task from the onboarding launcher's task ladder.
+    prompt: `The user selected the read-only checkout recovery trace from the first microtask choice.
 
-Create one independent task chat addressed to yourself. Its opening brief must be self-contained: Goal, repo/path context, Deliverable, Verification, and Progress communication. Reuse chat status/description plus an ordinary completion message for progress; do not invent another orchestration protocol. Then tell baixiaohang which task chat you opened.`,
+Complete it in this current chat. Start at ./source-repo/src/checkout/recovery.ts and follow only files it directly references; do not rediscover or recursively scan the repository. Return a 5–8 step call chain with file references and concrete evidence. Do not create a child chat. After the result, ask exactly one directly related question about the adjacent focused verification; do not mention setup, PR creation, or another unrelated task.`,
     repoState: "selected-readable",
-    requiredResponseHints: ["checkout", "chat"],
+    requiredResponseHints: ["checkout", "step", "verification"],
     role: "admin",
-    tags: ["selected-task", "fan-out-brief"],
+    tags: ["selected-task", "in-chat-result"],
     treeState: "populated",
   },
   {
-    action: "offer_repo_value_without_claiming_tree_ready",
-    forbiddenActions: ["claim-tree-ready", "seed-tree", "setup-as-first-task"],
+    action: "offer_single_select_microtasks",
+    forbiddenActions: [
+      "claim-tree-ready",
+      "seed-tree",
+      "setup-as-first-task",
+      "multi-select-first-task",
+      "fanout-first-task",
+      "time-estimate-first-task",
+    ],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-readable-repo-tree-unknown",
     chatScenario: "onboarding",
@@ -189,6 +221,34 @@ Create one independent task chat addressed to yourself. Its opening brief must b
     role: "admin",
     tags: ["welcome-row-9", "planned"],
     treeState: "unknown",
+  },
+  {
+    action: "offer_one_contextual_bridge",
+    forbiddenActions: ["multiple-bridges", "early-pr-setup", "repo-selection"],
+    forbiddenClaims: [],
+    id: "first-tree-welcome-admin-qualified-tree-bridge",
+    chatScenario: "post-result",
+    prompt:
+      "The confirmed admin has just received a verified read-only result. It exposed a lasting decision across checkout and authentication modules, and the team's Context Tree is confirmed empty. Offer exactly one directly related next step. Do not create the chat or mutate setup yet.",
+    repoState: "selected-readable",
+    requiredResponseHints: ["Context Tree", "separate chat", "decision"],
+    role: "admin",
+    tags: ["post-result", "admin", "tree-bridge"],
+    treeState: "empty",
+  },
+  {
+    action: "offer_one_contextual_bridge",
+    forbiddenActions: ["multiple-bridges", "early-pr-setup", "admin-setup", "repo-selection"],
+    forbiddenClaims: [],
+    id: "first-tree-welcome-invitee-result-bridge",
+    chatScenario: "post-result",
+    prompt:
+      "An invited teammate has just received a verified checkout call chain. The team's Context Tree is empty. Offer exactly one adjacent verification step without any admin setup, PR, GitHub App, or Context Tree prompt.",
+    repoState: "selected-readable",
+    requiredResponseHints: ["verify", "checkout"],
+    role: "invitee",
+    tags: ["post-result", "invitee", "no-setup"],
+    treeState: "empty",
   },
   {
     action: "give_evidence_value_or_ask_for_input",
@@ -226,8 +286,8 @@ function caseFromRow(
     expected: {
       action: row.action,
       evidenceSnippets:
-        row.repoState === "selected-readable" && row.treeState === "populated"
-          ? ["Acme Support Dashboard", "expired session TODO", "Checkout Reliability"]
+        row.action === "offer_single_select_microtasks"
+          ? ["Acme Support Dashboard", "expired session TODO"]
           : undefined,
       requiredResponseHints: row.requiredResponseHints,
       taskOptionHints: row.taskOptionHints,
@@ -293,7 +353,7 @@ export const FIRST_TREE_WELCOME_EVAL_CASES: readonly SkillEvalCase[] = [
       validator: "onboarding setup matrix (unique state tuples + explicit catch-all + no orphan actions)",
     },
     fixture: {
-      chatScenarios: ["onboarding", "selected-task", "team-onboarding", "tree-setup"],
+      chatScenarios: ["onboarding", "post-result", "selected-task", "team-onboarding", "tree-setup"],
       repoStates: ["none", "local-readable", "selected-readable", "selected-auth-fails", "unknown"],
       roles: ["admin", "invitee"],
       treeStates: ["none", "empty", "populated", "unknown"],
@@ -442,7 +502,7 @@ export const FIRST_TREE_WELCOME_SUITE: SkillEvalSuiteDefinition = {
       {
         caseIds: GATE_CASES.map((evalCase) => evalCase.id),
         description:
-          "Welcome onboarding matrix gate rows; tree-kickoff-chat, no-repo-intro, readable-repo-populated-tree, and selected-long-task run as live gate cases.",
+          "Welcome onboarding matrix gate rows; tree-kickoff-chat, no-repo-intro, readable-repo-populated-tree, and selected-first-task run as live gate cases.",
         status: "implemented",
         tier: "gate",
       },
@@ -455,8 +515,7 @@ export const FIRST_TREE_WELCOME_SUITE: SkillEvalSuiteDefinition = {
       },
       {
         caseIds: [FIRST_TREE_WELCOME_QUALITY_CASE.id],
-        description:
-          "LLM-as-judge task-ladder quality case for one read-only Quick Win plus timed, inspectable longer work.",
+        description: "LLM-as-judge quality for a bounded project receipt and one or two single-select microtasks.",
         status: "implemented",
         tier: "quality",
       },

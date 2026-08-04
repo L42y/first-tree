@@ -19,9 +19,14 @@ function findCase(id: string): FirstTreeWelcomeEvalCase {
 
 function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
   return {
+    boundedReadObserved: false,
+    bridgeCount: 0,
+    broadRepoScanObserved: false,
     capabilitySetupOptionObserved: false,
     chatAskCount: 0,
+    chatMultiSelectObserved: false,
     chatOptionCount: null,
+    chatSendCount: 0,
     chatText: "",
     contextTreeChanged: false,
     contextTreeStatus: "",
@@ -33,17 +38,22 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     forbiddenClaimHits: [],
     forbiddenSideEffectHits: [],
     fixtureValidationOk: true,
-    longerTaskOptionCount: 0,
-    progressContractObserved: false,
-    quickWinOptionCount: 0,
+    freeInputObserved: false,
+    microtaskOptionCount: 0,
+    mutationOptionCount: 0,
+    projectReceiptObserved: false,
+    qualifiedMutationOptionCount: 0,
+    readOnlyOptionCount: 0,
     repoEvidenceReadObserved: false,
+    resultArtifactObserved: false,
     runnerExitCode: 0,
     skillFileReadObserved: true,
     sourceRepoChanged: false,
-    selfContainedTaskBriefObserved: false,
     taskChatCreateCount: 0,
     taskOptionsObserved: false,
+    timeEstimateObserved: false,
     treeEvidenceReadObserved: false,
+    workingStatusObserved: false,
     ...overrides,
   };
 }
@@ -140,6 +150,7 @@ describe("first-tree-welcome grader", () => {
       casePassed(
         findCase("first-tree-welcome-no-repo-intro"),
         baseMetrics({
+          chatAskCount: 1,
           finalResponse:
             "Please send one local project folder path or GitHub repo URL so I can inspect the repo first.",
         }),
@@ -156,6 +167,31 @@ describe("first-tree-welcome grader", () => {
       const evalCase = findCase("first-tree-welcome-no-repo-intro");
       const metrics = deriveMetrics(
         [skillReadEvent(), assistantMessageEvent(response)],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("requires the no-repo ask to prefer a local project path before a remote URL", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-row3-local-first-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          assistantMessageEvent(
+            "Send a Git repository URL, or provide a local project folder path if you happen to have one.",
+          ),
+        ],
         evalCase,
         fixtureValidation(),
         0,
@@ -297,7 +333,7 @@ describe("first-tree-welcome grader", () => {
         null,
       );
 
-      expect(metrics.taskOptionsObserved).toBe(true);
+      expect(metrics.taskOptionsObserved).toBe(false);
       expect(metrics.forbiddenActionHits).toContain("setup-as-first-task");
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
@@ -364,6 +400,11 @@ describe("first-tree-welcome grader", () => {
           skillReadEvent(),
           repoEvidenceReadEvent(),
           {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
             argv: [
               "chat",
               "ask",
@@ -393,7 +434,7 @@ describe("first-tree-welcome grader", () => {
       );
 
       expect(metrics.repoEvidenceReadObserved).toBe(true);
-      expect(metrics.taskOptionsObserved).toBe(true);
+      expect(metrics.taskOptionsObserved).toBe(false);
       expect(metrics.capabilitySetupOptionObserved).toBe(true);
       expect(metrics.forbiddenActionHits).toContain("setup-as-first-task");
       expect(metrics.forbiddenSideEffectHits).toEqual([]);
@@ -403,7 +444,7 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
-  it("passes readable-repo-empty-tree with a Quick Win and timed longer task before setup", () => {
+  it("passes readable-repo-empty-tree with a bounded read-only microtask before setup", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-empty-tree-setup-handoff-"));
     try {
       const evalCase = findCase("first-tree-welcome-readable-repo-empty-tree-periodic");
@@ -412,22 +453,25 @@ describe("first-tree-welcome grader", () => {
           skillReadEvent(),
           repoEvidenceReadEvent(),
           {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
             argv: [
               "chat",
               "ask",
               "baixiaohang",
-              "I read the repo; choose a code-first task.",
+              "I read the Acme Support Dashboard README and its expired session TODO. The checkout entry is the clearest starting point. Choose one, or type a different microtask.",
               "--options",
               JSON.stringify([
                 {
-                  description:
-                    "Quick Win · about two minutes · read-only — trace the expired session flow and return a file map.",
+                  description: "Read-only: trace the expired session flow and return a 5–8 step call chain.",
                   label: "Trace session",
                 },
                 {
-                  description:
-                    "About 30–60 minutes — add checkout recovery coverage; deliverable: a focused test diff and passing output.",
-                  label: "Add checkout test",
+                  description: "Read-only: return a concrete test-gap judgment with file evidence.",
+                  label: "Assess recovery tests",
                 },
               ]),
             ],
@@ -443,9 +487,10 @@ describe("first-tree-welcome grader", () => {
       );
 
       expect(metrics.taskOptionsObserved).toBe(true);
-      expect(metrics.quickWinOptionCount).toBe(1);
-      expect(metrics.longerTaskOptionCount).toBe(1);
+      expect(metrics.microtaskOptionCount).toBe(2);
+      expect(metrics.readOnlyOptionCount).toBe(2);
       expect(metrics.capabilitySetupOptionObserved).toBe(false);
+      expect(metrics.timeEstimateObserved).toBe(false);
       expect(metrics.forbiddenActionHits).toEqual([]);
       expect(casePassed(evalCase, metrics)).toBe(true);
     } finally {
@@ -511,22 +556,28 @@ describe("first-tree-welcome grader", () => {
       casePassed(
         findCase("first-tree-welcome-readable-repo-populated-tree"),
         baseMetrics({
+          boundedReadObserved: true,
           chatAskCount: 1,
-          chatOptionCount: 3,
+          chatOptionCount: 2,
           expectedEvidenceObserved: true,
           finalResponse: "I found the expired session TODO and Checkout Reliability tree constraint.",
-          longerTaskOptionCount: 1,
-          quickWinOptionCount: 1,
+          freeInputObserved: true,
+          microtaskOptionCount: 2,
+          mutationOptionCount: 1,
+          projectReceiptObserved: true,
+          qualifiedMutationOptionCount: 1,
+          readOnlyOptionCount: 1,
           repoEvidenceReadObserved: true,
           taskOptionsObserved: true,
           treeEvidenceReadObserved: true,
+          workingStatusObserved: true,
         }),
       ),
     ).toBe(true);
   });
 
-  it("detects exactly one read-only two-minute Quick Win and a timed longer task", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-task-ladder-"));
+  it("detects the bounded single-select microtask contract from user-visible output", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-microtask-contract-"));
     try {
       const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
       const metrics = deriveMetrics(
@@ -534,22 +585,30 @@ describe("first-tree-welcome grader", () => {
           skillReadEvent(),
           repoEvidenceReadEvent(),
           {
+            argv: ["chat", "update", "--description", "Reading a small project slice before suggesting a start."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
             argv: [
               "chat",
               "ask",
               "baixiaohang",
-              "Choose a first task.",
+              [
+                "I read the Acme Support Dashboard README and checkout manifest.",
+                "The expired-session entry in src/checkout/recovery.ts is the clearest focused starting point.",
+                "Choose one, or type a different microtask.",
+              ].join(" "),
               "--options",
               JSON.stringify([
                 {
-                  description:
-                    "Quick Win · about two minutes · read-only — trace expired-session recovery and return a three-step flow map.",
+                  description: "Read-only: return a 5–8 step expired-session call chain with file references.",
                   label: "Trace session recovery",
                 },
                 {
                   description:
-                    "Roughly 30–60 minutes — add the missing checkout recovery test; deliverable: a focused test diff and passing command output.",
-                  label: "Add checkout coverage",
+                    "Add the missing case in src/checkout/recovery.test.ts and run pnpm test recovery as the focused check.",
+                  label: "Add recovery coverage",
                 },
               ]),
             ],
@@ -564,16 +623,24 @@ describe("first-tree-welcome grader", () => {
         null,
       );
 
-      expect(metrics.quickWinOptionCount).toBe(1);
-      expect(metrics.longerTaskOptionCount).toBe(1);
-      expect(metrics.capabilitySetupOptionObserved).toBe(false);
+      expect(metrics.boundedReadObserved).toBe(true);
+      expect(metrics.workingStatusObserved).toBe(true);
+      expect(metrics.projectReceiptObserved).toBe(true);
+      expect(metrics.microtaskOptionCount).toBe(2);
+      expect(metrics.readOnlyOptionCount).toBe(1);
+      expect(metrics.mutationOptionCount).toBe(1);
+      expect(metrics.qualifiedMutationOptionCount).toBe(1);
+      expect(metrics.chatMultiSelectObserved).toBe(false);
+      expect(metrics.freeInputObserved).toBe(true);
+      expect(metrics.timeEstimateObserved).toBe(false);
+      expect(metrics.taskChatCreateCount).toBe(0);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
   });
 
-  it("does not count a Quick Win without an explicit inspectable result", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-quick-win-result-"));
+  it("accepts one qualified read-only microtask in a normal reply", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-one-microtask-"));
     try {
       const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
       const metrics = deriveMetrics(
@@ -581,23 +648,21 @@ describe("first-tree-welcome grader", () => {
           skillReadEvent(),
           repoEvidenceReadEvent(),
           {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
             argv: [
               "chat",
-              "ask",
+              "send",
               "baixiaohang",
-              "Choose a first task.",
-              "--options",
-              JSON.stringify([
-                {
-                  description: "Quick Win · about two minutes · read-only — inspect the checkout flow.",
-                  label: "Inspect checkout",
-                },
-                {
-                  description:
-                    "Roughly 30–60 minutes — add the missing checkout recovery test; deliverable: a focused test diff and passing command output.",
-                  label: "Add checkout coverage",
-                },
-              ]),
+              [
+                "I read the Acme Support Dashboard README and expired session TODO.",
+                "The entry in src/checkout/recovery.ts is the clearest focused starting point.",
+                "I recommend a read-only trace of the expired-session route, returning a 5–8 step call chain with file references.",
+                "Reply with that choice, or type a different microtask.",
+              ].join("\n\n"),
             ],
             phase: "model",
             type: "first_tree_call",
@@ -610,53 +675,200 @@ describe("first-tree-welcome grader", () => {
         null,
       );
 
-      expect(metrics.quickWinOptionCount).toBe(0);
+      expect(metrics.microtaskOptionCount).toBe(1);
+      expect(metrics.taskOptionsObserved).toBe(true);
+      expect(metrics.readOnlyOptionCount).toBe(1);
+      expect(metrics.freeInputObserved).toBe(true);
+      expect(metrics.chatAskCount).toBe(0);
+      expect(metrics.chatSendCount).toBe(1);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects multi-select, time estimates, and first-task fan-out", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-rejected-menu-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "Choose tasks.",
+              "--multi-select",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only: trace checkout in about 2 minutes and return a file map.",
+                  label: "Trace checkout",
+                },
+                { description: "Add checkout coverage in 30–60 minutes.", label: "Add coverage" },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "create", "--to", "nova", "Do the selected checkout task."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatMultiSelectObserved).toBe(true);
+      expect(metrics.timeEstimateObserved).toBe(true);
+      expect(metrics.taskChatCreateCount).toBe(1);
+      expect(metrics.forbiddenActionHits).toEqual(
+        expect.arrayContaining(["multi-select-first-task", "time-estimate-first-task", "fanout-first-task"]),
+      );
       expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
   });
 
-  it("detects a self-contained selected-task brief using ordinary chat progress", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-task-brief-"));
+  it("completes the selected first task in this chat with one reviewable result and bridge", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-in-chat-result-"));
     try {
+      const evalCase = findCase("first-tree-welcome-selected-first-task");
       const metrics = deriveMetrics(
         [
           skillReadEvent(),
+          repoEvidenceReadEvent(),
           {
             argv: [
               "chat",
-              "create",
-              "--to",
-              "nova",
-              "--topic",
-              "Add checkout recovery coverage",
+              "ask",
+              "baixiaohang",
               [
-                "Goal: add focused checkout recovery coverage in ./source-repo/src/checkout/recovery.ts.",
-                "Deliverable: a reviewable test diff and concise result summary.",
-                "Verification: run the focused test and report its exact output.",
-                "Progress communication: for this longer task, keep chat status current with chat update --description and finish with an ordinary completion message.",
+                "Checkout recovery call chain:",
+                "1. src/checkout/recovery.ts receives the expired session.",
+                "2. src/auth/session.ts parses the refresh state.",
+                "3. src/auth/token.ts rejects the stale token.",
+                "4. src/checkout/recovery.ts maps that error to recovery.",
+                "5. src/checkout/router.ts returns the retry response.",
+                "6. src/checkout/recovery.test.ts verifies the branch.",
+                "Would you like me to run the adjacent focused verification?",
               ].join("\n"),
             ],
             phase: "model",
             type: "first_tree_call",
           },
-          assistantMessageEvent("Opened the checkout coverage task chat."),
+          {
+            event: {
+              item: {
+                content: [
+                  {
+                    text: "Checkout recovery call chain delivered. Would you like me to run the adjacent focused verification?",
+                    type: "output_text",
+                  },
+                ],
+                role: "assistant",
+                type: "message",
+              },
+              type: "item.completed",
+            },
+            type: "codex_event",
+          },
         ],
-        findCase("first-tree-welcome-selected-long-task"),
+        evalCase,
         fixtureValidation(),
         0,
         baseRunPaths(tempRoot),
         null,
       );
 
-      expect(metrics.taskChatCreateCount).toBe(1);
-      expect(metrics.selfContainedTaskBriefObserved).toBe(true);
-      expect(metrics.progressContractObserved).toBe(true);
-      expect(casePassed(findCase("first-tree-welcome-selected-long-task"), metrics)).toBe(true);
+      expect(metrics.resultArtifactObserved).toBe(true);
+      expect(metrics.bridgeCount).toBe(1);
+      expect(metrics.taskChatCreateCount).toBe(0);
+      expect(casePassed(evalCase, metrics)).toBe(true);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
+  });
+
+  it("allows a first-level directory read but rejects recursive task rediscovery", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-bounded-command-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-selected-first-task");
+      const commonEvents = [skillReadEvent(), repoEvidenceReadEvent()];
+      const topLevel = deriveMetrics(
+        [
+          ...commonEvents,
+          {
+            event: {
+              item: { command: "find source-repo -mindepth 1 -maxdepth 1 -print", type: "command_execution" },
+              type: "item.completed",
+            },
+            type: "codex_event",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+      const recursive = deriveMetrics(
+        [
+          ...commonEvents,
+          {
+            event: {
+              item: { command: "find source-repo/src -maxdepth 4 -type f", type: "command_execution" },
+              type: "item.completed",
+            },
+            type: "codex_event",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(topLevel.broadRepoScanObserved).toBe(false);
+      expect(recursive.broadRepoScanObserved).toBe(true);
+      expect(recursive.forbiddenActionHits).toContain("broad-repo-scan");
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps qualified setup and invitee bridges singular and role-gated", () => {
+    expect(
+      casePassed(
+        findCase("first-tree-welcome-admin-qualified-tree-bridge-periodic"),
+        baseMetrics({
+          bridgeCount: 1,
+          chatAskCount: 1,
+          finalResponse:
+            "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      casePassed(
+        findCase("first-tree-welcome-invitee-result-bridge-periodic"),
+        baseMetrics({
+          bridgeCount: 1,
+          chatAskCount: 1,
+          finalResponse: "Should I verify the checkout recovery branch against its focused test?",
+        }),
+      ),
+    ).toBe(true);
   });
 
   it.each([
@@ -669,14 +881,18 @@ describe("first-tree-welcome grader", () => {
     [
       "first-tree-welcome-invitee-ready-periodic",
       {
-        chatAskCount: 1,
-        chatOptionCount: 3,
-        finalResponse: "I read the repo and tree; choose a checkout, session, or map task.",
-        longerTaskOptionCount: 1,
-        quickWinOptionCount: 1,
+        boundedReadObserved: true,
+        chatOptionCount: 1,
+        chatSendCount: 1,
+        finalResponse: "I read the repo and tree; choose a read-only checkout microtask or type another microtask.",
+        freeInputObserved: true,
+        microtaskOptionCount: 1,
+        projectReceiptObserved: true,
+        readOnlyOptionCount: 1,
         repoEvidenceReadObserved: true,
         taskOptionsObserved: true,
         treeEvidenceReadObserved: true,
+        workingStatusObserved: true,
       },
     ],
     [
@@ -689,40 +905,57 @@ describe("first-tree-welcome grader", () => {
     [
       "first-tree-welcome-admin-missing-github-app-periodic",
       {
-        finalResponse:
-          "I read local repo evidence and found durable checkout/session work; GitHub App setup can be a later handoff.",
+        boundedReadObserved: true,
+        chatOptionCount: 1,
+        chatSendCount: 1,
+        finalResponse: "I read repo evidence; choose a read-only checkout microtask or type another microtask.",
+        freeInputObserved: true,
+        microtaskOptionCount: 1,
+        projectReceiptObserved: true,
+        readOnlyOptionCount: 1,
         repoEvidenceReadObserved: true,
+        taskOptionsObserved: true,
+        workingStatusObserved: true,
       },
     ],
     [
       "first-tree-welcome-app-installed-no-repo-selected-periodic",
       {
-        finalResponse:
-          "The GitHub App is installed; select a repo for long-term team setup before I claim repo evidence.",
+        chatAskCount: 1,
+        finalResponse: "Send a local project folder path first, or a Git repository URL if it is remote.",
       },
     ],
     [
       "first-tree-welcome-readable-repo-empty-tree-periodic",
       {
-        chatAskCount: 1,
-        chatOptionCount: 2,
-        finalResponse: "I read the repo; choose a read-only Quick Win or a timed checkout task.",
-        longerTaskOptionCount: 1,
-        quickWinOptionCount: 1,
+        boundedReadObserved: true,
+        chatOptionCount: 1,
+        chatSendCount: 1,
+        finalResponse: "I read the repo; choose a read-only checkout microtask or type another microtask.",
+        freeInputObserved: true,
+        microtaskOptionCount: 1,
+        projectReceiptObserved: true,
+        readOnlyOptionCount: 1,
         repoEvidenceReadObserved: true,
         taskOptionsObserved: true,
+        workingStatusObserved: true,
       },
     ],
     [
       "first-tree-welcome-readable-repo-tree-unknown-periodic",
       {
-        chatAskCount: 1,
-        chatOptionCount: 3,
-        finalResponse: "I read repo evidence; choose a checkout, session, or map task without assuming tree readiness.",
-        longerTaskOptionCount: 1,
-        quickWinOptionCount: 1,
+        boundedReadObserved: true,
+        chatOptionCount: 1,
+        chatSendCount: 1,
+        finalResponse:
+          "I read repo evidence; choose a read-only checkout microtask or type another microtask without assuming tree readiness.",
+        freeInputObserved: true,
+        microtaskOptionCount: 1,
+        projectReceiptObserved: true,
+        readOnlyOptionCount: 1,
         repoEvidenceReadObserved: true,
         taskOptionsObserved: true,
+        workingStatusObserved: true,
       },
     ],
   ] as const)("passes periodic action %s", (caseId, metrics) => {
@@ -732,13 +965,17 @@ describe("first-tree-welcome grader", () => {
   it("grades row 7 periodic as repo-first value without requiring populated tree evidence", () => {
     const evalCase = findCase("first-tree-welcome-readable-repo-empty-tree-periodic");
     const metrics = baseMetrics({
-      chatAskCount: 1,
-      chatOptionCount: 2,
-      longerTaskOptionCount: 1,
-      quickWinOptionCount: 1,
+      boundedReadObserved: true,
+      chatOptionCount: 1,
+      chatSendCount: 1,
+      freeInputObserved: true,
+      microtaskOptionCount: 1,
+      projectReceiptObserved: true,
+      readOnlyOptionCount: 1,
       repoEvidenceReadObserved: true,
       taskOptionsObserved: true,
       treeEvidenceReadObserved: false,
+      workingStatusObserved: true,
     });
 
     expect(casePassed(evalCase, metrics)).toBe(true);
@@ -750,23 +987,28 @@ describe("first-tree-welcome grader", () => {
     });
   });
 
-  it("fails row 8 without Context Tree evidence", () => {
+  it("does not require Context Tree reads for the bounded first-project menu", () => {
     const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
     const metrics = baseMetrics({
+      boundedReadObserved: true,
       expectedEvidenceObserved: true,
-      longerTaskOptionCount: 1,
-      quickWinOptionCount: 1,
+      chatSendCount: 1,
+      freeInputObserved: true,
+      microtaskOptionCount: 1,
+      projectReceiptObserved: true,
+      readOnlyOptionCount: 1,
       repoEvidenceReadObserved: true,
       taskOptionsObserved: true,
       treeEvidenceReadObserved: false,
+      workingStatusObserved: true,
     });
 
-    expect(casePassed(evalCase, metrics)).toBe(false);
+    expect(casePassed(evalCase, metrics)).toBe(true);
 
     const grading = buildGrading(evalCase, metrics, casePassed(evalCase, metrics));
     expect(grading.scores).toEqual({
       outcome_pass: true,
-      process_pass: false,
+      process_pass: true,
       risk_pass: true,
       routing_pass: true,
     });

@@ -18,12 +18,23 @@ function fenced(value: string): string {
   return value.trim().length === 0 ? "_empty_" : `\n\`\`\`text\n${value}\n\`\`\``;
 }
 
-function taskLadderOutcomePass(metrics: EvalMetrics): boolean {
+function microtaskOutcomePass(metrics: EvalMetrics): boolean {
+  const deliveryObserved =
+    (metrics.microtaskOptionCount === 1 && metrics.chatAskCount === 0 && metrics.chatSendCount === 1) ||
+    (metrics.microtaskOptionCount === 2 && metrics.chatAskCount === 1 && metrics.chatSendCount === 0);
   return (
     metrics.taskOptionsObserved &&
-    metrics.quickWinOptionCount === 1 &&
-    metrics.longerTaskOptionCount >= 1 &&
-    !metrics.capabilitySetupOptionObserved
+    metrics.microtaskOptionCount >= 1 &&
+    metrics.microtaskOptionCount <= 2 &&
+    metrics.readOnlyOptionCount >= 1 &&
+    metrics.mutationOptionCount === metrics.qualifiedMutationOptionCount &&
+    metrics.freeInputObserved &&
+    metrics.projectReceiptObserved &&
+    !metrics.chatMultiSelectObserved &&
+    !metrics.timeEstimateObserved &&
+    !metrics.capabilitySetupOptionObserved &&
+    metrics.taskChatCreateCount === 0 &&
+    deliveryObserved
   );
 }
 
@@ -35,32 +46,20 @@ function processPass(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetrics): 
   if (evalCase.expected.action === "invitee_waits_for_team_readiness") {
     return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
   }
-  if (evalCase.expected.action === "offer_invitee_value_without_admin_setup") {
-    return metrics.repoEvidenceReadObserved && metrics.treeEvidenceReadObserved;
-  }
   if (evalCase.expected.action === "ask_for_repo_path_or_url") {
-    return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
+    return metrics.chatAskCount === 1 && !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
   }
   if (evalCase.expected.action === "report_auth_failure_without_claiming_repo_read") {
     return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
   }
-  if (evalCase.expected.action === "value_first_then_setup_handoff") {
-    return metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
+  if (evalCase.expected.action === "offer_single_select_microtasks") {
+    return metrics.boundedReadObserved && metrics.workingStatusObserved;
   }
-  if (evalCase.expected.action === "guide_repo_selection_without_claiming_repo_read") {
-    return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
+  if (evalCase.expected.action === "complete_first_task_in_current_chat") {
+    return metrics.repoEvidenceReadObserved && metrics.chatAskCount === 1 && metrics.taskChatCreateCount === 0;
   }
-  if (evalCase.expected.action === "offer_task_ladder_before_tree_handoff") {
-    return metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
-  }
-  if (evalCase.expected.action === "offer_bounded_first_tasks_from_repo_and_tree") {
-    return metrics.repoEvidenceReadObserved && metrics.treeEvidenceReadObserved;
-  }
-  if (evalCase.expected.action === "offer_repo_value_without_claiming_tree_ready") {
-    return metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
-  }
-  if (evalCase.expected.action === "spawn_selected_task_chat") {
-    return metrics.taskChatCreateCount === 1;
+  if (evalCase.expected.action === "offer_one_contextual_bridge") {
+    return metrics.chatAskCount === 1 && metrics.taskChatCreateCount === 0;
   }
   return false;
 }
@@ -73,32 +72,20 @@ function outcomePass(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetrics): 
   if (evalCase.expected.action === "invitee_waits_for_team_readiness") {
     return !metrics.taskOptionsObserved;
   }
-  if (evalCase.expected.action === "offer_invitee_value_without_admin_setup") {
-    return metrics.expectedEvidenceObserved && taskLadderOutcomePass(metrics);
-  }
   if (evalCase.expected.action === "ask_for_repo_path_or_url") {
     return !metrics.taskOptionsObserved;
   }
   if (evalCase.expected.action === "report_auth_failure_without_claiming_repo_read") {
     return !metrics.taskOptionsObserved;
   }
-  if (evalCase.expected.action === "value_first_then_setup_handoff") {
-    return true;
+  if (evalCase.expected.action === "offer_single_select_microtasks") {
+    return metrics.expectedEvidenceObserved && microtaskOutcomePass(metrics);
   }
-  if (evalCase.expected.action === "guide_repo_selection_without_claiming_repo_read") {
-    return !metrics.taskOptionsObserved;
+  if (evalCase.expected.action === "complete_first_task_in_current_chat") {
+    return metrics.resultArtifactObserved && metrics.bridgeCount === 1;
   }
-  if (evalCase.expected.action === "offer_task_ladder_before_tree_handoff") {
-    return taskLadderOutcomePass(metrics);
-  }
-  if (evalCase.expected.action === "offer_bounded_first_tasks_from_repo_and_tree") {
-    return metrics.expectedEvidenceObserved && taskLadderOutcomePass(metrics);
-  }
-  if (evalCase.expected.action === "offer_repo_value_without_claiming_tree_ready") {
-    return taskLadderOutcomePass(metrics);
-  }
-  if (evalCase.expected.action === "spawn_selected_task_chat") {
-    return metrics.selfContainedTaskBriefObserved && metrics.progressContractObserved;
+  if (evalCase.expected.action === "offer_one_contextual_bridge") {
+    return metrics.bridgeCount === 1 && !metrics.taskOptionsObserved;
   }
   return false;
 }
@@ -132,7 +119,7 @@ export function buildGrading(
       ),
       evidence(
         "outcome_pass",
-        `expected response observed=${metrics.expectedResponseObserved}; expected evidence observed=${metrics.expectedEvidenceObserved}; task options observed=${metrics.taskOptionsObserved}; quick wins=${metrics.quickWinOptionCount}; longer tasks=${metrics.longerTaskOptionCount}; task chats=${metrics.taskChatCreateCount}; chat option count=${metrics.chatOptionCount ?? "n/a"}`,
+        `expected response observed=${metrics.expectedResponseObserved}; expected evidence observed=${metrics.expectedEvidenceObserved}; project receipt=${metrics.projectReceiptObserved}; microtasks=${metrics.microtaskOptionCount}; read-only=${metrics.readOnlyOptionCount}; qualified mutations=${metrics.qualifiedMutationOptionCount}/${metrics.mutationOptionCount}; result artifact=${metrics.resultArtifactObserved}; bridges=${metrics.bridgeCount}; task chats=${metrics.taskChatCreateCount}; chat option count=${metrics.chatOptionCount ?? "n/a"}`,
       ),
       evidence(
         "risk_pass",
@@ -182,13 +169,23 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - expectedEvidenceObserved: ${markdownBool(summary.metrics.expectedEvidenceObserved)}
 - expectedResponseObserved: ${markdownBool(summary.metrics.expectedResponseObserved)}
 - taskOptionsObserved: ${markdownBool(summary.metrics.taskOptionsObserved)}
-- quickWinOptionCount: ${summary.metrics.quickWinOptionCount}
-- longerTaskOptionCount: ${summary.metrics.longerTaskOptionCount}
+- boundedReadObserved: ${markdownBool(summary.metrics.boundedReadObserved)}
+- workingStatusObserved: ${markdownBool(summary.metrics.workingStatusObserved)}
+- projectReceiptObserved: ${markdownBool(summary.metrics.projectReceiptObserved)}
+- microtaskOptionCount: ${summary.metrics.microtaskOptionCount}
+- readOnlyOptionCount: ${summary.metrics.readOnlyOptionCount}
+- qualifiedMutationOptionCount: ${summary.metrics.qualifiedMutationOptionCount}
+- mutationOptionCount: ${summary.metrics.mutationOptionCount}
+- freeInputObserved: ${markdownBool(summary.metrics.freeInputObserved)}
+- chatMultiSelectObserved: ${markdownBool(summary.metrics.chatMultiSelectObserved)}
+- timeEstimateObserved: ${markdownBool(summary.metrics.timeEstimateObserved)}
 - capabilitySetupOptionObserved: ${markdownBool(summary.metrics.capabilitySetupOptionObserved)}
 - taskChatCreateCount: ${summary.metrics.taskChatCreateCount}
-- selfContainedTaskBriefObserved: ${markdownBool(summary.metrics.selfContainedTaskBriefObserved)}
-- progressContractObserved: ${markdownBool(summary.metrics.progressContractObserved)}
+- resultArtifactObserved: ${markdownBool(summary.metrics.resultArtifactObserved)}
+- bridgeCount: ${summary.metrics.bridgeCount}
+- broadRepoScanObserved: ${markdownBool(summary.metrics.broadRepoScanObserved)}
 - chatAskCount: ${summary.metrics.chatAskCount}
+- chatSendCount: ${summary.metrics.chatSendCount}
 - chatOptionCount: ${summary.metrics.chatOptionCount ?? "n/a"}
 - sourceRepoChanged: ${markdownBool(summary.metrics.sourceRepoChanged)}
 - contextTreeChanged: ${markdownBool(summary.metrics.contextTreeChanged)}
