@@ -21,12 +21,12 @@ export const ONBOARDING_ORIENTATION_CHAPTERS = {
     id: "context-tree",
     title: "Context Tree",
     summary: "Read, work, review, update—then start smarter",
-    durationInSeconds: 60,
+    durationInSeconds: 59,
     videoSrc: "/onboarding/orientation/context-tree.mp4",
     posterSrc: "/onboarding/orientation/stills/context-tree-poster.png",
     captionsSrc: "/onboarding/orientation/context-tree.vtt",
     transcript:
-      "A payment-retry task begins with an Agent reading only the task-relevant Context Tree paths it is authorized to use. Settled billing, authentication, and architecture decisions guide the design, implementation, and regression tests; the work then exposes a missing durable ownership boundary. The Agent proposes that source-backed knowledge while one-off implementation details remain in the code PR, and a dedicated Context Reviewer checks evidence, consistency, authorization boundaries, and lasting value before approving the Tree update. A new Agent reads the approved retry-ownership decision before planning the next checkout task, so each loop starts with more shared context than the last.",
+      "Context Tree carries durable team knowledge from one task into the next. Before working, an Agent reads only the task-relevant Context Tree paths it is authorized to use, so settled constraints guide design, code, and tests without replacing verification. Afterward, temporary implementation detail stays with the code while lasting decisions become source-backed proposals. A dedicated Context Reviewer checks evidence, consistency, authorization boundaries, and durable value before an approved update enters the team's shared snapshot. The real Context view keeps Agent reads and writes visible, and every future Agent begins with reviewed knowledge instead of starting from zero.",
   },
 } as const;
 

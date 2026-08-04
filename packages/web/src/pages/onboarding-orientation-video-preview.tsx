@@ -27,7 +27,7 @@ import { FirstTreeLogo } from "../components/first-tree-logo.js";
 import { Button } from "../components/ui/button.js";
 import { DenseBadge } from "../components/ui/dense-badge.js";
 import { StatusGlyph } from "../components/ui/status-glyph.js";
-import { ContextTreeOrientationScene } from "./onboarding-orientation-context-tree-scene.js";
+import { ContextTreeLoopScene } from "./onboarding-orientation-context-loop-scene.js";
 
 const FPS = 30;
 
@@ -100,9 +100,9 @@ export function OnboardingOrientationVideoPreviewPage() {
       data-frame={frame}
       className="h-screen w-screen overflow-hidden bg-background text-foreground"
     >
-      <ProductHeader activeItem="Workspace" />
+      <ProductHeader activeItem={chapterId === "context-tree" && time >= 55.2 ? "Context" : "Workspace"} />
       {chapterId === "context-tree" ? (
-        <ContextTreeOrientationScene time={time} />
+        <ContextTreeLoopScene time={time} />
       ) : (
         <div className="flex h-[calc(100vh-3rem)] min-h-0">
           <ConversationRail time={time} />

@@ -70,7 +70,7 @@ describe("OnboardingOrientation", () => {
 
     await click(multiAgent ?? null);
     expect(play).toHaveBeenCalledTimes(1);
-    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(2);
     expect(container.textContent).toContain("The right agents join as the work unfolds");
     const video = container.querySelector("video");
     expect(video?.getAttribute("poster")).toBe("/onboarding/orientation/stills/multi-agent-poster.png");

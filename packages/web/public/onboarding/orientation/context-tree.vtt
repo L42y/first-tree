@@ -1,21 +1,21 @@
 WEBVTT
 
-00:00.000 --> 00:10.000
-Collaboration handles today's task;
-shared context keeps the next one from starting over.
+00:00.000 --> 00:08.500
+Without shared context, each Agent must rediscover
+decisions the team has already settled.
 
-00:10.000 --> 00:24.000
+00:08.500 --> 00:20.000
+Task-scoped reads supply relevant, authorized context—
+not the entire Tree.
+
+00:20.000 --> 00:31.000
 Settled constraints guide design, code, and tests
-without taking the Agent out of the task.
+without replacing verification.
 
-00:24.000 --> 00:29.000
-Only a lasting ownership decision is proposed;
-temporary implementation detail stays with the code.
+00:31.000 --> 00:46.000
+Temporary detail stays with the code; review protects
+shared context before a lasting decision enters the Tree.
 
-00:29.000 --> 00:43.000
-Independent review protects shared context
-with source, consistency, and access checks.
-
-00:43.000 --> 01:00.000
-After approval, the durable decision becomes
-the next Agent's starting point.
+00:46.000 --> 00:55.000
+After approval, the shared snapshot becomes
+the next loop's starting point.
