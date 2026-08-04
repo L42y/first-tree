@@ -2,8 +2,7 @@ import { type ChildProcess, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classify, ERROR_KINDS, getChildProcessRegistry } from "@first-tree/client";
 import {
@@ -24,6 +23,12 @@ import { channelConfig } from "./channel.js";
 import { cliFetch } from "./cli-fetch.js";
 import { resolveNpmInvocation } from "./npm-invocation.js";
 import { print } from "./output.js";
+import {
+  hasPortableInstallSignal,
+  type PortableInstallContext,
+  portableShimContents,
+  resolvePortableInstallContext,
+} from "./portable-install-context.js";
 
 /** Hard ceiling on a single `npm install -g` invocation (5 min). */
 const NPM_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -66,7 +71,7 @@ export function detectInstallMode(
   argv1: string = process.argv[1] ?? "",
   packageName: string | null = PACKAGE_NAME,
 ): InstallMode {
-  if (process.env.FIRST_TREE_INSTALL_MODE === "portable" || process.env.FIRST_TREE_PORTABLE_ROOT) return "portable";
+  if (hasPortableInstallSignal()) return "portable";
   // dev channel is not published to npm — there is no `node_modules/<pkg>`
   // tree to detect a "global" install against. Treat dev binaries as
   // running from source so the update path declines self-update with the
@@ -262,6 +267,101 @@ function checkNpmTargetNodeEngine(spec: string): Extract<ExecuteUpdateResult, { 
   };
 }
 
+function npmPrefixFailure(reason: string, reasonCode: string): Extract<ExecuteUpdateResult, { ok: false }> {
+  return {
+    ok: false,
+    mode: "global",
+    reason,
+    retryable: false,
+    reasonCode,
+  };
+}
+
+function portableNodeVersionDir(prefix: string): string | null {
+  let cursor = resolve(prefix);
+  for (let depth = 0; depth < 8; depth++) {
+    const versionDir = dirname(cursor);
+    if (basename(cursor) === "node" && basename(dirname(versionDir)) === "versions") return versionDir;
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return null;
+}
+
+/** Refuse npm-global writes when this npm resolves inside a portable version tree. */
+function guardNpmGlobalPrefix(): Extract<ExecuteUpdateResult, { ok: false }> | null {
+  const npm = resolveNpmInvocation(["prefix", "--global"]);
+  const probe = spawnSync(npm.command, npm.args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: NPM_METADATA_TIMEOUT_MS,
+    shell: npm.shell,
+  });
+  if (probe.error || probe.status !== 0) {
+    const detail = probe.error?.message ?? probe.stderr?.trim() ?? `exit ${probe.status ?? "unknown"}`;
+    return npmPrefixFailure(
+      `Refusing npm-global update because the npm global prefix could not be verified (${detail}).`,
+      "npm_prefix_probe_failed",
+    );
+  }
+
+  const prefix = probe.stdout?.trim();
+  if (!prefix || !isAbsolute(prefix)) {
+    return npmPrefixFailure(
+      `Refusing npm-global update because npm returned an invalid global prefix: ${JSON.stringify(prefix ?? "")}.`,
+      "npm_prefix_probe_failed",
+    );
+  }
+
+  let canonicalPrefix: string;
+  try {
+    canonicalPrefix = realpathSync(prefix);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return npmPrefixFailure(
+      `Refusing npm-global update because npm prefix ${prefix} could not be resolved (${detail}).`,
+      "npm_prefix_probe_failed",
+    );
+  }
+
+  const versionDir = portableNodeVersionDir(canonicalPrefix);
+  if (versionDir === null) return null;
+
+  let parsed: ReturnType<typeof portableInstallMetadataSchema.safeParse>;
+  try {
+    parsed = portableInstallMetadataSchema.safeParse(
+      JSON.parse(readFileSync(join(versionDir, "INSTALL.json"), "utf8")),
+    );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return npmPrefixFailure(
+      `Refusing npm-global update because ${canonicalPrefix} is inside a portable-shaped versions tree whose provenance cannot be verified (${detail}).`,
+      "npm_prefix_provenance_unknown",
+    );
+  }
+  if (!parsed.success) {
+    return npmPrefixFailure(
+      `Refusing npm-global update because ${canonicalPrefix} is inside a portable-shaped versions tree with invalid INSTALL.json metadata.`,
+      "npm_prefix_provenance_unknown",
+    );
+  }
+
+  const mismatch = validatePortableMetadata(parsed.data);
+  if (parsed.data.installMode !== "portable" || mismatch) {
+    return npmPrefixFailure(
+      `Refusing npm-global update because ${canonicalPrefix} is inside a portable-shaped versions tree with conflicting installation metadata${mismatch ? ` (${mismatch})` : ""}.`,
+      "npm_prefix_provenance_unknown",
+    );
+  }
+
+  return npmPrefixFailure(
+    `Refusing npm-global update because npm prefix ${canonicalPrefix} is inside the immutable portable version ${parsed.data.version}. ` +
+      `Rerun the current channel portable installer and then invoke its absolute channel shim to repair the service; ${portableMigrationHint()}.`,
+    "npm_prefix_inside_portable_install",
+  );
+}
+
 function failPortable(reason: string, retryable = false, reasonCode?: string): ExecuteUpdateResult {
   const base = { ok: false as const, mode: "portable" as const, reason, retryable };
   return reasonCode ? { ...base, reasonCode } : base;
@@ -276,19 +376,6 @@ function portableDownloadBaseUrl(): string | null {
   if (override && override.trim().length > 0) return normalizeBaseUrl(override.trim());
   const configured = channelConfig.portable.downloadBaseUrl;
   return configured ? normalizeBaseUrl(configured) : null;
-}
-
-function currentPortableRoot(): string | null {
-  const root = process.env.FIRST_TREE_PORTABLE_ROOT;
-  if (!root || root.trim().length === 0) return null;
-  return resolve(root);
-}
-
-function portableInstallPrefix(root: string): string | null {
-  if (basename(root) !== "current") return null;
-  const base = dirname(root);
-  if (base === root) return null;
-  return base;
 }
 
 function detectPortablePlatform(): PortablePlatform | null {
@@ -455,41 +542,19 @@ async function switchPortableCurrent(prefix: string, versionDir: string): Promis
   }
 }
 
-function portableShimContents(root: string): string {
-  return `#!/bin/sh
-set -eu
-root="${root.replace(/"/g, '\\"')}"
-export FIRST_TREE_INSTALL_MODE=portable
-export FIRST_TREE_PORTABLE_ROOT="$root"
-exec "$root/node/bin/node" "$root/app/cli/index.mjs" "$@"
-`;
-}
-
-async function writePortableShim(path: string, root: string): Promise<void> {
+async function writePortableShim(path: string, root: string, binDir: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, portableShimContents(root), { mode: 0o755 });
+  await writeFile(tmp, portableShimContents(root, binDir), { mode: 0o755 });
   await chmod(tmp, 0o755);
   await rename(tmp, path);
 }
 
-function pathEntries(): string[] {
-  return (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":").filter((entry) => entry.length > 0);
-}
-
-function firstExistingShimDir(binNames: string[]): string | null {
-  for (const dir of pathEntries()) {
-    for (const bin of binNames) {
-      if (existsSync(join(dir, bin))) return dir;
-    }
-  }
-  return null;
-}
-
-async function rewritePortableShims(root: string): Promise<void> {
+async function rewritePortableShims(context: PortableInstallContext): Promise<void> {
   const binNames = [channelConfig.binName, channelConfig.aliasName];
-  const shimDir = firstExistingShimDir(binNames) ?? join(homedir(), ".local", "bin");
-  await Promise.all(binNames.map((name) => writePortableShim(join(shimDir, name), root)));
+  await Promise.all(
+    binNames.map((name) => writePortableShim(join(context.binDir, name), context.root, context.binDir)),
+  );
 }
 
 function portableInstallFailure(err: unknown, reasonCode = "portable_update_failed"): ExecuteUpdateResult {
@@ -510,11 +575,11 @@ async function installPortableMeta(
   const assetMismatch = validatePortableAsset(asset);
   if (assetMismatch) return failPortable(`Refusing to install portable update: ${assetMismatch}`);
 
-  const currentRoot = currentPortableRoot();
-  if (currentRoot === null) return failPortable("FIRST_TREE_PORTABLE_ROOT is required for portable self-update.");
-  const prefix = portableInstallPrefix(currentRoot);
-  if (prefix === null)
-    return failPortable(`Cannot derive portable install prefix from FIRST_TREE_PORTABLE_ROOT=${currentRoot}`);
+  const installContext = resolvePortableInstallContext();
+  if (installContext === null) {
+    return failPortable("Portable self-update requires an explicit portable installation identity.");
+  }
+  const { prefix } = installContext;
 
   await mkdir(join(prefix, ".tmp"), { recursive: true });
   const tempRoot = await mkdtemp(join(prefix, ".tmp", "update-"));
@@ -542,13 +607,23 @@ async function installPortableMeta(
       await rename(extractDir, finalVersionDir);
     }
 
+    // Prepare both stable shims while `current` still points at the old,
+    // known-good version. A shim-write failure therefore cannot partially
+    // commit the new runtime. Switching `current` is the final commit point.
+    await rewritePortableShims(installContext);
     await switchPortableCurrent(prefix, finalVersionDir);
-    await rewritePortableShims(join(prefix, "current"));
     return { ok: true, mode: "portable", installedVersion: meta.version };
   } catch (err) {
     return portableInstallFailure(err);
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    // `current` is the commit point. Cleanup must never turn an already
+    // committed update into a reported failure, because callers would then
+    // retry against a runtime that has in fact changed underneath them.
+    try {
+      await rm(tempRoot, { recursive: true, force: true });
+    } catch {
+      // best-effort; the next update uses a distinct mkdtemp directory
+    }
   }
 }
 
@@ -576,7 +651,7 @@ export async function installPortableSpec(spec: string): Promise<ExecuteUpdateRe
   try {
     const raw = await fetchPortableJson(metadataUrl);
     const parsed = spec === "latest" ? portableLatestSchema.parse(raw) : portableManifestSchema.parse(raw);
-    return installPortableMeta(parsed, platform);
+    return await installPortableMeta(parsed, platform);
   } catch (err) {
     return portableInstallFailure(err);
   }
@@ -655,6 +730,11 @@ export async function installGlobalSpec(
   if (engineMismatch) {
     writeInstallOutput(options, `  [update] ${engineMismatch.reason}\n`);
     return engineMismatch;
+  }
+  const prefixFailure = guardNpmGlobalPrefix();
+  if (prefixFailure) {
+    writeInstallOutput(options, `  [update] ${prefixFailure.reason}\n`);
+    return prefixFailure;
   }
   return new Promise((resolvePromise) => {
     const npm = resolveNpmInvocation(["install", "-g", `${PACKAGE_NAME}@${spec}`]);

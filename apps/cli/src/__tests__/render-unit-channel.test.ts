@@ -38,6 +38,10 @@ const FAKE_BIN_INVOCATION = { kind: "bin", program: "/usr/local/bin/first-tree-d
 // name is what macOS shows in the background-items list.
 const FAKE_WRAPPER_PATH = join(defaultHome(), "service", channelConfig.displayName);
 
+function nonPortablePath(basePaths: readonly string[]): string {
+  return [...new Set([dirname(process.execPath), ...basePaths])].join(":");
+}
+
 function extractPlistPathValue(plist: string): string {
   const match = /<key>PATH<\/key>\s*<string>([^<]+)<\/string>/.exec(plist);
   if (!match?.[1]) {
@@ -57,7 +61,7 @@ function withExecPath(execPath: string, callback: () => void): void {
 }
 
 describe("renderSystemdUnit — channel identity baked into unit text", () => {
-  const unit = renderSystemdUnit(FAKE_BIN_INVOCATION);
+  const unit = renderSystemdUnit(FAKE_BIN_INVOCATION, "user", nonPortablePath(["/usr/local/bin", "/usr/bin", "/bin"]));
 
   it("uses the channel's syslog identifier (bare name, no .service)", () => {
     expect(unit).toMatch(new RegExp(`SyslogIdentifier=${channelConfig.launchdLabel}\\b`));
@@ -90,7 +94,10 @@ describe("renderSystemdUnit — channel identity baked into unit text", () => {
 });
 
 describe("renderPlist — channel identity baked into plist text", () => {
-  const plist = renderPlist(FAKE_WRAPPER_PATH);
+  const plist = renderPlist(
+    FAKE_WRAPPER_PATH,
+    nonPortablePath(["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"]),
+  );
 
   it("uses the channel's launchd label", () => {
     // Label tag — exact match in the <key>Label</key><string>…</string> pair.
@@ -135,7 +142,9 @@ describe("renderPlist — channel identity baked into plist text", () => {
 
   it("does not duplicate launchd fallback paths that match the current Node binary directory", () => {
     withExecPath("/usr/local/bin/node", () => {
-      const pathEntries = extractPlistPathValue(renderPlist(FAKE_WRAPPER_PATH)).split(":");
+      const pathEntries = extractPlistPathValue(
+        renderPlist(FAKE_WRAPPER_PATH, nonPortablePath(["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"])),
+      ).split(":");
       expect(pathEntries[0]).toBe("/usr/local/bin");
       expect(pathEntries.filter((entry) => entry === "/usr/local/bin")).toHaveLength(1);
     });

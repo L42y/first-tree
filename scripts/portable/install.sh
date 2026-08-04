@@ -84,6 +84,15 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+case "$PREFIX" in
+  /*) ;;
+  *) die "--prefix must be an absolute path" ;;
+esac
+case "$BIN_DIR" in
+  /*) ;;
+  *) die "--bin-dir must be an absolute path" ;;
+esac
+
 command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
@@ -128,13 +137,13 @@ extract_tarball() {
 json_string() {
   file="$1"
   key="$2"
-  sed -n "s/.*\"$key\": \"\\([^\"]*\\)\".*/\\1/p" "$file" | sed -n '1p'
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | sed -n '1p'
 }
 
 json_number() {
   file="$1"
   key="$2"
-  sed -n "s/.*\"$key\": \\([0-9][0-9]*\\).*/\\1/p" "$file" | sed -n '1p'
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p" "$file" | sed -n '1p'
 }
 
 asset_block() {
@@ -163,16 +172,27 @@ detect_platform() {
   printf '%s-%s' "$portable_os" "$portable_arch"
 }
 
+shell_single_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\"'\"'/g"
+  printf "'"
+}
+
 write_shim() {
   path="$1"
   current_root="$2"
+  bin_dir="$3"
   tmp="${path}.$$"
+  root_literal="$(shell_single_quote "$current_root")"
+  bin_literal="$(shell_single_quote "$bin_dir")"
   cat >"$tmp" <<EOF
 #!/bin/sh
 set -eu
-root="$current_root"
+root=$root_literal
+bin_dir=$bin_literal
 export FIRST_TREE_INSTALL_MODE=portable
 export FIRST_TREE_PORTABLE_ROOT="\$root"
+export FIRST_TREE_PORTABLE_BIN_DIR="\$bin_dir"
 exec "\$root/node/bin/node" "\$root/app/cli/index.mjs" "\$@"
 EOF
   chmod 755 "$tmp"
@@ -376,6 +396,11 @@ ASSET_SIZE="$(json_number "$ASSET_FILE" size)"
 
 clean_npm_temp_residue "$PACKAGE_NAME"
 mkdir -p "$PREFIX/versions" "$PREFIX/.tmp" "$BIN_DIR"
+# Store one lexical absolute-path contract in shims and metadata consumers.
+# `pwd -L` removes trailing slashes and dot segments without resolving a
+# caller-selected symlink prefix, matching Node's path.resolve semantics.
+PREFIX="$(CDPATH= cd -L "$PREFIX" && pwd -L)"
+BIN_DIR="$(CDPATH= cd -L "$BIN_DIR" && pwd -L)"
 TARBALL="$WORK_DIR/payload.tar.gz"
 log "Downloading First Tree ${VERSION} for ${PLATFORM}"
 download_to "$ASSET_URL" "$TARBALL"
@@ -392,7 +417,29 @@ extract_tarball "$TARBALL" "$TEMP_VERSION_DIR"
 
 if [ -e "$FINAL_VERSION_DIR" ]; then
   rm -rf "$TEMP_VERSION_DIR"
+  VALIDATION_DIR="$FINAL_VERSION_DIR"
 else
+  VALIDATION_DIR="$TEMP_VERSION_DIR"
+fi
+
+INSTALL_FILE="$VALIDATION_DIR/INSTALL.json"
+[ -f "$INSTALL_FILE" ] || die "portable payload missing INSTALL.json"
+INSTALL_VERSION="$(json_string "$INSTALL_FILE" version)"
+INSTALL_PACKAGE="$(json_string "$INSTALL_FILE" packageName)"
+INSTALL_BIN="$(json_string "$INSTALL_FILE" binName)"
+INSTALL_ALIAS="$(json_string "$INSTALL_FILE" aliasName)"
+INSTALL_PLATFORM="$(json_string "$INSTALL_FILE" platform)"
+INSTALL_MODE="$(json_string "$INSTALL_FILE" installMode)"
+INSTALL_ENTRY="$(json_string "$INSTALL_FILE" appEntry)"
+[ "$INSTALL_VERSION" = "$VERSION" ] || die "INSTALL.json version does not match downloaded metadata"
+[ "$INSTALL_PACKAGE" = "$PACKAGE_NAME" ] || die "INSTALL.json packageName does not match downloaded metadata"
+[ "$INSTALL_BIN" = "$BIN_NAME" ] || die "INSTALL.json binName does not match downloaded metadata"
+[ "$INSTALL_ALIAS" = "$ALIAS_NAME" ] || die "INSTALL.json aliasName does not match downloaded metadata"
+[ "$INSTALL_PLATFORM" = "$PLATFORM" ] || die "INSTALL.json platform does not match the current platform"
+[ "$INSTALL_MODE" = "portable" ] || die "INSTALL.json does not describe a portable install"
+[ "$INSTALL_ENTRY" = "app/cli/index.mjs" ] || die "INSTALL.json appEntry is unsupported"
+
+if [ "$VALIDATION_DIR" = "$TEMP_VERSION_DIR" ]; then
   mv "$TEMP_VERSION_DIR" "$FINAL_VERSION_DIR"
 fi
 
@@ -401,16 +448,25 @@ if [ -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]; then
   die "$CURRENT_LINK exists and is not a symlink"
 fi
 NEW_LINK="$PREFIX/.current.$$"
+
+# Exercise the candidate runtime directly before changing stable shims or
+# `current`. Once `current` moves, every remaining operation is best-effort or
+# non-failing so installer success/failure always reflects the active version.
+if ! "$FINAL_VERSION_DIR/node/bin/node" "$FINAL_VERSION_DIR/app/cli/index.mjs" --version >/dev/null; then
+  die "portable payload failed the pre-commit runtime smoke check"
+fi
+
+# Prepare both stable shims while current still names the old version. The
+# current symlink is the final commit point, so a shim write failure never
+# reports failure after activating the new runtime.
+write_shim "$BIN_DIR/$BIN_NAME" "$CURRENT_LINK" "$BIN_DIR"
+write_shim "$BIN_DIR/$ALIAS_NAME" "$CURRENT_LINK" "$BIN_DIR"
 rm -f "$NEW_LINK"
 ln -s "$FINAL_VERSION_DIR" "$NEW_LINK"
 atomic_replace_current_link "$NEW_LINK" "$CURRENT_LINK"
 
-write_shim "$BIN_DIR/$BIN_NAME" "$CURRENT_LINK"
-write_shim "$BIN_DIR/$ALIAS_NAME" "$CURRENT_LINK"
-
 PATH="$BIN_DIR:${PATH:-}"
 export PATH
-"$BIN_DIR/$BIN_NAME" --version >/dev/null
 maybe_edit_path "$BIN_NAME"
 ensure_daemon_service "$BIN_NAME"
 

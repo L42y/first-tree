@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { channelConfig } from "../core/channel.js";
 
 const updateMocks = vi.hoisted(() => ({
   detectInstallMode: vi.fn(),
@@ -15,6 +14,9 @@ const updateStateMocks = vi.hoisted(() => ({
 }));
 
 const spawnSyncMock = vi.hoisted(() => vi.fn());
+const resolveCliInvocationMock = vi.hoisted(() =>
+  vi.fn(() => ({ kind: "bin" as const, program: "/opt/first-tree/bin/first-tree-dev" })),
+);
 const printLineMock = vi.hoisted(() => vi.fn());
 const exitMock = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null | undefined) => {
   throw Object.assign(new Error(`process.exit ${code}`), { exitCode: code });
@@ -26,6 +28,7 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("../core/update.js", () => updateMocks);
 vi.mock("../core/update-state.js", () => updateStateMocks);
+vi.mock("../core/supervisor/index.js", () => ({ resolveCliInvocation: resolveCliInvocationMock }));
 vi.mock("../core/output.js", () => ({
   print: { line: printLineMock },
 }));
@@ -43,6 +46,8 @@ describe("update glue", () => {
     updateStateMocks.isLoopGuarded.mockReset();
     updateStateMocks.recordUpdateAttempt.mockReset();
     spawnSyncMock.mockReset();
+    resolveCliInvocationMock.mockReset();
+    resolveCliInvocationMock.mockReturnValue({ kind: "bin", program: "/opt/first-tree/bin/first-tree-dev" });
     printLineMock.mockClear();
     exitMock.mockClear();
 
@@ -219,7 +224,7 @@ describe("update glue", () => {
       createExecuteUpdate({ managed: true })({ currentVersion: "0.5.0", targetVersion: "0.6.0" }),
     ).rejects.toMatchObject({ exitCode: SELF_RESTART_EXIT_CODE });
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      channelConfig.binName,
+      "/opt/first-tree/bin/first-tree-dev",
       ["daemon", "refresh-unit"],
       expect.objectContaining({ timeout: 45_000 }),
     );
@@ -230,7 +235,9 @@ describe("update glue", () => {
     await expect(
       createExecuteUpdate({ managed: true })({ currentVersion: "0.5.0", targetVersion: "0.6.0" }),
     ).rejects.toMatchObject({ exitCode: SELF_RESTART_EXIT_CODE });
-    expect(output()).toContain("warning: 'daemon refresh-unit' exited with status 7");
+    expect(output()).toContain(
+      "warning: '/opt/first-tree/bin/first-tree-dev daemon refresh-unit' exited with status 7",
+    );
 
     printLineMock.mockClear();
     spawnSyncMock.mockReturnValueOnce({ status: undefined, signal: undefined });
@@ -246,7 +253,8 @@ describe("update glue", () => {
     await expect(
       createExecuteUpdate({ managed: true })({ currentVersion: "0.5.0", targetVersion: "0.6.0" }),
     ).rejects.toMatchObject({ exitCode: SELF_RESTART_EXIT_CODE });
-    expect(output()).toContain("warning: could not spawn 'daemon refresh-unit': spawn denied");
+    expect(output()).toContain("warning: could not resolve or spawn the installed CLI");
+    expect(output()).toContain("spawn denied");
 
     printLineMock.mockClear();
     spawnSyncMock.mockImplementationOnce(() => {
@@ -255,7 +263,7 @@ describe("update glue", () => {
     await expect(
       createExecuteUpdate({ managed: true })({ currentVersion: "0.5.0", targetVersion: "0.6.0" }),
     ).rejects.toMatchObject({ exitCode: SELF_RESTART_EXIT_CODE });
-    expect(output()).toContain("warning: could not spawn 'daemon refresh-unit': spawn string denied");
+    expect(output()).toContain("spawn string denied");
   });
 
   it("routes managed update output through the injected logger and captures refresh-unit output", async () => {
@@ -283,14 +291,19 @@ describe("update glue", () => {
 
     expect(printLineMock).not.toHaveBeenCalled();
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      channelConfig.binName,
+      "/opt/first-tree/bin/first-tree-dev",
       ["daemon", "refresh-unit"],
       expect.objectContaining({ encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }),
     );
     expect(logs).toEqual(
       expect.arrayContaining([
         ["info", "npm stderr line"],
-        ["warn", expect.stringContaining("warning: 'daemon refresh-unit' exited with status 7")],
+        [
+          "warn",
+          expect.stringContaining(
+            "warning: '/opt/first-tree/bin/first-tree-dev daemon refresh-unit' exited with status 7",
+          ),
+        ],
         ["warn", expect.stringContaining("Output: stderr line | stdout line")],
       ]),
     );

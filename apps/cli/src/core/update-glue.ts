@@ -5,6 +5,7 @@ import * as semver from "semver";
 import { channelConfig } from "./channel.js";
 import { getChannelInstallCommand } from "./install-guidance.js";
 import { print } from "./output.js";
+import { resolveCliInvocation } from "./supervisor/index.js";
 import {
   detectInstallMode,
   fetchServerCommandVersion,
@@ -276,9 +277,9 @@ export function createExecuteUpdate({
 }
 
 /**
- * Spawn the newly-installed channel binary (now on PATH at
- * `/usr/local/bin/<binName>` or the equivalent global location) to
- * rewrite the service unit using its OWN templates.
+ * Resolve and spawn the newly-installed CLI through its installed identity to
+ * rewrite the service unit using its OWN templates. Portable installs use the
+ * explicit stable outer shim; npm installs retain their installed-bin lookup.
  *
  * Why a subprocess: this whole function runs inside the OLD daemon process,
  * which has the OLD `installClientService()` code loaded in memory.
@@ -296,15 +297,12 @@ export function createExecuteUpdate({
  * `bootstrap`, both of which routinely take 10-30s under load.
  */
 function refreshServiceUnit(log: (level: "info" | "warn", message: string) => void): void {
-  // Spawn the channel's own bin name (prod → `first-tree`, staging →
-  // `first-tree-staging`, dev → `first-tree-dev`). Crossing channels here
-  // would either ENOENT (the other bin isn't installed) or, worse,
-  // silently rewrite the wrong service unit with the wrong channel's
-  // templates.
-  const bin = channelConfig.binName;
-  const recovery = `\`${bin} logout && ${bin} login <code>\``;
   try {
-    const res = spawnSync(bin, ["daemon", "refresh-unit"], {
+    const invocation = resolveCliInvocation();
+    const args = [...(invocation.kind === "node" ? invocation.args : []), "daemon", "refresh-unit"];
+    const invocationLabel = [invocation.program, ...(invocation.kind === "node" ? invocation.args : [])].join(" ");
+    const recovery = `\`${invocationLabel} daemon ensure-service\``;
+    const res = spawnSync(invocation.program, args, {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 45_000,
@@ -319,7 +317,7 @@ function refreshServiceUnit(log: (level: "info" | "warn", message: string) => vo
       const outputSuffix = output ? ` Output: ${output}` : "";
       log(
         "warn",
-        `warning: 'daemon refresh-unit' exited with status ${res.status ?? "unknown"} ` +
+        `warning: '${invocationLabel} daemon refresh-unit' exited with status ${res.status ?? "unknown"} ` +
           `(signal=${res.signal ?? "none"}). If the supervisor restart fails after exit ${SELF_RESTART_EXIT_CODE}, ` +
           `recover with ${recovery}.${outputSuffix}`,
       );
@@ -328,7 +326,8 @@ function refreshServiceUnit(log: (level: "info" | "warn", message: string) => vo
     const msg = err instanceof Error ? err.message : String(err);
     log(
       "warn",
-      `warning: could not spawn 'daemon refresh-unit': ${msg}. If the supervisor restart fails, recover with ${recovery}.`,
+      `warning: could not resolve or spawn the installed CLI for 'daemon refresh-unit': ${msg}. ` +
+        `If the supervisor restart fails, rerun the ${channelConfig.channel} portable installer or invoke the installed channel shim by absolute path.`,
     );
   }
 }

@@ -13,7 +13,7 @@ import {
   logDir,
   migrateBakedProxyEnv,
   readFileOrFlagDrift,
-  resolveCliInvocation,
+  resolveCliInstall,
   runCapture,
   runCaptureOut,
   type ShellResult,
@@ -54,7 +54,7 @@ function launchdWrapperPath(): string {
  * itself `exec`s the resolved CLI invocation with the daemon args (see
  * `renderLaunchdWrapper`), so nothing else needs to be on the command line.
  */
-export function renderPlist(wrapperPath: string): string {
+export function renderPlist(wrapperPath: string, servicePath: string = launchdPathEnv()): string {
   const programArgs: string[] = [wrapperPath];
 
   const argsXml = programArgs.map((a) => `    <string>${escapeXml(a)}</string>`).join("\n");
@@ -78,7 +78,7 @@ export function renderPlist(wrapperPath: string): string {
   // launchd does not inherit the operator's interactive shell PATH. Put the
   // current Node directory first so npm-installed CLI shims and self-update
   // run under the same Node toolchain that installed/refreshed the service.
-  const pathEnvXml = escapeXml(launchdPathEnv());
+  const pathEnvXml = escapeXml(servicePath);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
@@ -194,7 +194,7 @@ function waitForLabelEvicted(target: string, label: string, timeoutMs: number): 
 }
 
 function writeLaunchdServiceFiles(): { plistPath: string; wrapperPath: string } {
-  const invocation = resolveCliInvocation();
+  const install = resolveCliInstall();
   ensureLogDir();
 
   const plistPath = launchdPlistPath();
@@ -207,10 +207,10 @@ function writeLaunchdServiceFiles(): { plistPath: string; wrapperPath: string } 
 
   const wrapperPath = launchdWrapperPath();
   mkdirSync(dirname(wrapperPath), { recursive: true, mode: 0o700 });
-  writeFileSync(wrapperPath, renderLaunchdWrapper(invocation), { mode: 0o755 });
+  writeFileSync(wrapperPath, renderLaunchdWrapper(install.invocation), { mode: 0o755 });
 
   mkdirSync(dirname(plistPath), { recursive: true });
-  writeFileSync(plistPath, renderPlist(wrapperPath), { mode: 0o644 });
+  writeFileSync(plistPath, renderPlist(wrapperPath, launchdPathEnv(install.portable)), { mode: 0o644 });
 
   return { plistPath, wrapperPath };
 }
@@ -312,15 +312,18 @@ function uninstallLaunchd(): ServiceInfo {
 }
 
 function launchdUnitDriftDetected(): boolean {
-  const invocation = resolveCliInvocation();
+  const install = resolveCliInstall();
   const wrapperPath = launchdWrapperPath();
   // Two files back the launchd service: the plist (points at the stable
   // wrapper path) and the wrapper (embeds the resolved Node/CLI invocation).
   // The plist rarely changes now, so the wrapper is what catches a Node
   // upgrade or install-path move — check both or auto-update would skip a
   // reinstall and keep launching a stale binary.
-  const wrapperDrift = readFileOrFlagDrift(wrapperPath, renderLaunchdWrapper(invocation));
-  const plistDrift = readFileOrFlagDrift(launchdPlistPath(), renderPlist(wrapperPath));
+  const wrapperDrift = readFileOrFlagDrift(wrapperPath, renderLaunchdWrapper(install.invocation));
+  const plistDrift = readFileOrFlagDrift(
+    launchdPlistPath(),
+    renderPlist(wrapperPath, launchdPathEnv(install.portable)),
+  );
   return wrapperDrift || plistDrift;
 }
 

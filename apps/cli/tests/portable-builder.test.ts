@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdtempSync,
   readdirSync,
@@ -12,9 +13,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   artifactDownloadUrl,
@@ -51,6 +53,7 @@ import {
 } from "../../../scripts/portable/build-portable.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const TSX_IMPORT = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
 
 let tmpDirs: string[] = [];
 
@@ -68,6 +71,30 @@ function currentPlatform(): string | null {
 
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function treeManifest(root: string): string {
+  const entries: string[] = [];
+  const walk = (directory: string, relativeRoot: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const absolute = join(directory, entry.name);
+      const relative = join(relativeRoot, entry.name).split("\\").join("/");
+      if (entry.isDirectory()) {
+        entries.push(`d ${relative}`);
+        walk(absolute, relative);
+      } else if (entry.isSymbolicLink()) {
+        entries.push(`l ${relative} ${readlinkSync(absolute)}`);
+      } else {
+        entries.push(`f ${relative} ${sha256(absolute)}`);
+      }
+    }
+  };
+  walk(root, "");
+  return entries.join("\n");
 }
 
 function commandPath(command: string): string {
@@ -587,26 +614,85 @@ exec node "$basedir/../${target}" "$@"
 });
 
 describe("portable installer", () => {
-  async function writeFixtureVersion(root: string, version: string, platform: string): Promise<void> {
+  async function writeFixtureVersion(
+    root: string,
+    version: string,
+    platform: string,
+    options: { failRuntimeSmoke?: boolean; integrationRuntime?: boolean } = {},
+  ): Promise<void> {
     const channelDir = join(root, "prod");
     const versionDir = join(channelDir, version);
     const payload = join(root, `payload-${version}`);
     await mkdir(join(payload, "node", "bin"), { recursive: true });
     await mkdir(join(payload, "app", "cli"), { recursive: true });
     await mkdir(join(payload, "bin"), { recursive: true });
-    await writeFile(
-      join(payload, "node", "bin", "node"),
-      `#!/bin/sh
+    const nodeScript = options.integrationRuntime
+      ? `#!/bin/sh
+exec ${shellSingleQuote(process.execPath)} --import ${shellSingleQuote(TSX_IMPORT)} "$@"
+`
+      : `#!/bin/sh
 if [ -n "\${FT_TEST_NODE_ARGS_LOG:-}" ]; then
   printf '%s\\n' "$*" >>"$FT_TEST_NODE_ARGS_LOG"
 fi
-if [ "$2" = "--version" ]; then echo ${version}; exit 0; fi
-if [ "$1" = "--version" ]; then echo ${version}; exit 0; fi
+if [ "$2" = "--version" ]; then ${options.failRuntimeSmoke ? "exit 51" : `echo ${version}; exit 0;`} fi
+if [ "$1" = "--version" ]; then ${options.failRuntimeSmoke ? "exit 51" : `echo ${version}; exit 0;`} fi
 echo node-stub "$@"
-`,
-      { mode: 0o755 },
+`;
+    await writeFile(join(payload, "node", "bin", "node"), nodeScript, { mode: 0o755 });
+    if (options.integrationRuntime) {
+      const runtimeRoot = join(payload, "test-runtime");
+      cpSync(join(REPO_ROOT, "apps", "cli", "src"), join(runtimeRoot, "src"), { recursive: true });
+      writeFileSync(join(runtimeRoot, "package.json"), JSON.stringify({ type: "module" }));
+      const buildInfoPath = join(runtimeRoot, "src", "build-info.ts");
+      const buildInfo = readFileSync(buildInfoPath, "utf8").replace('= "dev";', '= "prod";');
+      writeFileSync(buildInfoPath, buildInfo);
+      await symlink(join(REPO_ROOT, "apps", "cli", "node_modules"), join(runtimeRoot, "node_modules"));
+    }
+    const integrationApp = `
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+const { resolveCliInstall, systemdPathEnv } = await import(
+  new URL("../../test-runtime/src/core/supervisor/shared.ts", import.meta.url)
+);
+const { renderSystemdUnit } = await import(
+  new URL("../../test-runtime/src/core/supervisor/systemd.ts", import.meta.url)
+);
+const { createExecuteUpdate } = await import(
+  new URL("../../test-runtime/src/core/update-glue.ts", import.meta.url)
+);
+
+const version = ${JSON.stringify(version)};
+const args = process.argv.slice(2);
+
+function refreshService(kind) {
+  const install = resolveCliInstall();
+  const unit = renderSystemdUnit(install.invocation, "user", systemdPathEnv(install.portable));
+  writeFileSync(process.env.FT_INTEGRATION_UNIT, unit);
+  appendFileSync(process.env.FT_INTEGRATION_LOG, [kind, version, install.invocation.program].join(" ") + "\\n");
+}
+
+if (args[0] === "--version") {
+  console.log(version);
+} else if (args[0] === "login") {
+  refreshService("login");
+} else if (args[0] === "daemon" && (args[1] === "ensure-service" || args[1] === "refresh-unit")) {
+  refreshService(args[1]);
+} else if (args[0] === "managed-update") {
+  const execute = createExecuteUpdate({
+    managed: true,
+    log: (_level, message) => appendFileSync(process.env.FT_INTEGRATION_LOG, "update " + message + "\\n"),
+  });
+  await execute({ currentVersion: version, targetVersion: args[1] });
+  throw new Error("managed update returned without the restart exit");
+} else if (args[0] === "tree-version") {
+  console.log(readFileSync(new URL("../../VERSION", import.meta.url), "utf8").trim());
+} else {
+  throw new Error("unsupported integration fixture command: " + args.join(" "));
+}
+`;
+    await writeFile(
+      join(payload, "app", "cli", "index.mjs"),
+      options.integrationRuntime ? integrationApp : "// fixture\n",
     );
-    await writeFile(join(payload, "app", "cli", "index.mjs"), "// fixture\n");
     await writeFile(join(payload, "app", "package.json"), JSON.stringify({ name: "first-tree", version }));
     await writeFile(join(payload, "VERSION"), `${version}\n`);
     await writeFile(
@@ -697,6 +783,7 @@ echo node-stub "$@"
     const shim = readFileSync(join(binDir, "first-tree"), "utf8");
     expect(shim).toContain("FIRST_TREE_INSTALL_MODE=portable");
     expect(shim).toContain("FIRST_TREE_PORTABLE_ROOT");
+    expect(shim).toContain("FIRST_TREE_PORTABLE_BIN_DIR");
   });
 
   it("prints shell refresh guidance for the profile it updates", async () => {
@@ -841,6 +928,84 @@ echo node-stub "$@"
     expect(nodeArgs).toContain("app/cli/index.mjs daemon ensure-service");
   });
 
+  it("keeps one portable identity across installer, service render, managed update, and real shim refresh", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    const fixture = tempDir("first-tree-portable-integration-");
+    await writeFixtureVersion(fixture, "1.0.0", platform, { integrationRuntime: true });
+
+    const home = tempDir("first-tree-integration-home-");
+    const rawPrefix = `${join(home, "portable-parent", "..", "portable-root")}/`;
+    const rawBinDir = `${join(home, "bin-parent", "..", "custom-bin")}/`;
+    const prefix = resolve(rawPrefix);
+    const binDir = resolve(rawBinDir);
+    const shim = join(binDir, "first-tree");
+    const unitPath = join(home, "rendered.service");
+    const integrationLog = join(home, "integration.log");
+    const legacyMarker = join(home, "legacy-invoked");
+    const legacyBinDir = join(home, "legacy-global-bin");
+    const npmRoot = join(home, "npm-root");
+    await mkdir(legacyBinDir, { recursive: true });
+    await mkdir(npmRoot, { recursive: true });
+    await writeFile(join(legacyBinDir, "first-tree"), '#!/bin/sh\nprintf invoked >"$FT_LEGACY_MARKER"\nexit 99\n', {
+      mode: 0o755,
+    });
+    await writeFile(
+      join(legacyBinDir, "npm"),
+      '#!/bin/sh\nif [ "$1" = "root" ] && [ "$2" = "-g" ]; then echo "$FT_TEST_NPM_ROOT"; exit 0; fi\nexit 1\n',
+      { mode: 0o755 },
+    );
+
+    const env = {
+      ...process.env,
+      HOME: home,
+      FIRST_TREE_HOME: join(home, "state"),
+      FIRST_TREE_CHANNEL: "prod",
+      FIRST_TREE_PORTABLE_CHANNEL: "prod",
+      FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL: `file://${fixture}`,
+      FIRST_TREE_SERVICE_MODE: "",
+      FT_INTEGRATION_UNIT: unitPath,
+      FT_INTEGRATION_LOG: integrationLog,
+      FT_LEGACY_MARKER: legacyMarker,
+      FT_TEST_NPM_ROOT: npmRoot,
+      PATH: `${legacyBinDir}:${process.env.PATH ?? ""}`,
+    };
+    const installer = join(REPO_ROOT, "scripts", "portable", "install.sh");
+    const install = spawnSync("sh", [installer, "--prefix", rawPrefix, "--bin-dir", rawBinDir, "--no-path-edit"], {
+      cwd: REPO_ROOT,
+      env,
+      encoding: "utf8",
+    });
+    expect(install.status, install.stderr || install.stdout).toBe(0);
+    expect(realpathSync(join(prefix, "current"))).toBe(join(prefix, "versions", "1.0.0"));
+
+    const login = spawnSync(shim, ["login", "test-code"], { cwd: REPO_ROOT, env, encoding: "utf8" });
+    expect(login.status, login.stderr || login.stdout).toBe(0);
+    const unitBefore = readFileSync(unitPath, "utf8");
+    expect(unitBefore).toContain(shim);
+    expect(unitBefore).toContain(join(prefix, "current", "node", "bin"));
+    expect(unitBefore).not.toContain("/versions/");
+    const oldTree = treeManifest(join(prefix, "versions", "1.0.0"));
+
+    await writeFixtureVersion(fixture, "2.0.0", platform, { integrationRuntime: true });
+    const update = spawnSync(shim, ["managed-update", "2.0.0"], { cwd: REPO_ROOT, env, encoding: "utf8" });
+    expect(update.status, update.stderr || update.stdout).toBe(75);
+
+    expect(treeManifest(join(prefix, "versions", "1.0.0"))).toBe(oldTree);
+    expect(existsSync(legacyMarker)).toBe(false);
+    const unitAfter = readFileSync(unitPath, "utf8");
+    expect(unitAfter).toContain(shim);
+    expect(unitAfter).toContain(join(prefix, "current", "node", "bin"));
+    expect(unitAfter).not.toContain("/versions/");
+    const log = readFileSync(integrationLog, "utf8");
+    expect(log).toContain(`login 1.0.0 ${shim}`);
+    expect(log).toContain(`refresh-unit 2.0.0 ${shim}`);
+
+    const version = spawnSync(shim, ["--version"], { cwd: REPO_ROOT, env, encoding: "utf8" });
+    expect(version.status, version.stderr).toBe(0);
+    expect(version.stdout.trim()).toBe("2.0.0");
+  }, 45_000);
+
   it("replaces the current symlink itself when upgrading with the shell installer", async () => {
     const platform = currentPlatform();
     if (platform === null) return;
@@ -888,6 +1053,41 @@ echo node-stub "$@"
     expect(secondInstall.status, secondInstall.stderr || secondInstall.stdout).toBe(0);
     expect(readFileSync(join(prefix, "current", "VERSION"), "utf8")).toBe("1.2.4\n");
     expect(readdirSync(join(prefix, "versions", "1.2.3")).filter((entry) => entry.startsWith(".current."))).toEqual([]);
+  });
+
+  it("keeps the old current when the candidate runtime smoke check fails", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    const fixture = await makeFixture(platform);
+    const home = tempDir("first-tree-home-");
+    const prefix = join(home, "prefix");
+    const binDir = join(home, "bin");
+    const installArgs = [
+      join(REPO_ROOT, "scripts", "portable", "install.sh"),
+      "--prefix",
+      prefix,
+      "--bin-dir",
+      binDir,
+      "--no-path-edit",
+    ];
+    const env = {
+      ...process.env,
+      HOME: home,
+      FIRST_TREE_PORTABLE_CHANNEL: "prod",
+      FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL: `file://${fixture}`,
+    };
+
+    const firstInstall = spawnSync("sh", installArgs, { cwd: REPO_ROOT, env, encoding: "utf8" });
+    expect(firstInstall.status, firstInstall.stderr || firstInstall.stdout).toBe(0);
+    const oldShim = readFileSync(join(binDir, "first-tree"), "utf8");
+
+    await writeFixtureVersion(fixture, "1.2.4", platform, { failRuntimeSmoke: true });
+    const failedUpgrade = spawnSync("sh", installArgs, { cwd: REPO_ROOT, env, encoding: "utf8" });
+
+    expect(failedUpgrade.status).not.toBe(0);
+    expect(failedUpgrade.stderr).toContain("pre-commit runtime smoke check");
+    expect(readFileSync(join(prefix, "current", "VERSION"), "utf8")).toBe("1.2.3\n");
+    expect(readFileSync(join(binDir, "first-tree"), "utf8")).toBe(oldShim);
   });
 
   it("leaves the previous current symlink intact when atomic current replacement fails", async () => {
