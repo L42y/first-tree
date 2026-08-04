@@ -93,11 +93,13 @@ export function readFirstChatOrientationMessageMetadata(
 /**
  * Server-owned marker on the first visible human turn that consumes a pending
  * first-chat Orientation handoff. It binds the deferred bootstrap replay to
- * that exact notify trigger; ordinary message writes cannot supply it.
+ * that exact notify trigger and the original bootstrap target. Ordinary
+ * message writes cannot supply it.
  */
 export const FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY = "firstChatOrientationContinuation";
 export const firstChatOrientationContinuationMessageMetadataSchema = z.object({
   version: z.literal(1),
+  targetAgentId: z.string().min(1),
 });
 export type FirstChatOrientationContinuationMessageMetadata = z.infer<
   typeof firstChatOrientationContinuationMessageMetadataSchema

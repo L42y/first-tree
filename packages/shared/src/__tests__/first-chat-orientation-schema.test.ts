@@ -33,12 +33,17 @@ describe("first-chat Orientation message metadata", () => {
   it("accepts only the current server-owned continuation marker", () => {
     expect(
       readFirstChatOrientationContinuationMessageMetadata({
-        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1, targetAgentId: "agent-1" },
       }),
-    ).toEqual({ version: 1 });
+    ).toEqual({ version: 1, targetAgentId: "agent-1" });
     expect(
       readFirstChatOrientationContinuationMessageMetadata({
-        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 2 },
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 2, targetAgentId: "agent-1" },
+      }),
+    ).toBeNull();
+    expect(
+      readFirstChatOrientationContinuationMessageMetadata({
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
       }),
     ).toBeNull();
   });

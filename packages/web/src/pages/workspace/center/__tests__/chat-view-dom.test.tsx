@@ -870,7 +870,7 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("treats any later human message as completion without hiding the Orientation history", async () => {
+  it("treats a later human message to the original target as optimistic completion", async () => {
     const { ChatView } = await import("../chat-view.js");
     const bootstrap = message({
       id: "orientation-bootstrap-completed",
@@ -901,6 +901,42 @@ describe("ChatView", () => {
     await waitForText(container, "Watch again");
     expect(container.textContent).toContain("Start by reading /projects/acme.");
     expect(container.textContent).not.toContain("Skip introduction and start");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps Orientation pending when a later human message targets another participant", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const bootstrap = message({
+      id: "orientation-bootstrap-wrong-recipient",
+      senderId: "human-agent-self",
+      content: "Nova, welcome aboard.",
+      metadata: {
+        mentions: ["agent-1"],
+        [FIRST_CHAT_ORIENTATION_METADATA_KEY]: { version: 1 },
+      },
+      source: "api",
+      createdAt: "2026-05-28T11:55:00.000Z",
+    });
+    const messageToAnotherParticipant = message({
+      id: "orientation-wrong-recipient-message",
+      senderId: "human-agent-self",
+      content: "Please inspect the deployment notes.",
+      metadata: { mentions: ["agent-2"] },
+      createdAt: "2026-05-28T11:56:00.000Z",
+    });
+    const page = messages([bootstrap, messageToAnotherParticipant]);
+    chatMocks.listChatMessages.mockResolvedValue(page);
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={chatDetail()} />,
+      (queryClient) => seedChat(queryClient, chatDetail(), page),
+      "/",
+    );
+
+    await waitForText(container, "Skip introduction and start");
+    expect(container.querySelectorAll('[data-onboarding-orientation="pending"]')).toHaveLength(1);
+    expect(container.textContent).not.toContain("Watch again");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());

@@ -17,6 +17,7 @@ import {
   MESSAGE_SOURCES,
   RUNTIME_NOTICE_METADATA_KEY,
   readFirstChatOrientationChatState,
+  readFirstChatOrientationMessageMetadata,
   requestResolutionSchema,
   type SendMessage,
   scanMentionTokens,
@@ -815,6 +816,16 @@ async function sendMessageInner(
     if (!senderRow) {
       throw new NotFoundError(`Sender agent "${senderId}" not found`);
     }
+    const prepared = preflightMessageSendIntent({
+      chatId,
+      senderId,
+      senderType: senderRow.type,
+      data,
+      options,
+      participants,
+    });
+    const { content: outboundContent, metadata: preparedMetadata, mentionedAgentIds: mergedMentions } = prepared;
+    let metadataToStore = preparedMetadata;
     const initialTrial = getLandingCampaignTrialChat(chatRowSnapshot);
     const initialOrientationState = readFirstChatOrientationChatState(chatRowSnapshot?.metadata);
     const mayContinueFirstChatOrientation =
@@ -835,21 +846,48 @@ async function sendMessageInner(
           )[0]
         : chatRowSnapshot;
     const lockedOrientationState = readFirstChatOrientationChatState(chatRow?.metadata);
-    const continuesFirstChatOrientation =
+    let orientationTargetAgentId: string | null = null;
+    let openingMessage: { id: string; metadata: Record<string, unknown> } | undefined;
+    if (
       mayContinueFirstChatOrientation &&
       (lockedOrientationState === FIRST_CHAT_ORIENTATION_CHAT_STATES.PENDING ||
-        lockedOrientationState === FIRST_CHAT_ORIENTATION_CHAT_STATES.LEGACY_STARTED);
+        lockedOrientationState === FIRST_CHAT_ORIENTATION_CHAT_STATES.LEGACY_STARTED)
+    ) {
+      [openingMessage] = await tx
+        .select({ id: messages.id, metadata: messages.metadata })
+        .from(messages)
+        .where(eq(messages.chatId, chatId))
+        .orderBy(asc(messages.createdAt), asc(messages.id))
+        .limit(1);
+      const openingMentions = Array.isArray(openingMessage?.metadata.mentions)
+        ? openingMessage.metadata.mentions.filter((value): value is string => typeof value === "string")
+        : [];
+      const candidateTargetAgentId = openingMentions.length === 1 ? openingMentions[0] : undefined;
+      const candidateTarget = participants.find((participant) => participant.agentId === candidateTargetAgentId);
+      if (
+        !openingMessage ||
+        readFirstChatOrientationMessageMetadata(openingMessage.metadata) === null ||
+        !candidateTargetAgentId ||
+        !candidateTarget ||
+        candidateTarget.type === "human"
+      ) {
+        throw new Error(`Unexpected: pending first-chat Orientation "${chatId}" has no trusted target bootstrap`);
+      }
+      orientationTargetAgentId = candidateTargetAgentId;
+    }
+    const routedRecipientIds = new Set([
+      ...mergedMentions.filter((id) => id !== senderId),
+      ...(options.addressedToAgentIds ?? []).filter((id) => id !== senderId),
+    ]);
+    const continuesFirstChatOrientation =
+      orientationTargetAgentId !== null &&
+      !prepared.forceSilentFanOut &&
+      routedRecipientIds.has(orientationTargetAgentId);
 
     if (continuesFirstChatOrientation) {
       if (lockedOrientationState === FIRST_CHAT_ORIENTATION_CHAT_STATES.LEGACY_STARTED) {
-        const [openingMessage] = await tx
-          .select({ id: messages.id })
-          .from(messages)
-          .where(eq(messages.chatId, chatId))
-          .orderBy(asc(messages.createdAt), asc(messages.id))
-          .limit(1);
         const recipientInboxIds = participants
-          .filter((participant) => participant.agentId !== senderId && participant.status === "active")
+          .filter((participant) => participant.agentId === orientationTargetAgentId && participant.status === "active")
           .map((participant) => participant.inboxId);
         if (openingMessage && recipientInboxIds.length > 0) {
           // A legacy retry may already have signalled the silent bootstrap. If
@@ -884,17 +922,6 @@ async function sendMessageInner(
         })
         .where(eq(chats.id, chatId));
     }
-
-    const prepared = preflightMessageSendIntent({
-      chatId,
-      senderId,
-      senderType: senderRow.type,
-      data,
-      options,
-      participants,
-    });
-    const { content: outboundContent, metadata: preparedMetadata, mentionedAgentIds: mergedMentions } = prepared;
-    let metadataToStore = preparedMetadata;
 
     // Ask agent is a constrained clarification turn under an existing open
     // request. Re-check every relation under the same transaction that stores
@@ -961,7 +988,10 @@ async function sendMessageInner(
     if (continuesFirstChatOrientation) {
       metadataToStore = {
         ...metadataToStore,
-        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: {
+          version: 1,
+          targetAgentId: orientationTargetAgentId,
+        },
       };
     }
 

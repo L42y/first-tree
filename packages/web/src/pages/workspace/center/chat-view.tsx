@@ -1118,6 +1118,17 @@ function isFirstChatOrientationMessage(msg: MessageWithDelivery, myAgentId: stri
   );
 }
 
+function firstChatOrientationTargetAgentId(msg: MessageWithDelivery): string | null {
+  const mentions = readMentions(msg.metadata);
+  return mentions.length === 1 ? (mentions[0] ?? null) : null;
+}
+
+function messageRoutesToAgent(msg: MessageWithDelivery, agentId: string): boolean {
+  const addressedAgentIds = msg.metadata?.addressedAgentIds;
+  if (Array.isArray(addressedAgentIds) && addressedAgentIds.includes(agentId)) return true;
+  return readMentions(msg.metadata).includes(agentId);
+}
+
 function messageRenderFieldsEqual(a: MessageWithDelivery, b: MessageWithDelivery): boolean {
   return (
     messageBodyFieldsEqual(a, b) &&
@@ -1455,17 +1466,18 @@ const ChatTimeline = memo(function ChatTimeline({
       }
       return completed;
     }
-    let lastOwnMessageIndex = -1;
-    for (let index = messageItems.length - 1; index >= 0; index -= 1) {
-      if (messageItems[index]?.data.senderId === myAgentId) {
-        lastOwnMessageIndex = index;
-        break;
+    for (let bootstrapIndex = 0; bootstrapIndex < messageItems.length; bootstrapIndex += 1) {
+      const bootstrap = messageItems[bootstrapIndex]?.data;
+      if (!bootstrap || !isFirstChatOrientationMessage(bootstrap, myAgentId)) continue;
+      const targetAgentId = firstChatOrientationTargetAgentId(bootstrap);
+      if (!targetAgentId) continue;
+      for (let messageIndex = bootstrapIndex + 1; messageIndex < messageItems.length; messageIndex += 1) {
+        const candidate = messageItems[messageIndex]?.data;
+        if (candidate?.senderId === myAgentId && messageRoutesToAgent(candidate, targetAgentId)) {
+          completed.add(bootstrap.id);
+          break;
+        }
       }
-    }
-    if (lastOwnMessageIndex < 0) return completed;
-    for (let index = 0; index < lastOwnMessageIndex; index += 1) {
-      const item = messageItems[index];
-      if (item && isFirstChatOrientationMessage(item.data, myAgentId)) completed.add(item.data.id);
     }
     return completed;
   }, [myAgentId, orientationLifecycleCompleted, visibleItems]);

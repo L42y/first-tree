@@ -15,7 +15,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { ForbiddenError } from "../errors.js";
 import { FIRST_TREE_ATTR, withSpan } from "../observability/index.js";
-import { buildClientMessagePayloadsForInbox } from "./message-dispatcher.js";
+import { buildClientMessagePayloadsForInbox, resolveInboxAgentId } from "./message-dispatcher.js";
 
 /** Claimed `inbox_entries` row, typed via Drizzle `$inferSelect` so column-mode
  *  conversions (bigserial → number, timestamp → Date) flow through. */
@@ -199,9 +199,13 @@ export async function bundleDeliveryWithSilentContext(
   const messageIds = claimed.map((e) => e.messageId);
   const msgs = await tx.select().from(messages).where(inArray(messages.id, messageIds));
   const msgMap = new Map(msgs.map((m) => [m.id, m]));
+  const recipientAgentId = await resolveInboxAgentId(tx, inboxId);
   const orientationContinuationTriggerIds = new Set(
     msgs
-      .filter((message) => readFirstChatOrientationContinuationMessageMetadata(message.metadata) !== null)
+      .filter(
+        (message) =>
+          readFirstChatOrientationContinuationMessageMetadata(message.metadata)?.targetAgentId === recipientAgentId,
+      )
       .map((message) => message.id),
   );
   const precedingByEntryId = await collectPrecedingContext(tx, inboxId, claimed, orientationContinuationTriggerIds);
@@ -233,6 +237,7 @@ export async function bundleDeliveryWithSilentContext(
         },
       };
     }),
+    recipientAgentId,
   );
 
   return claimed.map((entry, idx) => {

@@ -166,6 +166,116 @@ describe("POST /me/onboarding/kickoff", () => {
     expect(res.json<{ chatId: string }>().chatId).toBe(chatId);
   });
 
+  it("does not let another participant consume a pending Orientation handoff", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const targetAgent = await createOrgAgent(app, admin);
+    const otherAgent = await createOrgAgent(app, admin);
+
+    const res = await app.inject({
+      method: "POST",
+      url: KICKOFF_URL,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: {
+        organizationId: admin.organizationId,
+        agentUuid: targetAgent.uuid,
+        bootstrap: "First Tree is getting the onboarding agent up to speed.",
+        topic: "Get started with First Tree",
+        orientation: 1,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const { chatId } = res.json<{ chatId: string }>();
+    await addParticipant(app.db, chatId, admin.humanAgentUuid, { agentId: otherAgent.uuid });
+
+    const unrelated = await sendMessage(app.db, chatId, admin.humanAgentUuid, {
+      format: "text",
+      content: `@${otherAgent.name} please handle this separate question.`,
+      metadata: { mentions: [otherAgent.uuid] },
+      source: "web",
+    });
+    const [pendingChat] = await app.db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    expect(readFirstChatOrientationChatState(pendingChat?.metadata)).toBe(FIRST_CHAT_ORIENTATION_CHAT_STATES.PENDING);
+    expect(unrelated.message.metadata).not.toHaveProperty(FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY);
+    const otherWake = (await pollInbox(app.db, otherAgent.inboxId, 10)).find(
+      (entry) => entry.messageId === unrelated.message.id,
+    );
+    expect(otherWake?.message.precedingMessages).toEqual([]);
+    expect(await pollInbox(app.db, targetAgent.inboxId, 10)).toEqual([]);
+
+    const continuation = await sendMessage(app.db, chatId, admin.humanAgentUuid, {
+      format: "text",
+      content: "I'm ready. Please help me get started with First Tree.",
+      metadata: { mentions: [targetAgent.uuid] },
+      source: "web",
+    });
+    expect(continuation.message.metadata).toMatchObject({
+      [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: {
+        version: 1,
+        targetAgentId: targetAgent.uuid,
+      },
+    });
+    const targetWake = (await pollInbox(app.db, targetAgent.inboxId, 10)).find(
+      (entry) => entry.messageId === continuation.message.id,
+    );
+    expect(targetWake?.message.precedingMessages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: "First Tree is getting the onboarding agent up to speed." }),
+      ]),
+    );
+  });
+
+  it("replays a pending Orientation bootstrap only to its original target on a multi-recipient continuation", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const targetAgent = await createOrgAgent(app, admin);
+    const otherAgent = await createOrgAgent(app, admin);
+
+    const res = await app.inject({
+      method: "POST",
+      url: KICKOFF_URL,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: {
+        organizationId: admin.organizationId,
+        agentUuid: targetAgent.uuid,
+        bootstrap: "First Tree is getting the onboarding agent up to speed.",
+        topic: "Get started with First Tree",
+        orientation: 1,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const { chatId } = res.json<{ chatId: string }>();
+    await addParticipant(app.db, chatId, admin.humanAgentUuid, { agentId: otherAgent.uuid });
+
+    const continuation = await sendMessage(app.db, chatId, admin.humanAgentUuid, {
+      format: "text",
+      content: "Let's start and keep the other agent informed.",
+      metadata: { mentions: [targetAgent.uuid, otherAgent.uuid] },
+      source: "web",
+    });
+    const [continuedChat] = await app.db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    expect(readFirstChatOrientationChatState(continuedChat?.metadata)).toBe(
+      FIRST_CHAT_ORIENTATION_CHAT_STATES.CONTINUED,
+    );
+    expect(continuation.message.metadata).toMatchObject({
+      [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: {
+        version: 1,
+        targetAgentId: targetAgent.uuid,
+      },
+    });
+
+    const targetWake = (await pollInbox(app.db, targetAgent.inboxId, 10)).find(
+      (entry) => entry.messageId === continuation.message.id,
+    );
+    expect(targetWake?.message.precedingMessages).toEqual([
+      expect.objectContaining({ content: "First Tree is getting the onboarding agent up to speed." }),
+    ]);
+    const otherWake = (await pollInbox(app.db, otherAgent.inboxId, 10)).find(
+      (entry) => entry.messageId === continuation.message.id,
+    );
+    expect(otherWake?.message.precedingMessages).toEqual([]);
+  });
+
   it("does not replay a completed Orientation bootstrap to a later participant outside the normal window", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);

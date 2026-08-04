@@ -40,13 +40,17 @@ Web → kickoff API → Inbox → runtime boundary that deterministic component 
    still receives the bootstrap as preceding context. Separately create with the current capability and retry the same
    keyed kickoff without it: the server converts the existing bootstrap to the legacy immediate-wake behavior instead
    of leaving an unrenderable silent chat.
-7. After completing Orientation, add another participant and let the marked bootstrap age beyond the ordinary replay
+7. Before completing a fresh Orientation, add another participant and address only that participant. The message wakes
+   only its stated recipient, does not receive the onboarding bootstrap, and leaves Orientation pending for the original
+   target. Then address the original target and the added participant together: both receive the visible turn, but only
+   the original target receives the bootstrap and consumes the one-time handoff.
+8. After completing Orientation, add another participant and let the marked bootstrap age beyond the ordinary replay
    window. Address that participant on a later unrelated turn and verify the old bootstrap is not replayed. Also load a
    completed chat history slice containing the bootstrap but not the original continuation: the card stays compact from
    the server lifecycle and cannot enqueue another first wake.
-8. Start a fresh kickoff with the capability omitted. It retains the legacy immediate wake. Verify campaign action,
+9. Start a fresh kickoff with the capability omitted. It retains the legacy immediate wake. Verify campaign action,
    dedicated tree setup, and ordinary chat messages never render or accept the trusted Orientation marker.
-9. At a narrow phone viewport, the initial chapter choice plus global skip are visible without traversing an empty video
+10. At a narrow phone viewport, the initial chapter choice plus global skip are visible without traversing an empty video
    well, the selected chapter remains usable without horizontal overflow, and every action is keyboard and touch
    reachable. Verify the Team-agent security chapter uses team/agent-neutral ownership language.
 
@@ -54,8 +58,9 @@ Web → kickoff API → Inbox → runtime boundary that deterministic component 
 
 `PASS` requires one bootstrap, no pre-continue runtime turn, one visible continuation, one agent wake, correct preceding
 context and `first-tree-welcome` behavior, working skip/chapter/direct-message branches, durable reload/retry behavior,
-bounded replay after completion, legacy reconciliation, and campaign/tree/ordinary-chat exclusion. `FAIL` includes an
-early or duplicate wake, lost or stale bootstrap context, a reopened completed Orientation, inaccessible skip,
+original-target-bound continuation and replay, bounded replay after completion, legacy reconciliation, and
+campaign/tree/ordinary-chat exclusion. `FAIL` includes an early or duplicate wake, lost or stale bootstrap context, a
+handoff consumed by or replayed to the wrong participant, a reopened completed Orientation, inaccessible skip,
 ownership-misleading security copy, or a marker accepted from an untrusted send.
 
 Keep the exact tested commit/build, redacted network request shapes, message and Inbox ordering, runtime turn evidence,

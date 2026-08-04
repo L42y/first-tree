@@ -31,7 +31,7 @@ function preflight(allowFirstChatOrientation = false) {
       source: "api",
       metadata: {
         [FIRST_CHAT_ORIENTATION_METADATA_KEY]: { version: 1 },
-        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1, targetAgentId: AGENT.agentId },
         mentions: [AGENT.agentId],
       },
     },
