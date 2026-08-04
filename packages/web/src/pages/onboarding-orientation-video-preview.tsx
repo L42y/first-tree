@@ -31,6 +31,7 @@ import { StatusGlyph } from "../components/ui/status-glyph.js";
 const FPS = 30;
 
 type OrientationVideoController = {
+  fps: number;
   frameCount: number;
   setFrame: (frame: number) => void;
 };
@@ -78,6 +79,7 @@ export function OnboardingOrientationVideoPreviewPage() {
 
   useEffect(() => {
     window.orientationVideoController = {
+      fps: FPS,
       frameCount,
       setFrame: (nextFrame) => {
         flushSync(() => setFrame(Math.max(0, Math.min(frameCount - 1, Math.round(nextFrame)))));

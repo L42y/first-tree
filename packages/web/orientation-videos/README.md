@@ -60,7 +60,7 @@ The script builds `@first-tree/shared`, opens the DEV-only recording route in Ch
 Master settings: a 1280×720 CSS viewport captured at 1.5× device scale for a 1920×1080 output, 30fps, H.264
 High Profile, yuv420p, CRF 18, slow preset with animation tuning, fast-start, and no audio.
 
-The product chapter registry is the source of truth for duration and asset paths. The recording page exposes its derived frame count to the renderer, so duration is not duplicated in the render script.
+The product chapter registry is the source of truth for duration and asset paths. The recording page exposes its frame rate and derived frame count to the renderer, so timing is not duplicated in the render script.
 
 ## Audio and captions
 

@@ -4,7 +4,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
-const FPS = 30;
 const WIDTH = 1280;
 const HEIGHT = 720;
 const DEVICE_SCALE_FACTOR = 1.5;
@@ -84,11 +83,17 @@ async function renderChapter(page, id, config) {
   });
   await page.waitForFunction(() => document.documentElement.dataset.orientationVideoReady === "true");
   await page.evaluate(() => document.fonts.ready);
-  const previewFrameCount = await page.evaluate(() => window.orientationVideoController?.frameCount);
-  if (!Number.isInteger(previewFrameCount) || previewFrameCount <= 0) {
-    throw new Error(`Invalid frame count for ${id}: ${previewFrameCount ?? "none"}`);
+  const previewMetadata = await page.evaluate(() => {
+    const controller = window.orientationVideoController;
+    return controller ? { fps: controller.fps, frameCount: controller.frameCount } : null;
+  });
+  if (!previewMetadata || !Number.isInteger(previewMetadata.frameCount) || previewMetadata.frameCount <= 0) {
+    throw new Error(`Invalid frame count for ${id}: ${previewMetadata?.frameCount ?? "none"}`);
   }
-  const frameCount = previewFrameCount;
+  if (!Number.isInteger(previewMetadata.fps) || previewMetadata.fps <= 0) {
+    throw new Error(`Invalid frame rate for ${id}: ${previewMetadata.fps ?? "none"}`);
+  }
+  const { fps, frameCount } = previewMetadata;
 
   const ffmpeg = spawn(
     "ffmpeg",
@@ -97,7 +102,7 @@ async function renderChapter(page, id, config) {
       "-f",
       "image2pipe",
       "-framerate",
-      String(FPS),
+      String(fps),
       "-vcodec",
       "png",
       "-i",
@@ -125,29 +130,47 @@ async function renderChapter(page, id, config) {
   ffmpeg.stderr.on("data", (chunk) => {
     ffmpegError += chunk.toString();
   });
+  let ffmpegInputError;
+  ffmpeg.stdin.on("error", (error) => {
+    ffmpegInputError ??= error;
+  });
+  const ffmpegExit = waitForExit(ffmpeg, `ffmpeg (${id})`).then(
+    () => ({ error: null }),
+    (error) => ({ error }),
+  );
 
-  const stillFrames = new Map(config.keyframes.map((seconds) => [Math.round(seconds * FPS), seconds]));
-  const posterFrame = Math.round(config.poster * FPS);
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    await page.evaluate((nextFrame) => window.orientationVideoController?.setFrame(nextFrame), frame);
-    const image = await page.screenshot({ type: "png", animations: "disabled" });
-    await writeToStream(ffmpeg.stdin, image);
+  const stillFrames = new Map(config.keyframes.map((seconds) => [Math.round(seconds * fps), seconds]));
+  const posterFrame = Math.round(config.poster * fps);
+  try {
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      if (ffmpegInputError) throw ffmpegInputError;
+      await page.evaluate((nextFrame) => window.orientationVideoController?.setFrame(nextFrame), frame);
+      const image = await page.screenshot({ type: "png", animations: "disabled" });
+      await writeToStream(ffmpeg.stdin, image);
 
-    const stillSecond = stillFrames.get(frame);
-    if (stillSecond !== undefined) {
-      const suffix = String(stillSecond).padStart(2, "0");
-      await writeFile(join(REVIEW_OUTPUT, `${id}-${suffix}s.png`), image);
+      const stillSecond = stillFrames.get(frame);
+      if (stillSecond !== undefined) {
+        const suffix = String(stillSecond).padStart(2, "0");
+        await writeFile(join(REVIEW_OUTPUT, `${id}-${suffix}s.png`), image);
+      }
+      if (frame === posterFrame) {
+        await writeFile(join(PUBLIC_OUTPUT, "stills", `${id}-poster.png`), image);
+      }
+      if (frame % fps === 0) process.stdout.write(`\r${id}: ${Math.round((frame / frameCount) * 100)}%`);
     }
-    if (frame === posterFrame) {
-      await writeFile(join(PUBLIC_OUTPUT, "stills", `${id}-poster.png`), image);
-    }
-    if (frame % FPS === 0) process.stdout.write(`\r${id}: ${Math.round((frame / frameCount) * 100)}%`);
+  } catch (error) {
+    ffmpeg.stdin.destroy();
+    if (!ffmpeg.killed) ffmpeg.kill("SIGTERM");
+    const exitResult = await ffmpegExit;
+    const failure = exitResult.error ?? ffmpegInputError ?? error;
+    throw new Error(`${failure instanceof Error ? failure.message : String(failure)}\n${ffmpegError}`);
   }
   ffmpeg.stdin.end();
-  try {
-    await waitForExit(ffmpeg, `ffmpeg (${id})`);
-  } catch (error) {
-    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${ffmpegError}`);
+  const exitResult = await ffmpegExit;
+  if (exitResult.error) {
+    throw new Error(
+      `${exitResult.error instanceof Error ? exitResult.error.message : String(exitResult.error)}\n${ffmpegError}`,
+    );
   }
   process.stdout.write(`\r${id}: 100%\n`);
 }
