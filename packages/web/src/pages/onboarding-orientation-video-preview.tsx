@@ -27,6 +27,7 @@ import { FirstTreeLogo } from "../components/first-tree-logo.js";
 import { Button } from "../components/ui/button.js";
 import { DenseBadge } from "../components/ui/dense-badge.js";
 import { StatusGlyph } from "../components/ui/status-glyph.js";
+import { ContextTreeLoopScene } from "./onboarding-orientation-context-loop-scene.js";
 
 const FPS = 30;
 
@@ -99,23 +100,27 @@ export function OnboardingOrientationVideoPreviewPage() {
       data-frame={frame}
       className="h-screen w-screen overflow-hidden bg-background text-foreground"
     >
-      <ProductHeader />
-      <div className="flex h-[calc(100vh-3rem)] min-h-0">
-        <ConversationRail time={time} />
-        <main className="relative flex min-w-0 flex-1 flex-col bg-background">
-          <ChatHeader time={time} />
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <MultiAgentScene time={time} />
-          </div>
-          <Composer />
-        </main>
-        <RightSidebar time={time} />
-      </div>
+      <ProductHeader activeItem={chapterId === "context-tree" && time >= 55.2 ? "Context" : "Workspace"} />
+      {chapterId === "context-tree" ? (
+        <ContextTreeLoopScene time={time} />
+      ) : (
+        <div className="flex h-[calc(100vh-3rem)] min-h-0">
+          <ConversationRail time={time} />
+          <main className="relative flex min-w-0 flex-1 flex-col bg-background">
+            <ChatHeader time={time} />
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <MultiAgentScene time={time} />
+            </div>
+            <Composer />
+          </main>
+          <RightSidebar time={time} />
+        </div>
+      )}
     </div>
   );
 }
 
-function ProductHeader() {
+function ProductHeader({ activeItem }: { activeItem: "Workspace" | "Context" }) {
   const navItems = ["Workspace", "Context", "Team", "Settings"] as const;
   return (
     <header
@@ -135,7 +140,7 @@ function ProductHeader() {
       </div>
       <nav className="flex" style={{ gap: 2, justifySelf: "center" }} aria-label="Product areas">
         {navItems.map((item) => {
-          const active = item === "Workspace";
+          const active = item === activeItem;
           return (
             <span
               key={item}

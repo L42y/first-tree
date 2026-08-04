@@ -20,6 +20,13 @@ const REVIEW_OUTPUT = join(WEB_ROOT, "orientation-videos", "review");
 
 const CHAPTERS = {
   "multi-agent": { keyframes: [0, 18, 32], poster: 18 },
+  "context-tree": {
+    keyframes: [0, 6, 10, 14, 18, 22, 25, 29, 32, 36, 39, 43, 47, 50, 53, 56, 58],
+    poster: 53,
+    captureScale: "device",
+    crf: "16",
+    videoFilter: "scale=1280:720:flags=lanczos",
+  },
 };
 
 function selectedChapters() {
@@ -107,6 +114,7 @@ async function renderChapter(page, id, config) {
       "png",
       "-i",
       "pipe:0",
+      ...(config.videoFilter ? ["-vf", config.videoFilter] : []),
       "-an",
       "-c:v",
       "libx264",
@@ -115,7 +123,7 @@ async function renderChapter(page, id, config) {
       "-tune",
       "animation",
       "-crf",
-      "18",
+      config.crf ?? "18",
       "-profile:v",
       "high",
       "-pix_fmt",
@@ -145,7 +153,11 @@ async function renderChapter(page, id, config) {
     for (let frame = 0; frame < frameCount; frame += 1) {
       if (ffmpegInputError) throw ffmpegInputError;
       await page.evaluate((nextFrame) => window.orientationVideoController?.setFrame(nextFrame), frame);
-      const image = await page.screenshot({ type: "png", animations: "disabled" });
+      const image = await page.screenshot({
+        type: "png",
+        animations: "disabled",
+        scale: config.captureScale ?? "device",
+      });
       await writeToStream(ffmpeg.stdin, image);
 
       const stillSecond = stillFrames.get(frame);
