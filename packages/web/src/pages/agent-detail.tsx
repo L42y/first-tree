@@ -39,7 +39,6 @@ import { AgentSwitcherStrip } from "./agent-detail/agent-switcher-strip.js";
 import { useAgentResources } from "./agent-detail/capability-section.js";
 import { ContextBar } from "./agent-detail/context-bar.js";
 import type { AgentDetailContext, RuntimeSwitchClaimView } from "./agent-detail/layout-context.js";
-import { ResponsibilitiesSection } from "./agent-detail/responsibilities-section.js";
 import { buildTabs, type TabDef } from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
 import { useLegacyAnchorRedirect } from "./agent-detail/use-legacy-anchor-redirect.js";
@@ -115,12 +114,13 @@ function AgentDetailPageView() {
     refetchInterval: 30_000,
   });
 
-  // Shared agent-resources cache (skills / MCP / repos). Fetched here so the
-  // Tools & skills badge shows its effective count on first paint — the badge's
-  // whole point is "tell me there's something in here before I click". One light
-  // query in the same tier as agent-config / client-status; the Tools & skills
-  // and Environment tabs then read+write this same ["agent-resources", uuid]
-  // cache, so their useAgentResources calls become cache hits.
+  // Shared agent-resources cache (Templates / skills / MCP / repos). Fetched
+  // here so the Tools & skills badge shows its effective count on first paint —
+  // the badge's whole point is "tell me there's something in here before I
+  // click". One light query in the same tier as agent-config / client-status;
+  // Responsibilities, Tools & skills, and Repositories then read+write this same
+  // ["agent-resources", uuid] cache, so their useAgentResources calls become
+  // cache hits.
   const toolsResources = useAgentResources(uuid, { enabled: !!uuid && agentQuery.data?.type !== "human" });
 
   // Immediate-save controller for model / reasoning effort / env. Lives in the
@@ -521,27 +521,6 @@ function AgentDetailPageView() {
           runtimeState={agent.runtimeState}
           visible={contextBarVisible}
         />
-      )}
-
-      {!isHuman && toolsResources.data && (
-        <div
-          style={{
-            padding: "var(--sp-3_5) var(--sp-5) 0",
-            maxWidth: "var(--agent-detail-rail)",
-            marginLeft: "auto",
-            marginRight: "auto",
-            width: "100%",
-          }}
-        >
-          <ResponsibilitiesSection
-            agentUuid={agent.uuid}
-            agentStatus={agent.status}
-            canManage={canEditConfig}
-            templateIds={toolsResources.data.templateIds}
-            adoptedTemplates={toolsResources.data.adoptedTemplates}
-            version={toolsResources.data.version}
-          />
-        </div>
       )}
 
       <TabsNav tabs={tabs} agentUuid={uuid} currentTabKey={currentTabKey} badges={tabBadges} />

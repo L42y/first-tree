@@ -928,9 +928,18 @@ describe("agent detail pure helpers", () => {
     expect(canEditConfigFor(agent(), "member-self", "member")).toBe(true);
     expect(canEditConfigFor(agent({ type: "human", clientId: null }), "member-self", "admin")).toBe(false);
     expect(resolveTabPath(agent({ type: "human", clientId: null }), "member-self", "admin", "usage")).toBe("profile");
+    expect(resolveTabPath(agent({ type: "human", clientId: null }), "member-self", "admin", "responsibilities")).toBe(
+      "profile",
+    );
     expect(resolveTabPath(agent(), "member-other", "member", "usage")).toBe("usage");
+    expect(resolveTabPath(agent(), "member-other", "member", "responsibilities")).toBe("responsibilities");
     expect(resolveTabPath(agent(), "member-other", "member", "runtime")).toBe("profile");
-    expect(buildTabs(false, false).map((tab) => tab.path)).toEqual(["profile", "capabilities", "usage"]);
+    expect(buildTabs(false, false).map((tab) => tab.path)).toEqual([
+      "profile",
+      "responsibilities",
+      "capabilities",
+      "usage",
+    ]);
 
     expect(isBindableClient({ status: "connected" })).toBe(true);
     expect(isBindableClient({ status: "retired" })).toBe(false);

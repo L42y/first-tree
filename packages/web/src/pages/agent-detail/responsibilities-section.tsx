@@ -24,8 +24,8 @@ import { Section } from "../../components/ui/section.js";
 import { agentResourcesMutationHandlers } from "./capability-section.js";
 
 /**
- * Responsibilities — the compact card between identity and the config tabs.
- * Shows the agent's adopted official Templates (0-3) with public-safe
+ * Responsibilities — the content of the dedicated Agent Detail tab. Shows
+ * the agent's adopted official Templates (0-3) with public-safe
  * summaries only. Managers of an ACTIVE agent edit via the full replace-set
  * PATCH; everyone else sees the same card read-only. Saved changes apply
  * before the agent's next action — there is no current/next version display

@@ -2,11 +2,20 @@ import { describe, expect, it } from "vitest";
 import { buildTabs, tabKeysFor } from "../tabs.js";
 
 describe("agent-detail tabs", () => {
-  it("gives an editor the engine-first 6-tab set with Repositories inserted before Usage", () => {
+  it("gives an editor the 7-tab set with Responsibilities after Profile", () => {
     const tabs = buildTabs(true, false);
-    expect(tabs.map((t) => t.key)).toEqual(["profile", "runtime", "prompt", "capabilities", "repositories", "usage"]);
+    expect(tabs.map((t) => t.key)).toEqual([
+      "profile",
+      "responsibilities",
+      "runtime",
+      "prompt",
+      "capabilities",
+      "repositories",
+      "usage",
+    ]);
     expect(tabs.map((t) => t.label)).toEqual([
       "Profile",
+      "Responsibilities",
       "Runtime",
       "Instructions",
       "Tools & skills",
@@ -22,10 +31,15 @@ describe("agent-detail tabs", () => {
     expect(runtime?.label).toBe("Runtime");
   });
 
-  it("keeps Repositories (and Runtime) editor-only for non-editor agents", () => {
-    // Non-editor, non-human: only Profile / Tools & skills / Usage — no runtime,
-    // no repositories (repos + context tree were never visible to non-editors).
-    expect(tabKeysFor(false, false).map((t) => t.key)).toEqual(["profile", "capabilities", "usage"]);
+  it("shows Responsibilities read-only while keeping Repositories and Runtime editor-only", () => {
+    // Non-editor, non-human: Responsibilities remains visible, while runtime
+    // and repositories keep their existing manager-only visibility.
+    expect(tabKeysFor(false, false).map((t) => t.key)).toEqual([
+      "profile",
+      "responsibilities",
+      "capabilities",
+      "usage",
+    ]);
   });
 
   it("gives a human agent only Profile", () => {
