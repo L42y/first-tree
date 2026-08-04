@@ -1369,6 +1369,7 @@ export {
 } from "./schemas/runtime-provider.js";
 export {
   CURSOR_INSTALL_COMMAND,
+  enabledOkRuntimeProviders,
   enabledRuntimeProviders,
   GROK_INSTALL_COMMAND,
   OPENCODE_MINIMUM_VERSION,

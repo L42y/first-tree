@@ -2,6 +2,7 @@
 
 import {
   DISABLED_RUNTIME_PROVIDERS,
+  enabledOkRuntimeProviders,
   pickPreferredRuntimeProvider,
   RUNTIME_PROVIDER_IDS,
   runtimeProviderInstallLoginCommand,
@@ -87,6 +88,19 @@ describe("web provider surfaces derived from shared catalog", () => {
       }),
     ).toBe("opencode");
     expect(pickPreferredRuntimeProvider({ "future-provider": { state: "ok" } })).toBeNull();
+  });
+
+  it("orders NewAgentDialog-style ok options by catalog display order, not cap key insertion", () => {
+    const shuffled = {
+      pi: { state: "ok" as const },
+      "kimi-code": { state: "ok" as const },
+      grok: { state: "ok" as const },
+      "claude-code": { state: "ok" as const },
+    };
+    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["claude-code", "grok", "kimi-code", "pi"]);
+    expect(enabledOkRuntimeProviders(shuffled)).toEqual(
+      PROVIDER_ORDER.filter((id) => shuffled[id as keyof typeof shuffled]?.state === "ok"),
+    );
   });
 
   it("locks install/login copy that cards and onboarding render", () => {

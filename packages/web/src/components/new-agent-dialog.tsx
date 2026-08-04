@@ -5,10 +5,9 @@ import {
   type Agent,
   type AgentTemplatePublicTemplate,
   type AgentVisibility,
-  asRuntimeProvider,
   type ClientCapabilities,
+  enabledOkRuntimeProviders,
   isReservedAgentName,
-  isRuntimeProviderEnabled,
   MAX_AGENT_TEMPLATE_IDS,
   pickPreferredRuntimeProvider,
   type RuntimeProvider,
@@ -145,8 +144,7 @@ async function resolveAvailableHandle(base: string, isStale: () => boolean): Pro
 
 /**
  * Pick the preferred runtime among the ones in `ok` state on a given client.
- * Order and disabled filtering come from the shared provider catalog
- * (`RUNTIME_PROVIDER_DISPLAY_ORDER` + `DISABLED_RUNTIME_PROVIDERS`).
+ * Uses catalog `selectionPriority` (may differ from display order).
  */
 function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null {
   return pickPreferredRuntimeProvider(caps);
@@ -554,18 +552,12 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // Capabilities tied to the *currently* picked client only — guards
   // against acting on stale data right after the user switches machines.
   const activeCapabilities = pickedClientId && capabilitiesClientId === pickedClientId ? capabilities : null;
-  const okRuntimes = useMemo<RuntimeProvider[]>(() => {
-    if (!activeCapabilities) return [];
-    const out: RuntimeProvider[] = [];
-    for (const [provider, entry] of Object.entries(activeCapabilities)) {
-      if (entry.state !== "ok") continue;
-      const rt = asRuntimeProvider(provider);
-      // Skip temporarily-disabled providers so they never appear as a
-      // selectable runtime, even if a stale snapshot still reports them `ok`.
-      if (rt && isRuntimeProviderEnabled(rt)) out.push(rt);
-    }
-    return out;
-  }, [activeCapabilities]);
+  // Catalog display order — never Object.entries(caps), which follows probe
+  // completion insertion order and can shuffle the picker.
+  const okRuntimes = useMemo<RuntimeProvider[]>(
+    () => (activeCapabilities ? enabledOkRuntimeProviders(activeCapabilities) : []),
+    [activeCapabilities],
+  );
 
   // Realign the runtime selection whenever the picked client's capabilities
   // change — if the previous selection isn't `ok` on the new machine, fall

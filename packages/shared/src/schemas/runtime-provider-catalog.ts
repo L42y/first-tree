@@ -229,3 +229,15 @@ export function pickPreferredRuntimeProvider(
   }
   return null;
 }
+
+/**
+ * Enabled providers in catalog **display** order whose capability state is `ok`.
+ *
+ * Use this for selectable option lists — never `Object.entries(caps)`, which
+ * follows probe-completion insertion order and is nondeterministic.
+ */
+export function enabledOkRuntimeProviders(
+  caps: Readonly<Partial<Record<string, { state?: string } | null | undefined>>>,
+): RuntimeProvider[] {
+  return enabledRuntimeProviders().filter((provider) => caps[provider]?.state === "ok");
+}

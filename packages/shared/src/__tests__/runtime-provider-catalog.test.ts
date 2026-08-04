@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   asRuntimeProvider,
   DISABLED_RUNTIME_PROVIDERS,
+  enabledOkRuntimeProviders,
   enabledRuntimeProviders,
   isRuntimeProviderEnabled,
   OPENCODE_MINIMUM_VERSION,
@@ -145,5 +146,30 @@ describe("runtime provider identity + catalog completeness", () => {
         pi: { state: "ok" },
       }),
     ).toBe("pi");
+  });
+
+  it("lists selectable ok runtimes in catalog display order despite shuffled cap keys", () => {
+    // Insertion order deliberately differs from display order (probe races).
+    const shuffled = {
+      pi: { state: "ok" as const },
+      "kimi-code": { state: "ok" as const },
+      opencode: { state: "error" as const },
+      grok: { state: "ok" as const },
+      codex: { state: "ok" as const },
+      "claude-code-tui": { state: "ok" as const },
+      cursor: { state: "missing" as const },
+      "claude-code": { state: "ok" as const },
+    };
+    expect(Object.keys(shuffled)).toEqual([
+      "pi",
+      "kimi-code",
+      "opencode",
+      "grok",
+      "codex",
+      "claude-code-tui",
+      "cursor",
+      "claude-code",
+    ]);
+    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["claude-code", "codex", "grok", "kimi-code", "pi"]);
   });
 });

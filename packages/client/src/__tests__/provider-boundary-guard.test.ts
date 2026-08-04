@@ -175,7 +175,9 @@ describe("runtime provider architecture guard", () => {
       const source = readFileSync(join(repoRoot, rel), "utf8");
       if (rel.endsWith("new-agent-dialog.tsx")) {
         expect(source).toContain("pickPreferredRuntimeProvider");
+        expect(source).toContain("enabledOkRuntimeProviders");
         expect(source).toContain("runtimeProviderLabel");
+        expect(source).not.toContain("Object.entries(activeCapabilities)");
         expect(source).not.toContain('provider === "claude-code"');
         expect(source).not.toMatch(/function prettyRuntimeLabel/);
         expect(source).not.toMatch(/function asRuntimeProvider/);
