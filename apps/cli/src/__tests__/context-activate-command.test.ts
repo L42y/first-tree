@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandContext } from "../commands/types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -28,17 +28,56 @@ function context(options: Record<string, unknown>): CommandContext {
   };
 }
 
+const stalePluginHealth = {
+  healthy: false,
+  issues: ["The installed Context Plugin payload differs from this release."],
+  install: { adapterDigest: "sha256:old" },
+  release: { manifest: { providers: { codex: { adapterDigest: "sha256:new" } } } },
+};
+
 describe("context activate command", () => {
-  it("keeps stale Plugin sessions usable and makes repair explicit-user-only", async () => {
-    mocks.inspectRuntime.mockReturnValue({
-      healthy: false,
-      issues: ["The installed Context Plugin payload differs from this release."],
-      install: { adapterDigest: "sha256:old" },
-      release: { manifest: { providers: { codex: { adapterDigest: "sha256:new" } } } },
-    });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("FIRST_TREE_AGENT_ID", "");
+    vi.stubEnv("FIRST_TREE_CHAT_ID", "");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("skips the external Context hook inside a managed First Tree agent session", async () => {
+    vi.stubEnv("FIRST_TREE_AGENT_ID", "agent-1");
+    vi.stubEnv("FIRST_TREE_CHAT_ID", "chat-1");
 
     await runContextActivate(context({ provider: "codex", releaseDigest: "sha256:old" }));
 
+    expect(mocks.inspectRuntime).not.toHaveBeenCalled();
+    expect(mocks.hook).toHaveBeenCalledWith({ continue: true });
+  });
+
+  it.each([
+    ["agent", "agent-1", ""],
+    ["chat", "", "chat-1"],
+  ])("keeps external activation enabled when only the managed %s marker is present", async (_marker, agentId, chatId) => {
+    vi.stubEnv("FIRST_TREE_AGENT_ID", agentId);
+    vi.stubEnv("FIRST_TREE_CHAT_ID", chatId);
+    mocks.inspectRuntime.mockReturnValue(stalePluginHealth);
+
+    await runContextActivate(context({ provider: "codex", releaseDigest: "sha256:old" }));
+
+    expect(mocks.inspectRuntime).toHaveBeenCalledOnce();
+    expect(mocks.hook.mock.calls[0]?.[0]).toMatchObject({
+      hookSpecificOutput: { hookEventName: "SessionStart" },
+    });
+  });
+
+  it("keeps stale Plugin sessions usable and makes repair explicit-user-only", async () => {
+    mocks.inspectRuntime.mockReturnValue(stalePluginHealth);
+
+    await runContextActivate(context({ provider: "codex", releaseDigest: "sha256:old" }));
+
+    expect(mocks.inspectRuntime).toHaveBeenCalledOnce();
     expect(mocks.hook).toHaveBeenCalledOnce();
     const response = mocks.hook.mock.calls[0]?.[0];
     expect(response).toMatchObject({

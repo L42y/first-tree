@@ -30,6 +30,10 @@ function configure(command: Command): void {
 
 export async function runContextActivate(context: CommandContext): Promise<void> {
   try {
+    if (isManagedFirstTreeAgentSession(process.env)) {
+      print.hook({ continue: true });
+      return;
+    }
     const options = context.command.opts<ActivateOptions>();
     const provider = parseContextProvider(options.provider ?? "");
     const health = inspectContextIntegrationRuntime(createContextIntegrationDriver(provider));
@@ -91,6 +95,11 @@ export async function runContextActivate(context: CommandContext): Promise<void>
       }. Ordinary provider work can continue.`,
     });
   }
+}
+
+/** Managed providers can still discover the user's BYO Plugin; never let its hook override the managed briefing. */
+function isManagedFirstTreeAgentSession(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(env.FIRST_TREE_AGENT_ID?.trim()) && Boolean(env.FIRST_TREE_CHAT_ID?.trim());
 }
 
 export const contextActivateCommand: SubcommandModule = {
