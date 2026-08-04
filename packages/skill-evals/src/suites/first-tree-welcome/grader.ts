@@ -432,6 +432,22 @@ function countBridgeQuestions(text: string): number {
     .length;
 }
 
+function matchesExpectedBridge(evalCase: FirstTreeWelcomeEvalCase, text: string): boolean {
+  if (evalCase.expected.bridgeKind !== "pull_request") return true;
+
+  const questions = text.split(/(?<=[.!?。！？])\s+/u).filter((part) => /[?？]/u.test(part));
+  const asksForPullRequestConsent = questions.some((question) =>
+    /\b(?:would you like|do you want|should i|shall i|want me to)\b.{0,100}\b(?:create|open)\b.{0,40}\b(?:pr|pull request|merge request)\b|\b(?:create|open)\b.{0,40}\b(?:pr|pull request|merge request)\b.{0,100}[?？]/iu.test(
+      question,
+    ),
+  );
+  const mentionsPrematureSetup =
+    /github app|context tree|register.{0,30}(?:team )?(?:repo|repository)|install.{0,30}(?:app|integration)|team repository/iu.test(
+      text,
+    );
+  return asksForPullRequestConsent && !mentionsPrematureSetup;
+}
+
 function hasReviewableResult(text: string): boolean {
   const numberedSteps = text
     .split("\n")
@@ -785,6 +801,7 @@ export function deriveMetrics(
   const capabilitySetupOptionObserved = setupTaskOptionObserved(chatOptionTexts, responseText);
   const broadRepoScanObserved = modelCommands.some(commandUsesBroadRepoScan);
   const bridgeCount = countBridgeQuestions(responseText);
+  const expectedBridgeSatisfied = matchesExpectedBridge(evalCase, responseText);
   const resultArtifactObserved = hasReviewableResult(responseText);
   const timeEstimateObserved = taskOptionTexts.some(hasTimeEstimate);
   const sourceRepoChanged = repoChanged(paths, baselines.sourceRepoHead);
@@ -826,6 +843,7 @@ export function deriveMetrics(
     contextTreeChanged: treeChanged(paths, baselines.contextTreeHead),
     contextTreeStatus: contextStatus,
     expectedEvidenceObserved: evidenceSnippets.length === 0 || countMatches(combinedText, evidenceSnippets) >= 2,
+    expectedBridgeSatisfied,
     expectedResponseObserved:
       evalCase.expected.action === "ask_for_repo_path_or_url"
         ? offersBothRepoEntryChoices(combinedText)
@@ -945,6 +963,7 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
       metrics.repoEvidenceReadObserved &&
       metrics.taskChatCreateCount === 0 &&
       metrics.resultArtifactObserved &&
+      metrics.expectedBridgeSatisfied &&
       metrics.bridgeCount === 1 &&
       metrics.chatAskCount === 1
     );
@@ -985,6 +1004,7 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
   }
   if (evalCase.expected.action === "complete_first_task_in_current_chat") {
     if (!metrics.resultArtifactObserved) notes.push("No reviewable first-task result was observed.");
+    if (!metrics.expectedBridgeSatisfied) notes.push("The post-result bridge did not match the required next step.");
     if (metrics.bridgeCount !== 1) notes.push(`Expected one post-result bridge; observed ${metrics.bridgeCount}.`);
     if (metrics.taskChatCreateCount > 0)
       notes.push("The first selected task fanned out instead of staying in this chat.");

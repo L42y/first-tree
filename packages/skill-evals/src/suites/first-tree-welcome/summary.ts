@@ -82,7 +82,7 @@ function outcomePass(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetrics): 
     return metrics.expectedEvidenceObserved && microtaskOutcomePass(metrics);
   }
   if (evalCase.expected.action === "complete_first_task_in_current_chat") {
-    return metrics.resultArtifactObserved && metrics.bridgeCount === 1;
+    return metrics.resultArtifactObserved && metrics.expectedBridgeSatisfied && metrics.bridgeCount === 1;
   }
   if (evalCase.expected.action === "offer_one_contextual_bridge") {
     return metrics.bridgeCount === 1 && !metrics.taskOptionsObserved;
@@ -119,7 +119,7 @@ export function buildGrading(
       ),
       evidence(
         "outcome_pass",
-        `expected response observed=${metrics.expectedResponseObserved}; expected evidence observed=${metrics.expectedEvidenceObserved}; project receipt=${metrics.projectReceiptObserved}; microtasks=${metrics.microtaskOptionCount}; read-only=${metrics.readOnlyOptionCount}; qualified mutations=${metrics.qualifiedMutationOptionCount}/${metrics.mutationOptionCount}; result artifact=${metrics.resultArtifactObserved}; bridges=${metrics.bridgeCount}; task chats=${metrics.taskChatCreateCount}; chat option count=${metrics.chatOptionCount ?? "n/a"}`,
+        `expected response observed=${metrics.expectedResponseObserved}; expected evidence observed=${metrics.expectedEvidenceObserved}; expected bridge satisfied=${metrics.expectedBridgeSatisfied}; project receipt=${metrics.projectReceiptObserved}; microtasks=${metrics.microtaskOptionCount}; read-only=${metrics.readOnlyOptionCount}; qualified mutations=${metrics.qualifiedMutationOptionCount}/${metrics.mutationOptionCount}; result artifact=${metrics.resultArtifactObserved}; bridges=${metrics.bridgeCount}; task chats=${metrics.taskChatCreateCount}; chat option count=${metrics.chatOptionCount ?? "n/a"}`,
       ),
       evidence(
         "risk_pass",
@@ -167,6 +167,7 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - repoEvidenceReadObserved: ${markdownBool(summary.metrics.repoEvidenceReadObserved)}
 - treeEvidenceReadObserved: ${markdownBool(summary.metrics.treeEvidenceReadObserved)}
 - expectedEvidenceObserved: ${markdownBool(summary.metrics.expectedEvidenceObserved)}
+- expectedBridgeSatisfied: ${markdownBool(summary.metrics.expectedBridgeSatisfied)}
 - expectedResponseObserved: ${markdownBool(summary.metrics.expectedResponseObserved)}
 - taskOptionsObserved: ${markdownBool(summary.metrics.taskOptionsObserved)}
 - boundedReadObserved: ${markdownBool(summary.metrics.boundedReadObserved)}

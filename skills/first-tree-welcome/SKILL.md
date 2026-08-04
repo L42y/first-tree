@@ -347,7 +347,7 @@ selected microtask and do not silently continue into a larger fix.
 
 ### One relevant bridge
 
-After the result, add at most one next-step question, directly related to that
+After the result, add exactly one next-step question, directly related to that
 result. The answer controls the next action, so put the complete result and the
 one question together in a tracked `first-tree chat ask <human>` body; do not
 leave the result or bridge only in console/final narration:
@@ -371,14 +371,8 @@ to the long-term Team repository catalog.
 Example shape:
 
 ```text
-Your acme-dashboard is a Next.js app. app/checkout/recovery.ts has an expired-
-session TODO with no nearby test, while recovery behavior is a documented team
-priority.
-
-I read the Next.js manifest and the recovery entry point in
-app/checkout/recovery.ts; the nearest focused seam is its expired-session branch.
-We can start by tracing that branch or, because the target and test command are
-clear, add only the missing recovery case.
+I read the Next.js manifest and the recovery entry point in app/checkout/recovery.ts.
+Its expired-session branch is a credible first seam because it has a focused nearby test command.
 
 Choose one:
 - Trace expired-session recovery and return a 5–8 step call chain with file references. (read-only)

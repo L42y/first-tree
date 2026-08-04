@@ -30,6 +30,7 @@ export type FirstTreeWelcomeFixture = {
 
 export type FirstTreeWelcomeExpected = {
   action: WelcomeExpectedAction;
+  bridgeKind?: "pull_request";
   evidenceSnippets?: readonly string[];
   requiredResponseHints: readonly string[];
   taskOptionHints?: readonly string[];
@@ -85,6 +86,7 @@ export type EvalMetrics = {
   contextTreeChanged: boolean;
   contextTreeStatus: string;
   expectedEvidenceObserved: boolean;
+  expectedBridgeSatisfied: boolean;
   expectedResponseObserved: boolean;
   finalResponse: string;
   forbiddenActionHits: readonly string[];

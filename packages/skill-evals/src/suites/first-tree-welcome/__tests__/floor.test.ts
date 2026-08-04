@@ -141,6 +141,15 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).toMatch(
       /Do not include Context Tree, GitHub App,\s+or repository setup in the first choice/u,
     );
+    const exampleChoices = skillMarkdown
+      .match(/Example shape:\s+```text[\s\S]*?Choose one:\n([\s\S]*?)\n\nOr type a different microtask\./u)?.[1]
+      ?.split("\n")
+      .filter((line) => line.startsWith("- "));
+    expect(exampleChoices).toHaveLength(2);
+    const exampleReceipt = skillMarkdown
+      .match(/Example shape:\s+```text\n([\s\S]*?)\n\nChoose one:/u)?.[1]
+      ?.match(/[.!?](?=\s|$)/gu);
+    expect(exampleReceipt).toHaveLength(2);
     expect(skillMarkdown).not.toContain("### L2 — Longer value work");
     expect(skillMarkdown).not.toContain("first choices as a multi-select ask");
   });

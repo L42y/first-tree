@@ -31,6 +31,7 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     contextTreeChanged: false,
     contextTreeStatus: "",
     expectedEvidenceObserved: true,
+    expectedBridgeSatisfied: true,
     expectedResponseObserved: true,
     finalResponse: "Done.",
     firstTreeArgv: [],
@@ -794,6 +795,81 @@ describe("first-tree-welcome grader", () => {
       expect(metrics.bridgeCount).toBe(1);
       expect(metrics.taskChatCreateCount).toBe(0);
       expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("requires a completed first-task diff to bridge only to PR consent", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-diff-bridge-"));
+    try {
+      const selectedTaskCase = findCase("first-tree-welcome-selected-first-task");
+      const mutationResultCase: FirstTreeWelcomeEvalCase = {
+        ...selectedTaskCase,
+        expected: {
+          ...selectedTaskCase.expected,
+          bridgeKind: "pull_request",
+          requiredResponseHints: ["diff", "pull request"],
+        },
+      };
+      const eventsFor = (body: string): unknown[] => [
+        skillReadEvent(),
+        repoEvidenceReadEvent(),
+        {
+          argv: ["chat", "ask", "baixiaohang", body],
+          phase: "model",
+          type: "first_tree_call",
+        },
+      ];
+      const compliant = deriveMetrics(
+        eventsFor(
+          "Minimal diff: changed src/checkout/recovery.test.ts only. Focused test passed. Would you like me to create a pull request for this diff?",
+        ),
+        mutationResultCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+      const wrongBridge = deriveMetrics(
+        eventsFor(
+          "Minimal diff: changed src/checkout/recovery.test.ts only. Focused test passed. Should I run another verification?",
+        ),
+        mutationResultCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+      const prematureSetup = deriveMetrics(
+        eventsFor(
+          "Minimal diff: changed src/checkout/recovery.test.ts only. Focused test passed. Would you like me to create a pull request and install the GitHub App?",
+        ),
+        mutationResultCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+      const unrelatedQuestionAfterPrStatement = deriveMetrics(
+        eventsFor(
+          "Minimal diff: changed src/checkout/recovery.test.ts only. Focused test passed. I can open a pull request. Should I run another verification?",
+        ),
+        mutationResultCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(compliant.expectedBridgeSatisfied).toBe(true);
+      expect(casePassed(mutationResultCase, compliant)).toBe(true);
+      expect(wrongBridge.expectedBridgeSatisfied).toBe(false);
+      expect(casePassed(mutationResultCase, wrongBridge)).toBe(false);
+      expect(prematureSetup.expectedBridgeSatisfied).toBe(false);
+      expect(casePassed(mutationResultCase, prematureSetup)).toBe(false);
+      expect(unrelatedQuestionAfterPrStatement.expectedBridgeSatisfied).toBe(false);
+      expect(casePassed(mutationResultCase, unrelatedQuestionAfterPrStatement)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
