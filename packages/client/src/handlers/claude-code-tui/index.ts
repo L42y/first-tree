@@ -21,7 +21,8 @@ import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../..
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
 import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../../runtime/workspace.js";
-import { createToolCallProcessor, mapMcpServers } from "../claude-code.js";
+import { mapMcpServers } from "../claude/mcp-config.js";
+import { createToolCallProcessor } from "../claude/tool-call-processor.js";
 import { resolveClaudeCodeExecutable } from "../claude-executable.js";
 import {
   capturePane,
