@@ -58,6 +58,29 @@ function message(err: unknown): string {
 type AuthFailure = { reason: RuntimeAuthFailureReason; message?: string };
 
 /**
+ * Every free-text string this orchestrator publishes goes through here.
+ *
+ * `redactErrorPreview` treats its argument as the body budget and appends a
+ * single ellipsis when it truncates, so hand it one less than the ceiling to
+ * keep the result within {@link RUNTIME_AUTH_ERROR_MAX_LEN}.
+ */
+function boundedErrorText(raw: string): string {
+  return redactErrorPreview(raw, RUNTIME_AUTH_ERROR_MAX_LEN - 1);
+}
+
+/**
+ * A driver's re-probe reports detection failures in `error`, and that text
+ * comes from the same hosts, paths and subprocesses as a login failure — so it
+ * gets the same treatment before it reaches the snapshot. Sanitising here
+ * rather than in each driver keeps one publish boundary to audit, and covers
+ * the extra rows a shared-credential driver returns alongside its own.
+ */
+function sanitizeProbedEntry(entry: CapabilityEntry): CapabilityEntry {
+  if (!entry.error) return entry;
+  return { ...entry, error: boundedErrorText(entry.error) };
+}
+
+/**
  * Stamp a terminal `lastAuthError` onto a freshly re-probed entry so the web can
  * tell "sign-in failed — retry" from "never attempted".
  *
@@ -69,17 +92,14 @@ type AuthFailure = { reason: RuntimeAuthFailureReason; message?: string };
  * clears any prior failure). The in-chat "needs login" entry point reads these
  * markers, the same way the prior card-side Connect control did.
  *
- * This is the single boundary where provider, resolver, spawn and thrown text
- * becomes published state, so it is also where redaction and truncation happen:
- * a provider's stderr tail can carry a token or an authenticated URL, and it
- * must not reach the snapshot verbatim or unbounded.
+ * Provider, resolver, spawn and thrown text becomes published state here, so
+ * it passes through {@link boundedErrorText} first: a provider's stderr tail
+ * can carry a token or an authenticated URL, and it must not reach the snapshot
+ * verbatim or unbounded.
  */
 function attachAuthError(entry: CapabilityEntry, failure: AuthFailure | null, nowMs: number): CapabilityEntry {
   if (!failure) return entry;
-  // `redactErrorPreview` treats its argument as the body budget and appends a
-  // single ellipsis when it truncates, so hand it one less than the ceiling to
-  // keep the published string within RUNTIME_AUTH_ERROR_MAX_LEN.
-  const preview = failure.message ? redactErrorPreview(failure.message, RUNTIME_AUTH_ERROR_MAX_LEN - 1) : "";
+  const preview = failure.message ? boundedErrorText(failure.message) : "";
   return {
     ...entry,
     lastAuthError: {
@@ -102,13 +122,19 @@ function pendingEntry(base: CapabilityEntry | undefined, pending: PendingAuth, n
     available: true,
     detectedAt: new Date(nowMs).toISOString(),
   };
+  // Starting a login clears the previous attempt's verdict, so the stale
+  // `error` / `lastAuthError` of the snapshot we are layering onto are dropped
+  // rather than spread forward: keeping detection-failure text on an entry we
+  // are about to force to `ok` contradicts itself, and republishing it would
+  // slip old (possibly credential-bearing) text past the sanitising boundary.
+  const { error: _staleError, lastAuthError: _staleAuthError, ...carried } = baseEntry;
   // A login only starts after the provider binary resolved, so the provider IS
   // installed: force the install fields rather than inheriting a possibly-stale
   // non-`ok` base (which would yield a contradictory `missing` + pendingAuth
   // entry). `authenticated`/`authMethod` are deprecated wire-compat for older
   // servers (see the client-capabilities schema).
   return {
-    ...baseEntry,
+    ...carried,
     state: "ok",
     available: true,
     authenticated: true,
@@ -163,7 +189,8 @@ async function driveRuntimeAuthLogin(
   const reflect = async (label: string, failure: AuthFailure | null): Promise<void> => {
     try {
       for (const { provider, entry } of await driver.reprobe()) {
-        const published = provider === command.provider ? attachAuthError(entry, failure, now()) : entry;
+        const safe = sanitizeProbedEntry(entry);
+        const published = provider === command.provider ? attachAuthError(safe, failure, now()) : safe;
         await deps.setProviderEntry(provider, published);
       }
     } catch (err) {

@@ -96,11 +96,17 @@ process-global mutable registry to install into.
 **Login output is bounded.** A browser login may stream for the whole
 five-minute window, so the subprocess retains no full output buffer: the
 fallback sign-in URL comes from an incremental scanner whose only carried state
-is the current partial token, and stderr keeps a bounded tail. Anything
-republished onto a capability entry passes through `redactErrorPreview` first,
-under a hard ceiling that counts the helper's truncation ellipsis. Do not put
-that ceiling on the shared wire schema — a `.max()` there breaks rolling
-daemon/server compatibility.
+is the current partial token, and stderr keeps a bounded tail.
+
+Every free-text string the dispatcher publishes passes through
+`redactErrorPreview` under a hard ceiling that counts the helper's truncation
+ellipsis: the login's own `lastAuthError.message`, and the `error` of *each*
+row a `reprobe()` returns — including the extra rows of a shared-credential
+driver, whose detection text comes from the same hosts and subprocesses.
+Starting a login also drops the previous attempt's `error` and `lastAuthError`
+instead of carrying them onto the pending entry, so nothing escapes the
+boundary by riding an older snapshot. Do not put that ceiling on the shared
+wire schema — a `.max()` there breaks rolling daemon/server compatibility.
 
 ## 3. Handler V1 contract
 

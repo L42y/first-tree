@@ -11,6 +11,18 @@ const repoRoot = join(clientSrc, "..", "..", "..");
 /** Quote tokens derived from the Zod ID set — auto-expands when a provider is added. */
 const PROVIDER_LITERAL_TOKENS: readonly string[] = RUNTIME_PROVIDER_IDS.flatMap((id) => [`"${id}"`, `'${id}'`]);
 
+/**
+ * The narrower in-product auth set, derived from its own schema so that
+ * extending `runtimeAuthProviderSchema` widens this guard in the same commit
+ * that widens the driver registry. The full-provider tokens above still apply
+ * to the daemon dispatcher; this set pins the enum the dispatcher keys on.
+ */
+const AUTH_PROVIDER_LITERAL_TOKENS: readonly string[] = runtimeAuthProviderSchema.options.flatMap((id) => [
+  `"${id}"`,
+  `'${id}'`,
+  `\`${id}\``,
+]);
+
 const THIRD_PARTY_SDK_IMPORTS = [
   "@anthropic-ai/claude-agent-sdk",
   "@openai/codex-sdk",
@@ -185,6 +197,12 @@ describe("runtime provider architecture guard", () => {
     expect(source).toContain("RUNTIME_AUTH_DRIVERS");
     const hit = containsAnyProviderLiteral(source);
     expect(hit, `${rel} must not contain provider literal ${hit}`).toBeNull();
+    // Same file, narrower lens: the auth enum the dispatcher keys on, derived
+    // from its own schema so a new in-product target cannot widen the registry
+    // without widening this guard.
+    for (const token of AUTH_PROVIDER_LITERAL_TOKENS) {
+      expect(source, `${rel} must not contain auth provider literal ${token}`).not.toContain(token);
+    }
     for (const provider of runtimeAuthProviderSchema.options) {
       expect(source, `${rel} must not branch on ${provider}`).not.toMatch(
         new RegExp(`(===|case)\\s*["']${provider}["']`),

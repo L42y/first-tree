@@ -384,6 +384,70 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
     expect(published).toBe("account not authorized");
   });
 
+  it("sanitizes a probe-reported error on the login target's row", async () => {
+    const { driver } = fakeDriver({
+      provider: "codex",
+      probeResult: okEntry({
+        state: "error",
+        available: false,
+        error: `detect failed for https://svc:hunter2pwd@registry.example/x token=${"b".repeat(2_000)}`,
+      }),
+    });
+    const h = harness(driver, "codex");
+    await runRuntimeAuthLogin({ provider: "codex", ref: "probe-error" }, h.deps);
+
+    const published = h.calls.at(-1)?.entry.error ?? "";
+    expect(published).not.toContain("hunter2pwd");
+    expect(published).toContain("[REDACTED]");
+    expect(published.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN);
+  });
+
+  it("sanitizes a probe-reported error on a shared-credential extra row too", async () => {
+    const { driver } = fakeDriver({
+      provider: "claude-code",
+      logLabel: "claude",
+      artifactLabel: "CLI",
+      extraRows: [
+        {
+          provider: "claude-code-tui",
+          entry: okEntry({
+            state: "error",
+            available: false,
+            error: `tui detect failed: Authorization: Bearer sk-ant-abcdefghijklmnopqrstuvwx ${"x".repeat(2_000)}`,
+          }),
+        },
+      ],
+    });
+    const h = harness(driver, "claude-code");
+    await runRuntimeAuthLogin({ provider: "claude-code", ref: "tui-probe-error" }, h.deps);
+
+    const tuiRow = h.calls.filter((c) => c.provider === "claude-code-tui").at(-1)?.entry;
+    expect(tuiRow?.error).not.toContain("sk-ant-abcdefghijklmnopqrstuvwx");
+    expect(tuiRow?.error).toContain("[REDACTED]");
+    expect((tuiRow?.error ?? "").length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN);
+    // The extra row still carries no failure marker — that belongs to the target.
+    expect(tuiRow?.lastAuthError).toBeUndefined();
+  });
+
+  it("drops the previous attempt's error and failure marker from the pending entry", async () => {
+    const { driver } = fakeDriver({ provider: "codex" });
+    const stale = okEntry({
+      state: "error",
+      available: false,
+      error: "old detect failure for https://svc:hunter2pwd@registry.example/x",
+      lastAuthError: { reason: "timeout", message: "an earlier sign-in timed out", at: "2026-06-21T00:00:00.000Z" },
+    });
+    const h = harness(driver, "codex", stale);
+    await runRuntimeAuthLogin({ provider: "codex", ref: "stale" }, h.deps);
+
+    const pending = h.calls[0]?.entry;
+    expect(pending?.pendingAuth).toBeDefined();
+    // Starting a login clears the last verdict; nothing from it may ride along.
+    expect(pending?.error).toBeUndefined();
+    expect(pending?.lastAuthError).toBeUndefined();
+    expect(pending?.state).toBe("ok");
+  });
+
   it("caps a thrown error and an unresolved-artifact error too", async () => {
     const thrown = harness(
       fakeDriver({ provider: "codex", throwLogin: new Error(`token=${"a".repeat(2_000)}`) }).driver,
