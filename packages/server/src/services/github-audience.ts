@@ -333,6 +333,7 @@ export async function resolveGithubAudience(
         personnelTargets.push({
           kind: "personnel_target",
           reason: target.reason,
+          requiresPersistentLine: target.reason === "assigned" || target.reason === "mentioned",
           humanAgentId: c.id,
           wakeAgentId: c.delegateMention,
           externalUsername: candidateLogin,

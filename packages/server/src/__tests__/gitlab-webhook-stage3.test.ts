@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agents } from "../db/schema/agents.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
@@ -1067,7 +1068,7 @@ describe("GitLab Stage 3 personnel routing", () => {
     ).toHaveLength(1);
   });
 
-  it("does not reuse entity membership for an assignment target", async () => {
+  it("co-locates an assignment target in one exact-membership entity chat", async () => {
     const app = getApp();
     const setup = await setupTarget(app);
     const iid = 24;
@@ -1120,7 +1121,93 @@ describe("GitLab Stage 3 personnel routing", () => {
     expect(rows).toHaveLength(2);
     const targetLine = rows.find((row) => row.boundVia === "identity_target");
     expect(targetLine?.chatId).toBeTruthy();
-    expect(targetLine?.chatId).not.toBe(existingChat.id);
+    expect(targetLine?.chatId).toBe(existingChat.id);
+  });
+
+  it("atomically admits a different current delegate and co-locates its assignment line", async () => {
+    const app = getApp();
+    const setup = await setupTarget(app);
+    const follower = await createAgent(app.db, {
+      name: `gitlab-follower-${randomUUID().slice(0, 8)}`,
+      type: "agent",
+      displayName: "GitLab Follower",
+      managerId: setup.admin.memberId,
+      organizationId: setup.admin.organizationId,
+      clientId: setup.clientId,
+    });
+    const iid = 124;
+    const existingChat = await createChat(app.db, setup.admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [follower.uuid],
+    });
+    await app.db.insert(gitlabEntityChatMappings).values({
+      id: randomUUID(),
+      organizationId: setup.admin.organizationId,
+      connectionId: setup.connection.connectionId,
+      chatId: existingChat.id,
+      declaredByAgentId: follower.uuid,
+      boundVia: "agent_declared",
+      humanAgentId: setup.admin.humanAgentUuid,
+      delegateAgentId: follower.uuid,
+      active: true,
+      entityType: "pull_request",
+      entityIid: iid,
+      projectId: 801,
+      projectPath: "Acme/Reviews",
+      projectPathNormalized: "acme/reviews",
+      entityUrl: `https://gitlab.internal/Acme/Reviews/-/merge_requests/${iid}`,
+      title: "Co-locate assignment",
+      entityState: "open",
+    });
+
+    expect(
+      (
+        await postMr(
+          app,
+          setup.connection.bearer,
+          mergeRequestPayload({
+            iid,
+            actor: "reviewer.one",
+            reviewers: [],
+            assignees: [{ username: "Reviewer.One" }],
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+
+    const rows = await app.db
+      .select()
+      .from(gitlabEntityChatMappings)
+      .where(
+        and(
+          eq(gitlabEntityChatMappings.connectionId, setup.connection.connectionId),
+          eq(gitlabEntityChatMappings.entityIid, iid),
+        ),
+      );
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ chatId: existingChat.id, delegateAgentId: follower.uuid }),
+        expect.objectContaining({
+          chatId: existingChat.id,
+          delegateAgentId: setup.delegate.uuid,
+          boundVia: "identity_target",
+          active: true,
+        }),
+      ]),
+    );
+    const speakers = await app.db
+      .select({ agentId: chatMembership.agentId })
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, existingChat.id), eq(chatMembership.accessMode, "speaker")));
+    expect(new Set(speakers.map((row) => row.agentId))).toEqual(
+      new Set([setup.admin.humanAgentUuid, follower.uuid, setup.delegate.uuid]),
+    );
+    const [card] = await app.db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.chatId, existingChat.id), eq(messages.source, "gitlab")));
+    expect(card?.metadata).toMatchObject({ mentions: [setup.delegate.uuid] });
   });
 
   it("unfollows an automatic route and lets a later reviewer event create a fresh chat", async () => {
