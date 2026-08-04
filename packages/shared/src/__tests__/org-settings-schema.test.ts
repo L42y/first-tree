@@ -386,14 +386,26 @@ describe("org settings schemas", () => {
         contextReviewer: {
           enabled: true,
           agentUuid: "agent-1",
-          reviewerAgent: { uuid: "agent-1", name: "reviewer", displayName: "Context Reviewer" },
+          reviewerAgent: {
+            uuid: "agent-1",
+            name: "reviewer",
+            displayName: "Context Reviewer",
+            managerHumanAgentId: "human-admin-1",
+            managerActiveAdmin: true,
+          },
         },
       }),
     ).toEqual({
       contextReviewer: {
         enabled: true,
         agentUuid: "agent-1",
-        reviewerAgent: { uuid: "agent-1", name: "reviewer", displayName: "Context Reviewer" },
+        reviewerAgent: {
+          uuid: "agent-1",
+          name: "reviewer",
+          displayName: "Context Reviewer",
+          managerHumanAgentId: "human-admin-1",
+          managerActiveAdmin: true,
+        },
       },
     });
     expect(

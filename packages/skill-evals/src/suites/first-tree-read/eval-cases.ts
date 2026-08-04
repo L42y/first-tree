@@ -105,7 +105,7 @@ export const FIRST_TREE_READ_SUITE: SkillEvalSuiteDefinition = {
       },
       {
         caseIds: FIRST_TREE_READ_CASES.map((evalCase) => evalCase.id),
-        description: "Run managed, explicit-Team BYO, and non-trigger read cases through the live gate suite.",
+        description: "Run managed, SCOPE-routed BYO, and non-trigger read cases through the live gate suite.",
         status: "implemented",
         tier: "gate",
       },

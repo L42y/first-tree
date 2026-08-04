@@ -10,69 +10,58 @@ import {
 const DIGEST = `sha256:${"a".repeat(64)}`;
 
 describe("context integration contracts", () => {
-  it("parses provider path and pathless project bindings", () => {
+  it("parses global and directory Team grants", () => {
     const parsed = contextIntegrationConfigSchema.parse({
-      schemaVersion: 2,
-      bindings: [
+      schemaVersion: 3,
+      grants: [
         {
           provider: "codex",
-          project: { kind: "path", root: "/work/payments" },
           organizationId: "org_acme",
+          activationScope: { kind: "directory", root: "/work/payments" },
         },
         {
           provider: "claude-code",
-          project: { kind: "pathless" },
           organizationId: "org_acme",
+          activationScope: { kind: "global" },
         },
       ],
     });
-    expect(parsed.bindings).toHaveLength(2);
+    expect(parsed.grants).toHaveLength(2);
   });
 
   it("rejects unsupported providers", () => {
     expect(
       contextIntegrationConfigSchema.safeParse({
-        schemaVersion: 2,
-        bindings: [
+        schemaVersion: 3,
+        grants: [
           {
             provider: "remote",
-            project: { kind: "path", root: "/work/payments" },
             organizationId: "org_acme",
+            activationScope: { kind: "global" },
           },
         ],
       }).success,
     ).toBe(false);
   });
 
-  it.each([
-    [
-      "pathless",
-      [
-        { provider: "codex", project: { kind: "pathless" }, organizationId: "org_a" },
-        { provider: "codex", project: { kind: "pathless" }, organizationId: "org_b" },
-      ],
-    ],
-    [
-      "path",
-      [
-        { provider: "codex", project: { kind: "path", root: "/work/project" }, organizationId: "org_a" },
-        { provider: "codex", project: { kind: "path", root: "/work/project" }, organizationId: "org_b" },
-      ],
-    ],
-  ])("rejects duplicate provider + %s project identities", (_kind, bindings) => {
-    expect(contextIntegrationConfigSchema.safeParse({ schemaVersion: 2, bindings }).success).toBe(false);
+  it("allows multiple Teams at the same activation scope", () => {
+    const grants = [
+      { provider: "codex", organizationId: "org_a", activationScope: { kind: "global" } },
+      { provider: "codex", organizationId: "org_b", activationScope: { kind: "global" } },
+    ];
+    expect(contextIntegrationConfigSchema.safeParse({ schemaVersion: 3, grants }).success).toBe(true);
   });
 
-  it("allows overlapping ancestor projects because their identities are distinct", () => {
+  it("rejects duplicate provider + Team + activation scope identities", () => {
     expect(
       contextIntegrationConfigSchema.safeParse({
-        schemaVersion: 2,
-        bindings: [
-          { provider: "codex", project: { kind: "path", root: "/work" }, organizationId: "org_a" },
-          { provider: "codex", project: { kind: "path", root: "/work/project" }, organizationId: "org_b" },
+        schemaVersion: 3,
+        grants: [
+          { provider: "codex", organizationId: "org_a", activationScope: { kind: "global" } },
+          { provider: "codex", organizationId: "org_a", activationScope: { kind: "global" } },
         ],
       }).success,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("rejects a legacy migration with duplicate provider + checkout identities", () => {

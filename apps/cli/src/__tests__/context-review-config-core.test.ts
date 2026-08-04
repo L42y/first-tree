@@ -5,6 +5,13 @@ import {
   readMemberContextReviewConfig,
 } from "../core/context-review-config.js";
 
+const liveReviewer = (agentUuid: string) => ({
+  enabled: true,
+  agentUuid,
+  managerHumanAgentId: "human-admin-1",
+  managerActiveAdmin: true,
+});
+
 describe("Context Review config", () => {
   it("normalizes one live binding and assignment tuple", () => {
     expect(
@@ -14,7 +21,7 @@ describe("Context Review config", () => {
           branch: "main",
           providerMatchesRepository: true,
           gitlabConnection: null,
-          contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
+          contextReviewer: liveReviewer("reviewer-1"),
         },
         "reviewer-1",
       ),
@@ -27,6 +34,8 @@ describe("Context Review config", () => {
       enabled: true,
       assigned: true,
       agentUuid: "reviewer-1",
+      managerHumanAgentId: "human-admin-1",
+      managerActiveAdmin: true,
     });
   });
 
@@ -38,7 +47,12 @@ describe("Context Review config", () => {
           branch: null,
           providerMatchesRepository: true,
           gitlabConnection: null,
-          contextReviewer: { enabled: false, agentUuid: null },
+          contextReviewer: {
+            enabled: false,
+            agentUuid: null,
+            managerHumanAgentId: null,
+            managerActiveAdmin: false,
+          },
         },
         "reviewer-1",
       ).assigned,
@@ -50,11 +64,32 @@ describe("Context Review config", () => {
           branch: "main",
           providerMatchesRepository: true,
           gitlabConnection: null,
-          contextReviewer: { enabled: true, agentUuid: "reviewer-2" },
+          contextReviewer: liveReviewer("reviewer-2"),
         },
         "reviewer-1",
       ).assigned,
     ).toBe(false);
+  });
+
+  it("keeps ordinary assignment but exposes a blocked SCOPE approver after demotion", () => {
+    const demoted = normalizeContextReviewConfig(
+      {
+        repo: "https://github.com/acme/context-tree.git",
+        branch: "main",
+        providerMatchesRepository: true,
+        gitlabConnection: null,
+        contextReviewer: {
+          enabled: true,
+          agentUuid: "reviewer-1",
+          managerHumanAgentId: "human-admin-1",
+          managerActiveAdmin: false,
+        },
+      },
+      "reviewer-1",
+    );
+    expect(demoted.assigned).toBe(true);
+    expect(demoted.managerActiveAdmin).toBe(false);
+    expect(demoted.managerHumanAgentId).toBe("human-admin-1");
   });
 
   it("fails closed for an invalid mixed response", () => {
@@ -78,7 +113,7 @@ describe("Context Review config", () => {
       branch: "main",
       providerMatchesRepository: true,
       gitlabConnection: null,
-      contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
+      contextReviewer: liveReviewer("reviewer-1"),
     }));
     await expect(
       readContextReviewConfig({ agentId: "reviewer-1", getAgentContextReviewConfig }),
@@ -96,7 +131,13 @@ describe("Context Review config", () => {
       contextReviewer: {
         enabled: true,
         agentUuid: "reviewer-private",
-        reviewerAgent: { uuid: "reviewer-private", name: "reviewer", displayName: "Reviewer" },
+        reviewerAgent: {
+          uuid: "reviewer-private",
+          name: "reviewer",
+          displayName: "Reviewer",
+          managerHumanAgentId: "human-admin-1",
+          managerActiveAdmin: true,
+        },
       },
     }));
 
@@ -111,6 +152,8 @@ describe("Context Review config", () => {
       enabled: true,
       assigned: true,
       agentUuid: "reviewer-private",
+      managerHumanAgentId: "human-admin-1",
+      managerActiveAdmin: true,
     });
     expect(getMemberContextTreeSetting).toHaveBeenCalledWith("org-1");
     expect(getMemberContextTreeFeatures).toHaveBeenCalledWith("org-1");
@@ -125,7 +168,7 @@ describe("Context Review config", () => {
           branch: "main",
           providerMatchesRepository: true,
           gitlabConnection: { id: "connection-1", instanceOrigin: "https://gitlab.internal:8443" },
-          contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
+          contextReviewer: liveReviewer("reviewer-1"),
         },
         "reviewer-1",
       ),
@@ -146,7 +189,7 @@ describe("Context Review config", () => {
           branch: "main",
           providerMatchesRepository: true,
           gitlabConnection: { id: "connection-1", instanceOrigin: "https://GITLAB.internal/" },
-          contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
+          contextReviewer: liveReviewer("reviewer-1"),
         },
         "reviewer-1",
       ),
@@ -162,7 +205,7 @@ describe("Context Review config", () => {
           branch: "main",
           providerMatchesRepository: true,
           gitlabConnection: null,
-          contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
+          contextReviewer: liveReviewer("reviewer-1"),
         },
         "reviewer-1",
       ),

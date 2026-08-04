@@ -28,14 +28,14 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
     workspaceKind: "context-tree",
   },
   {
-    description: "Explicit-Team BYO task that must activate one exact read snapshot before discovery.",
+    description: "BYO task that must select one exact SCOPE route before discovery.",
     expectedFacts: JWT_AUTH_EXPECTED_FACTS,
     expectedTrigger: true,
-    id: "byo-explicit-team-trigger",
+    id: "byo-scope-route-trigger",
     prompt:
-      "For this BYO Context Tree task, use the explicit First Tree Team id `team-byo-read-eval` and answer: what constraints should JWT auth routes follow?",
+      "For this BYO Context Tree task, use the locally authorized SCOPE router and answer: what constraints should JWT auth routes follow?",
     promptAlternates: [
-      "Team `team-byo-read-eval` is the explicit target for this BYO task. Read its current Context Tree once, then explain multi-org JWT route constraints.",
+      "Route this BYO task from the complete eligible SCOPE body, read the selected exact Context Tree once, then explain multi-org JWT route constraints.",
     ],
     readMode: "byo",
     workspaceKind: "byo-context-tree",

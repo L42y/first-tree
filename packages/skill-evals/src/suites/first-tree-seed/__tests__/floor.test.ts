@@ -80,13 +80,20 @@ describe("first-tree-seed floor invariants", () => {
     expect(durableProgressMarkdown).toContain("binding change");
   });
 
-  it("publishes the portable Seed skill as version 0.5.2", () => {
-    expect(skillVersion).toBe("0.5.2");
-    expect(skillMarkdown).toContain("version: 0.5.2");
+  it("publishes the portable Seed skill as version 0.6.0", () => {
+    expect(skillVersion).toBe("0.6.0");
+    expect(skillMarkdown).toContain("version: 0.6.0");
     expect(skillMarkdown).toContain('first-tree: ">=0.5.16 <0.6.0"');
     expect(openAiMetadata).toContain("$first-tree-seed");
     expect(openAiMetadata).toContain("merged durable progress");
     expect(openAiMetadata).not.toContain("in this chat");
+  });
+
+  it("keeps the root index and domain-neutral SCOPE responsibilities separate", () => {
+    expect(skillMarkdown).toContain("`## Active Domains`, `## Members`, and");
+    expect(skillMarkdown).toContain("`## Raw Context` sections enumerating what was opened");
+    expect(skillMarkdown).toContain("approved domain-neutral routing description");
+    expect(skillMarkdown).not.toContain("supporting signals.\n  `## Members`");
   });
 
   it("configures PR-only GitHub branch rules after creating a GitHub Context Repo", () => {

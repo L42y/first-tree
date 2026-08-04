@@ -1158,7 +1158,13 @@ describe("settings panels", () => {
       contextTreeFeatures({
         enabled: true,
         agentUuid: "agent-reviewer",
-        reviewerAgent: { uuid: "agent-reviewer", name: "context-reviewer", displayName: "Context Reviewer Bot" },
+        reviewerAgent: {
+          uuid: "agent-reviewer",
+          name: "context-reviewer",
+          displayName: "Context Reviewer Bot",
+          managerHumanAgentId: "human-admin",
+          managerActiveAdmin: true,
+        },
       }),
     );
     const { container, root } = await renderPanel(<ContextTreeSettingsPanel />);

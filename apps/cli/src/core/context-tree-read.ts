@@ -27,6 +27,9 @@ export type ContextTreeReadGitRunner = (cwd: string, args: readonly string[]) =>
 export type ActivateContextTreeReadInput = {
   teamId: string;
   snapshotPath: string;
+  expectedBinding?: { provider?: ContextTreeProvider; repo: string; branch: string };
+  expectedCommit?: string;
+  routeCandidateId?: string;
 };
 
 export type ContextTreeReadActivation = {
@@ -38,6 +41,7 @@ export type ContextTreeReadActivation = {
   };
   commit: string;
   snapshotPath: string;
+  routeCandidateId?: string;
 };
 
 export type ContextTreeReadSnapshotIdentity = ContextTreeReadActivation;
@@ -54,6 +58,7 @@ const SNAPSHOT_REPO_KEY = "first-tree-read.binding-repo";
 const SNAPSHOT_BRANCH_KEY = "first-tree-read.binding-branch";
 const SNAPSHOT_PROVIDER_KEY = "first-tree-read.binding-provider";
 const SNAPSHOT_COMMIT_KEY = "first-tree-read.commit";
+const SNAPSHOT_ROUTE_CANDIDATE_KEY = "first-tree-read.route-candidate-id";
 const SNAPSHOT_REF = "refs/first-tree-read/snapshot";
 const EXACT_COMMIT_RE = /^[0-9a-f]{40,64}$/u;
 const GIT_INDEX_ENTRY_RE = /^([0-7]{6}) ([0-9a-f]{40,64}) [0-3]\t([\s\S]+)$/u;
@@ -113,6 +118,13 @@ export async function activateContextTreeRead(
   }
 
   const binding = await readCurrentTeamBinding(reader, teamId);
+  if (input.expectedBinding && !sameBinding(binding, input.expectedBinding)) {
+    throw new ContextTreeReadActivationError(
+      "CONTEXT_TREE_READ_BINDING_INVALID",
+      "The selected Team's Context Tree binding changed after SCOPE routing. Route the task again.",
+      { stage: "binding", exitCode: 1 },
+    );
+  }
   const parent = dirname(snapshotPath);
   let stagingPath: string | null = null;
   let published = false;
@@ -153,6 +165,9 @@ export async function activateContextTreeRead(
       if (!EXACT_COMMIT_RE.test(commit)) {
         throw new Error("Git did not return an exact commit id");
       }
+      if (input.expectedCommit && commit !== input.expectedCommit.toLowerCase()) {
+        throw new Error("Context Tree branch changed after SCOPE routing");
+      }
     } catch {
       throw new ContextTreeReadActivationError(
         "CONTEXT_TREE_READ_COMMIT_FAILED",
@@ -180,6 +195,9 @@ export async function activateContextTreeRead(
         runGit(stagingPath, ["config", "--local", SNAPSHOT_PROVIDER_KEY, binding.provider]);
       }
       runGit(stagingPath, ["config", "--local", SNAPSHOT_COMMIT_KEY, commit]);
+      if (input.routeCandidateId) {
+        runGit(stagingPath, ["config", "--local", SNAPSHOT_ROUTE_CANDIDATE_KEY, input.routeCandidateId]);
+      }
       runGit(stagingPath, ["update-ref", SNAPSHOT_REF, commit]);
 
       // The task snapshot has no mutable remote. This makes accidental pull
@@ -255,6 +273,12 @@ export function readContextTreeReadSnapshotIdentity(
     const binding = contextTreeActiveBindingSchema.parse({ repo, branch, ...(provider ? { provider } : {}) });
     const commit = runGit(snapshotPath, ["config", "--local", "--get", SNAPSHOT_COMMIT_KEY]).toLowerCase();
     const head = runGit(snapshotPath, ["rev-parse", "--verify", "HEAD"]).toLowerCase();
+    let routeCandidateId: string | undefined;
+    try {
+      routeCandidateId = runGit(snapshotPath, ["config", "--local", "--get", SNAPSHOT_ROUTE_CANDIDATE_KEY]);
+    } catch {
+      routeCandidateId = undefined;
+    }
     // Include ignored files as well as ordinary untracked files. An ignored
     // Markdown file introduced after activation must not become readable as
     // if it were part of the pinned commit.
@@ -275,6 +299,7 @@ export function readContextTreeReadSnapshotIdentity(
       binding,
       commit,
       snapshotPath,
+      ...(routeCandidateId ? { routeCandidateId } : {}),
     };
   } catch (error) {
     if (error instanceof InvalidContextTreeReadSnapshotError) {
@@ -282,6 +307,13 @@ export function readContextTreeReadSnapshotIdentity(
     }
     throw new InvalidContextTreeReadSnapshotError();
   }
+}
+
+function sameBinding(
+  left: { provider?: ContextTreeProvider; repo: string; branch: string },
+  right: { provider?: ContextTreeProvider; repo: string; branch: string },
+): boolean {
+  return left.repo === right.repo && left.branch === right.branch && left.provider === right.provider;
 }
 
 export function runContextTreeReadGit(cwd: string, args: readonly string[]): string {

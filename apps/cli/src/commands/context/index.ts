@@ -6,6 +6,7 @@ import { contextDisableCommand } from "./disable.js";
 import { contextEnableCommand } from "./enable.js";
 import { contextReadCommand } from "./read.js";
 import { contextRepairCommand } from "./repair.js";
+import { contextRouteCommand } from "./route.js";
 import { contextStatusCommand } from "./status.js";
 import { contextWriteCommand } from "./write.js";
 
@@ -29,6 +30,7 @@ const contextCommand: CommandModule = {
       contextRepairCommand,
       contextDisableCommand,
       contextActivateCommand,
+      contextRouteCommand,
       contextReadCommand,
       contextWriteCommand,
     ]);

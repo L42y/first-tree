@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-
+import { parseContextTreeScopeMarkdown } from "@first-tree/shared";
 import type { Command } from "commander";
 
 import { channelConfig } from "../../core/channel.js";
@@ -42,6 +42,7 @@ export type VerifySummary = {
     nodes: VerifyCheck;
     progress: VerifyCheck & { uncheckedItems: string[] };
     rootNodeFrontmatter: VerifyCheck;
+    scope: VerifyCheck;
     treeState: VerifyCheck;
   };
   findings: TreeValidationFinding[];
@@ -143,6 +144,25 @@ function formatRootNodeError(finding: TreeValidationFinding): string {
   }
 }
 
+function verifyScopeFile(targetRoot: string): string[] {
+  const path = join(targetRoot, "SCOPE.md");
+  try {
+    const entry = lstatSync(path);
+    if (entry.isSymbolicLink() || !entry.isFile()) {
+      return ["SCOPE.md must be a regular root file and must not be a symlink."];
+    }
+    const bytes = readFileSync(path);
+    const markdown = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    parseContextTreeScopeMarkdown(markdown);
+    return [];
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT") {
+      return [];
+    }
+    return [`Invalid SCOPE.md: ${error instanceof Error ? error.message : String(error)}`];
+  }
+}
+
 export function verifyTreeRoot(targetRoot: string): VerifySummary {
   const invalidManagedPath = SOURCE_INTEGRATION_FILES.some(
     (file) => inspectRepoInfraMarkdownFile(targetRoot, file).kind === "invalid",
@@ -175,6 +195,7 @@ export function verifyTreeRoot(targetRoot: string): VerifySummary {
   const nodeErrors = nodeFindings.map(formatLegacyNodeError);
   const memberErrors = memberResult.findings.map(formatLegacyMemberError);
   const rootNodeErrors = rootFindings.map(formatRootNodeError);
+  const scopeErrors = verifyScopeFile(targetRoot);
 
   // W1 moved workspace/tree identity out of the tree repo and into the
   // workspace-root manifest. A fresh CI checkout of a tree repo is therefore
@@ -205,6 +226,10 @@ export function verifyTreeRoot(targetRoot: string): VerifySummary {
         ok: rootNodeErrors.length === 0,
         ...(rootNodeErrors.length === 0 ? {} : { errors: rootNodeErrors }),
       },
+      scope: {
+        ok: scopeErrors.length === 0,
+        ...(scopeErrors.length === 0 ? {} : { errors: scopeErrors }),
+      },
       treeState: {
         ok: true,
       },
@@ -227,6 +252,7 @@ function printVerifySummary(summary: VerifySummary): void {
     ["framework version", summary.checks.frameworkVersion],
     ["tree state", summary.checks.treeState],
     ["root node frontmatter", summary.checks.rootNodeFrontmatter],
+    ["root SCOPE.md", summary.checks.scope],
     ["node validation", summary.checks.nodes],
     ["member validation", summary.checks.members],
     ["progress checklist", summary.checks.progress],

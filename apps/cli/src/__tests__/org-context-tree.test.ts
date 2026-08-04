@@ -86,7 +86,12 @@ describe("org context-tree CLI", () => {
         branch: "main",
         providerMatchesRepository: true,
         gitlabConnection: null,
-        contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
+        contextReviewer: {
+          enabled: true,
+          agentUuid: "reviewer-1",
+          managerHumanAgentId: "human-admin-1",
+          managerActiveAdmin: true,
+        },
       })),
     };
     localAgentMocks.createSdk.mockReturnValue(sdk);
@@ -107,6 +112,8 @@ describe("org context-tree CLI", () => {
         enabled: true,
         assigned: true,
         agentUuid: "reviewer-1",
+        managerHumanAgentId: "human-admin-1",
+        managerActiveAdmin: true,
       },
     });
   });
@@ -125,7 +132,13 @@ describe("org context-tree CLI", () => {
         contextReviewer: {
           enabled: true,
           agentUuid: "private-reviewer",
-          reviewerAgent: { uuid: "private-reviewer", name: null, displayName: "Reviewer" },
+          reviewerAgent: {
+            uuid: "private-reviewer",
+            name: null,
+            displayName: "Reviewer",
+            managerHumanAgentId: "human-admin-1",
+            managerActiveAdmin: true,
+          },
         },
       })),
     });

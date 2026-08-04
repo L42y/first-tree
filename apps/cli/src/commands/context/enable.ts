@@ -1,11 +1,16 @@
+import { createHash } from "node:crypto";
+import type { ContextActivationScope, ContextIntegrationGrant, ContextIntegrationProvider } from "@first-tree/shared";
 import { confirm } from "@inquirer/prompts";
 import type { Command } from "commander";
-import { channelConfig } from "../../core/channel.js";
-import { readActiveContextAccountClientId } from "../../core/context-integration/account-state-guard.js";
-import { buildConnectedContextAdditionalContext } from "../../core/context-integration/activation.js";
-import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
 import {
-  findContextBinding,
+  readActiveContextAccountClientId,
+  withAccountStateMutationLockAsync,
+} from "../../core/context-integration/account-state-guard.js";
+import { inspectContextSetupLocation } from "../../core/context-integration/client-preflight.js";
+import {
+  assertContextGrantStoreFingerprint,
+  contextGrantStoreFingerprintAfterGrant,
+  inspectContextGrantStore,
   readContextIntegrationConfig,
 } from "../../core/context-integration/context-binding-store.js";
 import {
@@ -14,408 +19,478 @@ import {
 } from "../../core/context-integration/current-session-handoff.js";
 import { planContextIntegrationInstall } from "../../core/context-integration/installer.js";
 import { enableContextIntegrationOperation } from "../../core/context-integration/operation.js";
-import type { ProviderHookProbe } from "../../core/context-integration/provider-driver.js";
-import {
-  type ContextIntegrationStatus,
-  inspectContextIntegrationStatus,
-} from "../../core/context-integration/status.js";
+import { providerPluginRoot, resolveContextIntegrationRelease } from "../../core/context-integration/release.js";
+import { inspectContextIntegrationRuntime } from "../../core/context-integration/runtime-health.js";
 import { print } from "../../core/output.js";
 import { createMemberSdk } from "../_shared/member.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
 import { createContextIntegrationDriver, parseContextProvider } from "./shared.js";
-import { renderHookEnabled, renderHookTrust } from "./status.js";
 
 type EnableOptions = {
   provider?: string;
   team?: string;
+  plan?: boolean;
+  scope?: string;
+  planId?: string;
   yes?: boolean;
   projectRoot?: string;
   pathless?: boolean;
 };
 
+const setupPlanAccountClientId = Symbol("setupPlanAccountClientId");
+
+type SetupPlan = {
+  schemaVersion: 1;
+  planId: string;
+  grantStoreFingerprint: string;
+  provider: ContextIntegrationProvider;
+  team: { organizationId: string; displayName: string; role: string };
+  location: ReturnType<typeof inspectContextSetupLocation>;
+  choices: Array<{
+    kind: "global" | "directory" | "session";
+    label: string;
+    available: boolean;
+    recommended: boolean;
+    description: string;
+  }>;
+  [setupPlanAccountClientId]: string;
+};
+
+type SetupPlanToken = {
+  identityFingerprint: string;
+  beforeFingerprint: string;
+  globalAfterFingerprint: string;
+  directoryAfterFingerprint: string | null;
+};
+
 function configure(command: Command): void {
   command
     .requiredOption("--provider <provider>", "claude-code or codex")
-    .requiredOption("--team <team-id>", "Team from the server-authored Setup or invite handoff")
-    .option("--project-root <directory>", "attached provider project root")
-    .option("--pathless", "bind the provider's explicit pathless project")
-    .option("--yes", "accept the displayed local Plugin/binding change plan");
+    .requiredOption("--team <team-id>", "Team from the server-authored Setup handoff")
+    .option("--plan", "inspect the provider location and return the three activation choices without mutating state")
+    .option("--scope <scope>", "apply global, directory, or session activation")
+    .option("--plan-id <plan-id>", "exact plan id returned by --plan")
+    .option("--project-root <directory>", "explicit provider directory")
+    .option("--pathless", "provider session without a usable directory")
+    .option("--yes", "accept the selected activation change");
 }
 
 export async function runContextEnable(context: CommandContext): Promise<void> {
   const options = context.command.opts<EnableOptions>();
   const provider = parseContextProvider(options.provider ?? "");
   const teamId = options.team?.trim() ?? "";
-  if (!teamId) {
-    print.fail("CONTEXT_TEAM_REQUIRED", "--team must contain the explicit handoff Team id.", 2);
+  if (!teamId) print.fail("CONTEXT_TEAM_REQUIRED", "--team must contain the server-authored Team id.", 2);
+
+  const plan = await buildSetupPlan(provider, teamId, options);
+  if (options.plan || !options.scope) {
+    renderPlan(plan, context.options.json);
+    return;
   }
-  const expectedAccountClientId = readActiveContextAccountClientId();
-  const preflight = inspectContextClientPreflight(provider, {
-    projectRoot: options.projectRoot,
-    pathless: options.pathless,
-  });
-  const sdk = createMemberSdk();
-  const activation = await sdk.validateMemberContextActivation(
-    teamId,
-    {
-      schemaVersion: 2,
-    },
-    { retry: false, timeoutMs: 2_000 },
-  );
-  if (activation.outcome !== "connected") {
+  const activationScope = parseActivationScope(options.scope, plan);
+  const submittedPlan = parseSetupPlanToken(options.planId ?? "");
+  const currentToken = parseSetupPlanToken(plan.planId);
+  const expectedAfterFingerprint =
+    activationScope.kind === "global"
+      ? submittedPlan?.globalAfterFingerprint
+      : activationScope.kind === "directory"
+        ? submittedPlan?.directoryAfterFingerprint
+        : null;
+  const storeMatches =
+    submittedPlan !== null &&
+    (plan.grantStoreFingerprint === submittedPlan.beforeFingerprint ||
+      (activationScope.kind !== "session" &&
+        expectedAfterFingerprint !== null &&
+        plan.grantStoreFingerprint === expectedAfterFingerprint));
+  if (
+    !submittedPlan ||
+    !currentToken ||
+    submittedPlan.identityFingerprint !== currentToken.identityFingerprint ||
+    !storeMatches
+  ) {
     print.fail(
-      activation.reasonCode,
-      activation.nextAction.message +
-        (activation.nextAction.settingsUrl ? ` (${activation.nextAction.settingsUrl})` : ""),
-      1,
+      "CONTEXT_ENABLE_PLAN_CHANGED",
+      "The setup location, account, provider, or Team changed after the displayed choice. Run --plan again and ask the user again.",
+      2,
     );
   }
-
-  const driver = createContextIntegrationDriver(provider);
-  const installPlan = planContextIntegrationInstall(driver);
-  let expectedConfig: ReturnType<typeof readContextIntegrationConfig>;
-  let previousBinding: ReturnType<typeof findContextBinding>;
-  try {
-    expectedConfig = readContextIntegrationConfig();
-    previousBinding = findContextBinding(provider, preflight.project);
-  } catch (error) {
-    // Fail closed before displaying a plan built on unknown previous
-    // bindings; the shared config must never be deleted to recover.
-    print.fail(
-      "CONTEXT_BINDING_CONFIG_UNREADABLE",
-      `${error instanceof Error ? error.message : String(error)} Do not delete the binding config — it also holds bindings for other providers and projects. Back it up, then repair its file permissions or YAML together with the member before re-running this command.`,
-      1,
-    );
-    throw error;
-  }
-  print.status("Provider", provider);
-  print.status("Plugin", installPlan.operation);
-  print.status("Project", renderProject(preflight.project));
-  print.status("Team binding", previousBinding ? `${previousBinding.organizationId} → ${teamId}` : `add ${teamId}`);
-
+  const acceptedPlan = submittedPlan as SetupPlanToken;
   const accepted =
     options.yes === true ||
     (!context.options.json &&
-      (await confirm({
-        message: "Apply this user-scope Plugin and project binding change?",
-        default: true,
-      })));
+      (await confirm({ message: `Apply ${activationScope.kind} First Tree activation?`, default: true })));
   if (!accepted) print.fail("CONTEXT_ENABLE_CANCELLED", "No changes were applied.", 2);
 
-  enableContextIntegrationOperation(
-    driver,
-    installPlan,
-    {
-      provider,
-      project: preflight.project,
-      organizationId: teamId,
-    },
-    expectedConfig,
-    expectedAccountClientId,
+  const result =
+    activationScope.kind === "session"
+      ? await applySessionOnly(provider, plan, activationScope, acceptedPlan.beforeFingerprint)
+      : await applyPersistent(provider, plan, activationScope, {
+          beforeFingerprint: acceptedPlan.beforeFingerprint,
+          afterFingerprint: requireAfterFingerprint(expectedAfterFingerprint),
+        });
+  if (context.options.json) {
+    print.result(result);
+    return;
+  }
+  print.status("Provider", provider);
+  print.status("Team", `${plan.team.displayName} (${plan.team.organizationId})`);
+  print.status("Activation scope", renderScope(activationScope));
+  print.status(
+    "Persistent Plugin",
+    activationScope.kind === "session" ? "Not installed for this choice" : result.plugin,
   );
-
-  const verification = await inspectContextIntegrationStatus(driver, sdk, {
-    ...(preflight.project.kind === "path" ? { projectRoot: preflight.project.root } : { pathless: true }),
+  print.status("Current-session handoff", result.currentSessionHandoff ? "Ready" : "Unavailable");
+  print.line(`\nSetup: ${result.setup.complete ? "Complete" : "Incomplete"}\n`);
+  if (result.currentSessionHandoff) {
+    print.line(`${JSON.stringify(result.currentSessionHandoff, null, 2)}\n`);
+  }
+  result.nextActions.forEach((action, index) => {
+    print.status(`Next ${index + 1}`, action);
   });
-  const missingLayers = collectMissingSetupLayers(provider, verification);
-  const handoffIdentityIssues = collectHandoffIdentityIssues(preflight.project, teamId, verification);
-  missingLayers.push(...handoffIdentityIssues);
-  const activationContext =
-    verification.activation.state === "connected" && handoffIdentityIssues.length === 0
-      ? buildConnectedContextAdditionalContext(verification.activation.team)
-      : null;
-  let currentSessionHandoff: CurrentSessionHandoff | null = null;
-  let currentSessionHandoffIssue: string | null = null;
-  if (missingLayers.length === 0) {
-    try {
-      if (verification.activation.state !== "connected" || !verification.plugin.installedPath) {
-        throw new Error("Verified activation or provider-installed Plugin path is unavailable.");
+}
+
+async function buildSetupPlan(
+  provider: ContextIntegrationProvider,
+  teamId: string,
+  options: EnableOptions,
+): Promise<SetupPlan> {
+  const location = inspectContextSetupLocation(provider, {
+    projectRoot: options.projectRoot,
+    pathless: options.pathless,
+  });
+  const accountClientId = readActiveContextAccountClientId();
+  const sdk = createMemberSdk();
+  const activation = await sdk.validateMemberContextActivation(
+    teamId,
+    { schemaVersion: 2 },
+    { retry: false, timeoutMs: 2_000 },
+  );
+  if (activation.outcome !== "connected") {
+    print.fail(activation.reasonCode, activation.nextAction.message, 1);
+  }
+  // Verify the release payload during planning. This is read-only and ensures
+  // session-only never exposes an unchecked Skill bundle.
+  resolveContextIntegrationRelease();
+  const planIdentity = {
+    schemaVersion: 1,
+    provider,
+    teamId: activation.team.organizationId,
+    accountClientId,
+    project: location.project,
+    directory: location.directory,
+    temporaryDirectory: location.temporaryDirectory,
+  };
+  const grantStore = inspectContextGrantStore();
+  const globalGrant: ContextIntegrationGrant = {
+    provider,
+    organizationId: activation.team.organizationId,
+    activationScope: { kind: "global" },
+  };
+  const directoryGrant: ContextIntegrationGrant | null = location.directory
+    ? {
+        provider,
+        organizationId: activation.team.organizationId,
+        activationScope: { kind: "directory", root: location.directory },
       }
+    : null;
+  const token: SetupPlanToken = {
+    identityFingerprint: createHash("sha256").update(JSON.stringify(planIdentity)).digest("hex"),
+    beforeFingerprint: grantStore.fingerprint,
+    globalAfterFingerprint: contextGrantStoreFingerprintAfterGrant(grantStore, globalGrant),
+    directoryAfterFingerprint: directoryGrant
+      ? contextGrantStoreFingerprintAfterGrant(grantStore, directoryGrant)
+      : null,
+  };
+  return {
+    schemaVersion: 1,
+    planId: renderSetupPlanToken(token),
+    grantStoreFingerprint: grantStore.fingerprint,
+    provider,
+    team: activation.team,
+    location,
+    choices: buildContextSetupChoices(location),
+    [setupPlanAccountClientId]: accountClientId,
+  };
+}
+
+export function buildContextSetupChoices(
+  location: ReturnType<typeof inspectContextSetupLocation>,
+): SetupPlan["choices"] {
+  return [
+    {
+      kind: "global",
+      label: "All sessions",
+      available: true,
+      recommended: !location.temporaryDirectory,
+      description: "Make this Team eligible in every session for this provider.",
+    },
+    {
+      kind: "directory",
+      label: location.directory ? `This directory: ${location.directory}` : "This directory",
+      available: location.directoryAvailable,
+      recommended: location.directoryAvailable && !location.temporaryDirectory,
+      description: location.directoryAvailable
+        ? "Make this Team eligible in this directory and its descendants."
+        : "Unavailable because the provider did not expose a stable directory.",
+    },
+    {
+      kind: "session",
+      label: "This session only",
+      available: true,
+      recommended: location.temporaryDirectory,
+      description: "Use verified Read/Write Skills now without installing a Plugin, Hook, or persistent grant.",
+    },
+  ];
+}
+
+function parseActivationScope(scope: string, plan: SetupPlan): ContextActivationScope {
+  if (scope === "global") return { kind: "global" };
+  if (scope === "session") return { kind: "session" };
+  if (scope === "directory") {
+    if (!plan.location.directoryAvailable || !plan.location.directory) {
+      print.fail("CONTEXT_DIRECTORY_UNAVAILABLE", "Directory activation is unavailable for this session.", 2);
+      throw new Error("unreachable");
+    }
+    const root = plan.location.directory;
+    return { kind: "directory", root };
+  }
+  print.fail("CONTEXT_SCOPE_INVALID", "--scope must be global, directory, or session.", 2);
+  throw new Error("unreachable");
+}
+
+async function applySessionOnly(
+  provider: ContextIntegrationProvider,
+  plan: SetupPlan,
+  activationScope: Extract<ContextActivationScope, { kind: "session" }>,
+  expectedGrantStoreFingerprint: string,
+) {
+  return withAccountStateMutationLockAsync(async () => {
+    assertPlannedAccount(plan);
+    assertContextGrantStoreFingerprint(expectedGrantStoreFingerprint);
+    const finalActivation = await validateExactTeam(plan);
+    const release = resolveContextIntegrationRelease();
+    const sessionCandidate = await createMemberSdk().issueMemberContextSessionCandidate(
+      {
+        schemaVersion: 1,
+        provider,
+        project: plan.location.project,
+        organizationId: plan.team.organizationId,
+      },
+      { retry: false, timeoutMs: 5_000 },
+    );
+    assertPlannedAccount(plan);
+    const handoff = buildCurrentSessionHandoff({
+      provider,
+      project: plan.location.project,
+      activationScope,
+      organizationId: plan.team.organizationId,
+      sessionCandidateReceipt: sessionCandidate.receipt,
+      pluginRoot: providerPluginRoot(release.root, provider),
+    });
+    assertPlannedAccount(plan);
+    return {
+      provider,
+      team: finalActivation.team,
+      project: plan.location.project,
+      activationScope,
+      plugin: "not_installed" as const,
+      setup: { complete: true, missingLayers: [] as string[] },
+      currentSessionHandoff: handoff,
+      nextActions: ["Adopt the verified handoff in this session. It will not auto-activate in a future session."],
+    };
+  });
+}
+
+async function applyPersistent(
+  provider: ContextIntegrationProvider,
+  plan: SetupPlan,
+  activationScope: Exclude<ContextActivationScope, { kind: "session" }>,
+  expectedStore: { beforeFingerprint: string; afterFingerprint: string },
+) {
+  return withAccountStateMutationLockAsync(async () => {
+    assertPlannedAccount(plan);
+    const driver = createContextIntegrationDriver(provider);
+    const installPlan = planContextIntegrationInstall(driver);
+    const grant: ContextIntegrationGrant = {
+      provider,
+      organizationId: plan.team.organizationId,
+      activationScope,
+    };
+    enableContextIntegrationOperation(driver, installPlan, grant, expectedStore, plan[setupPlanAccountClientId]);
+    const health = inspectContextIntegrationRuntime(driver);
+    const grantReady = readContextIntegrationConfig().grants.some(
+      (candidate) =>
+        candidate.provider === provider &&
+        candidate.organizationId === plan.team.organizationId &&
+        JSON.stringify(candidate.activationScope) === JSON.stringify(activationScope),
+    );
+    const hook = await driver.inspectHook({
+      marketplaceName: health.install?.marketplaceName ?? "first-tree",
+      pluginName: health.install?.pluginName ?? "first-tree-context",
+      plugin: { installed: health.probe.installed, enabled: health.probe.enabled },
+      cwd: plan.location.directory ?? process.cwd(),
+    });
+    const hookRequired = provider === "codex";
+    const hookInspectionUnavailable =
+      hookRequired && (hook.source === "unavailable" || hook.trust === "unknown" || hook.enabled === null);
+    const hookConsentRequired =
+      hookRequired &&
+      !hookInspectionUnavailable &&
+      (hook.trust === "review_required" || hook.trust === "modified" || hook.enabled === false);
+    const finalActivation = await validateExactTeam(plan).catch((error: unknown) => ({
+      outcome: "unavailable" as const,
+      message: error instanceof Error ? error.message : String(error),
+    }));
+    assertPlannedAccount(plan);
+    const pluginMissing = !health.healthy;
+    const authorityMissing = finalActivation.outcome !== "connected";
+    const missingLayers = [
+      ...(pluginMissing ? health.issues.map((issue) => `Plugin: ${issue}`) : []),
+      ...(grantReady ? [] : ["Activation grant was not found after apply."]),
+      ...(hookInspectionUnavailable
+        ? hook.issues.length > 0
+          ? hook.issues.map((issue) => `Codex Hook inspection: ${issue}`)
+          : ["Codex Hook state could not be inspected."]
+        : []),
+      ...(!hookInspectionUnavailable && hookRequired && hook.trust !== "trusted"
+        ? ["Codex Hook requires review or trust."]
+        : []),
+      ...(!hookInspectionUnavailable && hookRequired && hook.enabled !== true ? ["Codex Hook is not enabled."] : []),
+      ...(authorityMissing ? [`Team authority: ${finalActivation.message}`] : []),
+    ];
+    let currentSessionHandoff: CurrentSessionHandoff | null = null;
+    if (missingLayers.length === 0 && health.probe.installedPath) {
       currentSessionHandoff = buildCurrentSessionHandoff({
         provider,
-        project: preflight.project,
-        team: verification.activation.team,
-        installedPluginRoot: verification.plugin.installedPath,
+        project: plan.location.project,
+        activationScope,
+        organizationId: plan.team.organizationId,
+        pluginRoot: health.probe.installedPath,
       });
-    } catch (error) {
-      currentSessionHandoffIssue = error instanceof Error ? error.message : String(error);
-      missingLayers.push("Current-session handoff: unavailable");
     }
-  }
-  const setup = { complete: missingLayers.length === 0, missingLayers };
-  const nextActions = buildSetupNextActions(
-    provider,
-    verification,
-    setup,
-    channelConfig.binName,
-    currentSessionHandoffIssue,
-    handoffIdentityIssues,
-  );
-  const verifiedTeam = verification.activation.state === "connected" ? verification.activation.team : activation.team;
-  const result = {
-    provider,
-    team: verifiedTeam,
-    requestedTeam: activation.team,
-    project: preflight.project,
-    plugin: installPlan.operation,
-    verification,
-    setup,
-    activationContext,
-    currentSessionHandoff,
-    nextActions,
-  };
-  if (context.options.json) print.result(result);
-  else {
-    print.status(
-      "Context",
-      handoffIdentityIssues.length === 0
-        ? `Enabled for ${verifiedTeam.displayName}`
-        : `Requested ${activation.team.displayName}; final project/Team identity changed during verification`,
-    );
-    print.status("Plugin installed", verification.plugin.installed ? "Yes" : "No");
-    print.status("Plugin enabled", verification.plugin.enabled ? "Yes" : "No");
-    print.status("Hook trusted", renderHookTrust(verification.hook));
-    print.status("Hook enabled", renderHookEnabled(verification.hook));
-    print.status(
-      "Project binding",
-      verification.binding.state === "exact"
-        ? `Connected — Team ${verification.binding.organizationId}`
-        : `Unavailable — ${verification.binding.state}`,
-    );
-    print.status(
-      "Live activation",
-      verification.activation.state === "connected"
-        ? `Connected — ${verification.activation.team.displayName}`
-        : verification.activation.state,
-    );
-    print.status("Current-session handoff", currentSessionHandoff ? "Ready" : "Unavailable");
-    print.line(`\n${renderSetupVerdictLine(setup)}\n`);
-    if (currentSessionHandoff) {
-      print.line(
-        preflight.project.kind === "path"
-          ? "\nAdopt this complete verified current-session handoff JSON in this coding-agent session now; future sessions in this project activate automatically:\n\n"
-          : "\nAdopt this complete verified current-session handoff JSON in this coding-agent session now. Pathless sessions activate manually:\n\n",
-      );
-      print.line(`${JSON.stringify(currentSessionHandoff, null, 2)}\n`);
-      print.line("\nCanonical Team Context (also present byte-for-byte in the handoff):\n\n");
-      print.line(`${currentSessionHandoff.activationContext}\n`);
-    } else if (activationContext) {
-      print.line(
-        "\nLive Team Context was verified, but it is not ready for current-session adoption. Finish the Next steps below and re-run this command:\n\n",
-      );
-      print.line(`${activationContext}\n`);
-    }
-    nextActions.forEach((action, index) => {
-      print.status(`Next ${index + 1}`, action);
-    });
-  }
-}
-
-/**
- * Layered setup verdict: every layer the BYO setup prompt tells the agent to
- * trust must be green before the command reports `Setup: Complete`, including
- * provider compatibility and the installed payload's runtime health — a
- * damaged or mismatched payload must not verify. The hook layers apply only
- * to Codex; Claude Code hooks are provider-managed.
- */
-export function collectMissingSetupLayers(
-  provider: "claude-code" | "codex",
-  verification: Pick<
-    ContextIntegrationStatus,
-    "provider" | "plugin" | "hook" | "runtime" | "project" | "binding" | "activation"
-  >,
-): string[] {
-  return [
-    ...(verification.provider.available ? [] : ["Provider available: No"]),
-    ...(verification.provider.compatible ? [] : ["Provider compatible: No"]),
-    ...(verification.plugin.installed ? [] : ["Plugin installed: No"]),
-    ...(verification.plugin.enabled ? [] : ["Plugin enabled: No"]),
-    ...(verification.runtime.healthy ? [] : ["Plugin payload healthy: No"]),
-    ...(provider === "codex" &&
-    verification.project.state === "ready" &&
-    verification.project.project.kind === "path" &&
-    verification.hook.trust !== "trusted"
-      ? ["Hook trusted: No"]
-      : []),
-    ...(provider === "codex" &&
-    verification.project.state === "ready" &&
-    verification.project.project.kind === "path" &&
-    verification.hook.enabled !== true
-      ? ["Hook enabled: No"]
-      : []),
-    ...(verification.project.state === "ready" ? [] : ["Project: unavailable"]),
-    ...(verification.binding.state === "exact" ? [] : [`Project binding: ${verification.binding.state}`]),
-    ...(verification.activation.state === "connected" ? [] : [`Live activation: ${verification.activation.state}`]),
-  ];
-}
-
-/**
- * The final status read happens after the install/binding transaction lock is
- * released. Bind the handoff verdict back to the exact server-authored request
- * so a concurrent rebind (including ancestor fallback) can never turn another
- * Team's connected Context into a successful handoff.
- */
-export function collectHandoffIdentityIssues(
-  expectedProject: import("@first-tree/shared").ContextIntegrationProject,
-  expectedOrganizationId: string,
-  verification: Pick<ContextIntegrationStatus, "project" | "binding" | "activation">,
-): string[] {
-  return [
-    ...(verification.project.state === "ready" && !sameProject(verification.project.project, expectedProject)
-      ? ["Requested project: changed during verification"]
-      : []),
-    ...(verification.binding.state === "exact" && verification.binding.organizationId !== expectedOrganizationId
-      ? ["Requested Team binding: changed during verification"]
-      : []),
-    ...(verification.activation.state === "connected" &&
-    verification.activation.team.organizationId !== expectedOrganizationId
-      ? ["Requested Team activation: changed during verification"]
-      : []),
-  ];
-}
-
-/**
- * The literal verdict line the BYO setup prompt anchors on: agents accept
- * setup only when the rendered output contains exactly `Setup: Complete`.
- */
-export function renderSetupVerdictLine(setup: { complete: boolean; missingLayers: string[] }): string {
-  return setup.complete
-    ? "Setup: Complete — every layer verified"
-    : `Setup: Incomplete — ${setup.missingLayers.join("; ")}`;
-}
-
-/**
- * Every red layer must surface an actionable recovery step; the BYO setup
- * prompt delegates all recovery to this command's output, so an Incomplete
- * verdict with no next step is a dead end.
- */
-export function collectSetupRecoveryActions(
-  provider: "claude-code" | "codex",
-  verification: Pick<ContextIntegrationStatus, "provider" | "runtime" | "project" | "binding" | "activation">,
-  binName = channelConfig.binName,
-): string[] {
-  const actions: string[] = [];
-  if (!verification.provider.available) {
-    actions.push(
-      `Install the ${provider} CLI (minimum ${verification.provider.minimumVersion}), then re-run this command.`,
-    );
-  } else if (!verification.provider.compatible) {
-    actions.push(`Upgrade ${provider} to at least ${verification.provider.minimumVersion}, then re-run this command.`);
-  }
-  if (!verification.runtime.healthy) {
-    actions.push(
-      `${verification.runtime.issues.join(" ")} Run \`${binName} context repair --provider ${provider}\`.`.trimStart(),
-    );
-  }
-  if (verification.project.state === "unavailable") {
-    actions.push(`${verification.project.message} ${verification.project.nextAction}`);
-  }
-  if (verification.binding.state === "missing") {
-    actions.push(verification.binding.nextAction);
-  } else if (verification.binding.state === "not_checked" && verification.project.state === "ready") {
-    // A binding-read failure carries its diagnostic (including the config
-    // path) only in `reason`; activation `not_checked` is the dependent layer
-    // and needs no separate action. The config is one account-scoped store
-    // for every provider and project, so recovery must stay
-    // preservation-safe and never suggest deleting the file.
-    actions.push(
-      `${verification.binding.reason} Re-run this \`${binName} context enable\` command; if the failure persists, do not delete the binding config — it also holds bindings for other providers and projects. Back it up, then repair its file permissions or YAML together with the member before retrying.`,
-    );
-  }
-  if (verification.activation.state === "needs_admin") {
-    actions.push(
-      verification.activation.message +
-        (verification.activation.settingsUrl ? ` (${verification.activation.settingsUrl})` : ""),
-    );
-  } else if (verification.activation.state === "unavailable") {
-    actions.push(`${verification.activation.message} ${verification.activation.nextAction}`);
-  }
-  return actions;
-}
-
-/**
- * Assemble the full Next list for an enable run. Guarantees the contract the
- * BYO setup prompt relies on: an Incomplete verdict never ships without at
- * least one next step, even for layer states with no specific recovery
- * (for example `not_checked` binding/activation variants).
- */
-export function buildSetupNextActions(
-  provider: "claude-code" | "codex",
-  verification: Pick<ContextIntegrationStatus, "provider" | "runtime" | "hook" | "project" | "binding" | "activation">,
-  setup: { complete: boolean; missingLayers: string[] },
-  binName = channelConfig.binName,
-  currentSessionHandoffIssue: string | null = null,
-  handoffIdentityIssues: string[] = [],
-): string[] {
-  const actions = [
-    ...collectSetupRecoveryActions(provider, verification, binName),
-    ...buildContextEnableNextActions(
+    assertPlannedAccount(plan);
+    const setupComplete = missingLayers.length === 0 && currentSessionHandoff !== null;
+    const nextActions = setupComplete
+      ? ["Adopt the verified handoff in this session. Future sessions will load the neutral Team router automatically."]
+      : [
+          ...(pluginMissing ? ["Repair the reported Plugin payload/state, then rerun the exact apply command."] : []),
+          ...(grantReady
+            ? []
+            : [
+                "Rerun the exact apply command to restore the missing activation grant; do not use /hooks for this error.",
+              ]),
+          ...(authorityMissing
+            ? ["Restore the reported Team membership/binding authority, create a fresh plan, and ask the user again."]
+            : []),
+          ...(!pluginMissing && hookInspectionUnavailable
+            ? ["Restore Codex Hook inspection/provider API availability, then rerun the exact apply command."]
+            : []),
+          ...(!pluginMissing && hookConsentRequired
+            ? [
+                "Open /hooks, Enable and Trust First Tree Context, return here, and say Continue so the same apply command runs again.",
+              ]
+            : []),
+        ];
+    return {
       provider,
-      verification.hook,
-      binName,
-      verification.project.state === "ready" ? verification.project.project : null,
-    ),
-  ];
-  if (currentSessionHandoffIssue) {
-    actions.push(
-      `Current-session handoff validation failed: ${currentSessionHandoffIssue} Run \`${binName} context repair --provider ${provider}\`, then re-run this command.`,
-    );
-  }
-  if (handoffIdentityIssues.length > 0) {
-    actions.push(
-      `Final verification no longer matches this server-authored project/Team handoff (${handoffIdentityIssues.join("; ")}). Re-run the exact server-authored \`${binName} context enable\` handoff; if this repeats, stop concurrent Context setup or binding changes before retrying.`,
-    );
-  }
-  if (!setup.complete && actions.length === 0) {
-    actions.push(`Fix the layers listed in the Setup line, then re-run this \`${binName} context enable\` command.`);
-  }
-  return actions;
+      team: finalActivation.outcome === "connected" ? finalActivation.team : plan.team,
+      project: plan.location.project,
+      activationScope,
+      plugin: installPlan.operation,
+      setup: { complete: setupComplete, missingLayers },
+      currentSessionHandoff,
+      nextActions,
+    };
+  });
 }
 
-export function buildContextEnableNextActions(
-  provider: "claude-code" | "codex",
-  hook: Pick<ProviderHookProbe, "trust" | "enabled">,
-  binName = channelConfig.binName,
-  project: import("@first-tree/shared").ContextIntegrationProject | null = { kind: "path", root: process.cwd() },
-): string[] {
-  if (provider === "claude-code" || project?.kind === "pathless") {
-    return [];
+function assertPlannedAccount(plan: SetupPlan): void {
+  if (readActiveContextAccountClientId() === plan[setupPlanAccountClientId]) return;
+  print.fail(
+    "CONTEXT_ENABLE_PLAN_CHANGED",
+    "The active First Tree Computer/account changed while applying this setup. Create a fresh plan and ask the user again.",
+    2,
+  );
+}
+
+async function validateExactTeam(plan: SetupPlan): Promise<{ outcome: "connected"; team: SetupPlan["team"] }> {
+  const activation = await createMemberSdk().validateMemberContextActivation(
+    plan.team.organizationId,
+    { schemaVersion: 2 },
+    { retry: false, timeoutMs: 2_000 },
+  );
+  if (activation.outcome !== "connected" || activation.team.organizationId !== plan.team.organizationId) {
+    const reason =
+      activation.outcome === "connected"
+        ? "The final Team identity did not match the setup plan."
+        : activation.nextAction.message;
+    throw new Error(`Final Team activation changed after the setup plan: ${reason}`);
   }
-  if (hook.trust === "trusted" && hook.enabled === true) {
-    return [];
+  return activation;
+}
+
+function renderPlan(plan: SetupPlan, json: boolean): void {
+  if (json) {
+    print.result({ status: "choice_required", plan });
+    return;
   }
-  if (hook.trust === "trusted" && hook.enabled === false) {
-    return [
-      "Run `/hooks` in this Codex session.",
-      "Find First Tree Context → SessionStart and enable its checkbox.",
-      "Return to the original setup conversation and tell the agent to continue.",
-      `The agent must re-run the same \`${binName} context enable\` command in this session; setup is complete only when it reports Setup: Complete.`,
-    ];
+  print.status("Provider", plan.provider);
+  print.status("Team", `${plan.team.displayName} (${plan.team.organizationId})`);
+  print.status("Current directory", plan.location.directory ?? "Unavailable");
+  if (plan.location.warning) print.status("Warning", plan.location.warning);
+  for (const choice of plan.choices) {
+    print.status(choice.label, choice.available ? choice.description : `Unavailable — ${choice.description}`);
   }
+  print.status("Next", "Choose one scope, then rerun with --scope <scope> --plan-id <planId> --yes.");
+}
+
+function renderScope(scope: ContextActivationScope): string {
+  return scope.kind === "directory" ? `directory (${scope.root})` : scope.kind;
+}
+
+function renderSetupPlanToken(token: SetupPlanToken): string {
   return [
-    "Run `/hooks` in this Codex session.",
-    "Find First Tree Context → SessionStart, enable its checkbox, and choose Trust.",
-    "Return to the original setup conversation and tell the agent to continue.",
-    `The agent must re-run the same \`${binName} context enable\` command in this session; setup is complete only when it reports Setup: Complete.`,
-  ];
+    "v1",
+    token.identityFingerprint,
+    token.beforeFingerprint,
+    token.globalAfterFingerprint,
+    token.directoryAfterFingerprint ?? "-",
+  ].join(".");
+}
+
+function parseSetupPlanToken(value: string): SetupPlanToken | null {
+  const [version, identityFingerprint, beforeFingerprint, globalAfterFingerprint, directoryAfter] = value.split(".");
+  const digest = /^[0-9a-f]{64}$/u;
+  if (
+    version !== "v1" ||
+    !identityFingerprint ||
+    !beforeFingerprint ||
+    !globalAfterFingerprint ||
+    !digest.test(identityFingerprint) ||
+    !digest.test(beforeFingerprint) ||
+    !digest.test(globalAfterFingerprint) ||
+    (directoryAfter !== "-" && (!directoryAfter || !digest.test(directoryAfter)))
+  ) {
+    return null;
+  }
+  return {
+    identityFingerprint,
+    beforeFingerprint,
+    globalAfterFingerprint,
+    directoryAfterFingerprint: directoryAfter === "-" ? null : directoryAfter,
+  };
+}
+
+function requireAfterFingerprint(value: string | null | undefined): string {
+  if (value) return value;
+  print.fail("CONTEXT_ENABLE_PLAN_CHANGED", "The selected scope was not present in the displayed plan.", 2);
+  throw new Error("unreachable");
 }
 
 export const contextEnableCommand: SubcommandModule = {
   name: "enable",
   alias: "",
   summary: "",
-  description: "Enable First Tree Context for this project from an explicit Team handoff.",
+  description: "Plan or apply a Team-specific BYO Context activation scope.",
   configure,
   action: runContextEnable,
 };
-
-function renderProject(project: import("@first-tree/shared").ContextIntegrationProject): string {
-  return project.kind === "path" ? project.root : "Pathless";
-}
-
-function sameProject(
-  left: import("@first-tree/shared").ContextIntegrationProject,
-  right: import("@first-tree/shared").ContextIntegrationProject,
-): boolean {
-  return left.kind === right.kind && (left.kind === "pathless" || (right.kind === "path" && left.root === right.root));
-}

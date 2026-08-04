@@ -25,6 +25,11 @@ import {
   type ContextActivationV2Response,
   type ContextReviewSubmitRequest,
   type ContextReviewSubmitResponse,
+  type ContextRouteCandidatesRequest,
+  type ContextRouteCandidatesResponse,
+  type ContextSessionCandidateIssueRequest,
+  type ContextSessionCandidateIssueResponse,
+  type ContextSessionCandidateValidateRequest,
   type ContextTreeSeedPreflightRequest,
   type ContextTreeSeedPreflightResponse,
   type ContextTreeWritePreflightRequest,
@@ -40,6 +45,11 @@ import {
   confirmTeamRepositoriesSchema,
   contextActivationRequestSchema,
   contextActivationV2ResponseSchema,
+  contextRouteCandidatesRequestSchema,
+  contextRouteCandidatesResponseSchema,
+  contextSessionCandidateIssueRequestSchema,
+  contextSessionCandidateIssueResponseSchema,
+  contextSessionCandidateValidateRequestSchema,
   contextTreeSeedPreflightRequestSchema,
   contextTreeSeedPreflightResponseSchema,
   contextTreeWritePreflightRequestSchema,
@@ -497,6 +507,48 @@ export class FirstTreeHubSDK {
     return body.schemaVersion === 2
       ? contextActivationV2ResponseSchema.parse(response)
       : legacyContextActivationResponseSchema.parse(response);
+  }
+
+  /** Batch-validate only the locally authorized BYO routing candidates. */
+  async validateMemberContextRouteCandidates(
+    data: ContextRouteCandidatesRequest,
+    options: { retry?: boolean; timeoutMs?: number } = {},
+  ): Promise<ContextRouteCandidatesResponse> {
+    const body = contextRouteCandidatesRequestSchema.parse(data);
+    const response = await this.requestJson<unknown>(
+      "/api/v1/me/context-activation/candidates/validate",
+      { method: "POST", body: JSON.stringify(body) },
+      { retry: options.retry ?? false, timeoutMs: options.timeoutMs },
+    );
+    return contextRouteCandidatesResponseSchema.parse(response);
+  }
+
+  /** Mint a short-lived, server-signed session-only Team candidate. */
+  async issueMemberContextSessionCandidate(
+    data: ContextSessionCandidateIssueRequest,
+    options: { retry?: boolean; timeoutMs?: number } = {},
+  ): Promise<ContextSessionCandidateIssueResponse> {
+    const body = contextSessionCandidateIssueRequestSchema.parse(data);
+    const response = await this.requestJson<unknown>(
+      "/api/v1/me/context-activation/session-candidate/issue",
+      { method: "POST", body: JSON.stringify(body) },
+      { retry: options.retry ?? false, timeoutMs: options.timeoutMs },
+    );
+    return contextSessionCandidateIssueResponseSchema.parse(response);
+  }
+
+  /** Validate one opaque session-only candidate without enumerating memberships. */
+  async validateMemberContextSessionCandidate(
+    data: ContextSessionCandidateValidateRequest,
+    options: { retry?: boolean; timeoutMs?: number } = {},
+  ): Promise<ContextRouteCandidatesResponse> {
+    const body = contextSessionCandidateValidateRequestSchema.parse(data);
+    const response = await this.requestJson<unknown>(
+      "/api/v1/me/context-activation/session-candidate/validate",
+      { method: "POST", body: JSON.stringify(body) },
+      { retry: options.retry ?? false, timeoutMs: options.timeoutMs },
+    );
+    return contextRouteCandidatesResponseSchema.parse(response);
   }
 
   /**

@@ -2,11 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildConnectedContextAdditionalContext } from "../core/context-integration/activation.js";
+import { buildByoContextAdditionalContext } from "../core/context-integration/activation.js";
 import { buildCurrentSessionHandoff } from "../core/context-integration/current-session-handoff.js";
 
 const roots: string[] = [];
-const team = { organizationId: "org-acme", displayName: "Acme", role: "member" as const };
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -18,21 +17,39 @@ describe("current-session Context handoff", () => {
     const handoff = buildCurrentSessionHandoff({
       provider: "codex",
       project: { kind: "path", root: "/work/project" },
-      team,
-      installedPluginRoot: pluginRoot,
+      activationScope: { kind: "global" },
+      organizationId: "org-acme",
+      pluginRoot,
     });
 
     expect(handoff).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       provider: "codex",
       project: { kind: "path", root: "/work/project" },
-      activationContext: buildConnectedContextAdditionalContext(team),
+      consumerKind: "byo",
+      activationScope: { kind: "global" },
+      sessionCandidate: null,
+      activationContext: buildByoContextAdditionalContext(),
       skills: ["first-tree", "first-tree-read", "first-tree-write"].map((name) => ({
         name,
         description: `${name} description`,
         skillPath: join(pluginRoot, "skills", name, "SKILL.md"),
       })),
     });
+  });
+
+  it("session-only exposes only Read/Write and carries its one candidate", () => {
+    const pluginRoot = createPlugin();
+    const handoff = buildCurrentSessionHandoff({
+      provider: "codex",
+      project: { kind: "path", root: "/tmp/session" },
+      activationScope: { kind: "session" },
+      organizationId: "org-session",
+      sessionCandidateReceipt: "opaque-header.opaque-payload.opaque-signature",
+      pluginRoot,
+    });
+    expect(handoff.skills.map((skill) => skill.name)).toEqual(["first-tree-read", "first-tree-write"]);
+    expect(handoff.sessionCandidate).toEqual({ receipt: "opaque-header.opaque-payload.opaque-signature" });
   });
 
   it("rejects missing Skill manifests", () => {
@@ -85,8 +102,9 @@ function build(pluginRoot: string) {
   return buildCurrentSessionHandoff({
     provider: "claude-code",
     project: { kind: "pathless" },
-    team,
-    installedPluginRoot: pluginRoot,
+    activationScope: { kind: "global" },
+    organizationId: "org-acme",
+    pluginRoot,
   });
 }
 

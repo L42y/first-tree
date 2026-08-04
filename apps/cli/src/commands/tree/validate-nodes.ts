@@ -191,6 +191,10 @@ export function collectNodeValidationFindings(treeRoot: string): NodeValidationR
   }
 
   for (const file of content.files) {
+    // Root SCOPE.md has its own strict, domain-neutral routing schema. It is
+    // normal durable content, but not a NODE and therefore does not require
+    // title/owners or participate in ordinary node-link validation.
+    if (file.relativePath === "SCOPE.md") continue;
     scannedByContentClass[file.contentClass] += 1;
 
     if (file.unresolved) {

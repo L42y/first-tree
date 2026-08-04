@@ -54,9 +54,10 @@ provider project, reload behavior, and the absence of accidental personal-agent 
    Claude Code or Codex; the current agent chooses its provider while the CLI alone classifies the current project.
    The UI never sends the member to a Terminal screen or creates a second copy step.
 8. Run the copied artifact once from each supported project shape: a normal directory with no repositories, a parent
-   directory containing multiple repositories, and a Codex projectless scratch session. Path projects bind to their
-   canonical root and receive automatic SessionStart activation; the pathless binding completes setup without
-   automatic activation and becomes usable through the manual `first-tree` Skill. No personal First Tree agent or
+   directory containing multiple repositories, and a Codex projectless scratch session. The current agent shows the
+   real directory plus global/directory/session choices and waits for the member. Persistent choices add a Team grant
+   and receive neutral SessionStart routing; session-only installs no Plugin/Hook/grant and works immediately through
+   the verified Read/Write catalog. No personal First Tree agent or
    onboarding kickoff chat is created, and `onboarding_completed_at` remains null.
 9. Add, remove, or change source repositories and their Team-resource registration. Context authority remains
    unchanged. Separately corrupt the local Plugin, revoke membership, or unbind the Team Context before activation;

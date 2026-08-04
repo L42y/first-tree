@@ -768,7 +768,7 @@ beforeEach(() => {
     role: "member",
     provider: "claude-code",
     intent: "settings",
-    command: "first-tree-dev --json context enable --provider 'claude-code' --team 'org-1' --yes",
+    command: "first-tree-dev --json context enable --provider 'claude-code' --team 'org-1' --plan",
     workingDirectoryInstruction: "Run this from the target code repository.",
   });
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({

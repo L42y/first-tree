@@ -66,8 +66,9 @@ For each provider:
    the assigned source change as a concrete PR/MR. Do not explicitly request a
    Tree update; the durable branch must rely on the connected standing route.
 3. For the durable artifact, observe the post-publication routing decision,
-   `first-tree-write` load, Double Test, target and linked-node reads, initial
-   and pre-publication hidden `context write` preflights, Tree verification,
+   `first-tree-write` load, Double Test, target and linked-node reads, the exact
+   write plan and a new user confirmation before any Tree worktree/file change, initial
+   and pre-publication hidden `context write-preflight` calls, Tree verification,
    and draft Tree PR/MR creation.
 4. For the implementation-only artifact, observe the routing/Double Test
    decision and inspect the Tree repository and forge after completion.
@@ -93,7 +94,10 @@ For each provider:
   source PR/MR exists. Provider differences are limited to provider name and
   guarded adapter mechanics; neither accepts a Team id from prompt/model input
   or falls back to a Managed workspace path.
-- The durable path creates exactly one Tree branch and one cross-linked draft
+- Before the new user confirmation, the durable path creates no authoring
+  worktree, changed Tree file, branch, commit, push, or PR/MR. This gate applies
+  to single-Team and multi-Team BYO sessions alike.
+- After confirmation, the durable path creates exactly one Tree branch and one cross-linked draft
   Tree PR/MR from the smallest correct diff. It runs live preflight before
   authoring and again before every push and PR/MR creation; SessionStart alone
   is never treated as mutation authority.
@@ -105,7 +109,7 @@ For each provider:
 - The implementation-only path explains why the artifact fails the durable
   write filter and creates no Tree branch, push, PR/MR, or hidden remote
   mutation. The preceding task-scoped Tree read still occurs.
-- Reviewer readiness, forge identity, exact project binding, immutable
+- Reviewer readiness, forge identity, exact SCOPE route receipt, immutable
   snapshot, and live authority failures remain fail-closed; no alternate Team
   or cached authority is used. Source-repository registration is not an
   authority input.

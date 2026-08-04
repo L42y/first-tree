@@ -1084,7 +1084,13 @@ describe("org-settings service", () => {
       contextReviewer: {
         enabled: true,
         agentUuid: reviewer.uuid,
-        reviewerAgent: { uuid: reviewer.uuid, name: reviewer.name, displayName: reviewer.displayName },
+        reviewerAgent: {
+          uuid: reviewer.uuid,
+          name: reviewer.name,
+          displayName: reviewer.displayName,
+          managerHumanAgentId: otherManager.humanAgentUuid,
+          managerActiveAdmin: true,
+        },
       },
     });
 
@@ -1120,7 +1126,13 @@ describe("org-settings service", () => {
       contextReviewer: {
         enabled: false,
         agentUuid: reviewer.uuid,
-        reviewerAgent: { uuid: reviewer.uuid, name: reviewer.name, displayName: reviewer.displayName },
+        reviewerAgent: {
+          uuid: reviewer.uuid,
+          name: reviewer.name,
+          displayName: reviewer.displayName,
+          managerHumanAgentId: admin.humanAgentUuid,
+          managerActiveAdmin: true,
+        },
       },
     });
   });
@@ -2674,7 +2686,13 @@ describe("org-settings API (admin gating + masking)", () => {
       contextReviewer: {
         enabled: false,
         agentUuid: reviewer.uuid,
-        reviewerAgent: { uuid: reviewer.uuid, name: reviewer.name, displayName: reviewer.displayName },
+        reviewerAgent: {
+          uuid: reviewer.uuid,
+          name: reviewer.name,
+          displayName: reviewer.displayName,
+          managerHumanAgentId: admin.humanAgentUuid,
+          managerActiveAdmin: true,
+        },
       },
     });
 
@@ -2689,7 +2707,13 @@ describe("org-settings API (admin gating + masking)", () => {
       contextReviewer: {
         enabled: false,
         agentUuid: reviewer.uuid,
-        reviewerAgent: { uuid: reviewer.uuid, name: reviewer.name, displayName: reviewer.displayName },
+        reviewerAgent: {
+          uuid: reviewer.uuid,
+          name: reviewer.name,
+          displayName: reviewer.displayName,
+          managerHumanAgentId: admin.humanAgentUuid,
+          managerActiveAdmin: true,
+        },
       },
     });
   });
@@ -2798,7 +2822,13 @@ describe("org-settings API (admin gating + masking)", () => {
       contextReviewer: {
         enabled: true,
         agentUuid: reviewer.uuid,
-        reviewerAgent: { uuid: reviewer.uuid, name: reviewer.name, displayName: "Team Reviewer" },
+        reviewerAgent: {
+          uuid: reviewer.uuid,
+          name: reviewer.name,
+          displayName: "Team Reviewer",
+          managerHumanAgentId: admin.humanAgentUuid,
+          managerActiveAdmin: true,
+        },
       },
     });
 

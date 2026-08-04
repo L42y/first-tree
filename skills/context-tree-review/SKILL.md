@@ -1,6 +1,6 @@
 ---
 name: context-tree-review
-version: 0.4.1
+version: 0.5.0
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Review a GitHub pull request or GitLab merge request against the workspace-bound Context Tree when a trusted server-authored Context Reviewer run supplies provider-scoped authority. Repair every safely determined finding with the host git and forge CLI identity, then use GitHub App review plus exact-head merge or GitLab note plus exact-SHA merge. Do not use for code changes, ordinary tree reads or writes, or default-branch audits.
@@ -109,6 +109,43 @@ worktree:
 git rev-parse HEAD
 first-tree tree verify --json
 ```
+
+### Root SCOPE approval gate
+
+Treat any add, edit, delete, or rename whose old or new path is root
+`SCOPE.md` as a protected routing decision. Never repair SCOPE.md yourself.
+After validator success and before any semantic approval or publication:
+
+1. Read the complete proposed SCOPE body (or clearly describe deletion) from
+   the detached exact head and record its digest and `REVIEWED_HEAD`.
+2. Rerun `first-tree org context-tree review-config --json`. Require
+   `managerActiveAdmin: true` and `managerHumanAgentId` to equal the trusted
+   run's `contextReviewReviewerManagerHumanAgentId`; never infer this authority
+   from Chat membership. Then use `first-tree chat ask` to ask **this
+   Reviewer's manager human** whether
+   that exact SCOPE at that exact head should become the Team's routing scope.
+   The question must show the repository, PR/MR, exact full head, digest, and
+   complete proposed body. Recommend approval only when the normal Evidence
+   and Challenge passes support it. Do not ask another participant.
+3. Stop the review turn. A plain message, PR comment, emoji, or answer from a
+   different participant is not approval; only the tracked ask's human answer
+   counts.
+4. When resumed to consume the answer, rerun live review configuration and
+   again require that exact manager to remain the same Org's active Admin.
+   Re-read the live PR/MR head and SCOPE
+   digest. If head, SCOPE digest, manager, membership, role, binding, provider,
+   or trusted run authority changed, the old answer is invalid: create a new
+   exact-head tracked ask and stop again.
+5. Continue toward approval/merge only after an affirmative answer to the
+   still-current exact head. That consumed exact-head decision is not revoked
+   merely because the manager is later demoted; a changed head or SCOPE still
+   requires a new ask. A rejection is a blocking protected decision.
+
+The Server enforces the active-Admin manager invariant when a Reviewer is
+selected, assigned, or enabled. The two live checks above make this tracked
+ask the required Org-admin SCOPE decision, not general Chat consensus; ordinary
+review repair, publication, notes, and merge retain their existing authority
+gates and do not recheck the manager's role.
 
 Structural validation failure is a blocking finding. Classify it immediately
 under the repair rules below. When the validator identifies a changed path and

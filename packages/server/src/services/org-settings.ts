@@ -196,7 +196,7 @@ async function toOutput<K extends OrgSettingNamespace>(
   }
   if (namespace === "github_features") {
     const s = storage as OrgSettingStorage<"github_features">;
-    const agent = await resolveContextReviewerAgentSummary(db, orgId, s.teamAgent.agentUuid);
+    const agent = await resolveOrgVisibleAgentSummary(db, orgId, s.teamAgent.agentUuid);
     const out: OrgSettingOutput<"github_features"> = {
       teamAgent: {
         agentUuid: agent?.uuid ?? null,
@@ -314,6 +314,8 @@ export async function getOrgContextReviewRuntime(db: Database, orgId: string): P
     contextReviewer: {
       enabled: features.contextReviewer.enabled,
       agentUuid: features.contextReviewer.agentUuid,
+      managerHumanAgentId: null,
+      managerActiveAdmin: false,
     },
   };
 }
@@ -334,6 +336,8 @@ export async function getTeamSafeOrgContextReviewRuntime(
     contextReviewer: {
       enabled: runtime.contextReviewer.enabled,
       agentUuid: reviewerAgent?.uuid ?? null,
+      managerHumanAgentId: reviewerAgent?.managerHumanAgentId ?? null,
+      managerActiveAdmin: reviewerAgent?.managerActiveAdmin ?? false,
     },
   };
 }
@@ -351,7 +355,12 @@ export type OrgContextReviewRuntime = {
     endpointSeen: boolean;
     lastValidInboundAt: Date | null;
   } | null;
-  contextReviewer: { enabled: boolean; agentUuid: string | null };
+  contextReviewer: {
+    enabled: boolean;
+    agentUuid: string | null;
+    managerHumanAgentId: string | null;
+    managerActiveAdmin: boolean;
+  };
 };
 
 function isSameOrgContextTreeBindingRuntime(
@@ -665,14 +674,54 @@ async function resolveContextReviewerAgentSummary(
   db: Database,
   orgId: string,
   agentUuid: string | null,
-): Promise<{ uuid: string; name: string | null; displayName: string } | null> {
+): Promise<{
+  uuid: string;
+  name: string | null;
+  displayName: string;
+  managerHumanAgentId: string | null;
+  managerActiveAdmin: boolean;
+} | null> {
   if (!agentUuid) return null;
   const [agent] = await db
     .select({
       uuid: agents.uuid,
       name: agents.name,
       displayName: agents.displayName,
+      managerHumanAgentId: members.agentId,
+      managerOrganizationId: members.organizationId,
+      managerStatus: members.status,
+      managerRole: members.role,
     })
+    .from(agents)
+    .leftJoin(members, eq(members.id, agents.managerId))
+    .where(
+      and(
+        eq(agents.uuid, agentUuid),
+        eq(agents.organizationId, orgId),
+        eq(agents.visibility, AGENT_VISIBILITY.ORGANIZATION),
+        ne(agents.status, "deleted"),
+      ),
+    )
+    .limit(1);
+  if (!agent) return null;
+  return {
+    uuid: agent.uuid,
+    name: agent.name,
+    displayName: agent.displayName,
+    managerHumanAgentId: agent.managerHumanAgentId,
+    managerActiveAdmin:
+      agent.managerOrganizationId === orgId && agent.managerStatus === "active" && agent.managerRole === "admin",
+  };
+}
+
+async function resolveOrgVisibleAgentSummary(
+  db: Database,
+  orgId: string,
+  agentUuid: string | null,
+): Promise<{ uuid: string; name: string | null; displayName: string } | null> {
+  if (!agentUuid) return null;
+  const [agent] = await db
+    .select({ uuid: agents.uuid, name: agents.name, displayName: agents.displayName })
     .from(agents)
     .where(
       and(
@@ -707,6 +756,7 @@ async function assertContextReviewerAgentAllowed(
       type: agents.type,
       status: agents.status,
       organizationId: agents.organizationId,
+      managerId: agents.managerId,
     })
     .from(agents)
     .where(eq(agents.uuid, agentUuid))
@@ -714,6 +764,14 @@ async function assertContextReviewerAgentAllowed(
 
   if (!agent || agent.organizationId !== orgId || agent.type === "human" || agent.status !== "active") {
     throw new BadRequestError("Context Reviewer agent must be an active non-human agent in this organization");
+  }
+  const [manager] = await db
+    .select({ organizationId: members.organizationId, status: members.status, role: members.role })
+    .from(members)
+    .where(eq(members.id, agent.managerId))
+    .limit(1);
+  if (!manager || manager.organizationId !== orgId || manager.status !== "active" || manager.role !== "admin") {
+    throw new BadRequestError("Context Reviewer agent must be managed by an active Team Admin");
   }
   const runtime = await getOrgContextReviewRuntime(db, orgId);
   if (

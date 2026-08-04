@@ -104,4 +104,90 @@ describe("org-scoped member Context activation", () => {
     });
     expect(response.statusCode).toBe(400);
   });
+
+  it("batch-validates only explicit local routing candidates without enumerating memberships", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      { provider: "github", repo: "https://github.com/acme/context-tree.git", branch: "main" },
+      { updatedBy: admin.userId, memberId: admin.memberId },
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/context-activation/candidates/validate",
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { schemaVersion: 1, organizationIds: [admin.organizationId, "org-not-authorized"] },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      schemaVersion: 1,
+      candidates: [
+        {
+          organizationId: admin.organizationId,
+          outcome: "connected",
+          team: expect.objectContaining({ organizationId: admin.organizationId, role: "admin" }),
+          binding: { provider: "github", repo: "https://github.com/acme/context-tree.git", branch: "main" },
+        },
+        {
+          organizationId: "org-not-authorized",
+          outcome: "unavailable",
+          reasonCode: "not_member",
+          message: expect.any(String),
+        },
+      ],
+    });
+  });
+
+  it("issues a stateless session-only receipt and binds validation to its provider/project", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      { provider: "github", repo: "https://github.com/acme/context-tree.git", branch: "main" },
+      { updatedBy: admin.userId, memberId: admin.memberId },
+    );
+    const project = { kind: "path" as const, root: "/tmp/codex-session" };
+    const issued = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/context-activation/session-candidate/issue",
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: {
+        schemaVersion: 1,
+        provider: "codex",
+        project,
+        organizationId: admin.organizationId,
+      },
+    });
+    expect(issued.statusCode).toBe(200);
+    const receipt = issued.json<{ receipt: string }>().receipt;
+    expect(receipt).toEqual(expect.any(String));
+
+    const validate = (candidateProject: typeof project) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/me/context-activation/session-candidate/validate",
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+        payload: { schemaVersion: 1, provider: "codex", project: candidateProject, receipt },
+      });
+    const accepted = await validate(project);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({
+      candidates: [{ organizationId: admin.organizationId, outcome: "connected" }],
+    });
+    expect((await validate({ kind: "path", root: "/tmp/changed" })).statusCode).toBe(403);
+
+    const tampered = `${receipt.slice(0, -1)}${receipt.endsWith("a") ? "b" : "a"}`;
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/context-activation/session-candidate/validate",
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { schemaVersion: 1, provider: "codex", project, receipt: tampered },
+    });
+    expect(rejected.statusCode).toBe(401);
+  });
 });

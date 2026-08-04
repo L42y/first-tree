@@ -106,6 +106,21 @@ describe("context-tree-review floor", () => {
     expect(cloud).not.toContain("gh pr review");
   });
 
+  it("protects every root SCOPE mutation with an exact-head admin-manager ask", () => {
+    const skill = readFileSync(join(repoRoot, "skills", "context-tree-review", "SKILL.md"), "utf8");
+
+    expect(skill).toContain("### Root SCOPE approval gate");
+    expect(skill).toContain("any add, edit, delete, or rename");
+    expect(skill).toContain("Never repair SCOPE.md yourself");
+    expect(skill).toMatch(/this\s+Reviewer's manager human/u);
+    expect(skill).toContain("exact full head, digest, and\n   complete proposed body");
+    expect(skill).toContain("only the tracked ask's human answer\n   counts");
+    expect(skill).toMatch(/exact manager to remain the same Org's active Admin/u);
+    expect(skill).toContain("old answer is invalid: create a new\n   exact-head tracked ask");
+    expect(skill).toContain("That consumed exact-head decision is not revoked");
+    expect(skill).toMatch(/ordinary\s+review repair, publication, notes, and merge retain their existing authority/u);
+  });
+
   it("pins mandatory local repair, App verdict, and response-head local merge", () => {
     const skill = readFileSync(join(repoRoot, "skills", "context-tree-review", "SKILL.md"), "utf8");
 

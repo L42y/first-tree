@@ -10,10 +10,10 @@ surfaces: [web, server, cli, claude-code, codex, context-tree]
 ## Goal
 
 Confirm that a member can paste the First Tree Web setup prompt into an
-already-running Claude Code or Codex conversation and use Team Context in that
-same conversation. Prove that the handoff comes only from a successful CLI JSON
-envelope and the provider-installed, payload-verified Plugin; do not treat
-Plugin UI discovery as proof of current-session adoption.
+already-running Claude Code or Codex conversation, choose one activation scope,
+and route Team Context in that same conversation. Prove that persistent
+handoffs come from the payload-verified Plugin and session-only handoffs come
+from the same verified release bundle without installing provider state.
 
 ## Preconditions
 
@@ -33,21 +33,23 @@ Plugin UI discovery as proof of current-session adoption.
 
 1. Copy the provider-neutral setup prompt from Web and paste it into the
    already-running Claude Code conversation. Let the agent run bootstrap and
-   the server-authored JSON enable command with its host-confirmed selector.
+   the server-authored JSON enable plan with its host-confirmed selector. Verify
+   it shows global/directory/session and waits for a new user choice.
    Confirm the enable command uses the same `~/.local/bin` portable executable
    as bootstrap rather than the older global CLI resolved from `PATH`.
 2. Without restarting or running `/reload-plugins`, ask a task that triggers
    `first-tree-read`. Confirm the same agent reads the exact `skillPath`,
    uses the handoff's immutable provider/project receipt for the first Read,
    activates an exact Context Tree snapshot, and uses the unique Team decision.
-3. Paste a fresh prompt into the already-running Codex attached conversation.
-   Capture the first enable result, run `/hooks`, Enable + Trust First Tree
+3. Choose directory, then paste a fresh prompt into the already-running Codex
+   attached conversation. Capture the first apply result, run `/hooks`, Enable + Trust First Tree
    Context, return to the original conversation, and reply `continue`.
 4. Confirm that same Codex agent re-runs the exact enable command, consumes the
    handoff, then completes the same Context read task without exit or a new
    conversation.
-5. Repeat Codex with an already-trusted Hook and with a pathless project; both
-   must consume a complete handoff on the first enable.
+5. Repeat Codex with an already-trusted Hook. Separately choose session-only in
+   a projectless session; it must consume a complete Read/Write handoff without
+   installing a Hook or asking for Trust.
 6. After both a path-project and pathless handoff, change shell cwd to a
    different bound project (and then to an unbound directory) before the first
    Read. Confirm the path receipt still supplies its original `--project-root`
@@ -65,17 +67,19 @@ Plugin UI discovery as proof of current-session adoption.
 ## Observe
 
 - The Server command places global `--json` before `context enable`, includes
-  the exact provider and Team, and includes `--yes`; Web adds no flags. On
+  the exact provider and Team, and ends in `--plan`; Web adds no flags. Apply
+  uses the unchanged plan id, the chosen scope and `--yes`. On
   non-dev channels, the command uses bootstrap's `~/.local/bin` portable
   executable even when an older same-channel global CLI shadows it on `PATH`.
 - Claude Code completes setup in one agent turn. Codex without consent returns
   `setup.complete: false` and `currentSessionHandoff: null`, asks only for
   `/hooks` consent plus return to the original conversation, and re-runs enable
   after `continue`.
-- Every complete result has `currentSessionHandoff.schemaVersion: 1`, the exact
-  top-level `activationContext`, the resolved provider/project receipt, and
-  exactly `first-tree`, `first-tree-read`, and `first-tree-write` in stable
-  order. Each description comes from strict frontmatter and each absolute
+- Every complete result has `currentSessionHandoff.schemaVersion: 2`,
+  `consumerKind: byo`, exact activation scope, neutral `activationContext`, and
+  the immutable provider/project receipt. Persistent scope has exactly
+  `first-tree`, `first-tree-read`, and `first-tree-write`; session-only has only
+  Read/Write plus an opaque signed candidate. Each absolute
   `skillPath` is a readable regular file inside the provider-installed cache.
 - The current agent adopts `activationContext` verbatim, treats the three
   entries as progressive-disclosure catalog entries, and reads the complete
@@ -89,8 +93,9 @@ Plugin UI discovery as proof of current-session adoption.
 - Tampered, missing, linked, unreadable, stale-payload, binding, activation, or
   authority failures never produce a handoff or Complete verdict. First Tree
   never writes Hook trust, uses a bypass flag, or replays SessionStart.
-- Later sessions still activate through provider Plugin + SessionStart; the
-  one-shot handoff is not persisted as a second binding or workflow source.
+- Later persistent sessions still activate through provider Plugin + neutral
+  SessionStart routing. Session-only leaves no Plugin, Hook, grant or candidate
+  file and does not promise continuity across clear/compact/resume/new session.
 
 ## Expected Result
 

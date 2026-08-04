@@ -5,14 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   classifyCodexProjectlessPath,
   inspectContextClientPreflight,
+  inspectContextSetupLocation,
   resolveProviderProject,
   resolveSessionContextProject,
 } from "../core/context-integration/client-preflight.js";
-import {
-  type ContextBindingStorePaths,
-  readContextIntegrationConfig,
-  writeContextBinding,
-} from "../core/context-integration/context-binding-store.js";
 
 describe("Context project resolver", () => {
   it.each([
@@ -69,42 +65,32 @@ describe("Context project resolver", () => {
     ).toBe(false);
   });
 
-  it("persists a Codex scratch setup as pathless through the shared resolver result", () => {
+  it("shows a Codex scratch setup as its real temporary directory before scope selection", () => {
     const root = mkdtempSync(join(tmpdir(), "codex-scratch-binding-"));
     const scratch = join(root, "home", "Documents", "Codex", "2026-07-30", "d");
     mkdirSync(scratch, { recursive: true });
-    const paths: ContextBindingStorePaths = {
-      configPath: join(root, "config", "context.yaml"),
-      lockPath: join(root, "state", "context", "install.lock"),
-    };
-    const resolution = resolveProviderProject(
-      "codex",
-      { cwd: scratch },
-      {},
-      { platform: process.platform, home: join(root, "home") },
+    mkdirSync(join(root, "config"));
+    writeFileSync(
+      join(root, "config", "credentials.json"),
+      JSON.stringify({ accessToken: "access", refreshToken: "refresh", serverUrl: "https://first-tree.test" }),
     );
-    expect(resolution).toMatchObject({
-      kind: "pathless",
-      project: { kind: "pathless" },
-      source: "codex_documents_v1",
-    });
-    if (resolution.kind !== "pathless") throw new Error("expected pathless project");
-
-    writeContextBinding(
-      {
-        provider: "codex",
-        project: resolution.project,
-        organizationId: "org_acme",
-      },
-      { paths },
-    );
-    expect(readContextIntegrationConfig(paths).bindings).toEqual([
-      {
-        provider: "codex",
-        project: { kind: "pathless" },
-        organizationId: "org_acme",
-      },
-    ]);
+    const previousHome = process.env.FIRST_TREE_HOME;
+    process.env.FIRST_TREE_HOME = root;
+    try {
+      const resolution = inspectContextSetupLocation("codex", {
+        cwd: scratch,
+        classifierOptions: { platform: process.platform, home: join(root, "home") },
+      });
+      expect(resolution).toMatchObject({
+        project: { kind: "path", root: scratch },
+        directory: scratch,
+        directoryAvailable: true,
+        temporaryDirectory: true,
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.FIRST_TREE_HOME;
+      else process.env.FIRST_TREE_HOME = previousHome;
+    }
   });
 
   it("canonicalizes Codex cwd before scratch classification", () => {

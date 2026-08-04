@@ -175,7 +175,12 @@ describe("agent context tree info route", () => {
       branch: "updated-side",
       providerMatchesRepository: true,
       gitlabConnection: null,
-      contextReviewer: { enabled: true, agentUuid: sideAgent.uuid },
+      contextReviewer: {
+        enabled: true,
+        agentUuid: sideAgent.uuid,
+        managerHumanAgentId: expect.any(String),
+        managerActiveAdmin: true,
+      },
     });
 
     await app.db
@@ -196,7 +201,28 @@ describe("agent context tree info route", () => {
       branch: null,
       providerMatchesRepository: false,
       gitlabConnection: null,
-      contextReviewer: { enabled: true, agentUuid: sideAgent.uuid },
+      contextReviewer: {
+        enabled: true,
+        agentUuid: sideAgent.uuid,
+        managerHumanAgentId: expect.any(String),
+        managerActiveAdmin: true,
+      },
+    });
+
+    await app.db.update(members).set({ role: "member" }).where(eq(members.id, sideMemberId));
+    const demotedManager = await app.inject({
+      method: "GET",
+      url: "/api/v1/agent/context-tree/info",
+      headers: { authorization: `Bearer ${admin.accessToken}`, "x-agent-id": sideAgent.uuid },
+    });
+    expect(demotedManager.statusCode).toBe(200);
+    expect(demotedManager.json()).toMatchObject({
+      contextReviewer: {
+        enabled: true,
+        agentUuid: sideAgent.uuid,
+        managerHumanAgentId: expect.any(String),
+        managerActiveAdmin: false,
+      },
     });
 
     const legacyUserScoped = await app.inject({

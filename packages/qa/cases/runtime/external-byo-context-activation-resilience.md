@@ -25,8 +25,8 @@ together.
 - Run the target release artifact in an isolated QA cell with a real supported
   Claude Code or Codex provider bridge.
 - Install the Context Plugin through the real user-scope lifecycle and enable it
-  for one ordinary parent project through a Team-scoped handoff.
-- Keep a second path project and a pathless session unbound as negative controls.
+  with two Team grants through Team-scoped handoffs.
+- Keep a second path project without applicable grants as a negative control.
 - Use only throwaway Team data and credentials. Source repositories must remain
   absent from Team resources.
 - Establish provider readiness with `runtime-provider-readiness` before treating
@@ -34,13 +34,11 @@ together.
 
 ## Operate And Observe
 
-- Start, resume, clear, and compact a provider session in the bound project.
+- Start, resume, clear, and compact a provider session with applicable grants.
   Observe the real SessionStart hook transcript and measure end-to-end hook time.
-- Repeat in the unbound path and pathless sessions and confirm no Team Context
-  is auto-injected and manual activation fails without a binding. Run
-  `context enable` with the pathless selector, start a fresh pathless session,
-  confirm SessionStart still does not auto-inject, then use the manual
-  `first-tree` Skill and confirm it activates the newly bound pathless project.
+- Repeat in the ungranted path and confirm no Team Context is injected. Choose
+  session-only in a projectless session and confirm it works now without
+  Plugin/Hook/grant state but does not reactivate after clear/compact/new session.
 - Exercise `context status`, guarded Read, and guarded Write preflight through the
   shipped CLI artifact while the activation endpoint is healthy.
 - Repeat with an access token that requires refresh. Introduce slow refresh,

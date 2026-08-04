@@ -113,11 +113,13 @@ evaluations.
 `;
 }
 
-function workspaceAgentsMarkdown(skillDescription: string): string {
+function workspaceAgentsMarkdown(skillDescription: string, workspaceKind: WorkspaceKind): string {
   return `# Eval Workspace Instructions
 
 Use installed skills only when the skill description applies to the user's
 prompt. Do not call \`first-tree\` for casual or non-software prompts.
+
+${workspaceKind === "byo-context-tree" ? "The trusted activation standing context declares `consumerKind: byo`, provider `codex`, immutable project selector `--pathless`, and a verified session-candidate receipt for this eval task." : "The trusted runtime standing context declares `consumerKind: managed`."}
 
 ## Available Skills
 
@@ -132,9 +134,12 @@ skill workflow exactly. In particular, if the skill instructs you to inspect a
 `;
 }
 
-function installFirstTreeReadSkill(repoRoot: string, workspacePath: string): void {
+function installFirstTreeReadSkill(repoRoot: string, workspacePath: string, workspaceKind: WorkspaceKind): void {
   const skillMarkdown = installRepoSkill(repoRoot, workspacePath, SKILL_NAME);
-  writeText(join(workspacePath, "AGENTS.md"), workspaceAgentsMarkdown(parseSkillDescription(skillMarkdown)));
+  writeText(
+    join(workspacePath, "AGENTS.md"),
+    workspaceAgentsMarkdown(parseSkillDescription(skillMarkdown), workspaceKind),
+  );
 }
 
 function runtimeGeneratedWorkspaceAgentsMarkdown(
@@ -424,6 +429,10 @@ function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind):
     )}\n`,
   );
   writeText(join(contextTreePath, "NODE.md"), rootNodeMarkdown());
+  writeText(
+    join(contextTreePath, "SCOPE.md"),
+    "---\nschemaVersion: 1\n---\n\nThis Context Tree covers software architecture, authentication, HTTP routes, and multi-organization authorization decisions.\n",
+  );
   writeText(join(contextTreePath, "AGENTS.md"), treeAgentsMarkdown());
   writeText(join(contextTreePath, "members", "eval-owner", "NODE.md"), memberNodeMarkdown());
 
@@ -474,7 +483,7 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
     }
     installRuntimeGeneratedBriefing(paths.repoRoot, paths.workspacePath, contextTreePath);
   } else {
-    installFirstTreeReadSkill(paths.repoRoot, paths.workspacePath);
+    installFirstTreeReadSkill(paths.repoRoot, paths.workspacePath, evalCase.workspaceKind);
   }
 
   appendEvent(paths.eventsPath, {

@@ -30,14 +30,14 @@ describe("Context enablement handoff", () => {
       role: "admin",
     });
     expect(response.json().command).toBe(
-      `~/.local/bin/first-tree-staging --json context enable --provider 'codex' --team '${admin.organizationId}' --yes`,
+      `~/.local/bin/first-tree-staging --json context enable --provider 'codex' --team '${admin.organizationId}' --plan`,
     );
-    expect(response.json().workingDirectoryInstruction).toContain("CLI centrally classifies");
-    expect(response.json().workingDirectoryInstruction).not.toContain("shell cwd");
+    expect(response.json().workingDirectoryInstruction).toContain("real canonical cwd");
+    expect(response.json().workingDirectoryInstruction).toContain("temporary directory");
     expect(response.body).not.toContain("--no-start");
   });
 
-  it("pre-accepts the local plan without completing onboarding", async () => {
+  it("returns a read-only local plan without completing onboarding", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const response = await app.inject({
@@ -54,10 +54,9 @@ describe("Context enablement handoff", () => {
       intent: "onboarding",
     });
     expect(response.json().command).toBe(
-      `~/.local/bin/first-tree-staging --json context enable --provider 'claude-code' --team '${admin.organizationId}' --yes`,
+      `~/.local/bin/first-tree-staging --json context enable --provider 'claude-code' --team '${admin.organizationId}' --plan`,
     );
-    expect(response.json().workingDirectoryInstruction).toContain("host-confirmed Claude Code selector");
-    expect(response.json().workingDirectoryInstruction).toContain("--pathless");
+    expect(response.json().workingDirectoryInstruction).toContain("host-provided Claude project directory");
     expect(response.body).not.toContain("--complete-onboarding");
   });
 });

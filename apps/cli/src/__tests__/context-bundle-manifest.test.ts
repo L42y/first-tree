@@ -74,39 +74,34 @@ describe("context integration bundle", () => {
       expect(hook).toContain('"timeout": 5');
       expect(hook).not.toContain('"timeout": 3');
       expect(hook).toContain('"matcher": "startup|resume|clear|compact"');
-      expect(readSkill).toContain(`context read --provider ${provider}`);
-      expect(writeSkill).toContain(`context write --provider ${provider}`);
+      expect(readSkill).toContain(`context route --provider ${provider}`);
+      expect(readSkill).toContain('context snapshot --candidate "<candidate-id>"');
+      expect(writeSkill).toContain("context write-preflight");
       const writeDescription = /^description: (.+)$/mu.exec(writeSkill)?.[1];
-      expect(writeDescription).toContain("connected SessionStart standing route classifies a concrete source artifact");
-      expect(writeDescription).toContain("for example, a PR/MR, forge Issue");
-      expect(writeDescription).toContain("meeting or decision note");
-      expect(writeDescription).toContain("commit discussion or review thread");
-      expect(writeDescription).not.toContain("source repo change you just completed");
-      expect(writeDescription).not.toContain("Audit finding");
-      expect(writeDescription).not.toContain("context-tree-audit");
+      expect(writeDescription).toContain(`for ${provider} BYO sessions`);
+      expect(writeDescription).toContain("exact SCOPE-routed snapshot");
+      expect(writeDescription).toContain("new user confirmation");
       expect(writeSkill).toContain("a source repo change you just completed");
       expect(writeSkill).toContain("an evidence-backed `context-tree-audit` finding");
       expect(writeSkill).toContain("This Source Gate\nremains intentionally broader than the generic automatic route.");
       expect(writeSkill).toContain(
-        "Write intent comes only from an\n  explicit Tree-write request or the connected SessionStart standing route",
-      );
-      expect(writeSkill).toContain(
-        "Authorization to\n  publish the source PR/MR alone is not a separate or transitive intent rule.",
+        "Authorization to publish a source PR/MR is\nnot, by itself, a separate or transitive Tree write-intent rule.",
       );
       expect(writeSkill).toContain(
         "standing classification selects this workflow but never\nbypasses its live write preflight",
       );
-      expect(readSkill).toContain("read\n`references/context-tree-policy.md` completely");
-      expect(writeSkill).toContain("read\n`references/context-tree-policy.md` completely");
+      expect(readSkill).toContain("read `references/context-tree-policy.md` completely");
+      expect(writeSkill).toContain("read `references/context-tree-policy.md` completely");
       expect(readSkill).toContain(
-        `__FIRST_TREE_SKILL_INVOCATION__ --json context read --provider ${provider} <host-confirmed-project-selector> \\\n`,
+        `__FIRST_TREE_SKILL_INVOCATION__ --json context route --provider ${provider} <immutable-project-selector>`,
       );
       expect(readSkill).not.toMatch(/\bfirst-tree\s+(?:chat|context|github|gitlab|tree)\b/u);
       expect(writeSkill).not.toMatch(/\bfirst-tree\s+(?:chat|context|github|gitlab|tree)\b/u);
       expect(readSkill).not.toContain('first_tree_project_root="<attached-project-root>"');
-      expect(readSkill).toContain("`activationProject` receipt");
-      expect(writeSkill).toContain("<activation-project-selector-from-read>");
-      expect(manualSkill).toContain(`context read --provider ${provider}`);
+      expect(readSkill).toContain("activation-project receipt");
+      expect(writeSkill).toContain('context write-preflight \\\n  --snapshot "<exact-snapshot>"');
+      expect(manualSkill).toContain(`context route --provider ${provider}`);
+      expect(manualSkill).toContain('context snapshot --candidate "<candidate-id>"');
       expect(manualSkill).toContain("current session's original project identity");
       expect(manualSkill).toContain("<host-confirmed-project-selector>");
       if (provider === "claude-code") {
@@ -116,14 +111,17 @@ describe("context integration bundle", () => {
         expect(manualSkill).toContain("Do not reclassify from the current shell cwd");
         expect(manualSkill).toContain("do not copy or reproduce the Codex scratch-path heuristic");
       }
-      expect(manualSkill).toContain("returned `activationProject` receipt");
+      expect(manualSkill).toContain("activation-project receipt");
+      expect(manualSkill).toContain("when selectionBlocked is true or any highest-priority candidate is unavailable");
+      expect(manualSkill).toContain("automatic selection is forbidden");
       expect(manualSkill).not.toContain("<project-selector>");
       expect(manualSkill).toContain("../first-tree-read/references/context-tree-policy.md");
       expect(manualSkill).not.toContain("--team");
       expect(readSkill).not.toMatch(/tree read --team/u);
       expect(writeSkill).not.toMatch(/tree write --team/u);
-      expect(readSkill).not.toContain("Resolve the managed workspace");
-      expect(writeSkill).not.toContain("**Managed:**");
+      expect(readSkill).toContain("External BYO Projection Boundary");
+      expect(readSkill).toContain("consumerKind is always byo");
+      expect(writeSkill).toContain("All BYO writes require");
       expect(readSkill).not.toMatch(/request (?:an explicit |it from the user|the )?Team id/iu);
       expect(writeSkill).not.toMatch(/request (?:an explicit |it from the user|the )?Team id/iu);
     }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { contextTreeActiveBindingSchema } from "./org-settings.js";
 import { canonicalizeResourceRepoUrl } from "./resource.js";
 
 export const CONTEXT_ACTIVATION_SCHEMA_VERSION = 2 as const;
@@ -126,3 +127,48 @@ export const contextActivationResponseSchema = z.union([
   contextActivationV2ResponseSchema,
 ]);
 export type ContextActivationResponse = z.infer<typeof contextActivationResponseSchema>;
+
+export const contextRouteCandidatesRequestSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    organizationIds: z.array(z.string().min(1)).min(1).max(32),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.organizationIds).size !== value.organizationIds.length) {
+      context.addIssue({ code: "custom", message: "organizationIds must be unique", path: ["organizationIds"] });
+    }
+  });
+export type ContextRouteCandidatesRequest = z.infer<typeof contextRouteCandidatesRequestSchema>;
+
+export const contextRouteCandidatesResponseSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    candidates: z.array(
+      z.discriminatedUnion("outcome", [
+        z
+          .object({
+            organizationId: z.string().min(1),
+            outcome: z.literal("connected"),
+            team: contextActivationAuthorizedTeamSchema,
+            binding: contextTreeActiveBindingSchema,
+          })
+          .strict(),
+        z
+          .object({
+            organizationId: z.string().min(1),
+            outcome: z.literal("unavailable"),
+            reasonCode: z.enum([
+              "not_member",
+              "context_tree_unbound",
+              "context_tree_binding_invalid",
+              "context_tree_provider_unresolved",
+            ]),
+            message: z.string().min(1),
+          })
+          .strict(),
+      ]),
+    ),
+  })
+  .strict();
+export type ContextRouteCandidatesResponse = z.infer<typeof contextRouteCandidatesResponseSchema>;

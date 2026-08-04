@@ -130,6 +130,32 @@ function commandIndex(argv, command, subcommand) {
   return index >= 0 && argv[index + 1] === subcommand ? index : -1;
 }
 
+function runContextRoute(argv, phase) {
+  if ((process.env.FIRST_TREE_EVAL_CASE_ID || "") !== "byo-scope-route-trigger") {
+    finish(argv, phase, 1, "", "BYO SCOPE routing is unavailable for this eval case.\\n", { blockedByEval: true });
+  }
+  const stdout = JSON.stringify({
+    ok: true,
+    data: {
+      schemaVersion: 1,
+      consumerKind: "byo",
+      candidates: [{
+        candidateId: "candidate-byo-read-eval",
+        organizationId: "team-byo-read-eval",
+        team: { displayName: "BYO Read Eval", role: "member" },
+        source: "session",
+        scope: {
+          schemaVersion: 1,
+          relatedRepositories: [],
+          body: "This Context Tree covers software architecture, authentication, HTTP routes, and multi-organization authorization decisions.",
+        },
+      }],
+      unavailable: [],
+    },
+  }) + "\\n";
+  finish(argv, phase, 0, stdout, "", { authorityChecks: 1, scopeReads: 1, shimmedByEval: true });
+}
+
 function runTreeRead(argv, phase) {
   if (argv.includes("--help") || argv.includes("-h")) {
     finish(
@@ -142,15 +168,16 @@ function runTreeRead(argv, phase) {
     );
   }
 
-  const teamId = optionValue(argv, "--team");
+  const candidateId = optionValue(argv, "--candidate");
+  const teamId = candidateId === "candidate-byo-read-eval" ? "team-byo-read-eval" : optionValue(argv, "--team");
   const snapshotOption = optionValue(argv, "--snapshot");
-  if ((process.env.FIRST_TREE_EVAL_CASE_ID || "") !== "byo-explicit-team-trigger") {
+  if ((process.env.FIRST_TREE_EVAL_CASE_ID || "") !== "byo-scope-route-trigger") {
     finish(argv, phase, 1, "", "BYO read activation is unavailable for this eval case.\\n", {
       blockedByEval: true,
     });
   }
-  if (teamId !== "team-byo-read-eval" || !snapshotOption) {
-    finish(argv, phase, 2, "", "Explicit Team and new snapshot path are required.\\n", {
+  if (teamId !== "team-byo-read-eval" || !snapshotOption || (argv.includes("context") && !candidateId)) {
+    finish(argv, phase, 2, "", "Opaque candidate and new snapshot path are required.\\n", {
       authorityChecks: teamId ? 1 : 0,
       shimmedByEval: true,
     });
@@ -229,6 +256,9 @@ function runTreeRead(argv, phase) {
         commit: exactCommit,
         snapshotPath,
         teamId,
+        consumerKind: "byo",
+        selectedTeam: { organizationId: teamId, displayName: "BYO Read Eval", role: "member" },
+        routeSelection: { candidateId: "candidate-byo-read-eval", scopeCommit: exactCommit, source: "session" },
       },
     }) + "\\n";
   finish(argv, phase, 0, stdout, "", {
@@ -692,6 +722,14 @@ if (argv[0] === "chat" && ["ask", "send", "update"].includes(argv[1] || "")) {
 }
 
 if (commandIndex(argv, "tree", "read") >= 0) {
+  runTreeRead(argv, phase);
+}
+
+if (commandIndex(argv, "context", "route") >= 0) {
+  runContextRoute(argv, phase);
+}
+
+if (commandIndex(argv, "context", "snapshot") >= 0) {
   runTreeRead(argv, phase);
 }
 

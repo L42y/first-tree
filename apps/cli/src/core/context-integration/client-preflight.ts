@@ -30,6 +30,80 @@ export type ContextSessionHookInput = {
   cwd?: string;
 };
 
+export type ContextSetupLocation = {
+  project: ContextIntegrationProject;
+  directory: string | null;
+  directoryAvailable: boolean;
+  temporaryDirectory: boolean;
+  warning: string | null;
+};
+
+/**
+ * Setup must show the real provider directory before the member chooses an
+ * activation scope. In particular, Codex Documents scratch directories are
+ * not collapsed to `pathless` at this boundary.
+ */
+export function inspectContextSetupLocation(
+  provider: ContextIntegrationProvider,
+  input: {
+    cwd?: string;
+    projectRoot?: string;
+    pathless?: boolean;
+    env?: NodeJS.ProcessEnv;
+    classifierOptions?: Parameters<typeof classifyCodexProjectlessPath>[2];
+  } = {},
+): ContextSetupLocation {
+  assertSignedIn();
+  if (input.pathless) {
+    return {
+      project: { kind: "pathless" },
+      directory: null,
+      directoryAvailable: false,
+      temporaryDirectory: false,
+      warning: "This provider session did not expose a usable directory. Directory activation is unavailable.",
+    };
+  }
+  const env = input.env ?? process.env;
+  const candidate =
+    input.projectRoot ??
+    (provider === "claude-code"
+      ? (env.CLAUDE_PROJECT_DIR ?? input.cwd ?? process.cwd())
+      : (input.cwd ?? process.cwd()));
+  if (!candidate) {
+    return {
+      project: { kind: "pathless" },
+      directory: null,
+      directoryAvailable: false,
+      temporaryDirectory: false,
+      warning: "This provider session did not expose a usable directory. Directory activation is unavailable.",
+    };
+  }
+  const resolved = requireKnownProject(
+    resolvePathProject(
+      candidate,
+      input.projectRoot ? "explicit_path" : provider === "claude-code" ? "claude_project_dir" : "codex_cwd_best_effort",
+    ),
+  );
+  if (resolved.project.kind !== "path") {
+    throw new ContextClientPreflightError(
+      contextClientPreflightErrorCode.projectUnknown,
+      "Setup location unexpectedly resolved without a directory.",
+      "Pass an existing directory with --project-root.",
+    );
+  }
+  const temporaryDirectory =
+    provider === "codex" && classifyCodexProjectlessPath(resolved.project.root, env, input.classifierOptions);
+  return {
+    project: resolved.project,
+    directory: resolved.project.root,
+    directoryAvailable: true,
+    temporaryDirectory,
+    warning: temporaryDirectory
+      ? "This looks like a Codex session temporary directory. A future session will usually use a different path; current-session activation is recommended."
+      : null,
+  };
+}
+
 export const contextClientPreflightErrorCode = {
   notSignedIn: "not_signed_in",
   projectUnreadable: "project_unreadable",
