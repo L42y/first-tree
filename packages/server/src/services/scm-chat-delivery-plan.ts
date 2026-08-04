@@ -22,7 +22,12 @@ export type ScmPlannedChatDelivery<TProviderContext = never> = {
   entries: Map<string, ScmDeliveryEntry<TProviderContext>>;
 };
 
-export type ResolvedScmChat = { chatId: string; created: boolean };
+export type ResolvedScmChat = {
+  chatId: string;
+  created: boolean;
+  /** Personnel resolution re-used an exact line that predated this event. */
+  personnelLineExisted?: boolean;
+};
 
 /**
  * Provider-neutral per-processing-pass audience planner.
@@ -61,7 +66,7 @@ export async function planScmChatDeliveries<TProviderContext = never>(input: {
     } else if (resolved.created) {
       delivery.created = true;
     }
-    addScmDeliveryEntry(delivery, target, input.actorHumanId);
+    addScmDeliveryEntry(delivery, target, input.actorHumanId, resolved);
   }
   return { deliveries, failed };
 }
@@ -70,6 +75,7 @@ function addScmDeliveryEntry<TProviderContext>(
   delivery: ScmPlannedChatDelivery<TProviderContext>,
   target: ScmAudienceTarget<TProviderContext>,
   actorHumanId: string | null,
+  resolved: ResolvedScmChat,
 ): void {
   const senderAgentId = scmTargetSenderAgentId(target);
   const humanAgentId = scmTargetHumanAgentId(target);
@@ -83,7 +89,7 @@ function addScmDeliveryEntry<TProviderContext>(
       ? target.entry.externalUsername
       : (target.directedContext?.externalUsername ?? null);
   const providerContext = target.entry.kind === "provider_task_target" ? target.entry.providerContext : null;
-  const wakeEligibility = scmWakeEligibility(target, actorHumanId);
+  const wakeEligibility = scmWakeEligibility(target, actorHumanId, resolved);
   const key = `${senderAgentId}:${humanAgentId ?? "-"}:${wakeAgentId ?? "-"}`;
   const reasons = new Set<"follow" | InvolveReason>();
   if (target.entry.kind === "existing_line" || target.entry.kind === "legacy_route") reasons.add("follow");
@@ -119,12 +125,13 @@ function addScmDeliveryEntry<TProviderContext>(
 function scmWakeEligibility<TProviderContext>(
   target: ScmAudienceTarget<TProviderContext>,
   actorHumanId: string | null,
+  resolved: ResolvedScmChat,
 ): ScmWakeEligibility {
   if (target.entry.kind === "legacy_route") return "route_only";
   if (
-    target.entry.kind === "existing_line" &&
+    (target.entry.kind === "existing_line" || resolved.personnelLineExisted === true) &&
     actorHumanId !== null &&
-    target.entry.line.humanAgentId === actorHumanId
+    scmTargetHumanAgentId(target) === actorHumanId
   ) {
     return "actor_echo_suppressed";
   }

@@ -5,6 +5,7 @@ export type ScmPersonnelTarget = Extract<ScmAudienceEntry, { kind: "personnel_ta
 
 export type ScmDirectedContext = {
   reason: InvolveReason;
+  requiresPersistentLine: boolean;
   externalUsername: string;
 };
 
@@ -50,7 +51,15 @@ export function composeScmAudience<TProviderContext = never>(input: {
   for (const target of input.personnelTargets) {
     const pair = attentionPairKey(target.humanAgentId, target.wakeAgentId);
     const current = personnelByPair.get(pair);
-    if (!current || comparePersonnelTargets(target, current) < 0) personnelByPair.set(pair, target);
+    if (!current) {
+      personnelByPair.set(pair, target);
+      continue;
+    }
+    const displayTarget = comparePersonnelTargets(target, current) < 0 ? target : current;
+    personnelByPair.set(pair, {
+      ...displayTarget,
+      requiresPersistentLine: current.requiresPersistentLine || target.requiresPersistentLine,
+    });
   }
 
   for (const [pair, personnelTarget] of [...personnelByPair.entries()].sort(([a], [b]) => a.localeCompare(b))) {
@@ -63,6 +72,7 @@ export function composeScmAudience<TProviderContext = never>(input: {
       matched = true;
       target.directedContext = {
         reason: personnelTarget.reason,
+        requiresPersistentLine: personnelTarget.requiresPersistentLine,
         externalUsername: personnelTarget.externalUsername,
       };
     }
