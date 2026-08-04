@@ -20,6 +20,11 @@ const REVIEW_OUTPUT = join(WEB_ROOT, "orientation-videos", "review");
 
 const CHAPTERS = {
   "multi-agent": { keyframes: [0, 18, 32], poster: 18 },
+  "context-tree": {
+    keyframes: [2, 6, 10, 13, 17, 23, 28, 31, 38, 45, 49, 53, 56, 59],
+    poster: 49,
+    captureScale: "css",
+  },
 };
 
 function selectedChapters() {
@@ -145,7 +150,11 @@ async function renderChapter(page, id, config) {
     for (let frame = 0; frame < frameCount; frame += 1) {
       if (ffmpegInputError) throw ffmpegInputError;
       await page.evaluate((nextFrame) => window.orientationVideoController?.setFrame(nextFrame), frame);
-      const image = await page.screenshot({ type: "png", animations: "disabled" });
+      const image = await page.screenshot({
+        type: "png",
+        animations: "disabled",
+        scale: config.captureScale ?? "device",
+      });
       await writeToStream(ffmpeg.stdin, image);
 
       const stillSecond = stillFrames.get(frame);

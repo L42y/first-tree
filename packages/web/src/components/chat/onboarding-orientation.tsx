@@ -17,6 +17,17 @@ export const ONBOARDING_ORIENTATION_CHAPTERS = {
     transcript:
       "Give one lead agent a clear software task. As the work unfolds, the lead @mentions UX, development, and QA agents in the same chat—each only when needed. Their working updates and replies stay in the shared conversation, and the verified pull request appears in the GitHub sidebar without the user coordinating separate chats.",
   },
+  "context-tree": {
+    id: "context-tree",
+    title: "Context Tree",
+    summary: "Read, work, review, update—then start smarter",
+    durationInSeconds: 60,
+    videoSrc: "/onboarding/orientation/context-tree.mp4",
+    posterSrc: "/onboarding/orientation/stills/context-tree-poster.png",
+    captionsSrc: "/onboarding/orientation/context-tree.vtt",
+    transcript:
+      "A payment-retry task begins with an Agent reading only the task-relevant Context Tree paths it is authorized to use. Settled billing, authentication, and architecture decisions guide the design, implementation, and regression tests; the work then exposes a missing durable ownership boundary. The Agent proposes that source-backed knowledge while one-off implementation details remain in the code PR, and a dedicated Context Reviewer checks evidence, consistency, authorization boundaries, and lasting value before approving the Tree update. A new Agent reads the approved retry-ownership decision before planning the next checkout task, so each loop starts with more shared context than the last.",
+  },
 } as const;
 
 export type OnboardingOrientationChapterId = keyof typeof ONBOARDING_ORIENTATION_CHAPTERS;

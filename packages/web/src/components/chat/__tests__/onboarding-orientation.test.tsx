@@ -45,9 +45,9 @@ describe("OnboardingOrientation", () => {
     const { container } = await renderOrientation({ onContinue });
 
     expect(container.querySelector('[data-onboarding-orientation="pending"]')).not.toBeNull();
-    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(2);
     expect(container.textContent).toContain("Watch the short tours");
-    expect(container.textContent).not.toContain("Context Tree");
+    expect(container.textContent).toContain("Context Tree");
     expect(container.textContent).not.toContain("GitHub automation");
     expect(container.textContent).not.toContain("Video placeholder");
     expect(container.textContent).toContain("Transcript");
@@ -91,6 +91,22 @@ describe("OnboardingOrientation", () => {
     expect(onContinue).toHaveBeenCalledTimes(1);
   });
 
+  it("connects the Context Tree chapter to its silent media, captions, and transcript", async () => {
+    const { container } = await renderOrientation();
+    const contextTree = [...container.querySelectorAll<HTMLButtonElement>("[data-orientation-chapter]")].find(
+      (button) => button.textContent?.includes("Context Tree"),
+    );
+
+    await click(contextTree ?? null);
+    expect(container.textContent).toContain("Read, work, review, update—then start smarter");
+    const video = container.querySelector("video");
+    expect(video?.getAttribute("poster")).toBe("/onboarding/orientation/stills/context-tree-poster.png");
+    expect(video?.querySelector("source")?.getAttribute("src")).toBe("/onboarding/orientation/context-tree.mp4");
+    expect(video?.querySelector("track")?.getAttribute("src")).toBe("/onboarding/orientation/context-tree.vtt");
+    expect(container.textContent).toContain("task-relevant Context Tree paths it is authorized to use");
+    expect(container.textContent).toContain("dedicated Context Reviewer");
+  });
+
   it("collapses completed Orientation while keeping an explicit review path", async () => {
     const onContinue = vi.fn();
     const { container } = await renderOrientation({ completed: true, onContinue });
@@ -101,7 +117,7 @@ describe("OnboardingOrientation", () => {
 
     const review = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Watch");
     await click(review ?? null);
-    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(2);
     expect(onContinue).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Continue with Nova");
   });
