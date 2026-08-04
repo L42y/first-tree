@@ -1,21 +1,21 @@
 WEBVTT
 
-00:00.000 --> 00:05.500
-Multi-agent collaboration coordinates one task;
-Context Tree carries settled decisions into the next.
+00:00.000 --> 00:10.000
+Collaboration handles today's task;
+shared context keeps the next one from starting over.
 
-00:05.500 --> 00:12.000
-The Agent reads only task-relevant context
-it is authorized to use.
+00:10.000 --> 00:24.000
+Settled constraints guide design, code, and tests
+without taking the Agent out of the task.
 
-00:12.000 --> 00:30.000
-Shared decisions define where the change belongs
-and what must remain unchanged.
+00:24.000 --> 00:29.000
+Only a lasting ownership decision is proposed;
+temporary implementation detail stays with the code.
 
-00:30.000 --> 00:47.000
-New durable knowledge reaches the Tree only after
-source-backed, independent review.
+00:29.000 --> 00:43.000
+Independent review protects shared context
+with source, consistency, and access checks.
 
-00:47.000 --> 01:00.000 position:72% size:50% align:middle
-Once approved, the update becomes
+00:43.000 --> 01:00.000
+After approval, the durable decision becomes
 the next Agent's starting point.

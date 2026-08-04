@@ -7,7 +7,7 @@ Deterministic product demonstrations rendered from the real First Tree Web desig
 | Chapter | Duration | Shots |
 | --- | ---: | --- |
 | `multi-agent` | 35s | User gives one clear feature task to `nova-lead` → the lead brings `prism-ux`, `forge-dev`, and `sentinel-qa` into the same chat at different stages → UX and development working states show meaningful live progress before their replies → the verified pull request appears in the real GitHub sidebar section |
-| `context-tree` | 60s | Checkout retry task → real Context map and task-scoped read activity → settled billing, auth, and architecture context guides design, implementation, and tests → Agent identifies the missing durable `system/billing/retry-ownership` boundary → dedicated Context Reviewer checks the source and approves it → the same real Context map and write feed record the update → a new Agent reads it before planning mobile checkout retries |
+| `context-tree` | 60s | Checkout retry task stays in the real chat UI while a persistent explanatory Tree map shows task-scoped reads → settled billing, auth, and architecture context guides design, implementation, and tests → Agent identifies the missing durable `system/billing/retry-ownership` boundary → dedicated Context Reviewer checks the source, consistency, and authorization boundary → the approved node becomes solid in the same map → a new Agent reads it before planning mobile checkout retries |
 
 ## Install and preview
 
@@ -64,7 +64,7 @@ The script builds `@first-tree/shared`, opens the DEV-only recording route in Ch
 - MP4 and poster assets to `packages/web/public/onboarding/orientation/`
 - first and key frames to `packages/web/orientation-videos/review/`
 
-Master settings: a 1280×720 CSS viewport, 30fps, H.264 High Profile, yuv420p, CRF 18, slow preset with animation tuning, fast-start, and no audio. The approved Multi-agent chapter retains its 1.5× device-scale 1920×1080 output; Context Tree is captured at CSS scale for a 1280×720 output.
+Master settings: a 1280×720 CSS viewport, 30fps, H.264 High Profile, yuv420p, slow preset with animation tuning, fast-start, and no audio. The approved Multi-agent chapter retains its 1.5× device-scale 1920×1080 output at CRF 18. Context Tree captures at 1.5× device scale, downsamples to 1280×720 with Lanczos, and uses CRF 16 so text and Tree lines remain crisp at the ordinary delivery resolution.
 
 The product chapter registry is the source of truth for duration and asset paths. The recording page exposes its frame rate and derived frame count to the renderer, so timing is not duplicated in the render script.
 
@@ -76,7 +76,7 @@ authoritative explanation layer; the visual story must remain understandable wit
 
 ## Edit copy or add a language
 
-- Visible scene copy and timing: `src/pages/onboarding-orientation-video-preview.tsx`
+- Visible scene copy and timing: `src/pages/onboarding-orientation-video-preview.tsx` and the chapter scene file beside it
 - English captions: `public/onboarding/orientation/*.vtt`
 - Inline transcripts: `src/components/chat/onboarding-orientation.tsx`
 

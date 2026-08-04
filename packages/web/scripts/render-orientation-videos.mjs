@@ -21,9 +21,11 @@ const REVIEW_OUTPUT = join(WEB_ROOT, "orientation-videos", "review");
 const CHAPTERS = {
   "multi-agent": { keyframes: [0, 18, 32], poster: 18 },
   "context-tree": {
-    keyframes: [2, 6, 10, 13, 17, 23, 28, 31, 38, 45, 49, 53, 56, 59],
-    poster: 49,
-    captureScale: "css",
+    keyframes: [2, 6, 10, 14, 18, 22, 25, 28, 30, 36, 42, 46, 49, 51, 55, 59],
+    poster: 46,
+    captureScale: "device",
+    crf: "16",
+    videoFilter: "scale=1280:720:flags=lanczos",
   },
 };
 
@@ -112,6 +114,7 @@ async function renderChapter(page, id, config) {
       "png",
       "-i",
       "pipe:0",
+      ...(config.videoFilter ? ["-vf", config.videoFilter] : []),
       "-an",
       "-c:v",
       "libx264",
@@ -120,7 +123,7 @@ async function renderChapter(page, id, config) {
       "-tune",
       "animation",
       "-crf",
-      "18",
+      config.crf ?? "18",
       "-profile:v",
       "high",
       "-pix_fmt",

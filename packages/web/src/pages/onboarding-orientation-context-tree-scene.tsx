@@ -1,10 +1,4 @@
-import type {
-  ContextTreeNode,
-  ContextTreeSnapshot,
-  ContextTreeUpdate,
-  GithubEventCard,
-  MeChatRow,
-} from "@first-tree/shared";
+import type { GithubEventCard, MeChatRow } from "@first-tree/shared";
 import { ChevronDown, Filter, ListTree, PanelRight, Paperclip, Plus, Send, UserPlus, Users } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 import { Avatar } from "../components/avatar.js";
@@ -13,8 +7,6 @@ import { ChatRowAvatar } from "../components/chat/chat-row-avatar.js";
 import { GithubEventCardMessage, GithubSystemAvatar } from "../components/chat/github-event-card.js";
 import { Button } from "../components/ui/button.js";
 import { StatusGlyph } from "../components/ui/status-glyph.js";
-import { ContextPage } from "./context.js";
-import { MOCK_CONTEXT_SNAPSHOT } from "./context-preview-mock.js";
 
 function clamp(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -36,60 +28,54 @@ function enterStyle(value: number, offset = 0.8): CSSProperties {
   };
 }
 
-export function contextTreeUsesWorkspace(time: number): boolean {
-  return time < 5 || (time >= 12 && time < 47) || time >= 55;
+type LoopPhase = "read" | "work" | "propose" | "review" | "update" | "reuse";
+
+const LOOP_PHASES: readonly { id: LoopPhase; label: string }[] = [
+  { id: "read", label: "Read" },
+  { id: "work", label: "Work" },
+  { id: "propose", label: "Draft" },
+  { id: "review", label: "Review" },
+  { id: "update", label: "Update" },
+  { id: "reuse", label: "Reuse" },
+];
+
+function loopPhase(time: number): LoopPhase {
+  if (time < 10) return "read";
+  if (time < 24) return "work";
+  if (time < 29) return "propose";
+  if (time < 43) return "review";
+  if (time < 50) return "update";
+  return "reuse";
 }
 
 export function ContextTreeOrientationScene({ time }: { time: number }) {
-  const firstContextOpacity = Math.min(progress(time, 4.7, 5.3), 1 - progress(time, 11.5, 12.1));
-  const finalContextOpacity = Math.min(progress(time, 46.7, 47.3), 1 - progress(time, 54.5, 55.1));
-  const contextOpacity = Math.max(firstContextOpacity, finalContextOpacity);
-  const workspaceOpacity = 1 - contextOpacity;
-  const finalContext = time >= 46.7;
-  const contextSnapshot = contextVideoSnapshot(finalContext);
-  const recipient = time < 30 ? "Nova" : time < 55 ? "context-reviewer" : "forge-dev";
-  const contextPan = finalContext ? ease(progress(time, 51, 52.2)) * 410 : ease(progress(time, 7, 8.5)) * 410;
+  const phase = loopPhase(time);
+  const recipient = time < 29 ? "nova-lead" : time < 50 ? "context-reviewer" : "forge-dev";
 
   return (
-    <div className="relative h-[calc(100vh-3rem)] min-h-0 overflow-hidden bg-background">
-      <div
-        className="absolute inset-0 overflow-hidden"
-        style={{ opacity: contextOpacity, pointerEvents: "none", transition: "none" }}
-      >
-        <div
-          className="mx-auto w-full p-6"
-          style={{ maxWidth: 1100, transform: `translateY(-${contextPan}px)`, transition: "none" }}
-        >
-          <ContextPage key={finalContext ? "updated" : "baseline"} previewSnapshot={contextSnapshot} />
+    <div className="flex h-[calc(100vh-3rem)] min-h-0 overflow-hidden bg-background">
+      <ContextConversationRail time={time} />
+      <main className="relative flex min-w-0 flex-1 flex-col bg-background">
+        <ContextChatHeader time={time} />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <ContextTreeChatScene time={time} />
         </div>
-      </div>
-      <div
-        className="absolute inset-0 flex min-h-0"
-        style={{ opacity: workspaceOpacity, pointerEvents: "none", transition: "none" }}
-      >
-        <ContextConversationRail time={time} />
-        <main className="relative flex min-w-0 flex-1 flex-col bg-background">
-          <ContextChatHeader time={time} />
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <ContextTreeChatScene time={time} />
-          </div>
-          <ContextComposer recipient={recipient} />
-        </main>
-        <ContextRightSidebar time={time} />
-      </div>
+        <ContextComposer recipient={recipient} />
+      </main>
+      <ContextRightSidebar time={time} phase={phase} />
     </div>
   );
 }
 
 function ContextChatHeader({ time }: { time: number }) {
   const title =
-    time < 30
+    time < 29
       ? "Prevent duplicate checkout charges"
-      : time < 55
+      : time < 50
         ? "Review Context update"
         : "Add mobile checkout retries";
   return (
-    <header className="flex min-h-12 shrink-0 items-center bg-bg-raised px-6 py-1.5">
+    <header className="flex min-h-12 shrink-0 items-center bg-bg-raised px-5 py-1.5">
       <p className="min-w-0 flex-1 truncate text-subtitle font-semibold">{title}</p>
       <div className="flex items-center text-fg-3" style={{ gap: "var(--sp-1)" }}>
         <Users size={15} />
@@ -123,33 +109,36 @@ const NEXT_TASK_PARTICIPANTS: MeChatRow["participants"] = [
 ];
 
 function ContextConversationRail({ time }: { time: number }) {
-  const workSelected = time < 30;
-  const reviewSelected = time >= 30 && time < 55;
+  const workSelected = time < 29;
+  const reviewSelected = time >= 29 && time < 50;
   return (
-    <aside className="flex w-70 shrink-0 flex-col overflow-hidden border-r border-border bg-bg-raised">
-      <ContextConversationRailHeader itemCount={time < 30 ? 1 : time < 55 ? 2 : 3} />
+    <aside
+      data-context-conversation-rail
+      className="flex w-70 shrink-0 flex-col overflow-hidden border-r border-border bg-bg-raised"
+    >
+      <ContextConversationRailHeader itemCount={time < 29 ? 1 : time < 50 ? 2 : 3} />
       <ContextRailItem
         title="Prevent duplicate checkout charges"
         participants={WORK_PARTICIPANTS}
         selected={workSelected}
         timeLabel={workSelected ? undefined : "8m"}
-        working={workSelected && time < 28.5}
+        working={workSelected && time < 27.5}
       />
-      {time >= 30 ? (
+      {time >= 29 ? (
         <ContextRailItem
           title="Review Context update"
           participants={REVIEW_PARTICIPANTS}
           selected={reviewSelected}
-          working={reviewSelected && time < 45.5}
+          working={reviewSelected && time < 46}
           timeLabel={reviewSelected ? undefined : "3m"}
         />
       ) : null}
-      {time >= 55 ? (
+      {time >= 50 ? (
         <ContextRailItem
           title="Add mobile checkout retries"
           participants={NEXT_TASK_PARTICIPANTS}
           selected={!workSelected && !reviewSelected}
-          working={time < 59}
+          working={time < 58.5}
         />
       ) : null}
     </aside>
@@ -158,7 +147,7 @@ function ContextConversationRail({ time }: { time: number }) {
 
 function ContextConversationRailHeader({ itemCount }: { itemCount: number }) {
   return (
-    <div className="shrink-0 flex flex-col border-b border-border-faint">
+    <div className="flex shrink-0 flex-col border-b border-border-faint">
       <div className="flex items-center px-3 py-2.5" style={{ gap: "var(--sp-1)" }}>
         <Button type="button" variant="cta" size="xs" className="text-body">
           <Plus size={14} strokeWidth={2} />
@@ -234,199 +223,6 @@ function ContextRailItem({
   );
 }
 
-const CONTEXT_VIDEO_NOW = "2099-01-01T12:00:00.000Z";
-
-function contextVideoNode(
-  id: string,
-  parentId: string | null,
-  path: string,
-  title: string,
-  kind: ContextTreeNode["kind"],
-  changeType: ContextTreeNode["changeType"],
-): ContextTreeNode {
-  return {
-    id,
-    parentId,
-    path,
-    sourcePath: kind === "leaf" ? `${path.replace(/^\//, "")}.md` : null,
-    title,
-    kind,
-    owners: id.startsWith("system/billing") ? ["billing-platform"] : [],
-    preview: changeType ? `Settled team context for ${title}.` : null,
-    relatedNodeIds: [],
-    affectedContextArea: title,
-    changeType,
-    changedAtCommit: changeType ? "8a42c1f" : null,
-  };
-}
-
-function contextVideoUpdate(
-  id: string,
-  nodeId: string,
-  path: string,
-  title: string,
-  changeType: ContextTreeUpdate["changeType"],
-  affectedContextArea: string,
-): ContextTreeUpdate {
-  return {
-    id,
-    nodeId,
-    path,
-    title,
-    changeType,
-    affectedContextArea,
-    reason: "Settled team decision",
-    summary: "Recorded retry ownership and rationale for future agents.",
-    changedBy: "nova-lead",
-    owners: ["billing-platform"],
-    relatedNodeIds: [],
-    sourceCommit: "8a42c1f0",
-    riskLevel: "low",
-  };
-}
-
-function contextVideoNodes(updated: boolean): ContextTreeNode[] {
-  return [
-    contextVideoNode("root", null, "/", "Context Tree", "root", null),
-    contextVideoNode("system", "root", "/system", "System", "domain", "edited"),
-    contextVideoNode("system/billing", "system", "/system/billing", "Billing", "subdomain", "edited"),
-    ...(updated
-      ? [
-          contextVideoNode(
-            "system/billing/retry-ownership",
-            "system/billing",
-            "/system/billing/retry-ownership",
-            "Billing retry ownership",
-            "leaf",
-            "added",
-          ),
-        ]
-      : []),
-    contextVideoNode("security", "root", "/security", "Security", "domain", "edited"),
-    contextVideoNode("security/auth", "security", "/security/auth", "Auth boundary", "leaf", "edited"),
-    contextVideoNode("decisions", "root", "/decisions", "Decisions", "domain", "edited"),
-    contextVideoNode("decisions/adr-019", "decisions", "/decisions/adr-019", "ADR-019", "leaf", "added"),
-  ];
-}
-
-const CONTEXT_BASELINE_UPDATES: ContextTreeUpdate[] = [
-  contextVideoUpdate(
-    "update-adr-019",
-    "decisions/adr-019",
-    "/decisions/adr-019",
-    "ADR-019",
-    "added",
-    "decisions / architecture",
-  ),
-  contextVideoUpdate(
-    "update-auth-boundary",
-    "security/auth",
-    "/security/auth",
-    "Auth boundary",
-    "edited",
-    "security / authentication",
-  ),
-  contextVideoUpdate("update-billing", "system/billing", "/system/billing", "Billing", "edited", "system / billing"),
-];
-
-const CONTEXT_RETRY_UPDATE: ContextTreeUpdate = contextVideoUpdate(
-  "update-billing-ownership",
-  "system/billing/retry-ownership",
-  "/system/billing/retry-ownership",
-  "Billing retry ownership",
-  "added",
-  "system / billing / ownership",
-);
-
-function contextReadEvent(
-  id: string,
-  targetPath: string,
-  agent: { id: string; name: string; hue: string; provider: "claude-code" | "codex" },
-  chat: { id: string; title: string },
-): ContextTreeSnapshot["io"]["recentEvents"][number] {
-  return {
-    id,
-    agentId: agent.id,
-    agentName: agent.name,
-    agentAvatarColorToken: agent.hue,
-    runtimeProvider: agent.provider,
-    action: "read",
-    source: "shell_command",
-    targetKind: "file",
-    targetPath,
-    chatId: chat.id,
-    chatTitle: chat.title,
-    viewerCanAccess: true,
-    createdAt: CONTEXT_VIDEO_NOW,
-  };
-}
-
-const BILLING_AGENT = { id: "nova-lead", name: "nova-lead", hue: "hue-2", provider: "claude-code" } as const;
-const REVIEW_AGENT = {
-  id: "context-reviewer",
-  name: "context-reviewer",
-  hue: "hue-1",
-  provider: "codex",
-} as const;
-const BILLING_CHAT = { id: "prevent-duplicate-charges", title: "Prevent duplicate checkout charges" } as const;
-const REVIEW_CHAT = { id: "review-context-update", title: "Review Context update" } as const;
-
-function contextVideoSnapshot(updated: boolean): ContextTreeSnapshot {
-  const reads: ContextTreeSnapshot["io"]["recentEvents"] = [
-    contextReadEvent("read-billing", "system/billing/NODE.md", BILLING_AGENT, BILLING_CHAT),
-    contextReadEvent("read-auth", "security/auth.md", BILLING_AGENT, BILLING_CHAT),
-    contextReadEvent("read-adr", "decisions/adr-019.md", BILLING_AGENT, BILLING_CHAT),
-    ...(updated
-      ? [contextReadEvent("read-review", "system/billing/retry-ownership.md", REVIEW_AGENT, REVIEW_CHAT)]
-      : []),
-  ];
-  return {
-    ...MOCK_CONTEXT_SNAPSHOT,
-    repo: "acme-team/context-tree",
-    branch: "main",
-    headCommit: "8a42c1f0",
-    syncedAt: CONTEXT_VIDEO_NOW,
-    summary: updated
-      ? { addedCount: 2, editedCount: 5, removedCount: 0, changedNodeCount: 7 }
-      : { addedCount: 1, editedCount: 5, removedCount: 0, changedNodeCount: 6 },
-    nodes: contextVideoNodes(updated),
-    updates: updated ? [CONTEXT_RETRY_UPDATE, ...CONTEXT_BASELINE_UPDATES] : CONTEXT_BASELINE_UPDATES,
-    edges: [],
-    changes: [],
-    io: {
-      ...MOCK_CONTEXT_SNAPSHOT.io,
-      summary: {
-        read: { agentCount: updated ? 2 : 1, eventCount: reads.length, targetCount: reads.length },
-        write: { agentCount: updated ? 1 : 0, eventCount: updated ? 1 : 0, targetCount: updated ? 1 : 0 },
-      },
-      recentEvents: reads,
-      agents: [],
-      writes: updated
-        ? [
-            {
-              id: `${"8".repeat(40)}:system/billing/retry-ownership.md`,
-              nodeId: "system/billing/retry-ownership",
-              nodePath: "system/billing/retry-ownership",
-              title: "Billing retry ownership",
-              changeType: "added",
-              summary: "record retry ownership and rationale",
-              riskLevel: "low",
-              authorName: "nova-lead",
-              agentId: "nova-lead",
-              agentName: "nova-lead",
-              agentAvatarColorToken: "hue-2",
-              commit: "8".repeat(40),
-              prNumber: 742,
-              createdAt: CONTEXT_VIDEO_NOW,
-            },
-          ]
-        : [],
-      writesTotal: updated ? 1 : 0,
-      skipped: { windowDays: 7, totalEventCount: 0, reasons: [] },
-    },
-  };
-}
-
 const CONTEXT_WORK_PR_NUMBER = `#${741}`;
 const CONTEXT_REVIEW_PR_NUMBER = `#${742}`;
 
@@ -457,7 +253,7 @@ const CONTEXT_REVIEW_PR_CARD: GithubEventCard = {
   repository: "acme-team/context-tree",
   sender: "nova-lead",
   title: `PR ${CONTEXT_REVIEW_PR_NUMBER}: Record billing retry ownership`,
-  body: "Context Tree update proposed from Prevent duplicate checkout charges.",
+  body: "Durable context proposed from the verified code change.",
   url: "https://github.com/acme-team/context-tree/pull/742",
   entity: {
     type: "pull_request",
@@ -467,122 +263,127 @@ const CONTEXT_REVIEW_PR_CARD: GithubEventCard = {
 };
 
 function ContextTreeChatScene({ time }: { time: number }) {
-  if (time < 30) {
+  if (time < 29) {
     return (
-      <div className="mx-auto w-full max-w-3xl px-6 py-4">
+      <div className="mx-auto w-full px-5 py-3.5">
         <TimelineMessage sender="Gandy" seed="human-gandy" at="09:02">
           Fix duplicate charges when checkout retries. Preserve the current auth boundary.
         </TimelineMessage>
-        {time < 12 ? (
+        {time < 10 ? (
           <TimelineWorking
             sender="nova-lead"
             seed="nova-lead"
-            body="Reading task-relevant Context Tree paths before changing code…"
-            visible={progress(time, 0.9, 1.8)}
-          />
-        ) : null}
-        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:06" visible={progress(time, 12, 12.8)}>
-          I read <span className="mono text-label">system/billing</span>,{" "}
-          <span className="mono text-label">security/auth</span>, and{" "}
-          <span className="mono text-label">decisions/adr-019</span>. Billing executes charges; credentials and payment
-          state stay server-side.
-        </TimelineMessage>
-        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:08" visible={progress(time, 15, 15.8)}>
-          Plan: enforce ADR-019 idempotency in Billing Service, leave Web’s authenticated flow unchanged, and cover both
-          boundaries with regression tests.
-        </TimelineMessage>
-        {time < 22 ? (
-          <TimelineWorking
-            sender="nova-lead"
-            seed="nova-lead"
-            body="Implementing the smallest safe diff and running duplicate-charge and auth regression tests…"
-            visible={progress(time, 18, 18.8)}
+            body="Reading the task-relevant Context Tree paths before planning…"
+            visible={progress(time, 1, 1.8)}
           />
         ) : (
-          <div className="grid" style={{ gridTemplateColumns: "var(--sp-5) 1fr", columnGap: 8 }}>
-            <GithubSystemAvatar size={20} />
-            <div className="min-w-0" style={enterStyle(progress(time, 22, 22.8), 0.45)}>
-              <p className="mono text-body mb-1 font-semibold text-primary">GitHub</p>
-              <GithubEventCardMessage content={CONTEXT_WORK_PR_CARD} />
-            </div>
-          </div>
+          <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:04" visible={progress(time, 10, 10.8)}>
+            Loaded the settled billing, auth, and ADR-019 constraints. Billing owns charge execution; credentials and
+            payment state stay server-side.
+          </TimelineMessage>
         )}
-        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:17" visible={progress(time, 25.2, 26)}>
-          The work exposed a missing durable boundary: clients request retries; Billing Service owns idempotency and
-          retry policy.
+        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:06" visible={progress(time, 13, 13.8)}>
+          I’ll enforce ADR-019 idempotency in Billing Service, preserve Web’s authenticated handoff, and test both
+          boundaries.
         </TimelineMessage>
-        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:18" visible={progress(time, 27.5, 28.3)}>
-          Proposing <span className="mono text-label">system/billing/retry-ownership</span>, sourced from PR{" "}
-          {CONTEXT_WORK_PR_NUMBER}. Implementation details stay in the code PR.
+        {time < 20.5 ? (
+          <TimelineWorking
+            sender="nova-lead"
+            seed="nova-lead"
+            body="Implementing the smallest safe diff and running billing and auth regression tests…"
+            visible={progress(time, 16, 16.8)}
+          />
+        ) : (
+          <GithubTimelineCard content={CONTEXT_WORK_PR_CARD} visible={progress(time, 20.5, 21.3)} />
+        )}
+        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:17" visible={progress(time, 24, 24.8)}>
+          This work settled a reusable boundary: clients request retries; Billing Service owns idempotency and retry
+          policy.
+        </TimelineMessage>
+        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:18" visible={progress(time, 26.5, 27.3)}>
+          Proposing <span className="mono text-label">system/billing/retry-ownership</span> from PR{" "}
+          {CONTEXT_WORK_PR_NUMBER}. One-off implementation details stay in the code PR.
         </TimelineMessage>
       </div>
     );
   }
-  if (time < 55) {
+
+  if (time < 50) {
     return (
-      <div className="mx-auto w-full max-w-3xl px-6 py-4">
-        <div className="grid" style={{ gridTemplateColumns: "var(--sp-5) 1fr", columnGap: 8 }}>
-          <GithubSystemAvatar size={20} />
-          <div className="min-w-0" style={enterStyle(progress(time, 30, 30.8), 0.45)}>
-            <p className="mono text-body mb-1 font-semibold text-primary">GitHub</p>
-            <GithubEventCardMessage content={CONTEXT_REVIEW_PR_CARD} />
-          </div>
-        </div>
+      <div className="mx-auto w-full px-5 py-3.5">
+        <GithubTimelineCard content={CONTEXT_REVIEW_PR_CARD} visible={progress(time, 29, 29.8)} />
         <TimelineMessage
           sender="context-reviewer"
           seed="context-reviewer"
           at="09:19"
-          visible={progress(time, 33, 33.8)}
+          visible={progress(time, 31, 31.8)}
         >
-          Reading the current Tree and source PR {CONTEXT_WORK_PR_NUMBER} before reviewing the proposed knowledge.
+          Reading the existing Tree and source PR {CONTEXT_WORK_PR_NUMBER} before reviewing the proposed knowledge.
         </TimelineMessage>
         <TimelineMessage
           sender="context-reviewer"
           seed="context-reviewer"
           at="09:21"
-          visible={progress(time, 37, 37.8)}
+          visible={progress(time, 35, 35.8)}
         >
-          Source evidence ✓ · Existing context ✓ · Auth boundary ✓
+          Source evidence ✓ · Existing context ✓ · Authorization boundary ✓
         </TimelineMessage>
         <TimelineMessage
           sender="context-reviewer"
           seed="context-reviewer"
           at="09:22"
-          visible={progress(time, 41, 41.8)}
+          visible={progress(time, 39, 39.8)}
         >
-          Durable value ✓ · One-off implementation details remain in PR {CONTEXT_WORK_PR_NUMBER}.
+          Durable value ✓ · No temporary implementation detail copied into shared context.
         </TimelineMessage>
         <TimelineMessage
           sender="context-reviewer"
           seed="context-reviewer"
           at="09:23"
-          visible={progress(time, 44.5, 45.3)}
+          visible={progress(time, 42, 42.8)}
         >
           Approved. The source-backed ownership and rationale can update the Tree.
+        </TimelineMessage>
+        <TimelineMessage sender="nova-lead" seed="nova-lead" at="09:24" visible={progress(time, 46, 46.8)}>
+          Updated <span className="mono text-label">system/billing/retry-ownership</span> in PR{" "}
+          {CONTEXT_REVIEW_PR_NUMBER}.
         </TimelineMessage>
       </div>
     );
   }
+
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 py-4">
+    <div className="mx-auto w-full px-5 py-3.5">
       <TimelineMessage sender="Gandy" seed="human-gandy" at="10:04">
         Add retry handling to mobile checkout.
       </TimelineMessage>
-      {time < 57 ? (
+      {time < 54.5 ? (
         <TimelineWorking
           sender="forge-dev"
           seed="forge-dev"
           body="Reading system/billing/retry-ownership before planning…"
-          visible={progress(time, 55.2, 55.8)}
+          visible={progress(time, 50.5, 51.3)}
         />
       ) : (
-        <TimelineMessage sender="forge-dev" seed="forge-dev" at="10:05" visible={progress(time, 57, 57.6)}>
-          Context says clients only request retries; Billing Service owns idempotency and retry policy.
+        <TimelineMessage sender="forge-dev" seed="forge-dev" at="10:05" visible={progress(time, 54.5, 55.3)}>
+          The Tree already says clients request retries while Billing Service owns idempotency and retry policy.
         </TimelineMessage>
       )}
-      <TimelineMessage sender="forge-dev" seed="forge-dev" at="10:06" visible={progress(time, 58.3, 58.9)}>
+      <TimelineMessage sender="forge-dev" seed="forge-dev" at="10:06" visible={progress(time, 57, 57.8)}>
         I’ll reuse that service contract and test the mobile auth handoff—no ownership debate to repeat.
       </TimelineMessage>
+    </div>
+  );
+}
+
+function GithubTimelineCard({ content, visible }: { content: GithubEventCard; visible: number }) {
+  return (
+    <div className="grid py-1" style={{ gridTemplateColumns: "var(--sp-5) 1fr", columnGap: 8 }}>
+      <GithubSystemAvatar size={20} />
+      <div className="min-w-0" style={enterStyle(visible, 0.45)}>
+        <p className="mono text-body mb-1 font-semibold text-primary">GitHub</p>
+        <GithubEventCardMessage content={content} />
+      </div>
     </div>
   );
 }
@@ -679,27 +480,205 @@ function ContextComposer({ recipient }: { recipient: string }) {
   );
 }
 
-function ContextRightSidebar({ time }: { time: number }) {
-  const activeAgent = time < 30 ? "nova-lead" : time < 55 ? "context-reviewer" : "forge-dev";
-  const workingUntil = time < 30 ? 28.5 : time < 55 ? 45.5 : 59;
+function ContextRightSidebar({ time, phase }: { time: number; phase: LoopPhase }) {
+  const activeAgent = time < 29 ? "nova-lead" : time < 50 ? "context-reviewer" : "forge-dev";
+  const workingUntil = time < 29 ? 27.5 : time < 50 ? 46 : 58.5;
   return (
-    <aside className="w-75 shrink-0 overflow-hidden border-l border-border bg-bg-raised">
-      <section className="border-b border-border-faint">
+    <aside data-context-details-rail className="w-75 shrink-0 overflow-hidden border-l border-border bg-bg-raised">
+      <ContextLoopGuide time={time} phase={phase} />
+      <section className="border-t border-border-faint">
         <div className="px-3 pb-1 pt-2.5 text-eyebrow text-fg-4">
           Participants <span className="mono">· 2</span>
         </div>
-        <div className="flex flex-col px-2 pb-1" style={{ gap: 2 }}>
+        <div className="flex flex-col px-2 pb-2" style={{ gap: 2 }}>
           <ContextParticipantStatusRow name={activeAgent} status={time < workingUntil ? "Working" : "Idle"} />
           <ContextParticipantStatusRow name="Gandy" human />
         </div>
-        <div className="px-2 pb-2 pt-1">
-          <div className="flex items-center px-2 py-1.5 text-fg-3" style={{ gap: "var(--sp-2_5)" }}>
-            <UserPlus size={16} />
-            <span className="text-body">Add</span>
-          </div>
-        </div>
       </section>
     </aside>
+  );
+}
+
+function ContextLoopGuide({ time, phase }: { time: number; phase: LoopPhase }) {
+  const activeIndex = LOOP_PHASES.findIndex((item) => item.id === phase);
+  const phaseCopy = {
+    read: "Task-relevant paths are being read",
+    work: "Settled context is guiding the work",
+    propose: "A durable boundary is being proposed",
+    review: "Evidence and boundaries are being checked",
+    update: "Approved knowledge is entering the Tree",
+    reuse: "The next Agent starts from the update",
+  }[phase];
+
+  return (
+    <section data-context-loop-phase={phase} data-context-tree-visual="explanatory" className="px-3 pb-3 pt-2.5">
+      <div className="flex items-baseline">
+        <p className="text-label font-semibold">Context Tree activity</p>
+        <span className="mono text-eyebrow ml-auto uppercase text-fg-4">Video guide</span>
+      </div>
+      <div className="mt-2 grid grid-cols-6" style={{ gap: 3 }}>
+        {LOOP_PHASES.map((item, index) => {
+          const reached = index <= activeIndex;
+          const active = item.id === phase;
+          return (
+            <div key={item.id} className="min-w-0 text-center">
+              <div
+                className="h-1 w-full rounded-full"
+                style={{ background: reached ? "var(--brand)" : "var(--border)" }}
+              />
+              <span
+                className={`mono text-eyebrow mt-1 block truncate uppercase ${active ? "font-bold text-foreground" : "font-medium text-fg-4"}`}
+              >
+                {item.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <ContextTreeMap time={time} phase={phase} />
+      <div className="mt-1.5 flex min-h-9 items-center border border-border-faint bg-background px-2 py-1.5">
+        <StatusGlyph
+          colorVar={phase === "review" ? "var(--warning)" : "var(--state-working)"}
+          shape="dot"
+          pulse={phase === "read" || phase === "review" || phase === "update" || phase === "reuse" ? "working" : null}
+          size={8}
+        />
+        <span className="text-caption ml-2 leading-snug text-fg-2">{phaseCopy}</span>
+      </div>
+    </section>
+  );
+}
+
+type MapNodeId = "root" | "system" | "billing" | "security" | "auth" | "decisions" | "adr" | "ownership";
+
+const MAP_NODES: readonly {
+  id: MapNodeId;
+  x: number;
+  y: number;
+  width: number;
+  label: string;
+  path?: string;
+}[] = [
+  { id: "root", x: 95, y: 8, width: 86, label: "Context Tree" },
+  { id: "system", x: 8, y: 56, width: 76, label: "System" },
+  { id: "security", x: 100, y: 56, width: 76, label: "Security" },
+  { id: "decisions", x: 192, y: 56, width: 76, label: "Decisions" },
+  { id: "billing", x: 8, y: 108, width: 76, label: "Billing", path: "system/billing" },
+  { id: "auth", x: 100, y: 108, width: 76, label: "Auth", path: "security/auth" },
+  { id: "adr", x: 192, y: 108, width: 76, label: "ADR-019", path: "decisions/adr-019" },
+  { id: "ownership", x: 8, y: 166, width: 116, label: "Retry ownership", path: "system/billing/retry-ownership" },
+];
+
+const MAP_NODE_LOOKUP = new Map(MAP_NODES.map((node) => [node.id, node]));
+
+function ContextTreeMap({ time, phase }: { time: number; phase: LoopPhase }) {
+  const readTargets: readonly MapNodeId[] = ["billing", "auth", "adr"];
+  const readIndex = Math.min(readTargets.length - 1, Math.floor(progress(time, 1.8, 9.2) * readTargets.length));
+  const targetId: MapNodeId =
+    phase === "read"
+      ? (readTargets[readIndex] ?? "billing")
+      : phase === "review" || phase === "propose" || phase === "update" || phase === "reuse"
+        ? "ownership"
+        : "billing";
+  const target = MAP_NODE_LOOKUP.get(targetId);
+  if (target === undefined) return null;
+  const showOwnership = phase === "propose" || phase === "review" || phase === "update" || phase === "reuse";
+  const ownershipProgress = phase === "update" ? ease(progress(time, 43, 47)) : phase === "reuse" ? 1 : 0;
+  const operation = phase === "update" ? "WRITE" : phase === "work" ? "APPLY" : phase === "propose" ? "DRAFT" : "READ";
+  const cursorX = target.x + target.width - 8;
+  const cursorY = targetId === "ownership" ? target.y + 2 : target.y + 25;
+
+  return (
+    <svg
+      className="mt-2 block w-full border border-border-faint bg-background"
+      style={{ height: 224 }}
+      viewBox="0 0 276 216"
+      role="img"
+      aria-label="Explanatory Context Tree map showing the current read or update"
+    >
+      <title>Context Tree map</title>
+      <g fill="none" stroke="var(--border)" strokeWidth="1.2">
+        <path d="M138 38 V47 H46 V56" />
+        <path d="M138 38 V56" />
+        <path d="M138 47 H230 V56" />
+        <path d="M46 86 V108" />
+        <path d="M138 86 V108" />
+        <path d="M230 86 V108" />
+        {showOwnership ? (
+          <path
+            d="M46 138 V166"
+            stroke={phase === "update" || phase === "reuse" ? "var(--brand)" : "var(--fg-4)"}
+            strokeDasharray={phase === "update" || phase === "reuse" ? undefined : "4 3"}
+          />
+        ) : null}
+      </g>
+      {MAP_NODES.map((node) => {
+        if (node.id === "ownership" && !showOwnership) return null;
+        const selected =
+          node.id === targetId ||
+          (phase === "work" && (node.id === "billing" || node.id === "auth" || node.id === "adr"));
+        const approvedOwnership = node.id === "ownership" && (phase === "reuse" || ownershipProgress > 0.45);
+        return (
+          <g key={node.id}>
+            <rect
+              x={node.x}
+              y={node.y}
+              width={node.width}
+              height={30}
+              rx={4}
+              fill={selected ? "var(--brand-bg)" : "var(--bg-raised)"}
+              stroke={selected ? "var(--brand)" : "var(--border)"}
+              strokeWidth={selected ? 1.8 : 1}
+              strokeDasharray={node.id === "ownership" && !approvedOwnership ? "4 3" : undefined}
+            />
+            <text
+              x={node.x + node.width / 2}
+              y={node.y + (node.path ? 11 : 18)}
+              textAnchor="middle"
+              fill="var(--fg)"
+              fontSize={node.path ? 9.5 : 10.5}
+              fontWeight={selected ? 700 : 600}
+            >
+              {node.label}
+            </text>
+            {node.path ? (
+              <text
+                x={node.x + node.width / 2}
+                y={node.y + 23}
+                textAnchor="middle"
+                fill="var(--fg-4)"
+                fontSize={node.id === "ownership" ? 6.5 : 7.5}
+              >
+                {node.id === "ownership" ? "system/billing/retry-ownership" : node.path}
+              </text>
+            ) : null}
+            {approvedOwnership ? (
+              <g transform={`translate(${node.x + node.width - 10} ${node.y + 4})`}>
+                <circle cx="0" cy="0" r="7" fill="var(--success)" />
+                <path d="M-3 0 L-1 2.5 L3.5 -2.5" fill="none" stroke="white" strokeWidth="1.5" />
+              </g>
+            ) : null}
+          </g>
+        );
+      })}
+      <g transform={`translate(${cursorX} ${cursorY})`}>
+        <line x1="0" y1="0" x2="13" y2="13" stroke="var(--primary)" strokeWidth="1.2" strokeDasharray="2 2" />
+        <path d="M12 11 L25 15 L18 20 Z" fill="var(--primary)" />
+        <rect x="22" y="22" width="42" height="16" rx="3" fill="var(--fg)" />
+        <text x="43" y="33" textAnchor="middle" fill="var(--bg)" fontSize="8" fontWeight="700">
+          {operation}
+        </text>
+      </g>
+      {phase === "reuse" ? (
+        <g transform="translate(151 177)">
+          <circle cx="8" cy="8" r="8" fill="var(--success)" />
+          <path d="M4 8 L7 11 L12 5" fill="none" stroke="white" strokeWidth="1.7" />
+          <text x="21" y="11" fill="var(--fg-2)" fontSize="9.5" fontWeight="600">
+            Shared starting point
+          </text>
+        </g>
+      ) : null}
+    </svg>
   );
 }
 
