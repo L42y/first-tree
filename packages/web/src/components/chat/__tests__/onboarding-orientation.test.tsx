@@ -107,6 +107,22 @@ describe("OnboardingOrientation", () => {
     expect(container.textContent).toContain("dedicated Context Reviewer");
   });
 
+  it("connects the GitHub chapter to its supported automation media and transcript", async () => {
+    const { container } = await renderOrientation();
+    const github = [...container.querySelectorAll<HTMLButtonElement>("[data-orientation-chapter]")].find((button) =>
+      button.textContent?.includes("GitHub automation"),
+    );
+
+    await click(github ?? null);
+    expect(container.textContent).toContain("Issue-to-PR work stays connected in one Chat");
+    const video = container.querySelector("video");
+    expect(video?.getAttribute("poster")).toBe("/onboarding/orientation/stills/github-poster.png");
+    expect(video?.querySelector("source")?.getAttribute("src")).toBe("/onboarding/orientation/github.mp4");
+    expect(video?.querySelector("track")?.getAttribute("src")).toBe("/onboarding/orientation/github.vtt");
+    expect(container.textContent).toContain("review, update, approval, and merge events return automatically");
+    expect(container.textContent).not.toContain("review, check, approval");
+  });
+
   it("collapses completed Orientation while keeping an explicit review path", async () => {
     const onContinue = vi.fn();
     const { container } = await renderOrientation({ completed: true, onContinue });
