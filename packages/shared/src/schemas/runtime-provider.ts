@@ -1,9 +1,30 @@
 import { z } from "zod";
 
 /**
- * Runtime provider — which LLM CLI runtime drives an agent. New providers
- * extend the union here, then register a handler factory and capability
- * probe module on the client side.
+ * Canonical runtime-provider identity list. Schema, named constants, catalog
+ * keys, and client built-in registry keys all derive from this single `as const`
+ * tuple so a new provider cannot drift across packages.
+ *
+ * Wire compatibility: unknown provider *strings* may still appear on rolling
+ * capability maps (`Record<string, …>`); execution paths must narrow to this
+ * known set before dispatching a handler.
+ */
+export const RUNTIME_PROVIDER_IDS = [
+  "claude-code",
+  "claude-code-tui",
+  "codex",
+  "cursor",
+  "grok",
+  "kimi-code",
+  "opencode",
+  "pi",
+] as const;
+
+export type RuntimeProvider = (typeof RUNTIME_PROVIDER_IDS)[number];
+
+/**
+ * Named constants for call sites that prefer `RUNTIME_PROVIDERS.CODEX` over
+ * string literals. Values are the same identities as {@link RUNTIME_PROVIDER_IDS}.
  */
 export const RUNTIME_PROVIDERS = {
   CLAUDE_CODE: "claude-code",
@@ -14,19 +35,9 @@ export const RUNTIME_PROVIDERS = {
   KIMI_CODE: "kimi-code",
   OPENCODE: "opencode",
   PI: "pi",
-} as const;
+} as const satisfies Record<string, RuntimeProvider>;
 
-export const runtimeProviderSchema = z.enum([
-  "claude-code",
-  "claude-code-tui",
-  "codex",
-  "cursor",
-  "grok",
-  "kimi-code",
-  "opencode",
-  "pi",
-]);
-export type RuntimeProvider = z.infer<typeof runtimeProviderSchema>;
+export const runtimeProviderSchema = z.enum(RUNTIME_PROVIDER_IDS);
 
 export const DEFAULT_RUNTIME_PROVIDER: RuntimeProvider = "claude-code";
 
@@ -46,4 +57,9 @@ export const DISABLED_RUNTIME_PROVIDERS: readonly RuntimeProvider[] = ["claude-c
 /** True when `provider` is not temporarily disabled (see {@link DISABLED_RUNTIME_PROVIDERS}). */
 export function isRuntimeProviderEnabled(provider: string): boolean {
   return !DISABLED_RUNTIME_PROVIDERS.some((p) => p === provider);
+}
+
+/** Narrow a wire string to a known {@link RuntimeProvider}, or `null`. */
+export function asRuntimeProvider(provider: string): RuntimeProvider | null {
+  return (RUNTIME_PROVIDER_IDS as readonly string[]).includes(provider) ? (provider as RuntimeProvider) : null;
 }

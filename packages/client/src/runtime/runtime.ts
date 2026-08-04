@@ -40,6 +40,15 @@ export type AgentRuntimeOptions = {
    * the admin dashboard.
    */
   getLastUpdateAttempt?: () => UpdateAttempt | null;
+  /**
+   * Installs built-in handler factories before slots are created.
+   *
+   * Production standalone boots should pass `registerBuiltinHandlers` (the same
+   * composition root daemon `ClientRuntime` uses). Omitting this keeps runtime
+   * core free of concrete handler imports; callers that already registered
+   * handlers (or tests that mock `getHandlerFactory`) may omit it.
+   */
+  installHandlers?: () => void;
 };
 
 const DEFAULT_SHUTDOWN_TIMEOUT = 30_000;
@@ -63,6 +72,10 @@ export class AgentRuntime {
     this.currentVersion = options.currentVersion;
     this.updateHooks = options.update;
     this.logger = createLogger("runtime");
+
+    // Composition root injection — same `registerBuiltinHandlers` source as
+    // daemon ClientRuntime when the caller supplies it.
+    options.installHandlers?.();
 
     this.clientConnection = new ClientConnection({
       serverUrl: this.config.server,

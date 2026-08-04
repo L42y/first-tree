@@ -1357,13 +1357,28 @@ export {
   runtimeAuthStartResponseSchema,
 } from "./schemas/runtime-auth.js";
 export {
+  asRuntimeProvider,
   DEFAULT_RUNTIME_PROVIDER,
   DISABLED_RUNTIME_PROVIDERS,
   isRuntimeProviderEnabled,
+  RUNTIME_PROVIDER_IDS,
   RUNTIME_PROVIDERS,
   type RuntimeProvider,
   runtimeProviderSchema,
 } from "./schemas/runtime-provider.js";
+export {
+  CURSOR_INSTALL_COMMAND,
+  enabledRuntimeProviders,
+  GROK_INSTALL_COMMAND,
+  RUNTIME_PROVIDER_CATALOG,
+  RUNTIME_PROVIDER_DISPLAY_ORDER,
+  RUNTIME_PROVIDER_LABELS,
+  type RuntimeProviderCatalogEntry,
+  runtimeProviderInstallCommand,
+  runtimeProviderInstallLoginCommand,
+  runtimeProviderLabel,
+  runtimeProviderLoginCommand,
+} from "./schemas/runtime-provider-catalog.js";
 export {
   type ScmAttentionLine,
   type ScmAttentionProvenance,

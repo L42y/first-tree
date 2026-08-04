@@ -1,139 +1,54 @@
-import { isRuntimeProviderEnabled, RUNTIME_PROVIDERS, type RuntimeProvider } from "@first-tree/shared";
+import {
+  asRuntimeProvider,
+  CURSOR_INSTALL_COMMAND,
+  enabledRuntimeProviders,
+  GROK_INSTALL_COMMAND,
+  RUNTIME_PROVIDER_CATALOG,
+  RUNTIME_PROVIDER_LABELS,
+  type RuntimeProvider,
+  runtimeProviderInstallCommand,
+  runtimeProviderInstallLoginCommand,
+  runtimeProviderLabel,
+  runtimeProviderLoginCommand,
+} from "@first-tree/shared";
 
 /**
- * Shared provider constants for runtime-related UI. Previously lived
- * locally in `clients.tsx`; extracted so the card-based IA can reuse
- * the same labels + setup commands without duplicating strings.
+ * Web presentation helpers over the shared runtime-provider catalog.
  *
- * Display order for runtime sections — Claude Code first because it
- * is the more common entry point, Codex second. Mirrors mockup §"Variant
- * B-2" ordering.
- *
- * Temporarily-disabled providers (`DISABLED_RUNTIME_PROVIDERS`) are filtered
- * out so they are never offered or shown across the client cards (Ready /
- * Offline / Setup-incomplete / Auth-expired) that drive their selection off
- * this list. The label / install-command maps below intentionally keep every
- * provider so an already-bound agent on a disabled runtime still renders.
+ * Labels, display order, npm/script install commands, and login commands are
+ * owned by `@first-tree/shared`. This module only adds OS-specific presentation
+ * (tmux package manager, device phrases, missing-state hints).
  */
-export const PROVIDER_ORDER: RuntimeProvider[] = [
-  RUNTIME_PROVIDERS.CLAUDE_CODE,
-  RUNTIME_PROVIDERS.CLAUDE_CODE_TUI,
-  RUNTIME_PROVIDERS.CODEX,
-  RUNTIME_PROVIDERS.CURSOR,
-  RUNTIME_PROVIDERS.GROK,
-  RUNTIME_PROVIDERS.KIMI_CODE,
-  RUNTIME_PROVIDERS.OPENCODE,
-  RUNTIME_PROVIDERS.PI,
-].filter((p) => isRuntimeProviderEnabled(p));
 
-export const PROVIDER_LABEL: Record<RuntimeProvider, string> = {
-  "claude-code": "Claude Code",
-  "claude-code-tui": "Claude Code CLI",
-  codex: "Codex",
-  cursor: "Cursor",
-  grok: "Grok Build",
-  "kimi-code": "Kimi Code",
-  opencode: "OpenCode",
-  pi: "Pi",
-};
-
-const KNOWN_RUNTIME_PROVIDERS: readonly string[] = Object.values(RUNTIME_PROVIDERS);
+export { asRuntimeProvider, CURSOR_INSTALL_COMMAND, GROK_INSTALL_COMMAND, runtimeProviderLabel };
 
 /**
- * Narrow a wire-string provider to the `RuntimeProvider` enum, or null when it
- * isn't one we recognise. The enum has no runtime type guard, so this
- * includes-check is the single sanctioned narrowing point — callers get a
- * typed value or null instead of sprinkling `as` at each use site.
+ * Display order for runtime sections — enabled providers only, derived from the
+ * shared catalog. Temporarily-disabled providers are filtered out so they are
+ * never offered across Ready / Offline / Setup-incomplete / Auth-expired cards.
  */
-export function asRuntimeProvider(provider: string): RuntimeProvider | null {
-  // Single `as` after an includes-guard, matching the accepted pattern in
-  // bound-agents-list / new-agent-dialog (the enum has no runtime type guard).
-  return KNOWN_RUNTIME_PROVIDERS.includes(provider) ? (provider as RuntimeProvider) : null;
-}
+export const PROVIDER_ORDER: RuntimeProvider[] = enabledRuntimeProviders();
 
-/** Friendly runtime label, falling back to the raw id if it isn't a known one. */
-export function runtimeProviderLabel(provider: string): string {
-  const known = asRuntimeProvider(provider);
-  return known ? PROVIDER_LABEL[known] : provider;
-}
+/** Friendly labels for every known provider (including disabled). */
+export const PROVIDER_LABEL: Record<RuntimeProvider, string> = { ...RUNTIME_PROVIDER_LABELS };
 
-/**
- * `npm install -g` package spec per runtime. The CLI canonical install
- * command lives here so the Setup-incomplete card body can render the
- * full install + login two-step without each card duplicating strings.
- *
- * `claude-code-tui` shares the same `claude` CLI binary as `claude-code`
- * — the difference is that the daemon drives it through tmux rather than
- * the SDK. The install command is identical; the additional tmux
- * requirement is surfaced via providerInstallHint().
- */
-export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = {
-  "claude-code": "@anthropic-ai/claude-code",
-  "claude-code-tui": "@anthropic-ai/claude-code",
-  codex: "@openai/codex",
-  // Cursor is not distributed via npm — its official installer script is the
-  // only supported install path (see CURSOR_INSTALL_COMMAND).
-  cursor: null,
-  // Grok Build is not distributed via npm either — same installer-script
-  // pattern as Cursor (see GROK_INSTALL_COMMAND).
-  grok: null,
-  // Runtime execution is bundled, but the official CLI remains the supported
-  // operator login/recovery surface for the shared ~/.kimi-code credential.
-  "kimi-code": "@moonshot-ai/kimi-code",
-  opencode: "opencode-ai@^1.18.7",
-  pi: "@earendil-works/pi-coding-agent",
-};
+/** `npm install -g` package spec per runtime, or null for script-only installs. */
+export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = Object.fromEntries(
+  Object.values(RUNTIME_PROVIDER_CATALOG).map((entry) => [entry.id, entry.npmPackage]),
+) as Record<RuntimeProvider, string | null>;
 
-/**
- * Cursor's official installer. First Tree never runs this itself — the daemon
- * does not download/install Cursor (external-only) — the card renders it for
- * the operator to run. Mirrors `CURSOR_INSTALL_COMMAND` in
- * `@first-tree/client`'s cursor-binary module (web cannot import the client
- * package, so the string is duplicated deliberately; update both together).
- */
-export const CURSOR_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
-
-/**
- * Grok Build's official installer. Same posture as Cursor: external-only, the
- * card renders it for the operator to run. Mirrors `GROK_INSTALL_COMMAND` in
- * `@first-tree/client`'s grok-binary module (web cannot import the client
- * package, so the string is duplicated deliberately; update both together).
- */
-export const GROK_INSTALL_COMMAND = "curl -fsSL https://x.ai/cli/install.sh | bash";
+/** Per-runtime login command shown after install. */
+export const PROVIDER_LOGIN_COMMAND: Record<RuntimeProvider, string> = Object.fromEntries(
+  Object.values(RUNTIME_PROVIDER_CATALOG).map((entry) => [entry.id, entry.loginCommand]),
+) as Record<RuntimeProvider, string>;
 
 /**
  * The single install command line for a provider: the `npm install -g` spec
- * when one exists, otherwise the provider's official installer script. Shared
- * by `buildInstallCommand` and the install-box probe-error path so non-npm
- * providers never fall back to another provider's installer.
+ * when one exists, otherwise the provider's official installer script.
  */
 export function providerInstallCommand(provider: RuntimeProvider): string {
-  const npmPackage = PROVIDER_NPM_PACKAGE[provider];
-  if (provider === "pi" && npmPackage) {
-    // Official Pi install disables dependency lifecycle scripts.
-    return `npm install -g --ignore-scripts ${npmPackage}`;
-  }
-  if (npmPackage) return `npm install -g ${npmPackage}`;
-  return provider === "grok" ? GROK_INSTALL_COMMAND : CURSOR_INSTALL_COMMAND;
+  return runtimeProviderInstallCommand(provider);
 }
-
-/**
- * Per-runtime login command shown after install. Codex prints
- * `codex login`; Claude Code prints `claude auth login`. Both accept
- * `--api-key` flavored alternatives the user discovers on the install
- * step's stdout — the card surfaces the OAuth form by default since
- * it's the documented happy path.
- */
-export const PROVIDER_LOGIN_COMMAND: Record<RuntimeProvider, string> = {
-  "claude-code": "claude auth login",
-  "claude-code-tui": "claude auth login",
-  codex: "codex login",
-  cursor: "cursor-agent login",
-  grok: "grok login",
-  "kimi-code": "kimi # then run /login",
-  opencode: "opencode auth login",
-  pi: "pi # then run /login",
-};
 
 /**
  * One-liner install + login command for an empty Setup-incomplete card.
@@ -142,16 +57,17 @@ export const PROVIDER_LOGIN_COMMAND: Record<RuntimeProvider, string> = {
  * box with a copy button per box.
  */
 export function buildInstallCommand(provider: RuntimeProvider, os?: string | null): string {
-  const base = `${providerInstallCommand(provider)}\n${PROVIDER_LOGIN_COMMAND[provider]}`;
   if (provider === "claude-code-tui") {
     // The tmux-driven runtime additionally needs tmux (>= 3.0). tmux is not an
     // npm package, so emit the command for the host's actual package manager
     // (keyed off the client's reported OS). Unknown OS → a non-command note
     // rather than a guessed package manager.
     const tmuxCmd = tmuxInstallCommand(os);
-    return `${base}\n${tmuxCmd ?? "# install tmux (>= 3.0) with your OS package manager"}`;
+    return runtimeProviderInstallLoginCommand(provider, [
+      tmuxCmd ?? "# install tmux (>= 3.0) with your OS package manager",
+    ]);
   }
-  return base;
+  return runtimeProviderInstallLoginCommand(provider);
 }
 
 /**
@@ -223,8 +139,11 @@ export function providerInstallHint(
   error?: string | null,
 ): string {
   const device = osDeviceName(os);
+  const installCmd = runtimeProviderInstallCommand(provider);
+  const loginCmd = runtimeProviderLoginCommand(provider);
+
   if (provider === "claude-code") {
-    return `Run \`npm install -g @anthropic-ai/claude-code\` on this ${device}.`;
+    return `Run \`${installCmd}\` on this ${device}.`;
   }
   if (provider === "claude-code-tui") {
     // The probe joins per-requirement reasons (claude + tmux) into one string;
@@ -241,11 +160,11 @@ export function providerInstallHint(
         : `Install tmux (>= 3.0) on this ${device} with your package manager.`;
     }
     if (claudeMissing && !tmuxMissing) {
-      return `Run \`npm install -g @anthropic-ai/claude-code\` on this ${device}.`;
+      return `Run \`${installCmd}\` on this ${device}.`;
     }
     return tmuxCmd
-      ? `Run \`npm install -g @anthropic-ai/claude-code\` and \`${tmuxCmd}\` (tmux >= 3.0) on this ${device}.`
-      : `Run \`npm install -g @anthropic-ai/claude-code\`, then install tmux (>= 3.0) with your package manager, on this ${device}.`;
+      ? `Run \`${installCmd}\` and \`${tmuxCmd}\` (tmux >= 3.0) on this ${device}.`
+      : `Run \`${installCmd}\`, then install tmux (>= 3.0) with your package manager, on this ${device}.`;
   }
   if (provider === "cursor") {
     return `Run \`${CURSOR_INSTALL_COMMAND}\` on this ${device} (official Cursor installer).`;
@@ -254,13 +173,13 @@ export function providerInstallHint(
     return `Run \`${GROK_INSTALL_COMMAND}\` on this ${device} (official Grok Build installer).`;
   }
   if (provider === "kimi-code") {
-    return `Install the official Kimi CLI with \`npm install -g @moonshot-ai/kimi-code\` on this ${device}, run \`kimi\`, then \`/login\`. First Tree still executes through its bundled Kimi SDK.`;
+    return `Install the official Kimi CLI with \`${installCmd}\` on this ${device}, run \`kimi\`, then \`/login\`. First Tree still executes through its bundled Kimi SDK.`;
   }
   if (provider === "opencode") {
-    return `Run \`npm install -g opencode-ai@^1.18.7\` on this ${device}, then complete provider-owned setup with \`opencode auth login\`.`;
+    return `Run \`${installCmd}\` on this ${device}, then complete provider-owned setup with \`${loginCmd}\`.`;
   }
   if (provider === "pi") {
-    return `Run \`npm install -g --ignore-scripts @earendil-works/pi-coding-agent\` on this ${device}, then run \`pi\` and enter \`/login\`.`;
+    return `Run \`${installCmd}\` on this ${device}, then run \`pi\` and enter \`/login\`.`;
   }
   return `Install the OpenAI Codex CLI on this ${device}.`;
 }

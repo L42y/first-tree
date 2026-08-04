@@ -32,6 +32,7 @@ import {
 } from "@first-tree/shared";
 import { parseDocument } from "yaml";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
+import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
 import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
 import {
   clearManagedSkillsJournal,
@@ -57,17 +58,6 @@ const MAX_SKILL_FILE_BYTES = TEAM_SKILL_BUNDLE_LIMITS.maxUncompressedBytes;
 const MAX_SKILL_DEPTH = TEAM_SKILL_BUNDLE_LIMITS.maxDepth;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 const MANAGED_SKILLS_QUARANTINE_PREFIX = ".managed-skill-quarantine-";
-
-const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = {
-  "claude-code": ".claude/skills",
-  "claude-code-tui": ".claude/skills",
-  codex: ".agents/skills",
-  cursor: ".cursor/skills",
-  grok: ".grok/skills",
-  "kimi-code": ".kimi-code/skills",
-  opencode: ".opencode/skills",
-  pi: ".agents/skills",
-};
 
 const ALLOWED_TARGET_ROOTS = new Set<string>([...Object.values(PROVIDER_SKILL_ROOTS), LEGACY_RESOURCE_SKILLS_ROOT]);
 
