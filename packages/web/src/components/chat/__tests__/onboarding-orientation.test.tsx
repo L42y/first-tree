@@ -14,7 +14,15 @@ async function renderOrientation(
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<OnboardingOrientation completed={false} continuing={false} onContinue={vi.fn()} {...props} />);
+    root.render(
+      <OnboardingOrientation
+        completed={false}
+        continuing={false}
+        targetAgentName="Nova"
+        onContinue={vi.fn()}
+        {...props}
+      />,
+    );
   });
   return { container, root };
 }

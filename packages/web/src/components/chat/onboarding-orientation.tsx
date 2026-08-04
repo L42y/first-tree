@@ -42,10 +42,16 @@ function formatTotalDuration(durationInSeconds: number): string {
 export type OnboardingOrientationProps = {
   completed: boolean;
   continuing: boolean;
+  targetAgentName: string | null;
   onContinue: () => void | Promise<void>;
 };
 
-export function OnboardingOrientation({ completed, continuing, onContinue }: OnboardingOrientationProps) {
+export function OnboardingOrientation({
+  completed,
+  continuing,
+  targetAgentName,
+  onContinue,
+}: OnboardingOrientationProps) {
   const titleId = useId();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [expanded, setExpanded] = useState(!completed);
@@ -55,6 +61,7 @@ export function OnboardingOrientation({ completed, continuing, onContinue }: Onb
   const [requestedAutoplayId, setRequestedAutoplayId] = useState<OnboardingOrientationChapterId | null>(null);
   const [watchedIds, setWatchedIds] = useState<Set<OnboardingOrientationChapterId>>(() => new Set());
   const [videoError, setVideoError] = useState(false);
+  const normalizedTargetAgentName = targetAgentName?.trim() || null;
 
   useEffect(() => {
     if (completed) setExpanded(false);
@@ -110,13 +117,7 @@ export function OnboardingOrientation({ completed, continuing, onContinue }: Onb
             </p>
           </div>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="min-h-11 shrink-0"
-          onClick={() => setExpanded(true)}
-        >
+        <Button type="button" variant="ghost" size="sm" className="min-h-11 shrink-0" onClick={() => setExpanded(true)}>
           {watchedIds.size > 0 ? <RotateCcw className="size-3.5" aria-hidden="true" /> : null}
           {reviewLabel}
         </Button>
@@ -263,7 +264,11 @@ export function OnboardingOrientation({ completed, continuing, onContinue }: Onb
               disabled={continuing}
               onClick={() => void onContinue()}
             >
-              {continuing ? "Continuing…" : "Continue with Nova"}
+              {continuing
+                ? "Continuing…"
+                : normalizedTargetAgentName
+                  ? `Continue with ${normalizedTargetAgentName}`
+                  : "Continue"}
             </Button>
           </div>
         ) : null}

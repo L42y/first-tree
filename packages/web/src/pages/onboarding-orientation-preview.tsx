@@ -50,6 +50,7 @@ export function OnboardingOrientationPreviewPage() {
                 key={completed ? "completed" : "pending"}
                 completed={completed}
                 continuing={false}
+                targetAgentName="Nova"
                 onContinue={() => setCompleted(true)}
               />
             </div>
