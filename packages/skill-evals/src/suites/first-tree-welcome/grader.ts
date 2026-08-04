@@ -430,10 +430,14 @@ function hasNamedStartingPoint(text: string): boolean {
   )?.[1];
   if (!chineseNamedSurface) return false;
 
-  const withoutGenericSuffix = chineseNamedSurface.replace(
-    /(?:(?:(?:这个|当前|该|本|此)?项目(?:中|里|里面)?的?|(?:我们|你们)(?:的)?|(?:这个|当前|一个|该|其|本|此)(?:的)?))+$/u,
-    "",
-  );
+  let withoutGenericSuffix = chineseNamedSurface;
+  const genericSuffix =
+    /(?:(?:这个|当前|该|本|此)?项目(?:中|里|里面)?的?|(?:我们|你们)(?:的)?|(?:这个|当前|一个|该|其|本|此)(?:的)?)$/u;
+  for (let segmentIndex = 0; segmentIndex < 24; segmentIndex += 1) {
+    const stripped = withoutGenericSuffix.replace(genericSuffix, "");
+    if (stripped === withoutGenericSuffix) break;
+    withoutGenericSuffix = stripped;
+  }
   const withoutConnector = withoutGenericSuffix.replace(
     /^(?:(?:我们|你们|大家)(?:可以|能够|应该|需要)?|(?:可以|能够|应该|需要|建议))(?:先|就)?(?:从|由)?/u,
     "",
