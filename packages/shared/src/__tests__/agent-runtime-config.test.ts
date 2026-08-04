@@ -11,6 +11,7 @@ import {
   DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD,
+  DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD,
   defaultRuntimeConfigPayload,
   deriveRepoLocalPath,
   deriveRepoShortLabel,
@@ -325,6 +326,24 @@ describe("agent runtime config — opencode variant", () => {
       reasoningEffort: "high",
     });
     expect(parsed.model).toBe("openai/gpt-5.5");
+    expect("reasoningEffort" in parsed).toBe(false);
+  });
+});
+
+describe("agent runtime config — pi variant", () => {
+  it("defaults to host-local model selection with no reasoning-effort field", () => {
+    expect(DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD).toMatchObject({ kind: "pi", model: "" });
+    expect("reasoningEffort" in DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD).toBe(false);
+    expect(defaultRuntimeConfigPayload("pi")).toMatchObject({ kind: "pi", model: "" });
+  });
+
+  it("passes a provider-native provider/model id through unchanged", () => {
+    const parsed = agentRuntimeConfigPayloadSchema.parse({
+      kind: "pi",
+      model: "openai-codex/gpt-5.4-mini",
+      reasoningEffort: "high",
+    });
+    expect(parsed.model).toBe("openai-codex/gpt-5.4-mini");
     expect("reasoningEffort" in parsed).toBe(false);
   });
 });

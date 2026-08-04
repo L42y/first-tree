@@ -28,9 +28,13 @@ import {
   type RuntimeState,
   runtimeAuthStartCommandSchema,
   type ServerWelcomeFrame,
+  type SessionCommandAbortedFrame,
+  type SessionCommandFinalizedFrame,
   type SessionEvent,
   type SessionState,
   serverWelcomeFrameSchema,
+  sessionCommandAbortedFrameSchema,
+  sessionCommandFinalizedFrameSchema,
   sessionEventAcceptedFrameSchema,
   sessionEventRejectedFrameSchema,
   type UpdateAttempt,
@@ -246,6 +250,23 @@ type ClientConnectionEvents = {
    */
   "agent:pinned": [message: AgentPinnedMessage];
   "session:command": [command: SessionCommand];
+  /**
+   * Success-side post-apply Reset disposition: server confirmed durable
+   * eviction after `session:command:applied` — `finalizeTerminatedSession`
+   * committed `evicted`. Parked Reset-fence recovery may release after this
+   * frame or the matching `session:command:aborted` disposition for the same
+   * generation; neither waits on the other.
+   */
+  "session:command:finalized": [frame: SessionCommandFinalizedFrame];
+  /**
+   * Server gave up on a Reset it had already accepted `session:command:applied`
+   * for: the eviction never committed (the session re-activated, the route was
+   * refused, or the cleanup transaction rolled back). The armed generation must
+   * still be released — the local provider session is gone either way — so this
+   * frame lifts exactly that generation's fence and is receipted like
+   * `session:command:finalized`.
+   */
+  "session:command:aborted": [frame: SessionCommandAbortedFrame];
   "runtime-auth:start": [command: RuntimeAuthCommand];
   "provider-models:list": [command: ProviderModelsListCommand];
   "session:reconcile:result": [result: SessionReconcileResult];
@@ -520,6 +541,18 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   private welcomeFramesReceived = 0;
   private serverSupportsInboxAckConfirm = false;
   private serverSupportsSessionEventConfirm = false;
+  /**
+   * Does the CURRENT server speak version 1 of the composite Reset protocol
+   * (ref'd terminate apply-ack + receipted post-apply terminal dispositions
+   * `session:command:finalized` / `session:command:aborted` + matching
+   * receipts)? Reset parks inbox recovery behind a fence only an exact
+   * receipted terminal disposition lifts, so a server without this capability
+   * must make the client refuse the ref'd terminate BEFORE applying it locally
+   * rather than tear the session down and park forever. Cleared on every new
+   * socket and re-learned from that connection's welcome, which the server
+   * sends ahead of `auth:ok`.
+   */
+  private serverSupportsSessionResetV1 = false;
   /**
    * Last handshake error, stashed for the `close` handler to surface a typed
    * reason (e.g. {@link ClientOrgMismatchError}) instead of a generic
@@ -1194,6 +1227,79 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
     );
   }
 
+  /**
+   * Did this connection negotiate version 1 of the composite Reset protocol?
+   * The agent slot consults this BEFORE applying a ref'd terminate: on a
+   * server that speaks only the legacy apply-only flow no post-apply terminal
+   * disposition (`finalized` / `aborted`) ever arrives, so the Reset must fail
+   * closed instead of destroying the local session and parking its queued work
+   * behind a fence nothing will lift.
+   */
+  get supportsSessionResetV1(): boolean {
+    return this.serverSupportsSessionResetV1;
+  }
+
+  /**
+   * Receipt for `session:command:finalized`. The server holds the Reset HTTP
+   * request open until this lands on the exact client route, so it is sent
+   * after the parked-fence release decision for that ref is made — including
+   * `released: false` when the ref did not match a locally armed generation,
+   * which is still an honest answer about this client's state.
+   */
+  reportSessionCommandFinalizedAck(input: {
+    ref: string;
+    ackRef: string;
+    agentId: string;
+    chatId: string;
+    command: "session:terminate";
+    released: boolean;
+  }): void {
+    this.sendSessionCommandDispositionAck("session:command:finalized:ack", input);
+  }
+
+  /**
+   * Receipt for `session:command:aborted` — the exact counterpart of
+   * {@link reportSessionCommandFinalizedAck} for a Reset the server accepted the
+   * apply for but could not finalize. The server holds the Reset HTTP request
+   * open until this lands, so it is sent after the release decision for that ref
+   * is made, `released: false` included.
+   */
+  reportSessionCommandAbortedAck(input: {
+    ref: string;
+    ackRef: string;
+    agentId: string;
+    chatId: string;
+    command: "session:terminate";
+    released: boolean;
+  }): void {
+    this.sendSessionCommandDispositionAck("session:command:aborted:ack", input);
+  }
+
+  private sendSessionCommandDispositionAck(
+    type: "session:command:finalized:ack" | "session:command:aborted:ack",
+    input: {
+      ref: string;
+      ackRef: string;
+      agentId: string;
+      chatId: string;
+      command: "session:terminate";
+      released: boolean;
+    },
+  ): void {
+    if (!this.canSendAgentFrame(input.agentId) || !this.ws) return;
+    this.ws.send(
+      JSON.stringify({
+        type,
+        ref: input.ref,
+        ackRef: input.ackRef,
+        agentId: input.agentId,
+        chatId: input.chatId,
+        command: input.command,
+        released: input.released,
+      }),
+    );
+  }
+
   reportRuntimeState(agentId: string, runtimeState: RuntimeState): void {
     if (!this.canSendAgentFrame(agentId) || !this.ws) return;
     this.ws.send(JSON.stringify({ type: "runtime:state", agentId, runtimeState }));
@@ -1356,6 +1462,10 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
 
       ws.on("open", async () => {
         this.ws = ws;
+        // Capability negotiation is per-connection: never carry a previous
+        // server's Reset support into the register frame of a socket that may
+        // have landed on a rolled-back replica.
+        this.serverSupportsSessionResetV1 = false;
         // Don't reset reconnectAttempt here — a TCP/WS handshake succeeding
         // but the auth phase failing is exactly the loop the client.log
         // captured at 19:40 (1 Hz reconnect storm with `failed to obtain
@@ -1502,11 +1612,21 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           hostname: getHostname(),
           os: platform(),
           sdkVersion: this.sdkVersion,
-          // Static capability declaration: this client answers a ref'd
-          // session:terminate with a session:command:applied apply-ack once
-          // the local mapping is dropped. Old servers ignore unknown
-          // wireCapabilities fields, so this is safe on every server build.
-          wireCapabilities: { wsSessionTerminateApplyAck: true },
+          // Two-sided, VERSIONED Reset negotiation. `wsSessionResetV1` is the
+          // whole protocol (apply-ack + parked-fence release + BOTH receipted
+          // post-apply terminal dispositions: finalized for durable eviction
+          // and aborted when the server could not finalize) and is declared
+          // ONLY when this connection's welcome (sent before auth:ok)
+          // advertised the same version. The legacy apply-only flag is
+          // deliberately never sent: an old server reads it as Reset consent,
+          // runs the pre-disposition flow, and answers the operator with a 200
+          // while this client's inbox rows stay parked behind a fence that
+          // server will never lift. Withholding it makes both skew directions
+          // fail closed before anything destructive is applied locally. Old
+          // servers ignore the unknown v1 field.
+          wireCapabilities: {
+            ...(this.serverSupportsSessionResetV1 ? { wsSessionResetV1: true } : {}),
+          },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),
         }),
       );
@@ -1529,6 +1649,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       this.welcomeFramesReceived++;
       this.serverSupportsInboxAckConfirm = parsed.data.capabilities?.wsInboxAckConfirm === true;
       this.serverSupportsSessionEventConfirm = parsed.data.capabilities?.wsSessionEventConfirm === true;
+      this.serverSupportsSessionResetV1 = parsed.data.capabilities?.wsSessionResetV1 === true;
       this.emit("server:welcome", { frame: parsed.data, isReconnect });
       return;
     }
@@ -1772,6 +1893,32 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           ...(ref ? { ref } : {}),
         });
       }
+      return;
+    }
+
+    if (type === "session:command:finalized") {
+      const parsed = sessionCommandFinalizedFrameSchema.safeParse(msg);
+      if (!parsed.success) {
+        this.wsLogger.warn(
+          { issues: parsed.error.issues.map((i) => i.message) },
+          "ignoring malformed session:command:finalized frame",
+        );
+        return;
+      }
+      this.emit("session:command:finalized", parsed.data);
+      return;
+    }
+
+    if (type === "session:command:aborted") {
+      const parsed = sessionCommandAbortedFrameSchema.safeParse(msg);
+      if (!parsed.success) {
+        this.wsLogger.warn(
+          { issues: parsed.error.issues.map((i) => i.message) },
+          "ignoring malformed session:command:aborted frame",
+        );
+        return;
+      }
+      this.emit("session:command:aborted", parsed.data);
       return;
     }
 

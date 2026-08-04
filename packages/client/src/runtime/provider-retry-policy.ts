@@ -133,6 +133,38 @@ export function classifyProviderFailure(
       sourceKind: base.kind,
     };
   }
+  if (context.provider === "pi" && /not supported on windows in v1/.test(text)) {
+    return {
+      category: "capability",
+      reasonCode: "pi_platform_unsupported",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
+  if (
+    context.provider === "pi" &&
+    (/unsupported version/.test(text) || /is not a supported pi/.test(text) || /requires >=/.test(text))
+  ) {
+    return {
+      category: "capability",
+      reasonCode: "pi_binary_unsupported",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
+  // Malformed/incompatible get_state and stable-session identity drift are
+  // protocol failures — terminal capability, never unknown-retry forever.
+  if (context.provider === "pi" && isPiProtocolError(shape.name, text)) {
+    return {
+      category: "capability",
+      reasonCode: "pi_protocol_error",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
   if (isCapability(text, base)) {
     return {
       category: "capability",
@@ -509,7 +541,12 @@ function isCredential(
   // handlers/auth-error-hint.ts). Same provider-gating rationale as cursor:
   // "not logged in" / "grok login" / "auth.json" carry no generic auth token
   // the shared classifier already covers, so they need a grok-only branch.
-  return provider === "grok" && /not logged in|grok login|auth\.json/.test(text);
+  if (provider === "grok" && /not logged in|grok login|auth\.json/.test(text)) return true;
+  // Pi CLI logged-out / missing-key phrasings (kept in sync with isPiAuthError).
+  return (
+    provider === "pi" &&
+    /missing credentials|no api key|\/login|auth[_ ]required|not authenticated|pi_auth_required/.test(text)
+  );
 }
 
 function credentialReason(base: Classification): string {
@@ -518,6 +555,25 @@ function credentialReason(base: Classification): string {
 
 function isCapability(text: string, base: Classification): boolean {
   return base.reasonCode.includes("binary_missing") || /binary missing|executable missing|unable to locate/.test(text);
+}
+
+function isPiProtocolError(name: string | undefined, text: string): boolean {
+  const named = (name ?? "").toLowerCase();
+  return (
+    named.includes("pirpcprotocolerror") ||
+    /session identity mismatch|pi_session_mismatch|pi_protocol_error/.test(text) ||
+    /get_state response missing|pi get_state failed|get_state failed/.test(text)
+  );
+}
+
+function isPiModelConfiguration(text: string): boolean {
+  return /model selector is invalid|model mismatch|thinkinglevel mismatch|pi_model_mismatch|pi_model_configuration/.test(
+    text,
+  );
+}
+
+function isPiMcpConfiguration(text: string): boolean {
+  return /managed mcp servers are not supported|mcp servers are not supported|pi_mcp_unsupported/.test(text);
 }
 
 function isConfiguration(text: string, base: Classification, provider: RuntimeProvider): boolean {
@@ -529,6 +585,9 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
   }
   if (provider === "codex" && isCodexServiceTierConfiguration(text)) return true;
   if (provider === "kimi-code" && /model\.not_configured|model\.config_invalid/.test(text)) return true;
+  // Pi model/MCP configuration gates — keep provider-gated so shared English
+  // phrases cannot terminalize another provider's retryable failures.
+  if (provider === "pi" && (isPiModelConfiguration(text) || isPiMcpConfiguration(text))) return true;
   // Cursor CLI literal invalid-model / explicit-deny / trust-wall phrasings
   // (captured in Phase 0). Gated to the cursor provider: this classifier is
   // shared and configuration wins over capacity in the classify chain, so an
@@ -541,6 +600,8 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
 
 function configurationReason(text: string, base: Classification, provider: RuntimeProvider): string {
   if (provider === "codex" && isCodexServiceTierConfiguration(text)) return "codex_service_tier_unsupported";
+  if (provider === "pi" && isPiModelConfiguration(text)) return "pi_model_configuration_error";
+  if (provider === "pi" && isPiMcpConfiguration(text)) return "pi_mcp_unsupported";
   return base.reasonCode === "unknown" ? "provider_configuration_error" : base.reasonCode;
 }
 
@@ -565,6 +626,19 @@ function deterministicReason(base: Classification): string {
   return base.reasonCode === "unknown" ? "provider_deterministic_input" : base.reasonCode;
 }
 
+/**
+ * Providers whose raw error stream surfaces HTTP-429 phrasings such as "too
+ * many requests" / "resource has been exhausted" after internal retries are
+ * exhausted. This single provider-scoped predicate drives both the shared
+ * capacity classifier and provider-side error sanitizers (e.g. Pi's
+ * sanitizePiProviderDetail) so one rule selects the same capacity
+ * classification everywhere. Keep provider-gated: the words alone are not
+ * reserved capacity-speak for unrelated providers.
+ */
+export function isExhaustedCapacityPhrasing(provider: RuntimeProvider, text: string): boolean {
+  return (provider === "grok" || provider === "pi") && /too many requests|resource has been exhausted/.test(text);
+}
+
 function isCapacity(
   text: string,
   base: Classification,
@@ -575,10 +649,7 @@ function isCapacity(
     retryAfterMs !== undefined ||
     base.reasonCode.includes("rate_limit") ||
     /rate.?limit|usage limit|session limit|quota|insufficient_quota|overloaded|capacity/.test(text) ||
-    // Grok Build surfaces HTTP 429 with these phrasings after its internal
-    // retry budget is exhausted. Provider-gated like the cursor configuration
-    // branch: the words alone are not reserved capacity-speak elsewhere.
-    (provider === "grok" && /too many requests|resource has been exhausted/.test(text))
+    isExhaustedCapacityPhrasing(provider, text)
   );
 }
 

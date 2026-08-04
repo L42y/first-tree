@@ -153,7 +153,8 @@ function asRuntimeProvider(provider: string): RuntimeProvider | null {
     provider === "cursor" ||
     provider === "grok" ||
     provider === "kimi-code" ||
-    provider === "opencode"
+    provider === "opencode" ||
+    provider === "pi"
   ) {
     return provider;
   }
@@ -179,6 +180,7 @@ function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null 
   if (isRuntimeProviderEnabled("cursor") && caps.cursor?.state === "ok") return "cursor";
   if (isRuntimeProviderEnabled("grok") && caps.grok?.state === "ok") return "grok";
   if (isRuntimeProviderEnabled("opencode") && caps.opencode?.state === "ok") return "opencode";
+  if (isRuntimeProviderEnabled("pi") && caps.pi?.state === "ok") return "pi";
   // Any other provider (incl. one still disabled in a stale snapshot) is only
   // auto-picked when enabled.
   for (const [provider, entry] of Object.entries(caps)) {
@@ -198,6 +200,7 @@ function prettyRuntimeLabel(provider: RuntimeProvider): string {
   if (provider === "grok") return "Grok Build";
   if (provider === "kimi-code") return "Kimi Code";
   if (provider === "opencode") return "OpenCode";
+  if (provider === "pi") return "Pi";
   return provider;
 }
 

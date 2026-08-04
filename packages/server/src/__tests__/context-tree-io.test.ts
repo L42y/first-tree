@@ -775,6 +775,54 @@ describe("context-tree IO service", () => {
     ).toEqual({ recordable: false, reason: "unsupported_tool" });
   });
 
+  it("derives Pi read/write/edit IO only for pi", () => {
+    const read = {
+      kind: "tool_call",
+      payload: {
+        toolUseId: "pi-read",
+        name: "read",
+        args: { path: "NODE.md" },
+        status: "ok",
+        toolFileRefs: [
+          {
+            origin: "tool_arg",
+            repoUrl: TREE_REPO,
+            repoBranch: "main",
+            repoRelativePath: "NODE.md",
+            pathKind: "file",
+          },
+        ],
+      },
+    };
+    const write = {
+      kind: "tool_call",
+      payload: {
+        toolUseId: "pi-write",
+        name: "edit",
+        args: { path: "system/NODE.md" },
+        status: "ok",
+        toolFileRefs: [
+          {
+            origin: "tool_arg",
+            repoUrl: TREE_REPO,
+            repoBranch: "main",
+            repoRelativePath: "system/NODE.md",
+            pathKind: "file",
+          },
+        ],
+      },
+    };
+    expect(explainContextTreeIoDecision({ runtimeProvider: "pi", sessionEvent: read, bindingRepo: TREE_REPO })).toEqual(
+      { recordable: true },
+    );
+    expect(
+      explainContextTreeIoDecision({ runtimeProvider: "pi", sessionEvent: write, bindingRepo: TREE_REPO }),
+    ).toEqual({ recordable: true });
+    expect(
+      explainContextTreeIoDecision({ runtimeProvider: "claude-code", sessionEvent: read, bindingRepo: TREE_REPO }),
+    ).toEqual({ recordable: false, reason: "unsupported_tool" });
+  });
+
   it("end-to-end regression: a real-shaped completed cursor shell event lands as a repo-qualified read", async () => {
     // The exact event shape the cursor handler emits after client enrichment
     // for a tree read via shell (`cat <tree>/NODE.md`) — the path the old

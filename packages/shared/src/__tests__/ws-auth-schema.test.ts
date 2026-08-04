@@ -165,4 +165,41 @@ describe("serverWelcomeFrameSchema", () => {
       expect(res.data.capabilities).toBeUndefined();
     }
   });
+
+  it("reads the composite Reset capability as absent on every legacy server shape", () => {
+    // The client only declares `wsSessionResetV1` when this reads true, so an
+    // old server — whether it omits `capabilities` entirely, sends a block
+    // that predates Reset, or advertises only a pre-v1 Reset flag — must
+    // never look supported.
+    const noBlock = serverWelcomeFrameSchema.parse({
+      type: "server:welcome",
+      serverCommandVersion: "0.9.2",
+      serverTimeMs: 0,
+    });
+    expect(noBlock.capabilities?.wsSessionResetV1).toBeUndefined();
+
+    const olderBlock = serverWelcomeFrameSchema.parse({
+      type: "server:welcome",
+      serverCommandVersion: "0.14.2",
+      serverTimeMs: 0,
+      capabilities: { wsInboxDeliver: true, wsInboxAckConfirm: true },
+    });
+    expect(olderBlock.capabilities?.wsSessionResetV1).toBe(false);
+
+    const preV1ResetBlock = serverWelcomeFrameSchema.parse({
+      type: "server:welcome",
+      serverCommandVersion: "0.15.0",
+      serverTimeMs: 0,
+      capabilities: { wsInboxDeliver: true, wsSessionResetFinalizeHandshake: true },
+    });
+    expect(preV1ResetBlock.capabilities?.wsSessionResetV1).toBe(false);
+
+    const current = serverWelcomeFrameSchema.parse({
+      type: "server:welcome",
+      serverCommandVersion: "1.0.0",
+      serverTimeMs: 0,
+      capabilities: { wsInboxDeliver: true, wsSessionResetV1: true },
+    });
+    expect(current.capabilities?.wsSessionResetV1).toBe(true);
+  });
 });

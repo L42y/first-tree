@@ -89,7 +89,8 @@ export function RuntimeTab() {
                 is hidden rather than rendered empty. */}
             {ctx.setupRuntimeProvider !== "cursor" &&
             ctx.setupRuntimeProvider !== "kimi-code" &&
-            ctx.setupRuntimeProvider !== "opencode" ? (
+            ctx.setupRuntimeProvider !== "opencode" &&
+            ctx.setupRuntimeProvider !== "pi" ? (
               <ReasoningEffortSection
                 value={"reasoningEffort" in config.payload ? config.payload.reasoningEffort : ""}
                 onChange={(v) => configSave.save({ reasoningEffort: v }, { field: "effort" })}

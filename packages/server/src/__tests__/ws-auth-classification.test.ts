@@ -256,7 +256,10 @@ describe("WS auth handshake classification", () => {
       const retryable = await waitForFrame(ws, (m) => (m as { type?: string }).type === "auth:retryable");
       const closeCode = await waitForClose(ws);
 
-      expect(frames).toContainEqual({ type: "auth:ok" });
+      // Welcome now precedes `auth:ok`, so a failed handshake never claims
+      // success: the client retries instead of registering against a server
+      // whose capabilities it never learned.
+      expect(frames).not.toContainEqual({ type: "auth:ok" });
       expect(retryable).toMatchObject({ type: "auth:retryable", code: "handshake_internal_error" });
       expect(frames.some((frame) => (frame as { type?: string }).type === "auth:rejected")).toBe(false);
       expect(closeCode).toBe(1011);

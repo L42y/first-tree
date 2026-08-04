@@ -39,6 +39,7 @@ const allOk = (): ClientCapabilities => ({
   grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
+  pi: ok(),
 });
 
 const codexMissing = (): ClientCapabilities => ({
@@ -49,6 +50,7 @@ const codexMissing = (): ClientCapabilities => ({
   grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
+  pi: ok(),
 });
 
 // Detection is install-only, so a provider mid-login is one whose binary is not
@@ -79,6 +81,7 @@ const codexPendingSnapshot = (): ClientCapabilities => ({
   grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
+  pi: ok(),
 });
 
 /** What a re-probe sees while the login is still in flight: still not installed. */
@@ -90,6 +93,7 @@ const codexUnauthSnapshot = (): ClientCapabilities => ({
   grok: ok(),
   "kimi-code": ok(),
   opencode: ok(),
+  pi: ok(),
 });
 
 const BASE = 100;

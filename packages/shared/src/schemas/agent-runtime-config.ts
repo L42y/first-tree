@@ -317,6 +317,14 @@ const opencodeRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend(
   // configuration; non-empty values are forwarded as one argv entry.
 });
 
+const piRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
+  kind: z.literal("pi"),
+  // Pi model identifiers are provider-native `provider/model` values (optional
+  // `:<thinking>` suffix). Empty model semantics: an existing stable Pi session
+  // keeps its persisted model; only a new session uses Pi's local default.
+  // Non-empty values are forwarded as one `--model` argv entry.
+});
+
 const grokRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
   kind: z.literal("grok"),
   // Maps to the Grok Build CLI `--effort <low|medium|high>` flag. The empty
@@ -340,6 +348,7 @@ const taggedPayloadUnion = z.discriminatedUnion("kind", [
   grokRuntimeConfigPayloadShape,
   kimiCodeRuntimeConfigPayloadShape,
   opencodeRuntimeConfigPayloadShape,
+  piRuntimeConfigPayloadShape,
 ]);
 type TaggedPayload = z.infer<typeof taggedPayloadUnion>;
 
@@ -498,6 +507,17 @@ export const DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload 
   resourceSkills: [],
 };
 
+/** Default payload for Pi. Empty model inherits the host-local Pi default. */
+export const DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD: AgentRuntimeConfigPayload = {
+  kind: "pi",
+  prompt: { append: "" },
+  model: "",
+  mcpServers: [],
+  env: [],
+  gitRepos: [],
+  resourceSkills: [],
+};
+
 /**
  * Default payload for a fresh grok agent. `model` is empty by default so the
  * spawn omits `--model`; `reasoningEffort` defaults to the inherit sentinel
@@ -534,6 +554,8 @@ export function defaultRuntimeConfigPayload(
       return { ...DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD };
     case "opencode":
       return { ...DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD };
+    case "pi":
+      return { ...DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD };
     case "claude-code-tui":
       return { ...DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD };
     case "claude-code":

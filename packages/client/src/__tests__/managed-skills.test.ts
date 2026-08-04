@@ -47,6 +47,7 @@ const PROVIDERS: readonly RuntimeProvider[] = [
   "grok",
   "kimi-code",
   "opencode",
+  "pi",
 ];
 
 function teamSkill(overrides: Partial<RuntimeResourceSkill> = {}): RuntimeResourceSkill {
@@ -183,6 +184,7 @@ describe("managed Skill reconciler", () => {
       ["grok", ".grok/skills"],
       ["kimi-code", ".kimi-code/skills"],
       ["opencode", ".opencode/skills"],
+      ["pi", ".agents/skills"],
     ]);
   });
 
@@ -201,13 +203,14 @@ describe("managed Skill reconciler", () => {
       "src/handlers/cursor/index.ts",
       "src/handlers/kimi-code.ts",
       "src/handlers/opencode/index.ts",
+      "src/handlers/pi/index.ts",
     ].map((path) => readFileSync(join(process.cwd(), path), "utf-8"));
     expect(
       handlerSources.reduce(
         (count, source) => count + (source.match(/reconcileManagedSkillsForConfig\(/g)?.length ?? 0),
         0,
       ),
-    ).toBe(15);
+    ).toBe(17);
     expect(handlerSources.every((source) => !source.includes("reconcileManagedSkills({"))).toBe(true);
     for (const source of [handlerSources[2] ?? "", handlerSources[3] ?? "", handlerSources[4] ?? ""]) {
       expect(source).toContain("if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;");

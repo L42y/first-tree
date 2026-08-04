@@ -22,6 +22,7 @@
 import { isCodexBinaryMissingError } from "./codex-binary.js";
 import { isCursorBinaryMissingError } from "./cursor-binary.js";
 import { isGrokBinaryMissingError } from "./grok-binary.js";
+import { isPiBinaryMissingError } from "./pi-binary.js";
 
 export const ERROR_KINDS = {
   TRANSIENT: "transient",
@@ -329,6 +330,23 @@ export function classify(err: unknown, context?: { source?: ErrorSource }): Clas
       strategy: NONE,
       reasonCode: "grok_binary_missing",
       message: shape.message ?? "Grok Build CLI binary missing",
+    };
+  }
+  // Same present-but-flaky vs genuinely-missing split for the external Pi CLI.
+  if (shape.name === "PiBinaryVerifyTransientError") {
+    return {
+      kind: ERROR_KINDS.TRANSIENT,
+      strategy: TRANSIENT_FAST,
+      reasonCode: "pi_verify_transient",
+      message: shape.message ?? "pi --version smoke check did not complete (transient)",
+    };
+  }
+  if (isPiBinaryMissingError(err)) {
+    return {
+      kind: ERROR_KINDS.PERMANENT,
+      strategy: NONE,
+      reasonCode: "pi_binary_missing",
+      message: shape.message ?? "Pi CLI binary missing",
     };
   }
   // `AbortSignal.timeout()` aborts with a `DOMException` whose `name` is

@@ -51,6 +51,8 @@ const KIMI_READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
 const KIMI_WRITE_TOOLS = new Set(["Write", "Edit"]);
 const OPENCODE_READ_TOOLS = new Set(["read", "grep", "glob"]);
 const OPENCODE_WRITE_TOOLS = new Set(["edit", "write", "patch"]);
+const PI_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const PI_WRITE_TOOLS = new Set(["write", "edit"]);
 const CONTEXT_TREE_IO_TOOL_NAMES = [
   "Bash",
   "Edit",
@@ -214,6 +216,7 @@ function isShellTool(runtimeProvider: string, toolName: string): boolean {
     (runtimeProvider === "grok" && toolName === "run_terminal_cmd") ||
     (runtimeProvider === "kimi-code" && toolName === "Bash") ||
     (runtimeProvider === "opencode" && toolName === "bash") ||
+    (runtimeProvider === "pi" && toolName === "bash") ||
     (isClaudeRuntime(runtimeProvider) && toolName === "Bash")
   );
 }
@@ -256,6 +259,9 @@ function skippedDecisionFastPathForNoRefs(
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
   if (runtimeProvider === "opencode" && (OPENCODE_READ_TOOLS.has(toolName) || OPENCODE_WRITE_TOOLS.has(toolName))) {
+    return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
+  }
+  if (runtimeProvider === "pi" && (PI_READ_TOOLS.has(toolName) || PI_WRITE_TOOLS.has(toolName))) {
     return { handled: true, decision: { recordable: false, reason: "no_tool_file_refs" }, toolName };
   }
   if (isClaudeRuntime(runtimeProvider) && (CLAUDE_READ_TOOLS.has(toolName) || CLAUDE_WRITE_TOOLS.has(toolName))) {
@@ -305,6 +311,12 @@ function deriveEventIo(event: SessionEvent, runtimeProvider: string): EventIoDer
   }
   if (runtimeProvider === "opencode" && OPENCODE_WRITE_TOOLS.has(toolName)) {
     return { action: "write", source: "opencode_write_tool" };
+  }
+  if (runtimeProvider === "pi" && PI_READ_TOOLS.has(toolName)) {
+    return { action: "read", source: "pi_read_tool" };
+  }
+  if (runtimeProvider === "pi" && PI_WRITE_TOOLS.has(toolName)) {
+    return { action: "write", source: "pi_write_tool" };
   }
   if (isClaudeRuntime(runtimeProvider) && CLAUDE_READ_TOOLS.has(toolName)) {
     return { action: "read", source: "claude_read_tool" };

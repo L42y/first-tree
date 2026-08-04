@@ -4,6 +4,7 @@ import type {
   InboxDeliverFrame,
   InboxEntryWithMessage,
   RuntimeState,
+  SessionCommandAbortReason,
   SessionEvent,
   SessionState,
 } from "@first-tree/shared";
@@ -97,6 +98,29 @@ type ConnectionListener =
         agentId: string;
         chatId: string;
         type: "session:suspend" | "session:resume" | "session:terminate";
+        ref?: string;
+      }) => void;
+    }
+  | {
+      event: "session:command:finalized";
+      fn: (frame: {
+        ref: string;
+        ackRef: string;
+        agentId: string;
+        chatId: string;
+        command: "session:terminate";
+        state: "evicted";
+      }) => void;
+    }
+  | {
+      event: "session:command:aborted";
+      fn: (frame: {
+        ref: string;
+        ackRef: string;
+        agentId: string;
+        chatId: string;
+        command: "session:terminate";
+        reason: SessionCommandAbortReason;
       }) => void;
     }
   | { event: "session:reconcile:result"; fn: (result: SessionReconcileResult) => void };
@@ -390,9 +414,30 @@ export class AgentSlot {
           // after handleCommand has fully resolved — handler stopped,
           // provider-session mapping dropped. A failed apply reports
           // applied:false so the operator can retry; never ack early.
+          // Parked Reset-fence recovery must wait for an exact receipted
+          // post-apply terminal disposition (`session:command:finalized` or
+          // `session:command:aborted`), not local success or the applied send alone.
           const ref = cmd.ref;
+          if (!this.clientConnection.supportsSessionResetV1) {
+            // Old server, new client: nothing would ever send a terminal
+            // disposition frame, so applying here would destroy the session and
+            // leave any intervening delivery parked behind a fence forever.
+            // Refuse BEFORE the destructive apply and let the Reset fail closed.
+            this.logger.warn(
+              { chatId: cmd.chatId, ref },
+              "refusing ref'd Reset: this connection did not negotiate the v1 Reset protocol",
+            );
+            this.clientConnection.reportSessionCommandApplied({
+              ref,
+              agentId: cmd.agentId,
+              chatId: cmd.chatId,
+              command: "session:terminate",
+              applied: false,
+            });
+            return;
+          }
           this.sessionManager
-            .handleCommand(cmd.chatId, cmd.type)
+            .handleCommand(cmd.chatId, cmd.type, { resetRef: ref })
             .then(() => {
               this.clientConnection.reportSessionCommandApplied({
                 ref,
@@ -414,12 +459,102 @@ export class AgentSlot {
             });
           return;
         }
+        if (cmd.type === "session:terminate") {
+          // Legacy unref'd terminate: the server archived and finalized this
+          // session before sending the command, so it carries its own
+          // authority to retire whatever Reset generation is armed. That is
+          // an explicit supersede, not the incidental unref'd release — a
+          // finalized frame for the superseded generation is then ignored.
+          this.sessionManager
+            .handleCommand(cmd.chatId, cmd.type)
+            .then(() => {
+              this.sessionManager?.supersedeResetGeneration(cmd.chatId, "unrefd_server_terminate");
+            })
+            .catch((err) => {
+              this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
+            });
+          return;
+        }
         this.sessionManager.handleCommand(cmd.chatId, cmd.type).catch((err) => {
           this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
         });
       };
       this.clientConnection.on("session:command", onCommand);
       this.listeners.push({ event: "session:command", fn: onCommand });
+
+      /**
+       * Apply one post-apply Reset disposition — `finalized` (the eviction
+       * committed) or `aborted` (the server could not finalize) — and answer it.
+       *
+       * Both dispositions do the SAME thing locally, because the local truth is
+       * the same in both: this client already destroyed its provider session
+       * when it acked `applied: true`, so all that is left is to lift the exact
+       * generation that fenced provider admission afterwards. Abort therefore
+       * restores nothing; it just lets the parked durable row recover once into
+       * a fresh nonce-derived session.
+       *
+       * The SessionManager is the single Reset-generation authority: it knows
+       * which refs are aliases of the current generation, which one superseded
+       * which, and whether the fence actually came down. The slot asks and
+       * reports that verdict verbatim — keeping a second map here is what let
+       * the receipt disagree with the fence. `idempotent` is still a released
+       * fence (duplicate disposition), `stale` is not. The server needs SOME
+       * receipt either way, or its request would hang until timeout.
+       */
+      const settleResetDisposition = (
+        kind: "finalized" | "aborted",
+        frame: { ref: string; ackRef: string; agentId: string; chatId: string },
+      ): void => {
+        if (frame.agentId !== this.config.agentId || !this.sessionManager) return;
+        const verdict = this.sessionManager.releaseParkedResetFenceRecovery(frame.chatId, frame.ref);
+        const released = verdict === "accepted" || verdict === "idempotent";
+        if (!released) {
+          this.logger.warn(
+            { chatId: frame.chatId, ref: frame.ref, verdict, disposition: kind },
+            "Reset disposition did not release this client's fence",
+          );
+        }
+        const receipt = {
+          ref: frame.ref,
+          ackRef: frame.ackRef,
+          agentId: frame.agentId,
+          chatId: frame.chatId,
+          command: "session:terminate" as const,
+          released,
+        };
+        if (kind === "aborted") this.clientConnection.reportSessionCommandAbortedAck(receipt);
+        else this.clientConnection.reportSessionCommandFinalizedAck(receipt);
+      };
+
+      const onCommandFinalized = (frame: {
+        ref: string;
+        ackRef: string;
+        agentId: string;
+        chatId: string;
+        command: "session:terminate";
+        state: "evicted";
+      }) => settleResetDisposition("finalized", frame);
+      this.clientConnection.on("session:command:finalized", onCommandFinalized);
+      this.listeners.push({ event: "session:command:finalized", fn: onCommandFinalized });
+
+      const onCommandAborted = (frame: {
+        ref: string;
+        ackRef: string;
+        agentId: string;
+        chatId: string;
+        command: "session:terminate";
+        reason: SessionCommandAbortReason;
+      }) => {
+        if (frame.agentId === this.config.agentId) {
+          this.logger.info(
+            { chatId: frame.chatId, ref: frame.ref, reason: frame.reason },
+            "server aborted an applied Reset; releasing that generation without an eviction",
+          );
+        }
+        settleResetDisposition("aborted", frame);
+      };
+      this.clientConnection.on("session:command:aborted", onCommandAborted);
+      this.listeners.push({ event: "session:command:aborted", fn: onCommandAborted });
 
       // Flush any `inbox:deliver` frames the early listener captured
       // during init. With the bind-time reset+drain path (see design §4)
@@ -633,27 +768,40 @@ export class AgentSlot {
       this.clientConnection.off(entry.event, entry.fn);
     }
     this.listeners = [];
-    this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
+    // The armed Reset generations die with the SessionManager below, so a
+    // finalized/aborted frame arriving after a restart belongs to a manager
+    // that no longer exists and cannot release anything the new one parked.
     let firstError: unknown = null;
+    // Settle provider-entered custody (durable notice + ACK) while the agent is
+    // still bound *and* the dynamic runtime-session proof provider is still
+    // registered. Clearing the provider first falls the bound SDK back to a
+    // possibly-stale bind-time token, so notice HTTP can fail closed and leave
+    // the entered turn unacked for reconnect replay.
     try {
-      await this.clientConnection.unbindAgent(this.config.agentId);
-    } catch (err) {
-      firstError = err;
-      this.logger.warn({ err }, "failed to unbind agent while stopping");
+      try {
+        await this.sessionManager?.shutdown(reason, opts.sessionShutdown);
+      } catch (err) {
+        firstError = err;
+        this.logger.warn({ err }, "failed to shut down sessions while stopping");
+      }
+      try {
+        await this.clientConnection.unbindAgent(this.config.agentId);
+      } catch (err) {
+        firstError ??= err;
+        this.logger.warn({ err }, "failed to unbind agent while stopping");
+      }
+    } finally {
+      // Cleanup runs exactly once even when drain/unbind fails — but never before
+      // SessionManager.shutdown has joined (success or failure).
+      this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
+      this.cleanupOwnedRuntimeSessionToken();
+      this.sessionManager = null;
+      this.agentConfigCache = null;
+      this.sdk = null;
+      this.activeRuntimeChatIds = null;
+      this.activeRuntimeChatIdsRefreshInFlight = null;
+      this.inboxId = null;
     }
-    try {
-      await this.sessionManager?.shutdown(reason, opts.sessionShutdown);
-    } catch (err) {
-      firstError ??= err;
-      this.logger.warn({ err }, "failed to shut down sessions while stopping");
-    }
-    this.cleanupOwnedRuntimeSessionToken();
-    this.sessionManager = null;
-    this.agentConfigCache = null;
-    this.sdk = null;
-    this.activeRuntimeChatIds = null;
-    this.activeRuntimeChatIdsRefreshInFlight = null;
-    this.inboxId = null;
     this.logger.info("stopped");
     if (firstError) throw firstError;
   }
@@ -678,27 +826,30 @@ export class AgentSlot {
       this.clientConnection.off(entry.event, entry.fn);
     }
     this.listeners = [];
-    this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
-    if (opts.unbind) {
-      try {
-        await this.clientConnection.unbindAgent(this.config.agentId);
-      } catch (err) {
-        this.logger.warn({ err }, "failed to unbind after aborted agent start");
-      }
-    }
     try {
-      await this.sessionManager?.shutdown();
-    } catch (err) {
-      this.logger.warn({ err }, "failed to shut down sessions after aborted agent start");
+      try {
+        await this.sessionManager?.shutdown();
+      } catch (err) {
+        this.logger.warn({ err }, "failed to shut down sessions after aborted agent start");
+      }
+      if (opts.unbind) {
+        try {
+          await this.clientConnection.unbindAgent(this.config.agentId);
+        } catch (err) {
+          this.logger.warn({ err }, "failed to unbind after aborted agent start");
+        }
+      }
+    } finally {
+      this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
+      this.cleanupOwnedRuntimeSessionToken();
+      this.sessionManager = null;
+      this.agentConfigCache = null;
+      this.sdk = null;
+      this.activeRuntimeChatIds = null;
+      this.activeRuntimeChatIdsRefreshInFlight = null;
+      this.inboxId = null;
+      this.runtimeSessionTokenMutationError = null;
     }
-    this.cleanupOwnedRuntimeSessionToken();
-    this.sessionManager = null;
-    this.agentConfigCache = null;
-    this.sdk = null;
-    this.activeRuntimeChatIds = null;
-    this.activeRuntimeChatIdsRefreshInFlight = null;
-    this.inboxId = null;
-    this.runtimeSessionTokenMutationError = null;
   }
 
   private reportSessionState(chatId: string, state: SessionState): void {

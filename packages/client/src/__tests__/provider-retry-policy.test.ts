@@ -5,6 +5,7 @@ import {
   buildProviderRetryEvent,
   classifyProviderFailure,
   decideProviderRetry,
+  isExhaustedCapacityPhrasing,
   MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "../runtime/provider-retry-policy.js";
@@ -269,13 +270,36 @@ describe("classifyProviderFailure", () => {
       expect(c, message).toMatchObject({ category: "provider_capacity", reasonCode: "provider_rate_limited" });
     }
     // "resource has been exhausted" is not reserved capacity-speak for other
-    // providers — the branch stays grok-only.
+    // providers — the branch stays provider-gated (grok/pi only).
     const other = classifyProviderFailure(new Error("resource has been exhausted"), {
       provider: "codex",
       scope: "provider_turn",
       source: "sdk",
     });
     expect(other.category).not.toBe("provider_capacity");
+  });
+
+  it("classifies Pi 429 / exhaustion phrasings as provider capacity via the shared provider-scoped rule", () => {
+    for (const message of ["too many requests", "resource has been exhausted"]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "sdk",
+      });
+      // The same provider-scoped rule the Pi sanitizer (pi_capacity_limited)
+      // uses must drive the shared classifier, so retry delay and the durable
+      // notice agree instead of falling through to unknown/unknown_exhausted.
+      expect(c, message).toMatchObject({ category: "provider_capacity", reasonCode: "provider_rate_limited" });
+      expect(
+        decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "retry" });
+    }
+    // One predicate, both consumers; still not reserved for other providers.
+    expect(isExhaustedCapacityPhrasing("pi", "too many requests")).toBe(true);
+    expect(isExhaustedCapacityPhrasing("pi", "resource has been exhausted")).toBe(true);
+    expect(isExhaustedCapacityPhrasing("grok", "too many requests")).toBe(true);
+    expect(isExhaustedCapacityPhrasing("codex", "too many requests")).toBe(false);
+    expect(isExhaustedCapacityPhrasing("kimi-code", "resource has been exhausted")).toBe(false);
   });
 
   it("a transient grok --version verify flake is retried at session start, NOT a terminal capability failure", () => {
@@ -301,6 +325,108 @@ describe("classifyProviderFailure", () => {
     expect(
       decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
     ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+  });
+
+  it("classifies Pi credential phrasings as needs_operator and does not unknown-retry them", () => {
+    for (const message of ["missing credentials", "No API key configured", "run /login to continue"]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "sdk",
+      });
+      expect(c, message).toMatchObject({ category: "credential" });
+      expect(
+        decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    }
+  });
+
+  it("classifies Pi missing/unsupported/platform failures as permanent capability", () => {
+    const missing = classifyProviderFailure(
+      new Error("Pi CLI is missing on this machine. First Tree does not bundle or install Pi"),
+      { provider: "pi", scope: "session_start", source: "session" },
+    );
+    expect(missing).toMatchObject({ category: "capability", reasonCode: "pi_binary_missing" });
+
+    const unsupported = classifyProviderFailure(
+      new Error("Pi runtime provider mismatch: unsupported version. First Tree requires >=0.80.5 <1.0.0"),
+      { provider: "pi", scope: "session_start", source: "session" },
+    );
+    expect(unsupported).toMatchObject({ category: "capability", reasonCode: "pi_binary_unsupported" });
+
+    const windows = classifyProviderFailure(
+      new Error("Pi runtime provider is not supported on Windows in V1 (macOS/Linux only)"),
+      { provider: "pi", scope: "session_start", source: "session" },
+    );
+    expect(windows).toMatchObject({ category: "capability", reasonCode: "pi_platform_unsupported" });
+
+    for (const c of [missing, unsupported, windows]) {
+      expect(
+        decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    }
+  });
+
+  it("classifies Pi protocol/get_state failures as terminal capability", () => {
+    for (const message of [
+      "Pi session identity mismatch: expected abc, get_state reported wrong",
+      "pi get_state response missing data object",
+      "pi get_state response missing sessionId",
+    ]) {
+      const err = Object.assign(new Error(message), {
+        name: message.includes("missing") ? "PiRpcProtocolError" : "Error",
+      });
+      if (message.includes("session identity")) err.name = "PiRpcProtocolError";
+      const c = classifyProviderFailure(err, {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "session",
+      });
+      expect(c, message).toMatchObject({
+        category: "capability",
+        reasonCode: "pi_protocol_error",
+      });
+      expect(
+        decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    }
+  });
+
+  it("classifies Pi model configuration phrases as terminal configuration", () => {
+    for (const message of [
+      "Pi model selector is invalid: bad",
+      "Pi model mismatch: configured openai-codex/gpt-test, get_state reported anthropic/gpt-test",
+      "Pi thinkingLevel mismatch: configured high, get_state reported low",
+    ]) {
+      const c = classifyProviderFailure(new Error(message), {
+        provider: "pi",
+        scope: "provider_turn",
+        source: "session",
+      });
+      expect(c, message).toMatchObject({
+        category: "configuration",
+        reasonCode: "pi_model_configuration_error",
+      });
+      expect(
+        decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+      ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+      // Must not leak into other providers as configuration.
+      expect(
+        classifyProviderFailure(new Error(message), { provider: "codex", scope: "provider_turn", source: "session" }),
+      ).toMatchObject({ category: "unknown", reasonCode: "unknown" });
+    }
+  });
+
+  it("retries Pi version-probe timeout as transient transport", () => {
+    const err = new Error(
+      "pi --version smoke check did not complete (transient host condition); will retry. Detail: `pi --version` timed out",
+    );
+    err.name = "PiBinaryVerifyTransientError";
+    const c = classifyProviderFailure(err, { provider: "pi", scope: "session_start", source: "session" });
+    expect(c).toMatchObject({ category: "transient_transport", reasonCode: "pi_verify_transient" });
+    expect(
+      decideProviderRetry({ classification: c, scope: "session_start", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "retry" });
   });
 
   it("a codex backend AbortSignal.timeout is transient_transport and retried", () => {

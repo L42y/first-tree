@@ -82,6 +82,7 @@ describe("hasNonOkProvider", () => {
         grok: okEntry(),
         "kimi-code": okEntry(),
         opencode: okEntry(),
+        pi: okEntry(),
       }),
     ).toBe(false);
   });

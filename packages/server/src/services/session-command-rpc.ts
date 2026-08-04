@@ -44,15 +44,49 @@ export function isConsistentAgentRoute(row: ApplyAckRouteRow): row is ApplyAckRo
   );
 }
 
-/** The `wsSessionTerminateApplyAck` flag out of a `clients.metadata` blob. */
-export function metadataHasApplyAckCapability(metadata: unknown): boolean {
-  const caps = (metadata as Record<string, unknown> | null)?.wireCapabilities as Record<string, unknown> | undefined;
-  return caps?.wsSessionTerminateApplyAck === true;
+function wireCapabilities(metadata: unknown): Record<string, unknown> | undefined {
+  return (metadata as Record<string, unknown> | null)?.wireCapabilities as Record<string, unknown> | undefined;
+}
+
+/**
+ * The LEGACY apply-only flag out of a `clients.metadata` blob. It identifies
+ * a pre-v1 client and is NOT a Reset verdict: such a client answers the
+ * apply-ack and then waits for a post-apply terminal disposition
+ * (`finalized` / `aborted`) it does not understand. Kept so this server can
+ * recognise old clients (and so the mixed-fleet regression can prove a current
+ * client is not mistaken for one).
+ */
+export function metadataHasLegacyApplyAckCapability(metadata: unknown): boolean {
+  return wireCapabilities(metadata)?.wsSessionTerminateApplyAck === true;
+}
+
+/** The composite `wsSessionResetV1` flag out of a `clients.metadata` blob. */
+export function metadataHasSessionResetV1Capability(metadata: unknown): boolean {
+  return wireCapabilities(metadata)?.wsSessionResetV1 === true;
+}
+
+/**
+ * The ONE capability verdict for chat-session Reset: the client declared the
+ * composite `wsSessionResetV1` protocol. That single flag covers the whole
+ * flow — apply-ack (the provider mapping is gone), parked-fence release on
+ * the exact terminate ref, and BOTH receipted post-apply terminal dispositions
+ * (`finalized` for a durable eviction and `aborted` when the server could not
+ * finalize) — so there is no way to negotiate half of it.
+ *
+ * The legacy apply-only flag deliberately does NOT count, in either
+ * direction. An old client that declares it would park its intervening rows
+ * behind a fence this server lifts with a frame the client never answers, so
+ * Reset stays hidden and fails closed before anything destructive is applied
+ * locally; and a current client never sends it, so an older server offering
+ * the legacy flow finds no consent either.
+ */
+export function metadataSupportsSessionReset(metadata: unknown): boolean {
+  return metadataHasSessionResetV1Capability(metadata);
 }
 
 /**
  * DB-authoritative route for one agent: consistent route (see
- * `isConsistentAgentRoute`) plus the registered apply-ack capability.
+ * `isConsistentAgentRoute`) plus the registered composite Reset capability.
  * `null` when the route is inconsistent or the agent row is missing.
  */
 export async function resolveAgentApplyAckRoute(
@@ -79,8 +113,25 @@ export async function resolveAgentApplyAckRoute(
   return {
     clientId: row.presenceClientId,
     instanceId: row.clientInstanceId,
-    capable: metadataHasApplyAckCapability(row.clientMetadata),
+    capable: metadataSupportsSessionReset(row.clientMetadata),
   };
+}
+
+/**
+ * Extra conditions a route guard may impose on top of pure identity.
+ *
+ * `requireSessionResetV1` re-reads the client's CURRENTLY registered
+ * composite capability out of `clients.metadata`. Identity alone is not a
+ * Reset verdict: `client:register` replaces `wireCapabilities` wholesale, so
+ * the SAME `clientId` on the SAME `instanceId` can come back as a legacy
+ * build after the HTTP preflight already saw v1. Anything that would apply a
+ * destructive terminate must therefore re-check the capability, not just the
+ * route.
+ */
+export type AgentRouteGuardOptions = { requireSessionResetV1?: boolean };
+
+function sessionResetV1MetadataSql() {
+  return sql`(${clients.metadata} -> 'wireCapabilities' ->> 'wsSessionResetV1') = 'true'`;
 }
 
 /**
@@ -90,8 +141,18 @@ export async function resolveAgentApplyAckRoute(
  * fan-out so a takeover (e.g. `clients.instance_id` moved to another
  * replica while the old presence route and process-local binding linger)
  * cannot land state or deliver a destructive command.
+ *
+ * With `requireSessionResetV1`, the same predicate also demands the
+ * registered composite Reset capability, closing the same-client/same-
+ * instance downgrade hole described on {@link AgentRouteGuardOptions}.
  */
-export function agentRouteGuardSql(agentId: string, clientId: string, instanceId: string) {
+export function agentRouteGuardSql(
+  agentId: string,
+  clientId: string,
+  instanceId: string,
+  options: AgentRouteGuardOptions = {},
+) {
+  const capabilityClause = options.requireSessionResetV1 ? sql` AND ${sessionResetV1MetadataSql()}` : sql.empty();
   return sql`EXISTS (
     SELECT 1 FROM ${agents}
     INNER JOIN ${agentPresence} ON ${agentPresence.agentId} = ${agents.uuid}
@@ -103,7 +164,7 @@ export function agentRouteGuardSql(agentId: string, clientId: string, instanceId
       AND ${agentPresence.clientId} = ${clientId}
       AND ${agentPresence.instanceId} = ${instanceId}
       AND ${clients.status} = 'connected'
-      AND ${clients.instanceId} = ${instanceId}
+      AND ${clients.instanceId} = ${instanceId}${capabilityClause}
   )`;
 }
 
@@ -113,11 +174,12 @@ export async function agentRoutedTo(
   agentId: string,
   clientId: string,
   instanceId: string,
+  options: AgentRouteGuardOptions = {},
 ): Promise<boolean> {
   const [row] = await db
     .select({ agentId: agents.uuid })
     .from(agents)
-    .where(and(eq(agents.uuid, agentId), agentRouteGuardSql(agentId, clientId, instanceId)))
+    .where(and(eq(agents.uuid, agentId), agentRouteGuardSql(agentId, clientId, instanceId, options)))
     .limit(1);
   return row !== undefined;
 }
@@ -146,14 +208,27 @@ export const SESSION_COMMAND_RPC_MAX_ENTRIES = 20;
 
 const REF_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Which phase of the Reset handshake an entry records. `applied` is the
+ * pre-finalize apply-ack; `finalized` and `aborted` are the two mutually
+ * exclusive post-apply dispositions the client receipts (durable eviction vs a
+ * Reset the server could not finalize). Each is stored under its own
+ * rendezvous ref so no two can satisfy each other's waiter. Legacy entries
+ * without the field read back as `applied`.
+ */
+export type SessionCommandRpcPhase = "applied" | "finalized" | "aborted";
+
+const RPC_PHASES: readonly SessionCommandRpcPhase[] = ["applied", "finalized", "aborted"];
+
 export type SessionCommandRpcResult = {
   command: "session:terminate";
   agentId: string;
   chatId: string;
   applied: boolean;
+  phase?: SessionCommandRpcPhase;
 };
 
-type RpcEntry = SessionCommandRpcResult & { storedAt: string };
+type RpcEntry = SessionCommandRpcResult & { phase: SessionCommandRpcPhase; storedAt: string };
 
 function asRpcEntry(raw: unknown): RpcEntry | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -167,6 +242,7 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
   ) {
     return null;
   }
+  if (row.phase !== undefined && !RPC_PHASES.includes(row.phase as SessionCommandRpcPhase)) return null;
   const storedMs = Date.parse(row.storedAt);
   if (!Number.isFinite(storedMs) || Date.now() - storedMs >= SESSION_COMMAND_RPC_MAX_AGE_MS) return null;
   return {
@@ -174,16 +250,34 @@ function asRpcEntry(raw: unknown): RpcEntry | null {
     agentId: row.agentId,
     chatId: row.chatId,
     applied: row.applied,
+    phase: (row.phase as SessionCommandRpcPhase | undefined) ?? "applied",
     storedAt: row.storedAt,
   };
 }
 
 /**
- * Persist one apply-ack ref iff this replica still owns the client row AND
+ * Persist one handshake ref iff this replica still owns the client row AND
  * the agent is still routed to this client/instance (durable binding +
  * online presence). Returns false when `instance_id` no longer matches
  * (takeover), the agent's route moved, or the row is gone. Physically prunes
  * aged/excess refs in the same statement.
+ *
+ * The `applied` phase is the ONLY one guarded on the agent route and the
+ * CURRENTLY registered `wsSessionResetV1` capability. It is the destructive
+ * half — persisting it is what lets an HTTP waiter conclude the provider
+ * mapping is gone and go on to evict — so neither a legacy build that
+ * re-registered under the same client/instance since the preflight nor a moved
+ * agent route may satisfy it.
+ *
+ * Both post-apply disposition phases (`finalized`, `aborted`) are scoped to
+ * CLIENT IDENTITY instead: `clients.id` plus the owning `instance_id`, with no
+ * agent-route or capability condition. Their authority is "this client answered
+ * for the generation it armed", which the agent's current route says nothing
+ * about, and their whole purpose is to lift that client's own fence. Guarding
+ * them on the route would refuse the receipt in exactly the situations the
+ * dispositions exist for — a route that moved or a session that re-activated
+ * after a truthful apply — leaving a genuinely capable client fenced over a
+ * session it can no longer reach.
  */
 export async function storeSessionCommandRpcResult(
   db: Database,
@@ -195,7 +289,8 @@ export async function storeSessionCommandRpcResult(
   if (!REF_RE.test(ref)) {
     throw new Error(`Invalid session-command RPC ref: ${ref}`);
   }
-  const entry = { ...result, storedAt: new Date().toISOString() };
+  const phase = result.phase ?? "applied";
+  const entry = { ...result, phase, storedAt: new Date().toISOString() };
   const maxAgeSeconds = Math.floor(SESSION_COMMAND_RPC_MAX_AGE_MS / 1000);
   // One UPDATE: ownership + agent-route guards + merge ref + physical prune
   // (age then newest N). Column refs in SET are the pre-update row;
@@ -227,18 +322,25 @@ export async function storeSessionCommandRpcResult(
       and(
         eq(clients.id, clientId),
         eq(clients.instanceId, expectedInstanceId),
-        agentRouteGuardSql(result.agentId, clientId, expectedInstanceId),
+        phase === "applied"
+          ? agentRouteGuardSql(result.agentId, clientId, expectedInstanceId, { requireSessionResetV1: true })
+          : undefined,
       ),
     )
     .returning({ id: clients.id });
   return returned.length > 0;
 }
 
-/** Load a previously stored apply-ack when still within the logical TTL. */
+/**
+ * Load a previously stored handshake result when still within the logical
+ * TTL. `expectedPhase` fails closed on a phase mismatch so a finalize waiter
+ * can never settle on a leftover apply-ack.
+ */
 export async function readSessionCommandRpcResult(
   db: Database,
   clientId: string,
   ref: string,
+  expectedPhase?: SessionCommandRpcPhase,
 ): Promise<SessionCommandRpcResult | null> {
   const [client] = await db
     .select({ metadata: clients.metadata })
@@ -251,8 +353,9 @@ export async function readSessionCommandRpcResult(
   if (!map || typeof map !== "object" || Array.isArray(map)) return null;
   const entry = asRpcEntry((map as Record<string, unknown>)[ref]);
   if (!entry) return null;
-  const { command, agentId, chatId, applied } = entry;
-  return { command, agentId, chatId, applied };
+  if (expectedPhase !== undefined && entry.phase !== expectedPhase) return null;
+  const { command, agentId, chatId, applied, phase } = entry;
+  return { command, agentId, chatId, applied, phase };
 }
 
 /** Raw rendezvous key count (including aged entries) — test/observability seam. */

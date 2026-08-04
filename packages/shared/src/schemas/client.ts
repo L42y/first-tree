@@ -71,13 +71,31 @@ export const clientWireCapabilitiesSchema = z
      */
     wsInboxDeliver: z.boolean().default(false),
     /**
-     * The client answers a ref'd `session:terminate` command with a
-     * `session:command:applied` frame after `handleCommand` has fully
-     * resolved (local provider-session mapping dropped). The server gates
-     * the Web chat-session Reset on this capability — without the apply-ack
-     * a queued WS frame cannot prove the old mapping is gone.
+     * LEGACY apply-only Reset flag, shipped before the finalize handshake
+     * existed. It means "the client answers a ref'd `session:terminate` with
+     * `session:command:applied`" and nothing more — it does NOT promise the
+     * post-finalize receipt, so it can no longer stand for Reset-readiness.
+     * Current clients never send it: a new client that advertised it against
+     * an old server would be handed the legacy flow and park its inbox rows
+     * behind a fence the old server never lifts. Retained so old clients'
+     * register frames still parse and so this server can recognise them as
+     * legacy and hide Reset.
      */
     wsSessionTerminateApplyAck: z.boolean().default(false),
+    /**
+     * Version 1 of the COMPOSITE Reset protocol (see `wsSessionResetV1` in
+     * the server capabilities): apply-ack plus parked-fence release on the
+     * exact terminate ref plus BOTH receipted terminal dispositions —
+     * `session:command:finalized:ack` for a durable eviction and
+     * `session:command:aborted:ack` for a Reset the server could not finalize.
+     * Both dispositions belong to this one version: a peer that could answer
+     * only the finalized half would stay fenced on every abort branch, so
+     * there is nothing to negotiate separately. Declared ONLY when the server
+     * advertised `wsSessionResetV1` in its welcome, so the flag proves both
+     * peers speak the same version. The server gates
+     * `terminate?waitForApply=true` on this field alone.
+     */
+    wsSessionResetV1: z.boolean().default(false),
   })
   .partial();
 export type ClientWireCapabilities = z.infer<typeof clientWireCapabilitiesSchema>;

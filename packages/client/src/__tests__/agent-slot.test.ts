@@ -7,6 +7,7 @@ import type { ClientConnection, SessionReconcileResult } from "../client-connect
 import type { AgentSlotConfig } from "../runtime/agent-slot.js";
 import type { HandlerConfig } from "../runtime/handler.js";
 import { RuntimeSessionTokenFile } from "../runtime/runtime-session-token-file.js";
+import type { ResetFenceReleaseVerdict } from "../runtime/session-manager.js";
 import { type FirstTreeHubSDK, type RegisterResult, SdkError } from "../sdk.js";
 
 type FakeLogger = {
@@ -26,10 +27,14 @@ type FakeSessionState = {
   heldChatIds: string[];
   dispatch: ReturnType<typeof vi.fn<(entry: unknown) => Promise<void>>>;
   handleCommand: ReturnType<
-    typeof vi.fn<(chatId: string, type: "session:suspend" | "session:terminate") => Promise<void>>
+    typeof vi.fn<
+      (chatId: string, type: "session:suspend" | "session:terminate", options?: { resetRef?: string }) => Promise<void>
+    >
   >;
   applyStaleChatIds: ReturnType<typeof vi.fn<(chatIds: string[]) => void>>;
   noteBindRecoveryComplete: ReturnType<typeof vi.fn<() => void>>;
+  releaseParkedResetFenceRecovery: ReturnType<typeof vi.fn<(chatId: string, ref?: string) => ResetFenceReleaseVerdict>>;
+  supersedeResetGeneration: ReturnType<typeof vi.fn<(chatId: string, reason: string) => ResetFenceReleaseVerdict>>;
   reconcileReplayFencesWithServer: ReturnType<typeof vi.fn<() => Promise<void>>>;
   updateTransport: ReturnType<typeof vi.fn<(sdk: unknown, agentConfigCache?: unknown) => void>>;
   shutdown: ReturnType<typeof vi.fn<(reason?: string, opts?: unknown) => Promise<void>>>;
@@ -76,7 +81,11 @@ class FakeClientConnection extends EventEmitter {
   reportSessionEventConfirmed = vi.fn(async () => {});
   reportSessionRuntime = vi.fn();
   reportSessionCommandApplied = vi.fn();
+  reportSessionCommandFinalizedAck = vi.fn();
+  reportSessionCommandAbortedAck = vi.fn();
   sendSessionReconcile = vi.fn();
+  /** Negotiated per connection; flip to false to model an old server. */
+  supportsSessionResetV1 = true;
 
   constructor(private readonly sdk: unknown) {
     super();
@@ -246,6 +255,12 @@ function installMocks(
           handleCommand: vi.fn(async () => {}),
           applyStaleChatIds: vi.fn(),
           noteBindRecoveryComplete: vi.fn(),
+          releaseParkedResetFenceRecovery: vi.fn<(chatId: string, ref?: string) => ResetFenceReleaseVerdict>(
+            () => "accepted",
+          ),
+          supersedeResetGeneration: vi.fn<(chatId: string, reason: string) => ResetFenceReleaseVerdict>(
+            () => "accepted",
+          ),
           reconcileReplayFencesWithServer: vi.fn(async () => {}),
           updateTransport: vi.fn(),
           shutdown: vi.fn(async () => {}),
@@ -280,8 +295,16 @@ function installMocks(
         return this.state.dispatch(entry);
       }
 
-      handleCommand(chatId: string, type: "session:suspend" | "session:terminate"): Promise<void> {
-        return this.state.handleCommand(chatId, type);
+      handleCommand(
+        chatId: string,
+        type: "session:suspend" | "session:terminate",
+        options?: { resetRef?: string },
+      ): Promise<void> {
+        // Forward the arity the caller used so assertions stay readable for
+        // the legacy unref'd path.
+        return options === undefined
+          ? this.state.handleCommand(chatId, type)
+          : this.state.handleCommand(chatId, type, options);
       }
 
       applyStaleChatIds(chatIds: string[]): void {
@@ -290,6 +313,16 @@ function installMocks(
 
       noteBindRecoveryComplete(): void {
         this.state.noteBindRecoveryComplete();
+      }
+
+      releaseParkedResetFenceRecovery(chatId: string, ref?: string): ResetFenceReleaseVerdict {
+        return ref === undefined
+          ? this.state.releaseParkedResetFenceRecovery(chatId)
+          : this.state.releaseParkedResetFenceRecovery(chatId, ref);
+      }
+
+      supersedeResetGeneration(chatId: string, reason: string): ResetFenceReleaseVerdict {
+        return this.state.supersedeResetGeneration(chatId, reason);
       }
 
       reconcileReplayFencesWithServer(): Promise<void> {
@@ -689,7 +722,7 @@ describe("AgentSlot", () => {
     });
     await Promise.resolve();
     await Promise.resolve();
-    expect(session.handleCommand).toHaveBeenCalledWith("chat-2", "session:terminate");
+    expect(session.handleCommand).toHaveBeenCalledWith("chat-2", "session:terminate", { resetRef: "ref-1" });
     expect(connection.reportSessionCommandApplied).not.toHaveBeenCalled();
 
     pending.resolve();
@@ -720,6 +753,284 @@ describe("AgentSlot", () => {
         applied: false,
       }),
     );
+
+    await slot.stop();
+  });
+
+  it("releases parked Reset-fence recovery only after session:command:finalized", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    session.handleCommand.mockResolvedValueOnce(undefined);
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-finalize",
+      type: "session:terminate",
+      ref: "ref-finalize-1",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-finalize-1",
+        agentId: "agent-1",
+        chatId: "chat-finalize",
+        command: "session:terminate",
+        applied: true,
+      }),
+    );
+    expect(session.releaseParkedResetFenceRecovery).not.toHaveBeenCalled();
+
+    connection.emit("session:command:finalized", {
+      type: "session:command:finalized",
+      ref: "ref-finalize-1",
+      ackRef: "ack-finalize-1",
+      agentId: "agent-1",
+      chatId: "chat-finalize",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-finalize", "ref-finalize-1");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(1);
+    // The server holds the Reset request open until this receipt lands.
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith({
+      ref: "ref-finalize-1",
+      ackRef: "ack-finalize-1",
+      agentId: "agent-1",
+      chatId: "chat-finalize",
+      command: "session:terminate",
+      released: true,
+    });
+
+    await slot.stop();
+  });
+
+  it("reports the SessionManager's release verdict verbatim on the finalized receipt", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const finalize = (ref: string, ackRef: string, agentId = "agent-1") => {
+      connection.emit("session:command:finalized", {
+        type: "session:command:finalized",
+        ref,
+        ackRef,
+        agentId,
+        chatId: "chat-gen",
+        command: "session:terminate",
+        state: "evicted",
+      });
+    };
+
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-gen",
+      type: "session:terminate",
+      ref: "ref-a",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: "ref-a", applied: true }),
+      ),
+    );
+
+    // The slot keeps no generation bookkeeping of its own: whatever the
+    // manager rules is exactly what the wire receipt says.
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("accepted");
+    finalize("ref-a", "ack-a");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-gen", "ref-a");
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-a", ackRef: "ack-a", released: true }),
+    );
+
+    // A duplicate for an already-released generation is still a lifted fence.
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("idempotent");
+    finalize("ref-a", "ack-a-late");
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-a", ackRef: "ack-a-late", released: true }),
+    );
+
+    // A superseded / unknown ref is answered honestly so the server's Reset
+    // fails closed instead of claiming a fence that is still up.
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("stale");
+    finalize("ref-a", "ack-a-superseded");
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-a", ackRef: "ack-a-superseded", released: false }),
+    );
+
+    // A finalized for another agent is not ours to answer at all — the
+    // manager is not even consulted.
+    const consulted = session.releaseParkedResetFenceRecovery.mock.calls.length;
+    finalize("ref-a", "ack-foreign", "other-agent");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(consulted);
+    expect(connection.reportSessionCommandFinalizedAck).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ackRef: "ack-foreign" }),
+    );
+
+    await slot.stop();
+  });
+
+  it("answers session:command:aborted through the same generation authority as finalized", async () => {
+    // The local truth after `applied: true` is identical either way: the
+    // provider session is already gone, so an abort has nothing to restore and
+    // simply lifts the generation that fenced provider admission afterwards.
+    // Without this listener the client would hold that fence forever whenever
+    // the server failed to commit the eviction.
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const abort = (
+      ref: string,
+      ackRef: string,
+      reason: "reactivated" | "route_refused" | "cleanup_failed" = "reactivated",
+      agentId = "agent-1",
+    ) => {
+      connection.emit("session:command:aborted", {
+        type: "session:command:aborted",
+        ref,
+        ackRef,
+        agentId,
+        chatId: "chat-abort",
+        command: "session:terminate",
+        reason,
+      });
+    };
+
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-abort",
+      type: "session:terminate",
+      ref: "ref-abort",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: "ref-abort", applied: true }),
+      ),
+    );
+    // Applying alone releases nothing — only an exact disposition does.
+    expect(session.releaseParkedResetFenceRecovery).not.toHaveBeenCalled();
+
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("accepted");
+    abort("ref-abort", "ack-abort", "cleanup_failed");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledWith("chat-abort", "ref-abort");
+    expect(connection.reportSessionCommandAbortedAck).toHaveBeenCalledWith({
+      ref: "ref-abort",
+      ackRef: "ack-abort",
+      agentId: "agent-1",
+      chatId: "chat-abort",
+      command: "session:terminate",
+      released: true,
+    });
+    // The two dispositions are distinct on the wire, so a server waiting on one
+    // can never be settled by the other.
+    expect(connection.reportSessionCommandFinalizedAck).not.toHaveBeenCalled();
+
+    // Duplicate → still a lifted fence; superseded/unknown → answered honestly
+    // so a late abort cannot claim it released a newer generation.
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("idempotent");
+    abort("ref-abort", "ack-abort-late");
+    expect(connection.reportSessionCommandAbortedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ackRef: "ack-abort-late", released: true }),
+    );
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("stale");
+    abort("ref-superseded", "ack-superseded");
+    expect(connection.reportSessionCommandAbortedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-superseded", ackRef: "ack-superseded", released: false }),
+    );
+
+    // Another agent's abort is not this slot's to answer at all.
+    const consulted = session.releaseParkedResetFenceRecovery.mock.calls.length;
+    abort("ref-abort", "ack-foreign", "reactivated", "other-agent");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(consulted);
+    expect(connection.reportSessionCommandAbortedAck).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ackRef: "ack-foreign" }),
+    );
+
+    await slot.stop();
+    // The listener is torn down with the slot, so a late abort cannot reach a
+    // manager that no longer holds the generation it named.
+    const afterStop = session.releaseParkedResetFenceRecovery.mock.calls.length;
+    abort("ref-abort", "ack-after-stop");
+    expect(session.releaseParkedResetFenceRecovery).toHaveBeenCalledTimes(afterStop);
+  });
+
+  it("an unref'd terminate supersedes the armed generation so its late finalized cannot release", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-mixed",
+      type: "session:terminate",
+      ref: "ref-armed",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith(
+        expect.objectContaining({ ref: "ref-armed", applied: true }),
+      ),
+    );
+
+    // Legacy path: the server archived and finalized before sending, so it
+    // carries its own authority — an EXPLICIT supersede, never the incidental
+    // unref'd release that a delayed reconcile would take.
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-mixed", type: "session:terminate" });
+    await vi.waitFor(() =>
+      expect(session.supersedeResetGeneration).toHaveBeenCalledWith("chat-mixed", "unrefd_server_terminate"),
+    );
+    expect(session.releaseParkedResetFenceRecovery).not.toHaveBeenCalled();
+
+    session.releaseParkedResetFenceRecovery.mockReturnValueOnce("stale");
+    connection.emit("session:command:finalized", {
+      type: "session:command:finalized",
+      ref: "ref-armed",
+      ackRef: "ack-armed",
+      agentId: "agent-1",
+      chatId: "chat-mixed",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(connection.reportSessionCommandFinalizedAck).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "ref-armed", released: false }),
+    );
+
+    await slot.stop();
+  });
+
+  it("refuses a ref'd Reset before applying it when the connection has no v1 Reset protocol", async () => {
+    const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+    // Old server: welcome never advertised the composite Reset capability.
+    connection.supportsSessionResetV1 = false;
+
+    connection.emit("session:command", {
+      agentId: "agent-1",
+      chatId: "chat-skew",
+      type: "session:terminate",
+      ref: "ref-skew",
+    });
+    await vi.waitFor(() =>
+      expect(connection.reportSessionCommandApplied).toHaveBeenCalledWith({
+        ref: "ref-skew",
+        agentId: "agent-1",
+        chatId: "chat-skew",
+        command: "session:terminate",
+        applied: false,
+      }),
+    );
+    // Nothing destructive ran: no local terminate, no park to release.
+    expect(session.handleCommand).not.toHaveBeenCalledWith("chat-skew", "session:terminate", expect.anything());
+    expect(session.releaseParkedResetFenceRecovery).not.toHaveBeenCalled();
+
+    // A legacy unref'd terminate is still honoured on an old server.
+    connection.emit("session:command", { agentId: "agent-1", chatId: "chat-skew", type: "session:terminate" });
+    await vi.waitFor(() => expect(session.handleCommand).toHaveBeenCalledWith("chat-skew", "session:terminate"));
 
     await slot.stop();
   });
@@ -1335,7 +1646,7 @@ describe("AgentSlot", () => {
     expect(state.logger.info).toHaveBeenCalledWith("stopped");
   });
 
-  it("surfaces session shutdown failures after a successful unbind", async () => {
+  it("surfaces session shutdown failures and still unbinds afterward", async () => {
     const { slot, connection, state } = await makeSlot();
     await slot.start();
     const session = state.sessions[0];
@@ -1345,9 +1656,43 @@ describe("AgentSlot", () => {
 
     await expect(slot.stop("operator stop")).rejects.toThrow("shutdown failed");
 
+    expect(session.shutdown).toHaveBeenCalled();
     expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
+    const shutdownOrder = session.shutdown.mock.invocationCallOrder[0];
+    const unbindOrder = connection.unbindAgent.mock.invocationCallOrder[0];
+    const clearOrder = connection.clearRuntimeSessionTokenProvider.mock.invocationCallOrder[0];
+    expect(shutdownOrder).toBeTypeOf("number");
+    expect(unbindOrder).toBeTypeOf("number");
+    expect(clearOrder).toBeTypeOf("number");
+    expect(shutdownOrder as number).toBeLessThan(unbindOrder as number);
+    // Proof provider must outlive SM.shutdown so notice HTTP can still resolve
+    // the current runtime-session token during drain.
+    expect(shutdownOrder as number).toBeLessThan(clearOrder as number);
     expect(state.logger.warn).toHaveBeenCalledWith({ err }, "failed to shut down sessions while stopping");
     expect(state.logger.info).toHaveBeenCalledWith("stopped");
+  });
+
+  it("keeps the runtime-session token provider registered while sessionManager.shutdown runs", async () => {
+    const { slot, connection, state } = await makeSlot({
+      activeRuntimeChatIds: ["chat-1"],
+      runtimeSessionToken: "runtime-token-live",
+    });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+
+    const seenDuringShutdown: Array<string | undefined> = [];
+    session.shutdown.mockImplementationOnce(async () => {
+      seenDuringShutdown.push(connection.tokenProviders.get("agent-1")?.());
+    });
+
+    await slot.stop("agent_runtime_switch");
+
+    expect(seenDuringShutdown).toEqual(["runtime-token-live"]);
+    expect(connection.tokenProviders.has("agent-1")).toBe(false);
+    const shutdownOrder = session.shutdown.mock.invocationCallOrder[0] as number;
+    const clearOrder = connection.clearRuntimeSessionTokenProvider.mock.invocationCallOrder[0] as number;
+    expect(shutdownOrder).toBeLessThan(clearOrder);
   });
 
   it("logs a forced-stop failure raised by a server unbind event", async () => {
@@ -1430,7 +1775,9 @@ describe("AgentSlot", () => {
     const session = state.sessions[0];
     if (!session) throw new Error("session missing");
 
+    const shutdown = deferred<void>();
     const unbind = deferred<void>();
+    session.shutdown.mockImplementationOnce(() => shutdown.promise);
     connection.unbindAgent.mockImplementationOnce(() => unbind.promise);
 
     connection.emit("agent:unbound", "agent-1", "agent_runtime_switch");
@@ -1443,13 +1790,22 @@ describe("AgentSlot", () => {
       },
     });
     await Promise.resolve();
-    expect(session.shutdown).not.toHaveBeenCalled();
+    // Session settlement runs before unbind so provider-entered custody can ACK.
+    expect(session.shutdown).toHaveBeenCalledTimes(1);
+    expect(connection.unbindAgent).not.toHaveBeenCalled();
+
+    shutdown.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
 
     unbind.resolve();
     await joinedStop;
 
-    expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
     expect(session.shutdown).toHaveBeenCalledTimes(1);
+    // AgentSlot forwards the diagnostic reason; SessionManager maps full graceful
+    // drain to handler.shutdown(..., { settleProviderEntered: true }) independently
+    // of that string (see pi-session-custody runtime-switch regressions).
     expect(session.shutdown).toHaveBeenCalledWith("agent_runtime_switch", {
       clearPersistedRegistry: true,
       reportSuspendedSessions: false,

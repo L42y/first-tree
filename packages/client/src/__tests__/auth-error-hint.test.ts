@@ -176,6 +176,14 @@ describe("formatAuthHint", () => {
     expect(hint).toContain("not First Tree's");
   });
 
+  it("keeps Pi authentication host-local and points at the provider-owned login", () => {
+    const hint = formatAuthHint("pi", "Please run /login");
+    expect(hint).toContain("pi");
+    expect(hint).toContain("`pi` and then `/login`");
+    expect(hint).toContain("Pi");
+    expect(hint).toContain("not First Tree's");
+  });
+
   it("falls back to a placeholder when the SDK gives no message", () => {
     const hint = formatAuthHint("codex", "");
     expect(hint).toContain("(no message from SDK)");

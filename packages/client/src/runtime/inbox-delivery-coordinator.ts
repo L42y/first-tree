@@ -1,4 +1,4 @@
-import type { InboxEntryWithMessage } from "@first-tree/shared";
+import type { InboxEntryWithMessage, ProviderRetryEventPayload } from "@first-tree/shared";
 import type { pino } from "../observability/logger.js";
 import { Deduplicator } from "./deduplicator.js";
 import type {
@@ -47,6 +47,14 @@ type TrackedDelivery = {
   dedupKey: string;
   phase: DeliveryPhase;
   processingStartedAt?: number;
+  /**
+   * When true, this entry must not be ACKed (including via redelivery_terminal_retry)
+   * until `durableNoticePayload` is successfully posted. Created when a consumed
+   * terminal failure captured a runtime notice but persistence failed.
+   */
+  requiresDurableNotice?: boolean;
+  durableNoticePayload?: ProviderRetryEventPayload;
+  noticeSettleInFlight?: boolean;
   terminalOutcome?: {
     status: "success" | "error";
     errorKind?: "deterministic" | "transient" | "unknown";
@@ -81,6 +89,8 @@ type ChatInboxLedger = {
 type InboxDeliveryCoordinatorConfig = {
   ackEntry: (entryId: number) => Promise<void>;
   recoverChat?: (chatId: string) => Promise<void>;
+  /** Retry a captured terminal runtime notice during recovery/redelivery. */
+  postRuntimeFailureNotice?: (chatId: string, payload: ProviderRetryEventPayload) => Promise<void>;
   onWorkChanged: (chatId: string) => void;
   /**
    * Called after concrete ledger entries are durably committed through a
@@ -140,6 +150,12 @@ export class InboxDeliveryCoordinator {
         { chatId, messageId, entryId: entry.id, phase: activeByEntryId.phase },
         "redelivery observed for active ledger entry",
       );
+      if (activeByEntryId.requiresDurableNotice) {
+        // Notice-backed settlement only — never treat this as an ACK-eligible
+        // terminal redelivery, and never re-route into the provider.
+        void this.settleNoticeRequiredRedelivery(chatId, activeByEntryId);
+        return { kind: "duplicate-in-flight" };
+      }
       if (activeByEntryId.phase === "terminal") {
         void this.ackThrough(chatId, activeByEntryId.entryId, "redelivery_terminal_retry", {
           requireTerminalPrefix: true,
@@ -408,12 +424,13 @@ export class InboxDeliveryCoordinator {
   }
 
   /**
-   * Retain custody without asking the current socket to redeliver. Runtime
-   * proof failures cannot make progress on that socket: both the failed turn
-   * and its durable HTTP notice use the same stale proof. A successful
-   * `agent:bound` is the only boundary that may release this hold.
+   * Retain custody without asking the current socket to redeliver.
+   * Callers keep distinct release boundaries: runtime-proof faults release on
+   * `agent:bound` via {@link completeBindRecovery}; Reset-fence parks release
+   * only after an exact receipted post-apply terminal disposition
+   * (`session:command:finalized` or `session:command:aborted`).
    */
-  async holdTurnForBindRecovery(
+  async parkTurnForDeferredRecovery(
     chatId: string,
     messages: SessionMessage | readonly SessionMessage[],
     reason: string,
@@ -466,17 +483,65 @@ export class InboxDeliveryCoordinator {
     if (remaining.length > 0) await this.markRecoveryDebt(chatId, reason);
   }
 
+  /**
+   * Stash a mandatory durable-notice obligation on the given messages so
+   * recovery/redelivery cannot ACK them via terminal dedup without posting.
+   */
+  markNoticeRequired(
+    chatId: string,
+    messages: SessionMessage | readonly SessionMessage[],
+    payload: ProviderRetryEventPayload | null,
+  ): void {
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger || ledger.entries.length === 0) return;
+    const entryIds = this.messageEntryIds(chatId, messages);
+    if (entryIds.size === 0) return;
+    let changed = false;
+    for (const tracked of ledger.entries) {
+      if (!entryIds.has(tracked.entryId)) continue;
+      tracked.requiresDurableNotice = true;
+      if (payload) tracked.durableNoticePayload = payload;
+      changed = true;
+    }
+    if (changed) this.emitWorkChanged(chatId);
+  }
+
+  /** Mark every contiguous owned+processingStarted prefix as notice-required. */
+  markNoticeRequiredForProcessingPrefix(chatId: string, payload: ProviderRetryEventPayload): void {
+    const ledger = this.ledgers.get(chatId);
+    if (!ledger || ledger.entries.length === 0) return;
+    let changed = false;
+    for (const tracked of ledger.entries) {
+      if (tracked.phase === "terminal") continue;
+      if (tracked.phase === "owned" && tracked.processingStartedAt !== undefined) {
+        tracked.requiresDurableNotice = true;
+        tracked.durableNoticePayload = payload;
+        changed = true;
+        continue;
+      }
+      break;
+    }
+    if (changed) this.emitWorkChanged(chatId);
+  }
+
   async prepareOperatorSuspend(chatId: string): Promise<void> {
     const ledger = this.ledgers.get(chatId);
     if (!ledger || ledger.entries.length === 0) return;
 
+    // Resolve the contiguous provider-entered prefix. DeliveryToken.complete is
+    // the preferred notice+ACK path. Entries that still require a durable notice
+    // must not be promoted to ACK-eligible terminal — recovery/redelivery would
+    // otherwise fire redelivery_terminal_retry without notice evidence.
     let resolvablePrefixCount = 0;
     let changed = false;
     const handledAt = Date.now();
     for (const tracked of ledger.entries) {
-      if (tracked.phase === "terminal") {
+      if (tracked.phase === "terminal" && !tracked.requiresDurableNotice) {
         resolvablePrefixCount++;
         continue;
+      }
+      if (tracked.requiresDurableNotice) {
+        break;
       }
       if (tracked.phase === "owned" && tracked.processingStartedAt !== undefined) {
         tracked.phase = "terminal";
@@ -515,7 +580,7 @@ export class InboxDeliveryCoordinator {
     void this.markRecoveryDebt(chatId, reason);
   }
 
-  async drainForTerminate(chatId: string): Promise<void> {
+  async drainForTerminate(chatId: string, opts: { requestNow?: boolean } = {}): Promise<void> {
     const ledger = this.ledgers.get(chatId);
     if (!ledger || ledger.entries.length === 0) return;
 
@@ -532,7 +597,14 @@ export class InboxDeliveryCoordinator {
     }
 
     const remaining = this.ledgers.get(chatId)?.entries ?? [];
-    if (remaining.length > 0) await this.markRecoveryDebt(chatId, "terminate_non_terminal_remainder");
+    if (remaining.length > 0) {
+      await this.markRecoveryDebt(chatId, "terminate_non_terminal_remainder", {
+        // Reset terminate passes requestNow:false so recoverChat waits until
+        // the admission fence clears. Terminal-failure teardown keeps the
+        // default immediate recovery.
+        requestNow: opts.requestNow,
+      });
+    }
   }
 
   hasUnsettledWork(chatId: string): boolean {
@@ -681,9 +753,21 @@ export class InboxDeliveryCoordinator {
 
   private async markRecoveryDebt(chatId: string, reason: string, opts: { requestNow?: boolean } = {}): Promise<void> {
     const ledger = this.ledger(chatId);
+    // A recovered multi-frame burst keeps recoveryWindowOpen while redeliveries
+    // settle. If that burst creates *new* debt (e.g. repeated notice failure),
+    // retire the window so the next dispatch reaches shouldRecoverBeforeDispatch
+    // and can request recovery again — otherwise receive() returns "recovering"
+    // forever without ever calling recoverChat.
+    const retireRecoveryWindow = ledger.recoveryWindowOpen || ledger.recoveryActivationReady;
     if (ledger.recoveryDebt !== "required") {
       ledger.recoveryDebt = "required";
       this.emitWorkChanged(chatId);
+    }
+    if (retireRecoveryWindow) {
+      ledger.recoveryWindowOpen = false;
+      ledger.recoveryActivationReady = false;
+      this.emitWorkChanged(chatId);
+      this.config.log.info({ chatId, reason }, "retired recovery activation window after new recovery debt");
     }
     this.config.log.warn(
       { chatId, reason, entryIds: ledger.entries.map((entry) => entry.entryId) },
@@ -695,11 +779,62 @@ export class InboxDeliveryCoordinator {
 
   private clearEntriesForRecoverySuccess(chatId: string): void {
     const ledger = this.ledger(chatId);
-    const nonTerminal = ledger.entries.filter((tracked) => tracked.phase !== "terminal");
-    for (const tracked of nonTerminal) {
+    // Retain ACK-eligible terminals and notice-required entries (owned or
+    // terminal). Notice-required rows must survive so redelivery can retry the
+    // durable notice without re-entering the provider.
+    const retained = ledger.entries.filter(
+      (tracked) => tracked.phase === "terminal" || tracked.requiresDurableNotice === true,
+    );
+    for (const tracked of ledger.entries) {
+      if (retained.includes(tracked)) continue;
       this.deduplicator.drop(tracked.dedupKey);
     }
-    ledger.entries = ledger.entries.filter((tracked) => tracked.phase === "terminal");
+    ledger.entries = retained;
+  }
+
+  private async settleNoticeRequiredRedelivery(chatId: string, tracked: TrackedDelivery): Promise<void> {
+    if (!tracked.requiresDurableNotice) return;
+    if (tracked.noticeSettleInFlight) return;
+    tracked.noticeSettleInFlight = true;
+    try {
+      const payload = tracked.durableNoticePayload;
+      const postNotice = this.config.postRuntimeFailureNotice;
+      if (!payload || !postNotice) {
+        this.config.log.warn(
+          { chatId, entryId: tracked.entryId, hasPayload: Boolean(payload) },
+          "notice-required redelivery cannot settle; retaining unacked custody",
+        );
+        await this.markRecoveryDebt(chatId, "terminal_notice_unresolved", { requestNow: false });
+        return;
+      }
+      try {
+        await postNotice(chatId, payload);
+      } catch (err) {
+        this.config.log.warn(
+          { chatId, entryId: tracked.entryId, err },
+          "notice-required redelivery failed to post durable notice; retaining unacked custody",
+        );
+        await this.markRecoveryDebt(chatId, "runtime_failure_notice_delivery_failed", { requestNow: false });
+        return;
+      }
+      tracked.requiresDurableNotice = false;
+      tracked.durableNoticePayload = undefined;
+      tracked.phase = "terminal";
+      if (!tracked.terminalOutcome) {
+        tracked.terminalOutcome = {
+          status: "error",
+          errorKind: "deterministic",
+          handledAt: Date.now(),
+        };
+      }
+      this.emitWorkChanged(chatId);
+      await this.ackThrough(chatId, tracked.entryId, "notice_required_redelivery", {
+        requireTerminalPrefix: true,
+        requestRecoveryOnAckFailure: false,
+      });
+    } finally {
+      tracked.noticeSettleInFlight = false;
+    }
   }
 
   private findEntry(chatId: string, entryId: number): TrackedDelivery | null {
@@ -740,6 +875,13 @@ export class InboxDeliveryCoordinator {
       if (!terminalIds.has(tracked.entryId)) continue;
       if (tracked.phase !== "terminal") {
         tracked.phase = "terminal";
+        changed = true;
+      }
+      // finishTurn / terminalRejected only run after notice persistence (or for
+      // success); clear any prior notice-required gate.
+      if (tracked.requiresDurableNotice || tracked.durableNoticePayload) {
+        tracked.requiresDurableNotice = false;
+        tracked.durableNoticePayload = undefined;
         changed = true;
       }
       if (!tracked.terminalOutcome) {

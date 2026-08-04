@@ -42,6 +42,7 @@ type SessionRecord = {
   deferredMessages: SessionMessage[];
   routeTransitionGeneration: number;
   routeTransition: { generation: number; handler: AgentHandler; phase: "start" | "resume" } | null;
+  routeInjectReady: boolean;
   pendingRuntimeFailureNotice: ProviderRetryEventPayload | null;
   retryFromEvicted: { claudeSessionId: string; lastActivity: number } | null;
 };
@@ -51,6 +52,7 @@ type SessionManagerInternals = {
   evictedMappings: Map<string, { claudeSessionId: string; lastActivity: number }>;
   terminatingChats: Map<string, Promise<void>>;
   terminatePersistFailures: Set<string>;
+  awaitingResetFenceRelease: Set<string>;
   pendingTeardowns: Map<string, Set<AgentHandler>>;
   routeProducers: Map<string, Set<Promise<void>>>;
   registry: SessionRegistry | null;
@@ -305,6 +307,7 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     deferredMessages: [],
     routeTransitionGeneration: 0,
     routeTransition: null,
+    routeInjectReady: false,
     pendingRuntimeFailureNotice: null,
     retryFromEvicted: null,
     ...overrides,
@@ -336,6 +339,45 @@ describe("SessionManager edge coverage", () => {
       { chatId: "chat-pending", state: "suspended" },
     ]);
     expect(sm.getEvictedChatIds(activeSet)).toEqual(["chat-evicted-active"]);
+
+    await sm.shutdown();
+  });
+
+  it("operator suspend clears routeInjectReady with the routeTransition pointer", async () => {
+    const activeHandler = handler();
+    const sm = makeManager({ handlers: [activeHandler] });
+    const i = internals(sm);
+    const chatId = "chat-inject-ready-suspend";
+    const generation = 3;
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        status: "active",
+        activeSlotHeld: true,
+        handler: activeHandler,
+        routeTransitionGeneration: generation,
+        routeTransition: { generation, handler: activeHandler, phase: "start" },
+        routeInjectReady: true,
+        deferredMessages: [makeMessage(chatId)],
+      }),
+    );
+    i._activeCount = 1;
+
+    // Operator suspend clears the transition pointer immediately while keeping
+    // generation stable through settle. Probe the entry before awaiting the
+    // suspending promise so we observe that latch-clear window.
+    const suspendPromise = sm.handleCommand(chatId, "session:suspend");
+    const duringSettle = i.sessions.get(chatId);
+    expect(duringSettle).toBeDefined();
+    expect(duringSettle?.routeTransition).toBeNull();
+    expect(duringSettle?.routeInjectReady).toBe(false);
+    expect(duringSettle?.status).toBe("suspended");
+    expect(duringSettle?.routeTransitionGeneration).toBe(generation);
+
+    await suspendPromise;
+    const afterSettle = i.sessions.get(chatId);
+    expect(afterSettle?.routeTransition).toBeNull();
+    expect(afterSettle?.routeInjectReady).toBe(false);
 
     await sm.shutdown();
   });
@@ -1689,6 +1731,116 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("operator suspend does not sweep an unentered queued active-inject tail into the resolved prefix", async () => {
+    let initialCtx: SessionContext | undefined;
+    let initialHead: SessionMessage | undefined;
+    let enteredToken: Parameters<AgentHandler["inject"]>[1];
+    let enteredMessage: SessionMessage | undefined;
+    let injectCount = 0;
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-inject-tail" });
+    const activeHandler = handler({
+      start: vi.fn().mockImplementation(async (message, ctx) => {
+        initialCtx = ctx;
+        initialHead = message;
+        return "active-inject-tail-session";
+      }),
+      inject: vi.fn().mockImplementation((message, token) => {
+        injectCount++;
+        if (injectCount === 1) {
+          enteredToken = token;
+          enteredMessage = message;
+          token?.processingStarted([message]);
+          return { kind: "owned", mode: "processing" } as const;
+        }
+        // Unentered queued-mode tail: owned locally but not provider-entered.
+        return { kind: "owned", mode: "queued" } as const;
+      }),
+      suspend: vi.fn().mockImplementation(async (_reason, opts) => {
+        if (opts?.settleProviderEntered === true && enteredToken && enteredMessage && initialCtx) {
+          // Capture notice while the inject settlement lease is still open, then
+          // complete the entered prefix. The queued tail must stay recovery debt.
+          initialCtx.emitEvent({
+            kind: "error",
+            payload: {
+              source: "runtime",
+              message: encodeProviderRetryEventMessage({
+                event: "provider_failure_terminal",
+                provider: "pi",
+                scope: "provider_turn",
+                category: "unknown",
+                reasonCode: "unsafe_replay",
+                replaySafety: "unsafe",
+                userSeverity: "error",
+                messagePreview: "active inject suspend settle",
+              }),
+            },
+          });
+          await enteredToken.complete([enteredMessage], {
+            status: "error",
+            completion: "consumed",
+            reason: "unsafe_replay",
+          });
+        }
+      }),
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const sdk = mockSdk();
+    vi.mocked(sdk.sendMessage).mockImplementation(sendMessage);
+    const sm = makeManager({
+      handlers: [activeHandler],
+      ackEntry,
+      sdk,
+    });
+    const i = internals(sm);
+    const chatId = "chat-active-inject-queued-tail";
+
+    await sm.dispatch(mockEntry({ id: 1, chatId, messageId: "msg-tail-establish" }));
+    if (!initialCtx || !initialHead) throw new Error("initial route was not captured");
+    await initialCtx.finishTurn(initialHead, { status: "success", terminal: true });
+
+    await sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-tail-entered" }));
+    await sm.dispatch(mockEntry({ id: 3, chatId, messageId: "msg-tail-queued" }));
+    expect(injectCount).toBe(2);
+
+    // Prove the inject DeliveryToken can settle with notice+ACK (split lease).
+    if (!enteredToken || !enteredMessage || !initialCtx) throw new Error("entered inject was not captured");
+    initialCtx.emitEvent({
+      kind: "error",
+      payload: {
+        source: "runtime",
+        message: encodeProviderRetryEventMessage({
+          event: "provider_failure_terminal",
+          provider: "pi",
+          scope: "provider_turn",
+          category: "unknown",
+          reasonCode: "unsafe_replay",
+          replaySafety: "unsafe",
+          userSeverity: "error",
+          messagePreview: "entered inject consumed",
+        }),
+      },
+    });
+    const disposition = await enteredToken.complete([enteredMessage], {
+      status: "error",
+      completion: "consumed",
+      reason: "unsafe_replay",
+    });
+    expect(disposition).toBe("settled");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 2)).toHaveLength(1);
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspending = i.sessions.get(chatId)?.suspending;
+    await suspending;
+
+    // Queued tail must not be force-resolved by prepareOperatorSuspend.
+    expect(ackEntry.mock.calls.filter((call) => call[0] === 3)).toHaveLength(0);
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+    expect(i.inboxDelivery.snapshot(chatId).entries.some((entry) => entry.entryId === 3)).toBe(true);
+
+    await sm.shutdown();
+  });
+
   it.each([
     "rejected",
     "throw",
@@ -2274,13 +2426,19 @@ describe("SessionManager edge coverage", () => {
     expect(terminatingHandler.inject).not.toHaveBeenCalled();
     expect(terminatingHandler.resume).not.toHaveBeenCalled();
     expect(sm.activeCount).toBe(1);
-    expect(recoverChat).toHaveBeenCalledWith(chatId);
-    expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
+    // Fenced delivery parks without same-socket recoverChat while terminate drains.
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
 
     resolveShutdown?.();
     await terminate;
 
-    expect(recoverChat).toHaveBeenCalledWith(chatId);
+    // Local success arms parked debt but must not recover until server-confirmed
+    // Reset finalization (simulated here via the public release API).
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
+    expect(recoverChat).toHaveBeenCalledTimes(1);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
     expect(i.sessions.has(chatId)).toBe(false);
     expect(i.sessions.has(blocker.chatId)).toBe(true);
@@ -3005,6 +3163,58 @@ describe("SessionManager edge coverage", () => {
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
+  });
+
+  it("manager shutdown stops a handler left unconfirmed after a completed failed operator suspend", async () => {
+    const suspendBoom = new Error("suspend settle failed");
+    const targetHandler = handler({
+      suspend: vi.fn().mockRejectedValue(suspendBoom),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-shutdown-after-failed-suspend";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(i.sessions.get(chatId)?.suspendError).toEqual({ error: suspendBoom });
+    expect(i.sessions.get(chatId)?.handlerStoppedBySuspend).toBe(null);
+    // Failed settle intentionally skipped teardown — stop is still unconfirmed.
+    expect(targetHandler.shutdown).not.toHaveBeenCalled();
+
+    await sm.shutdown("operator stop");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(targetHandler.shutdown).toHaveBeenCalledWith(
+      "operator stop",
+      expect.not.objectContaining({
+        settleProviderEntered: true,
+      }),
+    );
+    expect(i.sessions.has(chatId)).toBe(false);
+  });
+
+  it("manager shutdown stops a handler after a completed failed suspend with a falsey rejection", async () => {
+    const targetHandler = handler({
+      suspend: vi.fn().mockRejectedValue(undefined),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-shutdown-after-falsey-suspend-error";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    // Boxed error: falsey rejections are still failures.
+    expect(i.sessions.get(chatId)?.suspendError).toEqual({ error: undefined });
+    expect(targetHandler.shutdown).not.toHaveBeenCalled();
+
+    await sm.shutdown("manager_shutdown");
+    expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(i.sessions.has(chatId)).toBe(false);
   });
 
   it("strictly stops a failed-suspend handler before resume installs a fresh one", async () => {
@@ -5127,6 +5337,583 @@ describe("SessionManager edge coverage", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("fences provider route admission and force-keeps held-chat sync after a failed Reset flush", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-terminate-persist-fence-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-terminate-persist-fence";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const start = vi.fn().mockResolvedValue({
+      sessionId: "should-not-start",
+      route: { kind: "owned", mode: "processing" },
+    });
+    const resume = vi.fn().mockResolvedValue({
+      sessionId: "should-not-resume",
+      route: { kind: "owned", mode: "processing" },
+    });
+    const inject = vi.fn().mockReturnValue({ kind: "owned", mode: "processing" });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({
+      registryPath,
+      handlers: [handler({ start, resume, inject })],
+      recoverChat,
+    });
+    const i = internals(sm);
+    expect(i.evictedMappings.has(chatId)).toBe(true);
+
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+    // Empty active set still force-keeps the unresolved Reset persistence boundary.
+    expect(sm.getHeldChatIds(new Set())).toContain(chatId);
+
+    await sm.dispatch(mockEntry({ id: 80, chatId, messageId: "msg-fenced-while-persist-failed" }));
+    expect(start).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(inject).not.toHaveBeenCalled();
+    expect(i.sessions.has(chatId)).toBe(false);
+    // Parked behind the fence: no same-socket recoverChat storm.
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+
+    // Genuine terminate retry clears the fence after a successful flush.
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(recoverChat).toHaveBeenCalledWith(chatId);
+    await vi.waitFor(() => expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(false));
+    expect(sm.getHeldChatIds(new Set())).not.toContain(chatId);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("parks failed-Reset fence hits without recovery storm, then same-socket recovers once after successful retry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-terminate-persist-recover-loop-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-terminate-persist-recover-loop";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const intervening = mockEntry({ id: 81, chatId, messageId: "msg-intervening-same-socket" });
+    let consecutiveNoProgressResets = 0;
+    let lastResetSignature: string | null = null;
+    let noProgressCircuitOpen = false;
+    const NO_PROGRESS_LIMIT = 2;
+
+    const start = vi.fn().mockImplementation(async (message: SessionMessage, ctx: SessionContext, token) => {
+      token?.processingStarted(message);
+      await token?.complete(message, { status: "success", terminal: true });
+      await ctx.finishTurn(message, { status: "success", terminal: true });
+      return `fresh-${message.id}`;
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+
+    const recoverChat = vi.fn<(id: string) => Promise<void>>().mockImplementation(async () => {
+      // Production-shaped same-socket recover acceptance. Repeated identical
+      // resets of the same unacked row open the server's no-progress circuit.
+      const resetSignature = String(intervening.id);
+      consecutiveNoProgressResets = lastResetSignature === resetSignature ? consecutiveNoProgressResets + 1 : 1;
+      lastResetSignature = resetSignature;
+      if (consecutiveNoProgressResets > NO_PROGRESS_LIMIT) {
+        noProgressCircuitOpen = true;
+        throw new Error("recover_failed: no-progress circuit open");
+      }
+    });
+
+    const sm = makeManager({
+      registryPath,
+      handlers: [handler({ start })],
+      recoverChat,
+      ackEntry,
+    });
+    const i = internals(sm);
+
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
+
+    // Intervening durable row while fence is set: park with no provider entry,
+    // no ACK, and no recoverChat — even under repeated delivery attempts.
+    await sm.dispatch(intervening);
+    await sm.dispatch(intervening);
+    await sm.dispatch(intervening);
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(intervening.id);
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(noProgressCircuitOpen).toBe(false);
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+
+    // Same-socket Pause + successful Reset retry clears the fence and arms
+    // parked debt; recovery waits for server-confirmed finalization.
+    await sm.handleCommand(chatId, "session:suspend");
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(noProgressCircuitOpen).toBe(false);
+    expect(consecutiveNoProgressResets).toBe(1);
+
+    // Server redelivers the exact intervening row on the same socket after the
+    // accepted recovery; it must enter one fresh post-Reset session and settle.
+    await sm.dispatch(intervening);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(intervening.id));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(start).mock.calls[0]?.[0]).toMatchObject({ id: intervening.message.id });
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+    expect(noProgressCircuitOpen).toBe(false);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps late parked deliveries parked after non-persistence terminate failure until genuine retry + release", async () => {
+    let signalShutdownStarted: (() => void) | undefined;
+    let rejectShutdown: ((err: Error) => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((_resolve, reject) => {
+      rejectShutdown = reject;
+    });
+    const boom = new Error("handler shutdown failed");
+    const terminatingHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalShutdownStarted?.();
+        await shutdownGate;
+      }),
+    });
+    const start = vi.fn().mockResolvedValue("should-not-start");
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({
+      handlers: [terminatingHandler, handler({ start })],
+      recoverChat,
+      ackEntry,
+    });
+    const i = internals(sm);
+    const chatId = "chat-terminate-teardown-park";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: terminatingHandler,
+        status: "active",
+      }),
+    );
+    i._activeCount = 1;
+
+    const terminate = sm.handleCommand(chatId, "session:terminate");
+    await shutdownStarted;
+
+    const lateEntry = mockEntry({ id: 91, chatId, messageId: "msg-late-parked-teardown" });
+    await sm.dispatch(lateEntry);
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    rejectShutdown?.(boom);
+    await expect(terminate).rejects.toThrow("handler shutdown failed");
+    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    // Non-persistence failure must leave parked debt parked — no recover/provider/ACK.
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    // Repeated delivery while still awaiting a successful Reset stays parked.
+    await sm.dispatch(lateEntry);
+    await sm.dispatch(lateEntry);
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
+
+    // Genuine retry succeeds; release after simulated server finalization.
+    vi.mocked(terminatingHandler.shutdown).mockImplementation(async () => undefined);
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(recoverChat).toHaveBeenCalledWith(chatId);
+
+    await sm.shutdown();
+  });
+
+  it("ref'd terminate + same-socket finalize releases exactly once after applied/finalized ordering", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-terminate-finalize-order-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-terminate-finalize-order";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const intervening = mockEntry({ id: 92, chatId, messageId: "msg-finalize-order" });
+    let consecutiveNoProgressResets = 0;
+    let lastResetSignature: string | null = null;
+    let noProgressCircuitOpen = false;
+    const NO_PROGRESS_LIMIT = 2;
+    const order: string[] = [];
+
+    const start = vi.fn().mockImplementation(async (message: SessionMessage, ctx: SessionContext, token) => {
+      token?.processingStarted(message);
+      await token?.complete(message, { status: "success", terminal: true });
+      await ctx.finishTurn(message, { status: "success", terminal: true });
+      return `fresh-${message.id}`;
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(id: string) => Promise<void>>().mockImplementation(async () => {
+      order.push("recover");
+      const resetSignature = String(intervening.id);
+      consecutiveNoProgressResets = lastResetSignature === resetSignature ? consecutiveNoProgressResets + 1 : 1;
+      lastResetSignature = resetSignature;
+      if (consecutiveNoProgressResets > NO_PROGRESS_LIMIT) {
+        noProgressCircuitOpen = true;
+        throw new Error("recover_failed: no-progress circuit open");
+      }
+    });
+
+    const sm = makeManager({
+      registryPath,
+      handlers: [handler({ start })],
+      recoverChat,
+      ackEntry,
+    });
+    const i = internals(sm);
+
+    // Failed flush + repeated delivery: no recovery/provider/ACK/circuit.
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
+    await sm.dispatch(intervening);
+    await sm.dispatch(intervening);
+    await sm.dispatch(intervening);
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalledWith(intervening.id);
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(noProgressCircuitOpen).toBe(false);
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    // Successful Pause/Reset retry arms debt; simulated applied→finalized then
+    // exactly one same-socket recovery (no reconnect / no circuit).
+    await sm.handleCommand(chatId, "session:suspend");
+    await sm.handleCommand(chatId, "session:terminate");
+    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(recoverChat).not.toHaveBeenCalled();
+    order.push("applied");
+    order.push("finalized");
+    sm.releaseParkedResetFenceRecovery(chatId);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(["applied", "finalized", "recover"]);
+    expect(noProgressCircuitOpen).toBe(false);
+    expect(consecutiveNoProgressResets).toBe(1);
+
+    await sm.dispatch(intervening);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(intervening.id));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(start).mock.calls[0]?.[0]).toMatchObject({ id: intervening.message.id });
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+    expect(noProgressCircuitOpen).toBe(false);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("releases parked Reset debt only for the armed generation's ref", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-reset-ref-scope-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-reset-ref-scope";
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [chatId]: {
+            claudeSessionId: "persisted-session",
+            lastActivity: new Date(1_000).toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const start = vi.fn().mockImplementation(async (message: SessionMessage, ctx: SessionContext, token) => {
+      token?.processingStarted(message);
+      await token?.complete(message, { status: "success", terminal: true });
+      await ctx.finishTurn(message, { status: "success", terminal: true });
+      return `fresh-${message.id}`;
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(id: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ registryPath, handlers: [handler({ start }), handler({ start })], recoverChat, ackEntry });
+    const i = internals(sm);
+
+    // Park intervening debt behind a failed flush, exactly as a real Reset
+    // failure does, then arm generation A with a successful retry.
+    const boom = new Error("disk full");
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" })).rejects.toBe(boom);
+    await sm.dispatch(mockEntry({ id: 601, chatId, messageId: "msg-ref-scope" }));
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
+
+    // A ref that is not the armed generation may not lift the fence.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-not-armed")).toBe("stale");
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+
+    // Generation B parks new debt and arms over A; A's delayed duplicate is
+    // inert, and only the exact B ref releases — once.
+    vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
+      throw boom;
+    });
+    await expect(sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" })).rejects.toBe(boom);
+    await sm.dispatch(mockEntry({ id: 602, chatId, messageId: "msg-ref-scope-b" }));
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("stale");
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(2));
+    // A duplicate for the same generation is honest about the fence being
+    // down without recovering a second time.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("idempotent");
+    expect(recoverChat).toHaveBeenCalledTimes(2);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("associates every ref that joins one termination with a single generation", async () => {
+    let signalShutdownStarted: (() => void) | undefined;
+    let resolveShutdown: (() => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    });
+    const terminatingHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalShutdownStarted?.();
+        await shutdownGate;
+      }),
+    });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [terminatingHandler], recoverChat });
+    const i = internals(sm);
+    const chatId = "chat-reset-ref-join";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    i._activeCount = 1;
+
+    const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-first" });
+    await shutdownStarted;
+    await sm.dispatch(mockEntry({ id: 610, chatId, messageId: "msg-ref-join" }));
+    const second = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-second" });
+
+    resolveShutdown?.();
+    await first;
+    await second;
+
+    // A and B share one termination, so they share one generation: either
+    // alias is an honest release, and the second one recovers nothing extra.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-first")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-second")).toBe("idempotent");
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    // A later generation retires both aliases.
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-third" });
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-first")).toBe("stale");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-second")).toBe("stale");
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-third")).toBe("accepted");
+
+    await sm.shutdown();
+  });
+
+  it("keeps the joining alias releasable when the second ref's finalized lands first", async () => {
+    let signalShutdownStarted: (() => void) | undefined;
+    let resolveShutdown: (() => void) | undefined;
+    const shutdownStarted = new Promise<void>((resolve) => {
+      signalShutdownStarted = resolve;
+    });
+    const shutdownGate = new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    });
+    const terminatingHandler = handler({
+      shutdown: vi.fn().mockImplementation(async () => {
+        signalShutdownStarted?.();
+        await shutdownGate;
+      }),
+    });
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [terminatingHandler], recoverChat });
+    const i = internals(sm);
+    const chatId = "chat-reset-alias-order";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    i._activeCount = 1;
+
+    const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
+    await shutdownStarted;
+    await sm.dispatch(mockEntry({ id: 611, chatId, messageId: "msg-alias-order" }));
+    const second = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
+
+    resolveShutdown?.();
+    await first;
+    await second;
+
+    // Whichever Reset the server finalizes first is the one that releases;
+    // latest-ref-wins would have made this the stale one.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("idempotent");
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+  });
+
+  it("keeps a delayed stale reconcile from releasing a newer armed Reset generation", async () => {
+    const start = vi.fn().mockResolvedValue("should-not-start");
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [handler({ start }), handler({ start })], recoverChat, ackEntry });
+    const i = internals(sm);
+    const chatId = "chat-reset-stale-reconcile";
+
+    // Reset B is armed and holding a parked row.
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
+    await sm.dispatch(mockEntry({ id: 620, chatId, messageId: "msg-behind-generation-b" }));
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(recoverChat).not.toHaveBeenCalled();
+
+    // A reconcile result computed from older server state declares the chat
+    // stale. Its terminate still runs, but it carries no generation, so it
+    // must NOT lift B's fence — that would redeliver into a Reset the server
+    // has not finalized.
+    sm.applyStaleChatIds([chatId]);
+    await vi.waitFor(() => expect(i.terminatingChats.has(chatId)).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    // Only B's own finalized releases it.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-b")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+
+    await sm.shutdown();
+  });
+
+  it("fences the post-apply window of a zero-debt Reset until its exact finalized", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ft-reset-zero-debt-fence-"));
+    const registryPath = join(dir, "sessions.json");
+    const chatId = "chat-reset-zero-debt";
+
+    const start = vi.fn().mockImplementation(async (message: SessionMessage, ctx: SessionContext, token) => {
+      token?.processingStarted(message);
+      await token?.complete(message, { status: "success", terminal: true });
+      await ctx.finishTurn(message, { status: "success", terminal: true });
+      return `fresh-${message.id}`;
+    });
+    const inject = vi.fn().mockReturnValue({ kind: "owned", mode: "processing" });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(id: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ registryPath, handlers: [handler({ start, inject })], recoverChat, ackEntry });
+    const i = internals(sm);
+
+    // Clean Reset: no recovery debt and no unsettled work when it applies.
+    await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-clean" });
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(false);
+    expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
+    // The fence is armed anyway — the session is gone but the server has not
+    // finalized, so the chat is not open for business yet.
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(sm.getHeldChatIds(new Set())).toContain(chatId);
+
+    const late = mockEntry({ id: 630, chatId, messageId: "msg-after-applied" });
+    await sm.dispatch(late);
+    await sm.dispatch(late);
+    expect(start).not.toHaveBeenCalled();
+    expect(inject).not.toHaveBeenCalled();
+    expect(recoverChat).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
+
+    // A foreign ref still cannot open it.
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-other")).toBe("stale");
+    expect(recoverChat).not.toHaveBeenCalled();
+
+    expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-clean")).toBe("accepted");
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(false);
+
+    // The redelivered row now enters one fresh post-Reset session and settles.
+    await sm.dispatch(late);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(late.id));
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("cancels admitted delivery when terminate arrives before SessionEntry creation", async () => {
     let signalBindingStarted: (() => void) | undefined;
     let resolveBinding: (() => void) | undefined;
@@ -5152,6 +5939,8 @@ describe("SessionManager edge coverage", () => {
     expect(i.inboxDelivery.snapshot(chatId).admissionPending).toBe(true);
 
     await sm.handleCommand(chatId, "session:terminate");
+    expect(recoverChat).not.toHaveBeenCalled();
+    sm.releaseParkedResetFenceRecovery(chatId);
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(pendingHandler.start).not.toHaveBeenCalled();
     expect(sm.activeCount).toBe(0);
@@ -6180,7 +6969,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(i.sessions.has("chat-unowned")).toBe(false);
     expect(sm.activeCount).toBe(0);
-    await vi.waitFor(() => expect(badShutdown).toHaveBeenCalledWith("test_unowned_route"));
+    await vi.waitFor(() => expect(badShutdown).toHaveBeenCalledWith("test_unowned_route", {}));
     await sm.shutdown();
   });
 

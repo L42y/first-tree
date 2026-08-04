@@ -108,14 +108,41 @@ export const serverCapabilitiesSchema = z
      * path; ordinary event streaming may remain fire-and-forget.
      */
     wsSessionEventConfirm: z.boolean().default(false),
+    /**
+     * Version 1 of the COMPOSITE chat-session Reset protocol: the ref'd
+     * `session:terminate` apply-ack AND the post-apply disposition handshake
+     * on the exact applying client route, with the request held open until the
+     * client's receipt lands. The disposition is `session:command:finalized` /
+     * `session:command:finalized:ack` when the eviction committed durably, and
+     * `session:command:aborted` / `session:command:aborted:ack` when the server
+     * could not finalize (reactivation, route refusal, cleanup failure). All of
+     * it is one indivisible capability — a peer that implements only the
+     * apply-ack, or only the finalized disposition, cannot participate at all,
+     * because the client parks inbox rows behind a fence that only an exact
+     * receipted disposition lifts.
+     *
+     * This is the server half of a two-sided negotiation. A client must NOT
+     * declare `wsSessionResetV1` unless it saw this flag, and must not fall
+     * back to advertising the legacy apply-only flag as Reset-readiness: an
+     * older server would accept that as consent, run the legacy flow, and
+     * leave the client parked forever. The welcome frame is emitted BEFORE
+     * `auth:ok` so the client can answer with an accurate `client:register`.
+     *
+     * Future protocol changes bump to a new `wsSessionResetV2` field rather
+     * than redefining this one, so version skew stays decidable from the
+     * frame alone.
+     */
+    wsSessionResetV1: z.boolean().default(false),
   })
   .partial();
 export type ServerCapabilities = z.infer<typeof serverCapabilitiesSchema>;
 
 /**
- * Advisory frame sent server → client immediately after `auth:ok`. It carries
- * the Command-package version the server was bundled with, so the client can
- * detect version drift on startup and on each reconnect. `.passthrough()` so
+ * Advisory frame sent server → client on the post-auth handshake, immediately
+ * BEFORE `auth:ok` so its capabilities are known by the time the client
+ * answers with `client:register`. It carries the Command-package version the
+ * server was bundled with, so the client can detect version drift on startup
+ * and on each reconnect. `.passthrough()` so
  * future server versions may add fields without breaking older clients that
  * validate this frame.
  */

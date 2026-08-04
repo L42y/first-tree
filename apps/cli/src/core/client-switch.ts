@@ -860,18 +860,20 @@ export function parseSwitchProcessEnvValue(envText: string, key: string): string
 function isKnownProviderCommand(command: string): boolean {
   if (
     /(^|[/\s])(claude|codex|cursor-agent|grok|opencode)(\s|$)/i.test(command) ||
-    /@openai\/codex|claude-code|opencode-ai/i.test(command)
+    /@openai\/codex|claude-code|opencode-ai|pi-coding-agent/i.test(command)
   ) {
     return true;
   }
-  // Cursor's official main command is the generic name `agent`. Match it ONLY
-  // as the executed binary's basename (first argv token): a whole-command word
-  // scan would drag every unrelated process that merely mentions "agent"
-  // (ssh-agent arguments, `first-tree agent create`, …) into the fail-closed
-  // env check and block switches on processes whose env cannot be read.
+  // Cursor's official main command is the generic name `agent`; the Pi coding
+  // agent's is the generic name `pi`. Match these ONLY as the executed
+  // binary's basename (first argv token): a whole-command word scan would
+  // drag every unrelated process that merely mentions the word (ssh-agent
+  // arguments, `python worker.py --constant pi`, `first-tree agent create`, …)
+  // into the fail-closed env check and block switches on processes whose env
+  // cannot be read.
   const firstToken = command.trim().split(/\s+/, 1)[0] ?? "";
   const basename = firstToken.split("/").pop() ?? "";
-  return basename.toLowerCase() === "agent";
+  return basename.toLowerCase() === "agent" || basename.toLowerCase() === "pi";
 }
 
 function isKnownDaemonRuntimeCommand(command: string): boolean {

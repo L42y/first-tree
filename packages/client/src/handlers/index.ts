@@ -8,6 +8,7 @@ import { createCursorHandler } from "./cursor/index.js";
 import { createGrokHandler } from "./grok/index.js";
 import { createKimiCodeHandler } from "./kimi-code.js";
 import { createOpenCodeHandler } from "./opencode/index.js";
+import { createPiHandler } from "./pi/index.js";
 
 /** Injectable seam so tests can force a Claude-executable resolution (no real PATH / shell spawn). */
 export type RegisterBuiltinHandlersDeps = {
@@ -64,4 +65,7 @@ export function registerBuiltinHandlers(deps: RegisterBuiltinHandlersDeps = {}):
   // pre-admission Job Object supervisor is supplied and accepted as drain
   // authority.
   registerHandler("opencode", (config) => createOpenCodeHandler(config));
+  // Pi is an external, host-authenticated, long-lived RPC runtime. Windows
+  // stays fail-closed until a pre-admission Job Object supervisor is supplied.
+  registerHandler("pi", (config) => createPiHandler(config));
 }

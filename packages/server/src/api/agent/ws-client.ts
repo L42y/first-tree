@@ -17,7 +17,9 @@ import {
   PROVIDER_MODELS_RESULT_TYPE,
   providerModelsResultFrameSchema,
   runtimeStateMessageSchema,
+  sessionCommandAbortedAckFrameSchema,
   sessionCommandAppliedFrameSchema,
+  sessionCommandFinalizedAckFrameSchema,
   sessionEventMessageSchema,
   sessionEventRejectedReasonSchema,
   sessionReconcileRequestSchema,
@@ -64,6 +66,7 @@ import * as runtimeLivenessService from "../../services/runtime-liveness.js";
 import {
   agentRoutedTo,
   readSessionCommandRpcResult,
+  type SessionCommandRpcPhase,
   storeSessionCommandRpcResult,
 } from "../../services/session-command-rpc.js";
 import * as sessionEventService from "../../services/session-event.js";
@@ -325,15 +328,49 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         });
         return;
       }
+      if (payload.type === "session:command:finalized" || payload.type === "session:command:aborted") {
+        // Post-apply disposition fan-out. Addressed by the ORIGINAL applying
+        // `clientId`, deliberately WITHOUT an agent-route or capability
+        // revalidation: `sendToClient` can only ever reach that one client, so
+        // there is no wrong-socket hazard to guard against, and both frames are
+        // non-destructive — they lift a fence that client armed itself after it
+        // proved v1 by applying. Re-gating on a route that moved (the very
+        // condition `aborted` exists for) or on a capability flag that flipped
+        // mid-handshake would strand a genuinely capable client behind its own
+        // fence over a session it can no longer reach.
+        const frame =
+          payload.type === "session:command:finalized"
+            ? { type: payload.type, state: "evicted" as const }
+            : { type: payload.type, reason: payload.reason };
+        connectionManager.sendToClient(payload.clientId, {
+          ...frame,
+          ref: payload.ref,
+          ackRef: payload.ackRef,
+          agentId: payload.agentId,
+          chatId: payload.chatId,
+          command: "session:terminate",
+        });
+        return;
+      }
       // Chat-session Reset (payload.type === "session:terminate"). The
       // process-local binding check is not enough: a takeover between the
       // HTTP preflight and delivery could otherwise deliver a destructive
       // terminate to a stale socket. Re-verify the full DB route (durable
       // binding + online presence + this instance) before forwarding.
+      //
+      // Identity is also not enough on its own. The SAME clientId on the SAME
+      // instance may have reconnected as a legacy build since the preflight,
+      // and this frame destroys the client's provider session. Both halves of
+      // the capability are therefore rechecked here: the DB route must still
+      // carry the registered composite `wsSessionResetV1` flag, and the live
+      // socket this process owns must still advertise it.
       void (async () => {
-        const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId);
+        const routed = await agentRoutedTo(app.db, payload.agentId, payload.clientId, payload.targetInstanceId, {
+          requireSessionResetV1: true,
+        });
         if (!routed) return;
         if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
+        if (!connectionManager.agentSupportsSessionResetV1(payload.agentId)) return;
         connectionManager.sendToClient(payload.clientId, {
           type: "session:terminate",
           agentId: payload.agentId,
@@ -1021,7 +1058,10 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
           scheduleAuthExpiry(payload.exp);
 
           try {
-            sendJsonOrThrow(socket, { type: "auth:ok" });
+            // Welcome goes out BEFORE `auth:ok`. The client answers `auth:ok`
+            // with `client:register`, and its Reset capability declaration is
+            // only honest once it knows which Reset protocol version this
+            // server speaks — so the advertisement must arrive first.
             // Wire-additive: older clients drop the unknown type; newer ones
             // use it to detect version drift. `capabilities.wsInboxDeliver`
             // must stay `true` here so 0.10.4 ~ 0.14.2 clients suppress
@@ -1033,8 +1073,14 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               type: "server:welcome",
               serverCommandVersion: app.commandVersion(),
               serverTimeMs: Date.now(),
-              capabilities: { wsInboxDeliver: true, wsInboxAckConfirm: true, wsSessionEventConfirm: true },
+              capabilities: {
+                wsInboxDeliver: true,
+                wsInboxAckConfirm: true,
+                wsSessionEventConfirm: true,
+                wsSessionResetV1: true,
+              },
             });
+            sendJsonOrThrow(socket, { type: "auth:ok" });
             setAuthWsAttrs(socket, {
               phase: "post_auth_welcome",
               outcome: "accepted",
@@ -1741,6 +1787,20 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                 );
                 return;
               }
+              // …and from a socket that still speaks the composite Reset
+              // protocol. Accepting this ack is what lets the HTTP waiter
+              // conclude the provider mapping is gone and evict the session,
+              // so a legacy build that re-registered under the same clientId
+              // must not be able to complete a Reset it cannot finish. The
+              // durable store applies the same rule for the `applied` phase;
+              // this is the live-socket half of it.
+              if (!connectionManager.agentSupportsSessionResetV1(parsedAck.data.agentId)) {
+                app.log.debug(
+                  { clientId, agentId: parsedAck.data.agentId, ref: parsedAck.data.ref },
+                  "ignoring session:command:applied from a client that no longer advertises wsSessionResetV1",
+                );
+                return;
+              }
               const stored = await storeSessionCommandRpcResult(
                 app.db,
                 clientId,
@@ -1762,6 +1822,81 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               }
               connectionManager.resolveClientReply(clientId, parsedAck.data.ref, parsedAck.data);
               await notifier.notifyDaemonClientCommandResult({ clientId, ref: parsedAck.data.ref });
+            } else if (type === "session:command:finalized:ack" || type === "session:command:aborted:ack") {
+              // Post-apply disposition receipt: the client released (or
+              // refused to release) parked Reset-fence recovery for this exact
+              // generation, after either a durable eviction
+              // (`finalized:ack`) or a Reset the server could not finalize
+              // (`aborted:ack`). Correlated on its own `ackRef` so a late
+              // apply-ack wake for the terminate ref cannot satisfy the
+              // disposition waiter, with the same durable rendezvous as the
+              // apply-ack so a lost PG wake still converges.
+              //
+              // Deliberately WITHOUT the apply-ack's `wsSessionResetV1`
+              // recheck: only a client that already applied gets here, and
+              // this receipt just releases its own parked rows; rejecting it
+              // over a capability flag that flipped mid-handshake would leave
+              // that client fenced on a session it can no longer reach.
+              //
+              // Both dispositions are also scoped to CLIENT identity rather
+              // than the agent's current route: `isActiveClientConnection` pins
+              // the frame to the applying client's live socket and `boundAgents`
+              // proves this socket bound that agent. The agent's route may have
+              // moved since the apply — for `aborted` that is the very trigger —
+              // and following it would refuse the receipt in exactly the cases a
+              // disposition exists for, stranding the client that armed the
+              // fence while telling a replacement client about a Reset it never
+              // applied.
+              const phase: SessionCommandRpcPhase = type === "session:command:aborted:ack" ? "aborted" : "finalized";
+              const parsedReceipt =
+                phase === "aborted"
+                  ? sessionCommandAbortedAckFrameSchema.safeParse(msg)
+                  : sessionCommandFinalizedAckFrameSchema.safeParse(msg);
+              if (!parsedReceipt.success) {
+                app.log.warn(
+                  { clientId, issues: parsedReceipt.error.issues.map((i) => i.message) },
+                  `malformed ${type} frame — dropping`,
+                );
+                return;
+              }
+              if (!clientId) return;
+              if (!connectionManager.isActiveClientConnection(clientId, socket)) {
+                app.log.debug(
+                  { clientId, ref: parsedReceipt.data.ackRef },
+                  `ignoring ${type} from replaced local socket`,
+                );
+                return;
+              }
+              if (!boundAgents.has(parsedReceipt.data.agentId)) {
+                app.log.debug(
+                  { clientId, agentId: parsedReceipt.data.agentId, ref: parsedReceipt.data.ackRef },
+                  `ignoring ${type} from an agent this socket never bound`,
+                );
+                return;
+              }
+              const receipt = {
+                command: "session:terminate" as const,
+                agentId: parsedReceipt.data.agentId,
+                chatId: parsedReceipt.data.chatId,
+                applied: parsedReceipt.data.released,
+                phase,
+              };
+              const receiptStored = await storeSessionCommandRpcResult(
+                app.db,
+                clientId,
+                parsedReceipt.data.ackRef,
+                receipt,
+                instanceId,
+              );
+              if (!receiptStored) {
+                app.log.debug(
+                  { clientId, ref: parsedReceipt.data.ackRef, instanceId },
+                  `ignoring ${type}; client ownership moved before durable write`,
+                );
+                return;
+              }
+              connectionManager.resolveClientReply(clientId, parsedReceipt.data.ackRef, receipt);
+              await notifier.notifyDaemonClientCommandResult({ clientId, ref: parsedReceipt.data.ackRef });
             } else if (type === "inbox:ack") {
               const payloadResult = inboxAckFrameSchema.safeParse(msg);
               if (!payloadResult.success) {

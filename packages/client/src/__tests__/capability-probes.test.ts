@@ -751,7 +751,7 @@ describe("probeCapabilities (aggregator)", () => {
 
     // claude-code-tui is in DISABLED_RUNTIME_PROVIDERS — it is skipped, so it
     // gets no capability entry AND its probe is never called (no binary spawn).
-    expect(Object.keys(caps).sort()).toEqual(["claude-code", "codex", "cursor", "grok", "kimi-code", "opencode"]);
+    expect(Object.keys(caps).sort()).toEqual(["claude-code", "codex", "cursor", "grok", "kimi-code", "opencode", "pi"]);
     expect(caps["claude-code"]?.state).toBe("ok");
     expect(caps["claude-code-tui"]).toBeUndefined();
     expect(caps.codex?.state).toBe("ok");

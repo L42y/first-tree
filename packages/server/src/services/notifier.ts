@@ -1,4 +1,4 @@
-import { PROVIDER_MODELS_LIST_TYPE } from "@first-tree/shared";
+import { PROVIDER_MODELS_LIST_TYPE, type SessionCommandAbortReason } from "@first-tree/shared";
 import type postgres from "postgres";
 import type { WebSocket } from "ws";
 
@@ -128,6 +128,36 @@ export type DaemonClientCommandPayload =
       agentId: string;
       chatId: string;
       ref: string;
+      targetInstanceId: string;
+    }
+  | {
+      /** Post-finalize signal: forward Reset finalization to the owning replica. */
+      type: "session:command:finalized";
+      clientId: string;
+      agentId: string;
+      chatId: string;
+      /** Terminate ref — scopes the client's release to that Reset generation. */
+      ref: string;
+      /** Separate rendezvous ref the client echoes in its finalized receipt. */
+      ackRef: string;
+      targetInstanceId: string;
+    }
+  | {
+      /**
+       * Post-apply ABORT disposition: forward "this Reset generation is lifted
+       * without an eviction" to the replica owning the ORIGINAL applying
+       * client's socket. Addressed by `clientId`, never by the agent's current
+       * route — the branches that abort are the ones where that route moved.
+       */
+      type: "session:command:aborted";
+      clientId: string;
+      agentId: string;
+      chatId: string;
+      /** Terminate ref — scopes the client's release to that Reset generation. */
+      ref: string;
+      /** Separate rendezvous ref the client echoes in its aborted receipt. */
+      ackRef: string;
+      reason: SessionCommandAbortReason;
       targetInstanceId: string;
     };
 export type DaemonClientCommandHandler = (payload: DaemonClientCommandPayload) => void;
@@ -707,9 +737,24 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
           // Discriminated union: each command type carries its own required
           // fields; anything else (unknown type, missing discriminator
           // fields) is malformed and must not reach handlers.
-          if (parsed.type === "session:terminate") {
-            const sessionPayload = parsed as { agentId?: unknown; chatId?: unknown };
+          if (
+            parsed.type === "session:terminate" ||
+            parsed.type === "session:command:finalized" ||
+            parsed.type === "session:command:aborted"
+          ) {
+            const sessionPayload = parsed as {
+              agentId?: unknown;
+              chatId?: unknown;
+              ackRef?: unknown;
+              reason?: unknown;
+            };
             if (typeof sessionPayload.agentId !== "string" || typeof sessionPayload.chatId !== "string") return;
+            // A post-apply disposition is only actionable with its rendezvous
+            // ref: without it the client cannot address its receipt.
+            if (parsed.type !== "session:terminate" && typeof sessionPayload.ackRef !== "string") return;
+            // An abort must say WHY it lifts the generation, or the client
+            // cannot report the disposition honestly.
+            if (parsed.type === "session:command:aborted" && typeof sessionPayload.reason !== "string") return;
           } else if (parsed.type === PROVIDER_MODELS_LIST_TYPE) {
             if (typeof (parsed as { provider?: unknown }).provider !== "string") return;
           } else {

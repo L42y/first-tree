@@ -734,14 +734,20 @@ describe("ClientConnection — additional branch coverage", () => {
     priv(connection).clearTimers();
   });
 
-  it("declares the terminate apply-ack capability and forwards command refs", async () => {
+  it("advertises no Reset capability at all to a server that never offered v1", async () => {
     const connection = await makeConnection();
+    // This harness emits `auth:ok` before `server:welcome` and advertises
+    // nothing — an old server. The client must not promise a protocol that
+    // server cannot complete, and must NOT fall back to the legacy apply-only
+    // flag: an old server reads that as Reset consent, runs the pre-finalize
+    // flow, and leaves this client parked behind a fence forever.
     const socket = await openRegisteredConnection(connection);
 
     const registerFrame = socket.sent
       .map((raw) => JSON.parse(raw) as Record<string, unknown>)
       .find((message) => message.type === "client:register");
-    expect(registerFrame?.wireCapabilities).toEqual({ wsSessionTerminateApplyAck: true });
+    expect(registerFrame?.wireCapabilities).toEqual({});
+    expect(connection.supportsSessionResetV1).toBe(false);
 
     const commands: unknown[] = [];
     connection.on("session:command", (command) => commands.push(command));
@@ -751,6 +757,129 @@ describe("ClientConnection — additional branch coverage", () => {
       { type: "session:terminate", agentId: "agent-1", chatId: "chat-9", ref: "reset-1" },
       { type: "session:terminate", agentId: "agent-1", chatId: "chat-9" },
     ]);
+
+    priv(connection).clearTimers();
+  });
+
+  it("declares composite Reset v1 to a server that advertises it and answers finalized frames", async () => {
+    const connection = await makeConnection();
+    const internal = priv(connection);
+    const openPromise = internal.openWebSocket();
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) throw new Error("missing fake socket");
+    socket.emitOpen();
+    await flushMicrotasks();
+    // New server ordering: welcome first, so `client:register` can answer it.
+    socket.emitMessage({
+      type: "server:welcome",
+      serverCommandVersion: "1.0.0",
+      serverTimeMs: Date.now(),
+      capabilities: { wsSessionResetV1: true },
+    });
+    socket.emitMessage({ type: "auth:ok" });
+    socket.emitMessage({ type: "client:registered" });
+    await openPromise;
+
+    const registerFrame = socket.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .find((message) => message.type === "client:register");
+    // Composite only: the legacy apply-only flag never rides along, so no
+    // server can mistake this client for a pre-v1 one.
+    expect(registerFrame?.wireCapabilities).toEqual({ wsSessionResetV1: true });
+    expect(connection.supportsSessionResetV1).toBe(true);
+
+    await bindAgent(connection, socket);
+    const finalized: unknown[] = [];
+    connection.on("session:command:finalized", (frame) => finalized.push(frame));
+
+    // A finalized frame without its rendezvous ref is unanswerable — dropped.
+    socket.emitMessage({
+      type: "session:command:finalized",
+      ref: "reset-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(finalized).toEqual([]);
+
+    socket.emitMessage({
+      type: "session:command:finalized",
+      ref: "reset-1",
+      ackRef: "ack-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      state: "evicted",
+    });
+    expect(finalized).toEqual([
+      {
+        type: "session:command:finalized",
+        ref: "reset-1",
+        ackRef: "ack-1",
+        agentId: "agent-1",
+        chatId: "chat-9",
+        command: "session:terminate",
+        state: "evicted",
+      },
+    ]);
+
+    connection.reportSessionCommandFinalizedAck({
+      ref: "reset-1",
+      ackRef: "ack-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      released: true,
+    });
+    expect(parseSent(socket, socket.sent.length - 1)).toEqual({
+      type: "session:command:finalized:ack",
+      ref: "reset-1",
+      ackRef: "ack-1",
+      agentId: "agent-1",
+      chatId: "chat-9",
+      command: "session:terminate",
+      released: true,
+    });
+
+    // A new socket must re-learn support rather than trust the last server —
+    // the next connection may land on a rolled-back replica.
+    void internal.openWebSocket().catch(() => {});
+    const reconnected = FakeWebSocket.instances.at(-1);
+    if (!reconnected || reconnected === socket) throw new Error("missing reconnect socket");
+    reconnected.emitOpen();
+    await flushMicrotasks();
+    expect(connection.supportsSessionResetV1).toBe(false);
+
+    priv(connection).clearTimers();
+  });
+
+  it("treats a pre-v1 server Reset advertisement as no Reset capability", async () => {
+    const connection = await makeConnection();
+    const internal = priv(connection);
+    const openPromise = internal.openWebSocket();
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) throw new Error("missing fake socket");
+    socket.emitOpen();
+    await flushMicrotasks();
+    // Mixed fleet: a server build that only knows the pre-v1 finalize flag.
+    // Version skew must be decided from the advertised version alone, so this
+    // client stays silent and refuses the ref'd Reset later.
+    socket.emitMessage({
+      type: "server:welcome",
+      serverCommandVersion: "0.15.0",
+      serverTimeMs: Date.now(),
+      capabilities: { wsSessionResetFinalizeHandshake: true },
+    });
+    socket.emitMessage({ type: "auth:ok" });
+    socket.emitMessage({ type: "client:registered" });
+    await openPromise;
+
+    const registerFrame = socket.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .find((message) => message.type === "client:register");
+    expect(registerFrame?.wireCapabilities).toEqual({});
+    expect(connection.supportsSessionResetV1).toBe(false);
 
     priv(connection).clearTimers();
   });

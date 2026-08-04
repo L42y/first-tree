@@ -144,6 +144,17 @@ export function noopDeliveryToken(): DeliveryToken {
 export type SessionContext = HandlerContext & {
   /** The server-side chat this session belongs to. */
   chatId: string;
+  /**
+   * Optional opaque Reset tombstone for reconstructible provider fresh-start
+   * identities. Present once a Reset attempt has rotated a per-chat nonce in
+   * the session registry (including an in-memory pending rotation after a
+   * failed flush that is not yet apply-acknowledged). A successful Reset
+   * flush makes that nonce durable across mapping deletion and manager
+   * restart. Providers that mint deterministic start ids from inbox material
+   * must include this nonce so post-Reset same-row redelivery cannot reopen
+   * a discarded provider artifact.
+   */
+  freshStartNonce?: () => string | undefined;
   /** Refresh `lastActivity` timestamp when the provider produces activity. */
   recordProviderActivity: () => void;
   /**
@@ -337,11 +348,30 @@ export type AgentHandler = {
   /** Message arrives while session is active. Push into provider-owned queue or reject. */
   inject(message: SessionMessage, token?: DeliveryToken): HandlerRouteReceipt | undefined;
 
-  /** Idle timeout. Close query, preserve state for resume. */
-  suspend(reason?: string): Promise<void>;
+  /**
+   * Idle timeout / operator pause. Close query, preserve state for resume.
+   * SessionManager sets `opts.settleProviderEntered` for manual operator suspend
+   * so the contiguous provider-entered prefix can settle before ACK; idle yield
+   * and forced preemption leave it unset.
+   */
+  suspend(reason?: string, opts?: HandlerShutdownOptions): Promise<void>;
 
-  /** Eviction or runtime shutdown. Same as suspend(). */
-  shutdown(reason?: string): Promise<void>;
+  /**
+   * Eviction or runtime shutdown. Same as suspend() unless
+   * `opts.settleProviderEntered` is set by SessionManager's full graceful drain.
+   */
+  shutdown(reason?: string, opts?: HandlerShutdownOptions): Promise<void>;
+};
+
+/**
+ * Options for {@link AgentHandler.suspend} / {@link AgentHandler.shutdown}.
+ * The diagnostic `reason` string is not a custody contract — SessionManager sets
+ * `settleProviderEntered` explicitly for full manager/client graceful drain and
+ * for manual operator suspend. Route retirement / forced preemption leave it
+ * unset so provider-entered work stays recoverable (ACK-none).
+ */
+export type HandlerShutdownOptions = {
+  settleProviderEntered?: boolean;
 };
 
 /**
