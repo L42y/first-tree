@@ -1,13 +1,13 @@
 // @vitest-environment happy-dom
 
+import { enabledOkRuntimeProviders, pickPreferredRuntimeProvider } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentCreation } from "../use-agent-creation.js";
-import type { ComputerConnection } from "../use-computer-connection.js";
-import { useComputerConnection } from "../use-computer-connection.js";
+import { type ComputerConnection, useComputerConnection } from "../use-computer-connection.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -114,6 +114,19 @@ afterEach(async () => {
 });
 
 describe("shared setup hooks", () => {
+  it("uses one Codex-first runtime preference across setup surfaces", () => {
+    const ok = { state: "ok" as const };
+    expect(enabledOkRuntimeProviders({ opencode: ok, "claude-code": ok, "future-provider": ok, codex: ok })).toEqual([
+      "codex",
+      "claude-code",
+      "opencode",
+    ]);
+    expect(pickPreferredRuntimeProvider({ "claude-code": ok, codex: ok, opencode: ok })).toBe("codex");
+    expect(pickPreferredRuntimeProvider({ "claude-code": ok, opencode: ok })).toBe("claude-code");
+    expect(pickPreferredRuntimeProvider({ opencode: ok, "future-provider": ok })).toBe("opencode");
+    expect(pickPreferredRuntimeProvider({})).toBeNull();
+  });
+
   it("detects connected computers and picks a ready runtime without onboarding state", async () => {
     const latest = { current: null as ComputerConnection | null };
     const client = {
@@ -291,7 +304,7 @@ describe("shared setup hooks", () => {
     });
     await flush();
 
-    expect(expectHookValue(latest.current).okRuntimes).toEqual(["grok", "kimi-code", "pi"]);
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["grok", "pi", "kimi-code"]);
     expect(expectHookValue(latest.current).selectedRuntime).toBe("grok");
 
     await act(async () => expectHookValue(latest.current).setSelectedRuntime("kimi-code"));
@@ -311,7 +324,7 @@ describe("shared setup hooks", () => {
 
     // Still-valid manual pick is preserved even when a higher-priority runtime appears.
     expect(expectHookValue(latest.current).selectedRuntime).toBe("kimi-code");
-    expect(expectHookValue(latest.current).okRuntimes).toEqual(["codex", "grok", "kimi-code", "pi"]);
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["codex", "grok", "pi", "kimi-code"]);
   });
 
   it("mints connect commands, surfaces final token failures, and retries manually", async () => {

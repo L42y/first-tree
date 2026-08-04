@@ -1,6 +1,11 @@
-import { type AgentTemplatePublicTemplate, type AgentVisibility, runtimeProviderLabel } from "@first-tree/shared";
+import {
+  type AgentTemplatePublicTemplate,
+  type AgentVisibility,
+  orderRuntimeProvidersBySelection,
+  runtimeProviderLabel,
+} from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAgentTemplate } from "../../../api/agent-templates.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { Button } from "../../../components/ui/button.js";
@@ -31,11 +36,11 @@ const VISIBILITY_OPTIONS: ReadonlyArray<{ value: AgentVisibility; title: string;
 ];
 
 /**
- * Name the agent and choose who can use it. The computer + runtime
- * were settled in the previous step; we read them off the flow and never
- * surface "runtime" / "client" here. On success the flow auto-advances to
- * start-chat (the agent-online callback), so this renders form → creating →
- * (timeout fallback) only.
+ * Name the agent, choose what it runs, and choose who can use it. The connected
+ * computer and detected options come from the previous step; the product does
+ * not surface the runtime / client implementation vocabulary here. On success
+ * the flow auto-advances to start-chat (the agent-online callback), so this
+ * renders form → creating → (timeout fallback) only.
  */
 export function StepCreateAgent() {
   const {
@@ -149,9 +154,15 @@ export function StepCreateAgent() {
     agentPhase === "idle";
 
   // The coding-agent picker lives HERE now (moved from connect-computer). Always
-  // a list — even for one. Selection / display order come from
-  // `useComputerConnection` (shared catalog selectionPriority + displayOrder).
+  // a list — even for one. Selection and option order come from the shared
+  // Codex-first catalog preference in `useComputerConnection`.
   const { okRuntimes, selectedRuntime, setSelectedRuntime } = computer;
+  const orderedOkRuntimes = useMemo(() => orderRuntimeProvidersBySelection(okRuntimes), [okRuntimes]);
+  useEffect(() => {
+    if (selectedRuntime && orderedOkRuntimes.includes(selectedRuntime)) return;
+    const next = orderedOkRuntimes[0];
+    if (next) setSelectedRuntime(next);
+  }, [orderedOkRuntimes, selectedRuntime, setSelectedRuntime]);
 
   // Coding-agent pills to render. When the computer drops mid-form, okRuntimes
   // empties but `selectedRuntime` keeps the last pick — so we still show THAT
@@ -159,7 +170,7 @@ export function StepCreateAgent() {
   // jump. A disabled pill + the reconnect hint reads as "your agent's here, just
   // temporarily unreachable", not "it's gone".
   const connected = !!computer.connectedClient;
-  const displayProviders = okRuntimes.length > 0 ? okRuntimes : selectedRuntime ? [selectedRuntime] : [];
+  const displayProviders = orderedOkRuntimes.length > 0 ? orderedOkRuntimes : selectedRuntime ? [selectedRuntime] : [];
 
   if (agentPhase === "creating") {
     return <WorkingState label={COPY.createAgent.creating} hint={COPY.createAgent.creatingHint} />;
@@ -206,10 +217,66 @@ export function StepCreateAgent() {
     });
   };
 
+  const toolPicker =
+    displayProviders.length > 0 ? (
+      <fieldset className="flex flex-col" style={{ gap: "var(--sp-2)", margin: 0, padding: 0, border: 0 }}>
+        <legend
+          className="text-label font-medium"
+          style={{
+            color: "var(--fg-2)",
+            marginBottom: "var(--sp-1)",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "var(--sp-2)",
+          }}
+        >
+          {COPY.createAgent.codingAgentLabel}
+          {/* Prominent amber "Not ready" badge when the computer dropped — makes
+              the disabled pill read as unavailable (reconnect needed), not just
+              quietly greyed. */}
+          {!connected && (
+            <span
+              className="inline-flex items-center text-caption font-medium"
+              style={{
+                gap: "var(--sp-1)",
+                padding: "var(--sp-0_5) var(--sp-1_5)",
+                borderRadius: "var(--radius-chip)",
+                background: "var(--state-needs-you-soft)",
+                color: "var(--fg-needs-you-strong)",
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: "var(--sp-1_5)",
+                  height: "var(--sp-1_5)",
+                  borderRadius: "var(--radius-full)",
+                  background: "var(--state-needs-you)",
+                }}
+              />
+              {COPY.createAgent.codingAgentNotReady}
+            </span>
+          )}
+        </legend>
+        <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
+          {displayProviders.map((provider) => (
+            <OptionCard
+              key={provider}
+              name="onboarding-coding-agent"
+              layout="pill"
+              checked={selectedRuntime === provider}
+              onSelect={() => setSelectedRuntime(provider)}
+              disabled={!connected}
+            >
+              <span className="text-body">{runtimeProviderLabel(provider)}</span>
+            </OptionCard>
+          ))}
+        </div>
+      </fieldset>
+    ) : null;
+
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
-      {/* Collapsed-model subtitle: the agent you create IS your local coding
-          agent given a team identity — no two-layer "powered by" framing. */}
       <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
         {COPY.createAgent.subtitle}
       </p>
@@ -247,66 +314,9 @@ export function StepCreateAgent() {
         <FlowHint>{COPY.createAgent.templateIntentUnavailable}</FlowHint>
       )}
 
-      {/* Coding agent — always a list (even for one), default Claude Code.
+      {/* Coding agent — always a list (even for one), default Codex when available.
           Stays visible (disabled) when the computer drops, so the field never
           vanishes from under the user. */}
-      {displayProviders.length > 0 && (
-        <fieldset className="flex flex-col" style={{ gap: "var(--sp-2)", margin: 0, padding: 0, border: 0 }}>
-          <legend
-            className="text-label font-medium"
-            style={{
-              color: "var(--fg-2)",
-              marginBottom: "var(--sp-1)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "var(--sp-2)",
-            }}
-          >
-            {COPY.createAgent.codingAgentLabel}
-            {/* Prominent amber "Not ready" badge when the computer dropped — makes
-                the disabled pill read as unavailable (reconnect needed), not just
-                quietly greyed. */}
-            {!connected && (
-              <span
-                className="inline-flex items-center text-caption font-medium"
-                style={{
-                  gap: "var(--sp-1)",
-                  padding: "var(--sp-0_5) var(--sp-1_5)",
-                  borderRadius: "var(--radius-chip)",
-                  background: "var(--state-needs-you-soft)",
-                  color: "var(--fg-needs-you-strong)",
-                }}
-              >
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: "var(--sp-1_5)",
-                    height: "var(--sp-1_5)",
-                    borderRadius: "var(--radius-full)",
-                    background: "var(--state-needs-you)",
-                  }}
-                />
-                {COPY.createAgent.codingAgentNotReady}
-              </span>
-            )}
-          </legend>
-          <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
-            {displayProviders.map((provider) => (
-              <OptionCard
-                key={provider}
-                name="onboarding-coding-agent"
-                layout="pill"
-                checked={selectedRuntime === provider}
-                onSelect={() => setSelectedRuntime(provider)}
-                disabled={!connected}
-              >
-                <span className="text-body">{runtimeProviderLabel(provider)}</span>
-              </OptionCard>
-            ))}
-          </div>
-        </fieldset>
-      )}
-
       <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
         <label htmlFor="onboarding-agent-name" className="text-label font-medium" style={{ color: "var(--fg-2)" }}>
           {COPY.createAgent.nameLabel}
@@ -319,6 +329,8 @@ export function StepCreateAgent() {
           maxLength={200}
         />
       </div>
+
+      {toolPicker}
 
       <fieldset className="flex flex-col" style={{ gap: "var(--sp-2)", margin: 0, padding: 0, border: 0 }}>
         <legend className="text-label font-medium" style={{ color: "var(--fg-2)", marginBottom: "var(--sp-1)" }}>

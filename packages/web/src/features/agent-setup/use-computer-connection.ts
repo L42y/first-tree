@@ -4,7 +4,7 @@ import {
   pickPreferredRuntimeProvider,
   type RuntimeProvider,
 } from "@first-tree/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ConnectTokenResponse, getClientCapabilities, type HubClient, listClients } from "../../api/activity.js";
 import { api } from "../../api/client.js";
 import { runVisibilityAwareInterval } from "../../lib/visibility-interval.js";
@@ -20,7 +20,8 @@ const CLIENT_DETECT_POLL_MS = 5_000;
  *      the user pastes into their terminal).
  *   2. Poll `listClients()`; the most-recently-seen connected client wins.
  *   3. Once a client is connected, fetch its capabilities to learn which AI
- *      runtimes are ready, and auto-pick via shared catalog selectionPriority.
+ *      runtimes are ready, and auto-pick via the shared Codex-first catalog
+ *      selection priority.
  *
  * Pure presentation state is returned; the React step renders it. Polling
  * pauses while the tab is hidden (`runVisibilityAwareInterval`) and stops
@@ -207,17 +208,19 @@ export function useComputerConnection(
     connectedClient && capabilitiesClientId === connectedClient.id && hasReportedCapabilities(capabilities)
       ? capabilities
       : null;
+  const okRuntimes = useMemo(
+    () => (activeCapabilities ? enabledOkRuntimeProviders(activeCapabilities) : []),
+    [activeCapabilities],
+  );
 
   // Auto-pick via catalog selectionPriority; keep a still-valid prior choice.
   useEffect(() => {
     setSelectedRuntime((prev) => {
       if (!activeCapabilities) return prev;
-      if (prev && activeCapabilities[prev]?.state === "ok") return prev;
+      if (prev && okRuntimes.includes(prev)) return prev;
       return pickPreferredRuntimeProvider(activeCapabilities);
     });
-  }, [activeCapabilities]);
-
-  const okRuntimes = activeCapabilities ? enabledOkRuntimeProviders(activeCapabilities) : [];
+  }, [activeCapabilities, okRuntimes]);
 
   const cliCommand = bootstrapCommand;
 

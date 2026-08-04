@@ -14,7 +14,6 @@ import { CommandPalettePreviewPage } from "../command-palette-preview.js";
 import { ContextTreePreviewPage } from "../context-tree-preview.js";
 import { ConversationListPreviewPage } from "../conversation-list-preview.js";
 import { MobilePreviewPage } from "../mobile-preview.js";
-import { MockTeamStepsA, MockTeamStepsB, MockWelcomeCeremonial } from "../onboarding-team-steps-mocks.js";
 import { RequestDockPreviewPage } from "../request-dock-preview.js";
 import { ResourcesPreviewPage } from "../resources-preview.js";
 import { SettingsContextTreePreviewPage } from "../settings-context-tree-preview.js";
@@ -510,30 +509,5 @@ describe("extra preview pages", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(true);
 
     await cleanupRendered(rendered);
-  });
-
-  it("renders onboarding team-step mock variants and updates their editable names", async () => {
-    const list = await renderPreview(<MockTeamStepsA />);
-    expect(text(list.container)).toContain("What's next");
-    expect(text(list.container)).toContain("Install First Tree");
-    expect(text(list.container)).toContain("Create your first agent");
-    const listInput = list.container.querySelector<HTMLInputElement>("#mock-team");
-    if (!listInput) throw new Error("MockTeamStepsA input missing");
-    await setInputValue(listInput, "Renamed Team");
-    expect(listInput.value).toBe("Renamed Team");
-    await cleanupRendered(list);
-
-    const oneLine = await renderPreview(<MockTeamStepsB />);
-    expect(text(oneLine.container)).toContain("Next:");
-    expect(text(oneLine.container)).toContain("Connect to GitHub");
-    await cleanupRendered(oneLine);
-
-    const ceremonial = await renderPreview(<MockWelcomeCeremonial />);
-    expect(text(ceremonial.container)).toContain("rename it freely");
-    const ceremonialInput = ceremonial.container.querySelector<HTMLInputElement>("#mock-cer-team");
-    if (!ceremonialInput) throw new Error("MockWelcomeCeremonial input missing");
-    await setInputValue(ceremonialInput, "Ceremonial Team");
-    expect(ceremonialInput.value).toBe("Ceremonial Team");
-    await cleanupRendered(ceremonial);
   });
 });

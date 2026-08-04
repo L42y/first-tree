@@ -19,7 +19,6 @@ import { StepGetStarted } from "./onboarding/steps/step-get-started.js";
 import { StepStartChat } from "./onboarding/steps/step-start-chat.js";
 import { StepTeam } from "./onboarding/steps/step-team.js";
 import { getStepSequence, type OnboardingPath, type StepId } from "./onboarding/steps.js";
-import { MockTeamStepsA, MockTeamStepsB, MockWelcomeCeremonial } from "./onboarding-team-steps-mocks.js";
 import {
   buildInviteeReadyBootstrap,
   buildTeamAgentStartBootstrap,
@@ -238,16 +237,17 @@ const COMPUTER: Record<
   readyMulti: {
     connectedClient: HOST,
     capabilitiesLoaded: true,
-    okRuntimes: ["claude-code", "codex", "claude-code-tui"],
-    selectedRuntime: "claude-code",
+    okRuntimes: ["claude-code", "codex", "opencode", "pi"],
+    selectedRuntime: "codex",
     setSelectedRuntime: NOOP,
     cliCommand: SAMPLE_CLI,
     tokenError: null,
     retry: NOOP,
   },
-  // A connected computer with only unsupported BYO surfaces. The real
-  // connect-computer step must keep Continue disabled and explain that Claude
-  // Code or Codex is still required.
+  // These tools can power First Tree agents, but the optional external Context
+  // handoff supports only Claude Code and Codex. This fixture exercises that
+  // narrower handoff capability without implying the tools themselves are
+  // unsupported by First Tree.
   unsupportedByo: {
     connectedClient: HOST,
     capabilitiesLoaded: true,
@@ -563,7 +563,7 @@ type PreviewStepId = StepId | "connect-code";
 const PREVIEW_VIEWS: Array<{ id: PreviewView; label: string; subtitle: string }> = [
   { id: "flow", label: "Flow", subtitle: "Branch-complete journey with explicit destinations." },
   { id: "states", label: "States", subtitle: "State inventory. Real components, mocked state." },
-  { id: "experiments", label: "Experiments", subtitle: "Design experiments. Not production components." },
+  { id: "experiments", label: "Experiments", subtitle: "Accepted changes, rendered with production components." },
 ];
 
 const DEFAULT_VIEW: PreviewView = "flow";
@@ -611,28 +611,40 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     wizard: { step: "create-team" },
   },
   {
-    id: "admin-team-steps-a",
-    label: "Steps preview · A list",
-    group: "Create-team experiments",
+    id: "admin-concept-connect-computer",
+    label: "1 · Connect computer",
+    group: "Accepted concept flow",
     role: "admin",
     view: "experiments",
-    mockup: <MockTeamStepsA />,
+    wizard: {
+      step: "connect-computer",
+      flow: { computer: COMPUTER.waiting },
+      body: <StepConnectComputer />,
+    },
   },
   {
-    id: "admin-team-steps-b",
-    label: "Steps preview · B one-liner",
-    group: "Create-team experiments",
+    id: "admin-concept-create-agent",
+    label: "2 · Create agent",
+    group: "Accepted concept flow",
     role: "admin",
     view: "experiments",
-    mockup: <MockTeamStepsB />,
+    wizard: {
+      step: "create-agent",
+      flow: { computer: COMPUTER.readyMulti, agentPhase: "idle" },
+      body: <StepCreateAgent />,
+    },
   },
   {
-    id: "admin-welcome-ceremonial",
-    label: "Create team · ceremonial",
-    group: "Create-team experiments",
+    id: "admin-concept-start-chat",
+    label: "3 · Meet your agent",
+    group: "Accepted concept flow",
     role: "admin",
     view: "experiments",
-    mockup: <MockWelcomeCeremonial />,
+    wizard: {
+      step: "start-chat",
+      flow: { computer: COMPUTER.ready },
+      body: <StepStartChat />,
+    },
   },
 
   {
@@ -786,14 +798,14 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
 
   {
     id: "admin-ko-noproject",
-    label: "Start chat · no repo",
-    group: "Start-chat states",
+    label: "Meet your agent · no repo",
+    group: "Meet-your-agent states",
     role: "admin",
     wizard: { step: "start-chat", flow: { selectedRepoUrls: [] } },
   },
   {
     id: "admin-ko-new",
-    label: "Start chat",
+    label: "Meet your agent",
     group: "Admin flow",
     role: "admin",
     view: "flow",
@@ -806,21 +818,21 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "admin-ko-existing",
     label: "Existing (auto-detected)",
-    group: "Start-chat states",
+    group: "Meet-your-agent states",
     role: "admin",
     wizard: { step: "start-chat", flow: { selectedRepoUrls: [REPO_WEB] }, net: { contextTree: TREE_URL } },
   },
   {
     id: "admin-ko-checking",
     label: "Checking team setup",
-    group: "Start-chat states",
+    group: "Meet-your-agent states",
     role: "admin",
     wizard: { step: "start-chat", flow: { selectedRepoUrls: [REPO_WEB] }, net: { contextTree: "pending" } },
   },
   {
     id: "admin-ko-starting",
     label: "Starting…",
-    group: "Start-chat states",
+    group: "Meet-your-agent states",
     role: "admin",
     wizard: {
       step: "start-chat",
@@ -960,7 +972,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   },
   {
     id: "inv-ko-ready",
-    label: "Start first chat",
+    label: "Meet your agent",
     group: "Recommended onboarding",
     role: "invitee",
     view: "flow",
@@ -977,6 +989,43 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     role: "invitee",
     view: "flow",
     destination: <MemberChatDestination mode="personal-agent" />,
+  },
+  {
+    id: "inv-concept-connect-computer",
+    label: "1 · Connect computer",
+    group: "Accepted concept flow",
+    role: "invitee",
+    view: "experiments",
+    wizard: {
+      step: "connect-computer",
+      flow: { computer: COMPUTER.waiting },
+      body: <StepConnectComputer />,
+    },
+  },
+  {
+    id: "inv-concept-create-agent",
+    label: "2 · Create agent",
+    group: "Accepted concept flow",
+    role: "invitee",
+    view: "experiments",
+    wizard: {
+      step: "create-agent",
+      flow: { computer: COMPUTER.readyMulti, agentPhase: "idle" },
+      body: <StepCreateAgent />,
+    },
+  },
+  {
+    id: "inv-concept-start-chat",
+    label: "3 · Meet your agent",
+    group: "Accepted concept flow",
+    role: "invitee",
+    view: "experiments",
+    wizard: {
+      step: "start-chat",
+      flow: { computer: COMPUTER.ready },
+      net: { contextTree: TREE_URL, installExists: true, hasCodeRepository: true },
+      body: <StepStartChat />,
+    },
   },
   {
     id: "inv-workspace-team-pick",
@@ -1242,7 +1291,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "inv-ko-not-ready",
     label: "Team not ready · missing setup",
-    group: "First Tree chat states",
+    group: "Meet-your-agent states",
     role: "invitee",
     // Missing tree, missing GitHub install, or an uncertain probe all collapse to
     // the one not-ready screen; the invitee cannot fix those separately here.
@@ -1253,7 +1302,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   },
   {
     id: "inv-start-chat-ready",
-    label: "Start chat",
+    label: "Meet your agent",
     group: "Invitee flow",
     role: "invitee",
     wizard: {
@@ -1268,7 +1317,7 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
   {
     id: "inv-ko-starting",
     label: "Starting…",
-    group: "First Tree chat states",
+    group: "Meet-your-agent states",
     role: "invitee",
     wizard: { step: "start-chat", body: <WorkingState label={COPY.startChat.starting} /> },
   },

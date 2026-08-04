@@ -37,7 +37,8 @@ records the human cross-surface checks those tests cannot fully cover.
    - Open Computers / client setup cards and confirm provider labels, display
      order, and install/login commands match the shared catalog.
    - Confirm New Agent preferred-runtime order follows `selectionPriority`
-     (OpenCode before Pi before Kimi), which may differ from display order.
+     (Codex before Claude Code; OpenCode before Pi before Kimi), which may
+     differ from display order.
    - Spot-check one npm provider (e.g. Codex) and one script installer
      (Cursor or Grok).
 

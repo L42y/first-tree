@@ -5,6 +5,7 @@ import {
   enabledOkRuntimeProviders,
   pickPreferredRuntimeProvider,
   RUNTIME_PROVIDER_IDS,
+  RUNTIME_PROVIDER_SELECTION_ORDER,
   runtimeProviderInstallLoginCommand,
   runtimeProviderLabel as sharedRuntimeProviderLabel,
 } from "@first-tree/shared";
@@ -78,7 +79,7 @@ describe("web provider surfaces derived from shared catalog", () => {
         "claude-code": { state: "ok" },
         codex: { state: "ok" },
       }),
-    ).toBe("claude-code");
+    ).toBe("codex");
     // Display order places Kimi before OpenCode/Pi; selection keeps OpenCode → Pi → Kimi.
     expect(
       pickPreferredRuntimeProvider({
@@ -90,16 +91,16 @@ describe("web provider surfaces derived from shared catalog", () => {
     expect(pickPreferredRuntimeProvider({ "future-provider": { state: "ok" } })).toBeNull();
   });
 
-  it("orders NewAgentDialog-style ok options by catalog display order, not cap key insertion", () => {
+  it("orders NewAgentDialog-style ok options by catalog selection order, not cap key insertion", () => {
     const shuffled = {
       pi: { state: "ok" as const },
       "kimi-code": { state: "ok" as const },
       grok: { state: "ok" as const },
       "claude-code": { state: "ok" as const },
     };
-    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["claude-code", "grok", "kimi-code", "pi"]);
+    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["claude-code", "grok", "pi", "kimi-code"]);
     expect(enabledOkRuntimeProviders(shuffled)).toEqual(
-      PROVIDER_ORDER.filter((id) => shuffled[id as keyof typeof shuffled]?.state === "ok"),
+      RUNTIME_PROVIDER_SELECTION_ORDER.filter((id) => shuffled[id as keyof typeof shuffled]?.state === "ok"),
     );
   });
 

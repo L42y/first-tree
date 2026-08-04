@@ -8,6 +8,8 @@ import {
   KIMI_NPM_PACKAGE,
   OPENCODE_MINIMUM_VERSION,
   OPENCODE_NPM_PACKAGE,
+  orderRuntimeProvidersBySelection,
+  PREFERRED_RUNTIME_PROVIDER,
   pickPreferredRuntimeProvider,
   RUNTIME_PROVIDER_CATALOG,
   RUNTIME_PROVIDER_DISPLAY_ORDER,
@@ -59,16 +61,22 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(RUNTIME_PROVIDER_DISPLAY_ORDER.indexOf("kimi-code")).toBeLessThan(
       RUNTIME_PROVIDER_DISPLAY_ORDER.indexOf("opencode"),
     );
-    // Phase-1 selection: … Grok → OpenCode → Pi → Kimi
+    // Agent creation: Codex → Claude → TUI → … → Kimi.
     expect(RUNTIME_PROVIDER_SELECTION_ORDER).toEqual([
+      "codex",
       "claude-code",
       "claude-code-tui",
-      "codex",
       "cursor",
       "grok",
       "opencode",
       "pi",
       "kimi-code",
+    ]);
+    expect(PREFERRED_RUNTIME_PROVIDER).toBe("codex");
+    expect(orderRuntimeProvidersBySelection(["opencode", "claude-code", "codex"])).toEqual([
+      "codex",
+      "claude-code",
+      "opencode",
     ]);
   });
 
@@ -158,6 +166,7 @@ describe("runtime provider identity + catalog completeness", () => {
 
     expect(
       pickPreferredRuntimeProvider({
+        "claude-code": { state: "ok" },
         "claude-code-tui": { state: "ok" },
         codex: { state: "ok" },
       }),
@@ -185,8 +194,8 @@ describe("runtime provider identity + catalog completeness", () => {
     ).toBe("pi");
   });
 
-  it("lists selectable ok runtimes in catalog display order despite shuffled cap keys", () => {
-    // Insertion order deliberately differs from display order (probe races).
+  it("lists selectable ok runtimes in catalog selection order despite shuffled cap keys", () => {
+    // Insertion order deliberately differs from selection order (probe races).
     const shuffled = {
       pi: { state: "ok" as const },
       "kimi-code": { state: "ok" as const },
@@ -207,6 +216,6 @@ describe("runtime provider identity + catalog completeness", () => {
       "cursor",
       "claude-code",
     ]);
-    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["claude-code", "codex", "grok", "kimi-code", "pi"]);
+    expect(enabledOkRuntimeProviders(shuffled)).toEqual(["codex", "claude-code", "grok", "pi", "kimi-code"]);
   });
 });

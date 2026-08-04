@@ -203,7 +203,7 @@ describe("runtime provider architecture guard", () => {
         expect(source).toContain("pickPreferredRuntimeProvider");
         expect(source).toContain("enabledOkRuntimeProviders");
         expect(source).toContain("runtimeProviderLabel");
-        expect(source).toContain("DEFAULT_RUNTIME_PROVIDER");
+        expect(source).toContain("PREFERRED_RUNTIME_PROVIDER");
         expect(source).not.toContain("Object.entries(activeCapabilities)");
         expect(source).not.toContain('provider === "claude-code"');
         expect(source).not.toContain('"claude-code"');

@@ -1,5 +1,6 @@
 import {
   asRuntimeProvider,
+  DEFAULT_RUNTIME_PROVIDER,
   isRuntimeProviderEnabled,
   RUNTIME_PROVIDER_IDS,
   type RuntimeProvider,
@@ -56,7 +57,7 @@ export type RuntimeProviderCatalogEntry = {
   displayOrder: number;
   /**
    * Ascending order for preferred-runtime auto-pick (may differ from display).
-   * Locked to phase-1 new-agent priority: Claude → TUI → Codex → Cursor → Grok
+   * Locked to the agent-creation priority: Codex → Claude → TUI → Cursor → Grok
    * → OpenCode → Pi → Kimi.
    */
   selectionPriority: number;
@@ -75,7 +76,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "claude-code",
     label: "Claude Code",
     displayOrder: 10,
-    selectionPriority: 10,
+    selectionPriority: 20,
     install: { kind: "npm", package: "@anthropic-ai/claude-code", args: [] },
     loginSteps: ["claude auth login"],
     authRecovery: "in-product",
@@ -85,7 +86,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "claude-code-tui",
     label: "Claude Code CLI",
     displayOrder: 20,
-    selectionPriority: 20,
+    selectionPriority: 30,
     install: { kind: "npm", package: "@anthropic-ai/claude-code", args: [] },
     loginSteps: ["claude auth login"],
     // Shares Claude Code keychain; Connect targets `claude-code`, not a TUI CLI login.
@@ -96,7 +97,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     id: "codex",
     label: "Codex",
     displayOrder: 30,
-    selectionPriority: 30,
+    selectionPriority: 10,
     install: { kind: "npm", package: "@openai/codex", args: [] },
     loginSteps: ["codex login"],
     authRecovery: "in-product",
@@ -165,6 +166,16 @@ export const RUNTIME_PROVIDER_DISPLAY_ORDER: readonly RuntimeProvider[] = [...RU
 export const RUNTIME_PROVIDER_SELECTION_ORDER: readonly RuntimeProvider[] = [...RUNTIME_PROVIDER_IDS].sort(
   (a, b) => RUNTIME_PROVIDER_CATALOG[a].selectionPriority - RUNTIME_PROVIDER_CATALOG[b].selectionPriority,
 );
+
+/** First enabled provider in catalog selection order for pre-capability UI state. */
+export const PREFERRED_RUNTIME_PROVIDER: RuntimeProvider =
+  RUNTIME_PROVIDER_SELECTION_ORDER.find((provider) => isRuntimeProviderEnabled(provider)) ?? DEFAULT_RUNTIME_PROVIDER;
+
+/** Deterministically order a known-provider subset by catalog selection priority. */
+export function orderRuntimeProvidersBySelection(providers: readonly RuntimeProvider[]): RuntimeProvider[] {
+  const included = new Set(providers);
+  return RUNTIME_PROVIDER_SELECTION_ORDER.filter((provider) => included.has(provider));
+}
 
 /** Enabled providers only, in display order — drives setup / matrix UIs. */
 export function enabledRuntimeProviders(): RuntimeProvider[] {
@@ -284,13 +295,16 @@ export function pickPreferredRuntimeProvider(
 }
 
 /**
- * Enabled providers in catalog **display** order whose capability state is `ok`.
+ * Enabled providers in catalog **selection** order whose capability state is `ok`.
  *
- * Use this for selectable option lists — never `Object.entries(caps)`, which
- * follows probe-completion insertion order and is nondeterministic.
+ * Agent-creation surfaces use one Codex-first preference for both the default
+ * and option order. Never use `Object.entries(caps)`, which follows
+ * probe-completion insertion order and is nondeterministic.
  */
 export function enabledOkRuntimeProviders(
   caps: Readonly<Partial<Record<string, { state?: string } | null | undefined>>>,
 ): RuntimeProvider[] {
-  return enabledRuntimeProviders().filter((provider) => caps[provider]?.state === "ok");
+  return orderRuntimeProvidersBySelection(
+    enabledRuntimeProviders().filter((provider) => caps[provider]?.state === "ok"),
+  );
 }

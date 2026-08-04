@@ -1332,9 +1332,7 @@ describe("page SSR smoke coverage", () => {
     expect(await renderOnboardingStep(<StepConnectCode />, { activeStep: "connect-code" })).toContain(
       "Loading your repos",
     );
-    expect(await renderOnboardingStep(<StepStartChat />, { activeStep: "start-chat" })).toContain(
-      "Start your first Agent Chat",
-    );
+    expect(await renderOnboardingStep(<StepStartChat />, { activeStep: "start-chat" })).toContain("Meet your agent");
     expect(
       await renderOnboardingStep(<StepStartChat />, {
         activeStep: "start-chat",
@@ -1342,14 +1340,14 @@ describe("page SSR smoke coverage", () => {
         treeBindingPlan: "createBinding",
         treeUrl: "",
       }),
-    ).toContain("Start your first Agent Chat");
+    ).toContain("Meet your agent");
     expect(
       await renderOnboardingStep(<StepStartChat />, {
         path: "invitee",
         activeStep: "start-chat",
         selectedRepoUrls: [],
       }),
-    ).toContain("Start your first Agent Chat");
+    ).toContain("Meet your agent");
   });
 
   it("renders invite, GitHub App, settings, and layout surfaces", async () => {

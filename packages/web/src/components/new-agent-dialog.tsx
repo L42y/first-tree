@@ -6,10 +6,10 @@ import {
   type AgentTemplatePublicTemplate,
   type AgentVisibility,
   type ClientCapabilities,
-  DEFAULT_RUNTIME_PROVIDER,
   enabledOkRuntimeProviders,
   isReservedAgentName,
   MAX_AGENT_TEMPLATE_IDS,
+  PREFERRED_RUNTIME_PROVIDER,
   pickPreferredRuntimeProvider,
   type RuntimeProvider,
   runtimeProviderLabel,
@@ -198,7 +198,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // the team roster, which surprised users who expected new agents to be
   // personal until explicitly shared.
   const [visibility, setVisibility] = useState<AgentVisibility>("private");
-  const [runtime, setRuntime] = useState<RuntimeProvider>(DEFAULT_RUNTIME_PROVIDER);
+  const [runtime, setRuntime] = useState<RuntimeProvider>(PREFERRED_RUNTIME_PROVIDER);
 
   // Handle resolution. The slug follows the display name (auto-deduped on
   // collision); `resolvedHandle` is the winner. `manualHandle` is only used
@@ -295,7 +295,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     if (open) {
       setDisplayName("");
       setVisibility("private");
-      setRuntime(DEFAULT_RUNTIME_PROVIDER);
+      setRuntime(PREFERRED_RUNTIME_PROVIDER);
       setResolvedHandle("");
       setHandleState({ status: "idle" });
       setManualHandle("");
@@ -553,7 +553,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // Capabilities tied to the *currently* picked client only — guards
   // against acting on stale data right after the user switches machines.
   const activeCapabilities = pickedClientId && capabilitiesClientId === pickedClientId ? capabilities : null;
-  // Catalog display order — never Object.entries(caps), which follows probe
+  // Catalog selection order — never Object.entries(caps), which follows probe
   // completion insertion order and can shuffle the picker.
   const okRuntimes = useMemo<RuntimeProvider[]>(
     () => (activeCapabilities ? enabledOkRuntimeProviders(activeCapabilities) : []),
@@ -566,10 +566,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   useEffect(() => {
     if (!activeCapabilities) return;
     setRuntime((prev) => {
-      if (activeCapabilities[prev]?.state === "ok") return prev;
+      if (okRuntimes.includes(prev)) return prev;
       return pickPreferredRuntime(activeCapabilities) ?? prev;
     });
-  }, [activeCapabilities]);
+  }, [activeCapabilities, okRuntimes]);
 
   // The handle that will actually be submitted: the auto-resolved one, or the
   // user's manual fallback (slugified) when no handle could be derived.

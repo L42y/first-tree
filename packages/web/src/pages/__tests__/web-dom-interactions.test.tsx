@@ -881,12 +881,12 @@ describe("web DOM interaction coverage", () => {
         name: "deploy-bot",
         displayName: "Deploy Bot",
         clientId: "client-1",
-        runtimeProvider: "claude-code",
+        runtimeProvider: "codex",
         visibility: "private",
         organizationId: "org-1",
       }),
     );
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "claude-code", 0);
+    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "codex", 0);
 
     await unmountRoot(root);
   });
@@ -2051,7 +2051,7 @@ describe("web DOM interaction coverage", () => {
         retry: vi.fn(),
       },
     });
-    await waitForText("Choose which local coding agent it uses", container);
+    await waitForText("This agent will run", container);
 
     const nameInput = container.querySelector<HTMLInputElement>("#onboarding-agent-name");
     expect(nameInput).not.toBeNull();
@@ -2062,7 +2062,7 @@ describe("web DOM interaction coverage", () => {
     const runtimeInputs = Array.from(
       container.querySelectorAll<HTMLInputElement>('input[name="onboarding-coding-agent"]'),
     );
-    await click(runtimeInputs[1] ?? null);
+    await click(runtimeInputs[0] ?? null);
     expect(setSelectedRuntime).toHaveBeenCalledWith("codex");
 
     const visibilityInputs = Array.from(
@@ -2171,7 +2171,7 @@ describe("web DOM interaction coverage", () => {
       setTreeUrl,
       markTreeAutoDetectDone,
     });
-    await waitForText("Start your first Agent Chat", adminAutoDetect.container);
+    await waitForText("Meet your agent", adminAutoDetect.container);
     expect(markTreeAutoDetectDone).toHaveBeenCalled();
     expect(setTreeBindingPlan).toHaveBeenCalledWith("useBoundTree");
     expect(setTreeUrl).toHaveBeenCalledWith("https://github.com/acme/context-tree");
@@ -2186,9 +2186,9 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Start your first Agent Chat", adminExisting.container);
-    await click(findButton(adminExisting.container, "Start chat"));
-    await waitForText("Starting your agent", adminExisting.container);
+    await waitForText("Meet your agent", adminExisting.container);
+    await click(findButton(adminExisting.container, "Start exploring"));
+    await waitForText("Opening your first Chat", adminExisting.container);
     expect(agentApiMocks.listManagedAgents).toHaveBeenCalled();
     expect(onboardingEventMocks.startOnboardingChat).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2214,19 +2214,15 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "createBinding",
       treeUrl: "",
     });
-    await waitForText("Start your first Agent Chat", adminNoProject.container);
-    expect(adminNoProject.container.textContent).toContain("Stay connected");
-    expect(adminNoProject.container.textContent).toContain("Mobile app");
-    expect(adminNoProject.container.textContent).toContain("Scan to install");
-    expect(adminNoProject.container.textContent).toContain("WeChat group");
-    expect(adminNoProject.container.textContent).toContain("Discord");
-    const communityGrid = [...adminNoProject.container.querySelectorAll(".grid")].find((element) =>
-      element.textContent?.includes("Mobile app"),
+    await waitForText("Meet your agent", adminNoProject.container);
+    expect(adminNoProject.container.textContent).toContain(
+      "Explore First Tree together, then choose what you’d like to try first.",
     );
-    expect(communityGrid?.className).toContain("grid-cols-2");
-    expect(communityGrid?.className).toContain("sm:grid-cols-3");
-    expect(communityGrid?.querySelector('span[role="img"] svg')?.getAttribute("class")).toContain("h-20");
-    await click(findButton(adminNoProject.container, "Start chat"));
+    expect(adminNoProject.container.textContent).not.toContain("Stay connected");
+    expect(adminNoProject.container.textContent).not.toContain("Mobile app");
+    expect(adminNoProject.container.textContent).not.toContain("WeChat group");
+    expect(adminNoProject.container.textContent).not.toContain("Discord");
+    await click(findButton(adminNoProject.container, "Start exploring"));
     expect(onboardingEventMocks.startOnboardingChat).toHaveBeenLastCalledWith(
       expect.objectContaining({ agentUuid: "agent-1", topic: "Get started with First Tree" }),
     );
@@ -2239,12 +2235,12 @@ describe("web DOM interaction coverage", () => {
     contextEnablementMocks.getContextEnablementHandoff.mockClear();
     orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({ repo: "", branch: null });
     const inviteeNoTree = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
-    await waitForText("Start your first Agent Chat", inviteeNoTree.container);
+    await waitForText("Meet your agent", inviteeNoTree.container);
     expect(inviteeNoTree.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(inviteeNoTree.container.textContent).not.toContain("Needs Admin");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
-    await click(findButton(inviteeNoTree.container, "Start chat"));
-    await waitForText("Starting your agent", inviteeNoTree.container);
+    await click(findButton(inviteeNoTree.container, "Start exploring"));
+    await waitForText("Opening your first Chat", inviteeNoTree.container);
     expect(inviteeNoTree.flow.completeAndEnterChat).toHaveBeenCalled();
     await unmountRoot(inviteeNoTree.root);
 
@@ -2262,7 +2258,7 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Start your first Agent Chat", inviteeNoRepo.container);
+    await waitForText("Meet your agent", inviteeNoRepo.container);
     expect(inviteeNoRepo.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(inviteeNoRepo.container.textContent).not.toContain("Needs Admin");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
@@ -2282,11 +2278,11 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Start your first Agent Chat", inviteeNoInstall.container);
+    await waitForText("Meet your agent", inviteeNoInstall.container);
     expect(inviteeNoInstall.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
-    expect(findButton(inviteeNoInstall.container, "Start your first Agent Chat")).toBeNull();
-    await click(findButton(inviteeNoInstall.container, "Start chat"));
+    expect(findButton(inviteeNoInstall.container, "Start chat")).toBeNull();
+    await click(findButton(inviteeNoInstall.container, "Start exploring"));
     expect(inviteeNoInstall.flow.completeAndEnterChat).toHaveBeenCalled();
     await unmountRoot(inviteeNoInstall.root);
 
@@ -2300,20 +2296,20 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Start your first Agent Chat", inviteeProbeFail.container);
+    await waitForText("Meet your agent", inviteeProbeFail.container);
     expect(inviteeProbeFail.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
-    expect(findButton(inviteeProbeFail.container, "Start your first Agent Chat")).toBeNull();
+    expect(findButton(inviteeProbeFail.container, "Start chat")).toBeNull();
     await unmountRoot(inviteeProbeFail.root);
 
     // Invitee · ready (tree + install) → a single launch, no repo selection. The
     // agent already inherits the team's recommended repos.
     contextEnablementMocks.getContextEnablementHandoff.mockClear();
     const inviteeReady = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
-    await waitForText("Start your first Agent Chat", inviteeReady.container);
+    await waitForText("Meet your agent", inviteeReady.container);
     expect(inviteeReady.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
-    await click(findButton(inviteeReady.container, "Start chat"));
+    await click(findButton(inviteeReady.container, "Start exploring"));
     // Ready invitee also lands in a value-first work chat, not the tree setup
     // chat. The inherited team tree is context for orientation.
     expect(onboardingEventMocks.startOnboardingChat).toHaveBeenCalledWith(
@@ -2341,12 +2337,12 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "createBinding",
       treeUrl: "",
     });
-    await waitForText("Start your first Agent Chat", view.container);
+    await waitForText("Meet your agent", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,
     );
-    await waitForText("Starting your agent", view.container);
+    await waitForText("Opening your first Chat", view.container);
 
     expect(onboardingEventMocks.startOnboardingChat).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2407,12 +2403,12 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Start your first Agent Chat", view.container);
+    await waitForText("Meet your agent", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,
     );
-    await waitForText("Starting your agent", view.container);
+    await waitForText("Opening your first Chat", view.container);
     // web is still granted → written; the stale repo is pruned → never written.
     expect(resourceMocks.confirmTeamRepositoriesForOrg).toHaveBeenCalledWith(
       "org-1",
@@ -2436,7 +2432,7 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Start your first Agent Chat", view.container);
+    await waitForText("Meet your agent", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,
@@ -2492,12 +2488,12 @@ describe("web DOM interaction coverage", () => {
         );
       },
     );
-    await waitForText("Start your first Agent Chat", view.container);
+    await waitForText("Meet your agent", view.container);
     await click(
       ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
         null) as HTMLButtonElement | null,
     );
-    await waitForText("Starting your agent", view.container);
+    await waitForText("Opening your first Chat", view.container);
     // Live read returned web + api → `gone` is pruned despite being in the cache.
     expect(githubMocks.listOrgGithubRepos).toHaveBeenCalled();
     expect(resourceMocks.confirmTeamRepositoriesForOrg).toHaveBeenCalledWith(

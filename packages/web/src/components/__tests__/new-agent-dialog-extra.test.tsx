@@ -114,6 +114,7 @@ function client(overrides: Partial<HubClient> = {}): HubClient {
       "claude-code-tui": capability("ok"),
       codex: capability("ok"),
       future: capability("ok"),
+      pi: capability("ok"),
     },
   };
 }
@@ -263,6 +264,13 @@ describe("NewAgentDialog extra branches", () => {
 
     await waitForText(container, "gandy-macbook");
     expect(document.body.textContent).toContain("Claude Code");
+    const initialRuntimeInputs = [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')];
+    expect(initialRuntimeInputs.map((input) => input.closest("label")?.textContent)).toEqual([
+      expect.stringContaining("Codex"),
+      expect.stringContaining("Claude Code"),
+      expect.stringContaining("Pi"),
+    ]);
+    expect(initialRuntimeInputs.find((input) => input.checked)?.closest("label")?.textContent).toContain("Codex");
     await setValue(inputById("new-agent-display-name"), "Build Bot");
     await waitForCondition(() => agentMocks.checkAgentNameAvailability.mock.calls.length > 0, "Expected probe");
     await waitForText(container, "@build-bot");
@@ -425,9 +433,9 @@ describe("NewAgentDialog extra branches", () => {
     expect(agentMocks.createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: "probe-bot" }));
   });
 
-  it("renders runtime chips in catalog displayOrder despite shuffled capability keys", async () => {
+  it("renders runtime chips in catalog selectionPriority despite shuffled capability keys", async () => {
     const { NewAgentDialog } = await import("../new-agent-dialog.js");
-    // Insertion order deliberately differs from display order (probe races).
+    // Insertion order deliberately differs from selection order (probe races).
     const shuffledCaps = {
       pi: capability("ok"),
       "kimi-code": capability("ok"),
@@ -446,6 +454,6 @@ describe("NewAgentDialog extra branches", () => {
     const labels = [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].map(
       (input) => input.closest("label")?.querySelector(".text-body")?.textContent?.trim() ?? "",
     );
-    expect(labels).toEqual(["Claude Code", "Grok Build", "Kimi Code", "Pi"]);
+    expect(labels).toEqual(["Claude Code", "Grok Build", "Pi", "Kimi Code"]);
   });
 });

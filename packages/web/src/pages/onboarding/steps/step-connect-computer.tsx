@@ -1,4 +1,4 @@
-import { runtimeProviderLabel } from "@first-tree/shared";
+import { orderRuntimeProvidersBySelection, runtimeProviderLabel } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { COPY } from "../copy.js";
@@ -7,10 +7,9 @@ import { useOnboardingFlow } from "../onboarding-flow.js";
 
 /**
  * Install the First Tree client (a small background app) on the user's computer.
- * Two install paths: run the command block in a terminal, OR paste a ready prompt to
- * the coding agent the user already has (Claude Code / Codex) and let it install.
- * We poll until the computer shows up, then list the coding agents detected on it
- * (read-only — picking which one to use moves to the next step, create-agent).
+ * The user runs the server-authored command in a terminal. We poll until the
+ * computer shows up, then list what First Tree agents can run on it (read-only
+ * — choosing one moves to the next step, create-agent).
  *
  * No "Need help?" disclosure / example terminal: the normal state is just the
  * server-provided command(s) + status.
@@ -21,17 +20,16 @@ export function StepConnectComputer() {
 
   const noRuntime = !!connectedClient && capabilitiesLoaded && okRuntimes.length === 0;
   const ready = !!connectedClient && okRuntimes.length > 0;
-
-  // Box 2 hands the SAME command to the user's coding agent as a paste-able
-  // prompt, with a natural-language "please run this" wrapper so the agent
-  // actually executes it (a bare command pasted in might only get explained).
-  const agentPrompt = cliCommand ? `${COPY.connectComputer.agentPromptPrefix}\n${cliCommand}` : null;
+  const orderedRuntimes = orderRuntimeProvidersBySelection(okRuntimes);
+  const stepBody = connectedClient ? COPY.connectComputer.whyConnected : COPY.connectComputer.whyWaiting;
 
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
-      <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
-        {connectedClient ? COPY.connectComputer.whyConnected : COPY.connectComputer.whyWaiting}
-      </p>
+      {stepBody ? (
+        <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
+          {stepBody}
+        </p>
+      ) : null}
 
       {!connectedClient ? (
         tokenError ? (
@@ -42,21 +40,15 @@ export function StepConnectComputer() {
             {COPY.connectComputer.tokenErrorTitle}
           </FlowHint>
         ) : (
-          <>
+          <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
             <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
               <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
                 {COPY.connectComputer.terminalBoxLabel}
               </p>
               <CommandBox command={cliCommand} />
             </div>
-            <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
-              <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
-                {COPY.connectComputer.agentBoxLabel}
-              </p>
-              <CommandBox command={agentPrompt} />
-            </div>
             <StatusRow state="waiting" label={COPY.connectComputer.waiting} />
-          </>
+          </div>
         )
       ) : (
         <>
@@ -97,10 +89,10 @@ export function StepConnectComputer() {
                 {/* Names the nested group so the relationship is stated, not
                     only implied by the indent. */}
                 <p className="text-caption" style={{ margin: 0, color: "var(--fg-4)" }}>
-                  {COPY.connectComputer.detectedLabel(okRuntimes.length)}
+                  {COPY.connectComputer.detectedLabel}
                 </p>
                 <div className="flex flex-col" style={{ gap: "var(--sp-1_5)" }}>
-                  {okRuntimes.map((r) => (
+                  {orderedRuntimes.map((r) => (
                     <div
                       key={r}
                       className="inline-flex items-center text-label"
