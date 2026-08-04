@@ -47,7 +47,7 @@ describe("get-started progressive copy", () => {
     }
     expect(g.joinedTeam("Acme")).toBe("You've joined Acme");
     expect(g.recommendedTitle).toBe("Set up your First Tree agent");
-    expect(g.personalSteps).toEqual(["Connect computer", "Create agent", "Start first chat"]);
+    expect(g.personalSteps).toEqual(["Connect computer", "Create agent", "Meet your agent"]);
     expect(g.continueWithout).toBe("Continue without my own agent");
     expect(g.runBy("Zhang Wei")).toBe("Run by Zhang Wei");
     expect(g.teamAgentExecution("Zhang Wei")).toContain("Zhang Wei's connected computer");
@@ -64,9 +64,9 @@ describe("get-started progressive copy", () => {
 });
 
 describe("onboarding vocabulary (connect-agent reframe)", () => {
-  // The reframe retires "runtime" from UI copy in favour of "coding agent" /
-  // the tool's own name. Guard against it creeping back into the two steps
-  // that used to say it.
+  // The reframe retires "runtime" from UI copy in favour of plain descriptions
+  // and the detected option's own name. Guard against it creeping back into
+  // the two steps that used to say it.
   it("connect-computer + create-agent copy never says 'runtime'", () => {
     const cc = COPY.connectComputer;
     const ca = COPY.createAgent;
@@ -92,37 +92,39 @@ describe("onboarding vocabulary (connect-agent reframe)", () => {
     }
   });
 
-  it("keeps the computer bridge provider-neutral and names the managed agent", () => {
-    expect(COPY.connectComputer.whyWaiting).toContain("local coding agent");
-    expect(COPY.connectComputer.whyWaiting).not.toContain("Claude Code");
-    expect(COPY.connectComputer.whyWaiting).not.toContain("Codex");
+  it("explains the computer action without inventing a category users must learn", () => {
+    expect(COPY.connectComputer.whyWaiting).toBe(
+      "Install the First Tree app to connect this computer and detect what your agents can run.",
+    );
+    expect(COPY.connectComputer.whyConnected).toBe("");
+    expect(COPY.connectComputer.detectedLabel).toBe("Available on this computer");
     expect(COPY.connectComputer.detectedBridge).toBe("Next, create your First Tree agent.");
     expect(STEP_COPY["create-agent"].title).toContain("First Tree agent");
-    // The subtitle keeps the First Tree teammate distinct from the local
-    // provider selected in the field below.
-    expect(COPY.createAgent.subtitle).toContain("First Tree teammate");
-    expect(COPY.createAgent.subtitle).toContain("local coding agent");
+    expect(COPY.createAgent.subtitle).toBe(
+      "Build your own group of agents for different work in this team. Let’s create your first one.",
+    );
+    expect(COPY.createAgent.codingAgentLabel).toBe("This agent will run");
   });
 
-  it("keeps the start-chat finale action-oriented and consistent", () => {
-    expect(COPY.startChat.newTitle).toBe("Start your first Agent Chat");
-    expect(COPY.startChat.existingTitle).toBe("Start your first Agent Chat");
-    expect(COPY.startChat.noProjectTitle).toBe("Start your first Agent Chat");
-    expect(COPY.startChat.inviteeReadyTitle).toBe("Start your first Agent Chat");
-    expect(COPY.invitee.notReadyTitle).toBe("Start your first Agent Chat");
+  it("keeps the meet-your-agent finale action-oriented and consistent", () => {
+    expect(COPY.startChat.newTitle).toBe("Meet your agent");
+    expect(COPY.startChat.existingTitle).toBe("Meet your agent");
+    expect(COPY.startChat.noProjectTitle).toBe("Meet your agent");
+    expect(COPY.startChat.inviteeReadyTitle).toBe("Meet your agent");
+    expect(COPY.invitee.notReadyTitle).toBe("Meet your agent");
 
-    expect(COPY.startChat.startBuilding).toBe("Start chat");
-    expect(COPY.startChat.startExisting).toBe("Start chat");
-    expect(COPY.startChat.startChatting).toBe("Start chat");
-    expect(COPY.startChat.startWorking).toBe("Start chat");
-    expect(COPY.invitee.startAnyway).toBe("Start chat");
+    expect(COPY.startChat.startBuilding).toBe("Start exploring");
+    expect(COPY.startChat.startExisting).toBe("Start exploring");
+    expect(COPY.startChat.startChatting).toBe("Start exploring");
+    expect(COPY.startChat.startWorking).toBe("Start exploring");
+    expect(COPY.invitee.startAnyway).toBe("Start exploring");
   });
 
   it("shows one plain launch subtitle across every start-chat state", () => {
     // The finale intentionally reads the same regardless of role or team/tree
     // state: that state is invisible to the user (Context Tree is introduced
     // later, in chat), so the subtitle stays a single plain launch line.
-    const launch = "Your agent is ready. Delegate work, follow progress, and review results with your team.";
+    const launch = "Explore First Tree together, then choose what you’d like to try first.";
     expect(COPY.startChat.noProjectBody).toBe(launch);
     expect(COPY.startChat.inviteeReadyBody).toBe(launch);
     expect(COPY.invitee.notReadyBody).toBe(launch);

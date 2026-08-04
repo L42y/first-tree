@@ -95,7 +95,7 @@ describe("onboarding preview review surface", () => {
       "Create team",
       "Connect computer",
       "Create agent",
-      "Start chat",
+      "Meet your agent",
     ]);
     expect(adminFlow.some((scenario) => scenario.wizard?.step === "connect-code")).toBe(false);
   });
@@ -268,6 +268,135 @@ describe("onboarding preview review surface", () => {
     ).toBe(true);
   });
 
+  it("keeps only the progressive concept experiments for both roles", async () => {
+    const { ONBOARDING_PREVIEW_SCENARIOS } = await import("../onboarding-preview.js");
+
+    const experimentIds = (role: "admin" | "invitee") =>
+      ONBOARDING_PREVIEW_SCENARIOS.filter((scenario) => scenario.role === role && scenario.view === "experiments").map(
+        (scenario) => scenario.id,
+      );
+
+    expect(experimentIds("admin")).toEqual([
+      "admin-concept-connect-computer",
+      "admin-concept-create-agent",
+      "admin-concept-start-chat",
+    ]);
+    expect(experimentIds("invitee")).toEqual([
+      "inv-concept-connect-computer",
+      "inv-concept-create-agent",
+      "inv-concept-start-chat",
+    ]);
+
+    const catalog = ONBOARDING_PREVIEW_SCENARIOS.flatMap((scenario) => [scenario.id, scenario.group]).join("\n");
+    expect(catalog).not.toContain("Create-team experiments");
+    expect(catalog).not.toContain("admin-team-steps");
+    expect(catalog).not.toContain("admin-welcome-ceremonial");
+  });
+
+  it("uses the accepted concept copy in both focused previews and the live flow", async () => {
+    const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
+
+    window.history.replaceState(
+      null,
+      "",
+      "/preview/onboarding?role=admin&view=experiments&scenario=admin-concept-connect-computer",
+    );
+    const connect = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+    expect(connect.container.textContent).toContain(
+      "Install the First Tree app to connect this computer and detect what your agents can run.",
+    );
+    expect(connect.container.textContent).not.toContain("does not run a task or open any project files");
+    expect(connect.container.textContent).toContain("Run this command in your terminal");
+    expect(connect.container.textContent).not.toContain("Or paste this into your AI coding tool");
+    expect(connect.container.textContent).not.toContain("Or paste this to your Claude Code, Codex, or Cursor agent");
+    await act(async () => connect.root.unmount());
+
+    window.history.replaceState(
+      null,
+      "",
+      "/preview/onboarding?role=admin&view=experiments&scenario=admin-concept-create-agent",
+    );
+    const create = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+    expect(create.container.textContent).toContain(
+      "Build your own group of agents for different work in this team. Let’s create your first one.",
+    );
+    expect(create.container.textContent).toContain("This agent will run");
+    expect(create.container.textContent).not.toContain("Each agent can use a different tool.");
+    expect(create.container.textContent).toContain("Claude Code");
+    expect(create.container.textContent).toContain("Codex");
+    expect(create.container.textContent).toContain("OpenCode");
+    expect(create.container.textContent).toContain("Pi");
+    expect(
+      create.container
+        .querySelector<HTMLInputElement>('input[name="onboarding-coding-agent"]:checked')
+        ?.closest("label")?.textContent,
+    ).toContain("Codex");
+    const createText = create.container.textContent ?? "";
+    expect(createText.indexOf("Name your agent")).toBeLessThan(createText.indexOf("This agent will run"));
+    expect(createText.indexOf("This agent will run")).toBeLessThan(createText.indexOf("Who can use it?"));
+    expect(createText.indexOf("Codex")).toBeLessThan(createText.indexOf("Claude Code"));
+    expect(createText.indexOf("Claude Code")).toBeLessThan(createText.indexOf("OpenCode"));
+    expect(createText.indexOf("OpenCode")).toBeLessThan(createText.indexOf("Pi"));
+    await act(async () => create.root.unmount());
+
+    window.history.replaceState(
+      null,
+      "",
+      "/preview/onboarding?role=admin&view=experiments&scenario=admin-concept-start-chat",
+    );
+    const start = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+    expect(start.container.textContent).toContain("Meet your agent");
+    expect(start.container.textContent).toContain(
+      "Explore First Tree together, then choose what you’d like to try first.",
+    );
+    expect(start.container.textContent).toContain("Start exploring");
+    expect(start.container.textContent).not.toContain("Stay connected");
+    expect(start.container.textContent).not.toContain("WeChat group");
+    expect(start.container.textContent).not.toContain("Discord");
+    await act(async () => start.root.unmount());
+
+    window.history.replaceState(null, "", "/preview/onboarding?role=admin&view=states&scenario=admin-ko-noproject");
+    const liveStart = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+    expect(liveStart.container.textContent).toContain("Meet your agent");
+    expect(liveStart.container.textContent).toContain(
+      "Explore First Tree together, then choose what you’d like to try first.",
+    );
+    expect(liveStart.container.textContent).toContain("Start exploring");
+    expect(liveStart.container.textContent).not.toContain("Stay connected");
+    await act(async () => liveStart.root.unmount());
+
+    window.history.replaceState(null, "", "/preview/onboarding?role=admin&view=flow&scenario=admin-ca-form");
+    const live = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+    expect(live.container.textContent).toContain(
+      "Build your own group of agents for different work in this team. Let’s create your first one.",
+    );
+    expect(live.container.textContent).toContain("This agent will run");
+    const liveText = live.container.textContent ?? "";
+    expect(liveText.indexOf("Name your agent")).toBeLessThan(liveText.indexOf("This agent will run"));
+    expect(liveText.indexOf("This agent will run")).toBeLessThan(liveText.indexOf("Who can use it?"));
+    await act(async () => live.root.unmount());
+  });
+
   it("does not repeat the BYO choice after the member selected a First Tree agent", async () => {
     authMock.memberships = [{}];
     window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=flow&scenario=inv-ko-ready");
@@ -279,7 +408,7 @@ describe("onboarding preview review surface", () => {
       </MemoryRouter>,
     );
 
-    await waitForText(container, "Start your first Agent Chat");
+    await waitForText(container, "Meet your agent");
     expect(container.textContent).not.toContain("Use Team Context in your coding agent");
     expect(container.textContent).not.toContain("Copy setup prompt");
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();

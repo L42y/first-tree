@@ -193,7 +193,7 @@ describe("StepGetStarted", () => {
     expect(container.textContent).toContain("You've joined Acme");
     expect(container.textContent).toContain("Set up your First Tree agent");
     expect(container.textContent).toContain("Connect computer");
-    expect(container.textContent).toContain("Start first chat");
+    expect(container.textContent).toContain("Meet your agent");
     expect(container.textContent).not.toContain("Pick a team agent");
     expect(container.textContent).not.toContain("Use the Context Tree in Claude Code or Codex");
     expect(mocks.listAgents).not.toHaveBeenCalled();
