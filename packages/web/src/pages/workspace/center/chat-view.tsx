@@ -10,6 +10,7 @@ import {
   type DocSnapshotFailReason,
   documentContextSchema,
   extractMentions,
+  FIRST_CHAT_ORIENTATION_CHAT_STATES,
   imageAttachmentRefsFromMetadata,
   isImageBatchRefContent,
   isImageRefContent,
@@ -19,6 +20,8 @@ import {
   type RequestResolution,
   type RuntimeProvider,
   readAskAgentMessageMetadata,
+  readFirstChatOrientationChatState,
+  readFirstChatOrientationMessageMetadata,
   statusReasonFromProviderRetryEvent,
 } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -106,6 +109,10 @@ import {
   isTrustedGitlabDispatcherMessage,
 } from "../../../components/chat/gitlab-event-card.js";
 import { ImageRefGallery } from "../../../components/chat/image-ref-gallery.js";
+import {
+  ONBOARDING_ORIENTATION_CONTINUE_MESSAGE,
+  OnboardingOrientation,
+} from "../../../components/chat/onboarding-orientation.js";
 import {
   contentStartsWithMention,
   findBlockingRequest,
@@ -567,6 +574,10 @@ type MessageRowProps = {
    *  AgentHovercard whose actions ("View profile" → /agents/:id, "New chat" →
    *  /?c=draft) would navigate out of the controlled trial conversation. */
   isTrial: boolean;
+  orientationCompleted: boolean;
+  orientationHidden: boolean;
+  orientationContinuing: boolean;
+  onOrientationContinue: (bootstrap: MessageWithDelivery) => void;
 };
 
 const GitlabInstanceOriginContext = createContext<string | null>(null);
@@ -576,6 +587,10 @@ type MessageBodyProps = {
   requestTagAgentId: string | null;
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
+  orientationCompleted: boolean;
+  orientationHidden: boolean;
+  orientationContinuing: boolean;
+  onOrientationContinue: (bootstrap: MessageWithDelivery) => void;
 };
 
 type MessageMarkdownProps = {
@@ -642,6 +657,10 @@ const MessageBody = memo(function MessageBody({
   requestTagAgentId,
   myAgentId,
   mentionParticipants,
+  orientationCompleted,
+  orientationHidden,
+  orientationContinuing,
+  onOrientationContinue,
 }: MessageBodyProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -908,6 +927,13 @@ const MessageBody = memo(function MessageBody({
           {JSON.stringify(msg.content, null, 2)}
         </pre>
       )}
+      {!orientationHidden && isFirstChatOrientationMessage(msg, myAgentId) ? (
+        <OnboardingOrientation
+          completed={orientationCompleted}
+          continuing={orientationContinuing}
+          onContinue={() => onOrientationContinue(msg)}
+        />
+      ) : null}
       <ImageRefGallery
         images={metadataImages}
         hasLeadingContent={typeof msg.content === "string" && msg.content.trim().length > 0}
@@ -942,6 +968,10 @@ const MessageRow = memo(function MessageRow({
   agentColorTokenFn,
   mentionParticipants,
   isTrial,
+  orientationCompleted,
+  orientationHidden,
+  orientationContinuing,
+  onOrientationContinue,
 }: MessageRowProps) {
   // GitHub-dispatcher cards keep the human-agent uuid in `senderId` so
   // routing / read-receipts / mention-resolution stay consistent, but we
@@ -1038,6 +1068,10 @@ const MessageRow = memo(function MessageRow({
           requestTagAgentId={requestTagAgentId}
           myAgentId={myAgentId}
           mentionParticipants={mentionParticipants}
+          orientationCompleted={orientationCompleted}
+          orientationHidden={orientationHidden}
+          orientationContinuing={orientationContinuing}
+          onOrientationContinue={onOrientationContinue}
         />
       </div>
     </div>
@@ -1053,6 +1087,10 @@ function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): 
     prev.agentAvatarFn === next.agentAvatarFn &&
     prev.agentColorTokenFn === next.agentColorTokenFn &&
     prev.isTrial === next.isTrial &&
+    prev.orientationCompleted === next.orientationCompleted &&
+    prev.orientationHidden === next.orientationHidden &&
+    prev.orientationContinuing === next.orientationContinuing &&
+    prev.onOrientationContinue === next.onOrientationContinue &&
     mentionParticipantsEqual(prev.mentionParticipants, next.mentionParticipants)
   );
 }
@@ -1062,7 +1100,21 @@ function areMessageBodyPropsEqual(prev: MessageBodyProps, next: MessageBodyProps
     messageBodyFieldsEqual(prev.msg, next.msg) &&
     prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
+    prev.orientationCompleted === next.orientationCompleted &&
+    prev.orientationHidden === next.orientationHidden &&
+    prev.orientationContinuing === next.orientationContinuing &&
+    prev.onOrientationContinue === next.onOrientationContinue &&
     mentionParticipantsEqual(prev.mentionParticipants, next.mentionParticipants)
+  );
+}
+
+function isFirstChatOrientationMessage(msg: MessageWithDelivery, myAgentId: string | null): boolean {
+  return (
+    myAgentId !== null &&
+    msg.senderId === myAgentId &&
+    msg.source === "api" &&
+    msg.format === "text" &&
+    readFirstChatOrientationMessageMetadata(msg.metadata) !== null
   );
 }
 
@@ -1346,6 +1398,9 @@ type ChatTimelineProps = {
   dividerRef: RefObject<HTMLDivElement | null>;
   pillCount: number;
   onPillClick: () => void;
+  orientationContinuing: boolean;
+  orientationHidden: boolean;
+  onOrientationContinue: (bootstrap: MessageWithDelivery) => void;
 };
 
 const ChatTimeline = memo(function ChatTimeline({
@@ -1375,6 +1430,9 @@ const ChatTimeline = memo(function ChatTimeline({
   dividerRef,
   pillCount,
   onPillClick,
+  orientationContinuing,
+  orientationHidden,
+  onOrientationContinue,
 }: ChatTimelineProps) {
   const messagesById = useMemo(() => {
     const map = new Map<string, MessageWithDelivery>();
@@ -1383,6 +1441,26 @@ const ChatTimeline = memo(function ChatTimeline({
     }
     return map;
   }, [visibleItems]);
+  const completedOrientationMessageIds = useMemo(() => {
+    const completed = new Set<string>();
+    if (!myAgentId) return completed;
+    const messageItems = visibleItems.filter(
+      (item): item is Extract<TimelineItem, { kind: "message" }> => item.kind === "message",
+    );
+    let lastOwnMessageIndex = -1;
+    for (let index = messageItems.length - 1; index >= 0; index -= 1) {
+      if (messageItems[index]?.data.senderId === myAgentId) {
+        lastOwnMessageIndex = index;
+        break;
+      }
+    }
+    if (lastOwnMessageIndex < 0) return completed;
+    for (let index = 0; index < lastOwnMessageIndex; index += 1) {
+      const item = messageItems[index];
+      if (item && isFirstChatOrientationMessage(item.data, myAgentId)) completed.add(item.data.id);
+    }
+    return completed;
+  }, [myAgentId, visibleItems]);
   // Which non-human agents this turn awaits a reply from — routing-derived from
   // the latest message's persisted recipients (metadata.addressedAgentIds, which
   // includes the system addressedToAgentIds routing the onboarding bootstrap uses
@@ -1463,6 +1541,10 @@ const ChatTimeline = memo(function ChatTimeline({
                     agentColorTokenFn={agentColorTokenFn}
                     mentionParticipants={mentionParticipants}
                     isTrial={isTrial}
+                    orientationCompleted={completedOrientationMessageIds.has(msg.id)}
+                    orientationHidden={orientationHidden}
+                    orientationContinuing={orientationContinuing}
+                    onOrientationContinue={onOrientationContinue}
                   />
                 );
               }
@@ -2127,6 +2209,7 @@ export function ChatView({
       mentions: string[];
       inReplyTo?: string;
       resolves?: RequestResolution;
+      preserveDraft?: boolean;
     }) =>
       // `resolves` rides the blocking question's answer send (option
       // selections + free text merged) — see the `dockRequest` branch in
@@ -2138,10 +2221,10 @@ export function ChatView({
     // and clear the draft so the input feels responsive even when the POST
     // round-trip + follow-up GET take 1–2s. The ctx returned here is threaded
     // to onError / onSuccess so we can reconcile with the server row.
-    onMutate: async ({ content, mentions, inReplyTo, resolves }) => {
+    onMutate: async ({ content, mentions, inReplyTo, resolves, preserveDraft }) => {
       await queryClient.cancelQueries({ queryKey: messagesQueryKey });
       const previousDraft = draft;
-      setDraft("");
+      if (!preserveDraft) setDraft("");
       const optimistic = buildOptimisticTextMessage(content, { mentions, inReplyTo, resolves });
       if (!optimistic) return { tempId: null, previousDraft, sendChatId: chatId, sendUserId: user?.id ?? null };
       insertOwnOptimisticMessage(optimistic);
@@ -2213,6 +2296,23 @@ export function ChatView({
       queryClient.invalidateQueries({ queryKey: messagesQueryKey });
     },
   });
+  const sendChatMutation = sendMut.mutate;
+
+  const continueOnboardingOrientation = useCallback(
+    (bootstrap: MessageWithDelivery) => {
+      const mentions = readMentions(bootstrap.metadata).filter((id) => id !== myAgentId);
+      if (mentions.length === 0) {
+        setUploadError("This introduction can no longer reach its agent. Send a message from the composer instead.");
+        return;
+      }
+      sendChatMutation({
+        content: ONBOARDING_ORIENTATION_CONTINUE_MESSAGE,
+        mentions,
+        preserveDraft: true,
+      });
+    },
+    [myAgentId, sendChatMutation],
+  );
 
   const handleSend = async () => {
     if (isLandingCampaignTrialChatLocked(chatDetail?.metadata)) return;
@@ -4268,6 +4368,12 @@ export function ChatView({
             dividerRef={dividerRef}
             pillCount={pillCount}
             onPillClick={onPillClick}
+            orientationContinuing={sendMut.isPending}
+            orientationHidden={
+              readFirstChatOrientationChatState(chatDetail?.metadata) ===
+              FIRST_CHAT_ORIENTATION_CHAT_STATES.LEGACY_STARTED
+            }
+            onOrientationContinue={continueOnboardingOrientation}
           />
 
           {/* Input. Outer band keeps full-width border-top + side padding so

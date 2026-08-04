@@ -70,6 +70,26 @@ export function readAskAgentMessageMetadata(
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Server-owned marker on the visible bootstrap message of an ordinary first
+ * chat. Web uses it to mount the optional Orientation surface in that message
+ * row. It is presentation metadata only and never becomes agent prompt text;
+ * the visible bootstrap and the user's next visible turn remain the complete
+ * conversational context.
+ */
+export const FIRST_CHAT_ORIENTATION_METADATA_KEY = "firstChatOrientation";
+export const firstChatOrientationMessageMetadataSchema = z.object({
+  version: z.literal(1),
+});
+export type FirstChatOrientationMessageMetadata = z.infer<typeof firstChatOrientationMessageMetadataSchema>;
+
+export function readFirstChatOrientationMessageMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): FirstChatOrientationMessageMetadata | null {
+  const parsed = firstChatOrientationMessageMetadataSchema.safeParse(metadata?.[FIRST_CHAT_ORIENTATION_METADATA_KEY]);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Human-authored visible body accepted by the request-scoped Ask agent route. */
 export const askAgentQuestionSchema = z.object({
   content: z.string().trim().min(1).max(4_000),

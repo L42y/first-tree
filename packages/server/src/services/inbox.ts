@@ -1,11 +1,12 @@
 import {
+  FIRST_CHAT_ORIENTATION_METADATA_KEY,
   INBOX_FENCE_PROBE_MAX_IDS,
   type InboxEntryWithMessage,
   inboxEntryStatusSchema,
   messageSourceSchema,
   type PrecedingMessage,
 } from "@first-tree/shared";
-import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { Database } from "../db/connection.js";
@@ -502,7 +503,10 @@ async function collectPrecedingContext(
 
     // For each trigger, fetch silent context strictly before it (and after
     // the previous notify trigger cursor, even if that trigger was delivered
-    // in an earlier unacked batch). Window: 24h before the trigger.
+    // in an earlier unacked batch). Ordinary context uses a 24h window.
+    // A pending first-chat Orientation bootstrap is the deferred activation
+    // instruction itself, so it remains replayable until the user explicitly
+    // continues even when they return after that generic context window.
     //
     // Order matters: when there are MORE than `PRECEDING_CONTEXT_MAX_ENTRIES`
     // candidates, we want to keep the rows CLOSEST to the trigger (most
@@ -549,7 +553,10 @@ async function collectPrecedingContext(
             eq(inboxEntries.notify, false),
             lt(inboxEntries.id, trigger.id),
             previousNotifyId === null ? undefined : gt(inboxEntries.id, previousNotifyId),
-            gt(inboxEntries.createdAt, windowStart),
+            or(
+              gt(inboxEntries.createdAt, windowStart),
+              sql`${messages.metadata} -> ${FIRST_CHAT_ORIENTATION_METADATA_KEY} ->> 'version' = '1'`,
+            ),
           ),
         )
         .orderBy(desc(messages.createdAt))
