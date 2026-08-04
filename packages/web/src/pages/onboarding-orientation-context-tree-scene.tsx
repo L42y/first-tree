@@ -53,7 +53,7 @@ export function ContextTreeOrientationScene({ time }: { time: number }) {
   const recipient = time < 29 ? "nova-lead" : time < 50 ? "context-reviewer" : "forge-dev";
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] min-h-0 overflow-hidden bg-background">
+    <div className="relative flex h-[calc(100vh-3rem)] min-h-0 overflow-hidden bg-background">
       <ContextConversationRail time={time} />
       <main className="relative flex min-w-0 flex-1 flex-col bg-background">
         <ContextChatHeader time={time} />
@@ -62,7 +62,8 @@ export function ContextTreeOrientationScene({ time }: { time: number }) {
         </div>
         <ContextComposer recipient={recipient} />
       </main>
-      <ContextRightSidebar time={time} phase={phase} />
+      <ContextRightSidebar time={time} />
+      <ContextLoopOverlay time={time} phase={phase} />
     </div>
   );
 }
@@ -480,13 +481,12 @@ function ContextComposer({ recipient }: { recipient: string }) {
   );
 }
 
-function ContextRightSidebar({ time, phase }: { time: number; phase: LoopPhase }) {
+function ContextRightSidebar({ time }: { time: number }) {
   const activeAgent = time < 29 ? "nova-lead" : time < 50 ? "context-reviewer" : "forge-dev";
   const workingUntil = time < 29 ? 27.5 : time < 50 ? 46 : 58.5;
   return (
     <aside data-context-details-rail className="w-75 shrink-0 overflow-hidden border-l border-border bg-bg-raised">
-      <ContextLoopGuide time={time} phase={phase} />
-      <section className="border-t border-border-faint">
+      <section className="border-b border-border-faint">
         <div className="px-3 pb-1 pt-2.5 text-eyebrow text-fg-4">
           Participants <span className="mono">· 2</span>
         </div>
@@ -494,12 +494,18 @@ function ContextRightSidebar({ time, phase }: { time: number; phase: LoopPhase }
           <ContextParticipantStatusRow name={activeAgent} status={time < workingUntil ? "Working" : "Idle"} />
           <ContextParticipantStatusRow name="Gandy" human />
         </div>
+        <div className="px-2 pb-2 pt-1">
+          <div className="flex items-center px-2 py-1.5 text-fg-3" style={{ gap: "var(--sp-2_5)" }}>
+            <UserPlus size={16} />
+            <span className="text-body">Add</span>
+          </div>
+        </div>
       </section>
     </aside>
   );
 }
 
-function ContextLoopGuide({ time, phase }: { time: number; phase: LoopPhase }) {
+function ContextLoopOverlay({ time, phase }: { time: number; phase: LoopPhase }) {
   const activeIndex = LOOP_PHASES.findIndex((item) => item.id === phase);
   const phaseCopy = {
     read: "Task-relevant paths are being read",
@@ -511,41 +517,50 @@ function ContextLoopGuide({ time, phase }: { time: number; phase: LoopPhase }) {
   }[phase];
 
   return (
-    <section data-context-loop-phase={phase} data-context-tree-visual="explanatory" className="px-3 pb-3 pt-2.5">
-      <div className="flex items-baseline">
-        <p className="text-label font-semibold">Context Tree activity</p>
-        <span className="mono text-eyebrow ml-auto uppercase text-fg-4">Video guide</span>
+    <figure
+      data-context-loop-phase={phase}
+      data-context-tree-visual="explanatory-overlay"
+      className="pointer-events-none absolute right-2 top-20 z-20 w-75"
+      aria-label="Video explanation of the Context Tree loop"
+    >
+      <div className="mb-1.5 flex items-center justify-end" style={{ gap: "var(--sp-1_5)" }}>
+        <span className="h-px w-8 bg-primary" aria-hidden />
+        <figcaption className="mono text-eyebrow rounded-full border border-primary bg-background px-2 py-1 font-bold uppercase text-primary shadow-sm">
+          Context Tree loop · explainer
+        </figcaption>
       </div>
-      <div className="mt-2 grid grid-cols-6" style={{ gap: 3 }}>
-        {LOOP_PHASES.map((item, index) => {
-          const reached = index <= activeIndex;
-          const active = item.id === phase;
-          return (
-            <div key={item.id} className="min-w-0 text-center">
-              <div
-                className="h-1 w-full rounded-full"
-                style={{ background: reached ? "var(--brand)" : "var(--border)" }}
-              />
-              <span
-                className={`mono text-eyebrow mt-1 block truncate uppercase ${active ? "font-bold text-foreground" : "font-medium text-fg-4"}`}
-              >
-                {item.label}
-              </span>
-            </div>
-          );
-        })}
+      <div className="rounded-[var(--radius-panel)] border border-dashed border-primary bg-background/95 p-2.5 shadow-[var(--shadow-md)] backdrop-blur-sm">
+        <div className="grid grid-cols-6" style={{ gap: 3 }}>
+          {LOOP_PHASES.map((item, index) => {
+            const reached = index <= activeIndex;
+            const active = item.id === phase;
+            return (
+              <div key={item.id} className="min-w-0 text-center">
+                <div
+                  className="h-1 w-full rounded-full"
+                  style={{ background: reached ? "var(--brand)" : "var(--border)" }}
+                />
+                <span
+                  className={`mono text-eyebrow mt-1 block truncate uppercase ${active ? "font-bold text-foreground" : "font-medium text-fg-4"}`}
+                >
+                  {item.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <ContextTreeMap time={time} phase={phase} />
+        <div className="mt-1.5 flex min-h-8 items-center border-t border-border-faint px-1 pt-1.5">
+          <StatusGlyph
+            colorVar={phase === "review" ? "var(--warning)" : "var(--state-working)"}
+            shape="dot"
+            pulse={phase === "read" || phase === "review" || phase === "update" || phase === "reuse" ? "working" : null}
+            size={8}
+          />
+          <span className="text-caption ml-2 leading-snug text-fg-2">{phaseCopy}</span>
+        </div>
       </div>
-      <ContextTreeMap time={time} phase={phase} />
-      <div className="mt-1.5 flex min-h-9 items-center border border-border-faint bg-background px-2 py-1.5">
-        <StatusGlyph
-          colorVar={phase === "review" ? "var(--warning)" : "var(--state-working)"}
-          shape="dot"
-          pulse={phase === "read" || phase === "review" || phase === "update" || phase === "reuse" ? "working" : null}
-          size={8}
-        />
-        <span className="text-caption ml-2 leading-snug text-fg-2">{phaseCopy}</span>
-      </div>
-    </section>
+    </figure>
   );
 }
 
@@ -590,8 +605,8 @@ function ContextTreeMap({ time, phase }: { time: number; phase: LoopPhase }) {
 
   return (
     <svg
-      className="mt-2 block w-full border border-border-faint bg-background"
-      style={{ height: 224 }}
+      className="mt-1.5 block w-full bg-transparent"
+      style={{ height: 200 }}
       viewBox="0 0 276 216"
       role="img"
       aria-label="Explanatory Context Tree map showing the current read or update"

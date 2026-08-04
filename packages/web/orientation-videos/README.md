@@ -7,7 +7,7 @@ Deterministic product demonstrations rendered from the real First Tree Web desig
 | Chapter | Duration | Shots |
 | --- | ---: | --- |
 | `multi-agent` | 35s | User gives one clear feature task to `nova-lead` → the lead brings `prism-ux`, `forge-dev`, and `sentinel-qa` into the same chat at different stages → UX and development working states show meaningful live progress before their replies → the verified pull request appears in the real GitHub sidebar section |
-| `context-tree` | 60s | Checkout retry task stays in the real chat UI while a persistent explanatory Tree map shows task-scoped reads → settled billing, auth, and architecture context guides design, implementation, and tests → Agent identifies the missing durable `system/billing/retry-ownership` boundary → dedicated Context Reviewer checks the source, consistency, and authorization boundary → the approved node becomes solid in the same map → a new Agent reads it before planning mobile checkout retries |
+| `context-tree` | 60s | Checkout retry task stays in the real chat UI while a floating Tree-loop explainer overlays the upper-right and shows task-scoped reads → settled billing, auth, and architecture context guides design, implementation, and tests → Agent identifies the missing durable `system/billing/retry-ownership` boundary → dedicated Context Reviewer checks the source, consistency, and authorization boundary → the approved node becomes solid in the same explainer → a new Agent reads it before planning mobile checkout retries |
 
 ## Install and preview
 
