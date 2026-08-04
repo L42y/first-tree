@@ -25,6 +25,41 @@ describe("RUNTIME_AUTH_DRIVERS composition root", () => {
     expect(Object.keys(RUNTIME_AUTH_DRIVERS).sort()).toEqual([...runtimeAuthProviderSchema.options].sort());
   });
 
+  it("freezes every registered driver, not just the table that holds them", () => {
+    // Object.freeze on the table alone leaves each driver value mutable, so an
+    // importer could still repoint RUNTIME_AUTH_DRIVERS.codex.resolveLogin (or
+    // .reprobe) for the rest of the process without ever touching the table
+    // itself. Every value the table holds must be independently frozen too.
+    for (const provider of runtimeAuthProviderSchema.options) {
+      expect(Object.isFrozen(RUNTIME_AUTH_DRIVERS[provider]), provider).toBe(true);
+    }
+  });
+
+  it("rejects reassignment of a driver's methods, and the reassignment never takes effect", () => {
+    for (const provider of runtimeAuthProviderSchema.options) {
+      const driver = RUNTIME_AUTH_DRIVERS[provider];
+      const originalResolveLogin = driver.resolveLogin;
+      const originalReprobe = driver.reprobe;
+      const hijack = async () => ({ ok: false as const, error: "hijacked" });
+      // Assigning to a frozen property throws under the strict-mode ESM this
+      // module runs as; either way, the property must be unchanged afterwards.
+      try {
+        // @ts-expect-error intentional mutation attempt on a readonly contract member
+        driver.resolveLogin = hijack;
+      } catch {
+        // Expected in strict mode.
+      }
+      try {
+        // @ts-expect-error intentional mutation attempt on a readonly contract member
+        driver.reprobe = hijack;
+      } catch {
+        // Expected in strict mode.
+      }
+      expect(driver.resolveLogin, provider).toBe(originalResolveLogin);
+      expect(driver.reprobe, provider).toBe(originalReprobe);
+    }
+  });
+
   it("exposes a complete driver for every auth provider", () => {
     for (const provider of runtimeAuthProviderSchema.options) {
       const driver: RuntimeAuthDriver = RUNTIME_AUTH_DRIVERS[provider];
@@ -53,6 +88,20 @@ describe("RUNTIME_AUTH_DRIVERS composition root", () => {
       expect(RUNTIME_AUTH_DRIVERS[provider].artifactLabel, provider).toBe("binary");
       expect(RUNTIME_AUTH_DRIVERS[provider].loginLabel, provider).toBe(`${provider} login`);
     }
+  });
+});
+
+describe("every create*AuthDriver factory freezes its own return value", () => {
+  // The guarantee has to hold at construction, independent of composition: a
+  // caller that constructs a driver directly (a test, a future composition
+  // root) gets the same immutability as one read through RUNTIME_AUTH_DRIVERS.
+  it.each([
+    ["claude-code", () => createClaudeAuthDriver()],
+    ["codex", () => createCodexAuthDriver()],
+    ["cursor", () => createCursorAuthDriver()],
+    ["grok", () => createGrokAuthDriver()],
+  ] as const)("%s", (_provider, build) => {
+    expect(Object.isFrozen(build())).toBe(true);
   });
 });
 

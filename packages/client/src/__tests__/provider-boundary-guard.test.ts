@@ -188,6 +188,20 @@ describe("runtime provider architecture guard", () => {
     // The contract itself stays provider-neutral.
     const contract = readFileSync(join(clientSrc, "providers/auth-driver.ts"), "utf8");
     expect(containsAnyProviderLiteral(contract)).toBeNull();
+    // Method-shorthand type syntax (`resolveLogin(): ...`) is NOT readonly, so
+    // the contract must declare its function members as readonly properties -
+    // the compile-time half of the immutability guarantee that Object.freeze
+    // on each production driver enforces at runtime.
+    expect(contract).toContain("readonly resolveLogin");
+    expect(contract).toContain("readonly reprobe");
+
+    // Every provider-owned factory must freeze what it hands back, so the
+    // guarantee holds regardless of how - or whether - it is composed into
+    // RUNTIME_AUTH_DRIVERS.
+    for (const file of ["claude-login.ts", "codex-login.ts", "cursor-login.ts", "grok-login.ts"]) {
+      const source = readFileSync(join(clientSrc, "runtime", file), "utf8");
+      expect(source, `${file} must freeze its returned driver`).toContain("Object.freeze");
+    }
   });
 
   it("keeps the daemon runtime-auth dispatcher free of provider literals, imports and branches", () => {
@@ -223,6 +237,14 @@ describe("runtime provider architecture guard", () => {
     // No full-output accumulation, and no full-buffer handoff to consumers.
     expect(source).not.toMatch(/\bbuffer\s*\+=/);
     expect(source).not.toMatch(/onOutput\?\.\([^)]*,/);
+    // `pendingAuth.authUrl` is a structured field that never passes through
+    // redactErrorPreview, so URL candidacy is the only gate that keeps a
+    // credential-bearing string (proxy URL, redirect echo, β€¦) out of the
+    // capability snapshot. It must share the same key set redactErrorPreview
+    // uses rather than maintain a second list that can drift, and it must
+    // reject a bad candidate outright rather than rewrite it.
+    expect(source).toContain("CREDENTIAL_KEY_PATTERN");
+    expect(source).toContain("hasCredentialShape");
   });
 
   it("keeps third-party provider SDKs out of shared and web packages", () => {

@@ -77,7 +77,11 @@ export function createGrokAuthDriver(deps: GrokAuthDriverDeps = {}): RuntimeAuth
   const browserLogin = deps.runBrowserLogin ?? runGrokBrowserLogin;
   const probe = deps.probe ?? probeGrokCapability;
 
-  return {
+  // Frozen so this factory's promise ("a fresh, self-contained driver") holds
+  // even for a caller that never routes through RUNTIME_AUTH_DRIVERS: nothing
+  // downstream of this constructor can repoint resolveLogin/reprobe for the
+  // rest of the process.
+  return Object.freeze({
     logLabel: "grok",
     loginLabel: "grok login",
     artifactLabel: "binary",
@@ -89,5 +93,5 @@ export function createGrokAuthDriver(deps: GrokAuthDriverDeps = {}): RuntimeAuth
     async reprobe(): Promise<readonly RuntimeAuthProbeResult[]> {
       return [{ provider: RUNTIME_PROVIDERS.GROK, entry: await probe() }];
     },
-  };
+  });
 }

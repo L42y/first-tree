@@ -30,14 +30,19 @@ export type RuntimeAuthDriver = {
   /**
    * Resolve the login artifact. Returning `{ ok: false }` is the ordinary
    * "operator must install this first" path, not an exception.
+   *
+   * Declared as a `readonly` property (not TS method shorthand) so the
+   * contract itself blocks reassignment at the type level; every production
+   * driver is also `Object.freeze`d at construction so the same reassignment
+   * fails at runtime regardless of how it is typed at the call site.
    */
-  resolveLogin(): Promise<RuntimeAuthLoginResolution>;
+  readonly resolveLogin: () => Promise<RuntimeAuthLoginResolution>;
   /**
    * Re-detect every capability row this login can change, in publish order.
    * Claude returns two rows when the TUI is enabled because both read the same
    * keychain credential; the other providers return their own row only.
    */
-  reprobe(): Promise<readonly RuntimeAuthProbeResult[]>;
+  readonly reprobe: () => Promise<readonly RuntimeAuthProbeResult[]>;
 };
 
 export type RuntimeAuthLoginResolution = { ok: true; login: RuntimeAuthLoginStart } | { ok: false; error: string };

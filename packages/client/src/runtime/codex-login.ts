@@ -64,7 +64,11 @@ export function createCodexAuthDriver(deps: CodexAuthDriverDeps = {}): RuntimeAu
   const browserLogin = deps.runBrowserLogin ?? runCodexBrowserLogin;
   const probe = deps.probe ?? probeCodexCapability;
 
-  return {
+  // Frozen so this factory's promise ("a fresh, self-contained driver") holds
+  // even for a caller that never routes through RUNTIME_AUTH_DRIVERS: nothing
+  // downstream of this constructor can repoint resolveLogin/reprobe for the
+  // rest of the process.
+  return Object.freeze({
     logLabel: "codex",
     loginLabel: "codex login",
     artifactLabel: "binary",
@@ -76,5 +80,5 @@ export function createCodexAuthDriver(deps: CodexAuthDriverDeps = {}): RuntimeAu
     async reprobe(): Promise<readonly RuntimeAuthProbeResult[]> {
       return [{ provider: RUNTIME_PROVIDERS.CODEX, entry: await probe() }];
     },
-  };
+  });
 }

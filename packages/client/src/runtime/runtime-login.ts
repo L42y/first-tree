@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { CREDENTIAL_KEY_PATTERN } from "./redact-error-preview.js";
 
 /**
  * Provider-agnostic plumbing for driving an official CLI login on the daemon
@@ -142,6 +143,32 @@ function isLoopbackHost(host: string): boolean {
   return host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 }
 
+/** Matches a bare query-param name against the shared credential-key set. */
+const CREDENTIAL_QUERY_KEY = new RegExp(`^${CREDENTIAL_KEY_PATTERN}$`, "i");
+
+/**
+ * True if the URL carries its own auth material: RFC-3986 userinfo
+ * (`https://user:pass@host/...`), or a query parameter shaped like a
+ * credential (the same {@link CREDENTIAL_KEY_PATTERN} set `redactErrorPreview`
+ * treats as unsafe to publish). The provider's real sign-in link is, by
+ * definition, a URL the operator has NOT yet authenticated against, so a
+ * string with this shape in a login CLI's output is diagnostic noise (a proxy
+ * URL, a redirect echo, a copy-pasted example, …) rather than the fallback
+ * link. `pendingAuth.authUrl` is a structured field, not error text, so it
+ * never passes through `redactErrorPreview` (see `runtime-auth-login.ts`) —
+ * candidacy is the only gate here, and it rejects rather than rewrites: an
+ * OAuth URL's query string is part of the provider's protocol, so stripping
+ * or altering a matched parameter risks handing the browser a broken
+ * redirect instead of just declining to surface an unrelated string.
+ */
+function hasCredentialShape(url: URL): boolean {
+  if (url.username || url.password) return true;
+  for (const key of url.searchParams.keys()) {
+    if (CREDENTIAL_QUERY_KEY.test(key)) return true;
+  }
+  return false;
+}
+
 /**
  * Pull a usable fallback *sign-in* URL out of accumulated, ANSI-stripped login
  * output, or `null` if none is present yet. The fallback link exists for when
@@ -152,21 +179,25 @@ function isLoopbackHost(host: string): boolean {
  *   - only treat a whitespace-terminated token as complete (a trailing,
  *     unterminated token may still be streaming in across a stdout chunk
  *     boundary, so it is held back until the next chunk completes it),
- *   - strip trailing sentence punctuation (so the result parses), and
- *   - skip loopback origins.
+ *   - strip trailing sentence punctuation (so the result parses),
+ *   - skip loopback origins, and
+ *   - skip a candidate that carries its own auth material, so scanning moves
+ *     on to a later, legitimate URL in the same output instead of surfacing
+ *     one that never should have been a candidate.
  * Tokenising on whitespace keeps this linear in the output length.
  */
 function authUrlFromToken(token: string): string | null {
   if (!token || !URL_PREFIX.test(token)) return null;
   const url = stripTrailingPunct(token);
   if (!url) return null;
-  let hostname: string;
+  let parsed: URL;
   try {
-    hostname = new URL(url).hostname;
+    parsed = new URL(url);
   } catch {
     return null;
   }
-  return isLoopbackHost(hostname) ? null : url;
+  if (isLoopbackHost(parsed.hostname) || hasCredentialShape(parsed)) return null;
+  return url;
 }
 
 const WHITESPACE = /\s/;

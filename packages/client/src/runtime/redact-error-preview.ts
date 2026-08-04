@@ -29,6 +29,16 @@
 const DEFAULT_MAX_LEN = 256;
 
 /**
+ * Query/form/env key names that make ANY value on them a credential.
+ * Exported so a second no-secret boundary — the fallback sign-in URL
+ * candidacy check in `runtime-login.ts`, which must reject a URL carrying
+ * one of these as a query parameter rather than redact it — shares this
+ * exact definition instead of maintaining its own list that could drift.
+ */
+export const CREDENTIAL_KEY_PATTERN =
+  "(?:token|access[_-]?token|api[_-]?key|apikey|private[_-]?token|password|passwd|secret|client[_-]?secret)";
+
+/**
  * Redact common credential shapes then truncate. Pure function — every input
  * deterministically maps to the same output, suitable for snapshot tests.
  *
@@ -130,16 +140,14 @@ export function redactErrorPreview(input: string, maxLen: number = DEFAULT_MAX_L
   //    `X-GitHub-Token` would otherwise let `token` match, then redact the
   //    `ghp_…` value the step-2 vendor pattern just turned into
   //    `[REDACTED:ghp]`, producing a stuttered double-redact.
-  const credKey =
-    "(?:token|access[_-]?token|api[_-]?key|apikey|private[_-]?token|password|passwd|secret|client[_-]?secret)";
   s = s.replace(
-    new RegExp(`(?<![\\w-])(${credKey})(["']?\\s*[:=]\\s*["']?)([A-Za-z0-9._\\-+/=~]{4,})`, "gi"),
+    new RegExp(`(?<![\\w-])(${CREDENTIAL_KEY_PATTERN})(["']?\\s*[:=]\\s*["']?)([A-Za-z0-9._\\-+/=~]{4,})`, "gi"),
     "$1$2[REDACTED]",
   );
   // URL query string form: `?token=...` / `&access_token=...` — distinct
   // from the key=value form because the credential charset there can include
   // url-encoded bytes that the above pattern's value class would reject.
-  s = s.replace(new RegExp(`([?&]${credKey}=)[^&\\s]{4,}`, "gi"), "$1[REDACTED]");
+  s = s.replace(new RegExp(`([?&]${CREDENTIAL_KEY_PATTERN}=)[^&\\s]{4,}`, "gi"), "$1[REDACTED]");
 
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
 }

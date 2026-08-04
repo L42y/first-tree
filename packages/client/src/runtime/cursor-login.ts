@@ -63,7 +63,11 @@ export function createCursorAuthDriver(deps: CursorAuthDriverDeps = {}): Runtime
   const browserLogin = deps.runBrowserLogin ?? runCursorBrowserLogin;
   const probe = deps.probe ?? probeCursorCapability;
 
-  return {
+  // Frozen so this factory's promise ("a fresh, self-contained driver") holds
+  // even for a caller that never routes through RUNTIME_AUTH_DRIVERS: nothing
+  // downstream of this constructor can repoint resolveLogin/reprobe for the
+  // rest of the process.
+  return Object.freeze({
     logLabel: "cursor",
     loginLabel: "cursor login",
     artifactLabel: "binary",
@@ -75,5 +79,5 @@ export function createCursorAuthDriver(deps: CursorAuthDriverDeps = {}): Runtime
     async reprobe(): Promise<readonly RuntimeAuthProbeResult[]> {
       return [{ provider: RUNTIME_PROVIDERS.CURSOR, entry: await probe() }];
     },
-  };
+  });
 }

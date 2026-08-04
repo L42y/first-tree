@@ -113,6 +113,45 @@ describe("auth URL scanner keeps retained state bounded", () => {
   });
 });
 
+describe("auth URL scanner rejects a candidate that carries its own auth material", () => {
+  // The published fallback link is a structured field, not error text, so it
+  // never goes through `redactErrorPreview` (see runtime-auth-login.ts) β€” this
+  // candidacy check is the only gate standing between a credential-shaped
+  // string in provider output and a rendered "sign in" link.
+  it("skips URL userinfo and finds the legitimate sign-in URL that follows", () => {
+    const scanner = createAuthUrlScanner();
+    expect(scanner.push("proxying through https://user:hunter2pwd@proxy.example/\n")).toBeNull();
+    expect(scanner.push("now visit https://auth.openai.com/oauth/authorize?x=1\n")).toBe(
+      "https://auth.openai.com/oauth/authorize?x=1",
+    );
+  });
+
+  it("skips a credential-bearing query parameter and finds a later legitimate URL", () => {
+    const scanner = createAuthUrlScanner();
+    expect(scanner.push("debug callback https://auth.example/cb?access_token=abc123def456\n")).toBeNull();
+    expect(scanner.push("sign in at https://auth.openai.com/oauth/authorize?client_id=cli\n")).toBe(
+      "https://auth.openai.com/oauth/authorize?client_id=cli",
+    );
+  });
+
+  it("does not treat an ordinary OAuth authorize query string as credential-bearing", () => {
+    // client_id / redirect_uri / state / scope / code_challenge are normal
+    // parts of an authorization URL and must not be mistaken for the
+    // credential-key set (in particular `client_id` must not match
+    // `client_secret`'s pattern).
+    const scanner = createAuthUrlScanner();
+    const url =
+      "https://auth.openai.com/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2Flocalhost%3A1455&state=xyz&scope=openid";
+    expect(scanner.push(`${url}\n`)).toBe(url);
+  });
+
+  it("rejects a single-component userinfo token (bare `<token>@host`) the same way", () => {
+    const scanner = createAuthUrlScanner();
+    expect(scanner.push("cached at https://ghp_abcdef1234567890@raw.githubusercontent.com/x\n")).toBeNull();
+    expect(scanner.push("visit https://auth.openai.com/oauth?x=1\n")).toBe("https://auth.openai.com/oauth?x=1");
+  });
+});
+
 describe("runBrowserLogin does not retain the provider's output", () => {
   it("reports a cross-chunk external URL exactly once while streaming every chunk", async () => {
     const child = new FakeChild();
@@ -135,6 +174,23 @@ describe("runBrowserLogin does not retain the provider's output", () => {
     expect(urls).toEqual(["https://auth.openai.com/oauth?x=1"]);
     // Chunks keep streaming to the diagnostic hook; the login itself keeps none.
     expect(raw).toHaveLength(503);
+  });
+
+  it("never fires a credential-bearing stderr URL as the fallback link, even when it precedes the real one", async () => {
+    const child = new FakeChild();
+    const urls: string[] = [];
+    const run = runCodexBrowserLogin({
+      binary: "/bundled/codex",
+      onAuthUrl: (u) => urls.push(u),
+      spawnFn: fakeSpawn(child),
+    });
+
+    child.emitStderr("proxying through https://user:hunter2pwd@proxy.example/\n");
+    child.emitStdout("If it didn't open, visit https://auth.openai.com/oauth?x=1\n");
+    child.close(0);
+
+    await expect(run).resolves.toEqual({ ok: true });
+    expect(urls).toEqual(["https://auth.openai.com/oauth?x=1"]);
   });
 
   it("keeps only a bounded stderr tail in the failure message", async () => {

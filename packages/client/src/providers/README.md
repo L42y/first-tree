@@ -91,12 +91,25 @@ Adding an in-product provider therefore means: extend
 provider's own login module, and register it in `RUNTIME_AUTH_DRIVERS` — the
 `satisfies Record<RuntimeAuthProvider, RuntimeAuthDriver>` will not compile
 until you do. Inject a driver (or a whole table) for tests; there is no
-process-global mutable registry to install into.
+process-global mutable registry to install into. Every `create<Provider>AuthDriver`
+returns an `Object.freeze`d driver, and the `RuntimeAuthDriver` contract
+declares `resolveLogin` / `reprobe` as `readonly` properties (not TS method
+shorthand, which is not readonly) — so an importer of `RUNTIME_AUTH_DRIVERS`
+cannot repoint a driver's methods for the rest of the process, and the
+guarantee holds even for a driver constructed outside the table.
 
 **Login output is bounded.** A browser login may stream for the whole
 five-minute window, so the subprocess retains no full output buffer: the
 fallback sign-in URL comes from an incremental scanner whose only carried state
-is the current partial token, and stderr keeps a bounded tail.
+is the current partial token, and stderr keeps a bounded tail. `runLoginSubprocess`
+feeds both stdout and stderr to the same scanner, so a URL candidate can come
+from either stream. Because `pendingAuth.authUrl` is a structured field that
+never passes through `redactErrorPreview` (see below), URL candidacy is
+itself a no-secret boundary: a token carrying RFC-3986 userinfo or a
+credential-shaped query parameter (the same key set `redactErrorPreview`
+treats as unsafe, via the shared `CREDENTIAL_KEY_PATTERN`) is rejected outright
+rather than rewritten, and scanning continues to a later, legitimate URL in
+the same output.
 
 Every error/failure string the dispatcher republishes — `CapabilityEntry.error`
 and `lastAuthError.message`, and nothing else — passes through

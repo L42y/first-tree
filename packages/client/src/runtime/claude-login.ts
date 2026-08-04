@@ -102,7 +102,11 @@ export function createClaudeAuthDriver(deps: ClaudeAuthDriverDeps = {}): Runtime
   const probeTui = deps.probeTui ?? probeClaudeCodeTuiCapability;
   const isProviderEnabled = deps.isProviderEnabled ?? isRuntimeProviderEnabled;
 
-  return {
+  // Frozen so this factory's promise ("a fresh, self-contained driver") holds
+  // even for a caller that never routes through RUNTIME_AUTH_DRIVERS: nothing
+  // downstream of this constructor can repoint resolveLogin/reprobe for the
+  // rest of the process.
+  return Object.freeze({
     logLabel: "claude",
     loginLabel: "claude auth login",
     // Claude can fall back to the SDK-bundled engine, so the operator-facing
@@ -127,5 +131,5 @@ export function createClaudeAuthDriver(deps: ClaudeAuthDriverDeps = {}): Runtime
         { provider: RUNTIME_PROVIDERS.CLAUDE_CODE_TUI, entry: tui },
       ];
     },
-  };
+  });
 }
