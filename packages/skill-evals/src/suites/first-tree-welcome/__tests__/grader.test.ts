@@ -640,6 +640,154 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("accepts concrete repository evidence without requiring fixture branding", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-evidence-contract-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read README.md and package.json for the checkout service. src/checkout/recovery.ts is the clearest focused starting point. Choose one, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only: return a 5–8 step session-recovery call chain with file references.",
+                  label: "Trace recovery",
+                },
+                {
+                  description: "Read-only: verify the focused recovery test and return command evidence.",
+                  label: "Verify recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.expectedEvidenceObserved).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("counts every structured non-input microtask without requiring a verb whitelist", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-structured-options-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the checkout README and package manifest. src/checkout/recovery.ts is the clearest focused starting point. Choose one, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only 5–8 step call chain with file references.",
+                  label: "Trace session flow",
+                },
+                {
+                  description: "Read-only judgment with file and command evidence.",
+                  label: "Assess recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatOptionCount).toBe(2);
+      expect(metrics.microtaskOptionCount).toBe(2);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("accepts a two-sentence receipt before a start-with-microtask heading", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-receipt-heading-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the checkout README and package manifest. src/checkout/recovery.ts is the clearest focused starting point.\n\nStart with this microtask, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only: return a 5–8 step session-recovery call chain with file references.",
+                  label: "Trace recovery",
+                },
+                {
+                  description: "Read-only: verify the focused recovery test and return command evidence.",
+                  label: "Verify recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("accepts one qualified read-only microtask in a normal reply", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-one-microtask-"));
     try {

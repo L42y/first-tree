@@ -285,10 +285,6 @@ function caseFromRow(
     briefingMode: "generated-fixture",
     expected: {
       action: row.action,
-      evidenceSnippets:
-        row.action === "offer_single_select_microtasks"
-          ? ["Acme Support Dashboard", "expired session TODO"]
-          : undefined,
       requiredResponseHints: row.requiredResponseHints,
       taskOptionHints: row.taskOptionHints,
     },

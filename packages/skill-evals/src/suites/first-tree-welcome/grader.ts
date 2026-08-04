@@ -413,7 +413,7 @@ function hasTwoSentenceReceipt(text: string): boolean {
   const beforeChoice =
     text
       .split(
-        /\b(?:choose|pick|select|reply with|i recommend|my recommendation)\b|\n\s*[-*]\s+|请选择|选择(?:一个|其中)|回复(?:这个|该)|我建议|建议先/iu,
+        /\b(?:choose|pick|select|start with|reply with|i recommend|my recommendation)\b|\n\s*[-*]\s+|请选择|选择(?:一个|其中)|回复(?:这个|该)|我建议|建议先/iu,
       )[0]
       ?.trim() ?? "";
   const sentences = beforeChoice
@@ -776,9 +776,10 @@ export function deriveMetrics(
   const responseText = deliveredText.length > 0 ? deliveredText : finalResponse;
   const combinedText = `${chatText}\n${finalResponse}`;
   const taskOptionHints = evalCase.expected.taskOptionHints ?? [];
-  const explicitTaskOptionTexts = (chatOptionTexts.length > 0 ? chatOptionTexts : optionLineTexts(responseText)).filter(
-    (text) => optionLooksLikeTask(text, taskOptionHints),
-  );
+  const explicitTaskOptionTexts =
+    chatOptionTexts.length > 0
+      ? chatOptionTexts.filter((text) => !isInputCollectionOption(text))
+      : optionLineTexts(responseText).filter((text) => optionLooksLikeTask(text, taskOptionHints));
   const taskOptionTexts =
     explicitTaskOptionTexts.length > 0 || evalCase.expected.action !== "offer_single_select_microtasks"
       ? explicitTaskOptionTexts
