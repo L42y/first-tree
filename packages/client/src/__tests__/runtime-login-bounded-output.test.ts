@@ -51,6 +51,29 @@ describe("auth URL scanner keeps retained state bounded", () => {
     expect(scanner.retainedChars()).toBe(0);
   });
 
+  it("skips a token that only exceeds the cap once its chunks are joined", () => {
+    const scanner = createAuthUrlScanner();
+    // Each piece fits on its own, so the cap has to be judged on the completed
+    // token: otherwise a 2 KB carry plus a short segment is concatenated and
+    // parsed, and an over-long "URL" is handed to the browser.
+    scanner.push(`https://auth.example/${"a".repeat(2_000)}`);
+    expect(scanner.retainedChars()).toBeLessThanOrEqual(AUTH_URL_TOKEN_MAX);
+    expect(scanner.push(`${"b".repeat(100)} still waiting\n`)).toBeNull();
+    expect(scanner.retainedChars()).toBeLessThanOrEqual(AUTH_URL_TOKEN_MAX);
+
+    // The oversized token must not swallow what follows it.
+    expect(scanner.push("visit https://auth.example/ok\n")).toBe("https://auth.example/ok");
+  });
+
+  it("skips a single over-long token without letting it hide a later URL in the same chunk", () => {
+    const scanner = createAuthUrlScanner();
+    const scannedBefore = scanner.scannedChars();
+    const chunk = `https://auth.example/${"z".repeat(3_000)} then https://auth.example/real\n`;
+    expect(scanner.push(chunk)).toBe("https://auth.example/real");
+    expect(scanner.retainedChars()).toBe(0);
+    expect(scanner.scannedChars()).toBe(scannedBefore + chunk.length);
+  });
+
   it("recognises a URL split across chunk boundaries", () => {
     const scanner = createAuthUrlScanner();
     expect(scanner.push("If it didn't open, visit https://auth.open")).toBeNull();

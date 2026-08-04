@@ -172,11 +172,12 @@ function authUrlFromToken(token: string): string | null {
 const WHITESPACE = /\s/;
 
 /**
- * Ceiling on the partial token carried across chunk boundaries. A sign-in URL
- * that does not fit is not a link worth handing to a browser anyway, so an
- * over-long run of non-whitespace is discarded instead of retained. This is
- * what keeps scanner state constant no matter how much a provider prints
- * during the five-minute login window.
+ * Ceiling on any token the scanner will assemble or parse, whether it arrived
+ * whole or across chunk boundaries. A sign-in URL that does not fit is not a
+ * link worth handing to a browser anyway, so an over-long run of non-whitespace
+ * is skipped rather than retained, concatenated, or matched. This is what keeps
+ * both the retained state and the per-token work constant no matter how much a
+ * provider prints during the five-minute login window.
  */
 export const AUTH_URL_TOKEN_MAX = 2048;
 
@@ -216,10 +217,17 @@ export function createAuthUrlScanner(): AuthUrlScanner {
       let start = 0;
       for (let i = 0; i < chunk.length; i++) {
         if (!WHITESPACE.test(chunk[i] as string)) continue;
-        const token = discarding ? "" : carry + chunk.slice(start, i);
+        // The cap applies to the completed token, not just to the tail we
+        // carried: a carry that fits and a segment that fits can still exceed
+        // it together, and a single over-long run inside one chunk must not be
+        // concatenated or parsed either. Measure first, then skip without
+        // building the string.
+        const overflowed = discarding || carry.length + (i - start) > AUTH_URL_TOKEN_MAX;
+        const token = overflowed ? "" : carry + chunk.slice(start, i);
         carry = "";
         discarding = false;
         start = i + 1;
+        if (overflowed) continue;
         const url = authUrlFromToken(token);
         if (url) {
           found = true;
