@@ -271,12 +271,12 @@ describe("NewAgentDialog initial Template", () => {
     );
     await renderHarness("pr-engineer");
     // Catalog still pending — nothing preselected yet, no crash.
-    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+    expect(document.body.textContent).not.toContain("Purpose of PR Engineer");
 
     await act(async () => {
       resolveCatalog({ templates: [TEMPLATE_A, TEMPLATE_B] });
     });
-    await waitForText("Tagline of PR Engineer");
+    await waitForText("Purpose of PR Engineer");
 
     await fillNameAndSubmit("Build Bot");
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length === 1, "create not called");
@@ -317,7 +317,7 @@ describe("NewAgentDialog initial Template", () => {
     await act(async () => {
       resolveCatalog({ templates: [TEMPLATE_A, TEMPLATE_B] });
     });
-    await waitForText("Tagline of PR Engineer");
+    await waitForText("Purpose of PR Engineer");
     expect(buttonByText("Create").disabled).toBe(false);
   });
 
@@ -345,7 +345,7 @@ describe("NewAgentDialog initial Template", () => {
     });
     await flush();
     await flush();
-    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+    expect(document.body.textContent).not.toContain("Purpose of PR Engineer");
     expect(document.body.textContent).not.toContain("Resolving your template…");
   });
 
@@ -364,7 +364,7 @@ describe("NewAgentDialog initial Template", () => {
   it("never re-applies the intent after the user removes it", async () => {
     templateMocks.listAgentTemplates.mockResolvedValue({ templates: [TEMPLATE_A, TEMPLATE_B] });
     await renderHarness("pr-engineer");
-    await waitForText("Tagline of PR Engineer");
+    await waitForText("Purpose of PR Engineer");
 
     await click(buttonByText("Remove"));
     expect(document.body.textContent).toContain("Choose a template");
@@ -372,7 +372,7 @@ describe("NewAgentDialog initial Template", () => {
     await flush();
     await flush();
     expect(document.body.textContent).toContain("Choose a template");
-    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+    expect(document.body.textContent).not.toContain("Purpose of PR Engineer");
   });
 
   it("degrades safely when the intent slug is no longer an active template", async () => {
@@ -390,7 +390,7 @@ describe("NewAgentDialog initial Template", () => {
   it("does not leak the previous intent into a later ordinary open", async () => {
     templateMocks.listAgentTemplates.mockResolvedValue({ templates: [TEMPLATE_A, TEMPLATE_B] });
     await renderHarness("pr-engineer");
-    await waitForText("Tagline of PR Engineer");
+    await waitForText("Purpose of PR Engineer");
 
     // Close, drop the intent prop, reopen — an ordinary open starts clean.
     await click(buttonByText("harness-close"));
@@ -403,14 +403,14 @@ describe("NewAgentDialog initial Template", () => {
     );
     await flush();
     expect(document.body.textContent).toContain("Choose a template");
-    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+    expect(document.body.textContent).not.toContain("Purpose of PR Engineer");
   });
 
   it("never preselects from the previous open's catalog when the template retired between opens", async () => {
     // First open: the slug is active and preselected.
     templateMocks.listAgentTemplates.mockResolvedValueOnce({ templates: [TEMPLATE_A, TEMPLATE_B] });
     await renderHarness("pr-engineer");
-    await waitForText("Tagline of PR Engineer");
+    await waitForText("Purpose of PR Engineer");
 
     // Close, then reopen with the SAME intent slug — but the Template has
     // since retired, so the fresh catalog no longer carries it.
@@ -418,7 +418,7 @@ describe("NewAgentDialog initial Template", () => {
     await click(buttonByText("harness-close"));
     await click(buttonByText("harness-open"));
     await waitForText("no longer available");
-    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+    expect(document.body.textContent).not.toContain("Purpose of PR Engineer");
 
     // Submission must not contain the stale id.
     await fillNameAndSubmit("Build Bot");
@@ -451,6 +451,6 @@ describe("NewAgentDialog initial Template", () => {
     await flush();
     // Still the second open's catalog: no PR Engineer preselect, notice kept.
     expect(document.body.textContent).toContain("no longer available");
-    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+    expect(document.body.textContent).not.toContain("Purpose of PR Engineer");
   });
 });

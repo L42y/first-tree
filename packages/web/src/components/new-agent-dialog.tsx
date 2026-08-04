@@ -26,6 +26,7 @@ import {
 import { useCopyFeedback } from "../lib/use-copy-feedback.js";
 import { runVisibilityAwareInterval } from "../lib/visibility-interval.js";
 import { slugify } from "../utils/agent-naming.js";
+import { activeTemplateResponsibilityLabel, TemplateResponsibilityLabel } from "./template-responsibility-label.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog.js";
 import { Input } from "./ui/input.js";
@@ -935,21 +936,11 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                 </div>
               )}
               {selectedTemplates.map((template) => (
-                <div
-                  key={template.id}
-                  className="rounded-[var(--radius-panel)] border border-border px-3 py-2 space-y-1"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="text-body font-medium">{template.name}</div>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => toggleTemplate(template)}>
-                      Remove
-                    </Button>
-                  </div>
-                  <div className="text-caption text-muted-foreground">{template.public.tagline}</div>
-                  <div className="text-caption text-muted-foreground">{template.public.purpose}</div>
-                  <div className="text-caption text-muted-foreground">For {template.public.targetUsers}</div>
-                  <div className="text-caption text-muted-foreground">{template.public.userValue}</div>
-                  <div className="text-caption text-muted-foreground">{template.public.toolsAndSkillsSummary}</div>
+                <div key={template.id} className="flex items-start justify-between gap-2">
+                  <TemplateResponsibilityLabel template={activeTemplateResponsibilityLabel(template)} />
+                  <Button type="button" variant="ghost" size="sm" onClick={() => toggleTemplate(template)}>
+                    Remove
+                  </Button>
                 </div>
               ))}
               {selectedTemplates.length > 0 &&
@@ -977,11 +968,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                         setTemplatePickerOpen(false);
                       }}
                     >
-                      <div className="flex-1 min-w-0">
-                        <div className="text-body font-medium">{template.name}</div>
-                        <div className="text-caption text-muted-foreground">{template.public.tagline}</div>
-                        <div className="text-caption text-muted-foreground">{template.public.purpose}</div>
-                      </div>
+                      <TemplateResponsibilityLabel template={activeTemplateResponsibilityLabel(template)} />
                     </OptionCard>
                   ))}
                 </div>
