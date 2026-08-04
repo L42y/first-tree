@@ -115,6 +115,14 @@ const OnboardingOrientationPreviewPage = import.meta.env.DEV
     )
   : null;
 
+const OnboardingOrientationVideoPreviewPage = import.meta.env.DEV
+  ? lazy(() =>
+      import("./pages/onboarding-orientation-video-preview.js").then((module) => ({
+        default: module.OnboardingOrientationVideoPreviewPage,
+      })),
+    )
+  : null;
+
 const TeamPreviewPage = import.meta.env.DEV
   ? lazy(() => import("./pages/team-preview.js").then((module) => ({ default: module.TeamPreviewPage })))
   : null;
@@ -409,6 +417,16 @@ export function App() {
                   element={
                     <Suspense fallback={null}>
                       <OnboardingOrientationPreviewPage />
+                    </Suspense>
+                  }
+                />
+              ) : null}
+              {OnboardingOrientationVideoPreviewPage ? (
+                <Route
+                  path="/preview/onboarding-orientation-video"
+                  element={
+                    <Suspense fallback={null}>
+                      <OnboardingOrientationVideoPreviewPage />
                     </Suspense>
                   }
                 />
