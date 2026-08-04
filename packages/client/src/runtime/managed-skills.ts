@@ -617,15 +617,27 @@ async function digestLegacyTargetIfOwned(
 ): Promise<`sha256:${string}` | null> {
   const marker = await readOwnershipMarker(workspace, target);
   if (marker?.key === key) {
-    return digestManagedTarget(workspace, target, { followExpectedLegacySymlink: true });
+    return digestManagedTarget(workspace, target, {
+      followExpectedLegacySymlink: true,
+      modePolicy: "normalize-bundled",
+    });
   }
-  const targetDigest = await digestManagedTarget(workspace, target, { followExpectedLegacySymlink: true });
+  const targetDigest = await digestManagedTarget(workspace, target, {
+    followExpectedLegacySymlink: true,
+    modePolicy: "normalize-bundled",
+  });
   if (!targetDigest) return null;
   if (ownershipProven) return targetDigest;
   const bundledDigest = bundledPath
     ? await digestDirectoryIfPresent(bundledPath, undefined, "normalize-bundled")
     : null;
-  return bundledDigest === targetDigest ? targetDigest : null;
+  if (bundledDigest === targetDigest) return targetDigest;
+
+  // Normalized mode comparison is only an ownership probe. If no ownership
+  // evidence matches, retain the ordinary strict digest gate so an unsafe
+  // same-name target cannot remain in provider discovery unnoticed.
+  await digestManagedTarget(workspace, target, { followExpectedLegacySymlink: true });
+  return null;
 }
 
 async function adoptLegacyResourceSkills(
@@ -1867,13 +1879,15 @@ async function digestManagedTarget(
   options?: Readonly<{
     followExpectedLegacySymlink?: boolean;
     modePlatform?: NodeJS.Platform;
+    modePolicy?: SkillTreeModePolicy;
   }>,
 ): Promise<`sha256:${string}` | null> {
   assertManagedTarget(target);
   const path = resolveWorkspacePath(workspace, target, "target");
+  const modePolicy = options?.modePolicy ?? "enforce-safe";
   try {
     const targetStat = await lstat(path);
-    if (targetStat.isDirectory()) return await digestDirectory(path, options?.modePlatform);
+    if (targetStat.isDirectory()) return await digestDirectory(path, options?.modePlatform, modePolicy);
     if (targetStat.isSymbolicLink() && options?.followExpectedLegacySymlink) {
       const linked = resolve(dirname(path), await readlink(path));
       const [workspaceRealPath, linkedRealPath] = await Promise.all([realpath(workspace), realpath(linked)]);
@@ -1882,12 +1896,13 @@ async function digestManagedTarget(
       }
       const linkedStat = await stat(linkedRealPath);
       if (!linkedStat.isDirectory()) return null;
-      return await digestDirectory(linkedRealPath, options?.modePlatform);
+      return await digestDirectory(linkedRealPath, options?.modePlatform, modePolicy);
     }
     return null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Managed Skill target ${target} cannot be digested: ${reason}`, { cause: error });
   }
 }
 

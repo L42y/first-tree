@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
@@ -1745,6 +1746,193 @@ describe("managed Skill reconciler", () => {
     expect(existsSync(join(workspace, ".claude", "skills", "first-tree-read"))).toBe(false);
     expect(readManagedStateResult(workspace)).toMatchObject({ kind: "current" });
   });
+
+  it.skipIf(process.platform === "win32")(
+    "reprojects a v1-owned Core target with legacy npm write modes before publication",
+    async () => {
+      const skillName = "first-tree-read";
+      const bundledRoot = join(bundledSkillsRoot, skillName);
+      const bundledExecutable = join(bundledRoot, "run.sh");
+      writeFileSync(bundledExecutable, "#!/bin/sh\necho legacy\n");
+      chmodSync(bundledExecutable, 0o755);
+
+      const legacyTarget = target(workspace, "codex", skillName);
+      mkdirSync(dirname(legacyTarget), { recursive: true });
+      cpSync(bundledRoot, legacyTarget, { recursive: true });
+      chmodSync(legacyTarget, 0o775);
+      chmodSync(join(legacyTarget, "references"), 0o775);
+      chmodSync(join(legacyTarget, "SKILL.md"), 0o664);
+      chmodSync(join(legacyTarget, "VERSION"), 0o664);
+      chmodSync(join(legacyTarget, "references", "guide.md"), 0o664);
+      chmodSync(join(legacyTarget, "run.sh"), 0o775);
+      writeLegacyState(workspace, [skillName]);
+
+      const result = await reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+        bundledSkillsRoot,
+      });
+
+      expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+      expect(result.installed).toContain(`core:${skillName}`);
+      expect(lstatSync(legacyTarget).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(legacyTarget, "references")).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(legacyTarget, "SKILL.md")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(legacyTarget, "VERSION")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(legacyTarget, "references", "guide.md")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(legacyTarget, "run.sh")).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(legacyTarget, ".first-tree-managed.json")).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(join(legacyTarget, ".first-tree-managed.json"), "utf-8"))).toMatchObject({
+        key: `core:${skillName}`,
+      });
+      const state = readManagedState(workspace);
+      expect(state).not.toBeNull();
+      expect(state?.skills).toContainEqual(
+        expect.objectContaining({
+          key: `core:${skillName}`,
+          target: `.agents/skills/${skillName}`,
+        }),
+      );
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "preserves an unowned unsafe Core-name target and reports its full managed path",
+    async () => {
+      const skillName = "first-tree-write";
+      const userTarget = target(workspace, "codex", skillName);
+      mkdirSync(userTarget, { recursive: true });
+      writeFileSync(join(userTarget, "SKILL.md"), "unowned same-name user Skill\n");
+      chmodSync(userTarget, 0o775);
+      chmodSync(join(userTarget, "SKILL.md"), 0o664);
+      writeLegacyState(workspace, []);
+
+      let thrown: unknown;
+      try {
+        await reconcileManagedSkills({
+          workspace,
+          provider: "codex",
+          teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+          bundledSkillsRoot,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+      expect(thrown).toMatchObject({
+        cause: expect.objectContaining({
+          message: expect.stringContaining(`Managed Skill target .agents/skills/${skillName}`),
+        }),
+      });
+      expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("unowned same-name user Skill\n");
+      expect(lstatSync(userTarget).mode & 0o777).toBe(0o775);
+      expect(lstatSync(join(userTarget, "SKILL.md")).mode & 0o777).toBe(0o664);
+      expect(existsSync(join(userTarget, ".first-tree-managed.json"))).toBe(false);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "reprojects an unsafe exact-bundle Core target without marker, ledger entry, or pair",
+    async () => {
+      const skillName = "first-tree-seed";
+      const bundledRoot = join(bundledSkillsRoot, skillName);
+      const legacyTarget = target(workspace, "codex", skillName);
+      mkdirSync(dirname(legacyTarget), { recursive: true });
+      cpSync(bundledRoot, legacyTarget, { recursive: true });
+      chmodSync(legacyTarget, 0o775);
+      chmodSync(join(legacyTarget, "references"), 0o775);
+      chmodSync(join(legacyTarget, "SKILL.md"), 0o664);
+      chmodSync(join(legacyTarget, "VERSION"), 0o664);
+      chmodSync(join(legacyTarget, "references", "guide.md"), 0o664);
+      writeLegacyState(workspace, []);
+
+      const result = await reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+        bundledSkillsRoot,
+      });
+
+      expect(result.ok, JSON.stringify(result.failures)).toBe(true);
+      expect(result.installed).toContain(`core:${skillName}`);
+      expect(lstatSync(legacyTarget).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(legacyTarget, "references")).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(legacyTarget, "SKILL.md")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(legacyTarget, "VERSION")).mode & 0o777).toBe(0o600);
+      expect(lstatSync(join(legacyTarget, "references", "guide.md")).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(join(legacyTarget, ".first-tree-managed.json"), "utf-8"))).toMatchObject({
+        key: `core:${skillName}`,
+      });
+    },
+  );
+
+  it("rejects a symlink inside a v1-owned Core target without mutating it", async () => {
+    const skillName = "first-tree-read";
+    const legacyTarget = target(workspace, "codex", skillName);
+    mkdirSync(dirname(legacyTarget), { recursive: true });
+    cpSync(join(bundledSkillsRoot, skillName), legacyTarget, { recursive: true });
+    const linkedGuide = join(legacyTarget, "references", "guide.md");
+    rmSync(linkedGuide);
+    symlinkSync("../SKILL.md", linkedGuide);
+    writeLegacyState(workspace, [skillName]);
+
+    let thrown: unknown;
+    try {
+      await reconcileManagedSkills({
+        workspace,
+        provider: "codex",
+        teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+        bundledSkillsRoot,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+    expect(thrown).toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringContaining(`Managed Skill target .agents/skills/${skillName}`),
+      }),
+    });
+    expect(lstatSync(linkedGuide).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(legacyTarget, ".first-tree-managed.json"))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a special file inside a v1-owned Core target without mutating it",
+    async () => {
+      const skillName = "first-tree-read";
+      const legacyTarget = target(workspace, "codex", skillName);
+      mkdirSync(dirname(legacyTarget), { recursive: true });
+      cpSync(join(bundledSkillsRoot, skillName), legacyTarget, { recursive: true });
+      const fifo = join(legacyTarget, "references", "legacy.fifo");
+      execFileSync("mkfifo", [fifo]);
+      writeLegacyState(workspace, [skillName]);
+
+      let thrown: unknown;
+      try {
+        await reconcileManagedSkills({
+          workspace,
+          provider: "codex",
+          teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
+          bundledSkillsRoot,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ManagedSkillsUnsafeDiscoveryError);
+      expect(thrown).toMatchObject({
+        cause: expect.objectContaining({
+          message: expect.stringContaining(`Managed Skill target .agents/skills/${skillName}`),
+        }),
+      });
+      expect(lstatSync(fifo).isFIFO()).toBe(true);
+      expect(existsSync(join(legacyTarget, ".first-tree-managed.json"))).toBe(false);
+    },
+  );
 
   it("does not follow a legacy managed-name symlink outside the workspace", async () => {
     const outside = join(sandbox, "outside-user-skill");
