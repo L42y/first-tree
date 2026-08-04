@@ -8,6 +8,9 @@ Deterministic product demonstrations rendered from the real First Tree Web desig
 | --- | ---: | --- |
 | `multi-agent` | 35s | User gives one clear feature task to `nova-lead` → the lead brings `prism-ux`, `forge-dev`, and `sentinel-qa` into the same chat at different stages → UX and development working states show meaningful live progress before their replies → the verified pull request appears in the real GitHub sidebar section |
 | `context-tree` | 59s | A concept-first Context-based Work Loop keeps the Tree Map as its visual anchor: relevant and authorized paths guide work → temporary detail stays with the code while the durable `system/billing/retry-ownership` decision is distilled → a dedicated Context Reviewer turns a candidate into an approved update → the new team snapshot serves multiple future Agents → the completed loop resolves into the real read/write-visible Context page and the promise that every task starts smarter |
+| `github` | 31s | A repository-scoped GitHub App connects Issue / PR / review events to First Tree → an Issue assignment creates a Source-grouped Chat and wakes the assignee’s Delegate Agent → the linked PR, review feedback, updates, approval, and Merged / Closed state return to the same Chat |
+
+Total: **125 seconds**.
 
 ## Install and preview
 
@@ -25,7 +28,7 @@ Then open:
 http://127.0.0.1:4178/preview/onboarding-orientation-video?chapter=multi-agent&frame=180
 ```
 
-The registered chapter ids are `multi-agent` and `context-tree`. `frame` is zero-based at 30fps.
+The registered chapter ids are `multi-agent`, `context-tree`, and `github`. `frame` is zero-based at 30fps.
 
 ## Render
 
@@ -88,6 +91,7 @@ For a new language, add separate VTT files and a matching `<track>` per chapter.
 | --- | --- | --- | --- |
 | `multi-agent` | `/onboarding/orientation/multi-agent.mp4` | `/onboarding/orientation/multi-agent.vtt` | `/onboarding/orientation/stills/multi-agent-poster.png` |
 | `context-tree` | `/onboarding/orientation/context-tree.mp4` | `/onboarding/orientation/context-tree.vtt` | `/onboarding/orientation/stills/context-tree-poster.png` |
+| `github` | `/onboarding/orientation/github.mp4` | `/onboarding/orientation/github.vtt` | `/onboarding/orientation/stills/github-poster.png` |
 
 `OnboardingOrientation` reads these stable paths directly. The only product change is replacing the selected chapter's placeholder with a native `<video>` element and caption track. Start / Skip, composer input, refresh recovery, and agent wake ordering are unchanged.
 

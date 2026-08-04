@@ -27,6 +27,7 @@ const CHAPTERS = {
     crf: "16",
     videoFilter: "scale=1280:720:flags=lanczos",
   },
+  github: { keyframes: [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 21, 24, 27, 29, 30], poster: 16 },
 };
 
 function selectedChapters() {

@@ -1,0 +1,21 @@
+WEBVTT
+
+00:00.000 --> 00:03.000
+The repository-scoped connection lets GitHub events
+reach the right First Tree work.
+
+00:03.000 --> 00:09.000
+An Issue assignment becomes a Source Chat
+for the assignee’s Agent.
+
+00:09.000 --> 00:15.000
+The Issue context moves with the Agent—
+without rebuilding the task.
+
+00:15.000 --> 00:22.000
+A linked pull request keeps delivery
+attached to its source Issue.
+
+00:22.000 --> 00:31.000
+Review, approval, and merge return to the same Chat,
+preserving the work’s history.

@@ -45,10 +45,10 @@ describe("OnboardingOrientation", () => {
     const { container } = await renderOrientation({ onContinue });
 
     expect(container.querySelector('[data-onboarding-orientation="pending"]')).not.toBeNull();
-    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(3);
     expect(container.textContent).toContain("Watch the short tours");
     expect(container.textContent).toContain("Context Tree");
-    expect(container.textContent).not.toContain("GitHub automation");
+    expect(container.textContent).toContain("GitHub automation");
     expect(container.textContent).not.toContain("Video placeholder");
     expect(container.textContent).toContain("Transcript");
     expect(container.querySelector("video")?.autoplay).toBe(false);
@@ -70,7 +70,7 @@ describe("OnboardingOrientation", () => {
 
     await click(multiAgent ?? null);
     expect(play).toHaveBeenCalledTimes(1);
-    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(3);
     expect(container.textContent).toContain("The right agents join as the work unfolds");
     const video = container.querySelector("video");
     expect(video?.getAttribute("poster")).toBe("/onboarding/orientation/stills/multi-agent-poster.png");
@@ -117,7 +117,7 @@ describe("OnboardingOrientation", () => {
 
     const review = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Watch");
     await click(review ?? null);
-    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(3);
     expect(onContinue).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Continue with Nova");
   });
