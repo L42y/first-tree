@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { type ConnectTokenResponse, getClientCapabilities, type HubClient, listClients } from "../../api/activity.js";
 import { api } from "../../api/client.js";
 import { runVisibilityAwareInterval } from "../../lib/visibility-interval.js";
+import { orderRuntimesByPreference, pickPreferredRuntime } from "./runtime-preference.js";
 
 const CLIENT_DETECT_POLL_MS = 5_000;
 
@@ -15,7 +16,7 @@ const CLIENT_DETECT_POLL_MS = 5_000;
  *      the user pastes into their terminal).
  *   2. Poll `listClients()`; the most-recently-seen connected client wins.
  *   3. Once a client is connected, fetch its capabilities to learn which AI
- *      runtimes are ready, and auto-pick the best one (Claude Code → Codex).
+ *      runtimes are ready, and auto-pick the best one (Codex → Claude Code).
  *
  * Pure presentation state is returned; the React step renders it. Polling
  * pauses while the tab is hidden (`runVisibilityAwareInterval`) and stops
@@ -55,17 +56,14 @@ export type UseComputerConnectionOptions = {
 /** Silent auto-retries before surfacing a token-mint failure to the user. */
 const TOKEN_MINT_ATTEMPTS = 3;
 const TOKEN_MINT_BACKOFF_MS = [600, 1500];
-
-function pickPreferredRuntime(caps: ClientCapabilities): string | null {
-  const ok = (provider: string) => caps[provider]?.state === "ok";
-  if (ok("claude-code")) return "claude-code";
-  if (ok("codex")) return "codex";
-  // Never fall back to a temporarily-disabled provider, even if a stale snapshot
+function listReadyRuntimes(caps: ClientCapabilities): string[] {
+  // Never include a temporarily-disabled provider, even if a stale snapshot
   // still reports it `ok`.
-  const first = Object.entries(caps).find(
-    ([provider, entry]) => entry.state === "ok" && isRuntimeProviderEnabled(provider),
+  return orderRuntimesByPreference(
+    Object.entries(caps)
+      .filter(([provider, entry]) => entry.state === "ok" && isRuntimeProviderEnabled(provider))
+      .map(([provider]) => provider),
   );
-  return first ? first[0] : null;
 }
 
 function hasReportedCapabilities(caps: ClientCapabilities | null): caps is ClientCapabilities {
@@ -218,16 +216,13 @@ export function useComputerConnection(
   useEffect(() => {
     setSelectedRuntime((prev) => {
       if (!activeCapabilities) return prev;
-      if (prev && activeCapabilities[prev]?.state === "ok") return prev;
-      return pickPreferredRuntime(activeCapabilities);
+      const ready = listReadyRuntimes(activeCapabilities);
+      if (prev && ready.includes(prev)) return prev;
+      return pickPreferredRuntime(ready);
     });
   }, [activeCapabilities]);
 
-  const okRuntimes = activeCapabilities
-    ? Object.entries(activeCapabilities)
-        .filter(([provider, entry]) => entry.state === "ok" && isRuntimeProviderEnabled(provider))
-        .map(([provider]) => provider)
-    : [];
+  const okRuntimes = activeCapabilities ? listReadyRuntimes(activeCapabilities) : [];
 
   const cliCommand = bootstrapCommand;
 

@@ -5,9 +5,9 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { orderRuntimesByPreference, pickPreferredRuntime } from "../runtime-preference.js";
 import { useAgentCreation } from "../use-agent-creation.js";
-import type { ComputerConnection } from "../use-computer-connection.js";
-import { useComputerConnection } from "../use-computer-connection.js";
+import { type ComputerConnection, useComputerConnection } from "../use-computer-connection.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -114,6 +114,19 @@ afterEach(async () => {
 });
 
 describe("shared setup hooks", () => {
+  it("uses one Codex-first runtime preference across setup surfaces", () => {
+    expect(orderRuntimesByPreference(["opencode", "claude-code", "future-provider", "codex"])).toEqual([
+      "codex",
+      "claude-code",
+      "opencode",
+      "future-provider",
+    ]);
+    expect(pickPreferredRuntime(["claude-code", "codex", "opencode"])).toBe("codex");
+    expect(pickPreferredRuntime(["claude-code", "opencode"])).toBe("claude-code");
+    expect(pickPreferredRuntime(["opencode", "future-provider"])).toBe("opencode");
+    expect(pickPreferredRuntime([])).toBeNull();
+  });
+
   it("detects connected computers and picks a ready runtime without onboarding state", async () => {
     const latest = { current: null as ComputerConnection | null };
     const client = {

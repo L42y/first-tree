@@ -19,6 +19,10 @@ import { listAgentTemplates } from "../api/agent-templates.js";
 import { checkAgentNameAvailability, createAgent } from "../api/agents.js";
 import { ApiError, api, type ValidationIssue } from "../api/client.js";
 import { useAuth } from "../auth/auth-context.js";
+import {
+  orderRuntimesByPreference,
+  pickPreferredRuntime as pickPreferredRuntimeFromList,
+} from "../features/agent-setup/runtime-preference.js";
 import { useCopyFeedback } from "../lib/use-copy-feedback.js";
 import { runVisibilityAwareInterval } from "../lib/visibility-interval.js";
 import { slugify } from "../utils/agent-naming.js";
@@ -161,37 +165,6 @@ function asRuntimeProvider(provider: string): RuntimeProvider | null {
   return null;
 }
 
-/**
- * Pick the preferred runtime among the ones in `ok` state on a given
- * client. Claude Code wins over Claude Code CLI which wins over Codex;
- * if none of those is ok we fall back to whatever else the client reports
- * as ok (still narrowed to a known RuntimeProvider), then `null`.
- */
-function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null {
-  if (caps["claude-code"]?.state === "ok") return "claude-code";
-  // Keep the documented Claude Code → Claude Code CLI → Codex priority, but guard
-  // the TUI branch on the central switch: disabled today (short-circuits, so a
-  // stale `ok` snapshot is skipped and Codex wins), yet removing it from
-  // DISABLED_RUNTIME_PROVIDERS restores its priority over Codex in one line.
-  if (isRuntimeProviderEnabled("claude-code-tui") && caps["claude-code-tui"]?.state === "ok") return "claude-code-tui";
-  if (caps.codex?.state === "ok") return "codex";
-  // Same central-switch guard as the TUI line: a stale `ok` snapshot from a
-  // daemon must not auto-pick a provider that has since been disabled.
-  if (isRuntimeProviderEnabled("cursor") && caps.cursor?.state === "ok") return "cursor";
-  if (isRuntimeProviderEnabled("grok") && caps.grok?.state === "ok") return "grok";
-  if (isRuntimeProviderEnabled("opencode") && caps.opencode?.state === "ok") return "opencode";
-  if (isRuntimeProviderEnabled("pi") && caps.pi?.state === "ok") return "pi";
-  // Any other provider (incl. one still disabled in a stale snapshot) is only
-  // auto-picked when enabled.
-  for (const [provider, entry] of Object.entries(caps)) {
-    if (entry.state === "ok") {
-      const rt = asRuntimeProvider(provider);
-      if (rt && isRuntimeProviderEnabled(rt)) return rt;
-    }
-  }
-  return null;
-}
-
 function prettyRuntimeLabel(provider: RuntimeProvider): string {
   if (provider === "claude-code") return "Claude Code";
   if (provider === "claude-code-tui") return "Claude Code CLI";
@@ -251,7 +224,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // the team roster, which surprised users who expected new agents to be
   // personal until explicitly shared.
   const [visibility, setVisibility] = useState<AgentVisibility>("private");
-  const [runtime, setRuntime] = useState<RuntimeProvider>("claude-code");
+  const [runtime, setRuntime] = useState<RuntimeProvider>("codex");
 
   // Handle resolution. The slug follows the display name (auto-deduped on
   // collision); `resolvedHandle` is the winner. `manualHandle` is only used
@@ -348,7 +321,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     if (open) {
       setDisplayName("");
       setVisibility("private");
-      setRuntime("claude-code");
+      setRuntime("codex");
       setResolvedHandle("");
       setHandleState({ status: "idle" });
       setManualHandle("");
@@ -616,7 +589,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
       // selectable runtime, even if a stale snapshot still reports them `ok`.
       if (rt && isRuntimeProviderEnabled(rt)) out.push(rt);
     }
-    return out;
+    return orderRuntimesByPreference(out);
   }, [activeCapabilities]);
 
   // Realign the runtime selection whenever the picked client's capabilities
@@ -625,10 +598,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   useEffect(() => {
     if (!activeCapabilities) return;
     setRuntime((prev) => {
-      if (activeCapabilities[prev]?.state === "ok") return prev;
-      return pickPreferredRuntime(activeCapabilities) ?? prev;
+      if (okRuntimes.includes(prev)) return prev;
+      return pickPreferredRuntimeFromList(okRuntimes) ?? prev;
     });
-  }, [activeCapabilities]);
+  }, [activeCapabilities, okRuntimes]);
 
   // The handle that will actually be submitted: the auto-resolved one, or the
   // user's manual fallback (slugified) when no handle could be derived.

@@ -114,6 +114,7 @@ function client(overrides: Partial<HubClient> = {}): HubClient {
       "claude-code-tui": capability("ok"),
       codex: capability("ok"),
       future: capability("ok"),
+      pi: capability("ok"),
     },
   };
 }
@@ -263,6 +264,13 @@ describe("NewAgentDialog extra branches", () => {
 
     await waitForText(container, "gandy-macbook");
     expect(document.body.textContent).toContain("Claude Code");
+    const initialRuntimeInputs = [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')];
+    expect(initialRuntimeInputs.map((input) => input.closest("label")?.textContent)).toEqual([
+      expect.stringContaining("Codex"),
+      expect.stringContaining("Claude Code"),
+      expect.stringContaining("Pi"),
+    ]);
+    expect(initialRuntimeInputs.find((input) => input.checked)?.closest("label")?.textContent).toContain("Codex");
     await setValue(inputById("new-agent-display-name"), "Build Bot");
     await waitForCondition(() => agentMocks.checkAgentNameAvailability.mock.calls.length > 0, "Expected probe");
     await waitForText(container, "@build-bot");

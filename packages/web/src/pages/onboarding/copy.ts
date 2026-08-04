@@ -9,9 +9,9 @@
  * agent journey. Only after they explicitly continue without one do Team-agent
  * quick start and external Context access appear. BYO gives the coding agent
  * one self-contained prompt that connects the computer and enables Team
- * Context without creating a First Tree agent or completing onboarding. A
- * local coding agent is a provider, never something silently added to First
- * Tree Chat.
+ * Context without creating a First Tree agent or completing onboarding. In
+ * the recommended path, the detected executable is named directly instead of
+ * introducing a category term users must learn before creating an agent.
  * "repo" stays (GitHub access / start-chat can still involve repos, and
  * "project" is ambiguous next to GitHub's own "Projects"). "binding" and
  * other deep internals still never leak.
@@ -70,11 +70,11 @@ export const STEP_COPY: Record<StepId, StepCopy> = {
   },
 };
 
-/** One plain launch line for every start-chat finale — admin or invitee, team
- *  ready or not. It teaches the product value without leaking Team/Tree
- *  readiness or implying that a personal Claude Code / Codex conversation is
- *  joining First Tree Chat. */
-const START_CHAT_LAUNCH_WHY = "Your agent is ready. Delegate work, follow progress, and review results with your team.";
+/** One plain exploration line for every first-chat finale — admin or invitee,
+ *  team ready or not. The page introduces the managed First Tree agent without
+ *  exposing repo / Context Tree readiness or turning Chat into the concept the
+ *  member has to understand first. */
+const START_CHAT_LAUNCH_WHY = "Explore First Tree together, then choose what you’d like to try first.";
 
 /** Shared phrases reused across steps so wording stays consistent. */
 export const COPY = {
@@ -180,21 +180,16 @@ export const COPY = {
     // The Client connects the computer and lets a managed First Tree agent run
     // there. It does not itself enable Team Context inside a personal provider
     // session, so keep that separate in the user-facing mental model.
-    whyWaiting: "A background app that lets First Tree agents run here using a local coding agent.",
-    whyConnected: "A background app that lets First Tree agents run here using a local coding agent.",
-    // Two install paths (waiting state): run the bare command in a terminal, or
-    // paste a ready prompt to the coding agent the user already has — the prompt
-    // wraps the command in a "please run this" line so the agent executes it
-    // instead of just explaining a bare command.
+    whyWaiting: "Install the First Tree app to connect this computer and detect what your agents can run.",
+    // Once connected, the status row and detected options carry the result.
+    // Repeating the install explanation would describe work the user has
+    // already completed, so the connected state has no separate lead sentence.
+    whyConnected: "",
+    // One canonical install path: run the server-authored command in a terminal.
     terminalBoxLabel: "Run this command in your terminal",
-    agentBoxLabel: "Or paste this to your Claude Code, Codex, or Cursor agent",
-    agentPromptPrefix: "Help me install First Tree by running the command below:",
-    // Quiet caption naming the nested coding-agent list, so the indented rows
-    // read as "found ON this computer" (the relationship the nesting implies)
-    // rather than as an unlabelled cluster. Count-aware so a single detection
-    // doesn't read as a plural label.
-    detectedLabel: (count: number) =>
-      count === 1 ? "Coding agent on this computer" : "Coding agents on this computer",
+    // Quiet caption naming the nested executable list without asking the user
+    // to learn another category term such as "AI tool" or "coding agent".
+    detectedLabel: "Available on this computer",
     // Bridge below the detected-agents list → the next step (create-agent).
     detectedBridge: "Next, create your First Tree agent.",
     waiting: "Waiting for your computer…",
@@ -203,8 +198,8 @@ export const COPY = {
     // connected (so no "Your computer is connected, but…" lead-in), and this is a
     // live polling state (so the dropped "it'll appear here automatically" tail is
     // implied — a detected agent just shows up). Problem + fix only.
-    noRuntime: "No coding agent found yet. Install one (like Claude Code) and sign in.",
-    detecting: "Looking for coding agents on it…",
+    noRuntime: "Nothing your agents can run was found yet. Install Codex, Claude Code, or another supported option.",
+    detecting: "Detecting what your agents can run…",
     /** Token-mint failure (POST /me/connect-tokens threw, after silent retries).
         Calm + recoverable: the auto-retry handles transient blips, so by the
         time this shows it's worth a manual Try again. */
@@ -213,18 +208,13 @@ export const COPY = {
   },
   /** create-agent states */
   createAgent: {
-    // A First Tree agent is the managed teammate; the local coding
-    // agent is the provider it uses on this computer. Keep both nouns visible
-    // so onboarding never implies that a personal provider conversation joins
-    // First Tree Chat.
-    subtitle: "A First Tree teammate you can delegate work to. It runs here using your local coding agent.",
-    // Coding-agent picker (moved here from connect-computer): always a list, even
-    // for one, default-selected to Claude Code when present. Verb-leading to
-    // match the imperative `nameLabel` ("Name your agent") below; "local" keeps
-    // the subtitle's vocabulary and frames the pick as the user's own
-    // machine-side tool — connect-computer already showed which machine, so no
-    // "Detected on <host>" sub-label is repeated here.
-    codingAgentLabel: "Choose which local coding agent it uses",
+    // Establish the durable product model first: this is the user's first of
+    // potentially several agents in the current Team. The selected executable
+    // is explained immediately below, where the choice is made.
+    subtitle: "Build your own group of agents for different work in this team. Let’s create your first one.",
+    // The detected executables define how this First Tree agent runs, without
+    // collapsing the managed teammate identity into a renamed local tool.
+    codingAgentLabel: "This agent will run",
     // Amber "not ready" badge beside the label when the computer dropped — so the
     // disabled picker reads AS unavailable (action needed: reconnect) at a glance,
     // not just a quietly greyed pill.
@@ -274,47 +264,39 @@ export const COPY = {
     // admin · new tree (the default — the team has none yet). `newWhy`/`existingWhy`
     // are only read by the dormant repo-aware branch (StepConnectCode is out of the
     // live sequence); kept as functions so that call site's shape is unchanged.
-    newTitle: "Start your first Agent Chat",
+    newTitle: "Meet your agent",
     newWhy: (_repoCount: number): string => START_CHAT_LAUNCH_WHY,
-    startBuilding: "Start chat",
+    startBuilding: "Start exploring",
 
     // admin · the team already has a Context Tree (re-run / second admin /
     // CLI-bound). Detected silently; also part of the dormant repo-aware branch.
-    existingTitle: "Start your first Agent Chat",
+    existingTitle: "Meet your agent",
     existingWhy: (_repoCount: number): string => START_CHAT_LAUNCH_WHY,
-    startExisting: "Start chat",
+    startExisting: "Start exploring",
 
     // admin · no repo connected (the live default path).
-    noProjectTitle: "Start your first Agent Chat",
+    noProjectTitle: "Meet your agent",
     noProjectBody: START_CHAT_LAUNCH_WHY,
-    startChatting: "Start chat",
+    startChatting: "Start exploring",
 
     // invitee · ready (team has a tree + a GitHub connection). The agent inherits
     // the team's recommended repos automatically, so there is nothing to select.
-    inviteeReadyTitle: "Start your first Agent Chat",
+    inviteeReadyTitle: "Meet your agent",
     inviteeReadyBody: START_CHAT_LAUNCH_WHY,
-    startWorking: "Start chat",
+    startWorking: "Start exploring",
 
     // shared launch transition
-    starting: "Starting your agent…",
-
-    /** Heading of the community footer under the launch CTA (every finale).
-     *  The channel cards themselves live in components/community-channels.tsx
-     *  (shared with the top-bar SupportMenu), so only the onboarding-surface
-     *  heading is copy here. */
-    community: {
-      title: "Stay connected",
-    },
+    starting: "Opening your first Chat…",
   },
   /** Invitee not-ready (blocked-on-admin) state. The not-ready screen covers
    *  both "no Context Tree" and "no GitHub connection" — the invitee can't act
    *  on either, and it advances on its own once the admin finishes. */
   invitee: {
-    notReadyTitle: "Start your first Agent Chat",
+    notReadyTitle: "Meet your agent",
     notReadyBody: START_CHAT_LAUNCH_WHY,
     // The primary action on the not-ready screen — start a simple first chat now
     // instead of waiting on the team.
-    startAnyway: "Start chat",
+    startAnyway: "Start exploring",
   },
   /** Progressive Member entry: one recommended personal-agent path first,
    *  then Team-agent and external Context access after explicit continuation. */
@@ -323,7 +305,7 @@ export const COPY = {
     recommendedTitle: "Set up your First Tree agent",
     recommendedWhy: "Create your own agent for ongoing work with your team.",
     computerReady: "Your computer is connected. Next, create your agent.",
-    personalSteps: ["Connect computer", "Create agent", "Start first chat"],
+    personalSteps: ["Connect computer", "Create agent", "Meet your agent"],
     continueWithout: "Continue without my own agent",
     personal: {
       cta: "Set up my agent",
@@ -376,7 +358,7 @@ export const COPY = {
   /** failure recovery, shared */
   errors: {
     generic: "Something went wrong. Try again in a moment.",
-    chatFailed: "Couldn't start the first task. Try again.",
+    chatFailed: "Couldn't open your first Chat. Try again.",
     agentFailed: "Couldn't add your agent to the team — please try again.",
     noAgent: "We couldn't find your agent. Go back a step and add one.",
   },

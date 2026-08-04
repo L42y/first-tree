@@ -120,8 +120,16 @@ describe("StepConnectComputer", () => {
 
     const container = await renderStep(value);
 
+    expect(container.textContent).toContain(
+      "Install the First Tree app to connect this computer and detect what your agents can run.",
+    );
+    expect(container.textContent).toContain("Run this command in your terminal");
     expect(container.textContent).toContain("https://download.first-tree.ai/releases/prod/install.sh");
     expect(container.textContent).toContain("~/.local/bin/first-tree login abc123");
+    expect(
+      [...container.querySelectorAll("button")].filter((button) => button.textContent?.includes("Copy")),
+    ).toHaveLength(1);
+    expect(container.textContent).not.toContain("Or paste this");
     expect(container.textContent).not.toContain("npm install");
     expect(container.textContent).not.toContain("Node.js");
     await click(buttonByText(container, "Copy"));
@@ -158,23 +166,26 @@ describe("StepConnectComputer", () => {
 
     const detecting = await renderStep(flow({ computer: computer({ connectedClient }) }));
     expect(detecting.textContent).toContain("workstation");
-    expect(detecting.textContent).toContain("Looking for coding agents");
+    expect(detecting.textContent).toContain("Detecting what your agents can run");
+    expect(detecting.textContent).not.toContain("Install the First Tree app");
     expect(buttonByText(detecting, "Continue")?.disabled).toBe(true);
 
     const noRuntime = await renderStep(
       flow({ computer: computer({ connectedClient, capabilitiesLoaded: true, okRuntimes: [] }) }),
     );
-    expect(noRuntime.textContent).toContain("No coding agent found yet");
+    expect(noRuntime.textContent).toContain("Nothing your agents can run was found yet");
 
     const goNext = vi.fn();
     const ready = await renderStep(
       flow({
         goNext,
-        computer: computer({ connectedClient, capabilitiesLoaded: true, okRuntimes: ["codex", "claude-code"] }),
+        computer: computer({ connectedClient, capabilitiesLoaded: true, okRuntimes: ["claude-code", "codex"] }),
       }),
     );
     expect(ready.textContent).toContain("Codex");
     expect(ready.textContent).toContain("Claude Code");
+    expect(ready.textContent).toContain("Available on this computer");
+    expect((ready.textContent ?? "").indexOf("Codex")).toBeLessThan((ready.textContent ?? "").indexOf("Claude Code"));
     expect(buttonByText(ready, "Continue")?.disabled).toBe(false);
     await click(buttonByText(ready, "Continue"));
     expect(goNext).toHaveBeenCalledTimes(1);
