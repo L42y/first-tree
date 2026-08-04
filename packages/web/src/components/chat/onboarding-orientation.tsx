@@ -4,38 +4,24 @@ import { Button } from "../ui/button.js";
 
 export const ONBOARDING_ORIENTATION_CONTINUE_MESSAGE = "I'm ready. Please help me get started with First Tree.";
 
-const CHAPTERS = [
-  {
+export const ONBOARDING_ORIENTATION_CHAPTERS = {
+  "multi-agent": {
     id: "multi-agent",
     title: "Multi-agent collaboration",
-    summary: "Specialists work in parallel",
+    summary: "The right agents join as the work unfolds",
+    durationInSeconds: 35,
+    videoSrc: "/onboarding/orientation/multi-agent.mp4",
+    posterSrc: "/onboarding/orientation/stills/multi-agent-poster.png",
+    captionsSrc: "/onboarding/orientation/multi-agent.vtt",
     transcript:
-      "Your lead agent can split independent work into focused chats, so several specialists can make progress at the same time while the original chat stays your map.",
+      "Give one lead agent a clear software task. As the work unfolds, the lead @mentions UX, development, and QA agents in the same chat—each only when needed. Their working updates and replies stay in the shared conversation, and the verified pull request appears in the GitHub sidebar without the user coordinating separate chats.",
   },
-  {
-    id: "context-tree",
-    title: "Context Tree",
-    summary: "Shared decisions, available to every agent",
-    transcript:
-      "The Context Tree keeps durable decisions, constraints, ownership, and relationships in one shared memory so future agents begin with the team's settled context.",
-  },
-  {
-    id: "github",
-    title: "GitHub automation",
-    summary: "PR updates return to the work",
-    transcript:
-      "When your team explicitly authorizes GitHub access, pull request checks, reviews, and merge activity can flow back into the chat where the work is happening.",
-  },
-  {
-    id: "security",
-    title: "Data & security",
-    summary: "Local work, visible sharing, explicit access",
-    transcript:
-      "Agents work through the computer connected to them. First Tree Cloud receives the conversations, attachments, and work status your team can see. GitHub access is limited to repositories your team explicitly authorizes. First Tree does not silently bulk-upload repositories a local agent can access.",
-  },
-] as const;
+} as const;
 
-type ChapterId = (typeof CHAPTERS)[number]["id"];
+export type OnboardingOrientationChapterId = keyof typeof ONBOARDING_ORIENTATION_CHAPTERS;
+export const ONBOARDING_ORIENTATION_DEFAULT_CHAPTER_ID: OnboardingOrientationChapterId = "multi-agent";
+
+const CHAPTERS = Object.values(ONBOARDING_ORIENTATION_CHAPTERS);
 
 export type OnboardingOrientationProps = {
   completed: boolean;
@@ -46,13 +32,13 @@ export type OnboardingOrientationProps = {
 export function OnboardingOrientation({ completed, continuing, onContinue }: OnboardingOrientationProps) {
   const titleId = useId();
   const [expanded, setExpanded] = useState(!completed);
-  const [selectedId, setSelectedId] = useState<ChapterId | null>(null);
+  const [selectedId, setSelectedId] = useState<OnboardingOrientationChapterId | null>(null);
 
   useEffect(() => {
     if (completed) setExpanded(false);
   }, [completed]);
 
-  const selected = CHAPTERS.find((chapter) => chapter.id === selectedId) ?? null;
+  const selected = selectedId === null ? null : ONBOARDING_ORIENTATION_CHAPTERS[selectedId];
 
   if (!expanded) {
     return (
@@ -71,7 +57,7 @@ export function OnboardingOrientation({ completed, continuing, onContinue }: Onb
           </span>
           <div className="min-w-0 flex-1">
             <p id={titleId} className="text-label font-medium">
-              First Tree introduction · About 90 seconds
+              First Tree introduction
             </p>
           </div>
         </div>
@@ -102,7 +88,7 @@ export function OnboardingOrientation({ completed, continuing, onContinue }: Onb
               {selected?.title ?? "See how First Tree works"}
             </p>
             <p className="text-body text-muted-foreground">
-              {selected?.summary ?? "Pick a short chapter, or skip straight to work. About 90 seconds total."}
+              {selected?.summary ?? "Watch a short product tour, or skip straight to work."}
             </p>
           </div>
           {selected ? (
@@ -121,20 +107,21 @@ export function OnboardingOrientation({ completed, continuing, onContinue }: Onb
 
       {selected ? (
         <div className="border-t border-border" style={{ padding: "var(--sp-4)" }}>
-          <div
-            className="aspect-video flex items-center justify-center border border-border bg-muted/40 text-center"
-            style={{ borderRadius: "var(--radius-input)", padding: "var(--sp-4)" }}
-            aria-live="polite"
+          <video
+            key={selected.id}
+            data-onboarding-orientation-video={selected.id}
+            className="aspect-video w-full border border-border bg-muted/40"
+            style={{ borderRadius: "var(--radius-input)" }}
+            controls
+            playsInline
+            preload="metadata"
+            poster={selected.posterSrc}
+            aria-label={`${selected.title} orientation video`}
           >
-            <div className="flex max-w-prose flex-col items-center" style={{ gap: "var(--sp-2)" }}>
-              <span className="flex size-10 items-center justify-center rounded-full bg-secondary" aria-hidden="true">
-                <Play className="size-4" />
-              </span>
-              <p className="text-label font-medium">{selected.title}</p>
-              <p className="text-body text-muted-foreground">{selected.summary}</p>
-              <span className="mono text-caption text-muted-foreground">Video placeholder</span>
-            </div>
-          </div>
+            <source src={selected.videoSrc} type="video/mp4" />
+            <track kind="captions" src={selected.captionsSrc} srcLang="en" label="English" default />
+            {selected.transcript}
+          </video>
 
           <details className="group mt-3 border-t border-border pt-3">
             <summary className="text-label inline-flex min-h-11 cursor-pointer items-center font-medium">
@@ -160,7 +147,7 @@ export function OnboardingOrientation({ completed, continuing, onContinue }: Onb
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 border-y border-border sm:grid-cols-2">
+          <div className="orientation-chapter-grid grid border-y border-border">
             {CHAPTERS.map((chapter, index) => (
               <button
                 key={chapter.id}
