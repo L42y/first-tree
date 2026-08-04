@@ -1245,6 +1245,96 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("accepts one start-with analytical microtask after a named project path receipt", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-start-with-analytical-task-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              [
+                "I read the Acme Support Dashboard README and manifest plus `src/auth/session.ts`; it is a small Next.js support dashboard whose session loader currently delegates directly to token refresh and carries an expired-session TODO.",
+                "The session-expiry path is a credible place to start because the entry point and its direct dependency are explicit, while the intended re-auth behavior still needs evidence before any change.",
+                "Start with a read-only trace of expired-session handling, returning a 5–8 step call chain with file references and a concrete judgment about the TODO.",
+                "Or type a different microtask.",
+              ].join("\n\n"),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(true);
+      expect(metrics.microtaskOptionCount).toBe(1);
+      expect(metrics.readOnlyOptionCount).toBe(1);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("accepts one choose-named analytical microtask without counting a choose-one heading", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-choose-named-task-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              [
+                "I read the Acme Support Dashboard README and manifest plus `src/auth/session.ts`, a small Next.js support dashboard whose tests run with Vitest.",
+                "Work can start at `loadSession` because its expired-session TODO sits directly in front of the token-refresh boundary.",
+                "Choose **Trace session expiry**: I’ll follow `loadSession` through its direct references and return a concrete behavior judgment with file evidence. (read-only)",
+                "Or type a different microtask.",
+              ].join("\n\n"),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(true);
+      expect(metrics.microtaskOptionCount).toBe(1);
+      expect(metrics.readOnlyOptionCount).toBe(1);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("rejects multi-select, time estimates, and first-task fan-out", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-rejected-menu-"));
     try {

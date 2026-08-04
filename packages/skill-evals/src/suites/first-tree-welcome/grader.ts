@@ -330,11 +330,16 @@ function recommendedTaskTexts(text: string, taskOptionHints: readonly string[]):
   return text
     .split(/\n\s*\n/u)
     .map((paragraph) => paragraph.trim())
-    .filter(
-      (paragraph) =>
-        /\b(?:i recommend|recommended task|recommend starting|my recommendation)\b|我建议|建议先/iu.test(paragraph) &&
-        optionLooksLikeTask(paragraph, taskOptionHints),
-    );
+    .filter((paragraph) => {
+      const recommendationIntro =
+        /\b(?:i recommend|recommended task|recommend starting|my recommendation)\b|^start with\b|我建议|建议先|^先做|^先从/iu.test(
+          paragraph,
+        );
+      const namedChoiceIntro =
+        /^choose\s+[*_`]*(?!(?:one|a|an|between|from|either)\b)[\p{L}\p{N}]/iu.test(paragraph) ||
+        /^选择\s*[*_`]*(?!(?:一个|一项|其中))[\p{L}\p{N}]/iu.test(paragraph);
+      return (recommendationIntro || namedChoiceIntro) && optionLooksLikeTask(paragraph, taskOptionHints);
+    });
 }
 
 function setupTaskOptionObserved(chatOptionTexts: readonly string[], combinedText: string): boolean {
@@ -421,7 +426,7 @@ function hasConcreteProjectSurface(text: string): boolean {
 function hasNamedStartingPoint(text: string): boolean {
   if (hasConcreteProjectSurface(text)) return true;
   if (
-    /\b(?!(?:a|an|the|this|that|its|our|your|project|current|existing|main|primary|relevant)\b)[a-z][\w.-]*(?:\s+(?!(?:a|an|the|this|that|its|our|your|project|current|existing|main|primary|relevant)\b)[a-z][\w.-]*){0,2}\s+(?:entry point|entry|boundary|module|route|flow|branch|test|todo|service|component|package|handler|subsystem)\b/iu.test(
+    /\b(?!(?:a|an|the|this|that|its|our|your|project|current|existing|main|primary|relevant)\b)[a-z][\w.-]*(?:\s+(?!(?:a|an|the|this|that|its|our|your|project|current|existing|main|primary|relevant)\b)[a-z][\w.-]*){0,2}\s+(?:entry point|entry|boundary|module|path|route|flow|branch|test|todo|service|component|package|handler|subsystem)\b/iu.test(
       text,
     )
   ) {
