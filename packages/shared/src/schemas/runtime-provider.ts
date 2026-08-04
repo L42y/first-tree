@@ -25,20 +25,48 @@ export type RuntimeProvider = z.infer<typeof runtimeProviderSchema>;
 /** Exhaustive ID list derived from the Zod enum (same order as schema options). */
 export const RUNTIME_PROVIDER_IDS: readonly RuntimeProvider[] = runtimeProviderSchema.options;
 
+/** `claude-code` → `CLAUDE_CODE` (kebab wire id → UPPER_SNAKE named constant key). */
+type KebabToConstKey<S extends string> = S extends `${infer Head}-${infer Tail}`
+  ? `${Uppercase<Head>}_${KebabToConstKey<Tail>}`
+  : Uppercase<S>;
+
+/**
+ * Named-constant map shape derived from {@link RuntimeProvider}.
+ * Call sites keep `RUNTIME_PROVIDERS.CLAUDE_CODE` / `.CODEX` — keys are not handwritten.
+ */
+export type RuntimeProvidersMap = {
+  readonly [K in RuntimeProvider as KebabToConstKey<K>]: K;
+};
+
+/**
+ * Build {@link RUNTIME_PROVIDERS} from {@link runtimeProviderSchema.options}.
+ * Fail closed on illegal keys or collisions so a new schema id cannot silently
+ * overwrite another constant.
+ */
+function buildRuntimeProviders(): RuntimeProvidersMap {
+  const entries: Array<[string, RuntimeProvider]> = [];
+  const seenKeys = new Set<string>();
+  for (const id of RUNTIME_PROVIDER_IDS) {
+    const key = id.replace(/-/g, "_").toUpperCase();
+    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
+      throw new Error(`runtime provider id "${id}" does not map to a valid RUNTIME_PROVIDERS key`);
+    }
+    if (seenKeys.has(key)) {
+      throw new Error(`RUNTIME_PROVIDERS key collision for "${key}" (from "${id}")`);
+    }
+    seenKeys.add(key);
+    entries.push([key, id]);
+  }
+  // Object.fromEntries widens keys to `string`; freeze + cast once at this bridge.
+  return Object.freeze(Object.fromEntries(entries)) as RuntimeProvidersMap;
+}
+
 /**
  * Named constants for call sites that prefer `RUNTIME_PROVIDERS.CODEX` over
- * string literals. Values match {@link runtimeProviderSchema}.
+ * string literals. Values / keys are generated from {@link runtimeProviderSchema}
+ * — never a second handwritten wire-id list.
  */
-export const RUNTIME_PROVIDERS = {
-  CLAUDE_CODE: "claude-code",
-  CLAUDE_CODE_TUI: "claude-code-tui",
-  CODEX: "codex",
-  CURSOR: "cursor",
-  GROK: "grok",
-  KIMI_CODE: "kimi-code",
-  OPENCODE: "opencode",
-  PI: "pi",
-} as const satisfies Record<string, RuntimeProvider>;
+export const RUNTIME_PROVIDERS: RuntimeProvidersMap = buildRuntimeProviders();
 
 export const DEFAULT_RUNTIME_PROVIDER: RuntimeProvider = "claude-code";
 

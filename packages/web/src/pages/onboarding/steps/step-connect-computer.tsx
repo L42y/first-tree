@@ -1,6 +1,6 @@
+import { runtimeProviderLabel } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
-import { runtimeProviderLabel } from "../../clients/cards/shared/providers.js";
 import { COPY } from "../copy.js";
 import { CommandBox, FlowHint, StatusRow } from "../flow-ui.js";
 import { useOnboardingFlow } from "../onboarding-flow.js";

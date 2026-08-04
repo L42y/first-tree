@@ -1364,6 +1364,7 @@ export {
   RUNTIME_PROVIDER_IDS,
   RUNTIME_PROVIDERS,
   type RuntimeProvider,
+  type RuntimeProvidersMap,
   recordByRuntimeProvider,
   runtimeProviderSchema,
 } from "./schemas/runtime-provider.js";

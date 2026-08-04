@@ -41,8 +41,10 @@ const CATALOG_CONSUMER_FILES = [
   "packages/web/src/components/new-agent-dialog.tsx",
   "packages/web/src/features/agent-setup/use-computer-connection.ts",
   "packages/web/src/pages/onboarding/steps/step-create-agent.tsx",
+  "packages/web/src/pages/onboarding/steps/step-connect-computer.tsx",
   "packages/web/src/pages/agent-detail/runtime-section.tsx",
   "packages/web/src/pages/clients/cards/shared/providers.ts",
+  "packages/web/src/pages/clients/cards/shared/bound-agents-list.tsx",
   "packages/client/src/handlers/auth-error-hint.ts",
   "packages/client/src/runtime/runtime-notice.ts",
   "packages/client/src/runtime/capabilities/claude-code.ts",
@@ -216,11 +218,22 @@ describe("runtime provider architecture guard", () => {
         expect(source).not.toContain('"claude-code"');
         expect(source).not.toContain('"codex"');
       }
-      if (rel.endsWith("step-create-agent.tsx")) {
+      if (rel.endsWith("step-create-agent.tsx") || rel.endsWith("step-connect-computer.tsx")) {
+        expect(source).toMatch(/from "@first-tree\/shared"/);
+        expect(source).toContain("runtimeProviderLabel");
+        expect(source).not.toContain("clients/cards/shared/providers");
+        expect(source).not.toContain("PROVIDER_LABEL");
         expect(source).not.toContain("Object.entries(");
         expect(source).not.toMatch(/r === ["']claude-code["']/);
         expect(source).not.toContain('"claude-code"');
         expect(source).not.toMatch(/function pickPreferred/);
+      }
+      if (rel.endsWith("bound-agents-list.tsx")) {
+        expect(source).toContain("asRuntimeProvider");
+        expect(source).toContain("runtimeProviderLabel");
+        expect(source).not.toContain("Object.values(RUNTIME_PROVIDERS)");
+        expect(source).not.toContain("KNOWN_RUNTIME_PROVIDERS");
+        expect(source).not.toContain("PROVIDER_LABEL");
       }
       if (rel.endsWith("runtime-section.tsx")) {
         expect(source).toContain("runtimeProviderLabel");

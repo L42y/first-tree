@@ -32,10 +32,17 @@ describe("runtimeProviderSchema", () => {
     expect(() => runtimeProviderSchema.parse("")).toThrow();
   });
 
-  it("RUNTIME_PROVIDERS constants match the schema", () => {
-    for (const value of Object.values(RUNTIME_PROVIDERS)) {
-      expect(runtimeProviderSchema.parse(value)).toBe(value);
+  it("RUNTIME_PROVIDERS is generated from schema options (frozen, no parallel list)", () => {
+    expect(Object.isFrozen(RUNTIME_PROVIDERS)).toBe(true);
+    expect(Object.values(RUNTIME_PROVIDERS).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
+    for (const id of RUNTIME_PROVIDER_IDS) {
+      const key = id.replace(/-/g, "_").toUpperCase() as keyof typeof RUNTIME_PROVIDERS;
+      expect(RUNTIME_PROVIDERS[key]).toBe(id);
+      expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS[key])).toBe(id);
     }
+    // Published shape still resolves named constants for call sites.
+    expect(RUNTIME_PROVIDERS.CLAUDE_CODE).toBe("claude-code");
+    expect(RUNTIME_PROVIDERS.CODEX).toBe("codex");
   });
 
   it("DEFAULT_RUNTIME_PROVIDER is claude-code (existing rows pre-0026 have no kind)", () => {

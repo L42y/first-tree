@@ -1,4 +1,4 @@
-import type { AgentTemplatePublicTemplate, AgentVisibility } from "@first-tree/shared";
+import { type AgentTemplatePublicTemplate, type AgentVisibility, runtimeProviderLabel } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getAgentTemplate } from "../../../api/agent-templates.js";
@@ -7,7 +7,6 @@ import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { OptionCard } from "../../../components/ui/option-card.js";
 import { readOnboardingTemplateIntent } from "../../../utils/onboarding-flags.js";
-import { PROVIDER_LABEL } from "../../clients/cards/shared/providers.js";
 import { COPY } from "../copy.js";
 import { FlowHint, WorkingState } from "../flow-ui.js";
 import { useOnboardingFlow } from "../onboarding-flow.js";
@@ -301,7 +300,7 @@ export function StepCreateAgent() {
                 onSelect={() => setSelectedRuntime(provider)}
                 disabled={!connected}
               >
-                <span className="text-body">{PROVIDER_LABEL[provider]}</span>
+                <span className="text-body">{runtimeProviderLabel(provider)}</span>
               </OptionCard>
             ))}
           </div>

@@ -29,20 +29,30 @@ import {
 describe("runtime provider identity + catalog completeness", () => {
   it("derives schema, named constants, and catalog from one Zod source", () => {
     expect([...runtimeProviderSchema.options]).toEqual([...RUNTIME_PROVIDER_IDS]);
+    expect(Object.isFrozen(RUNTIME_PROVIDERS)).toBe(true);
     expect(Object.values(RUNTIME_PROVIDERS).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
+    expect(Object.keys(RUNTIME_PROVIDERS).sort()).toEqual(
+      [...RUNTIME_PROVIDER_IDS].map((id) => id.replace(/-/g, "_").toUpperCase()).sort(),
+    );
+    expect(RUNTIME_PROVIDERS.CLAUDE_CODE).toBe("claude-code");
+    expect(RUNTIME_PROVIDERS.CLAUDE_CODE_TUI).toBe("claude-code-tui");
+    expect(RUNTIME_PROVIDERS.CODEX).toBe("codex");
+    expect(RUNTIME_PROVIDERS.KIMI_CODE).toBe("kimi-code");
     expect(Object.keys(RUNTIME_PROVIDER_CATALOG).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     expect(Object.keys(RUNTIME_PROVIDER_LABELS).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
   });
 
-  it("keeps display order and selection priority distinct and exhaustive", () => {
+  it("keeps display order and selection priority distinct, unique, and exhaustive", () => {
     expect([...RUNTIME_PROVIDER_DISPLAY_ORDER].sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     expect([...RUNTIME_PROVIDER_SELECTION_ORDER].sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     const displayOrders = RUNTIME_PROVIDER_DISPLAY_ORDER.map((id) => RUNTIME_PROVIDER_CATALOG[id].displayOrder);
     expect(displayOrders).toEqual([...displayOrders].sort((a, b) => a - b));
+    expect(new Set(displayOrders).size).toBe(displayOrders.length);
     const selectionOrders = RUNTIME_PROVIDER_SELECTION_ORDER.map(
       (id) => RUNTIME_PROVIDER_CATALOG[id].selectionPriority,
     );
     expect(selectionOrders).toEqual([...selectionOrders].sort((a, b) => a - b));
+    expect(new Set(selectionOrders).size).toBe(selectionOrders.length);
 
     // Phase-1 display: … Grok → Kimi → OpenCode → Pi
     expect(RUNTIME_PROVIDER_DISPLAY_ORDER.indexOf("kimi-code")).toBeLessThan(
