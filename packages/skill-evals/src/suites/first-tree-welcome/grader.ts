@@ -816,7 +816,7 @@ export function deriveMetrics(
   // teammate-visible delivery once instead of treating that echo as another
   // menu or bridge. Fall back to final output only for non-chat responses.
   const responseText = deliveredText.length > 0 ? deliveredText : finalResponse;
-  const combinedText = `${chatText}\n${finalResponse}`;
+  const combinedText = deliveredText.length > 0 ? chatText : finalResponse;
   const taskOptionHints = evalCase.expected.taskOptionHints ?? [];
   const explicitTaskOptionTexts =
     chatOptionTexts.length > 0
@@ -836,8 +836,17 @@ export function deriveMetrics(
       : countMatches(responseText, taskOptionHints) >= 1;
   const microtaskOptionCount = taskOptionTexts.length;
   const readOnlyOptionCount = taskOptionTexts.filter(isReadOnlyOption).length;
-  const mutationOptionCount = taskOptionTexts.filter(isMutationOption).length;
-  const qualifiedMutationOptionCount = taskOptionTexts.filter(isQualifiedMutationOption).length;
+  const mutationOptionTexts = taskOptionTexts.filter(isMutationOption);
+  const mutationOptionCount = mutationOptionTexts.length;
+  let qualifiedMutationOptionCount = mutationOptionTexts.filter(isQualifiedMutationOption).length;
+  if (
+    chatOptionTexts.length > 0 &&
+    mutationOptionCount === 1 &&
+    qualifiedMutationOptionCount === 0 &&
+    isQualifiedMutationOption(responseText)
+  ) {
+    qualifiedMutationOptionCount = 1;
+  }
   const evidenceSnippets = evalCase.expected.evidenceSnippets ?? [];
   const contextStatus = treeStatus(paths);
   const baselines = baselineHeads(events);

@@ -786,6 +786,96 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("qualifies one structured mutation from its detailed tracked body", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-structured-mutation-body-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-invitee-ready-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the checkout README and package manifest. src/auth/session.ts is the clearest focused starting point.\n\nChoose one:\n- Trace the session path and return a 5–8 step call chain. (read-only)\n- Add the missing fallback in src/auth/session.ts and run pnpm test as the focused check.\n\nOr type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Return a read-only 5–8 step call chain with file evidence.",
+                  label: "Trace session flow",
+                },
+                {
+                  description: "Minimal local change verified with pnpm test.",
+                  label: "Fix session fallback",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.mutationOptionCount).toBe(1);
+      expect(metrics.qualifiedMutationOptionCount).toBe(1);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("ignores a final console echo that says no admin setup was offered", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-console-echo-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-invitee-ready-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              "I read the checkout README and package manifest. src/auth/session.ts is the clearest focused starting point.\n\nI recommend a read-only 5–8 step session trace with file evidence. Type a different microtask if you prefer.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          assistantMessageEvent("No admin-only team setup was offered or changed."),
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.forbiddenActionHits).not.toContain("admin-setup");
+      expect(metrics.forbiddenActionHits).not.toContain("setup-as-first-task");
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("accepts a two-sentence receipt before a start-with-microtask heading", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-receipt-heading-"));
     try {
