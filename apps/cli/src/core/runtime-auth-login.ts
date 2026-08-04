@@ -40,12 +40,13 @@ export type RuntimeAuthLoginDeps = {
 };
 
 /**
- * Budget for a login failure republished on a capability entry. Matched to the
- * probe's own error budget so a provider that streams a huge stack trace, or a
- * resolver that echoes a credential-bearing path, cannot grow the snapshot the
- * daemon PATCHes. The cap lives here rather than on the shared wire schema: a
- * `.max()` there would make a new server reject an older daemon's payload and
- * break the rolling-upgrade contract the capability map depends on.
+ * Hard ceiling on the length of a login failure republished on a capability
+ * entry, ellipsis included. Sized to the probe's own error budget so a provider
+ * that streams a huge stack trace, or a resolver that echoes a
+ * credential-bearing path, cannot grow the snapshot the daemon PATCHes. The cap
+ * lives here rather than on the shared wire schema: a `.max()` there would make
+ * a new server reject an older daemon's payload and break the rolling-upgrade
+ * contract the capability map depends on.
  */
 export const RUNTIME_AUTH_ERROR_MAX_LEN = 500;
 
@@ -75,7 +76,10 @@ type AuthFailure = { reason: RuntimeAuthFailureReason; message?: string };
  */
 function attachAuthError(entry: CapabilityEntry, failure: AuthFailure | null, nowMs: number): CapabilityEntry {
   if (!failure) return entry;
-  const preview = failure.message ? redactErrorPreview(failure.message, RUNTIME_AUTH_ERROR_MAX_LEN) : "";
+  // `redactErrorPreview` treats its argument as the body budget and appends a
+  // single ellipsis when it truncates, so hand it one less than the ceiling to
+  // keep the published string within RUNTIME_AUTH_ERROR_MAX_LEN.
+  const preview = failure.message ? redactErrorPreview(failure.message, RUNTIME_AUTH_ERROR_MAX_LEN - 1) : "";
   return {
     ...entry,
     lastAuthError: {

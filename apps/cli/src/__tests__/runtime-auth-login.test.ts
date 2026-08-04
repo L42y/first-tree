@@ -366,8 +366,22 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
     await runRuntimeAuthLogin({ provider: "codex", ref: "cap" }, h.deps);
 
     const published = h.calls.at(-1)?.entry.lastAuthError?.message ?? "";
-    // Truncation appends a single ellipsis marker past the budget.
-    expect(published.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN + 1);
+    // The budget is the ceiling on the published string, ellipsis included —
+    // the redaction helper appends one when it truncates.
+    expect(published.length).toBe(RUNTIME_AUTH_ERROR_MAX_LEN);
+    expect(published.endsWith("…")).toBe(true);
+  });
+
+  it("leaves a message that fits the budget exactly as it is", async () => {
+    const { driver } = fakeDriver({
+      provider: "codex",
+      outcome: { ok: false, reason: "exit-nonzero", error: "account not authorized" },
+    });
+    const h = harness(driver, "codex");
+    await runRuntimeAuthLogin({ provider: "codex", ref: "short" }, h.deps);
+
+    const published = h.calls.at(-1)?.entry.lastAuthError?.message;
+    expect(published).toBe("account not authorized");
   });
 
   it("caps a thrown error and an unresolved-artifact error too", async () => {
@@ -377,7 +391,7 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
     );
     await runRuntimeAuthLogin({ provider: "codex", ref: "cap-throw" }, thrown.deps);
     const thrownMessage = thrown.calls.at(-1)?.entry.lastAuthError?.message ?? "";
-    expect(thrownMessage.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN + 1);
+    expect(thrownMessage.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN);
     expect(thrownMessage).toContain("[REDACTED]");
 
     const unresolved = harness(

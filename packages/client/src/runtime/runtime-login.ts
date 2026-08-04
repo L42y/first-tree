@@ -26,8 +26,9 @@ export const BROWSER_LOGIN_TIMEOUT_MS = 5 * 60_000;
 /**
  * Upper bound on the stderr we keep for a failure message. The login can stream
  * for the whole {@link BROWSER_LOGIN_TIMEOUT_MS} window, so only a tail is
- * retained; it also matches the budget the daemon publishes onto a capability
- * entry, so a bounded tail cannot become an unbounded `lastAuthError.message`.
+ * retained. This bound stands on its own: a consumer that republishes the
+ * failure applies its own ceiling, so the two need not agree exactly — what
+ * matters here is that the tail never grows with the volume of output.
  */
 export const LOGIN_STDERR_TAIL_MAX = 500;
 
