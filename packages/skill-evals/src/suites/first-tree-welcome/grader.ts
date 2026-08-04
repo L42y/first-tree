@@ -418,7 +418,7 @@ function hasConcreteProjectSurface(text: string): boolean {
 function hasNamedStartingPoint(text: string): boolean {
   if (hasConcreteProjectSurface(text)) return true;
   if (
-    /\b(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*(?:\s+(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*){0,2}\s+(?:entry point|entry|boundary|module|route|flow|branch|test|todo|service|component|package|handler|subsystem)\b/iu.test(
+    /\b(?!(?:a|an|the|this|that|its|our|your|project|current|existing|main|primary|relevant)\b)[a-z][\w.-]*(?:\s+(?!(?:a|an|the|this|that|its|our|your|project|current|existing|main|primary|relevant)\b)[a-z][\w.-]*){0,2}\s+(?:entry point|entry|boundary|module|route|flow|branch|test|todo|service|component|package|handler|subsystem)\b/iu.test(
       text,
     )
   ) {
@@ -426,10 +426,11 @@ function hasNamedStartingPoint(text: string): boolean {
   }
 
   const chineseNamedSurface = text.match(
-    /([\p{Script=Han}a-z0-9_.-]{1,24})(?:模块|服务|组件|包|处理器|子系统|入口|边界|路由|流程|分支|测试|待办|起点)/iu,
+    /([\p{Script=Han}a-z0-9_.-]{1,24}?)(?:模块|服务|组件|包|处理器|子系统|入口|边界|路由|流程|分支|测试|待办|起点)/iu,
   )?.[1];
   return Boolean(
-    chineseNamedSurface && !/^(?:项目|这个|该|当前|其|我们的|你们的|一个|这个项目)$/u.test(chineseNamedSurface),
+    chineseNamedSurface &&
+      !/^(?:(?:项目|这个|该|当前|其|我们(?:的)?|你们(?:的)?|一个|本|此))+$/u.test(chineseNamedSurface),
   );
 }
 

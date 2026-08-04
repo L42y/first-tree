@@ -942,6 +942,57 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it.each([
+    [
+      "an English generic service",
+      "I read README. The current service is the clearest starting point. Choose one, or type a different microtask.",
+    ],
+    ["a Chinese generic project entry", "我读到了 README。当前项目入口是起点。请选择一个，或自由输入其他微任务。"],
+  ])("rejects a two-sentence receipt naming only %s", (_description, receipt) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-generic-start-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              receipt,
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only 5–8 step recovery call chain with file references.",
+                  label: "Trace recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("rejects a generic two-sentence receipt without named repository evidence", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-generic-receipt-"));
     try {
