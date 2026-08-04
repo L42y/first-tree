@@ -15,14 +15,16 @@ import { probePiCapability } from "../runtime/capabilities/pi.js";
 
 export type CapabilityProbe = () => Promise<CapabilityEntry>;
 
+export type BuiltinProviderProbeTable = Readonly<Record<RuntimeProvider, CapabilityProbe>>;
+
 /**
- * Immutable install-probe table for built-in providers.
+ * Frozen install-probe table for built-in providers.
  *
  * Composition-owned projection of the exhaustive provider set. Capability
  * aggregation reads this table directly (or an explicit `{ probes }` inject)
  * so the probe path does not pull handler/SDK imports.
  */
-export const BUILTIN_PROVIDER_PROBES = {
+export const BUILTIN_PROVIDER_PROBES: BuiltinProviderProbeTable = Object.freeze({
   "claude-code": probeClaudeCodeCapability,
   "claude-code-tui": probeClaudeCodeTuiCapability,
   codex: probeCodexCapability,
@@ -31,9 +33,7 @@ export const BUILTIN_PROVIDER_PROBES = {
   "kimi-code": probeKimiCodeCapability,
   opencode: probeOpenCodeCapability,
   pi: probePiCapability,
-} as const satisfies Record<RuntimeProvider, CapabilityProbe>;
-
-export type BuiltinProviderProbeTable = Readonly<Record<RuntimeProvider, CapabilityProbe>>;
+} satisfies Record<RuntimeProvider, CapabilityProbe>);
 
 export function builtinProbeProviderIds(
   probes: BuiltinProviderProbeTable = BUILTIN_PROVIDER_PROBES,

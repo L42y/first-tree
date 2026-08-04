@@ -10,12 +10,12 @@ import { registerHandler } from "../runtime/handler.js";
 export type RegisterBuiltinHandlersDeps = BuiltinHandlerRegistryDeps;
 
 /**
- * Register all built-in handlers from an immutable handler registry value.
+ * Register all built-in handlers from a frozen handler registry value.
  * Call once at startup (daemon `ClientRuntime`).
  *
  * Builds the registry once, registers each factory, and discards the value —
  * there is no process-global installed registry snapshot. Probe/skill consumers
- * read their own immutable composition tables (`BUILTIN_PROVIDER_PROBES` /
+ * read their own frozen composition tables (`BUILTIN_PROVIDER_PROBES` /
  * `PROVIDER_SKILL_ROOTS`).
  */
 export function registerBuiltinHandlers(deps: RegisterBuiltinHandlersDeps = {}): void {
@@ -32,12 +32,9 @@ export function registerBuiltinHandlers(deps: RegisterBuiltinHandlersDeps = {}):
   });
 
   for (const id of RUNTIME_PROVIDER_IDS) {
-    registerHandler(id, registry[id].factory);
+    registerHandler(id, registry[id]);
   }
 }
 
 /** Re-export registry builder for composition roots and tests. */
-export {
-  createBuiltinHandlerRegistry,
-  createBuiltinProviderRegistry,
-} from "../providers/builtin-registry.js";
+export { createBuiltinHandlerRegistry } from "../providers/builtin-registry.js";

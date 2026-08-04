@@ -12,11 +12,12 @@ model / lifecycle protocol into generic core.
 | --- | --- |
 | Zod `runtimeProviderSchema` | Wire IDs → `RuntimeProvider` / `RUNTIME_PROVIDER_IDS` |
 | Shared `RUNTIME_PROVIDER_CATALOG` | Labels, display/selection order, install/login, auth-owner copy |
-| `createBuiltinHandlerRegistry` | Handler factories only (consumed once by `registerBuiltinHandlers`) |
-| `BUILTIN_PROVIDER_PROBES` | Install-only capability probes |
-| `PROVIDER_SKILL_ROOTS` | Native managed-skill roots |
+| `createBuiltinHandlerRegistry` | `Object.freeze`d `Record<RuntimeProvider, HandlerFactory>` (consumed once by `registerBuiltinHandlers`) |
+| `BUILTIN_PROVIDER_PROBES` | `Object.freeze`d install-only capability probes |
+| `PROVIDER_SKILL_ROOTS` | `Object.freeze`d native managed-skill roots |
 
-Probe/skills paths do **not** consume a full installed handler registry.
+Probe/skills paths do **not** consume a full installed handler registry. Tests assert
+`Object.isFrozen(...)` on all three tables.
 
 ## 1. Identity
 

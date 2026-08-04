@@ -424,4 +424,28 @@ describe("NewAgentDialog extra branches", () => {
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length > 0, "Expected create after failed probe");
     expect(agentMocks.createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: "probe-bot" }));
   });
+
+  it("renders runtime chips in catalog displayOrder despite shuffled capability keys", async () => {
+    const { NewAgentDialog } = await import("../new-agent-dialog.js");
+    // Insertion order deliberately differs from display order (probe races).
+    const shuffledCaps = {
+      pi: capability("ok"),
+      "kimi-code": capability("ok"),
+      grok: capability("ok"),
+      "claude-code": capability("ok"),
+    };
+    const hub = client({ capabilities: shuffledCaps });
+    activityMocks.listClients.mockResolvedValue([hub]);
+    activityMocks.getClientCapabilities.mockResolvedValue(hub);
+
+    const container = await renderDom(
+      <NewAgentDialog open onOpenChange={() => undefined} onCreated={() => undefined} />,
+    );
+    await waitForText(container, "Claude Code");
+
+    const labels = [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].map(
+      (input) => input.closest("label")?.querySelector(".text-body")?.textContent?.trim() ?? "",
+    );
+    expect(labels).toEqual(["Claude Code", "Grok Build", "Kimi Code", "Pi"]);
+  });
 });

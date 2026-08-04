@@ -1,12 +1,12 @@
 import { RUNTIME_PROVIDER_IDS, type RuntimeProvider } from "@first-tree/shared";
 
 /**
- * Immutable native managed-skill projection roots per runtime provider.
+ * Frozen native managed-skill projection roots per runtime provider.
  *
  * Composition-owned projection of the exhaustive provider set — read directly
  * by `managed-skills` (not via the handler registry).
  */
-export const PROVIDER_SKILL_ROOTS = {
+export const PROVIDER_SKILL_ROOTS: Readonly<Record<RuntimeProvider, string>> = Object.freeze({
   "claude-code": ".claude/skills",
   "claude-code-tui": ".claude/skills",
   codex: ".agents/skills",
@@ -15,7 +15,7 @@ export const PROVIDER_SKILL_ROOTS = {
   "kimi-code": ".kimi-code/skills",
   opencode: ".opencode/skills",
   pi: ".agents/skills",
-} as const satisfies Record<RuntimeProvider, string>;
+} satisfies Record<RuntimeProvider, string>);
 
 export function assertSkillRootsComplete(): void {
   for (const id of RUNTIME_PROVIDER_IDS) {

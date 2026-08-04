@@ -1,4 +1,4 @@
-import { RUNTIME_PROVIDER_IDS, type RuntimeProvider } from "@first-tree/shared";
+import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerBuiltinHandlers } from "../handlers/index.js";
 import { BUILTIN_PROVIDER_PROBES } from "../providers/builtin-probes.js";
@@ -15,16 +15,20 @@ describe("builtin handler registry", () => {
     vi.restoreAllMocks();
   });
 
-  it("is exhaustive over RuntimeProvider and shares skill-root keys with managed-skills", () => {
+  it("freezes exhaustive composition tables and shares skill-root keys", () => {
     const registry = createBuiltinHandlerRegistry({
       resolveExecutable: () => ({ path: undefined, source: "default" }),
     });
+
+    expect(Object.isFrozen(registry)).toBe(true);
+    expect(Object.isFrozen(BUILTIN_PROVIDER_PROBES)).toBe(true);
+    expect(Object.isFrozen(PROVIDER_SKILL_ROOTS)).toBe(true);
 
     expect(builtinRegistryProviderIds(registry).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     expect(Object.keys(BUILTIN_PROVIDER_PROBES).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     expect(Object.keys(PROVIDER_SKILL_ROOTS).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     for (const id of RUNTIME_PROVIDER_IDS) {
-      expect(typeof registry[id].factory).toBe("function");
+      expect(typeof registry[id]).toBe("function");
       expect(providerSkillRoot(id)).toBe(PROVIDER_SKILL_ROOTS[id]);
       expect(typeof BUILTIN_PROVIDER_PROBES[id]).toBe("function");
     }
@@ -59,7 +63,8 @@ describe("builtin handler registry", () => {
     registerHandler("custom-echo", customFactory);
 
     expect(hasHandler("custom-echo")).toBe(true);
-    expect(RUNTIME_PROVIDER_IDS).not.toContain("custom-echo" as RuntimeProvider);
+    const builtinIds = new Set<string>(RUNTIME_PROVIDER_IDS);
+    expect(builtinIds.has("custom-echo")).toBe(false);
     expect(
       builtinRegistryProviderIds(
         createBuiltinHandlerRegistry({
@@ -69,7 +74,7 @@ describe("builtin handler registry", () => {
     ).toEqual([...RUNTIME_PROVIDER_IDS]);
   });
 
-  it("binds independent registry instances to their own deps without shared mutable state", () => {
+  it("binds independent registry instances to distinct Claude closures", () => {
     const a = createBuiltinHandlerRegistry({
       resolveExecutable: () => ({ path: "/tmp/claude-a", source: "env" }),
     });
@@ -77,8 +82,9 @@ describe("builtin handler registry", () => {
       resolveExecutable: () => ({ path: "/tmp/claude-b", source: "env" }),
     });
 
-    expect(a["claude-code"].factory).not.toBe(b["claude-code"].factory);
-    expect(Object.isFrozen(a) || true).toBe(true);
+    expect(Object.isFrozen(a)).toBe(true);
+    expect(Object.isFrozen(b)).toBe(true);
+    expect(a["claude-code"]).not.toBe(b["claude-code"]);
   });
 
   it("probeCapabilities accepts an explicit probe table without affecting handler registration", async () => {
@@ -101,12 +107,14 @@ describe("builtin handler registry", () => {
     await probeCapabilities({ probes });
     expect(customProbe).toHaveBeenCalled();
     expect(BUILTIN_PROVIDER_PROBES.codex).not.toBe(customProbe);
+    expect(Object.isFrozen(BUILTIN_PROVIDER_PROBES)).toBe(true);
   });
 
   it("daemon composition root is registerBuiltinHandlers + createBuiltinHandlerRegistry", async () => {
     const handlers = await import("../handlers/index.js");
     expect(handlers.createBuiltinHandlerRegistry).toBe(createBuiltinHandlerRegistry);
     expect(typeof handlers.registerBuiltinHandlers).toBe("function");
+    expect(handlers).not.toHaveProperty("createBuiltinProviderRegistry");
     const runtimeSource = await import("node:fs").then((fs) =>
       fs.readFileSync(new URL("../runtime/runtime.ts", import.meta.url), "utf8"),
     );

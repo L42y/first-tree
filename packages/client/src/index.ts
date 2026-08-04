@@ -31,21 +31,10 @@ export {
   initClientSentry,
   rootLogger,
 } from "./observability/index.js";
-export { BUILTIN_PROVIDER_PROBES } from "./providers/builtin-probes.js";
-export type {
-  BuiltinHandlerEntry,
-  BuiltinHandlerRegistry,
-  BuiltinHandlerRegistryDeps,
-  BuiltinProviderEntry,
-  BuiltinProviderRegistry,
-  BuiltinRegistryDeps,
-  CapabilityProbe,
-} from "./providers/builtin-registry.js";
-export {
-  createBuiltinHandlerRegistry,
-  createBuiltinProviderRegistry,
-  probedRuntimeProviders,
-} from "./providers/builtin-registry.js";
+export type { BuiltinProviderProbeTable, CapabilityProbe } from "./providers/builtin-probes.js";
+export { BUILTIN_PROVIDER_PROBES, probedRuntimeProviders } from "./providers/builtin-probes.js";
+export type { BuiltinHandlerRegistry, BuiltinHandlerRegistryDeps } from "./providers/builtin-registry.js";
+export { createBuiltinHandlerRegistry } from "./providers/builtin-registry.js";
 export { PROVIDER_SKILL_ROOTS } from "./providers/skill-roots.js";
 export { readCanonicalContextTreeWriteRouting } from "./runtime/agent-briefing.js";
 // Runtime

@@ -136,9 +136,18 @@ describe("runtime provider architecture guard", () => {
       expect(source).toContain("createBuiltinHandlerRegistry");
       expect(source).not.toContain("installBuiltinProviderRegistry");
       expect(source).not.toContain("installedRegistry");
+      expect(source).not.toContain("createBuiltinProviderRegistry");
+      expect(source).not.toContain("BuiltinProviderRegistry");
       expect(source).not.toMatch(/probe\s*:/);
       expect(source).not.toMatch(/skillRoot\s*:/);
+      expect(source).not.toMatch(/\{\s*factory\s*:/);
     }
+    const registry = readFileSync(join(clientSrc, "providers/builtin-registry.ts"), "utf8");
+    const probes = readFileSync(join(clientSrc, "providers/builtin-probes.ts"), "utf8");
+    const skills = readFileSync(join(clientSrc, "providers/skill-roots.ts"), "utf8");
+    expect(registry).toContain("Object.freeze");
+    expect(probes).toContain("Object.freeze");
+    expect(skills).toContain("Object.freeze");
   });
 
   it("keeps third-party provider SDKs out of shared and web packages", () => {

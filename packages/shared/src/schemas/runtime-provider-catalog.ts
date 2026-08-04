@@ -27,9 +27,10 @@ export type RuntimeProviderInstall =
 
 /**
  * Ordered login steps for setup / auth-recovery surfaces.
- * Shell providers have one step; interactive providers (Kimi / Pi) have two.
+ * Shell providers have exactly one step; interactive providers (Kimi / Pi)
+ * have exactly two (`program`, slash-command).
  */
-export type RuntimeProviderLoginSteps = readonly [string, ...string[]];
+export type RuntimeProviderLoginSteps = readonly [string] | readonly [string, string];
 
 /**
  * Cross-package pure-data catalog for runtime providers.
@@ -181,12 +182,13 @@ export function runtimeProviderInstallCommand(provider: RuntimeProvider): string
 
 /**
  * Shell / comment-form login line for setup cards.
- * One-step → command; multi-step → `program # then run /login`.
+ * One-step → command; two-step → `program # then run /login`.
  */
 export function runtimeProviderLoginCommand(provider: RuntimeProvider): string {
   const steps = runtimeProviderLoginSteps(provider);
   if (steps.length === 1) return steps[0];
-  return `${steps[0]} # then run ${steps[1]}`;
+  const [program, slashCommand] = steps;
+  return `${program} # then run ${slashCommand}`;
 }
 
 /**
@@ -196,7 +198,8 @@ export function runtimeProviderLoginCommand(provider: RuntimeProvider): string {
 export function runtimeProviderChatAuthLoginPhrase(provider: RuntimeProvider): string {
   const steps = runtimeProviderLoginSteps(provider);
   if (steps.length === 1) return `\`${steps[0]}\``;
-  return steps.map((step) => `\`${step}\``).join(" and then ");
+  const [program, slashCommand] = steps;
+  return `\`${program}\` and then \`${slashCommand}\``;
 }
 
 /** Credential-owner label used in chat auth-failure hints. */
