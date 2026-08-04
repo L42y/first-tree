@@ -2,6 +2,7 @@ import type { CapabilityEntry, PendingAuth } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import {
   deriveRuntimeAuthView,
+  loginTargetProvider,
   providerAuthHandledInProduct,
   providerSupportsInProductAuth,
   runtimeAuthIsPending,
@@ -170,6 +171,17 @@ describe("deriveRuntimeAuthView", () => {
     expect(providerSupportsInProductAuth("cursor")).toBe(true);
     expect(providerSupportsInProductAuth("grok")).toBe(true);
     expect(providerSupportsInProductAuth("claude-code-tui")).toBe(false);
+  });
+
+  it("derives every login target from the typed catalog contract", () => {
+    expect(loginTargetProvider("claude-code")).toBe("claude-code");
+    expect(loginTargetProvider("claude-code-tui")).toBe("claude-code");
+    expect(loginTargetProvider("codex")).toBe("codex");
+    expect(loginTargetProvider("cursor")).toBe("cursor");
+    expect(loginTargetProvider("grok")).toBe("grok");
+    expect(loginTargetProvider("kimi-code")).toBeNull();
+    expect(loginTargetProvider("opencode")).toBeNull();
+    expect(loginTargetProvider("pi")).toBeNull();
   });
 
   it("treats claude-code-tui's auth as in-product (shared Claude keychain) — no manual login hint", () => {

@@ -355,6 +355,9 @@ describe("codex binary resolution", () => {
     const message = formatCodexBinaryMissingMessage("Unable to locate Codex CLI binaries");
     expect(message).toContain("Codex runtime binary is missing");
     expect(message).toContain("ChatGPT/Codex desktop app on macOS");
+    expect(message).toContain("npm install -g @openai/codex");
+    expect(message).toContain("codex login");
+    expect(message).toContain("daemon install-codex");
     expect(message).toContain("Original error: Unable to locate Codex CLI binaries");
   });
 });

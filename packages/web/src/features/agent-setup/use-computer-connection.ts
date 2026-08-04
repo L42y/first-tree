@@ -1,9 +1,13 @@
-import { type ClientCapabilities, isRuntimeProviderEnabled } from "@first-tree/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ClientCapabilities,
+  enabledOkRuntimeProviders,
+  pickPreferredRuntimeProvider,
+  type RuntimeProvider,
+} from "@first-tree/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ConnectTokenResponse, getClientCapabilities, type HubClient, listClients } from "../../api/activity.js";
 import { api } from "../../api/client.js";
 import { runVisibilityAwareInterval } from "../../lib/visibility-interval.js";
-import { orderRuntimesByPreference, pickPreferredRuntime } from "./runtime-preference.js";
 
 const CLIENT_DETECT_POLL_MS = 5_000;
 
@@ -16,7 +20,8 @@ const CLIENT_DETECT_POLL_MS = 5_000;
  *      the user pastes into their terminal).
  *   2. Poll `listClients()`; the most-recently-seen connected client wins.
  *   3. Once a client is connected, fetch its capabilities to learn which AI
- *      runtimes are ready, and auto-pick the best one (Codex → Claude Code).
+ *      runtimes are ready, and auto-pick via the shared Codex-first catalog
+ *      selection priority.
  *
  * Pure presentation state is returned; the React step renders it. Polling
  * pauses while the tab is hidden (`runVisibilityAwareInterval`) and stops
@@ -25,9 +30,10 @@ const CLIENT_DETECT_POLL_MS = 5_000;
 export type ComputerConnection = {
   connectedClient: HubClient | null;
   capabilitiesLoaded: boolean;
-  okRuntimes: string[];
-  selectedRuntime: string | null;
-  setSelectedRuntime: (next: string | null) => void;
+  /** Enabled `ok` providers in catalog display order. */
+  okRuntimes: RuntimeProvider[];
+  selectedRuntime: RuntimeProvider | null;
+  setSelectedRuntime: (next: RuntimeProvider | null) => void;
   /** The full multi-line command the user pastes into their terminal. */
   cliCommand: string | null;
   /** Non-null when minting the connect token failed (after silent retries). */
@@ -56,15 +62,6 @@ export type UseComputerConnectionOptions = {
 /** Silent auto-retries before surfacing a token-mint failure to the user. */
 const TOKEN_MINT_ATTEMPTS = 3;
 const TOKEN_MINT_BACKOFF_MS = [600, 1500];
-function listReadyRuntimes(caps: ClientCapabilities): string[] {
-  // Never include a temporarily-disabled provider, even if a stale snapshot
-  // still reports it `ok`.
-  return orderRuntimesByPreference(
-    Object.entries(caps)
-      .filter(([provider, entry]) => entry.state === "ok" && isRuntimeProviderEnabled(provider))
-      .map(([provider]) => provider),
-  );
-}
 
 function hasReportedCapabilities(caps: ClientCapabilities | null): caps is ClientCapabilities {
   return !!caps && Object.keys(caps).length > 0;
@@ -77,7 +74,7 @@ export function useComputerConnection(
   const [connectedClient, setConnectedClient] = useState<HubClient | null>(null);
   const [capabilities, setCapabilities] = useState<ClientCapabilities | null>(null);
   const [capabilitiesClientId, setCapabilitiesClientId] = useState<string | null>(null);
-  const [selectedRuntime, setSelectedRuntime] = useState<string | null>(null);
+  const [selectedRuntime, setSelectedRuntime] = useState<RuntimeProvider | null>(null);
   const [connectToken, setConnectToken] = useState<string | null>(null);
   const [connectTokenExpiresAt, setConnectTokenExpiresAt] = useState<number | null>(null);
   const [bootstrapCommand, setBootstrapCommand] = useState<string | null>(null);
@@ -211,18 +208,20 @@ export function useComputerConnection(
     connectedClient && capabilitiesClientId === connectedClient.id && hasReportedCapabilities(capabilities)
       ? capabilities
       : null;
+  const okRuntimes = useMemo(
+    () => (activeCapabilities ? enabledOkRuntimeProviders(activeCapabilities) : []),
+    [activeCapabilities],
+  );
 
-  // Auto-pick the preferred ready runtime; keep a still-valid prior choice.
+  // Auto-pick via the catalog preference prefix while preserving Client order;
+  // keep a still-valid prior choice.
   useEffect(() => {
     setSelectedRuntime((prev) => {
       if (!activeCapabilities) return prev;
-      const ready = listReadyRuntimes(activeCapabilities);
-      if (prev && ready.includes(prev)) return prev;
-      return pickPreferredRuntime(ready);
+      if (prev && okRuntimes.includes(prev)) return prev;
+      return pickPreferredRuntimeProvider(activeCapabilities);
     });
-  }, [activeCapabilities]);
-
-  const okRuntimes = activeCapabilities ? listReadyRuntimes(activeCapabilities) : [];
+  }, [activeCapabilities, okRuntimes]);
 
   const cliCommand = bootstrapCommand;
 

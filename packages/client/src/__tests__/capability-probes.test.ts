@@ -1,7 +1,14 @@
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CapabilityEntry } from "@first-tree/shared";
+import {
+  type CapabilityEntry,
+  enabledOkRuntimeProviders,
+  isRuntimeProviderEnabled,
+  RUNTIME_PROVIDER_IDS,
+  type RuntimeProvider,
+  recordByRuntimeProvider,
+} from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeExecutableResolution } from "../handlers/claude-executable.js";
 import {
@@ -224,6 +231,7 @@ describe("formatClaudeBinaryMissingMessage", () => {
     // Guard against the login-command drift codex-assistant caught: the
     // remediation must match the command the runtime-auth orchestrator runs.
     expect(msg).toContain("claude auth login");
+    expect(msg).toContain("npm install -g @anthropic-ai/claude-code");
     expect(msg).not.toContain("claude /login");
     expect(msg).toContain("daemon install-claude");
     expect(msg).toContain("Native CLI binary for darwin-arm64 not found");
@@ -722,81 +730,46 @@ describe("probeCapabilities (aggregator)", () => {
   });
 
   it("probes only the enabled providers (claude-code-tui is temporarily disabled, never invoked)", async () => {
-    vi.resetModules();
     const tuiProbe = vi.fn().mockResolvedValue(fakeEntry("missing"));
-    vi.doMock("../runtime/capabilities/claude-code.js", () => ({
-      probeClaudeCodeCapability: vi.fn().mockResolvedValue(fakeEntry("ok")),
-    }));
-    vi.doMock("../runtime/capabilities/claude-code-tui.js", () => ({
-      probeClaudeCodeTuiCapability: tuiProbe,
-    }));
-    vi.doMock("../runtime/capabilities/codex.js", () => ({
-      probeCodexCapability: vi.fn().mockResolvedValue(fakeEntry("ok")),
-    }));
-    vi.doMock("../runtime/capabilities/cursor.js", () => ({
-      probeCursorCapability: vi.fn().mockResolvedValue(fakeEntry("ok")),
-    }));
-    vi.doMock("../runtime/capabilities/grok.js", () => ({
-      probeGrokCapability: vi.fn().mockResolvedValue(fakeEntry("ok")),
-    }));
-    vi.doMock("../runtime/capabilities/kimi-code.js", () => ({
-      probeKimiCodeCapability: vi.fn().mockResolvedValue(fakeEntry("ok")),
-    }));
-    vi.doMock("../runtime/capabilities/opencode.js", () => ({
-      probeOpenCodeCapability: vi.fn().mockResolvedValue(fakeEntry("ok")),
-    }));
-    const mod = await import("../runtime/capabilities/index.js");
+    const okProbe = vi.fn().mockResolvedValue(fakeEntry("ok"));
+    const probes = {
+      "claude-code": okProbe,
+      "claude-code-tui": tuiProbe,
+      codex: okProbe,
+      cursor: okProbe,
+      grok: okProbe,
+      "kimi-code": okProbe,
+      opencode: okProbe,
+      pi: okProbe,
+    } as const;
 
-    const caps = await mod.probeCapabilities();
+    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const caps = await probeCapabilities({ probes });
 
     // claude-code-tui is in DISABLED_RUNTIME_PROVIDERS — it is skipped, so it
     // gets no capability entry AND its probe is never called (no binary spawn).
     expect(Object.keys(caps).sort()).toEqual(["claude-code", "codex", "cursor", "grok", "kimi-code", "opencode", "pi"]);
     expect(caps["claude-code"]?.state).toBe("ok");
     expect(caps["claude-code-tui"]).toBeUndefined();
-    expect(caps.codex?.state).toBe("ok");
-    expect(caps.cursor?.state).toBe("ok");
-    expect(caps.grok?.state).toBe("ok");
-    expect(caps["kimi-code"]?.state).toBe("ok");
-    expect(caps.opencode?.state).toBe("ok");
     expect(tuiProbe).not.toHaveBeenCalled();
-
-    vi.doUnmock("../runtime/capabilities/claude-code.js");
-    vi.doUnmock("../runtime/capabilities/claude-code-tui.js");
-    vi.doUnmock("../runtime/capabilities/codex.js");
-    vi.doUnmock("../runtime/capabilities/cursor.js");
-    vi.doUnmock("../runtime/capabilities/grok.js");
-    vi.doUnmock("../runtime/capabilities/kimi-code.js");
-    vi.doUnmock("../runtime/capabilities/opencode.js");
-    vi.resetModules();
+    // Each enabled provider invokes the shared ok probe once (7 enabled).
+    expect(okProbe).toHaveBeenCalledTimes(7);
   });
 
   it("converts enabled-provider probe rejections into error capability entries", async () => {
-    vi.resetModules();
-    vi.doMock("../runtime/capabilities/claude-code.js", () => ({
-      probeClaudeCodeCapability: vi.fn().mockRejectedValue(new Error("claude probe failed")),
-    }));
-    vi.doMock("../runtime/capabilities/codex.js", () => ({
-      probeCodexCapability: vi.fn().mockRejectedValue("codex probe failed"),
-    }));
-    vi.doMock("../runtime/capabilities/claude-code-tui.js", () => ({
-      probeClaudeCodeTuiCapability: vi.fn().mockRejectedValue("tui probe failed"),
-    }));
-    vi.doMock("../runtime/capabilities/cursor.js", () => ({
-      probeCursorCapability: vi.fn().mockRejectedValue("cursor probe failed"),
-    }));
-    vi.doMock("../runtime/capabilities/grok.js", () => ({
-      probeGrokCapability: vi.fn().mockRejectedValue("grok probe failed"),
-    }));
-    vi.doMock("../runtime/capabilities/kimi-code.js", () => ({
-      probeKimiCodeCapability: vi.fn().mockRejectedValue("kimi probe failed"),
-    }));
-    vi.doMock("../runtime/capabilities/opencode.js", () => ({
-      probeOpenCodeCapability: vi.fn().mockRejectedValue("opencode probe failed"),
-    }));
-    const mod = await import("../runtime/capabilities/index.js");
+    const probes = {
+      "claude-code": vi.fn().mockRejectedValue(new Error("claude probe failed")),
+      "claude-code-tui": vi.fn().mockRejectedValue("tui probe failed"),
+      codex: vi.fn().mockRejectedValue("codex probe failed"),
+      cursor: vi.fn().mockRejectedValue("cursor probe failed"),
+      grok: vi.fn().mockRejectedValue("grok probe failed"),
+      "kimi-code": vi.fn().mockRejectedValue("kimi probe failed"),
+      opencode: vi.fn().mockRejectedValue("opencode probe failed"),
+      pi: vi.fn().mockRejectedValue("pi probe failed"),
+    } as const;
 
-    const caps = await mod.probeCapabilities();
+    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const caps = await probeCapabilities({ probes });
 
     expect(caps["claude-code"]).toMatchObject({
       state: "error",
@@ -808,16 +781,72 @@ describe("probeCapabilities (aggregator)", () => {
     expect(caps.grok).toMatchObject({ state: "error", error: "grok probe failed" });
     expect(caps["kimi-code"]).toMatchObject({ state: "error", error: "kimi probe failed" });
     expect(caps.opencode).toMatchObject({ state: "error", error: "opencode probe failed" });
+    expect(caps.pi).toMatchObject({ state: "error", error: "pi probe failed" });
     // Disabled provider is never probed, so no entry (not even an error one).
     expect(caps["claude-code-tui"]).toBeUndefined();
+    expect(probes["claude-code-tui"]).not.toHaveBeenCalled();
+  });
 
-    vi.doUnmock("../runtime/capabilities/claude-code.js");
-    vi.doUnmock("../runtime/capabilities/codex.js");
-    vi.doUnmock("../runtime/capabilities/claude-code-tui.js");
-    vi.doUnmock("../runtime/capabilities/cursor.js");
-    vi.doUnmock("../runtime/capabilities/grok.js");
-    vi.doUnmock("../runtime/capabilities/kimi-code.js");
-    vi.doUnmock("../runtime/capabilities/opencode.js");
-    vi.resetModules();
+  it("publishes stable provider order when probes settle in reverse", async () => {
+    const resolvers = new Map<RuntimeProvider, (entry: CapabilityEntry) => void>();
+    const probes = recordByRuntimeProvider(
+      RUNTIME_PROVIDER_IDS.map(
+        (provider) =>
+          [
+            provider,
+            vi.fn(
+              () =>
+                new Promise<CapabilityEntry>((resolve) => {
+                  resolvers.set(provider, resolve);
+                }),
+            ),
+          ] as const,
+      ),
+    );
+
+    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const pending = probeCapabilities({ probes });
+    const enabledProviders = RUNTIME_PROVIDER_IDS.filter((provider) => isRuntimeProviderEnabled(provider));
+
+    expect([...resolvers.keys()]).toEqual(enabledProviders);
+    for (const provider of [...enabledProviders].reverse()) {
+      const resolve = resolvers.get(provider);
+      if (!resolve) throw new Error(`Missing deferred probe resolver for ${provider}`);
+      resolve(fakeEntry("ok"));
+    }
+
+    const caps = await pending;
+    expect(Object.keys(caps)).toEqual(enabledProviders);
+    expect(enabledOkRuntimeProviders(caps)).toEqual([
+      "codex",
+      "claude-code",
+      "cursor",
+      "grok",
+      "kimi-code",
+      "opencode",
+      "pi",
+    ]);
+  });
+
+  it("isolates a single probe rejection to that provider entry", async () => {
+    const ok = vi.fn().mockResolvedValue(fakeEntry("ok"));
+    const probes = {
+      "claude-code": ok,
+      "claude-code-tui": ok,
+      codex: vi.fn().mockRejectedValue(new Error("only codex")),
+      cursor: ok,
+      grok: ok,
+      "kimi-code": ok,
+      opencode: ok,
+      pi: ok,
+    } as const;
+
+    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const caps = await probeCapabilities({ probes });
+
+    expect(caps.codex).toMatchObject({ state: "error", error: "only codex" });
+    expect(caps["claude-code"]?.state).toBe("ok");
+    expect(caps.cursor?.state).toBe("ok");
+    expect(caps.pi?.state).toBe("ok");
   });
 });

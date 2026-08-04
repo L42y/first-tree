@@ -880,6 +880,8 @@ describe("Resources and runtime extra sections", () => {
       />,
     );
     expect(error.textContent).toContain("Could not verify computer binding: lookup failed");
+    // Catalog label for claude-code-tui — not the collapsed "Claude Code" alias.
+    expect(error.textContent).toContain("Claude Code CLI");
     expect(buttonByText(error, "Bind computer")).toBeNull();
     expect(buttonByText(error, "Switching")?.disabled).toBe(true);
 

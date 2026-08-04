@@ -179,7 +179,7 @@ describe("StepConnectComputer", () => {
     const ready = await renderStep(
       flow({
         goNext,
-        computer: computer({ connectedClient, capabilitiesLoaded: true, okRuntimes: ["claude-code", "codex"] }),
+        computer: computer({ connectedClient, capabilitiesLoaded: true, okRuntimes: ["codex", "claude-code"] }),
       }),
     );
     expect(ready.textContent).toContain("Codex");

@@ -13,7 +13,13 @@
  * CLI. The hint reframes the message so the next step is obvious.
  */
 
-type Runtime = "codex" | "claude-code" | "cursor" | "grok" | "kimi-code" | "opencode" | "pi";
+import {
+  type RuntimeProvider,
+  runtimeProviderAuthOwnerLabel,
+  runtimeProviderChatAuthLoginPhrase,
+} from "@first-tree/shared";
+
+type Runtime = Exclude<RuntimeProvider, "claude-code-tui">;
 
 /**
  * Substring keywords used to detect codex's auth-refresh failures. Codex's
@@ -149,39 +155,10 @@ export function isClaudeAuthError(code: string | undefined): boolean {
  * UI button or relogin flow, by design.
  */
 export function formatAuthHint(runtime: Runtime, originalMessage: string): string {
-  // Login command mirrors `PROVIDER_LOGIN_COMMAND` in
-  // packages/web/src/pages/clients/cards/shared/providers.ts so the in-chat
-  // hint matches what the Setup-incomplete card already prints. Keeping them
-  // textually identical is intentional — if the provider's canonical command
-  // ever changes, update both call sites together.
-  const reauth =
-    runtime === "codex"
-      ? "`codex login`"
-      : runtime === "cursor"
-        ? "`cursor-agent login`"
-        : runtime === "grok"
-          ? "`grok login`"
-          : runtime === "opencode"
-            ? "`opencode auth login`"
-            : runtime === "kimi-code"
-              ? "`kimi` and then `/login`"
-              : runtime === "pi"
-                ? "`pi` and then `/login`"
-                : "`claude auth login`";
-  const provider =
-    runtime === "codex"
-      ? "OpenAI"
-      : runtime === "cursor"
-        ? "Cursor"
-        : runtime === "grok"
-          ? "Grok Build"
-          : runtime === "opencode"
-            ? "OpenCode's selected provider"
-            : runtime === "kimi-code"
-              ? "Kimi"
-              : runtime === "pi"
-                ? "Pi"
-                : "Anthropic";
+  // Login / owner copy comes from the shared runtime-provider catalog so the
+  // in-chat hint stays aligned with Computers setup and other surfaces.
+  const reauth = runtimeProviderChatAuthLoginPhrase(runtime);
+  const provider = runtimeProviderAuthOwnerLabel(runtime);
   // Cap the appended raw message so an upstream stack-trace envelope (codex
   // wraps its `event.error.message` in surprising ways) doesn't bloat the
   // hint into a wall of text on the chat timeline.

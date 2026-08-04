@@ -6,10 +6,13 @@ import {
   type AgentTemplatePublicTemplate,
   type AgentVisibility,
   type ClientCapabilities,
+  enabledOkRuntimeProviders,
   isReservedAgentName,
-  isRuntimeProviderEnabled,
   MAX_AGENT_TEMPLATE_IDS,
+  PREFERRED_RUNTIME_PROVIDER,
+  pickPreferredRuntimeProvider,
   type RuntimeProvider,
+  runtimeProviderLabel,
 } from "@first-tree/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,10 +22,6 @@ import { listAgentTemplates } from "../api/agent-templates.js";
 import { checkAgentNameAvailability, createAgent } from "../api/agents.js";
 import { ApiError, api, type ValidationIssue } from "../api/client.js";
 import { useAuth } from "../auth/auth-context.js";
-import {
-  orderRuntimesByPreference,
-  pickPreferredRuntime as pickPreferredRuntimeFromList,
-} from "../features/agent-setup/runtime-preference.js";
 import { useCopyFeedback } from "../lib/use-copy-feedback.js";
 import { runVisibilityAwareInterval } from "../lib/visibility-interval.js";
 import { slugify } from "../utils/agent-naming.js";
@@ -145,36 +144,12 @@ async function resolveAvailableHandle(base: string, isStale: () => boolean): Pro
 }
 
 /**
- * Narrow an arbitrary capability key to a `RuntimeProvider`. Capability
- * blobs are `Record<string, ...>` so old clients can ship runtimes the UI
- * doesn't know about yet — the UI just ignores anything it can't render.
+ * Pick the preferred runtime among the ones in `ok` state on a given client.
+ * Uses the catalog-owned Codex/Claude preference prefix, then preserves the
+ * selected Client's reported order (which may differ from display order).
  */
-function asRuntimeProvider(provider: string): RuntimeProvider | null {
-  if (
-    provider === "claude-code" ||
-    provider === "claude-code-tui" ||
-    provider === "codex" ||
-    provider === "cursor" ||
-    provider === "grok" ||
-    provider === "kimi-code" ||
-    provider === "opencode" ||
-    provider === "pi"
-  ) {
-    return provider;
-  }
-  return null;
-}
-
-function prettyRuntimeLabel(provider: RuntimeProvider): string {
-  if (provider === "claude-code") return "Claude Code";
-  if (provider === "claude-code-tui") return "Claude Code CLI";
-  if (provider === "codex") return "Codex";
-  if (provider === "cursor") return "Cursor";
-  if (provider === "grok") return "Grok Build";
-  if (provider === "kimi-code") return "Kimi Code";
-  if (provider === "opencode") return "OpenCode";
-  if (provider === "pi") return "Pi";
-  return provider;
+function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null {
+  return pickPreferredRuntimeProvider(caps);
 }
 
 function availabilityReasonMessage(reason: "invalid" | "reserved" | "taken"): string {
@@ -224,7 +199,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // the team roster, which surprised users who expected new agents to be
   // personal until explicitly shared.
   const [visibility, setVisibility] = useState<AgentVisibility>("private");
-  const [runtime, setRuntime] = useState<RuntimeProvider>("codex");
+  const [runtime, setRuntime] = useState<RuntimeProvider>(PREFERRED_RUNTIME_PROVIDER);
 
   // Handle resolution. The slug follows the display name (auto-deduped on
   // collision); `resolvedHandle` is the winner. `manualHandle` is only used
@@ -321,7 +296,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     if (open) {
       setDisplayName("");
       setVisibility("private");
-      setRuntime("codex");
+      setRuntime(PREFERRED_RUNTIME_PROVIDER);
       setResolvedHandle("");
       setHandleState({ status: "idle" });
       setManualHandle("");
@@ -579,18 +554,12 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // Capabilities tied to the *currently* picked client only — guards
   // against acting on stale data right after the user switches machines.
   const activeCapabilities = pickedClientId && capabilitiesClientId === pickedClientId ? capabilities : null;
-  const okRuntimes = useMemo<RuntimeProvider[]>(() => {
-    if (!activeCapabilities) return [];
-    const out: RuntimeProvider[] = [];
-    for (const [provider, entry] of Object.entries(activeCapabilities)) {
-      if (entry.state !== "ok") continue;
-      const rt = asRuntimeProvider(provider);
-      // Skip temporarily-disabled providers so they never appear as a
-      // selectable runtime, even if a stale snapshot still reports them `ok`.
-      if (rt && isRuntimeProviderEnabled(rt)) out.push(rt);
-    }
-    return orderRuntimesByPreference(out);
-  }, [activeCapabilities]);
+  // Catalog selection order — never Object.entries(caps), which follows probe
+  // completion insertion order and can shuffle the picker.
+  const okRuntimes = useMemo<RuntimeProvider[]>(
+    () => (activeCapabilities ? enabledOkRuntimeProviders(activeCapabilities) : []),
+    [activeCapabilities],
+  );
 
   // Realign the runtime selection whenever the picked client's capabilities
   // change — if the previous selection isn't `ok` on the new machine, fall
@@ -599,7 +568,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     if (!activeCapabilities) return;
     setRuntime((prev) => {
       if (okRuntimes.includes(prev)) return prev;
-      return pickPreferredRuntimeFromList(okRuntimes) ?? prev;
+      return pickPreferredRuntime(activeCapabilities) ?? prev;
     });
   }, [activeCapabilities, okRuntimes]);
 
@@ -1062,7 +1031,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                         checked={runtime === provider}
                         onSelect={() => setRuntime(provider)}
                       >
-                        <span className="text-body">{prettyRuntimeLabel(provider)}</span>
+                        <span className="text-body">{runtimeProviderLabel(provider)}</span>
                       </OptionCard>
                     ))}
                   </div>

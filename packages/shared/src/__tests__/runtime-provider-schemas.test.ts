@@ -5,6 +5,7 @@ import {
   clientCapabilitiesSchema,
   DEFAULT_RUNTIME_PROVIDER,
   isRuntimeProviderEnabled,
+  RUNTIME_PROVIDER_IDS,
   RUNTIME_PROVIDERS,
   runtimeProviderSchema,
   updateClientCapabilitiesSchema,
@@ -20,15 +21,10 @@ import {
  *     here so a server change can't silently relax validation.
  */
 describe("runtimeProviderSchema", () => {
-  it("accepts all built-in providers", () => {
-    expect(runtimeProviderSchema.parse("claude-code")).toBe("claude-code");
-    expect(runtimeProviderSchema.parse("claude-code-tui")).toBe("claude-code-tui");
-    expect(runtimeProviderSchema.parse("codex")).toBe("codex");
-    expect(runtimeProviderSchema.parse("cursor")).toBe("cursor");
-    expect(runtimeProviderSchema.parse("grok")).toBe("grok");
-    expect(runtimeProviderSchema.parse("kimi-code")).toBe("kimi-code");
-    expect(runtimeProviderSchema.parse("opencode")).toBe("opencode");
-    expect(runtimeProviderSchema.parse("pi")).toBe("pi");
+  it("accepts all built-in providers from RUNTIME_PROVIDER_IDS", () => {
+    for (const id of RUNTIME_PROVIDER_IDS) {
+      expect(runtimeProviderSchema.parse(id)).toBe(id);
+    }
   });
 
   it("rejects unknown providers", () => {
@@ -36,15 +32,17 @@ describe("runtimeProviderSchema", () => {
     expect(() => runtimeProviderSchema.parse("")).toThrow();
   });
 
-  it("RUNTIME_PROVIDERS constants match the schema", () => {
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CLAUDE_CODE)).toBe("claude-code");
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CLAUDE_CODE_TUI)).toBe("claude-code-tui");
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CODEX)).toBe("codex");
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.CURSOR)).toBe("cursor");
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.GROK)).toBe("grok");
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.KIMI_CODE)).toBe("kimi-code");
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.OPENCODE)).toBe("opencode");
-    expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS.PI)).toBe("pi");
+  it("RUNTIME_PROVIDERS is generated from schema options (frozen, no parallel list)", () => {
+    expect(Object.isFrozen(RUNTIME_PROVIDERS)).toBe(true);
+    expect(Object.values(RUNTIME_PROVIDERS).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
+    for (const id of RUNTIME_PROVIDER_IDS) {
+      const key = id.replace(/-/g, "_").toUpperCase() as keyof typeof RUNTIME_PROVIDERS;
+      expect(RUNTIME_PROVIDERS[key]).toBe(id);
+      expect(runtimeProviderSchema.parse(RUNTIME_PROVIDERS[key])).toBe(id);
+    }
+    // Published shape still resolves named constants for call sites.
+    expect(RUNTIME_PROVIDERS.CLAUDE_CODE).toBe("claude-code");
+    expect(RUNTIME_PROVIDERS.CODEX).toBe("codex");
   });
 
   it("DEFAULT_RUNTIME_PROVIDER is claude-code (existing rows pre-0026 have no kind)", () => {

@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
+import { enabledOkRuntimeProviders, pickPreferredRuntimeProvider } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { orderRuntimesByPreference, pickPreferredRuntime } from "../runtime-preference.js";
 import { useAgentCreation } from "../use-agent-creation.js";
 import { type ComputerConnection, useComputerConnection } from "../use-computer-connection.js";
 
@@ -114,17 +114,17 @@ afterEach(async () => {
 });
 
 describe("shared setup hooks", () => {
-  it("uses one Codex-first runtime preference across setup surfaces", () => {
-    expect(orderRuntimesByPreference(["opencode", "claude-code", "future-provider", "codex"])).toEqual([
+  it("uses one Codex/Claude preference prefix and otherwise keeps Client order", () => {
+    const ok = { state: "ok" as const };
+    expect(enabledOkRuntimeProviders({ opencode: ok, "claude-code": ok, "future-provider": ok, codex: ok })).toEqual([
       "codex",
       "claude-code",
       "opencode",
-      "future-provider",
     ]);
-    expect(pickPreferredRuntime(["claude-code", "codex", "opencode"])).toBe("codex");
-    expect(pickPreferredRuntime(["claude-code", "opencode"])).toBe("claude-code");
-    expect(pickPreferredRuntime(["opencode", "future-provider"])).toBe("opencode");
-    expect(pickPreferredRuntime([])).toBeNull();
+    expect(pickPreferredRuntimeProvider({ "claude-code": ok, codex: ok, opencode: ok })).toBe("codex");
+    expect(pickPreferredRuntimeProvider({ "claude-code": ok, opencode: ok })).toBe("claude-code");
+    expect(pickPreferredRuntimeProvider({ opencode: ok, "future-provider": ok })).toBe("opencode");
+    expect(pickPreferredRuntimeProvider({})).toBeNull();
   });
 
   it("detects connected computers and picks a ready runtime without onboarding state", async () => {
@@ -237,7 +237,7 @@ describe("shared setup hooks", () => {
     expect(expectHookValue(latest.current).selectedRuntime).toBe("codex");
   });
 
-  it("keeps prior runtime choice and falls back to enabled future providers after transient capability failures", async () => {
+  it("skips disabled/unknown providers and keeps a still-valid prior selection", async () => {
     const latest = { current: null as ComputerConnection | null };
     const client = {
       id: "client-1",
@@ -253,20 +253,18 @@ describe("shared setup hooks", () => {
       lastSeenAt: "2026-05-28T12:00:00.000Z",
       capabilities: {},
     };
+    const ok = {
+      state: "ok" as const,
+      available: true,
+      detectedAt: "2026-05-28T12:00:00.000Z",
+    };
     activityMocks.listClients.mockResolvedValue([client]);
     activityMocks.getClientCapabilities.mockRejectedValueOnce(new Error("capabilities offline")).mockResolvedValue({
       ...client,
       capabilities: {
-        "claude-code-tui": {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:00.000Z",
-        },
-        "future-provider": {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:00.000Z",
-        },
+        // Disabled known provider + unknown wire id — neither is selectable.
+        "claude-code-tui": ok,
+        "future-provider": ok,
       },
     });
 
@@ -289,23 +287,16 @@ describe("shared setup hooks", () => {
     await flush();
 
     expect(expectHookValue(latest.current).capabilitiesLoaded).toBe(true);
-    expect(expectHookValue(latest.current).okRuntimes).toEqual(["future-provider"]);
-    expect(expectHookValue(latest.current).selectedRuntime).toBe("future-provider");
+    expect(expectHookValue(latest.current).okRuntimes).toEqual([]);
+    expect(expectHookValue(latest.current).selectedRuntime).toBeNull();
 
-    await act(async () => expectHookValue(latest.current).setSelectedRuntime("future-provider"));
     activityMocks.getClientCapabilities.mockResolvedValueOnce({
       ...client,
       capabilities: {
-        "future-provider": {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:05.000Z",
-        },
-        codex: {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:05.000Z",
-        },
+        pi: ok,
+        "kimi-code": ok,
+        grok: ok,
+        "future-provider": ok,
       },
     });
     await act(async () => {
@@ -313,7 +304,27 @@ describe("shared setup hooks", () => {
     });
     await flush();
 
-    expect(expectHookValue(latest.current).selectedRuntime).toBe("future-provider");
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["pi", "kimi-code", "grok"]);
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("pi");
+
+    await act(async () => expectHookValue(latest.current).setSelectedRuntime("kimi-code"));
+    activityMocks.getClientCapabilities.mockResolvedValueOnce({
+      ...client,
+      capabilities: {
+        pi: ok,
+        "kimi-code": ok,
+        grok: ok,
+        codex: ok,
+      },
+    });
+    await act(async () => {
+      await tick();
+    });
+    await flush();
+
+    // Still-valid manual pick is preserved even when a higher-priority runtime appears.
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("kimi-code");
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["codex", "pi", "kimi-code", "grok"]);
   });
 
   it("mints connect commands, surfaces final token failures, and retries manually", async () => {

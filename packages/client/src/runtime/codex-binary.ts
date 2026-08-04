@@ -3,6 +3,7 @@ import { accessSync, constants } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { runtimeProviderInstallCommand, runtimeProviderLoginCommand } from "@first-tree/shared";
 import { codexDesktopAppBinDirs, wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
@@ -107,7 +108,7 @@ export function formatCodexBinaryMissingMessage(input: unknown): string {
   return (
     "Codex runtime binary is missing on this machine. " +
     "First Tree does not bundle the native Codex engine by default — it resolves `codex` from PATH, well-known install directories, or the ChatGPT/Codex desktop app on macOS. " +
-    "Install it with the daemon's one-click `daemon install-codex` (or `npm install -g @openai/codex`), then run `codex login` and retry." +
+    `Install it with the daemon's one-click \`daemon install-codex\` (or \`${runtimeProviderInstallCommand("codex")}\`), then run \`${runtimeProviderLoginCommand("codex")}\` and retry.` +
     suffix
   );
 }

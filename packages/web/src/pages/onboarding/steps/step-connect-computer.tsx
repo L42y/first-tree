@@ -1,7 +1,6 @@
+import { orderRuntimeProvidersByPreference, runtimeProviderLabel } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
-import { orderRuntimesByPreference } from "../../../features/agent-setup/runtime-preference.js";
-import { runtimeProviderLabel } from "../../clients/cards/shared/providers.js";
 import { COPY } from "../copy.js";
 import { CommandBox, FlowHint, StatusRow } from "../flow-ui.js";
 import { useOnboardingFlow } from "../onboarding-flow.js";
@@ -21,7 +20,7 @@ export function StepConnectComputer() {
 
   const noRuntime = !!connectedClient && capabilitiesLoaded && okRuntimes.length === 0;
   const ready = !!connectedClient && okRuntimes.length > 0;
-  const orderedRuntimes = orderRuntimesByPreference(okRuntimes);
+  const orderedRuntimes = orderRuntimeProvidersByPreference(okRuntimes);
   const stepBody = connectedClient ? COPY.connectComputer.whyConnected : COPY.connectComputer.whyWaiting;
 
   return (

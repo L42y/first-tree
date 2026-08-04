@@ -1,7 +1,6 @@
-import { RUNTIME_PROVIDERS, type RuntimeProvider } from "@first-tree/shared";
+import { asRuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
 import { PresenceChip, runtimeStateToPresence } from "../../../../components/ui/presence-chip.js";
 import type { BoundAgentsSummary } from "../view-models.js";
-import { PROVIDER_LABEL } from "./providers.js";
 
 type BoundAgentsListProps = {
   summary: BoundAgentsSummary;
@@ -70,20 +69,11 @@ export function BoundAgentsList({ summary, agentName, headerless = false }: Boun
 
 /**
  * Map raw `runtimeType` (the wire-format string from `clients.agents`)
- * to the human label used in PROVIDER_LABEL. Returns null when the
- * provider isn't recognized so the row gracefully degrades to just
- * `name + chip` rather than rendering "· null".
+ * to the catalog label. Unknown wire strings degrade to the raw value so the
+ * row still renders `name · <raw>` rather than dropping the mid-dot segment.
  */
-const KNOWN_RUNTIME_PROVIDERS: readonly string[] = Object.values(RUNTIME_PROVIDERS);
-
 function formatRuntimeLabel(runtimeType: string | null): string | null {
   if (!runtimeType) return null;
-  // Recognize every provider in the shared enum (not a hardcoded subset) so a
-  // newly added runtime — e.g. claude-code-tui — gets its friendly label
-  // automatically instead of leaking the raw wire string. Truly-unknown values
-  // still degrade gracefully to the raw string.
-  if (KNOWN_RUNTIME_PROVIDERS.includes(runtimeType)) {
-    return PROVIDER_LABEL[runtimeType as RuntimeProvider];
-  }
-  return runtimeType;
+  const known = asRuntimeProvider(runtimeType);
+  return known ? runtimeProviderLabel(known) : runtimeType;
 }

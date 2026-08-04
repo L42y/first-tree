@@ -1,4 +1,5 @@
 import type { CapabilityEntry, RuntimeProvider } from "@first-tree/shared";
+import { runtimeProviderShowsHostLoginOnSetup } from "@first-tree/shared";
 import type { ReactNode } from "react";
 import { InlineCommand } from "./inline-command.js";
 import { buildInstallCommand, PROVIDER_LABEL, PROVIDER_LOGIN_COMMAND, providerInstallCommand } from "./providers.js";
@@ -107,10 +108,17 @@ export function installBoxView(
     // `claude-code-tui` needs the `claude` CLI AND tmux (>= 3.0); name the tmux
     // requirement explicitly so the box isn't read as a CLI-only install (the
     // command from `buildInstallCommand` carries the matching OS tmux line).
-    const headline =
-      provider === "claude-code-tui"
-        ? `Install ${PROVIDER_LABEL[provider]} (the \`claude\` CLI + tmux >= 3.0) and run \`${PROVIDER_LOGIN_COMMAND[provider]}\` on ${hostname}.`
-        : `Install ${PROVIDER_LABEL[provider]} and run \`${PROVIDER_LOGIN_COMMAND[provider]}\` on ${hostname}.`;
+    // In-product OAuth providers stay install-only on computer/setup surfaces;
+    // host-local providers may include their login cue.
+    const label = PROVIDER_LABEL[provider];
+    let headline: string;
+    if (provider === "claude-code-tui") {
+      headline = `Install ${label} (the \`claude\` CLI + tmux >= 3.0) on ${hostname}.`;
+    } else if (runtimeProviderShowsHostLoginOnSetup(provider)) {
+      headline = `Install ${label} and run \`${PROVIDER_LOGIN_COMMAND[provider]}\` on ${hostname}.`;
+    } else {
+      headline = `Install ${label} on ${hostname}.`;
+    }
     return { headline, command: buildInstallCommand(provider, os) };
   }
   if (entry.state === "error") {

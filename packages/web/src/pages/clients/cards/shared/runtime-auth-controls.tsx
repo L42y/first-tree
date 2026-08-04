@@ -1,4 +1,4 @@
-import type { CapabilityEntry, RuntimeAuthLastError, RuntimeProvider } from "@first-tree/shared";
+import type { CapabilityEntry, RuntimeAuthLastError, RuntimeAuthProvider } from "@first-tree/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { startRuntimeAuth } from "../../../../api/activity.js";
@@ -51,7 +51,7 @@ export function RuntimeAuthControls({
   forceConnectable = false,
 }: {
   clientId: string;
-  provider: RuntimeProvider;
+  provider: RuntimeAuthProvider;
   entry: CapabilityEntry | null;
   onStarted?: () => void;
   forceConnectable?: boolean;

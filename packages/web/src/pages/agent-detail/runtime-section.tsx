@@ -1,4 +1,4 @@
-import type { RuntimeProvider } from "@first-tree/shared";
+import { type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
 import { AlertTriangle, Link2, RefreshCcw } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "../../components/ui/button.js";
@@ -26,17 +26,6 @@ export type RuntimeSectionProps = {
   onSwitchRuntime?: () => void;
 };
 
-const RUNTIME_NAME: Record<RuntimeProvider, string> = {
-  "claude-code": "Claude Code",
-  "claude-code-tui": "Claude Code CLI",
-  codex: "Codex",
-  cursor: "Cursor",
-  grok: "Grok Build",
-  "kimi-code": "Kimi Code",
-  opencode: "OpenCode",
-  pi: "Pi",
-};
-
 export function RuntimeSection(props: RuntimeSectionProps) {
   return (
     <Section title={titleWithSemantics("Execution")}>
@@ -49,7 +38,7 @@ export function RuntimeSection(props: RuntimeSectionProps) {
         onBindComputer={props.onBindComputer}
       />
       <RuntimeRow
-        name={RUNTIME_NAME[props.runtimeProvider]}
+        name={runtimeProviderLabel(props.runtimeProvider)}
         canSwitch={props.canSwitchRuntime ?? false}
         switchPending={props.runtimeSwitchPending ?? false}
         onSwitch={props.onSwitchRuntime}

@@ -1,14 +1,17 @@
-import type { AgentTemplatePublicTemplate, AgentVisibility } from "@first-tree/shared";
+import {
+  type AgentTemplatePublicTemplate,
+  type AgentVisibility,
+  orderRuntimeProvidersByPreference,
+  runtimeProviderLabel,
+} from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAgentTemplate } from "../../../api/agent-templates.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { OptionCard } from "../../../components/ui/option-card.js";
-import { orderRuntimesByPreference, pickPreferredRuntime } from "../../../features/agent-setup/runtime-preference.js";
 import { readOnboardingTemplateIntent } from "../../../utils/onboarding-flags.js";
-import { asRuntimeProvider, PROVIDER_LABEL } from "../../clients/cards/shared/providers.js";
 import { COPY } from "../copy.js";
 import { FlowHint, WorkingState } from "../flow-ui.js";
 import { useOnboardingFlow } from "../onboarding-flow.js";
@@ -151,18 +154,15 @@ export function StepCreateAgent() {
     agentPhase === "idle";
 
   // The coding-agent picker lives HERE now (moved from connect-computer). Always
-  // a list — even for one — using the shared Codex → Claude Code → first-ready
-  // preference. Seed the selection if it isn't a valid detected runtime yet.
+  // a list — even for one. Selection and option order come from the shared
+  // Codex-first catalog preference in `useComputerConnection`.
   const { okRuntimes, selectedRuntime, setSelectedRuntime } = computer;
+  const orderedOkRuntimes = useMemo(() => orderRuntimeProvidersByPreference(okRuntimes), [okRuntimes]);
   useEffect(() => {
-    if (selectedRuntime && okRuntimes.includes(selectedRuntime)) return;
-    const next = pickPreferredRuntime(okRuntimes);
+    if (selectedRuntime && orderedOkRuntimes.includes(selectedRuntime)) return;
+    const next = orderedOkRuntimes[0];
     if (next) setSelectedRuntime(next);
-  }, [okRuntimes, selectedRuntime, setSelectedRuntime]);
-  const okProviders = orderRuntimesByPreference(okRuntimes).flatMap((p) => {
-    const provider = asRuntimeProvider(p);
-    return provider ? [provider] : [];
-  });
+  }, [orderedOkRuntimes, selectedRuntime, setSelectedRuntime]);
 
   // Coding-agent pills to render. When the computer drops mid-form, okRuntimes
   // empties but `selectedRuntime` keeps the last pick — so we still show THAT
@@ -170,8 +170,7 @@ export function StepCreateAgent() {
   // jump. A disabled pill + the reconnect hint reads as "your agent's here, just
   // temporarily unreachable", not "it's gone".
   const connected = !!computer.connectedClient;
-  const fallbackProvider = selectedRuntime ? asRuntimeProvider(selectedRuntime) : null;
-  const displayProviders = okProviders.length > 0 ? okProviders : fallbackProvider ? [fallbackProvider] : [];
+  const displayProviders = orderedOkRuntimes.length > 0 ? orderedOkRuntimes : selectedRuntime ? [selectedRuntime] : [];
 
   if (agentPhase === "creating") {
     return <WorkingState label={COPY.createAgent.creating} hint={COPY.createAgent.creatingHint} />;
@@ -269,7 +268,7 @@ export function StepCreateAgent() {
               onSelect={() => setSelectedRuntime(provider)}
               disabled={!connected}
             >
-              <span className="text-body">{PROVIDER_LABEL[provider]}</span>
+              <span className="text-body">{runtimeProviderLabel(provider)}</span>
             </OptionCard>
           ))}
         </div>

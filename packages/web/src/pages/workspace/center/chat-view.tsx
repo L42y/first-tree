@@ -17,7 +17,7 @@ import {
   type MentionParticipant,
   parseProviderRetryEventMessage,
   type RequestResolution,
-  type RuntimeProvider,
+  type RuntimeAuthProvider,
   readAskAgentMessageMetadata,
   statusReasonFromProviderRetryEvent,
 } from "@first-tree/shared";
@@ -275,7 +275,7 @@ const STARTING_LATCH_MS = 30_000;
  * a `claude-code-tui` failure arrives here as `claude-code`, so the capability
  * lookup + `startRuntimeAuth` both key off the provider the daemon can drive.
  */
-function ChatRuntimeLoginButton({ clientId, provider }: { clientId: string; provider: RuntimeProvider }) {
+function ChatRuntimeLoginButton({ clientId, provider }: { clientId: string; provider: RuntimeAuthProvider }) {
   // A login attempt began at this wall-clock instant. Only an in-flight attempt
   // arms the poll; it disarms the moment the attempt resolves (see below).
   const [startedAt, setStartedAt] = useState<number | null>(null);

@@ -1,4 +1,10 @@
-import type { CapabilityEntry, RuntimeAuthLastError, RuntimeProvider } from "@first-tree/shared";
+import {
+  type CapabilityEntry,
+  type RuntimeAuthLastError,
+  type RuntimeAuthProvider,
+  type RuntimeProvider,
+  runtimeProviderInProductAuthTarget,
+} from "@first-tree/shared";
 
 /**
  * Pure view-model for the in-product runtime-auth controls. Derives what to
@@ -29,11 +35,8 @@ export type RuntimeAuthView =
 
 /** Providers whose login the daemon can drive in-product today. */
 export function providerSupportsInProductAuth(provider: RuntimeProvider): boolean {
-  // Consistent browser-OAuth Connect: codex (`codex login`), claude-code
-  // (`claude auth login`), cursor (`cursor-agent login`), and grok
-  // (`grok login`). `claude-code-tui` shares Claude Code's credentials but
-  // isn't a distinct Connect target.
-  return provider === "codex" || provider === "claude-code" || provider === "cursor" || provider === "grok";
+  const target = runtimeProviderInProductAuthTarget(provider);
+  return target !== null && target === provider;
 }
 
 /**
@@ -45,8 +48,8 @@ export function providerSupportsInProductAuth(provider: RuntimeProvider): boolea
  * capability-entry lookup, and `deriveRuntimeAuthView`). Every other provider
  * maps to itself.
  */
-export function loginTargetProvider(provider: RuntimeProvider): RuntimeProvider {
-  return provider === "claude-code-tui" ? "claude-code" : provider;
+export function loginTargetProvider(provider: RuntimeProvider): RuntimeAuthProvider | null {
+  return runtimeProviderInProductAuthTarget(provider);
 }
 
 /**
@@ -57,7 +60,7 @@ export function loginTargetProvider(provider: RuntimeProvider): RuntimeProvider 
  * separate CLI login to run.
  */
 export function providerAuthHandledInProduct(provider: RuntimeProvider): boolean {
-  return providerSupportsInProductAuth(provider) || provider === "claude-code-tui";
+  return runtimeProviderInProductAuthTarget(provider) !== null;
 }
 
 export function deriveRuntimeAuthView(

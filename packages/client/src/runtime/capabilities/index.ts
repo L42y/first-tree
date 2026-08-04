@@ -2,16 +2,14 @@ import {
   type CapabilityEntry,
   type ClientCapabilities,
   isRuntimeProviderEnabled,
+  RUNTIME_PROVIDER_IDS,
   type RuntimeProvider,
 } from "@first-tree/shared";
-import { probeClaudeCodeCapability } from "./claude-code.js";
-import { probeClaudeCodeTuiCapability } from "./claude-code-tui.js";
-import { probeCodexCapability } from "./codex.js";
-import { probeCursorCapability } from "./cursor.js";
-import { probeGrokCapability } from "./grok.js";
-import { probeKimiCodeCapability } from "./kimi-code.js";
-import { probeOpenCodeCapability } from "./opencode.js";
-import { probePiCapability } from "./pi.js";
+import {
+  BUILTIN_PROVIDER_PROBES,
+  type BuiltinProviderProbeTable,
+  probedRuntimeProviders,
+} from "../../providers/builtin-probes.js";
 
 /** Periodic full re-probe ceiling: re-detect at most this often on reconnect to
  * catch silent drift (a provider uninstalled while connected). Detection is
@@ -21,9 +19,7 @@ export const REPROBE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** The runtime providers a built-in probe exists for AND that are not
  * temporarily disabled. Drives whether a daemon's advertised snapshot still has
  * a provider worth re-probing (see {@link hasNonOkProvider}). */
-export const PROBED_RUNTIME_PROVIDERS: readonly RuntimeProvider[] = (
-  ["claude-code", "claude-code-tui", "codex", "cursor", "grok", "kimi-code", "opencode", "pi"] as const
-).filter((p) => isRuntimeProviderEnabled(p));
+export const PROBED_RUNTIME_PROVIDERS: readonly RuntimeProvider[] = probedRuntimeProviders();
 
 /** First delay before the daemon-side degraded-capability re-probe fires. Short
  * enough that a freshly-installed provider is noticed quickly during setup. */
@@ -69,35 +65,47 @@ function errorEntry(err: unknown): CapabilityEntry {
 async function aggregate(
   probes: Array<readonly [RuntimeProvider, Promise<CapabilityEntry>]>,
 ): Promise<ClientCapabilities> {
-  const out: ClientCapabilities = {};
-  await Promise.all(
+  // Settle concurrently, then publish in the input/provider order. Writing
+  // into `out` inside each async branch would make capability-map insertion
+  // order depend on probe completion timing, which agent-creation surfaces
+  // intentionally preserve after their explicit Codex/Claude preference.
+  const settled = await Promise.all(
     probes.map(async ([provider, p]) => {
       try {
-        out[provider] = await p;
+        return [provider, await p] as const;
       } catch (err) {
-        out[provider] = errorEntry(err);
+        return [provider, errorEntry(err)] as const;
       }
     }),
   );
+
+  const out: ClientCapabilities = {};
+  for (const [provider, entry] of settled) out[provider] = entry;
   return out;
 }
 
+export type ProbeCapabilitiesOptions = {
+  /**
+   * Explicit probe table injection for tests. Production callers omit this and
+   * use the immutable {@link BUILTIN_PROVIDER_PROBES} composition table.
+   */
+  probes?: BuiltinProviderProbeTable;
+};
+
 /**
- * Run every built-in install probe and aggregate the results. Each provider
- * gets its own module under this directory; the orchestrator is intentionally
- * simple. Detection is install-only — no binary is launched.
+ * Run every built-in install probe and aggregate the results.
+ *
+ * Probe callbacks come from explicit `probes` or the immutable composition
+ * table. This orchestrator must not import or switch on concrete provider
+ * modules. Detection is install-only — no binary is launched.
  */
-export async function probeCapabilities(): Promise<ClientCapabilities> {
-  // Guard BEFORE invoking each probe — a disabled provider must be skipped here.
+export async function probeCapabilities(options: ProbeCapabilitiesOptions = {}): Promise<ClientCapabilities> {
+  const probeTable = options.probes ?? BUILTIN_PROVIDER_PROBES;
   const probes: Array<readonly [RuntimeProvider, Promise<CapabilityEntry>]> = [];
-  if (isRuntimeProviderEnabled("claude-code")) probes.push(["claude-code", probeClaudeCodeCapability()]);
-  if (isRuntimeProviderEnabled("claude-code-tui")) probes.push(["claude-code-tui", probeClaudeCodeTuiCapability()]);
-  if (isRuntimeProviderEnabled("codex")) probes.push(["codex", probeCodexCapability()]);
-  if (isRuntimeProviderEnabled("cursor")) probes.push(["cursor", probeCursorCapability()]);
-  if (isRuntimeProviderEnabled("grok")) probes.push(["grok", probeGrokCapability()]);
-  if (isRuntimeProviderEnabled("kimi-code")) probes.push(["kimi-code", probeKimiCodeCapability()]);
-  if (isRuntimeProviderEnabled("opencode")) probes.push(["opencode", probeOpenCodeCapability()]);
-  if (isRuntimeProviderEnabled("pi")) probes.push(["pi", probePiCapability()]);
+  for (const provider of RUNTIME_PROVIDER_IDS) {
+    if (!isRuntimeProviderEnabled(provider)) continue;
+    probes.push([provider, probeTable[provider]()]);
+  }
   return aggregate(probes);
 }
 
