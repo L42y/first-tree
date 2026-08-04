@@ -1,7 +1,14 @@
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CapabilityEntry } from "@first-tree/shared";
+import {
+  type CapabilityEntry,
+  enabledOkRuntimeProviders,
+  isRuntimeProviderEnabled,
+  RUNTIME_PROVIDER_IDS,
+  type RuntimeProvider,
+  recordByRuntimeProvider,
+} from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaudeExecutableResolution } from "../handlers/claude-executable.js";
 import {
@@ -778,6 +785,47 @@ describe("probeCapabilities (aggregator)", () => {
     // Disabled provider is never probed, so no entry (not even an error one).
     expect(caps["claude-code-tui"]).toBeUndefined();
     expect(probes["claude-code-tui"]).not.toHaveBeenCalled();
+  });
+
+  it("publishes stable provider order when probes settle in reverse", async () => {
+    const resolvers = new Map<RuntimeProvider, (entry: CapabilityEntry) => void>();
+    const probes = recordByRuntimeProvider(
+      RUNTIME_PROVIDER_IDS.map(
+        (provider) =>
+          [
+            provider,
+            vi.fn(
+              () =>
+                new Promise<CapabilityEntry>((resolve) => {
+                  resolvers.set(provider, resolve);
+                }),
+            ),
+          ] as const,
+      ),
+    );
+
+    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const pending = probeCapabilities({ probes });
+    const enabledProviders = RUNTIME_PROVIDER_IDS.filter((provider) => isRuntimeProviderEnabled(provider));
+
+    expect([...resolvers.keys()]).toEqual(enabledProviders);
+    for (const provider of [...enabledProviders].reverse()) {
+      const resolve = resolvers.get(provider);
+      if (!resolve) throw new Error(`Missing deferred probe resolver for ${provider}`);
+      resolve(fakeEntry("ok"));
+    }
+
+    const caps = await pending;
+    expect(Object.keys(caps)).toEqual(enabledProviders);
+    expect(enabledOkRuntimeProviders(caps)).toEqual([
+      "codex",
+      "claude-code",
+      "cursor",
+      "grok",
+      "kimi-code",
+      "opencode",
+      "pi",
+    ]);
   });
 
   it("isolates a single probe rejection to that provider entry", async () => {

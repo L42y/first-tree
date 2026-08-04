@@ -18,6 +18,11 @@ ACK / Reset / auth / model / persistence protocol into shared catalog.
 
 Probe/skills paths do **not** consume a full installed handler registry.
 
+`probeCapabilities()` starts enabled probes concurrently, but publishes the
+snapshot in `RUNTIME_PROVIDER_IDS` order after all probes settle. Do not write
+entries from probe-completion callbacks: agent-creation surfaces intentionally
+preserve the Client snapshot order after the Codex / Claude preference prefix.
+
 ## 1. Identity
 
 1. Add the wire id to `runtimeProviderSchema` only.

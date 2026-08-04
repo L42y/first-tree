@@ -65,16 +65,22 @@ function errorEntry(err: unknown): CapabilityEntry {
 async function aggregate(
   probes: Array<readonly [RuntimeProvider, Promise<CapabilityEntry>]>,
 ): Promise<ClientCapabilities> {
-  const out: ClientCapabilities = {};
-  await Promise.all(
+  // Settle concurrently, then publish in the input/provider order. Writing
+  // into `out` inside each async branch would make capability-map insertion
+  // order depend on probe completion timing, which agent-creation surfaces
+  // intentionally preserve after their explicit Codex/Claude preference.
+  const settled = await Promise.all(
     probes.map(async ([provider, p]) => {
       try {
-        out[provider] = await p;
+        return [provider, await p] as const;
       } catch (err) {
-        out[provider] = errorEntry(err);
+        return [provider, errorEntry(err)] as const;
       }
     }),
   );
+
+  const out: ClientCapabilities = {};
+  for (const [provider, entry] of settled) out[provider] = entry;
   return out;
 }
 
