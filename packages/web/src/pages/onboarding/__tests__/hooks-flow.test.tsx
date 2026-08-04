@@ -217,8 +217,8 @@ describe("onboarding hooks and flow", () => {
     expect(expectHookValue(latest.current).okRuntimes).toEqual(["codex"]);
     expect(expectHookValue(latest.current).selectedRuntime).toBe("codex");
 
-    await act(async () => expectHookValue(latest.current).setSelectedRuntime("manual"));
-    expect(expectHookValue(latest.current).selectedRuntime).toBe("manual");
+    await act(async () => expectHookValue(latest.current).setSelectedRuntime("cursor"));
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("cursor");
 
     await act(async () => root?.unmount());
     root = null;
@@ -233,6 +233,64 @@ describe("onboarding hooks and flow", () => {
     });
     expect(expectHookValue(latest.current).tokenError).toBe("token failed");
   }, 10_000);
+
+  it("orders okRuntimes by displayOrder and prefers selectionPriority under shuffled caps", async () => {
+    const latest = { current: null as ComputerConnection | null };
+    const client = {
+      id: "client-shuffle",
+      userId: "user-self",
+      status: "connected" as const,
+      authState: "ok" as const,
+      binName: "first-tree-dev",
+      sdkVersion: "0.5.0",
+      hostname: "shuffle-host",
+      os: "darwin",
+      agentCount: 1,
+      connectedAt: "2026-05-28T00:00:00.000Z",
+      lastSeenAt: "2026-05-28T12:00:00.000Z",
+      capabilities: {},
+    };
+    const ok = {
+      state: "ok" as const,
+      available: true,
+      authenticated: true,
+      authMethod: "api_key" as const,
+      detectedAt: "2026-05-28T12:00:00.000Z",
+    };
+    // Insertion order deliberately differs from catalog display / selection order.
+    const shuffledCaps = {
+      pi: ok,
+      "kimi-code": ok,
+      "claude-code-tui": ok, // disabled — must not appear or be preferred
+      grok: ok,
+      opencode: ok,
+      future: ok, // unknown — must not appear
+      "claude-code": { ...ok, state: "missing" as const, available: false },
+      codex: { ...ok, state: "error" as const, available: false },
+      cursor: { ...ok, state: "missing" as const, available: false },
+    };
+    activityMocks.listClients.mockResolvedValue([client]);
+    activityMocks.getClientCapabilities.mockResolvedValue({
+      ...client,
+      capabilities: shuffledCaps,
+    });
+
+    function Probe() {
+      latest.current = useComputerConnection(true);
+      return <div>{(latest.current.okRuntimes ?? []).join(",")}</div>;
+    }
+
+    await renderProbe(<Probe />);
+    await flush();
+    await flush();
+
+    // Display order: Grok → Kimi → OpenCode → Pi (claude-code-tui disabled, others not ok).
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["grok", "kimi-code", "opencode", "pi"]);
+    // Selection priority: Grok → OpenCode → Pi → Kimi → first ok is grok.
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("grok");
+    expect(expectHookValue(latest.current).okRuntimes).not.toContain("claude-code-tui");
+    expect(expectHookValue(latest.current).okRuntimes).not.toContain("future");
+  });
 
   it("creates an agent, supports caller side effects, and reaches online", async () => {
     const latest = { current: null as ReturnType<typeof useAgentCreation> | null };

@@ -39,6 +39,8 @@ const GUARDED_CLIENT_FILES = [
 /** Live presentation consumers that must derive catalog-owned copy. */
 const CATALOG_CONSUMER_FILES = [
   "packages/web/src/components/new-agent-dialog.tsx",
+  "packages/web/src/features/agent-setup/use-computer-connection.ts",
+  "packages/web/src/pages/onboarding/steps/step-create-agent.tsx",
   "packages/web/src/pages/agent-detail/runtime-section.tsx",
   "packages/web/src/pages/clients/cards/shared/providers.ts",
   "packages/client/src/handlers/auth-error-hint.ts",
@@ -186,10 +188,27 @@ describe("runtime provider architecture guard", () => {
         expect(source).toContain("pickPreferredRuntimeProvider");
         expect(source).toContain("enabledOkRuntimeProviders");
         expect(source).toContain("runtimeProviderLabel");
+        expect(source).toContain("DEFAULT_RUNTIME_PROVIDER");
         expect(source).not.toContain("Object.entries(activeCapabilities)");
         expect(source).not.toContain('provider === "claude-code"');
+        expect(source).not.toContain('"claude-code"');
         expect(source).not.toMatch(/function prettyRuntimeLabel/);
         expect(source).not.toMatch(/function asRuntimeProvider/);
+      }
+      if (rel.endsWith("use-computer-connection.ts")) {
+        expect(source).toContain("pickPreferredRuntimeProvider");
+        expect(source).toContain("enabledOkRuntimeProviders");
+        expect(source).not.toContain("Object.entries(activeCapabilities)");
+        expect(source).not.toMatch(/Object\.entries\([^)]*capabilities/);
+        expect(source).not.toMatch(/function pickPreferredRuntime/);
+        expect(source).not.toContain('"claude-code"');
+        expect(source).not.toContain('"codex"');
+      }
+      if (rel.endsWith("step-create-agent.tsx")) {
+        expect(source).not.toContain("Object.entries(");
+        expect(source).not.toMatch(/r === ["']claude-code["']/);
+        expect(source).not.toContain('"claude-code"');
+        expect(source).not.toMatch(/function pickPreferred/);
       }
       if (rel.endsWith("runtime-section.tsx")) {
         expect(source).toContain("runtimeProviderLabel");

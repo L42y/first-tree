@@ -1,4 +1,4 @@
-import type { AgentVisibility, GithubAppInstallationOutput } from "@first-tree/shared";
+import type { AgentVisibility, GithubAppInstallationOutput, RuntimeProvider } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Bot, CircleCheck, MessageSquare, Plus, SendHorizontal } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -251,7 +251,7 @@ const COMPUTER: Record<
   unsupportedByo: {
     connectedClient: HOST,
     capabilitiesLoaded: true,
-    okRuntimes: ["cursor", "kimi"],
+    okRuntimes: ["cursor", "kimi-code"],
     selectedRuntime: null,
     setSelectedRuntime: NOOP,
     cliCommand: SAMPLE_CLI,
@@ -1557,7 +1557,9 @@ function WizardScenarioView({ spec, role }: { spec: WizardSpec; role: Role }) {
   const [treeAutoDetectDone, setTreeAutoDetectDone] = useState<boolean>(init.treeAutoDetectDone ?? false);
   // Back the injected computer's runtime selection with local state so the
   // single-select runtime pills actually switch when clicked.
-  const [selectedRuntime, setSelectedRuntime] = useState<string | null>(init.computer?.selectedRuntime ?? null);
+  const [selectedRuntime, setSelectedRuntime] = useState<RuntimeProvider | null>(
+    init.computer?.selectedRuntime ?? null,
+  );
 
   const queryClient = useMemo(
     () => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }),

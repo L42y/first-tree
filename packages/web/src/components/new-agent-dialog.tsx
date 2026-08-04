@@ -6,6 +6,7 @@ import {
   type AgentTemplatePublicTemplate,
   type AgentVisibility,
   type ClientCapabilities,
+  DEFAULT_RUNTIME_PROVIDER,
   enabledOkRuntimeProviders,
   isReservedAgentName,
   MAX_AGENT_TEMPLATE_IDS,
@@ -197,7 +198,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // the team roster, which surprised users who expected new agents to be
   // personal until explicitly shared.
   const [visibility, setVisibility] = useState<AgentVisibility>("private");
-  const [runtime, setRuntime] = useState<RuntimeProvider>("claude-code");
+  const [runtime, setRuntime] = useState<RuntimeProvider>(DEFAULT_RUNTIME_PROVIDER);
 
   // Handle resolution. The slug follows the display name (auto-deduped on
   // collision); `resolvedHandle` is the winner. `manualHandle` is only used
@@ -294,7 +295,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     if (open) {
       setDisplayName("");
       setVisibility("private");
-      setRuntime("claude-code");
+      setRuntime(DEFAULT_RUNTIME_PROVIDER);
       setResolvedHandle("");
       setHandleState({ status: "idle" });
       setManualHandle("");

@@ -7,7 +7,7 @@ import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { OptionCard } from "../../../components/ui/option-card.js";
 import { readOnboardingTemplateIntent } from "../../../utils/onboarding-flags.js";
-import { asRuntimeProvider, PROVIDER_LABEL } from "../../clients/cards/shared/providers.js";
+import { PROVIDER_LABEL } from "../../clients/cards/shared/providers.js";
 import { COPY } from "../copy.js";
 import { FlowHint, WorkingState } from "../flow-ui.js";
 import { useOnboardingFlow } from "../onboarding-flow.js";
@@ -150,18 +150,9 @@ export function StepCreateAgent() {
     agentPhase === "idle";
 
   // The coding-agent picker lives HERE now (moved from connect-computer). Always
-  // a list — even for one — defaulting to Claude Code when present, else the
-  // first detected. Seed the selection if it isn't a valid detected runtime yet.
+  // a list — even for one. Selection / display order come from
+  // `useComputerConnection` (shared catalog selectionPriority + displayOrder).
   const { okRuntimes, selectedRuntime, setSelectedRuntime } = computer;
-  useEffect(() => {
-    if (selectedRuntime && okRuntimes.includes(selectedRuntime)) return;
-    const next = okRuntimes.find((r) => r === "claude-code") ?? okRuntimes[0];
-    if (next) setSelectedRuntime(next);
-  }, [okRuntimes, selectedRuntime, setSelectedRuntime]);
-  const okProviders = okRuntimes.flatMap((p) => {
-    const provider = asRuntimeProvider(p);
-    return provider ? [provider] : [];
-  });
 
   // Coding-agent pills to render. When the computer drops mid-form, okRuntimes
   // empties but `selectedRuntime` keeps the last pick — so we still show THAT
@@ -169,8 +160,7 @@ export function StepCreateAgent() {
   // jump. A disabled pill + the reconnect hint reads as "your agent's here, just
   // temporarily unreachable", not "it's gone".
   const connected = !!computer.connectedClient;
-  const fallbackProvider = selectedRuntime ? asRuntimeProvider(selectedRuntime) : null;
-  const displayProviders = okProviders.length > 0 ? okProviders : fallbackProvider ? [fallbackProvider] : [];
+  const displayProviders = okRuntimes.length > 0 ? okRuntimes : selectedRuntime ? [selectedRuntime] : [];
 
   if (agentPhase === "creating") {
     return <WorkingState label={COPY.createAgent.creating} hint={COPY.createAgent.creatingHint} />;

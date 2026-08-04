@@ -224,7 +224,7 @@ describe("shared setup hooks", () => {
     expect(expectHookValue(latest.current).selectedRuntime).toBe("codex");
   });
 
-  it("keeps prior runtime choice and falls back to enabled future providers after transient capability failures", async () => {
+  it("skips disabled/unknown providers and keeps a still-valid prior selection", async () => {
     const latest = { current: null as ComputerConnection | null };
     const client = {
       id: "client-1",
@@ -240,20 +240,18 @@ describe("shared setup hooks", () => {
       lastSeenAt: "2026-05-28T12:00:00.000Z",
       capabilities: {},
     };
+    const ok = {
+      state: "ok" as const,
+      available: true,
+      detectedAt: "2026-05-28T12:00:00.000Z",
+    };
     activityMocks.listClients.mockResolvedValue([client]);
     activityMocks.getClientCapabilities.mockRejectedValueOnce(new Error("capabilities offline")).mockResolvedValue({
       ...client,
       capabilities: {
-        "claude-code-tui": {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:00.000Z",
-        },
-        "future-provider": {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:00.000Z",
-        },
+        // Disabled known provider + unknown wire id — neither is selectable.
+        "claude-code-tui": ok,
+        "future-provider": ok,
       },
     });
 
@@ -276,23 +274,16 @@ describe("shared setup hooks", () => {
     await flush();
 
     expect(expectHookValue(latest.current).capabilitiesLoaded).toBe(true);
-    expect(expectHookValue(latest.current).okRuntimes).toEqual(["future-provider"]);
-    expect(expectHookValue(latest.current).selectedRuntime).toBe("future-provider");
+    expect(expectHookValue(latest.current).okRuntimes).toEqual([]);
+    expect(expectHookValue(latest.current).selectedRuntime).toBeNull();
 
-    await act(async () => expectHookValue(latest.current).setSelectedRuntime("future-provider"));
     activityMocks.getClientCapabilities.mockResolvedValueOnce({
       ...client,
       capabilities: {
-        "future-provider": {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:05.000Z",
-        },
-        codex: {
-          state: "ok",
-          available: true,
-          detectedAt: "2026-05-28T12:00:05.000Z",
-        },
+        pi: ok,
+        "kimi-code": ok,
+        grok: ok,
+        "future-provider": ok,
       },
     });
     await act(async () => {
@@ -300,7 +291,27 @@ describe("shared setup hooks", () => {
     });
     await flush();
 
-    expect(expectHookValue(latest.current).selectedRuntime).toBe("future-provider");
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["grok", "kimi-code", "pi"]);
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("grok");
+
+    await act(async () => expectHookValue(latest.current).setSelectedRuntime("kimi-code"));
+    activityMocks.getClientCapabilities.mockResolvedValueOnce({
+      ...client,
+      capabilities: {
+        pi: ok,
+        "kimi-code": ok,
+        grok: ok,
+        codex: ok,
+      },
+    });
+    await act(async () => {
+      await tick();
+    });
+    await flush();
+
+    // Still-valid manual pick is preserved even when a higher-priority runtime appears.
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("kimi-code");
+    expect(expectHookValue(latest.current).okRuntimes).toEqual(["codex", "grok", "kimi-code", "pi"]);
   });
 
   it("mints connect commands, surfaces final token failures, and retries manually", async () => {
