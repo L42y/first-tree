@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelConfig } from "../core/channel.js";
+import { portableShimContents } from "../core/portable-install-context.js";
 import {
   getClientServiceStatus,
   installClientService,
@@ -71,6 +72,10 @@ const originalSystemdSystemDir = process.env.FIRST_TREE_SYSTEMD_SYSTEM_DIR;
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 const originalXdgRuntimeDir = process.env.XDG_RUNTIME_DIR;
 const originalDbusSessionBusAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+const originalPath = process.env.PATH;
+const originalInstallMode = process.env.FIRST_TREE_INSTALL_MODE;
+const originalPortableRoot = process.env.FIRST_TREE_PORTABLE_ROOT;
+const originalPortableBinDir = process.env.FIRST_TREE_PORTABLE_BIN_DIR;
 
 function setPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { configurable: true, value: platform });
@@ -140,6 +145,9 @@ beforeEach(() => {
   process.env.FIRST_TREE_HOME = join(home, "ft-home");
   process.env.FIRST_TREE_SYSTEMD_SYSTEM_DIR = join(home, "systemd-system");
   process.env.XDG_CONFIG_HOME = join(home, "xdg");
+  delete process.env.FIRST_TREE_INSTALL_MODE;
+  delete process.env.FIRST_TREE_PORTABLE_ROOT;
+  delete process.env.FIRST_TREE_PORTABLE_BIN_DIR;
   process.argv = ["node", "/repo/dist/cli/index.mjs"];
   setExecPath("/opt/node/bin/node");
   process.cwd = () => "/repo";
@@ -163,6 +171,14 @@ afterEach(() => {
   else process.env.XDG_RUNTIME_DIR = originalXdgRuntimeDir;
   if (originalDbusSessionBusAddress === undefined) delete process.env.DBUS_SESSION_BUS_ADDRESS;
   else process.env.DBUS_SESSION_BUS_ADDRESS = originalDbusSessionBusAddress;
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
+  if (originalInstallMode === undefined) delete process.env.FIRST_TREE_INSTALL_MODE;
+  else process.env.FIRST_TREE_INSTALL_MODE = originalInstallMode;
+  if (originalPortableRoot === undefined) delete process.env.FIRST_TREE_PORTABLE_ROOT;
+  else process.env.FIRST_TREE_PORTABLE_ROOT = originalPortableRoot;
+  if (originalPortableBinDir === undefined) delete process.env.FIRST_TREE_PORTABLE_BIN_DIR;
+  else process.env.FIRST_TREE_PORTABLE_BIN_DIR = originalPortableBinDir;
   process.argv = [...originalArgv];
   setExecPath(originalExecPath);
   process.cwd = originalCwd;
@@ -200,6 +216,33 @@ describe("service install helpers", () => {
     execFileSyncMock.mockReturnValueOnce(`${extensionlessShim}\r\n${cmdShim}\r\n`);
 
     expect(resolveCliInvocation()).toEqual({ kind: "bin", program: realpathSync(cmdShim) });
+  });
+
+  it("keeps portable service identity stable when a legacy global binary is first on PATH", () => {
+    setPlatform("linux");
+    const prefix = join(home, "portable");
+    const root = join(prefix, "current");
+    const binDir = join(home, "custom-bin");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, channelConfig.binName), portableShimContents(root, binDir), { mode: 0o755 });
+    process.env.FIRST_TREE_INSTALL_MODE = "portable";
+    process.env.FIRST_TREE_PORTABLE_ROOT = root;
+    process.env.FIRST_TREE_PORTABLE_BIN_DIR = binDir;
+    process.env.PATH = `/usr/local/bin:${binDir}`;
+    execFileSyncMock.mockReturnValue(`/usr/local/bin/${channelConfig.binName}\n`);
+
+    const invocation = resolveCliInvocation();
+    expect(invocation).toEqual({ kind: "bin", program: join(binDir, channelConfig.binName) });
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+
+    const unit = renderSystemdUnit(invocation);
+    expect(unit).toContain(`ExecStart=${join(binDir, channelConfig.binName)} daemon start --no-interactive`);
+    expect(unit).toContain(`Environment=PATH=${binDir}:${root}/node/bin:/usr/local/bin:/usr/bin:/bin`);
+    expect(unit).not.toContain("/versions/");
+
+    const plist = renderPlist("/tmp/First Tree");
+    expect(plist).toContain(`${binDir}:${root}/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`);
+    expect(plist).not.toContain("/versions/");
   });
 
   it("renders service templates with escaped values and quoted shell arguments", () => {

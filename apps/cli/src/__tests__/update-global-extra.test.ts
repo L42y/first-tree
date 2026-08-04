@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnSyncMock = vi.hoisted(() => vi.fn());
@@ -77,12 +80,79 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  spawnSyncMock.mockImplementation((_command: string, args: string[]) =>
+    args.includes("prefix")
+      ? { status: 0, stdout: "/usr/local\n", stderr: "" }
+      : { status: 0, stdout: "null", stderr: "" },
+  );
   existsSyncMock.mockReturnValue(false);
   classifyMock.mockReturnValue({ kind: "permanent", reasonCode: "classified" });
   resolveServerUrlMock.mockReturnValue("https://hub.example///");
 });
 
 describe("global update helpers", () => {
+  it("refuses npm-global writes inside a validated portable version tree", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-npm-portable-prefix-"));
+    try {
+      const versionDir = join(root, "versions", "1.2.3");
+      const nodePrefix = join(versionDir, "node");
+      mkdirSync(nodePrefix, { recursive: true });
+      writeFileSync(
+        join(versionDir, "INSTALL.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          channel: "prod",
+          version: "1.2.3",
+          gitSha: "abc123",
+          nodeVersion: "v24.0.0",
+          packageName: "first-tree",
+          binName: "first-tree",
+          aliasName: "ft",
+          generatedAt: new Date().toISOString(),
+          platform: process.platform === "darwin" ? "darwin-x64" : "linux-x64",
+          installMode: "portable",
+          appEntry: "app/cli/index.mjs",
+        }),
+      );
+      spawnSyncMock.mockImplementation((_command: string, args: string[]) =>
+        args.includes("prefix")
+          ? { status: 0, stdout: `${nodePrefix}\n`, stderr: "" }
+          : { status: 0, stdout: "null", stderr: "" },
+      );
+      const output = vi.fn();
+      const { installGlobalSpec } = await import("../core/update.js");
+
+      await expect(installGlobalSpec("latest", { output })).resolves.toMatchObject({
+        ok: false,
+        mode: "global",
+        retryable: false,
+        reasonCode: "npm_prefix_inside_portable_install",
+        reason: expect.stringContaining("immutable portable version 1.2.3"),
+      });
+      expect(registrySpawnMock).not.toHaveBeenCalled();
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("absolute channel shim"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the npm global prefix cannot be verified", async () => {
+    spawnSyncMock.mockImplementation((_command: string, args: string[]) =>
+      args.includes("prefix")
+        ? { status: 1, stdout: "", stderr: "prefix denied" }
+        : { status: 0, stdout: "null", stderr: "" },
+    );
+    const { installGlobalSpec } = await import("../core/update.js");
+
+    await expect(installGlobalSpec("latest")).resolves.toMatchObject({
+      ok: false,
+      retryable: false,
+      reasonCode: "npm_prefix_probe_failed",
+      reason: expect.stringContaining("prefix denied"),
+    });
+    expect(registrySpawnMock).not.toHaveBeenCalled();
+  });
+
   it("rejects npm targets whose engine metadata excludes the current Node", async () => {
     spawnSyncMock.mockReturnValueOnce({
       status: 0,
@@ -166,7 +236,11 @@ describe("global update helpers", () => {
   });
 
   it("classifies npm child errors and timeout exits", async () => {
-    spawnSyncMock.mockReturnValue({ status: 0, stdout: "null", stderr: "" });
+    spawnSyncMock.mockImplementation((_command: string, args: string[]) =>
+      args.includes("prefix")
+        ? { status: 0, stdout: "/usr/local\n", stderr: "" }
+        : { status: 0, stdout: "null", stderr: "" },
+    );
     classifyMock.mockReturnValueOnce({ kind: "transient", reasonCode: "spawn_failed" });
     const errored = new FakeChild();
     registrySpawnMock.mockReturnValueOnce({ child: errored });
@@ -193,7 +267,11 @@ describe("global update helpers", () => {
   });
 
   it("stringifies non-Error npm child failures", async () => {
-    spawnSyncMock.mockReturnValue({ status: 0, stdout: "null", stderr: "" });
+    spawnSyncMock.mockImplementation((_command: string, args: string[]) =>
+      args.includes("prefix")
+        ? { status: 0, stdout: "/usr/local\n", stderr: "" }
+        : { status: 0, stdout: "null", stderr: "" },
+    );
     classifyMock.mockReturnValueOnce({ kind: "transient", reasonCode: "string_failure" });
     const child = new FakeChild();
     registrySpawnMock.mockReturnValueOnce({ child });

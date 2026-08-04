@@ -89,7 +89,14 @@ beforeEach(() => {
   bootstrapMocks.ensureFreshAccessToken.mockResolvedValue("token");
   bootstrapMocks.resolveServerUrl.mockReturnValue("https://hub.example");
   childRegistryMocks.classify.mockReturnValue({ kind: "permanent", reasonCode: "classified" });
-  spawnSyncMock.mockReturnValue({ status: 0, stdout: "0.6.0\n", stderr: "" });
+  spawnSyncMock.mockImplementation((_command: string, args: string[]) =>
+    args.includes("prefix")
+      ? { status: 0, stdout: "/usr/local\n", stderr: "" }
+      : { status: 0, stdout: "0.6.0\n", stderr: "" },
+  );
+  vi.stubEnv("FIRST_TREE_INSTALL_MODE", "");
+  vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", "");
+  vi.stubEnv("FIRST_TREE_PORTABLE_BIN_DIR", "");
 });
 
 describe("core update helpers", () => {

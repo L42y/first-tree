@@ -4,7 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { contextIntegrationReleaseManifestSchema } from "@first-tree/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   contextIntegrationMarketplaceSourcePath,
   installContextIntegration,
@@ -24,11 +24,26 @@ import { COMMAND_VERSION } from "../core/version.js";
 
 const roots: string[] = [];
 const originalFirstTreeHome = process.env.FIRST_TREE_HOME;
+const originalInstallMode = process.env.FIRST_TREE_INSTALL_MODE;
+const originalPortableRoot = process.env.FIRST_TREE_PORTABLE_ROOT;
+const originalPortableBinDir = process.env.FIRST_TREE_PORTABLE_BIN_DIR;
+
+beforeEach(() => {
+  delete process.env.FIRST_TREE_INSTALL_MODE;
+  delete process.env.FIRST_TREE_PORTABLE_ROOT;
+  delete process.env.FIRST_TREE_PORTABLE_BIN_DIR;
+});
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   if (originalFirstTreeHome === undefined) delete process.env.FIRST_TREE_HOME;
   else process.env.FIRST_TREE_HOME = originalFirstTreeHome;
+  if (originalInstallMode === undefined) delete process.env.FIRST_TREE_INSTALL_MODE;
+  else process.env.FIRST_TREE_INSTALL_MODE = originalInstallMode;
+  if (originalPortableRoot === undefined) delete process.env.FIRST_TREE_PORTABLE_ROOT;
+  else process.env.FIRST_TREE_PORTABLE_ROOT = originalPortableRoot;
+  if (originalPortableBinDir === undefined) delete process.env.FIRST_TREE_PORTABLE_BIN_DIR;
+  else process.env.FIRST_TREE_PORTABLE_BIN_DIR = originalPortableBinDir;
 });
 
 describe("context integration bundle", () => {

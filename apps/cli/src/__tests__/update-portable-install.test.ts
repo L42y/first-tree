@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childRegistryMocks = vi.hoisted(() => ({
@@ -167,7 +167,29 @@ async function makePortableFixture(
   return { root, latestPath, manifestPath, tarball, platform };
 }
 
-async function seedOldInstall(prefix: string, options: { nodeVersion?: string } = {}): Promise<void> {
+function stableShimContents(root: string, binDir: string): string {
+  return `#!/bin/sh
+set -eu
+root='${root}'
+bin_dir='${binDir}'
+export FIRST_TREE_INSTALL_MODE=portable
+export FIRST_TREE_PORTABLE_ROOT="$root"
+export FIRST_TREE_PORTABLE_BIN_DIR="$bin_dir"
+exec "$root/node/bin/node" "$root/app/cli/index.mjs" "$@"
+`;
+}
+
+function configurePortableIdentity(prefix: string, binDir = join(dirname(prefix), ".local", "bin")): void {
+  const root = join(prefix, "current");
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(join(binDir, "first-tree"), stableShimContents(root, binDir), { mode: 0o755 });
+  writeFileSync(join(binDir, "ft"), stableShimContents(root, binDir), { mode: 0o755 });
+  vi.stubEnv("FIRST_TREE_INSTALL_MODE", "portable");
+  vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", root);
+  vi.stubEnv("FIRST_TREE_PORTABLE_BIN_DIR", binDir);
+}
+
+async function seedOldInstall(prefix: string, options: { nodeVersion?: string; binDir?: string } = {}): Promise<void> {
   const nodeVersion = options.nodeVersion ?? "v24.0.0";
   await mkdir(join(prefix, "versions", "old"), { recursive: true });
   await writeFile(join(prefix, "versions", "old", "VERSION"), "old\n");
@@ -189,6 +211,8 @@ async function seedOldInstall(prefix: string, options: { nodeVersion?: string } 
     }),
   );
   await symlink(join(prefix, "versions", "old"), join(prefix, "current"));
+  const binDir = options.binDir ?? join(dirname(prefix), ".local", "bin");
+  configurePortableIdentity(prefix, binDir);
 }
 
 async function importProdUpdateModule(
@@ -229,6 +253,9 @@ beforeEach(() => {
   // Keep every test inside a disposable shim directory and exclude operator
   // installs from the inherited PATH so a test can never rewrite them.
   vi.stubEnv("PATH", isolatedPortablePath(binDir));
+  vi.stubEnv("FIRST_TREE_INSTALL_MODE", "");
+  vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", "");
+  vi.stubEnv("FIRST_TREE_PORTABLE_BIN_DIR", "");
 });
 
 afterEach(() => {
@@ -425,13 +452,18 @@ describe("installPortableSpec", () => {
     const home = tempDir("ft-portable-home-");
     const prefix = join(home, "prefix");
     const binDir = join(home, "bin");
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(join(binDir, "first-tree"), "#!/bin/sh\nexit 0\n");
-    await seedOldInstall(prefix);
+    const legacyBinDir = join(home, "legacy-global-bin");
+    const legacyBin = join(legacyBinDir, "first-tree");
+    await seedOldInstall(prefix, { binDir });
+    mkdirSync(legacyBinDir, { recursive: true });
+    writeFileSync(legacyBin, "#!/bin/sh\necho stale-global\n", { mode: 0o755 });
+    const oldSentinel = join(prefix, "versions", "old", "node", "lib", "node_modules", "first-tree", "sentinel");
+    mkdirSync(dirname(oldSentinel), { recursive: true });
+    writeFileSync(oldSentinel, "immutable-old-version\n");
     vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", join(prefix, "current"));
     vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${fixture.root}`);
     vi.stubEnv("HOME", home);
-    vi.stubEnv("PATH", `${binDir}${delimiter}${process.env.PATH ?? ""}`);
+    vi.stubEnv("PATH", `${legacyBinDir}${delimiter}${binDir}${delimiter}${process.env.PATH ?? ""}`);
 
     const { installPortableSpec } = await importProdUpdateModule();
     await expect(installPortableSpec("latest")).resolves.toEqual({
@@ -444,7 +476,10 @@ describe("installPortableSpec", () => {
     const shim = readFileSync(join(binDir, "first-tree"), "utf8");
     expect(shim).toContain("FIRST_TREE_INSTALL_MODE=portable");
     expect(shim).toContain(`FIRST_TREE_PORTABLE_ROOT="$root"`);
-    expect(readFileSync(join(binDir, "ft"), "utf8")).toContain('root="');
+    expect(shim).toContain(`FIRST_TREE_PORTABLE_BIN_DIR="$bin_dir"`);
+    expect(readFileSync(join(binDir, "ft"), "utf8")).toContain("root='");
+    expect(readFileSync(legacyBin, "utf8")).toBe("#!/bin/sh\necho stale-global\n");
+    expect(readFileSync(oldSentinel, "utf8")).toBe("immutable-old-version\n");
   });
 
   it("downloads portable payloads over HTTP and writes fallback shims when PATH has no existing shim", async () => {
@@ -495,7 +530,7 @@ describe("installPortableSpec", () => {
     await expect(installPortableSpec("latest")).resolves.toMatchObject({
       ok: false,
       mode: "portable",
-      reason: expect.stringContaining("Cannot derive portable install prefix"),
+      reason: expect.stringContaining("must name the stable current symlink"),
     });
 
     const httpFixture = await makePortableFixture({ version: "1.2.4" });
@@ -612,6 +647,71 @@ describe("installPortableSpec", () => {
     expect(readFileSync(join(prefix, "current", "VERSION"), "utf8")).toBe("old\n");
   });
 
+  it("keeps current on the old version when preparing a stable shim fails", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    vi.doMock("node:fs/promises", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs/promises")>();
+      return {
+        ...actual,
+        writeFile: async (
+          path: Parameters<typeof actual.writeFile>[0],
+          data: Parameters<typeof actual.writeFile>[1],
+          options?: Parameters<typeof actual.writeFile>[2],
+        ) => {
+          if (basename(String(path)).startsWith("ft.")) throw new Error("alias shim write denied");
+          return actual.writeFile(path, data, options);
+        },
+      };
+    });
+    const fixture = await makePortableFixture({ version: "3.0.0" });
+    const home = tempDir("ft-portable-home-");
+    const prefix = join(home, "prefix");
+    await seedOldInstall(prefix);
+    vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${fixture.root}`);
+
+    const { installPortableSpec } = await importProdUpdateModule();
+    const result = await installPortableSpec("latest");
+
+    expect(result).toMatchObject({ ok: false, mode: "portable", reason: "alias shim write denied" });
+    expect(readFileSync(join(prefix, "current", "VERSION"), "utf8")).toBe("old\n");
+    expect(readFileSync(join(home, ".local", "bin", "first-tree"), "utf8")).toContain(
+      `FIRST_TREE_PORTABLE_ROOT="$root"`,
+    );
+  });
+
+  it("keeps a committed update successful when temporary cleanup fails", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    const fixture = await makePortableFixture({ version: "3.1.0" });
+    const home = tempDir("ft-portable-home-");
+    const prefix = join(home, "prefix");
+    await seedOldInstall(prefix);
+    const cleanupPrefix = join(prefix, ".tmp", "update-");
+    let cleanupAttempts = 0;
+    vi.doMock("node:fs/promises", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs/promises")>();
+      return {
+        ...actual,
+        rm: async (path: Parameters<typeof actual.rm>[0], options?: Parameters<typeof actual.rm>[1]) => {
+          if (String(path).startsWith(cleanupPrefix) && options?.recursive) {
+            cleanupAttempts += 1;
+            throw new Error("temporary cleanup denied");
+          }
+          return actual.rm(path, options);
+        },
+      };
+    });
+    vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${fixture.root}`);
+
+    const { installPortableSpec } = await importProdUpdateModule();
+    const result = await installPortableSpec("latest");
+
+    expect(result).toEqual({ ok: true, mode: "portable", installedVersion: "3.1.0" });
+    expect(cleanupAttempts).toBe(1);
+    expect(readFileSync(join(prefix, "current", "VERSION"), "utf8")).toBe("3.1.0\n");
+  });
+
   it("rejects channel, package, bin, alias, version-channel, and asset name mismatches", async () => {
     const platform = currentPlatform();
     if (platform === null) return;
@@ -672,10 +772,11 @@ describe("installPortableSpec", () => {
 
     const rootFixture = await makePortableFixture({ version: "1.2.4" });
     vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${rootFixture.root}`);
+    vi.stubEnv("FIRST_TREE_INSTALL_MODE", "portable");
     vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", "   ");
     await expect(installPortableSpec("latest")).resolves.toMatchObject({
       ok: false,
-      reason: "FIRST_TREE_PORTABLE_ROOT is required for portable self-update.",
+      reason: expect.stringContaining("missing FIRST_TREE_PORTABLE_ROOT"),
     });
 
     vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${rootFixture.root}`);
@@ -771,7 +872,7 @@ describe("installPortableSpec", () => {
     const secondHome = tempDir("ft-portable-home-");
     const secondPrefix = join(secondHome, "prefix");
     mkdirSync(join(secondPrefix, "current"), { recursive: true });
-    vi.stubEnv("FIRST_TREE_PORTABLE_ROOT", join(secondPrefix, "current"));
+    configurePortableIdentity(secondPrefix);
     vi.stubEnv("FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL", `file://${badCurrent.root}`);
     const currentFailure = await installPortableSpec("latest");
     expect(currentFailure.ok).toBe(false);

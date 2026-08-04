@@ -781,8 +781,10 @@ function writeArtifactShim(path, appEntry) {
     `#!/bin/sh
 set -eu
 root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
+bin_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
 export FIRST_TREE_INSTALL_MODE=portable
 export FIRST_TREE_PORTABLE_ROOT="$root"
+export FIRST_TREE_PORTABLE_BIN_DIR="$bin_dir"
 exec "$root/node/bin/node" "$root/${appEntry}" "$@"
 `,
     { mode: 0o755 },

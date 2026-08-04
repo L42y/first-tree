@@ -12,7 +12,7 @@ import {
   logDir,
   migrateBakedProxyEnv,
   readFileOrFlagDrift,
-  resolveCliInvocation,
+  resolveCliInstall,
   runCapture,
   runCaptureOut,
   shellQuote,
@@ -83,7 +83,11 @@ function blockingLegacyRootUserUnitPath(scope: SystemdScope = systemdScope()): s
   return existsSync(legacyUnitPath) ? legacyUnitPath : null;
 }
 
-export function renderSystemdUnit(invocation: ResolvedBinary, scope: SystemdScope = "user"): string {
+export function renderSystemdUnit(
+  invocation: ResolvedBinary,
+  scope: SystemdScope = "user",
+  servicePath: string = systemdPathEnv(),
+): string {
   const execStart: string =
     invocation.kind === "bin"
       ? `${shellQuote(invocation.program)} daemon start --no-interactive`
@@ -99,7 +103,7 @@ export function renderSystemdUnit(invocation: ResolvedBinary, scope: SystemdScop
   // `systemd --user` does not inherit the operator's interactive shell PATH.
   // Put this CLI's Node directory first so npm/nvm-installed shebangs and
   // self-update use the same Node toolchain when supervised.
-  const pathEnv = `Environment=PATH=${shellQuote(systemdPathEnv())}\n`;
+  const pathEnv = `Environment=PATH=${shellQuote(servicePath)}\n`;
   const wantedBy = scope === "system" ? "multi-user.target" : "default.target";
 
   // Restart policy split:
@@ -257,7 +261,7 @@ function assertNoLegacyRootUserUnitDuringRefresh(): void {
 }
 
 function writeAndEnableSystemd(scope: SystemdScope): ServiceInfo {
-  const invocation = resolveCliInvocation();
+  const install = resolveCliInstall();
   ensureLogDir();
   const unitPath = systemdUnitPath(scope);
   // Upgrade buffer: lift any proxy env a prior version baked into the unit into
@@ -267,7 +271,9 @@ function writeAndEnableSystemd(scope: SystemdScope): ServiceInfo {
     migrateBakedProxyEnv(extractProxyFromSystemd(readFileSync(unitPath, "utf-8")));
   }
   mkdirSync(dirname(unitPath), { recursive: true });
-  writeFileSync(unitPath, renderSystemdUnit(invocation, scope), { mode: 0o644 });
+  writeFileSync(unitPath, renderSystemdUnit(install.invocation, scope, systemdPathEnv(install.portable)), {
+    mode: 0o644,
+  });
 
   const reloadRes = runCapture("systemctl", systemctlArgs(scope, ["daemon-reload"]), 5_000);
   if (!reloadRes.ok) {
@@ -360,8 +366,8 @@ function uninstallSystemd(): ServiceInfo {
 function systemdUnitDriftDetected(): boolean {
   const scope = systemdScope();
   if (blockingLegacyRootUserUnitPath(scope)) return true;
-  const invocation = resolveCliInvocation();
-  const expected = renderSystemdUnit(invocation, scope);
+  const install = resolveCliInstall();
+  const expected = renderSystemdUnit(install.invocation, scope, systemdPathEnv(install.portable));
   return readFileOrFlagDrift(systemdUnitPath(scope), expected);
 }
 

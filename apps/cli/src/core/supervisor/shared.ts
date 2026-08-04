@@ -5,6 +5,7 @@ import { defaultHome } from "@first-tree/shared/config";
 import { channelConfig } from "../channel.js";
 import { daemonEnvPath } from "../daemon-env.js";
 import { print } from "../output.js";
+import { type PortableInstallContext, resolvePortableInstallContext } from "../portable-install-context.js";
 import type { ResolvedBinary } from "./types.js";
 
 export type ShellResult = { ok: true } | { ok: false; stderr: string; code: number | null };
@@ -67,9 +68,11 @@ export function logDir(): string {
   return join(defaultHome(), "logs");
 }
 
-function servicePathEnv(basePaths: readonly string[]): string {
+function servicePathEnv(basePaths: readonly string[], portable?: PortableInstallContext | null): string {
   const seen = new Set<string>();
-  const paths = [dirname(process.execPath), ...basePaths].filter((value) => {
+  const identity = portable === undefined ? resolvePortableInstallContext() : portable;
+  const installPaths = identity ? [identity.binDir, identity.nodeBinDir] : [dirname(process.execPath)];
+  const paths = [...installPaths, ...basePaths].filter((value) => {
     if (seen.has(value)) return false;
     seen.add(value);
     return true;
@@ -77,12 +80,12 @@ function servicePathEnv(basePaths: readonly string[]): string {
   return paths.join(":");
 }
 
-export function systemdPathEnv(): string {
-  return servicePathEnv(SYSTEMD_BASE_PATH);
+export function systemdPathEnv(portable?: PortableInstallContext | null): string {
+  return servicePathEnv(SYSTEMD_BASE_PATH, portable);
 }
 
-export function launchdPathEnv(): string {
-  return servicePathEnv(LAUNCHD_BASE_PATH);
+export function launchdPathEnv(portable?: PortableInstallContext | null): string {
+  return servicePathEnv(LAUNCHD_BASE_PATH, portable);
 }
 
 // Proxy env keys scanned during the one-time upgrade migration below. Both
@@ -230,15 +233,25 @@ function normalizeWindowsCliBin(bin: string): string {
  *      symlink or absolute path), so this guarantees the service launches
  *      the same binary the operator invoked.
  */
-export function resolveCliInvocation(): ResolvedBinary {
+export type ResolvedCliInstall = {
+  invocation: ResolvedBinary;
+  portable: PortableInstallContext | null;
+};
+
+export function resolveCliInstall(): ResolvedCliInstall {
+  const portable = resolvePortableInstallContext();
+  if (portable) {
+    return { invocation: { kind: "bin", program: portable.cliPath }, portable };
+  }
+
   const bin = whichBin(channelConfig.binName);
   if (bin && isAbsolute(bin)) {
     const serviceBin = normalizeWindowsCliBin(bin);
     try {
       // Resolve symlinks so launchd records a stable path.
-      return { kind: "bin", program: realpathSync(serviceBin) };
+      return { invocation: { kind: "bin", program: realpathSync(serviceBin) }, portable: null };
     } catch {
-      return { kind: "bin", program: serviceBin };
+      return { invocation: { kind: "bin", program: serviceBin }, portable: null };
     }
   }
 
@@ -247,7 +260,11 @@ export function resolveCliInvocation(): ResolvedBinary {
     throw new Error("Cannot resolve CLI entry point (process.argv[1] is empty).");
   }
   const scriptAbs = isAbsolute(script) ? script : join(process.cwd(), script);
-  return { kind: "node", program: process.execPath, args: [scriptAbs] };
+  return { invocation: { kind: "node", program: process.execPath, args: [scriptAbs] }, portable: null };
+}
+
+export function resolveCliInvocation(): ResolvedBinary {
+  return resolveCliInstall().invocation;
 }
 
 export function ensureLogDir(): void {
