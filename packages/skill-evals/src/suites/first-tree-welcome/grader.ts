@@ -355,6 +355,10 @@ function containsPrematurePrSetup(text: string): boolean {
   );
 }
 
+function containsPullRequestOption(text: string): boolean {
+  return /\b(?:pr|mr)\b|pull request|merge request/iu.test(text);
+}
+
 function bestTaskOptionCount(
   chatOptionTexts: readonly string[],
   combinedText: string,
@@ -873,7 +877,7 @@ export function deriveMetrics(
   const resultArtifactObserved = hasReviewableResult(responseText);
   const timeEstimateObserved = taskOptionTexts.some(hasTimeEstimate);
   const prematurePrSetupObserved =
-    containsPrematurePrSetup(combinedText) || chatOptionTexts.some(containsPrematurePrSetup);
+    containsPrematurePrSetup(combinedText) || chatOptionTexts.some(containsPullRequestOption);
   const sourceRepoChanged = repoChanged(paths, baselines.sourceRepoHead);
 
   const forbiddenActions = forbiddenActionHits(

@@ -935,7 +935,11 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
-  it("rejects a structured pull-request option when the shim records a separate body", () => {
+  it.each([
+    ["Open pull request", "Publish the current changes."],
+    ["Draft PR", "Prepare the current changes for review."],
+    ["Prepare MR", "Publish the current changes for review."],
+  ])("rejects the structured %s option when the shim records a separate body", (label, description) => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-structured-pr-body-"));
     try {
       const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
@@ -964,8 +968,8 @@ describe("first-tree-welcome grader", () => {
                   label: "Trace session flow",
                 },
                 {
-                  description: "Publish the current changes.",
-                  label: "Open pull request",
+                  description,
+                  label,
                 },
               ]),
             ],
