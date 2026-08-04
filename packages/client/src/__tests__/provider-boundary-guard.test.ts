@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
+import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -10,6 +10,18 @@ const repoRoot = join(clientSrc, "..", "..", "..");
 
 /** Quote tokens derived from the Zod ID set — auto-expands when a provider is added. */
 const PROVIDER_LITERAL_TOKENS: readonly string[] = RUNTIME_PROVIDER_IDS.flatMap((id) => [`"${id}"`, `'${id}'`]);
+
+/**
+ * The narrower in-product auth set, derived from its own schema so that
+ * extending `runtimeAuthProviderSchema` widens this guard in the same commit
+ * that widens the driver registry. The full-provider tokens above still apply
+ * to the daemon dispatcher; this set pins the enum the dispatcher keys on.
+ */
+const AUTH_PROVIDER_LITERAL_TOKENS: readonly string[] = runtimeAuthProviderSchema.options.flatMap((id) => [
+  `"${id}"`,
+  `'${id}'`,
+  `\`${id}\``,
+]);
 
 const THIRD_PARTY_SDK_IMPORTS = [
   "@anthropic-ai/claude-agent-sdk",
@@ -20,6 +32,7 @@ const THIRD_PARTY_SDK_IMPORTS = [
 
 /** Unique composition roots allowed to name concrete providers / import adapters. */
 const COMPOSITION_ALLOWLIST = new Set([
+  "providers/auth-drivers.ts",
   "providers/builtin-registry.ts",
   "providers/builtin-probes.ts",
   "providers/skill-roots.ts",
@@ -161,6 +174,79 @@ describe("runtime provider architecture guard", () => {
     expect(probes).not.toContain("builtinProbeProviderIds");
     expect(skills).toContain("Object.freeze");
     expect(skills).not.toContain("assertSkillRootsComplete");
+  });
+
+  it("keeps the runtime-auth driver projection in one frozen, schema-exhaustive composition root", () => {
+    const drivers = readFileSync(join(clientSrc, "providers/auth-drivers.ts"), "utf8");
+    expect(drivers).toContain("Object.freeze");
+    // The key set is a projection of the narrow server-accepted auth enum, not
+    // a second handwritten known-provider list.
+    expect(drivers).toContain("satisfies Record<RuntimeAuthProvider, RuntimeAuthDriver>");
+    for (const provider of runtimeAuthProviderSchema.options) {
+      expect(drivers, `auth-drivers must register ${provider}`).toContain(provider);
+    }
+    // The contract itself stays provider-neutral.
+    const contract = readFileSync(join(clientSrc, "providers/auth-driver.ts"), "utf8");
+    expect(containsAnyProviderLiteral(contract)).toBeNull();
+    // Method-shorthand type syntax (`resolveLogin(): ...`) is NOT readonly, so
+    // the contract must declare its function members as readonly properties -
+    // the compile-time half of the immutability guarantee that Object.freeze
+    // on each production driver enforces at runtime.
+    expect(contract).toContain("readonly resolveLogin");
+    expect(contract).toContain("readonly reprobe");
+
+    // Every provider-owned factory must freeze what it hands back, so the
+    // guarantee holds regardless of how - or whether - it is composed into
+    // RUNTIME_AUTH_DRIVERS.
+    for (const file of ["claude-login.ts", "codex-login.ts", "cursor-login.ts", "grok-login.ts"]) {
+      const source = readFileSync(join(clientSrc, "runtime", file), "utf8");
+      expect(source, `${file} must freeze its returned driver`).toContain("Object.freeze");
+    }
+  });
+
+  it("keeps the daemon runtime-auth dispatcher free of provider literals, imports and branches", () => {
+    const rel = "apps/cli/src/core/runtime-auth-login.ts";
+    const source = readFileSync(join(repoRoot, rel), "utf8");
+
+    expect(source).toContain("RUNTIME_AUTH_DRIVERS");
+    const hit = containsAnyProviderLiteral(source);
+    expect(hit, `${rel} must not contain provider literal ${hit}`).toBeNull();
+    // Same file, narrower lens: the auth enum the dispatcher keys on, derived
+    // from its own schema so a new in-product target cannot widen the registry
+    // without widening this guard.
+    for (const token of AUTH_PROVIDER_LITERAL_TOKENS) {
+      expect(source, `${rel} must not contain auth provider literal ${token}`).not.toContain(token);
+    }
+    for (const provider of runtimeAuthProviderSchema.options) {
+      expect(source, `${rel} must not branch on ${provider}`).not.toMatch(
+        new RegExp(`(===|case)\\s*["']${provider}["']`),
+      );
+    }
+    // No provider-specific resolver / probe / browser-login imports remain.
+    expect(source).not.toMatch(/\b(resolve|probe|run)(Codex|Claude|Cursor|Grok)\w*/);
+    // Published failure text goes through the shared redaction boundary.
+    expect(source).toContain("redactErrorPreview");
+    expect(source).toContain("RUNTIME_AUTH_ERROR_MAX_LEN");
+  });
+
+  it("keeps provider login output bounded and incrementally scanned", () => {
+    const source = readFileSync(join(clientSrc, "runtime/runtime-login.ts"), "utf8");
+    expect(source).toContain("createAuthUrlScanner");
+    expect(source).toContain("AUTH_URL_TOKEN_MAX");
+    expect(source).toContain("LOGIN_STDERR_TAIL_MAX");
+    // No full-output accumulation, and no full-buffer handoff to consumers.
+    expect(source).not.toMatch(/\bbuffer\s*\+=/);
+    expect(source).not.toMatch(/onOutput\?\.\([^)]*,/);
+    // `pendingAuth.authUrl` is a structured field that never itself passes
+    // through redactErrorPreview, so URL candidacy is the only gate that
+    // keeps a credential-bearing string (proxy URL, redirect echo, a vendor
+    // token under a neutral key, ...) out of the capability snapshot. It must
+    // delegate to that exact sanitizer rather than re-check a subset of its
+    // rules (a partial reimplementation would fall behind the moment that
+    // helper gains a new detection rule), and it must reject a bad candidate
+    // outright rather than rewrite it.
+    expect(source).toContain("redactErrorPreview");
+    expect(source).toContain("hasCredentialShape");
   });
 
   it("keeps third-party provider SDKs out of shared and web packages", () => {

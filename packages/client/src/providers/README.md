@@ -15,6 +15,7 @@ ACK / Reset / auth / model / persistence protocol into shared catalog.
 | `createBuiltinHandlerRegistry` | Frozen `Record<RuntimeProvider, HandlerFactory>` (consumed once by `registerBuiltinHandlers`) |
 | `BUILTIN_PROVIDER_PROBES` | Frozen install-only capability probes |
 | `PROVIDER_SKILL_ROOTS` | Frozen native managed-skill roots |
+| `RUNTIME_AUTH_DRIVERS` | Frozen `Record<RuntimeAuthProvider, RuntimeAuthDriver>` for in-product login |
 
 Probe/skills paths do **not** consume a full installed handler registry.
 
@@ -54,6 +55,77 @@ capability gates — do not reverse-parse package strings.
   Claude Code target; every direct target maps to itself. Adding in-product
   OAuth requires extending the runtime-auth contract and its exact-target tests.
 
+## 2a. Runtime-auth driver (in-product login only)
+
+Only an `{ kind: "in-product", target }` provider gets a driver, and the target
+set is `runtimeAuthProviderSchema` — narrower than `runtimeProviderSchema`.
+Host-login providers (Kimi / OpenCode / Pi) never appear here, and
+`claude-code-tui` is not its own target because it shares Claude Code's
+keychain credential.
+
+| Layer | Owns | Where |
+| --- | --- | --- |
+| Daemon dispatcher | Announce, `pendingAuth`, `authUrl`, re-probe order, `lastAuthError`, redaction + truncation | `apps/cli/src/core/runtime-auth-login.ts` |
+| `RUNTIME_AUTH_DRIVERS` | Frozen projection of `RuntimeAuthProvider` → driver | `providers/auth-drivers.ts` |
+| `create<Provider>AuthDriver` | Resolve the artifact, spawn the official login, re-probe affected rows | `runtime/<provider>-login.ts` |
+
+The dispatcher must stay provider-neutral: no provider literal, no
+provider-specific resolver / probe / login import, no `if` / `switch` on a
+provider id. A driver contributes only `logLabel` / `loginLabel` /
+`artifactLabel` copy plus `resolveLogin()` and `reprobe()`; it never publishes a
+capability entry, and it never owns retry, ordering, or error policy.
+
+Because the dispatcher owns ordering, a driver may resolve slowly, print its
+sign-in URL at any moment, or throw: entry writes are chained so the URL always
+lands before the terminal re-probe, and a thrown resolver or login is contained
+and reflected the same way a reported failure is.
+
+`reprobe()` returns rows in publish order and may return more than one when
+providers share a credential (a Claude login refreshes both Claude rows while
+the TUI is enabled, and neither probes nor writes the TUI row while it is
+centrally disabled). Only the row matching the login target carries
+`lastAuthError`.
+
+Adding an in-product provider therefore means: extend
+`runtimeAuthProviderSchema`, add a `create<Provider>AuthDriver` in that
+provider's own login module, and register it in `RUNTIME_AUTH_DRIVERS` — the
+`satisfies Record<RuntimeAuthProvider, RuntimeAuthDriver>` will not compile
+until you do. Inject a driver (or a whole table) for tests; there is no
+process-global mutable registry to install into. Every `create<Provider>AuthDriver`
+returns an `Object.freeze`d driver, and the `RuntimeAuthDriver` contract
+declares `resolveLogin` / `reprobe` as `readonly` properties (not TS method
+shorthand, which is not readonly) — so an importer of `RUNTIME_AUTH_DRIVERS`
+cannot repoint a driver's methods for the rest of the process, and the
+guarantee holds even for a driver constructed outside the table.
+
+**Login output is bounded.** A browser login may stream for the whole
+five-minute window, so the subprocess retains no full output buffer: the
+fallback sign-in URL comes from an incremental scanner whose only carried state
+is the current partial token, and stderr keeps a bounded tail. `runLoginSubprocess`
+feeds both stdout and stderr to the same scanner, so a URL candidate can come
+from either stream. Because `pendingAuth.authUrl` is a structured field that
+never passes through `redactErrorPreview` itself (see below), URL candidacy is
+itself a no-secret boundary: `hasCredentialShape` rejects a candidate the
+moment `redactErrorPreview` would change it — URL userinfo, a vendor-prefixed
+token shape under any key (or inside a URL fragment), an Authorization/Bearer
+shape, or a credential-named key=value pair — rather than re-checking a
+narrower subset of those rules that could fall behind. Rejection never
+rewrites the URL (an OAuth query string is part of the provider's protocol),
+and scanning continues to a later, legitimate URL in the same output.
+
+Every error/failure string the dispatcher republishes — `CapabilityEntry.error`
+and `lastAuthError.message`, and nothing else — passes through
+`redactErrorPreview` under a hard ceiling that counts the helper's truncation
+ellipsis. That covers the login's own verdict and the `error` of *each* row a
+`reprobe()` returns, including the extra rows of a shared-credential driver,
+whose detection text comes from the same hosts and subprocesses. Structured
+fields such as `pendingAuth.authUrl` or the detected version are not error text
+and are not redacted.
+Starting a login also drops the previous attempt's `error` and `lastAuthError`
+instead of carrying them onto the pending entry, so nothing escapes the
+boundary by riding an older snapshot. Do not put that ceiling on the shared
+wire schema — a `.max()` there breaks rolling daemon/server compatibility.
+
 ## 3. Handler V1 contract
 
 Each factory must provide `start` / `resume` / `inject` / `suspend` /
@@ -81,7 +153,8 @@ fallback to another provider or default config is forbidden.
 1. Handler factory in `createBuiltinHandlerRegistry`.
 2. Install probe in `BUILTIN_PROVIDER_PROBES`.
 3. Skill root in `PROVIDER_SKILL_ROOTS`.
-4. Binary remediation may re-export catalog install/login helpers; adapter
+4. Auth driver in `RUNTIME_AUTH_DRIVERS` — only for an in-product OAuth target.
+5. Binary remediation may re-export catalog install/login helpers; adapter
    protocol keywords stay local.
 
 ## 7. Minimum test gates
