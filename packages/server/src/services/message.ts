@@ -863,13 +863,10 @@ async function sendMessageInner(
         ? openingMessage.metadata.mentions.filter((value): value is string => typeof value === "string")
         : [];
       const candidateTargetAgentId = openingMentions.length === 1 ? openingMentions[0] : undefined;
-      const candidateTarget = participants.find((participant) => participant.agentId === candidateTargetAgentId);
       if (
         !openingMessage ||
         readFirstChatOrientationMessageMetadata(openingMessage.metadata) === null ||
-        !candidateTargetAgentId ||
-        !candidateTarget ||
-        candidateTarget.type === "human"
+        !candidateTargetAgentId
       ) {
         throw new Error(`Unexpected: pending first-chat Orientation "${chatId}" has no trusted target bootstrap`);
       }

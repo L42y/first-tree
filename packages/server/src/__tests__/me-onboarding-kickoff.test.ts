@@ -15,7 +15,7 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { createAgent } from "../services/agent.js";
-import { addParticipant } from "../services/chat.js";
+import { addParticipant, removeParticipant } from "../services/chat.js";
 import { pollInbox } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -223,6 +223,53 @@ describe("POST /me/onboarding/kickoff", () => {
         expect.objectContaining({ content: "First Tree is getting the onboarding agent up to speed." }),
       ]),
     );
+  });
+
+  it("keeps ordinary messages working after the original Orientation target is removed", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const targetAgent = await createOrgAgent(app, admin);
+    const otherAgent = await createOrgAgent(app, admin);
+
+    const res = await app.inject({
+      method: "POST",
+      url: KICKOFF_URL,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: {
+        organizationId: admin.organizationId,
+        agentUuid: targetAgent.uuid,
+        bootstrap: "First Tree is getting the onboarding agent up to speed.",
+        topic: "Get started with First Tree",
+        orientation: 1,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const { chatId } = res.json<{ chatId: string }>();
+    await addParticipant(app.db, chatId, admin.humanAgentUuid, { agentId: otherAgent.uuid });
+    await removeParticipant(app.db, chatId, admin.humanAgentUuid, targetAgent.uuid);
+
+    const unrelated = await sendMessage(app.db, chatId, admin.humanAgentUuid, {
+      format: "text",
+      content: `@${otherAgent.name} please handle this separate question.`,
+      metadata: { mentions: [otherAgent.uuid] },
+      source: "web",
+    });
+    const [pendingChat] = await app.db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
+    expect(readFirstChatOrientationChatState(pendingChat?.metadata)).toBe(FIRST_CHAT_ORIENTATION_CHAT_STATES.PENDING);
+    expect(unrelated.message.metadata).not.toHaveProperty(FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY);
+    const otherWake = (await pollInbox(app.db, otherAgent.inboxId, 10)).find(
+      (entry) => entry.messageId === unrelated.message.id,
+    );
+    expect(otherWake?.message.precedingMessages).toEqual([]);
+
+    await expect(
+      sendMessage(app.db, chatId, admin.humanAgentUuid, {
+        format: "text",
+        content: "Please continue the onboarding handoff.",
+        metadata: { mentions: [targetAgent.uuid] },
+        source: "web",
+      }),
+    ).rejects.toThrow("Sending a message requires an explicit recipient.");
   });
 
   it("replays a pending Orientation bootstrap only to its original target on a multi-recipient continuation", async () => {

@@ -42,8 +42,10 @@ Web → kickoff API → Inbox → runtime boundary that deterministic component 
    of leaving an unrenderable silent chat.
 7. Before completing a fresh Orientation, add another participant and address only that participant. The message wakes
    only its stated recipient, does not receive the onboarding bootstrap, and leaves Orientation pending for the original
-   target. Then address the original target and the added participant together: both receive the visible turn, but only
-   the original target receives the bootstrap and consumes the one-time handoff.
+   target. Remove the original target and repeat: messages to remaining participants still work while Orientation stays
+   pending, and a send to the removed target fails through ordinary routing validation. Re-add the original target, then
+   address it and the added participant together: both receive the visible turn, but only the original target receives
+   the bootstrap and consumes the one-time handoff.
 8. After completing Orientation, add another participant and let the marked bootstrap age beyond the ordinary replay
    window. Address that participant on a later unrelated turn and verify the old bootstrap is not replayed. Also load a
    completed chat history slice containing the bootstrap but not the original continuation: the card stays compact from
