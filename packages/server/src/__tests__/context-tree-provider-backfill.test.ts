@@ -7,7 +7,9 @@ import {
   resolveContextTreeProvider,
 } from "@first-tree/shared";
 import { eq, sql } from "drizzle-orm";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
+import { sslOptions } from "../db/connection.js";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { createOrganization } from "../services/organization.js";
@@ -21,6 +23,27 @@ const migrationSql = readFileSync(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function databaseUrlWithApplicationName(url: string, applicationName: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("application_name", applicationName);
+  return parsed.toString();
+}
+
+async function waitForPostgresLockWait(observer: ReturnType<typeof postgres>, applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await observer<{ wait_event_type: string | null }[]>`
+      SELECT wait_event_type
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND application_name = ${applicationName}
+    `;
+    if (rows.some((row) => row.wait_event_type === "Lock")) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for PostgreSQL lock: ${applicationName}`);
 }
 
 describe("Context Tree provider backfill migration", () => {
@@ -173,5 +196,69 @@ describe("Context Tree provider backfill migration", () => {
       .from(organizationSettings)
       .where(eq(organizationSettings.namespace, "context_tree"));
     expect(secondRun).toEqual(firstRun);
+  });
+
+  it("skips a stale candidate when the binding changes while the migration waits for its row lock", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const organization = await createOrganization(app.db, {
+      name: `backfill-race-${randomUUID()}`,
+      displayName: "Backfill Race Team",
+    });
+    const originalValue = { repo: "https://github.com/acme/original.git", branch: "main" };
+    const concurrentValue = { repo: "git@forge.internal:group/replacement.git", branch: "main" };
+    await app.db.insert(organizationSettings).values({
+      organizationId: organization.id,
+      namespace: "context_tree",
+      value: originalValue,
+      version: 7,
+      updatedBy: admin.userId,
+    });
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the migration concurrency test");
+    const applicationName = `context_tree_provider_backfill_${randomUUID().slice(0, 8)}`;
+    const blocker = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const migrationWriter = postgres(databaseUrlWithApplicationName(databaseUrl, applicationName), {
+      max: 1,
+      ...sslOptions(databaseUrl),
+    });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let blockerCommitted = false;
+    try {
+      await blocker`BEGIN`;
+      await blocker`
+        UPDATE organization_settings
+        SET updated_at = updated_at
+        WHERE organization_id = ${organization.id}
+          AND namespace = 'context_tree'
+      `;
+
+      const migration = migrationWriter.unsafe(migrationSql).then((result) => result);
+      await waitForPostgresLockWait(observer, applicationName);
+
+      await blocker`
+        UPDATE organization_settings
+        SET value = ${JSON.stringify(concurrentValue)}::jsonb,
+            version = version + 1,
+            updated_at = now()
+        WHERE organization_id = ${organization.id}
+          AND namespace = 'context_tree'
+      `;
+      await blocker`COMMIT`;
+      blockerCommitted = true;
+      await migration;
+
+      const [row] = await app.db
+        .select({ value: organizationSettings.value, version: organizationSettings.version })
+        .from(organizationSettings)
+        .where(eq(organizationSettings.organizationId, organization.id));
+      expect(row).toEqual({ value: concurrentValue, version: 8 });
+    } finally {
+      if (!blockerCommitted) await blocker`ROLLBACK`;
+      await blocker.end();
+      await migrationWriter.end();
+      await observer.end();
+    }
   });
 });

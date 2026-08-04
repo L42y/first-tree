@@ -2,6 +2,7 @@ WITH eligible_bindings AS (
 	SELECT
 		settings.organization_id,
 		settings.value,
+		settings.version AS source_version,
 		settings.value ->> 'repo' AS repo,
 		settings.value ->> 'branch' AS branch,
 		connection.instance_origin
@@ -16,6 +17,7 @@ WITH eligible_bindings AS (
 	SELECT
 		organization_id,
 		value,
+		source_version,
 		repo,
 		branch,
 		regexp_match(
@@ -39,6 +41,7 @@ WITH eligible_bindings AS (
 	SELECT
 		organization_id,
 		value,
+		source_version,
 		repo,
 		branch,
 		https_parts,
@@ -90,6 +93,8 @@ WITH eligible_bindings AS (
 ), provider_candidates AS (
 	SELECT
 		organization_id,
+		value AS source_value,
+		source_version,
 		CASE
 			WHEN
 				branch_valid
@@ -139,6 +144,8 @@ SET
 FROM provider_candidates AS candidate
 WHERE settings.organization_id = candidate.organization_id
 	AND settings.namespace = 'context_tree'
+	AND settings.value = candidate.source_value
+	AND settings.version = candidate.source_version
 	AND candidate.provider IS NOT NULL
 	AND jsonb_typeof(settings.value) = 'object'
 	AND jsonb_typeof(settings.value -> 'repo') = 'string'
