@@ -30,7 +30,7 @@ describe("first-tree-welcome floor invariants", () => {
   it("implements periodic coverage for every concrete non-catch-all matrix row", () => {
     const periodicCases = cases.filter((evalCase) => evalCase.tier === "periodic");
 
-    expect(periodicCases).toHaveLength(10);
+    expect(periodicCases).toHaveLength(11);
     expect(periodicCases.every((evalCase) => evalCase.status === "implemented")).toBe(true);
     expect(periodicCases.some((evalCase) => hasTag(evalCase, "catch-all"))).toBe(false);
   });
@@ -109,9 +109,40 @@ describe("first-tree-welcome floor invariants", () => {
     expect(description).not.toContain("local project folder path");
     expect(skillMarkdown).toContain("Treat the opening message as the user's onboarding request.");
     expect(skillMarkdown).toContain("local project folder path");
-    expect(skillMarkdown).toContain("GitHub/GitLab repo URL");
+    expect(skillMarkdown).toContain("Git repository URL");
     expect(skillMarkdown).toContain("`gh auth login` or `glab auth login`");
     expect(skillMarkdown).not.toContain("First Tree sent it");
+  });
+
+  it("keeps the post-orientation guidance on the value-first task ladder", () => {
+    const l0 = skillMarkdown.indexOf("### L0 — Show concrete understanding");
+    const l1 = skillMarkdown.indexOf("### L1 — Quick Win");
+    const l2 = skillMarkdown.indexOf("### L2 — Longer value work");
+    const l3 = skillMarkdown.indexOf("### L3 — Contextual capability handoff");
+
+    expect(l0).toBeGreaterThan(-1);
+    expect(l1).toBeGreaterThan(l0);
+    expect(l2).toBeGreaterThan(l1);
+    expect(l3).toBeGreaterThan(l2);
+    expect(skillMarkdown).toContain("exactly one Quick Win");
+    expect(skillMarkdown).toContain("read-only");
+    expect(skillMarkdown).toContain("about two minutes");
+    expect(skillMarkdown).toContain("**2–3 options**");
+    expect(skillMarkdown).toContain("rough time range");
+    expect(skillMarkdown).toContain("inspectable outcome");
+    expect(skillMarkdown).toMatch(
+      /Do not include Context Tree, GitHub App, repository setup, or authorization in this first menu/u,
+    );
+  });
+
+  it("keeps task-chat briefs self-contained and reuses ordinary chat progress", () => {
+    expect(skillMarkdown).toContain("Goal");
+    expect(skillMarkdown).toContain("Deliverable");
+    expect(skillMarkdown).toContain("Verification");
+    expect(skillMarkdown).toContain("Progress communication");
+    expect(skillMarkdown).toContain("`chat update --description`");
+    expect(skillMarkdown).toContain("ordinary completion message");
+    expect(skillMarkdown).toContain("Do not invent a second orchestration or progress protocol");
   });
 
   it("keeps GitLab MR attention provider-native and independent of the GitHub App", () => {

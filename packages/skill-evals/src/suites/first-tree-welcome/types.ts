@@ -3,7 +3,7 @@ import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
 export type WelcomeRole = "admin" | "invitee";
-export type WelcomeChatScenario = "onboarding" | "team-onboarding" | "tree-setup";
+export type WelcomeChatScenario = "onboarding" | "selected-task" | "team-onboarding" | "tree-setup";
 export type WelcomeRepoState = "none" | "local-readable" | "selected-readable" | "selected-auth-fails" | "unknown";
 export type WelcomeTreeState = "none" | "empty" | "populated" | "unknown";
 export type WelcomeGithubAppState = "installed" | "missing" | "unknown";
@@ -16,10 +16,11 @@ export type WelcomeExpectedAction =
   | "report_auth_failure_without_claiming_repo_read"
   | "value_first_then_setup_handoff"
   | "guide_repo_selection_without_claiming_repo_read"
-  | "offer_tree_build_with_code_value"
+  | "offer_task_ladder_before_tree_handoff"
   | "offer_bounded_first_tasks_from_repo_and_tree"
   | "offer_repo_value_without_claiming_tree_ready"
   | "offer_invitee_value_without_admin_setup"
+  | "spawn_selected_task_chat"
   | "give_evidence_value_or_ask_for_input";
 
 export type FirstTreeWelcomeFixture = {
@@ -76,6 +77,7 @@ export type FixtureValidation = {
 };
 
 export type EvalMetrics = {
+  capabilitySetupOptionObserved: boolean;
   chatAskCount: number;
   chatOptionCount: number | null;
   chatText: string;
@@ -89,12 +91,16 @@ export type EvalMetrics = {
   forbiddenSideEffectHits: readonly string[];
   firstTreeArgv: readonly (readonly string[])[];
   fixtureValidationOk: boolean;
+  longerTaskOptionCount: number;
+  progressContractObserved: boolean;
+  quickWinOptionCount: number;
   repoEvidenceReadObserved: boolean;
   runnerExitCode: number | null;
   skillFileReadObserved: boolean;
   sourceRepoChanged: boolean;
+  selfContainedTaskBriefObserved: boolean;
+  taskChatCreateCount: number;
   taskOptionsObserved: boolean;
-  treeBuildOptionObserved: boolean;
   treeEvidenceReadObserved: boolean;
 };
 

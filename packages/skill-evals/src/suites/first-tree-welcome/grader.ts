@@ -159,6 +159,18 @@ function containsAny(haystack: string, needles: readonly string[]): boolean {
   return false;
 }
 
+function offersBothRepoEntryChoices(text: string): boolean {
+  const localPathObserved =
+    /local project folder path|local clone path|local repository path|local repo path|本地(?:项目|仓库|克隆)?路径/iu.test(
+      text,
+    );
+  const repositoryUrlObserved =
+    /git repository url|github repo(?:sitory)? url|github url|gitlab repo(?:sitory)? url|gitlab url|仓库\s*url/iu.test(
+      text,
+    );
+  return localPathObserved && repositoryUrlObserved;
+}
+
 function countMatches(haystack: string, needles: readonly string[]): number {
   const normalizedHaystack = normalizeForMatch(haystack);
   let count = 0;
@@ -335,6 +347,64 @@ function bestTaskOptionCount(
   return countTaskOptionLines(combinedText);
 }
 
+function isQuickWinOption(text: string): boolean {
+  const hasInspectableResult =
+    /return|deliver|produce|provide|show|summari[sz]e|map|list|report|identify|给出|返回|产出|提供|总结|梳理|列出/iu.test(
+      text,
+    ) &&
+    /map|summary|report|file reference|file list|finding|diagram|table|explanation|recommendation|flow|清单|摘要|报告|文件引用|流程图|结论|建议/iu.test(
+      text,
+    );
+  return (
+    /quick win|快速成果|快速胜利/iu.test(text) &&
+    /read[- ]?only|只读/iu.test(text) &&
+    /about two minutes|roughly two minutes|about 2 minutes|roughly 2 minutes|~\s*2\s*min|约\s*2\s*分钟/iu.test(text) &&
+    hasInspectableResult
+  );
+}
+
+function taskLadderObserved(metrics: EvalMetrics): boolean {
+  return (
+    metrics.taskOptionsObserved &&
+    metrics.quickWinOptionCount === 1 &&
+    metrics.longerTaskOptionCount >= 1 &&
+    !metrics.capabilitySetupOptionObserved
+  );
+}
+
+function isLongerTaskOption(text: string): boolean {
+  const hasRange =
+    /\b\d+\s*[–—-]\s*\d+\s*(?:minutes?|mins?|hours?|hrs?)\b|\b(?:a few hours|half a day)\b|约\s*\d+\s*[–—-]\s*\d+\s*(?:分钟|小时)/iu.test(
+      text,
+    );
+  const hasOutcome =
+    /deliverable|inspectable|output|result|report|summary|map|diff|tests?|passing|pr\b|mr\b|产出|结果|报告|摘要|图|测试/iu.test(
+      text,
+    );
+  return hasRange && hasOutcome && !isQuickWinOption(text);
+}
+
+function taskBriefText(argv: readonly string[]): string {
+  return argv.join("\n");
+}
+
+function isSelfContainedTaskBrief(text: string): boolean {
+  return (
+    /\bGoal\s*:/iu.test(text) &&
+    /\bDeliverable\s*:/iu.test(text) &&
+    /\bVerification\s*:/iu.test(text) &&
+    /source-repo|repository|repo\b|\.\/|src\//iu.test(text)
+  );
+}
+
+function hasOrdinaryProgressContract(text: string): boolean {
+  return (
+    /Progress communication\s*:/iu.test(text) &&
+    /chat update --description/iu.test(text) &&
+    /ordinary completion message/iu.test(text)
+  );
+}
+
 function treeStatus(paths: RunPaths): string {
   const contextTreePath = join(paths.workspacePath, "context-tree");
   if (!existsSync(contextTreePath)) return "";
@@ -450,8 +520,8 @@ function forbiddenActionHits(
     if (
       (action === "seed-tree" || action === "seed-tree-in-welcome-chat") &&
       // Fire on an actual seed/init/bind/create invocation (argv) OR a
-      // past/present-tense claim that a seed happened — NOT a mere gloss that a
-      // separate tree-build option "will seed" the tree, which is now offered.
+      // past/present-tense claim that a seed happened — NOT a mere explanation
+      // of what a later, separately accepted tree-build chat will do.
       (/first-tree(?:-staging)?\s+tree\s+(?:seed|init|bind|create)\b/iu.test(firstTreeText) ||
         /seeded the tree|seeding the tree/iu.test(combinedText))
     ) {
@@ -539,6 +609,7 @@ export function deriveMetrics(
   const modelOutputTexts: string[] = [];
   const chatTexts: string[] = [];
   const chatOptionTexts: string[] = [];
+  const taskChatBriefTexts: string[] = [];
   let chatAskCount = 0;
   let chatOptionCount: number | null = null;
 
@@ -567,6 +638,9 @@ export function deriveMetrics(
       const argv = event.argv;
       if (!isStringArray(argv)) continue;
       firstTreeArgv.push([...argv]);
+      if (argv[0] === "chat" && argv[1] === "create" && !argv.includes("--help")) {
+        taskChatBriefTexts.push(taskBriefText(argv));
+      }
       if (argv[0] === "chat" && ["ask", "send", "update"].includes(argv[1] ?? "") && !argv.includes("--help")) {
         chatTexts.push(collectChatText(argv));
         if (argv[1] === "ask") chatAskCount += 1;
@@ -588,17 +662,24 @@ export function deriveMetrics(
     taskOptionCount !== null
       ? taskOptionCount >= 2 && taskOptionCount <= 3
       : countMatches(combinedText, taskOptionHints) >= 2;
+  const quickWinOptionCount = chatOptionTexts.filter(isQuickWinOption).length;
+  const longerTaskOptionCount = chatOptionTexts.filter(isLongerTaskOption).length;
   const evidenceSnippets = evalCase.expected.evidenceSnippets ?? [];
   const contextStatus = treeStatus(paths);
   const baselines = baselineHeads(events);
-  const treeBuildOptionObserved = setupTaskOptionObserved(chatOptionTexts, combinedText);
+  const capabilitySetupOptionObserved = setupTaskOptionObserved(chatOptionTexts, combinedText);
+  const taskChatCreateCount = taskChatBriefTexts.length;
+  const selfContainedTaskBriefObserved =
+    taskChatBriefTexts.length > 0 && taskChatBriefTexts.every(isSelfContainedTaskBrief);
+  const progressContractObserved =
+    taskChatBriefTexts.length > 0 && taskChatBriefTexts.every(hasOrdinaryProgressContract);
 
   const forbiddenActions = forbiddenActionHits(
     evalCase,
     combinedText,
     chatAskCount,
     taskOptionsObserved,
-    treeBuildOptionObserved,
+    capabilitySetupOptionObserved,
     firstTreeArgv,
   );
   const forbiddenClaims = forbiddenClaimHits(
@@ -610,25 +691,33 @@ export function deriveMetrics(
   const forbiddenSideEffects = forbiddenSideEffectHits(events, firstTreeArgv);
 
   return {
+    capabilitySetupOptionObserved,
     chatAskCount,
     chatOptionCount: chatOptionCount ?? taskOptionCount,
     chatText,
     contextTreeChanged: treeChanged(paths, baselines.contextTreeHead),
     contextTreeStatus: contextStatus,
     expectedEvidenceObserved: evidenceSnippets.length === 0 || countMatches(combinedText, evidenceSnippets) >= 2,
-    expectedResponseObserved: containsAny(combinedText, evalCase.expected.requiredResponseHints),
+    expectedResponseObserved:
+      evalCase.expected.action === "ask_for_repo_path_or_url"
+        ? offersBothRepoEntryChoices(combinedText)
+        : containsAny(combinedText, evalCase.expected.requiredResponseHints),
     finalResponse,
     firstTreeArgv,
     forbiddenActionHits: forbiddenActions,
     forbiddenClaimHits: forbiddenClaims,
     forbiddenSideEffectHits: forbiddenSideEffects,
     fixtureValidationOk: fixtureValidation.ok,
+    longerTaskOptionCount,
+    progressContractObserved,
+    quickWinOptionCount,
     repoEvidenceReadObserved,
     runnerExitCode,
     skillFileReadObserved,
     sourceRepoChanged: repoChanged(paths, baselines.sourceRepoHead),
+    selfContainedTaskBriefObserved,
+    taskChatCreateCount,
     taskOptionsObserved,
-    treeBuildOptionObserved,
     treeEvidenceReadObserved,
   };
 }
@@ -647,9 +736,10 @@ export const GRADED_ACTIONS: ReadonlySet<WelcomeExpectedAction> = new Set([
   "report_auth_failure_without_claiming_repo_read",
   "value_first_then_setup_handoff",
   "guide_repo_selection_without_claiming_repo_read",
-  "offer_tree_build_with_code_value",
+  "offer_task_ladder_before_tree_handoff",
   "offer_bounded_first_tasks_from_repo_and_tree",
   "offer_repo_value_without_claiming_tree_ready",
+  "spawn_selected_task_chat",
 ]);
 
 /**
@@ -702,7 +792,7 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
       metrics.repoEvidenceReadObserved &&
       metrics.treeEvidenceReadObserved &&
       metrics.expectedEvidenceObserved &&
-      metrics.taskOptionsObserved
+      taskLadderObserved(metrics)
     );
   }
 
@@ -722,8 +812,8 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
     return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved && !metrics.taskOptionsObserved;
   }
 
-  if (evalCase.expected.action === "offer_tree_build_with_code_value") {
-    return metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved && metrics.taskOptionsObserved;
+  if (evalCase.expected.action === "offer_task_ladder_before_tree_handoff") {
+    return metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved && taskLadderObserved(metrics);
   }
 
   if (evalCase.expected.action === "offer_bounded_first_tasks_from_repo_and_tree") {
@@ -731,12 +821,18 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
       metrics.repoEvidenceReadObserved &&
       metrics.treeEvidenceReadObserved &&
       metrics.expectedEvidenceObserved &&
-      metrics.taskOptionsObserved
+      taskLadderObserved(metrics)
     );
   }
 
   if (evalCase.expected.action === "offer_repo_value_without_claiming_tree_ready") {
-    return metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved && metrics.taskOptionsObserved;
+    return metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved && taskLadderObserved(metrics);
+  }
+
+  if (evalCase.expected.action === "spawn_selected_task_chat") {
+    return (
+      metrics.taskChatCreateCount === 1 && metrics.selfContainedTaskBriefObserved && metrics.progressContractObserved
+    );
   }
 
   return false;
@@ -760,7 +856,7 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
   }
   if (
     evalCase.expected.action === "offer_invitee_value_without_admin_setup" ||
-    evalCase.expected.action === "offer_tree_build_with_code_value" ||
+    evalCase.expected.action === "offer_task_ladder_before_tree_handoff" ||
     evalCase.expected.action === "offer_repo_value_without_claiming_tree_ready" ||
     evalCase.expected.action === "value_first_then_setup_handoff"
   ) {
@@ -771,11 +867,34 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
   }
   if (
     (evalCase.expected.action === "offer_invitee_value_without_admin_setup" ||
-      evalCase.expected.action === "offer_tree_build_with_code_value" ||
+      evalCase.expected.action === "offer_task_ladder_before_tree_handoff" ||
       evalCase.expected.action === "offer_repo_value_without_claiming_tree_ready") &&
     !metrics.taskOptionsObserved
   ) {
     notes.push("Two or three bounded first-task options were not observed.");
+  }
+  if (
+    (evalCase.expected.action === "offer_invitee_value_without_admin_setup" ||
+      evalCase.expected.action === "offer_task_ladder_before_tree_handoff" ||
+      evalCase.expected.action === "offer_bounded_first_tasks_from_repo_and_tree" ||
+      evalCase.expected.action === "offer_repo_value_without_claiming_tree_ready") &&
+    metrics.quickWinOptionCount !== 1
+  ) {
+    notes.push(`Expected exactly one Quick Win option; observed ${metrics.quickWinOptionCount}.`);
+  }
+  if (
+    (evalCase.expected.action === "offer_invitee_value_without_admin_setup" ||
+      evalCase.expected.action === "offer_task_ladder_before_tree_handoff" ||
+      evalCase.expected.action === "offer_bounded_first_tasks_from_repo_and_tree" ||
+      evalCase.expected.action === "offer_repo_value_without_claiming_tree_ready") &&
+    metrics.longerTaskOptionCount < 1
+  ) {
+    notes.push("No longer value task with a rough time range and inspectable outcome was observed.");
+  }
+  if (evalCase.expected.action === "spawn_selected_task_chat") {
+    if (metrics.taskChatCreateCount !== 1) notes.push("Exactly one selected-task chat was not created.");
+    if (!metrics.selfContainedTaskBriefObserved) notes.push("The selected-task brief was not self-contained.");
+    if (!metrics.progressContractObserved) notes.push("The selected-task brief did not reuse ordinary chat progress.");
   }
   if (evalCase.expected.action === "route_to_tree_skill" && metrics.taskOptionsObserved) {
     notes.push("Tree kickoff row offered value-chat task options.");

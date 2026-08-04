@@ -19,6 +19,7 @@ function findCase(id: string): FirstTreeWelcomeEvalCase {
 
 function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
   return {
+    capabilitySetupOptionObserved: false,
     chatAskCount: 0,
     chatOptionCount: null,
     chatText: "",
@@ -32,12 +33,16 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     forbiddenClaimHits: [],
     forbiddenSideEffectHits: [],
     fixtureValidationOk: true,
+    longerTaskOptionCount: 0,
+    progressContractObserved: false,
+    quickWinOptionCount: 0,
     repoEvidenceReadObserved: false,
     runnerExitCode: 0,
     skillFileReadObserved: true,
     sourceRepoChanged: false,
+    selfContainedTaskBriefObserved: false,
+    taskChatCreateCount: 0,
     taskOptionsObserved: false,
-    treeBuildOptionObserved: false,
     treeEvidenceReadObserved: false,
     ...overrides,
   };
@@ -140,6 +145,29 @@ describe("first-tree-welcome grader", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it.each([
+    "Please send one local project folder path so I can inspect it first.",
+    "Please send one Git repository URL so I can inspect it first.",
+  ])("requires both no-repo entry choices instead of accepting one alone: %s", (response) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-row3-both-entry-choices-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      const metrics = deriveMetrics(
+        [skillReadEvent(), assistantMessageEvent(response)],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
   });
 
   it("fails row 3 when setup is packaged as first-task options", () => {
@@ -327,7 +355,7 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
-  it("passes readable-repo-empty-tree when Build your Context Tree is offered as a first-class option", () => {
+  it("rejects readable-repo-empty-tree when Context Tree setup is mixed into the first menu", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-empty-tree-build-option-"));
     try {
       const evalCase = findCase("first-tree-welcome-readable-repo-empty-tree-periodic");
@@ -366,16 +394,16 @@ describe("first-tree-welcome grader", () => {
 
       expect(metrics.repoEvidenceReadObserved).toBe(true);
       expect(metrics.taskOptionsObserved).toBe(true);
-      expect(metrics.treeBuildOptionObserved).toBe(true);
-      expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(metrics.capabilitySetupOptionObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toContain("setup-as-first-task");
       expect(metrics.forbiddenSideEffectHits).toEqual([]);
-      expect(casePassed(evalCase, metrics)).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
   });
 
-  it("passes readable-repo-empty-tree when tree setup is only a separate handoff note", () => {
+  it("passes readable-repo-empty-tree with a Quick Win and timed longer task before setup", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-empty-tree-setup-handoff-"));
     try {
       const evalCase = findCase("first-tree-welcome-readable-repo-empty-tree-periodic");
@@ -388,11 +416,19 @@ describe("first-tree-welcome grader", () => {
               "chat",
               "ask",
               "baixiaohang",
-              "I read the repo; choose a code-first task. The separate tree setup chat can build shared memory later.",
+              "I read the repo; choose a code-first task.",
               "--options",
               JSON.stringify([
-                { description: "Debug the expired session flow.", label: "Fix session" },
-                { description: "Trace checkout reliability failures.", label: "Trace checkout" },
+                {
+                  description:
+                    "Quick Win · about two minutes · read-only — trace the expired session flow and return a file map.",
+                  label: "Trace session",
+                },
+                {
+                  description:
+                    "About 30–60 minutes — add checkout recovery coverage; deliverable: a focused test diff and passing output.",
+                  label: "Add checkout test",
+                },
               ]),
             ],
             phase: "model",
@@ -407,6 +443,9 @@ describe("first-tree-welcome grader", () => {
       );
 
       expect(metrics.taskOptionsObserved).toBe(true);
+      expect(metrics.quickWinOptionCount).toBe(1);
+      expect(metrics.longerTaskOptionCount).toBe(1);
+      expect(metrics.capabilitySetupOptionObserved).toBe(false);
       expect(metrics.forbiddenActionHits).toEqual([]);
       expect(casePassed(evalCase, metrics)).toBe(true);
     } finally {
@@ -476,12 +515,148 @@ describe("first-tree-welcome grader", () => {
           chatOptionCount: 3,
           expectedEvidenceObserved: true,
           finalResponse: "I found the expired session TODO and Checkout Reliability tree constraint.",
+          longerTaskOptionCount: 1,
+          quickWinOptionCount: 1,
           repoEvidenceReadObserved: true,
           taskOptionsObserved: true,
           treeEvidenceReadObserved: true,
         }),
       ),
     ).toBe(true);
+  });
+
+  it("detects exactly one read-only two-minute Quick Win and a timed longer task", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-task-ladder-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "Choose a first task.",
+              "--options",
+              JSON.stringify([
+                {
+                  description:
+                    "Quick Win · about two minutes · read-only — trace expired-session recovery and return a three-step flow map.",
+                  label: "Trace session recovery",
+                },
+                {
+                  description:
+                    "Roughly 30–60 minutes — add the missing checkout recovery test; deliverable: a focused test diff and passing command output.",
+                  label: "Add checkout coverage",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.quickWinOptionCount).toBe(1);
+      expect(metrics.longerTaskOptionCount).toBe(1);
+      expect(metrics.capabilitySetupOptionObserved).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not count a Quick Win without an explicit inspectable result", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-quick-win-result-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "Choose a first task.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Quick Win · about two minutes · read-only — inspect the checkout flow.",
+                  label: "Inspect checkout",
+                },
+                {
+                  description:
+                    "Roughly 30–60 minutes — add the missing checkout recovery test; deliverable: a focused test diff and passing command output.",
+                  label: "Add checkout coverage",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.quickWinOptionCount).toBe(0);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("detects a self-contained selected-task brief using ordinary chat progress", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-task-brief-"));
+    try {
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "create",
+              "--to",
+              "nova",
+              "--topic",
+              "Add checkout recovery coverage",
+              [
+                "Goal: add focused checkout recovery coverage in ./source-repo/src/checkout/recovery.ts.",
+                "Deliverable: a reviewable test diff and concise result summary.",
+                "Verification: run the focused test and report its exact output.",
+                "Progress communication: for this longer task, keep chat status current with chat update --description and finish with an ordinary completion message.",
+              ].join("\n"),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          assistantMessageEvent("Opened the checkout coverage task chat."),
+        ],
+        findCase("first-tree-welcome-selected-long-task"),
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.taskChatCreateCount).toBe(1);
+      expect(metrics.selfContainedTaskBriefObserved).toBe(true);
+      expect(metrics.progressContractObserved).toBe(true);
+      expect(casePassed(findCase("first-tree-welcome-selected-long-task"), metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
   });
 
   it.each([
@@ -497,6 +672,8 @@ describe("first-tree-welcome grader", () => {
         chatAskCount: 1,
         chatOptionCount: 3,
         finalResponse: "I read the repo and tree; choose a checkout, session, or map task.",
+        longerTaskOptionCount: 1,
+        quickWinOptionCount: 1,
         repoEvidenceReadObserved: true,
         taskOptionsObserved: true,
         treeEvidenceReadObserved: true,
@@ -528,12 +705,12 @@ describe("first-tree-welcome grader", () => {
       "first-tree-welcome-readable-repo-empty-tree-periodic",
       {
         chatAskCount: 1,
-        chatOptionCount: 3,
-        finalResponse:
-          "I read the repo; choose a checkout, session, or map task, or build your Context Tree for shared memory.",
+        chatOptionCount: 2,
+        finalResponse: "I read the repo; choose a read-only Quick Win or a timed checkout task.",
+        longerTaskOptionCount: 1,
+        quickWinOptionCount: 1,
         repoEvidenceReadObserved: true,
         taskOptionsObserved: true,
-        treeBuildOptionObserved: true,
       },
     ],
     [
@@ -542,6 +719,8 @@ describe("first-tree-welcome grader", () => {
         chatAskCount: 1,
         chatOptionCount: 3,
         finalResponse: "I read repo evidence; choose a checkout, session, or map task without assuming tree readiness.",
+        longerTaskOptionCount: 1,
+        quickWinOptionCount: 1,
         repoEvidenceReadObserved: true,
         taskOptionsObserved: true,
       },
@@ -555,9 +734,10 @@ describe("first-tree-welcome grader", () => {
     const metrics = baseMetrics({
       chatAskCount: 1,
       chatOptionCount: 2,
+      longerTaskOptionCount: 1,
+      quickWinOptionCount: 1,
       repoEvidenceReadObserved: true,
       taskOptionsObserved: true,
-      treeBuildOptionObserved: true,
       treeEvidenceReadObserved: false,
     });
 
@@ -574,6 +754,8 @@ describe("first-tree-welcome grader", () => {
     const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
     const metrics = baseMetrics({
       expectedEvidenceObserved: true,
+      longerTaskOptionCount: 1,
+      quickWinOptionCount: 1,
       repoEvidenceReadObserved: true,
       taskOptionsObserved: true,
       treeEvidenceReadObserved: false,

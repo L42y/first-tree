@@ -178,11 +178,14 @@ the currently implemented `first-tree-welcome` gate rows:
 
 - tree kickoff chat routes to the tree setup lane instead of welcome first-task
   options;
-- no repo connected / intro chat asks for a local project folder path or GitHub repo URL
+- no repo connected / intro chat asks for a local project folder path or Git repository URL
   without requiring GitHub authorization first;
 - readable repo + populated Context Tree reads both evidence sources and offers
-  two or three bounded first-task options without seeding or setting up the
-  tree.
+  exactly one read-only, roughly two-minute Quick Win plus timed longer work
+  with inspectable outputs, without putting setup in the first menu;
+- a selected longer task creates one independent task chat with a self-contained
+  Goal/Context/Deliverable/Verification/Progress brief that reuses ordinary chat
+  status and completion messaging.
 
 `eval:periodic -- --suite first-tree-welcome` runs the broader live welcome
 matrix. It covers every concrete setup-state row from the current
@@ -191,9 +194,10 @@ repo authorization failure, local-readable repo with missing GitHub App,
 installed app with no selected repo, readable repo with empty tree, and
 readable repo with unknown tree. For the admin + readable repo + missing/empty
 tree row, the welcome chat leads with evidence-backed code-first task options
-and may also offer "Build your Context Tree" as a first-class menu option; it
-must never seed, create, or bind the tree from the launcher itself — that side
-effect stays forbidden. The explicit catch-all row remains a no-model
+and defers "Build your Context Tree" until after a verified result or a real
+capability blocker; it must never seed, create, or bind the tree from the
+launcher itself — that side effect stays forbidden. Selected-task fan-out is
+also covered. The explicit catch-all row remains a no-model
 floor invariant because it is a structural fallback rather than a stable live
 oracle. Periodic case ids use the gate row id plus `-periodic`; `--case` also
 accepts the source row id as an alias.

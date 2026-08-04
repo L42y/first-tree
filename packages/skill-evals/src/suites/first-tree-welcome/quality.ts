@@ -13,7 +13,19 @@ const WELCOME_TASK_QUALITY_DIMENSIONS: readonly JudgeRubricDimension[] = [
     threshold: 4,
   },
   {
-    description: "Each option is small enough to start immediately and does not balloon into open-ended setup work.",
+    description:
+      "The menu contains exactly one repo-specific, read-only Quick Win targeted at about two minutes with a compact inspectable result.",
+    key: "quick_win",
+    threshold: 5,
+  },
+  {
+    description:
+      "Every longer option gives an honest rough time range and names the inspectable outcome the user will receive.",
+    key: "longer_task_contract",
+    threshold: 4,
+  },
+  {
+    description: "Each option is bounded and does not balloon into open-ended setup work.",
     key: "bounded",
     threshold: 4,
   },
@@ -40,7 +52,7 @@ export const FIRST_TREE_WELCOME_QUALITY_CASE: QualityEvalCase = {
   briefingMode: "generated-fixture",
   expected: {
     dimensions: WELCOME_TASK_QUALITY_DIMENSIONS.map((dimension) => dimension.key),
-    rubric: "first-tree-welcome first-task quality",
+    rubric: "first-tree-welcome task-ladder quality",
   },
   fixture: {
     artifact: "actual chat ask/final task text produced by welcome row 8",
@@ -48,7 +60,7 @@ export const FIRST_TREE_WELCOME_QUALITY_CASE: QualityEvalCase = {
     source: "repo and Context Tree evidence from welcome row 8 fixture",
   },
   id: "first-tree-welcome-first-task-quality",
-  prompt: "Judge the quality of first-tree-welcome bounded first-task options from readable repo and tree evidence.",
+  prompt: "Judge the quality of the first-tree-welcome value-first task ladder from readable repo and tree evidence.",
   provider: "codex",
   skill: "first-tree-welcome",
   status: "implemented",
@@ -63,10 +75,10 @@ function dimensionLines(dimensions: readonly JudgeRubricDimension[]): string {
 }
 
 function buildWelcomeJudgePrompt(input: QualityArtifactInput): string {
-  return `You are judging first-tree-welcome first-task options produced by a live gate run.
+  return `You are judging a first-tree-welcome value-first task ladder produced by a live gate run.
 
 Return ONLY strict JSON with this shape:
-{"scores":{"evidence_backed":1,"bounded":1,"useful":1,"verifiable":1,"not_setup_as_task":1},"reasoning":"one concise paragraph"}
+{"scores":{"evidence_backed":1,"quick_win":1,"longer_task_contract":1,"bounded":1,"useful":1,"verifiable":1,"not_setup_as_task":1},"reasoning":"one concise paragraph"}
 
 Scores are integers from 1 to 5. Do not include markdown or any extra text.
 
@@ -90,7 +102,7 @@ export const FIRST_TREE_WELCOME_QUALITY_DEFINITION: QualityCaseDefinition = {
   dimensions: WELCOME_TASK_QUALITY_DIMENSIONS,
   evalCase: FIRST_TREE_WELCOME_QUALITY_CASE,
   gateCaseId: "first-tree-welcome-readable-repo-populated-tree",
-  title: "first-tree-welcome first-task quality",
+  title: "first-tree-welcome task-ladder quality",
 };
 
 function sanityInput(name: QualitySanityFixture["name"], artifact: string): QualityArtifactInput {
@@ -118,15 +130,17 @@ export const FIRST_TREE_WELCOME_QUALITY_SANITY_FIXTURES: readonly QualitySanityF
     input: sanityInput(
       "good",
       [
-        "1. Trace the checkout JWT refresh path and identify the smallest failing test to add.",
-        "2. Compare the Context Tree checkout reliability note with the session refresh implementation and report one concrete fix candidate.",
+        "1. Quick Win · about two minutes · read-only — trace the checkout JWT refresh path and return a three-step file map.",
+        "2. About 30–60 minutes — compare checkout reliability with session refresh and deliver a bounded fix recommendation with file evidence.",
       ].join("\n"),
     ),
     judgeOutput: judgeOutput(
       {
         bounded: 5,
         evidence_backed: 5,
+        longer_task_contract: 5,
         not_setup_as_task: 5,
+        quick_win: 5,
         useful: 4,
         verifiable: 4,
       },
@@ -138,13 +152,18 @@ export const FIRST_TREE_WELCOME_QUALITY_SANITY_FIXTURES: readonly QualitySanityF
     expectedPassed: true,
     input: sanityInput(
       "borderline",
-      "Check the checkout session refresh code against the tree note and propose one small verification step.",
+      [
+        "Quick Win · about two minutes · read-only — map the checkout session refresh path with file references.",
+        "Roughly 30–60 minutes — check it against the tree note; deliverable: one bounded verification report.",
+      ].join("\n"),
     ),
     judgeOutput: judgeOutput(
       {
         bounded: 4,
         evidence_backed: 4,
+        longer_task_contract: 4,
         not_setup_as_task: 5,
+        quick_win: 5,
         useful: 3,
         verifiable: 3,
       },
@@ -162,7 +181,9 @@ export const FIRST_TREE_WELCOME_QUALITY_SANITY_FIXTURES: readonly QualitySanityF
       {
         bounded: 2,
         evidence_backed: 2,
+        longer_task_contract: 1,
         not_setup_as_task: 1,
+        quick_win: 1,
         useful: 2,
         verifiable: 2,
       },

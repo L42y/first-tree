@@ -6,6 +6,7 @@ import type { FirstTreeWelcomeEvalCase, WelcomeExpectedAction } from "./types.js
 
 const FLOOR_CASE_ID = "first-tree-welcome-setup-matrix";
 const IMPLEMENTED_GATE_CASE_IDS = new Set([
+  "first-tree-welcome-selected-long-task",
   "first-tree-welcome-tree-kickoff-chat",
   "first-tree-welcome-no-repo-intro",
   "first-tree-welcome-readable-repo-populated-tree",
@@ -44,7 +45,7 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
   },
   {
     action: "invitee_waits_for_team_readiness",
-    forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree"],
+    forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree", "setup-as-first-task"],
     forbiddenClaims: ["repo evidence", "tree readiness"],
     id: "first-tree-welcome-invitee-not-ready",
     chatScenario: "team-onboarding",
@@ -57,7 +58,7 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
   },
   {
     action: "offer_invitee_value_without_admin_setup",
-    forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree"],
+    forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree", "setup-as-first-task"],
     forbiddenClaims: ["unread evidence"],
     id: "first-tree-welcome-invitee-ready",
     chatScenario: "team-onboarding",
@@ -80,9 +81,9 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
 
 Please help me get started with First Tree.
 
-No repository is connected, no local project folder path or GitHub repo URL is available, and no populated Context Tree is readable. Give the smallest useful next ask.`,
+No repository is connected, no local project folder path or Git repository URL is available, and no populated Context Tree is readable. Give the smallest useful next ask.`,
     repoState: "none",
-    requiredResponseHints: ["local project folder path", "GitHub repo URL"],
+    requiredResponseHints: ["local project folder path", "Git repository URL", "GitHub repo URL"],
     role: "admin",
     tags: ["welcome-row-3", "no-repo"],
     treeState: "none",
@@ -127,22 +128,22 @@ No repository is connected, no local project folder path or GitHub repo URL is a
     treeState: "unknown",
   },
   {
-    action: "offer_tree_build_with_code_value",
-    forbiddenActions: ["seed-tree-in-welcome-chat", "create-tree"],
+    action: "offer_task_ladder_before_tree_handoff",
+    forbiddenActions: ["setup-as-first-task", "seed-tree-in-welcome-chat", "create-tree"],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-readable-repo-empty-tree",
     chatScenario: "onboarding",
     prompt: "Help the user pick the first valuable task.",
     repoState: "selected-readable",
-    requiredResponseHints: ["task", "repo"],
+    requiredResponseHints: ["quick win", "task", "repo"],
     role: "admin",
     tags: ["welcome-row-7", "planned"],
-    taskOptionHints: ["context tree", "shared memory", "checkout", "session", "map"],
+    taskOptionHints: ["checkout", "session", "map"],
     treeState: "empty",
   },
   {
     action: "offer_bounded_first_tasks_from_repo_and_tree",
-    forbiddenActions: ["seed-tree", "create-tree", "setup-only-action", "skip-for-now-option"],
+    forbiddenActions: ["seed-tree", "create-tree", "setup-as-first-task", "setup-only-action", "skip-for-now-option"],
     forbiddenClaims: ["unread evidence"],
     id: "first-tree-welcome-readable-repo-populated-tree",
     chatScenario: "onboarding",
@@ -153,7 +154,7 @@ Please help me get started with First Tree.
 Connected code:
 - ./source-repo
 
-A readable source repo is available at ./source-repo and a populated Context Tree is available at ./context-tree. Read both sources of evidence, cite what you observed, then ask baixiaohang to choose from two or three bounded first-task options. Use the tracked request primitive if useful.`,
+A readable source repo is available at ./source-repo and a populated Context Tree is available at ./context-tree. Read both sources of evidence, cite what you observed, then ask baixiaohang to choose from a value-first task ladder: exactly one repo-specific, read-only Quick Win that takes about two minutes, plus one or two longer tasks with rough time ranges and inspectable outcomes. Do not put setup in this first menu. Use the tracked request primitive if useful.`,
     repoState: "selected-readable",
     requiredResponseHints: ["checkout", "session", "task"],
     role: "admin",
@@ -162,8 +163,23 @@ A readable source repo is available at ./source-repo and a populated Context Tre
     treeState: "populated",
   },
   {
+    action: "spawn_selected_task_chat",
+    forbiddenActions: ["admin-setup", "seed-tree-in-welcome-chat"],
+    forbiddenClaims: [],
+    id: "first-tree-welcome-selected-long-task",
+    chatScenario: "selected-task",
+    prompt: `The user selected the longer checkout coverage task from the onboarding launcher's task ladder.
+
+Create one independent task chat addressed to yourself. Its opening brief must be self-contained: Goal, repo/path context, Deliverable, Verification, and Progress communication. Reuse chat status/description plus an ordinary completion message for progress; do not invent another orchestration protocol. Then tell baixiaohang which task chat you opened.`,
+    repoState: "selected-readable",
+    requiredResponseHints: ["checkout", "chat"],
+    role: "admin",
+    tags: ["selected-task", "fan-out-brief"],
+    treeState: "populated",
+  },
+  {
     action: "offer_repo_value_without_claiming_tree_ready",
-    forbiddenActions: ["claim-tree-ready", "seed-tree"],
+    forbiddenActions: ["claim-tree-ready", "seed-tree", "setup-as-first-task"],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-readable-repo-tree-unknown",
     chatScenario: "onboarding",
@@ -277,7 +293,7 @@ export const FIRST_TREE_WELCOME_EVAL_CASES: readonly SkillEvalCase[] = [
       validator: "onboarding setup matrix (unique state tuples + explicit catch-all + no orphan actions)",
     },
     fixture: {
-      chatScenarios: ["onboarding", "team-onboarding", "tree-setup"],
+      chatScenarios: ["onboarding", "selected-task", "team-onboarding", "tree-setup"],
       repoStates: ["none", "local-readable", "selected-readable", "selected-auth-fails", "unknown"],
       roles: ["admin", "invitee"],
       treeStates: ["none", "empty", "populated", "unknown"],
@@ -300,10 +316,10 @@ function validateFirstTreeWelcomeFloor(cases: readonly SkillEvalCase[]): readonl
     return Array.isArray(tags) ? (tags as readonly string[]) : [];
   };
 
-  // Live-gate contract: exactly the three implemented rows run against a model.
+  // Live-gate contract: exactly the four implemented rows run against a model.
   const implementedGateRows = gateRows.filter((evalCase) => evalCase.status === "implemented");
-  if (implementedGateRows.length !== 3) {
-    errors.push(`welcome matrix must implement exactly 3 live gate rows, found ${implementedGateRows.length}.`);
+  if (implementedGateRows.length !== 4) {
+    errors.push(`welcome matrix must implement exactly 4 live gate rows, found ${implementedGateRows.length}.`);
   }
 
   // Orphan-action: an implemented row whose action has no `casePassed` branch
@@ -426,7 +442,7 @@ export const FIRST_TREE_WELCOME_SUITE: SkillEvalSuiteDefinition = {
       {
         caseIds: GATE_CASES.map((evalCase) => evalCase.id),
         description:
-          "Welcome onboarding matrix gate rows; tree-kickoff-chat, no-repo-intro, and readable-repo-populated-tree run as live gate cases.",
+          "Welcome onboarding matrix gate rows; tree-kickoff-chat, no-repo-intro, readable-repo-populated-tree, and selected-long-task run as live gate cases.",
         status: "implemented",
         tier: "gate",
       },
@@ -439,7 +455,8 @@ export const FIRST_TREE_WELCOME_SUITE: SkillEvalSuiteDefinition = {
       },
       {
         caseIds: [FIRST_TREE_WELCOME_QUALITY_CASE.id],
-        description: "LLM-as-judge first-task quality case for evidence-backed bounded welcome options.",
+        description:
+          "LLM-as-judge task-ladder quality case for one read-only Quick Win plus timed, inspectable longer work.",
         status: "implemented",
         tier: "quality",
       },
