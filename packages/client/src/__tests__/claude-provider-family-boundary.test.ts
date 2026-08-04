@@ -1,47 +1,93 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const clientSrc = join(here, "..");
 
-function escapeForRegex(spec: string): string {
-  return spec.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * Every literal module specifier a source file references through a real
+ * ESM import/export/dynamic-import syntax node, plus the named bindings
+ * imported from each specifier (`import { name } from "spec"`).
+ *
+ * Built by walking a real TypeScript AST (`ts.createSourceFile` +
+ * `ts.forEachChild`) rather than by pattern-matching source text. This is
+ * what a regex-based matcher cannot give you: comments are trivia the parser
+ * discards before producing nodes, and a string/template-literal expression
+ * is never classified as an `ImportDeclaration`, `ExportDeclaration`, or a
+ * dynamic `import()` call — so text that merely *looks like* import syntax
+ * inside a comment, doc-string, or string/template literal can never be
+ * misread as a real dependency edge, regardless of how closely it resembles
+ * real syntax. A previous regex-based version of this guard (any version up
+ * to and including commit `5b1cd66c`) was fooled by exactly this: a
+ * global, unanchored `import\(...\)` pattern matched `import("...")` text
+ * inside line comments, doc-comments, plain strings, and template literals
+ * alike. The "module-specifier detection stays precise" block below
+ * reproduces that exact class of near-miss against this AST-based
+ * implementation to prove it no longer happens.
+ */
+interface ModuleReferences {
+  specifiers: Set<string>;
+  namedImportsBySpecifier: Map<string, Set<string>>;
 }
 
 /**
- * Matches a real `import`/`export ... from "<spec>"` declaration (covers both
- * a binding import and a re-export-from) whose module specifier is exactly
- * `spec` — anchored to the start of a line so a comment or doc-string merely
- * mentioning the same text cannot satisfy it. `[^;]*` intentionally excludes
- * `;` (not newlines) so multi-line named-import lists
- * (`import {\n  a,\n  b,\n} from "spec";`) still match.
+ * `ts.isImportCall` (the TS compiler's own dynamic-`import()`-call
+ * predicate) is `@internal` and not part of the public `.d.ts`, so it's
+ * unusable under `tsc --noEmit`. A dynamic import call is, in the public
+ * AST shape, simply a `CallExpression` whose callee is the bare `import`
+ * keyword token — that's the one fact this local check relies on.
  */
-function fromImportOrExportOf(spec: string): RegExp {
-  const escaped = escapeForRegex(spec);
-  return new RegExp(`^\\s*(?:import|export)\\b[^;]*from\\s*["']${escaped}["']`, "m");
+function isDynamicImportCall(node: ts.Node): node is ts.CallExpression {
+  return ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword;
 }
 
-/**
- * Matches a bare side-effect `import "<spec>";` (no bindings, no `from`) —
- * the ESM form that runs a module purely for its top-level side effects.
- */
-function sideEffectImportOf(spec: string): RegExp {
-  const escaped = escapeForRegex(spec);
-  return new RegExp(`^\\s*import\\s*["']${escaped}["']`, "m");
-}
+function parseModuleReferences(source: string): ModuleReferences {
+  const sourceFile = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const specifiers = new Set<string>();
+  const namedImportsBySpecifier = new Map<string, Set<string>>();
 
-/** Matches a dynamic `import("<spec>")` / `import('<spec>')` call anywhere in the source. */
-function dynamicImportOf(spec: string): RegExp {
-  const escaped = escapeForRegex(spec);
-  return new RegExp(`import\\(\\s*["']${escaped}["']`);
-}
+  function recordNamedImport(spec: string, name: string): void {
+    let names = namedImportsBySpecifier.get(spec);
+    if (!names) {
+      names = new Set();
+      namedImportsBySpecifier.set(spec, names);
+    }
+    names.add(name);
+  }
 
-/** Matches a real named import of `name` from the exact module specifier `spec`. */
-function namedImportOf(name: string, spec: string): RegExp {
-  const escaped = escapeForRegex(spec);
-  return new RegExp(`^\\s*import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*["']${escaped}["']`, "m");
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      // Covers named, default, namespace, type-only, and bare side-effect
+      // imports alike — all of them are `ImportDeclaration` nodes; only the
+      // (optional) `importClause` shape differs, and a side-effect import
+      // simply has no `importClause` at all.
+      const spec = node.moduleSpecifier.text;
+      specifiers.add(spec);
+      const namedBindings = node.importClause?.namedBindings;
+      if (namedBindings && ts.isNamedImports(namedBindings)) {
+        for (const element of namedBindings.elements) {
+          recordNamedImport(spec, element.name.text);
+        }
+      }
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      // `export { name } from "spec"` / `export * from "spec"`.
+      specifiers.add(node.moduleSpecifier.text);
+    } else if (isDynamicImportCall(node)) {
+      // Dynamic `import("spec")`, however it's used (awaited, `.then()`-
+      // chained, bare statement, single- or double-quoted).
+      const [arg] = node.arguments;
+      if (arg && ts.isStringLiteralLike(arg)) {
+        specifiers.add(arg.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { specifiers, namedImportsBySpecifier };
 }
 
 /**
@@ -52,11 +98,56 @@ function namedImportOf(name: string, spec: string): RegExp {
  * the guard forgot to check.
  */
 function referencesModuleSpecifier(source: string, spec: string): boolean {
-  return (
-    fromImportOrExportOf(spec).test(source) ||
-    sideEffectImportOf(spec).test(source) ||
-    dynamicImportOf(spec).test(source)
-  );
+  return parseModuleReferences(source).specifiers.has(spec);
+}
+
+/** True if `source` has a real named-import binding of `name` from the exact module specifier `spec`. */
+function hasNamedImport(source: string, name: string, spec: string): boolean {
+  return parseModuleReferences(source).namedImportsBySpecifier.get(spec)?.has(name) ?? false;
+}
+
+/**
+ * Every name a source file re-exports via `export { name }` or
+ * `export { name } from "spec"` (both are `ExportDeclaration` nodes with a
+ * `NamedExports` `exportClause`; only the presence of `moduleSpecifier`
+ * differs) — i.e. every name reachable by importing this file, regardless of
+ * whether it re-exports a name imported from elsewhere or one declared here.
+ */
+function collectNamedExports(source: string): Set<string> {
+  const sourceFile = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const names = new Set<string>();
+
+  function visit(node: ts.Node): void {
+    if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+      for (const element of node.exportClause.elements) {
+        names.add(element.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return names;
+}
+
+/** Every top-level function name declared with `export function name(...)` in `source`. */
+function collectExportedFunctionDeclarationNames(source: string): Set<string> {
+  const sourceFile = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const names = new Set<string>();
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name &&
+      node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+    ) {
+      names.add(node.name.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return names;
 }
 
 /**
@@ -74,13 +165,13 @@ function referencesModuleSpecifier(source: string, spec: string): boolean {
  * SDK handler entry stops re-exporting the same names (which would silently
  * break any existing internal/package import of them from `claude-code.js`).
  *
- * All checks below match actual `import`/`export`/dynamic-`import()` syntax
- * (anchored to a statement, not a bare substring), so a comment or doc-string
- * mentioning the forbidden/required path cannot flip the assertion either
- * way. The "specifier-matching helpers stay precise" block below proves this
- * directly against synthetic snippets, so the guard's own detection logic
- * does not rest solely on the fact that it happens to pass against current
- * source.
+ * Every check below is driven by a real TypeScript AST parse of the file
+ * under test, not text pattern-matching, so a comment, doc-string, or
+ * string/template literal that merely *contains* the forbidden/required
+ * import syntax cannot flip the assertion either way. The "module-specifier
+ * detection stays precise" block below proves this directly against
+ * synthetic snippets, so the guard's own detection logic does not rest
+ * solely on the fact that it happens to pass against current source.
  */
 describe("Claude provider-family boundary", () => {
   it("TUI handler depends on the provider-family modules directly, never on the SDK handler entry", () => {
@@ -92,8 +183,8 @@ describe("Claude provider-family boundary", () => {
 
     // It must import the provider-family modules it actually uses via real
     // named-import declarations (not merely mention them in a comment).
-    expect(tui).toMatch(namedImportOf("createToolCallProcessor", "../claude/tool-call-processor.js"));
-    expect(tui).toMatch(namedImportOf("mapMcpServers", "../claude/mcp-config.js"));
+    expect(hasNamedImport(tui, "createToolCallProcessor", "../claude/tool-call-processor.js")).toBe(true);
+    expect(hasNamedImport(tui, "mapMcpServers", "../claude/mcp-config.js")).toBe(true);
   });
 
   it("provider-family modules stay self-contained (no import back into either handler, in any ESM form)", () => {
@@ -115,7 +206,7 @@ describe("Claude provider-family boundary", () => {
 
   it("sdk-query-options.ts composes mcp-config.ts rather than re-deriving MCP mapping", () => {
     const source = readFileSync(join(clientSrc, "handlers/claude/sdk-query-options.ts"), "utf8");
-    expect(source).toMatch(namedImportOf("mapMcpServers", "./mcp-config.js"));
+    expect(hasNamedImport(source, "mapMcpServers", "./mcp-config.js")).toBe(true);
     expect(source).not.toMatch(/for \(const s of payload\.mcpServers\)/);
   });
 
@@ -124,14 +215,15 @@ describe("Claude provider-family boundary", () => {
 
     // The three modules stay the actual owners; claude-code.ts is now a thin
     // SDK-lifecycle-only facade that imports and re-exports them.
-    expect(source).toMatch(fromImportOrExportOf("./claude/tool-call-processor.js"));
-    expect(source).toMatch(fromImportOrExportOf("./claude/mcp-config.js"));
-    expect(source).toMatch(fromImportOrExportOf("./claude/sdk-query-options.js"));
+    expect(referencesModuleSpecifier(source, "./claude/tool-call-processor.js")).toBe(true);
+    expect(referencesModuleSpecifier(source, "./claude/mcp-config.js")).toBe(true);
+    expect(referencesModuleSpecifier(source, "./claude/sdk-query-options.js")).toBe(true);
 
     // Every name any existing import site (internal call sites, tests, and —
     // pre-decoupling — the TUI handler) could previously reach via
     // `handlers/claude-code.js` must still resolve from there, via a real
-    // `export { ... }` statement (not a mention in prose).
+    // `export { ... }` declaration (not a mention in prose).
+    const exportedNames = collectNamedExports(source);
     for (const name of [
       "createToolCallProcessor",
       "treeNodePathOf",
@@ -142,16 +234,17 @@ describe("Claude provider-family boundary", () => {
       "isSameModelFamily",
       "ClaudeQueryConfigOptions",
     ]) {
-      expect(source, `claude-code.ts must still export ${name}`).toMatch(
-        new RegExp(`^export\\s*\\{[^}]*\\b${name}\\b`, "m"),
-      );
+      expect(exportedNames.has(name), `claude-code.ts must still export ${name}`).toBe(true);
     }
 
     // The extracted logic itself must not still be defined inline here —
     // only imported/re-exported — so there is exactly one source of truth.
-    expect(source).not.toMatch(/^export function createToolCallProcessor/m);
-    expect(source).not.toMatch(/^export function mapMcpServers/m);
-    expect(source).not.toMatch(/^export function buildClaudeQueryOptions/m);
+    const exportedFunctionDeclarations = collectExportedFunctionDeclarationNames(source);
+    for (const name of ["createToolCallProcessor", "mapMcpServers", "buildClaudeQueryOptions"]) {
+      expect(exportedFunctionDeclarations.has(name), `claude-code.ts must not still declare ${name} inline`).toBe(
+        false,
+      );
+    }
   });
 
   it("re-exported runtime helpers are the exact same function references the leaf modules export, not a second implementation", async () => {
@@ -179,16 +272,20 @@ describe("Claude provider-family boundary", () => {
     // declaration, which the repo-wide typecheck run already exercises.
   });
 
-  describe("specifier-matching helpers stay precise", () => {
+  describe("module-specifier detection stays precise", () => {
     const spec = "../claude-code.js";
 
     /**
      * Table-driven characterization of `referencesModuleSpecifier()` against
      * every real ESM form that could re-introduce the forbidden dependency,
-     * plus the near-miss shapes (comments, doc-strings, string literals, a
-     * similar-but-unequal specifier) that must never trip a false positive.
-     * This is what proves the detection logic itself — the guard elsewhere
-     * in this file only proves today's real source happens to satisfy it.
+     * plus the near-miss shapes that must never trip a false positive:
+     * comments, doc-strings, plain strings, and template literals — each
+     * tested both as a bare specifier mention AND as a full import/dynamic-
+     * import statement written out inside them (the latter is exactly the
+     * class of false positive a text-pattern matcher is prone to, and an
+     * AST-based check is not). This is what proves the detection logic
+     * itself — the guard tests above only prove today's real source happens
+     * to satisfy it.
      */
     const SPECIFIER_CASES: ReadonlyArray<{ label: string; snippet: string; expected: boolean }> = [
       {
@@ -198,6 +295,7 @@ describe("Claude provider-family boundary", () => {
       },
       { label: "static default import", snippet: 'import ClaudeCode from "../claude-code.js";', expected: true },
       { label: "static namespace import", snippet: 'import * as claudeCode from "../claude-code.js";', expected: true },
+      { label: "static type-only import", snippet: 'import type { Foo } from "../claude-code.js";', expected: true },
       {
         label: "multi-line static named import",
         snippet: 'import {\n  createToolCallProcessor,\n  mapMcpServers,\n} from "../claude-code.js";',
@@ -213,6 +311,7 @@ describe("Claude provider-family boundary", () => {
         snippet: 'export { createToolCallProcessor } from "../claude-code.js";',
         expected: true,
       },
+      { label: "namespace re-export-from", snippet: 'export * from "../claude-code.js";', expected: true },
       {
         label: "dynamic import(), awaited",
         snippet: 'const m = await import("../claude-code.js");',
@@ -225,19 +324,44 @@ describe("Claude provider-family boundary", () => {
       },
       { label: "dynamic import(), single-quoted", snippet: "import('../claude-code.js');", expected: true },
       {
-        label: "comment-only mention",
+        label: "comment-only mention (bare specifier text)",
         snippet:
           '// see ../claude-code.js for the pre-split behaviour\nimport { mapMcpServers } from "./mcp-config.js";',
         expected: false,
       },
       {
-        label: "doc-string mention",
+        label: "doc-string mention (bare specifier text)",
         snippet: '/**\n * Used to import from "../claude-code.js" before this split.\n */\nexport const x = 1;',
         expected: false,
       },
       {
-        label: "string-literal mention",
+        label: "string-literal mention (bare specifier text)",
         snippet: 'const message = "this string contains ../claude-code.js but is not an import";',
+        expected: false,
+      },
+      {
+        label: "line comment containing a full dynamic-import statement",
+        snippet: 'const x = 1;\n// do not use import("../claude-code.js")\nconst y = 2;',
+        expected: false,
+      },
+      {
+        label: "block comment containing a full static-import statement",
+        snippet: '/* import { createToolCallProcessor } from "../claude-code.js"; */\nconst y = 2;',
+        expected: false,
+      },
+      {
+        label: "doc comment containing a full dynamic-import statement",
+        snippet: '/**\n * Used to do: import("../claude-code.js")\n */\nexport const x = 1;',
+        expected: false,
+      },
+      {
+        label: "plain string literal containing a full dynamic-import statement",
+        snippet: "const s = 'import(\"../claude-code.js\")';",
+        expected: false,
+      },
+      {
+        label: "multi-line template literal containing a full static-import statement",
+        snippet: 'const s = `\n  import { x } from "../claude-code.js";\n`;',
         expected: false,
       },
       {
@@ -249,18 +373,6 @@ describe("Claude provider-family boundary", () => {
 
     it.each(SPECIFIER_CASES)("$label -> referencesModuleSpecifier === $expected", ({ snippet, expected }) => {
       expect(referencesModuleSpecifier(snippet, spec)).toBe(expected);
-    });
-
-    it("the side-effect-import case is exactly the regression the guard used to miss: the pre-fix from-anchored matcher alone stays blind to it, and the dynamic-import matcher alone stays blind to it too — only the combinator catches it", () => {
-      const sideEffectSnippet = 'import "../claude-code.js";';
-      // `fromImportOrExportOf` is the pre-fix matcher (it required a `from`
-      // clause): it correctly does NOT see a bare side-effect import, which
-      // is exactly why relying on it alone let this reverse-dependency form
-      // through undetected before this test file added `sideEffectImportOf`.
-      expect(fromImportOrExportOf(spec).test(sideEffectSnippet)).toBe(false);
-      expect(dynamicImportOf(spec).test(sideEffectSnippet)).toBe(false);
-      // The combined predicate closes the gap.
-      expect(referencesModuleSpecifier(sideEffectSnippet, spec)).toBe(true);
     });
   });
 });
