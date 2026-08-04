@@ -44,6 +44,7 @@ const CATALOG_CONSUMER_FILES = [
   "packages/web/src/pages/onboarding/steps/step-connect-computer.tsx",
   "packages/web/src/pages/agent-detail/runtime-section.tsx",
   "packages/web/src/pages/clients/cards/shared/providers.ts",
+  "packages/web/src/pages/clients/cards/shared/runtime-auth-view.ts",
   "packages/web/src/pages/clients/cards/shared/bound-agents-list.tsx",
   "packages/client/src/handlers/auth-error-hint.ts",
   "packages/client/src/runtime/runtime-notice.ts",
@@ -189,6 +190,8 @@ describe("runtime provider architecture guard", () => {
     expect(providersTs).toContain("runtimeProviderInstallCommand");
     expect(providersTs).toContain("runtimeProviderInteractiveLoginCue");
     expect(providersTs).toContain("runtimeProviderShowsHostLoginOnSetup");
+    expect(providersTs).toContain("runtimeProviderComputerSetupCommand");
+    expect(providersTs).not.toContain("runtimeProviderInstallLoginCommand");
     expect(providersTs).toContain("recordByRuntimeProvider");
     expect(providersTs).toContain('case "codex"');
     expect(providersTs).toContain("const _exhaustive: never = provider");
@@ -239,6 +242,12 @@ describe("runtime provider architecture guard", () => {
       if (rel.endsWith("runtime-section.tsx")) {
         expect(source).toContain("runtimeProviderLabel");
         expect(source).not.toMatch(/const RUNTIME_NAME/);
+      }
+      if (rel.endsWith("runtime-auth-view.ts")) {
+        expect(source).toContain("runtimeProviderInProductAuthTarget");
+        expect(source).not.toContain("runtimeProviderAuthRecovery");
+        const hit = containsAnyProviderLiteral(source);
+        expect(hit, `${rel} must not hard-code auth target ${hit}`).toBeNull();
       }
       if (rel.endsWith("auth-error-hint.ts")) {
         expect(source).toContain("runtimeProviderChatAuthLoginPhrase");
@@ -291,5 +300,9 @@ describe("runtime provider architecture guard", () => {
         expect(source).not.toContain("run `pi` and enter `/login`");
       }
     }
+
+    const activityTs = readFileSync(join(repoRoot, "packages/web/src/api/activity.ts"), "utf8");
+    expect(activityTs).toContain("RuntimeAuthStartRequest");
+    expect(activityTs).not.toMatch(/provider:\s*RuntimeProvider/);
   });
 });

@@ -17,10 +17,12 @@ import {
   RUNTIME_PROVIDER_LABELS,
   RUNTIME_PROVIDER_SELECTION_ORDER,
   RUNTIME_PROVIDERS,
+  runtimeAuthProviderSchema,
   runtimeProviderAuthOwnerLabel,
   runtimeProviderChatAuthLoginPhrase,
+  runtimeProviderComputerSetupCommand,
+  runtimeProviderInProductAuthTarget,
   runtimeProviderInstallCommand,
-  runtimeProviderInstallLoginCommand,
   runtimeProviderInteractiveLoginCue,
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
@@ -111,11 +113,11 @@ describe("runtime provider identity + catalog completeness", () => {
         expect(install).toBe(entry.install.command);
       }
       if (runtimeProviderShowsHostLoginOnSetup(id)) {
-        expect(entry.authRecovery).toBe("host");
-        expect(runtimeProviderInstallLoginCommand(id)).toBe(`${install}\n${runtimeProviderLoginCommand(id)}`);
+        expect(entry.authRecovery).toEqual({ kind: "host" });
+        expect(runtimeProviderComputerSetupCommand(id)).toBe(`${install}\n${runtimeProviderLoginCommand(id)}`);
       } else {
-        expect(entry.authRecovery).toBe("in-product");
-        expect(runtimeProviderInstallLoginCommand(id)).toBe(install);
+        expect(entry.authRecovery.kind).toBe("in-product");
+        expect(runtimeProviderComputerSetupCommand(id)).toBe(install);
       }
       expect(runtimeProviderAuthOwnerLabel(id).length).toBeGreaterThan(0);
       expect(runtimeProviderChatAuthLoginPhrase(id)).toContain("`");
@@ -128,6 +130,18 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderShowsHostLoginOnSetup("claude-code-tui")).toBe(false);
     expect(runtimeProviderShowsHostLoginOnSetup("cursor")).toBe(false);
     expect(runtimeProviderShowsHostLoginOnSetup("grok")).toBe(false);
+  });
+
+  it("keeps in-product auth targets typed and exactly aligned with the server contract", () => {
+    const targets = RUNTIME_PROVIDER_IDS.map(runtimeProviderInProductAuthTarget).filter((target) => target !== null);
+    expect([...new Set(targets)]).toEqual([...runtimeAuthProviderSchema.options]);
+    for (const provider of runtimeAuthProviderSchema.options) {
+      expect(runtimeProviderInProductAuthTarget(provider)).toBe(provider);
+    }
+    expect(runtimeProviderInProductAuthTarget("claude-code-tui")).toBe("claude-code");
+    expect(runtimeProviderInProductAuthTarget("kimi-code")).toBeNull();
+    expect(runtimeProviderInProductAuthTarget("opencode")).toBeNull();
+    expect(runtimeProviderInProductAuthTarget("pi")).toBeNull();
   });
 
   it("narrows wire strings via safeParse and leaves unknown ids unlabeled", () => {

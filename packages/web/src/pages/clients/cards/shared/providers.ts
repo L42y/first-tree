@@ -8,8 +8,8 @@ import {
   RUNTIME_PROVIDER_LABELS,
   type RuntimeProvider,
   recordByRuntimeProvider,
+  runtimeProviderComputerSetupCommand,
   runtimeProviderInstallCommand,
-  runtimeProviderInstallLoginCommand,
   runtimeProviderInteractiveLoginCue,
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
@@ -70,11 +70,11 @@ export function buildInstallCommand(provider: RuntimeProvider, os?: string | nul
     // (keyed off the client's reported OS). Unknown OS → a non-command note
     // rather than a guessed package manager.
     const tmuxCmd = tmuxInstallCommand(os);
-    return runtimeProviderInstallLoginCommand(provider, [
+    return runtimeProviderComputerSetupCommand(provider, [
       tmuxCmd ?? "# install tmux (>= 3.0) with your OS package manager",
     ]);
   }
-  return runtimeProviderInstallLoginCommand(provider);
+  return runtimeProviderComputerSetupCommand(provider);
 }
 
 /**

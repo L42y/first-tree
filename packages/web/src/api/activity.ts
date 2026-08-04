@@ -2,8 +2,8 @@ import type {
   AgentType,
   ClientCapabilities,
   ConnectTokenResponse,
-  RuntimeAuthMethod,
-  RuntimeProvider,
+  RuntimeAuthStartRequest,
+  RuntimeAuthStartResponse,
   UpdateAttempt,
 } from "@first-tree/shared";
 import { api, withOrg } from "./client.js";
@@ -123,10 +123,7 @@ export function disconnectClient(clientId: string): Promise<{ disconnected: bool
  * {@link getClientCapabilities} afterwards and reads `entry.pendingAuth` then
  * the flipped `state`.
  */
-export function startRuntimeAuth(
-  clientId: string,
-  body: { provider: RuntimeProvider; method?: RuntimeAuthMethod },
-): Promise<{ ref: string; started: true }> {
+export function startRuntimeAuth(clientId: string, body: RuntimeAuthStartRequest): Promise<RuntimeAuthStartResponse> {
   return api.post(`/clients/${encodeURIComponent(clientId)}/runtime-auth/start`, body);
 }
 

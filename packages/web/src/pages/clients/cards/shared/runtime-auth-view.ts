@@ -1,8 +1,9 @@
 import {
   type CapabilityEntry,
   type RuntimeAuthLastError,
+  type RuntimeAuthProvider,
   type RuntimeProvider,
-  runtimeProviderAuthRecovery,
+  runtimeProviderInProductAuthTarget,
 } from "@first-tree/shared";
 
 /**
@@ -34,9 +35,8 @@ export type RuntimeAuthView =
 
 /** Providers whose login the daemon can drive in-product today. */
 export function providerSupportsInProductAuth(provider: RuntimeProvider): boolean {
-  // Catalog `authRecovery: "in-product"` plus a distinct Connect target.
-  // `claude-code-tui` shares Claude Code's credentials but isn't its own target.
-  return runtimeProviderAuthRecovery(provider) === "in-product" && provider !== "claude-code-tui";
+  const target = runtimeProviderInProductAuthTarget(provider);
+  return target !== null && target === provider;
 }
 
 /**
@@ -48,8 +48,8 @@ export function providerSupportsInProductAuth(provider: RuntimeProvider): boolea
  * capability-entry lookup, and `deriveRuntimeAuthView`). Every other provider
  * maps to itself.
  */
-export function loginTargetProvider(provider: RuntimeProvider): RuntimeProvider {
-  return provider === "claude-code-tui" ? "claude-code" : provider;
+export function loginTargetProvider(provider: RuntimeProvider): RuntimeAuthProvider | null {
+  return runtimeProviderInProductAuthTarget(provider);
 }
 
 /**
@@ -60,7 +60,7 @@ export function loginTargetProvider(provider: RuntimeProvider): RuntimeProvider 
  * separate CLI login to run.
  */
 export function providerAuthHandledInProduct(provider: RuntimeProvider): boolean {
-  return runtimeProviderAuthRecovery(provider) === "in-product";
+  return runtimeProviderInProductAuthTarget(provider) !== null;
 }
 
 export function deriveRuntimeAuthView(

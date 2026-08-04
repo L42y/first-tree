@@ -37,12 +37,14 @@ Helpers derive install/login/chat phrases. Share version constants with
 capability gates — do not reverse-parse package strings.
 
 **Auth recovery (`authRecovery`):**
-- `host` — provider-owned CLI / interactive login may appear on computer and
-  setup-incomplete surfaces (Kimi / OpenCode / Pi today).
-- `in-product` — browser-OAuth / Connect from a failing chat. Computer and
-  setup cards stay **install-only** (no terminal login copy). Adding in-product
-  OAuth requires a separate runtime-auth contract + tests — set
-  `authRecovery: "in-product"` and do not teach terminal login on setup cards.
+- `{ kind: "host" }` — provider-owned CLI / interactive login may appear on
+  computer and setup-incomplete surfaces (Kimi / OpenCode / Pi today).
+- `{ kind: "in-product", target }` — browser-OAuth / Connect from a failing
+  chat, with `target` typed by the narrower server-accepted
+  `RuntimeAuthProvider` contract. Computer and setup cards stay
+  **install-only** (no terminal login copy). Claude Code CLI maps to the shared
+  Claude Code target; every direct target maps to itself. Adding in-product
+  OAuth requires extending the runtime-auth contract and its exact-target tests.
 
 ## 3. Handler V1 contract
 

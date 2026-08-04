@@ -6,7 +6,8 @@ import {
   pickPreferredRuntimeProvider,
   RUNTIME_PROVIDER_IDS,
   RUNTIME_PROVIDER_SELECTION_ORDER,
-  runtimeProviderInstallLoginCommand,
+  type RuntimeProvider,
+  runtimeProviderComputerSetupCommand,
   runtimeProviderLabel as sharedRuntimeProviderLabel,
 } from "@first-tree/shared";
 import { act } from "react";
@@ -23,6 +24,20 @@ import {
 import { RuntimeInstallBox } from "../cards/shared/runtime-install-box.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const IN_PRODUCT_SETUP_CASES = [
+  ["claude-code", "claude auth login"],
+  ["claude-code-tui", "claude auth login"],
+  ["codex", "codex login"],
+  ["cursor", "cursor-agent login"],
+  ["grok", "grok login"],
+] as const satisfies readonly (readonly [RuntimeProvider, string])[];
+
+const HOST_SETUP_CASES = [
+  ["kimi-code", "kimi # then run /login"],
+  ["opencode", "opencode auth login"],
+  ["pi", "pi # then run /login"],
+] as const satisfies readonly (readonly [RuntimeProvider, string])[];
 
 let root: Root | null = null;
 let container: HTMLElement | null = null;
@@ -131,15 +146,26 @@ describe("web provider surfaces derived from shared catalog", () => {
     );
   });
 
-  it("renders RuntimeInstallBox install-only for in-product auth providers", async () => {
-    const expected = runtimeProviderInstallLoginCommand("codex");
-    expect(expected).toBe("npm install -g @openai/codex");
-    const el = await render(<RuntimeInstallBox provider="codex" entry={null} hostname="devbox" os="darwin" />);
-    const text = el.textContent ?? "";
-    expect(text).toContain("Codex");
-    expect(text).toContain(expected);
-    expect(text).not.toContain("codex login");
-    const pre = el.querySelector("pre");
-    expect(pre?.textContent).toBe("npm install -g @openai/codex");
-  });
+  for (const [provider, loginCommand] of IN_PRODUCT_SETUP_CASES) {
+    it(`renders RuntimeInstallBox install-only for in-product provider ${provider}`, async () => {
+      const expected = buildInstallCommand(provider, "darwin");
+      const el = await render(<RuntimeInstallBox provider={provider} entry={null} hostname="devbox" os="darwin" />);
+      const text = el.textContent ?? "";
+      expect(text).toContain(PROVIDER_LABEL[provider]);
+      expect(text).toContain(expected);
+      expect(text).not.toContain(loginCommand);
+      expect(el.querySelector("pre")?.textContent).toBe(expected);
+    });
+  }
+
+  for (const [provider, loginCommand] of HOST_SETUP_CASES) {
+    it(`renders RuntimeInstallBox with host-login guidance for provider ${provider}`, async () => {
+      const expected = runtimeProviderComputerSetupCommand(provider);
+      const el = await render(<RuntimeInstallBox provider={provider} entry={null} hostname="devbox" os="darwin" />);
+      const text = el.textContent ?? "";
+      expect(text).toContain(PROVIDER_LABEL[provider]);
+      expect(text).toContain(loginCommand);
+      expect(el.querySelector("pre")?.textContent).toBe(expected);
+    });
+  }
 });
