@@ -884,6 +884,64 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it.each([
+    [
+      "an English service name",
+      "I read README and the root manifest. The checkout service is the clearest starting point. Choose one, or type a different microtask.",
+    ],
+    [
+      "a Chinese module name",
+      "我读到了 README 和 checkout 清单。恢复模块是最清晰的起点。请选择一个，或自由输入其他微任务。",
+    ],
+  ])("accepts a concrete two-sentence receipt naming %s", (_description, receipt) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-named-start-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              receipt,
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only 5–8 step recovery call chain with file references.",
+                  label: "Trace recovery",
+                },
+                {
+                  description: "Read-only recovery judgment with file and command evidence.",
+                  label: "Assess recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("rejects a generic two-sentence receipt without named repository evidence", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-generic-receipt-"));
     try {

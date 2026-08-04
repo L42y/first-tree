@@ -417,8 +417,19 @@ function hasConcreteProjectSurface(text: string): boolean {
 
 function hasNamedStartingPoint(text: string): boolean {
   if (hasConcreteProjectSurface(text)) return true;
-  return /\b(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*(?:\s+(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*){0,2}\s+(?:entry point|entry|boundary|module|route|flow|branch|test|todo)\b/iu.test(
-    text,
+  if (
+    /\b(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*(?:\s+(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*){0,2}\s+(?:entry point|entry|boundary|module|route|flow|branch|test|todo|service|component|package|handler|subsystem)\b/iu.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+
+  const chineseNamedSurface = text.match(
+    /([\p{Script=Han}a-z0-9_.-]{1,24})(?:模块|服务|组件|包|处理器|子系统|入口|边界|路由|流程|分支|测试|待办|起点)/iu,
+  )?.[1];
+  return Boolean(
+    chineseNamedSurface && !/^(?:项目|这个|该|当前|其|我们的|你们的|一个|这个项目)$/u.test(chineseNamedSurface),
   );
 }
 
@@ -430,7 +441,7 @@ function hasTwoSentenceReceipt(text: string): boolean {
       )[0]
       ?.trim() ?? "";
   const sentences = beforeChoice
-    .split(/(?<=[.!?。！？])\s+/u)
+    .split(/(?<=[.!?])\s+|(?<=[。！？])\s*/u)
     .map((sentence) => sentence.trim())
     .filter(Boolean);
   const [readSentence = "", startSentence = ""] = sentences;
