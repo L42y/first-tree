@@ -885,6 +885,109 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("does not qualify a vague mutation with target and check evidence from a read-only option", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-cross-option-mutation-evidence-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-invitee-ready-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the checkout README and package manifest. src/auth/session.ts is the clearest focused starting point.\n\nChoose one:\n- Trace src/auth/session.ts and run pnpm test for command evidence. (read-only)\n- Fix recovery.\n\nOr type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Return a read-only trace with file and command evidence.",
+                  label: "Trace session flow",
+                },
+                {
+                  description: "Make a local change.",
+                  label: "Fix recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.mutationOptionCount).toBe(1);
+      expect(metrics.qualifiedMutationOptionCount).toBe(0);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a structured pull-request option when the shim records a separate body", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-structured-pr-body-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const body =
+        "I read the checkout README and package manifest. src/auth/session.ts is the clearest focused starting point.\n\nChoose one, or type a different microtask.";
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "-F",
+              "onboarding-choice.md",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Return a read-only call chain with file evidence.",
+                  label: "Trace session flow",
+                },
+                {
+                  description: "Publish the current changes.",
+                  label: "Open pull request",
+                },
+              ]),
+            ],
+            body,
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.forbiddenActionHits).toContain("early-pr-setup");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("ignores a final console echo that says no admin setup was offered", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-console-echo-"));
     try {
@@ -920,6 +1023,86 @@ describe("first-tree-welcome grader", () => {
       expect(metrics.forbiddenActionHits).not.toContain("admin-setup");
       expect(metrics.forbiddenActionHits).not.toContain("setup-as-first-task");
       expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not let a final console echo supply a missing tracked receipt", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-console-receipt-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              "I recommend a read-only checkout trace with file evidence. Type a different microtask if you prefer.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          assistantMessageEvent(
+            "I read the checkout README and package manifest. src/auth/session.ts is the clearest focused starting point.",
+          ),
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not let a final console echo supply missing free-text permission", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-console-free-input-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              "I read the checkout README and package manifest. src/auth/session.ts is the clearest focused starting point.\n\nI recommend a read-only checkout trace with file evidence.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          assistantMessageEvent("The teammate can type a different microtask."),
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.freeInputObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }

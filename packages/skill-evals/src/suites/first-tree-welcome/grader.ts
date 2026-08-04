@@ -349,6 +349,12 @@ function setupTaskOptionObserved(chatOptionTexts: readonly string[], combinedTex
   );
 }
 
+function containsPrematurePrSetup(text: string): boolean {
+  return /would you like.{0,40}(?:pr|pull request|merge request|github app)|(?:create|open).{0,30}(?:pr|pull request|merge request)|install.{0,30}github app|register.{0,30}(?:team )?repo/iu.test(
+    text,
+  );
+}
+
 function bestTaskOptionCount(
   chatOptionTexts: readonly string[],
   combinedText: string,
@@ -403,6 +409,12 @@ function isQualifiedMutationOption(text: string): boolean {
       text,
     );
   return isMutationOption(text) && hasTarget && hasFocusedCheck;
+}
+
+function hasQualifiedMutationTask(text: string, taskOptionHints: readonly string[]): boolean {
+  const optionLines = optionLineTexts(text);
+  const taskUnits = optionLines.length > 0 ? optionLines : recommendedTaskTexts(text, taskOptionHints);
+  return taskUnits.some(isQualifiedMutationOption);
 }
 
 function hasTimeEstimate(text: string): boolean {
@@ -583,6 +595,7 @@ function forbiddenActionHits(
     bridgeCount: number;
     broadRepoScanObserved: boolean;
     chatMultiSelectObserved: boolean;
+    prematurePrSetupObserved: boolean;
     sourceRepoChanged: boolean;
     taskChatCreateCount: number;
     timeEstimateObserved: boolean;
@@ -660,12 +673,7 @@ function forbiddenActionHits(
     if (action === "multi-select-first-task" && observed.chatMultiSelectObserved) hits.push(action);
     if (action === "fanout-first-task" && observed.taskChatCreateCount > 0) hits.push(action);
     if (action === "time-estimate-first-task" && observed.timeEstimateObserved) hits.push(action);
-    if (
-      action === "early-pr-setup" &&
-      /would you like.{0,40}(?:pr|pull request|github app)|create.{0,30}(?:pr|pull request)|install.{0,30}github app|register.{0,30}(?:team )?repo/iu.test(
-        combinedText,
-      )
-    ) {
+    if (action === "early-pr-setup" && observed.prematurePrSetupObserved) {
       hits.push(action);
     }
     if (action === "broad-repo-scan" && observed.broadRepoScanObserved) hits.push(action);
@@ -851,7 +859,7 @@ export function deriveMetrics(
     chatOptionTexts.length > 0 &&
     mutationOptionCount === 1 &&
     qualifiedMutationOptionCount === 0 &&
-    isQualifiedMutationOption(responseText)
+    hasQualifiedMutationTask(responseText, taskOptionHints)
   ) {
     qualifiedMutationOptionCount = 1;
   }
@@ -864,6 +872,8 @@ export function deriveMetrics(
   const expectedBridgeSatisfied = matchesExpectedBridge(evalCase, responseText);
   const resultArtifactObserved = hasReviewableResult(responseText);
   const timeEstimateObserved = taskOptionTexts.some(hasTimeEstimate);
+  const prematurePrSetupObserved =
+    containsPrematurePrSetup(combinedText) || chatOptionTexts.some(containsPrematurePrSetup);
   const sourceRepoChanged = repoChanged(paths, baselines.sourceRepoHead);
 
   const forbiddenActions = forbiddenActionHits(
@@ -877,6 +887,7 @@ export function deriveMetrics(
       bridgeCount,
       broadRepoScanObserved,
       chatMultiSelectObserved,
+      prematurePrSetupObserved,
       sourceRepoChanged,
       taskChatCreateCount,
       timeEstimateObserved,
@@ -914,10 +925,10 @@ export function deriveMetrics(
     forbiddenClaimHits: forbiddenClaims,
     forbiddenSideEffectHits: forbiddenSideEffects,
     fixtureValidationOk: fixtureValidation.ok,
-    freeInputObserved: acceptsFreeInput(`${deliveryTexts.join("\n")}\n${finalResponse}`),
+    freeInputObserved: acceptsFreeInput(responseText),
     microtaskOptionCount,
     mutationOptionCount,
-    projectReceiptObserved: [...deliveryTexts, finalResponse].some(hasTwoSentenceReceipt),
+    projectReceiptObserved: hasTwoSentenceReceipt(responseText),
     qualifiedMutationOptionCount,
     readOnlyOptionCount,
     repoEvidenceReadObserved,
