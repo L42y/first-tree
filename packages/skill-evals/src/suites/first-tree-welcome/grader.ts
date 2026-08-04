@@ -250,7 +250,7 @@ function withoutNegatedSetupLanguage(text: string): string {
 }
 
 function containsSetupTaskLanguage(text: string): boolean {
-  return /install|create.{0,30}(context\s+)?tree|seed.{0,20}tree|tree.{0,20}setup|setup.{0,20}tree|select.{0,20}repo|connect.{0,20}repo|authori[sz]e|authorization|安装.{0,20}github app|授权/iu.test(
+  return /install|github app|create.{0,30}(context\s+)?tree|seed.{0,20}tree|tree.{0,20}setup|setup.{0,20}tree|select.{0,20}repo|connect.{0,20}repo|authori[sz]e|authorization|安装.{0,20}github app|授权/iu.test(
     withoutNegatedSetupLanguage(text),
   );
 }
@@ -409,18 +409,37 @@ function acceptsFreeInput(text: string): boolean {
   );
 }
 
+function hasConcreteProjectSurface(text: string): boolean {
+  return /`[^`]+`|(?:[\w.-]+\/)+[\w.-]+|\b(?:readme(?:\.\w+)?|manifest|package\.json|pyproject\.toml|cargo\.toml|go\.mod|pom\.xml|build\.gradle|makefile|[\w.-]+\.(?:ts|tsx|js|jsx|py|go|rs|rb|java))\b/iu.test(
+    text,
+  );
+}
+
+function hasNamedStartingPoint(text: string): boolean {
+  if (hasConcreteProjectSurface(text)) return true;
+  return /\b(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*(?:\s+(?!(?:a|an|the|this|that|its|our|your|project)\b)[a-z][\w.-]*){0,2}\s+(?:entry point|entry|boundary|module|route|flow|branch|test|todo)\b/iu.test(
+    text,
+  );
+}
+
 function hasTwoSentenceReceipt(text: string): boolean {
   const beforeChoice =
     text
       .split(
-        /\b(?:choose|pick|select|start with|reply with|i recommend|my recommendation)\b|\n\s*[-*]\s+|请选择|选择(?:一个|其中)|回复(?:这个|该)|我建议|建议先/iu,
+        /\b(?:choose|pick|select|reply with|i recommend|my recommendation)\b|\n\s*\n\s*start with\b|\n\s*[-*]\s+|请选择|选择(?:一个|其中)|回复(?:这个|该)|我建议|建议先/iu,
       )[0]
       ?.trim() ?? "";
   const sentences = beforeChoice
     .split(/(?<=[.!?。！？])\s+/u)
     .map((sentence) => sentence.trim())
     .filter(Boolean);
-  return sentences.length === 2 && /read|found|observed|inspected|读到|看到|发现/iu.test(sentences[0] ?? "");
+  const [readSentence = "", startSentence = ""] = sentences;
+  return (
+    sentences.length === 2 &&
+    /read|found|observed|inspected|读到|看到|发现/iu.test(readSentence) &&
+    hasConcreteProjectSurface(readSentence) &&
+    hasNamedStartingPoint(startSentence)
+  );
 }
 
 function countBridgeQuestions(text: string): number {

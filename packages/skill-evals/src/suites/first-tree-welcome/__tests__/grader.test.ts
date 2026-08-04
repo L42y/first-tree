@@ -341,6 +341,53 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("rejects a plain GitHub App capability option from the first microtask menu", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-github-app-option-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the checkout README and package manifest. src/checkout/recovery.ts is the clearest focused starting point. Choose one, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only 5–8 step checkout call chain with file references.",
+                  label: "Trace session flow",
+                },
+                { description: "Enable live PR tracking.", label: "GitHub App" },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.capabilitySetupOptionObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toContain("setup-as-first-task");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("fails invitee-not-ready when admin setup and repo selection are offered", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-invitee-admin-setup-"));
     try {
@@ -783,6 +830,104 @@ describe("first-tree-welcome grader", () => {
 
       expect(metrics.projectReceiptObserved).toBe(true);
       expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not treat start-with wording inside a receipt sentence as a menu heading", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-start-with-sentence-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the checkout README and package manifest. We can start with src/checkout/recovery.ts because it is the focused recovery boundary. Choose one, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only 5–8 step session-recovery call chain with file references.",
+                  label: "Trace recovery",
+                },
+                {
+                  description: "Read-only recovery judgment with file and command evidence.",
+                  label: "Assess recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects a generic two-sentence receipt without named repository evidence", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-generic-receipt-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the project. We can start from its entry point. Choose one, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only 5–8 step checkout call chain with file references.",
+                  label: "Trace session flow",
+                },
+                {
+                  description: "Read-only session judgment with file and command evidence.",
+                  label: "Assess recovery",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.projectReceiptObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
