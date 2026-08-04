@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { GROK_INSTALL_COMMAND, runtimeProviderLoginCommand } from "@first-tree/shared";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
@@ -15,8 +16,8 @@ import { getLoginShellPathDirs } from "./login-shell-path.js";
  * it is NOT an npm package, so no node_modules resolution is attempted.
  */
 
-/** Official install command surfaced in missing-binary copy and setup UI. */
-export const GROK_INSTALL_COMMAND = "curl -fsSL https://x.ai/cli/install.sh | bash";
+/** Official install command — shared catalog constant (compatible re-export). */
+export { GROK_INSTALL_COMMAND };
 
 /**
  * Supported Grok Build CLI range for this integration. Verified against
@@ -88,7 +89,7 @@ export function formatGrokBinaryMissingMessage(input: unknown): string {
   return (
     "Grok Build CLI is missing on this machine. " +
     "First Tree does not bundle or install the Grok engine — it resolves the operator-installed `grok` from PATH, well-known install directories, or the login-shell PATH. " +
-    `Install it with the official installer (\`${GROK_INSTALL_COMMAND}\`), then sign in with \`grok login\` and re-run capability detection.` +
+    `Install it with the official installer (\`${GROK_INSTALL_COMMAND}\`), then sign in with \`${runtimeProviderLoginCommand("grok")}\` and re-run capability detection.` +
     suffix
   );
 }

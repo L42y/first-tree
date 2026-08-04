@@ -1,16 +1,21 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  OPENCODE_MINIMUM_VERSION,
+  runtimeProviderInstallCommand,
+  runtimeProviderLoginCommand,
+} from "@first-tree/shared";
 import { prerelease, satisfies, valid } from "semver";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
-/** Lowest compatible CLI validated by the runtime contract. */
-export const OPENCODE_MINIMUM_VERSION = "1.18.7";
-export const OPENCODE_SUPPORTED_VERSION_RANGE = ">=1.18.7 <2.0.0";
+/** Lowest compatible CLI — shared with catalog npm package metadata. */
+export { OPENCODE_MINIMUM_VERSION };
+export const OPENCODE_SUPPORTED_VERSION_RANGE = `>=${OPENCODE_MINIMUM_VERSION} <2.0.0`;
 /** Host-local OpenCode installation surfaced in setup and error copy. */
-export const OPENCODE_INSTALL_COMMAND = `npm install -g opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
-export const OPENCODE_LOGIN_COMMAND = "opencode auth login";
+export const OPENCODE_INSTALL_COMMAND = runtimeProviderInstallCommand("opencode");
+export const OPENCODE_LOGIN_COMMAND = runtimeProviderLoginCommand("opencode");
 
 export function formatOpenCodeBinaryMissingMessage(input: unknown): string {
   const original = errorText(input).trim();

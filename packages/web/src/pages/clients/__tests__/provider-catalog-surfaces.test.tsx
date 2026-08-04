@@ -1,10 +1,15 @@
+// @vitest-environment happy-dom
+
 import {
   DISABLED_RUNTIME_PROVIDERS,
   pickPreferredRuntimeProvider,
   RUNTIME_PROVIDER_IDS,
+  runtimeProviderInstallLoginCommand,
   runtimeProviderLabel as sharedRuntimeProviderLabel,
 } from "@first-tree/shared";
-import { describe, expect, it } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   asRuntimeProvider,
   buildInstallCommand,
@@ -13,6 +18,34 @@ import {
   providerInstallHint,
   runtimeProviderLabel,
 } from "../cards/shared/providers.js";
+import { RuntimeInstallBox } from "../cards/shared/runtime-install-box.js";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+let root: Root | null = null;
+let container: HTMLElement | null = null;
+
+async function render(element: React.ReactElement): Promise<HTMLElement> {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () => {
+    root?.render(element);
+  });
+  if (!container) throw new Error("container missing");
+  return container;
+}
+
+afterEach(async () => {
+  if (root) {
+    await act(async () => {
+      root?.unmount();
+    });
+  }
+  container?.remove();
+  root = null;
+  container = null;
+});
 
 describe("web provider surfaces derived from shared catalog", () => {
   it("offers only enabled providers and keeps disabled labels for already-bound agents", () => {
@@ -32,7 +65,7 @@ describe("web provider surfaces derived from shared catalog", () => {
     expect(sharedRuntimeProviderLabel("codex")).toBe(PROVIDER_LABEL.codex);
   });
 
-  it("picks preferred runtime from catalog display order and skips disabled providers", () => {
+  it("picks preferred runtime from catalog selectionPriority (not display order)", () => {
     expect(
       pickPreferredRuntimeProvider({
         "claude-code-tui": { state: "ok" },
@@ -45,6 +78,14 @@ describe("web provider surfaces derived from shared catalog", () => {
         codex: { state: "ok" },
       }),
     ).toBe("claude-code");
+    // Display order places Kimi before OpenCode/Pi; selection keeps OpenCode → Pi → Kimi.
+    expect(
+      pickPreferredRuntimeProvider({
+        "kimi-code": { state: "ok" },
+        opencode: { state: "ok" },
+        pi: { state: "ok" },
+      }),
+    ).toBe("opencode");
     expect(pickPreferredRuntimeProvider({ "future-provider": { state: "ok" } })).toBeNull();
   });
 
@@ -63,5 +104,19 @@ describe("web provider surfaces derived from shared catalog", () => {
     expect(providerInstallHint("claude-code-tui", "darwin", "tmux not found")).not.toContain(
       "npm install -g @anthropic-ai/claude-code",
     );
+  });
+
+  it("renders RuntimeInstallBox label + catalog install/login command into the DOM", async () => {
+    const expected = runtimeProviderInstallLoginCommand("codex");
+    const [installLine = ""] = expected.split("\n");
+    const el = await render(<RuntimeInstallBox provider="codex" entry={null} hostname="devbox" os="darwin" />);
+    const text = el.textContent ?? "";
+    expect(text).toContain("Codex");
+    expect(installLine.length).toBeGreaterThan(0);
+    expect(text).toContain(installLine);
+    expect(text).toContain("codex login");
+    const pre = el.querySelector("pre");
+    expect(pre?.textContent).toContain("npm install -g @openai/codex");
+    expect(pre?.textContent).toContain("codex login");
   });
 });

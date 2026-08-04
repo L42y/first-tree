@@ -14,7 +14,7 @@ export {
 } from "./client-connection.js";
 // Handlers
 export { detectStreamApiError, StreamApiTransientError } from "./handlers/claude-code.js";
-export { createBuiltinProviderRegistry, registerBuiltinHandlers } from "./handlers/index.js";
+export { registerBuiltinHandlers } from "./handlers/index.js";
 export { createKimiCodeHandler, formatKimiCodeError, kimiToolIsReadOnly } from "./handlers/kimi-code.js";
 export {
   buildOpenCodeConfigContent,
@@ -31,18 +31,22 @@ export {
   initClientSentry,
   rootLogger,
 } from "./observability/index.js";
+export { BUILTIN_PROVIDER_PROBES } from "./providers/builtin-probes.js";
 export type {
+  BuiltinHandlerEntry,
+  BuiltinHandlerRegistry,
+  BuiltinHandlerRegistryDeps,
   BuiltinProviderEntry,
   BuiltinProviderRegistry,
   BuiltinRegistryDeps,
   CapabilityProbe,
 } from "./providers/builtin-registry.js";
 export {
-  getBuiltinProviderRegistry,
-  installBuiltinProviderRegistry,
+  createBuiltinHandlerRegistry,
+  createBuiltinProviderRegistry,
   probedRuntimeProviders,
 } from "./providers/builtin-registry.js";
-export { PROVIDER_SKILL_ROOTS, providerSkillRootFromRegistry } from "./providers/skill-roots.js";
+export { PROVIDER_SKILL_ROOTS } from "./providers/skill-roots.js";
 export { readCanonicalContextTreeWriteRouting } from "./runtime/agent-briefing.js";
 // Runtime
 export type { AgentSlotConfig } from "./runtime/agent-slot.js";

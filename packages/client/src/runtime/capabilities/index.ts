@@ -6,14 +6,10 @@ import {
   type RuntimeProvider,
 } from "@first-tree/shared";
 import {
+  BUILTIN_PROVIDER_PROBES,
   type BuiltinProviderProbeTable,
-  getBuiltinProviderProbes,
   probedRuntimeProviders,
 } from "../../providers/builtin-probes.js";
-import {
-  type BuiltinProviderRegistry,
-  peekInstalledBuiltinProviderRegistry,
-} from "../../providers/builtin-registry.js";
 
 /** Periodic full re-probe ceiling: re-detect at most this often on reconnect to
  * catch silent drift (a provider uninstalled while connected). Detection is
@@ -83,38 +79,22 @@ async function aggregate(
 }
 
 export type ProbeCapabilitiesOptions = {
-  /** Override the built-in probe table (tests inject fakes). */
+  /**
+   * Explicit probe table injection for tests. Production callers omit this and
+   * use the immutable {@link BUILTIN_PROVIDER_PROBES} composition table.
+   */
   probes?: BuiltinProviderProbeTable;
-  /** Prefer probes from this registry (also used when installed via composition). */
-  registry?: BuiltinProviderRegistry;
 };
-
-function probeTableFromRegistry(registry: BuiltinProviderRegistry): BuiltinProviderProbeTable {
-  const out = {} as Record<RuntimeProvider, () => Promise<CapabilityEntry>>;
-  for (const provider of RUNTIME_PROVIDER_IDS) {
-    out[provider] = registry[provider].probe;
-  }
-  return out;
-}
 
 /**
  * Run every built-in install probe and aggregate the results.
  *
- * Probe callbacks come from (in order): explicit `probes`, explicit `registry`,
- * the installed composition registry (kept in sync by
- * `installBuiltinProviderRegistry`), or the default probe seed table. This
- * orchestrator must not import or switch on concrete provider modules.
- * Detection is install-only — no binary is launched.
+ * Probe callbacks come from explicit `probes` or the immutable composition
+ * table. This orchestrator must not import or switch on concrete provider
+ * modules. Detection is install-only — no binary is launched.
  */
 export async function probeCapabilities(options: ProbeCapabilitiesOptions = {}): Promise<ClientCapabilities> {
-  const installed = peekInstalledBuiltinProviderRegistry();
-  const probeTable =
-    options.probes ??
-    (options.registry
-      ? probeTableFromRegistry(options.registry)
-      : installed
-        ? probeTableFromRegistry(installed)
-        : getBuiltinProviderProbes());
+  const probeTable = options.probes ?? BUILTIN_PROVIDER_PROBES;
   const probes: Array<readonly [RuntimeProvider, Promise<CapabilityEntry>]> = [];
   for (const provider of RUNTIME_PROVIDER_IDS) {
     if (!isRuntimeProviderEnabled(provider)) continue;

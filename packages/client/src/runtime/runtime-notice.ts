@@ -3,6 +3,7 @@ import {
   type ProviderRetryScope,
   RUNTIME_NOTICE_METADATA_KEY,
   type RuntimeProvider,
+  runtimeProviderLabel,
 } from "@first-tree/shared";
 import { daemonEnvFile } from "@first-tree/shared/config";
 import type { FirstTreeHubSDK } from "../sdk.js";
@@ -39,28 +40,6 @@ export async function postProviderFailureRuntimeNotice(
   });
 }
 
-function providerLabel(provider: RuntimeProvider): string {
-  switch (provider) {
-    case "codex":
-      return "Codex";
-    case "claude-code":
-    case "claude-code-tui":
-      return "Claude Code";
-    case "cursor":
-      return "Cursor";
-    case "grok":
-      return "Grok Build";
-    case "kimi-code":
-      return "Kimi Code";
-    case "opencode":
-      return "OpenCode";
-    case "pi":
-      return "Pi";
-    default:
-      return provider;
-  }
-}
-
 function actionLabel(scope: ProviderRetryScope): string {
   switch (scope) {
     case "session_start":
@@ -76,7 +55,7 @@ function noticeLead(payload: ProviderRetryEventPayload): string {
   if (payload.scope === "provider_turn" && isClaudeProvider(payload.provider)) {
     return claudeProviderTurnNoticeLead(payload);
   }
-  const provider = providerLabel(payload.provider);
+  const provider = runtimeProviderLabel(payload.provider);
   const action = actionLabel(payload.scope);
   switch (payload.category) {
     case "runtime_transport":

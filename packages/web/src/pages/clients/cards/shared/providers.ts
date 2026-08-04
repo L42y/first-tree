@@ -4,8 +4,10 @@ import {
   enabledRuntimeProviders,
   GROK_INSTALL_COMMAND,
   RUNTIME_PROVIDER_CATALOG,
+  RUNTIME_PROVIDER_IDS,
   RUNTIME_PROVIDER_LABELS,
   type RuntimeProvider,
+  recordByRuntimeProvider,
   runtimeProviderInstallCommand,
   runtimeProviderInstallLoginCommand,
   runtimeProviderLabel,
@@ -33,14 +35,17 @@ export const PROVIDER_ORDER: RuntimeProvider[] = enabledRuntimeProviders();
 export const PROVIDER_LABEL: Record<RuntimeProvider, string> = { ...RUNTIME_PROVIDER_LABELS };
 
 /** `npm install -g` package spec per runtime, or null for script-only installs. */
-export const PROVIDER_NPM_PACKAGE: Record<RuntimeProvider, string | null> = Object.fromEntries(
-  Object.values(RUNTIME_PROVIDER_CATALOG).map((entry) => [entry.id, entry.npmPackage]),
-) as Record<RuntimeProvider, string | null>;
+export const PROVIDER_NPM_PACKAGE: Readonly<Record<RuntimeProvider, string | null>> = recordByRuntimeProvider(
+  RUNTIME_PROVIDER_IDS.map((id) => {
+    const install = RUNTIME_PROVIDER_CATALOG[id].install;
+    return [id, install.kind === "npm" ? install.package : null] as const;
+  }),
+);
 
 /** Per-runtime login command shown after install. */
-export const PROVIDER_LOGIN_COMMAND: Record<RuntimeProvider, string> = Object.fromEntries(
-  Object.values(RUNTIME_PROVIDER_CATALOG).map((entry) => [entry.id, entry.loginCommand]),
-) as Record<RuntimeProvider, string>;
+export const PROVIDER_LOGIN_COMMAND: Readonly<Record<RuntimeProvider, string>> = recordByRuntimeProvider(
+  RUNTIME_PROVIDER_IDS.map((id) => [id, runtimeProviderLoginCommand(id)] as const),
+);
 
 /**
  * The single install command line for a provider: the `npm install -g` spec

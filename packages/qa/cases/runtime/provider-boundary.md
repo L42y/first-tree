@@ -1,6 +1,6 @@
 ---
 id: runtime-provider-boundary
-description: Cross-surface acceptance that provider identity, catalog metadata, and built-in registration stay behind one ownership boundary.
+description: Cross-surface acceptance that provider identity, catalog metadata, and composition-owned projections stay behind one ownership boundary.
 areas: [runtime]
 surfaces: [client, cli, web]
 ---
@@ -9,9 +9,10 @@ surfaces: [client, cli, web]
 
 ## Goal
 
-Validate that First Tree's runtime-provider foundation keeps concrete provider
-knowledge behind the shared catalog + client built-in registry boundary, while
-generic runtime / web surfaces only consume injected or catalog-derived data.
+Validate that First Tree keeps a single known-provider identity plus
+composition-owned exhaustive projections (handler factories, install probes,
+skill roots), while generic runtime / web surfaces only consume catalog-derived
+or injected data.
 
 Use this case after provider-registration / catalog refactors. It does **not**
 replace product tests (`pnpm --filter @first-tree/shared|client|web test`); it
@@ -27,34 +28,36 @@ records the human cross-surface checks those tests cannot fully cover.
 ## Checklist
 
 1. **Identity single source**
-   - Confirm `RUNTIME_PROVIDER_IDS` in `@first-tree/shared` is the only identity
-     list and that schema / catalog keys match it.
+   - Confirm Zod `runtimeProviderSchema` is the type source (`RuntimeProvider =
+     z.infer<…>`, IDs from schema options).
    - Confirm a disabled provider (currently `claude-code-tui`) stays a valid ID
      but is absent from enabled selection / probe aggregation.
 
 2. **Web catalog derivation**
-   - Open Computers / client setup cards and confirm provider labels, order, and
-     install/login commands match the shared catalog (no divergent parallel
-     strings in web-only tables).
+   - Open Computers / client setup cards and confirm provider labels, display
+     order, and install/login commands match the shared catalog.
+   - Confirm New Agent preferred-runtime order follows `selectionPriority`
+     (OpenCode before Pi before Kimi), which may differ from display order.
    - Spot-check one npm provider (e.g. Codex) and one script installer
      (Cursor or Grok).
 
-3. **Built-in registry wiring**
-   - Confirm daemon boot still registers every known provider handler through
-     `registerBuiltinHandlers` / `createBuiltinProviderRegistry`.
+3. **Composition wiring**
+   - Confirm daemon boot registers handlers through
+     `registerBuiltinHandlers` / `createBuiltinHandlerRegistry` (factories only).
+   - Confirm probe aggregation reads `BUILTIN_PROVIDER_PROBES` (or an explicit
+     inject), not a process-global registry snapshot.
    - Confirm `first-tree daemon probe --json --no-upload` still returns entries
      for enabled providers only, and a single probe failure does not drop the
      rest of the snapshot.
 
 4. **Skill roots**
-   - Confirm managed-skills projection still maps each provider to its native
-     root (Claude → `.claude/skills`, Codex/Pi → `.agents/skills`, etc.) without
-     a second hard-coded map in generic aggregation.
+   - Confirm managed-skills reads `PROVIDER_SKILL_ROOTS` directly (Claude →
+     `.claude/skills`, Codex/Pi → `.agents/skills`, etc.).
 
 5. **Architecture guard**
-   - Confirm the committed provider-boundary guard test remains green: generic
-     capability aggregation / handler registration do not reintroduce provider
-     literal switches, and shared/web do not import provider SDKs.
+   - Confirm the committed provider-boundary guard remains green: generic
+     modules stay free of provider-literal switches, guard tokens derive from
+     `RUNTIME_PROVIDER_IDS`, and live consumers use catalog helpers.
 
 ## Evidence
 
@@ -65,13 +68,14 @@ providers.
 
 ## Expected Result
 
-`PASS` means the revision keeps provider identity/catalog/registry ownership
+`PASS` means the revision keeps identity + composition-owned projections
 intact across shared, client, CLI probe, and web setup surfaces, with no
 provider-literal regression in the guarded generic modules.
 
 `FAIL` means a generic module regained concrete provider branches/lists, web
 reintroduced a parallel provider table, probe aggregation diverged from the
-enabled provider set, or skill-root mapping drifted from the registry source.
+enabled provider set, or skill-root / preference order drifted from catalog
+data.
 
 `BLOCKED` means the run cell could not exercise probe/UI surfaces for
 environment reasons; record the gap and keep product-test evidence separate.

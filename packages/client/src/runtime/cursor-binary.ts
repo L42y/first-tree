@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { CURSOR_INSTALL_COMMAND, runtimeProviderLoginCommand } from "@first-tree/shared";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
 
@@ -16,8 +17,8 @@ import { getLoginShellPathDirs } from "./login-shell-path.js";
  * main-command fallback.
  */
 
-/** Official install command surfaced in missing-binary copy and setup UI. */
-export const CURSOR_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
+/** Official install command — shared catalog constant (compatible re-export). */
+export { CURSOR_INSTALL_COMMAND };
 
 /**
  * `cursor-agent --version` smoke-check ceiling. Mirrors the codex bound: a cold
@@ -83,7 +84,7 @@ export function formatCursorBinaryMissingMessage(input: unknown): string {
   return (
     "Cursor Agent CLI is missing on this machine. " +
     "First Tree does not bundle or install the Cursor engine — it resolves the operator-installed `cursor-agent` (or `agent`) from PATH, well-known install directories, or the login-shell PATH. " +
-    `Install it with the official installer (\`${CURSOR_INSTALL_COMMAND}\`), then sign in with \`cursor-agent login\` and re-run capability detection.` +
+    `Install it with the official installer (\`${CURSOR_INSTALL_COMMAND}\`), then sign in with \`${runtimeProviderLoginCommand("cursor")}\` and re-run capability detection.` +
     suffix
   );
 }

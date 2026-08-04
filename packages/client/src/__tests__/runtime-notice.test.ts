@@ -46,7 +46,7 @@ describe("runtime notice formatting", () => {
       },
       {
         overrides: { provider: "claude-code-tui", scope: "session_resume", category: "capability" },
-        expected: "Claude Code could not resume this chat session: the runtime is unavailable",
+        expected: "Claude Code CLI could not resume this chat session: the runtime is unavailable",
       },
       {
         overrides: { provider: "codex", category: "configuration" },

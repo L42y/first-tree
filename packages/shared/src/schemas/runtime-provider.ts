@@ -1,15 +1,15 @@
 import { z } from "zod";
 
 /**
- * Canonical runtime-provider identity list. Schema, named constants, catalog
- * keys, and client built-in registry keys all derive from this single `as const`
- * tuple so a new provider cannot drift across packages.
+ * Zod is the source of truth for known runtime-provider wire IDs.
+ * Catalog keys, client composition tables, and named constants all derive from
+ * this schema so a new provider cannot drift across packages.
  *
  * Wire compatibility: unknown provider *strings* may still appear on rolling
- * capability maps (`Record<string, …>`); execution paths must narrow to this
- * known set before dispatching a handler.
+ * capability maps (`Record<string, …>`); execution paths must narrow with
+ * {@link asRuntimeProvider} / {@link runtimeProviderSchema} before dispatch.
  */
-export const RUNTIME_PROVIDER_IDS = [
+export const runtimeProviderSchema = z.enum([
   "claude-code",
   "claude-code-tui",
   "codex",
@@ -18,13 +18,16 @@ export const RUNTIME_PROVIDER_IDS = [
   "kimi-code",
   "opencode",
   "pi",
-] as const;
+]);
 
-export type RuntimeProvider = (typeof RUNTIME_PROVIDER_IDS)[number];
+export type RuntimeProvider = z.infer<typeof runtimeProviderSchema>;
+
+/** Exhaustive ID list derived from the Zod enum (same order as schema options). */
+export const RUNTIME_PROVIDER_IDS: readonly RuntimeProvider[] = runtimeProviderSchema.options;
 
 /**
  * Named constants for call sites that prefer `RUNTIME_PROVIDERS.CODEX` over
- * string literals. Values are the same identities as {@link RUNTIME_PROVIDER_IDS}.
+ * string literals. Values match {@link runtimeProviderSchema}.
  */
 export const RUNTIME_PROVIDERS = {
   CLAUDE_CODE: "claude-code",
@@ -36,8 +39,6 @@ export const RUNTIME_PROVIDERS = {
   OPENCODE: "opencode",
   PI: "pi",
 } as const satisfies Record<string, RuntimeProvider>;
-
-export const runtimeProviderSchema = z.enum(RUNTIME_PROVIDER_IDS);
 
 export const DEFAULT_RUNTIME_PROVIDER: RuntimeProvider = "claude-code";
 
@@ -61,5 +62,30 @@ export function isRuntimeProviderEnabled(provider: string): boolean {
 
 /** Narrow a wire string to a known {@link RuntimeProvider}, or `null`. */
 export function asRuntimeProvider(provider: string): RuntimeProvider | null {
-  return (RUNTIME_PROVIDER_IDS as readonly string[]).includes(provider) ? (provider as RuntimeProvider) : null;
+  const parsed = runtimeProviderSchema.safeParse(provider);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Build a complete `Record<RuntimeProvider, V>` from an exhaustive entry list.
+ *
+ * `Object.fromEntries` widens keys to `string` in TypeScript's standard library
+ * even when every {@link RuntimeProvider} key is present at runtime. Callers
+ * must pass exactly one entry per {@link RUNTIME_PROVIDER_IDS} member; we check
+ * that length and then assert the record type once here so shared/web surfaces
+ * do not each carry their own cast.
+ */
+export function recordByRuntimeProvider<V>(
+  entries: ReadonlyArray<readonly [RuntimeProvider, V]>,
+): Readonly<Record<RuntimeProvider, V>> {
+  if (entries.length !== RUNTIME_PROVIDER_IDS.length) {
+    throw new Error(`recordByRuntimeProvider: expected ${RUNTIME_PROVIDER_IDS.length} entries, got ${entries.length}`);
+  }
+  const keys = new Set(entries.map(([id]) => id));
+  for (const id of RUNTIME_PROVIDER_IDS) {
+    if (!keys.has(id)) {
+      throw new Error(`recordByRuntimeProvider: missing provider "${id}"`);
+    }
+  }
+  return Object.fromEntries(entries) as Record<RuntimeProvider, V>;
 }

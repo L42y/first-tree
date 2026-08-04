@@ -1,6 +1,7 @@
 import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { runtimeProviderInstallCommand, runtimeProviderLoginCommand } from "@first-tree/shared";
 import { prerelease, satisfies, valid } from "semver";
 import { wellKnownBinDirs } from "./install-locations.js";
 import { getLoginShellPathDirs } from "./login-shell-path.js";
@@ -8,9 +9,9 @@ import { getLoginShellPathDirs } from "./login-shell-path.js";
 /** Lowest published compatible CLI validated by the runtime contract. */
 export const PI_MINIMUM_VERSION = "0.80.5";
 export const PI_SUPPORTED_VERSION_RANGE = ">=0.80.5 <1.0.0";
-/** Official unversioned install; runtime gate enforces `>=0.80.5 <1.0.0`. */
-export const PI_INSTALL_COMMAND = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent";
-export const PI_LOGIN_COMMAND = "pi # then run /login";
+/** Official install / login — shared catalog (compatible re-exports). */
+export const PI_INSTALL_COMMAND = runtimeProviderInstallCommand("pi");
+export const PI_LOGIN_COMMAND = runtimeProviderLoginCommand("pi");
 
 export function formatPiBinaryMissingMessage(input: unknown): string {
   const original = errorText(input).trim();

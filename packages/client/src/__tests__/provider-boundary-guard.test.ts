@@ -1,23 +1,15 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const clientSrc = join(here, "..");
 const repoRoot = join(clientSrc, "..", "..", "..");
 
-const PROVIDER_LITERALS = [
-  "claude-code-tui",
-  "claude-code",
-  "kimi-code",
-  "opencode",
-  "codex",
-  "cursor",
-  "grok",
-  '"pi"',
-  "'pi'",
-] as const;
+/** Quote tokens derived from the Zod ID set — auto-expands when a provider is added. */
+const PROVIDER_LITERAL_TOKENS: readonly string[] = RUNTIME_PROVIDER_IDS.flatMap((id) => [`"${id}"`, `'${id}'`]);
 
 const THIRD_PARTY_SDK_IMPORTS = [
   "@anthropic-ai/claude-agent-sdk",
@@ -26,13 +18,35 @@ const THIRD_PARTY_SDK_IMPORTS = [
   "@agentclientprotocol/sdk",
 ] as const;
 
+/** Unique composition roots allowed to name concrete providers / import adapters. */
+const COMPOSITION_ALLOWLIST = new Set([
+  "providers/builtin-registry.ts",
+  "providers/builtin-probes.ts",
+  "providers/skill-roots.ts",
+  "handlers/index.ts",
+]);
+
 /** Generic modules that must stay provider-neutral after this foundation PR. */
 const GUARDED_CLIENT_FILES = [
   "runtime/capabilities/index.ts",
   "runtime/managed-skills.ts",
   "runtime/runtime.ts",
   "runtime/handler.ts",
-  "handlers/index.ts",
+  "runtime/runtime-notice.ts",
+  "handlers/auth-error-hint.ts",
+] as const;
+
+/** Live presentation consumers that must derive catalog-owned copy. */
+const CATALOG_CONSUMER_FILES = [
+  "packages/web/src/components/new-agent-dialog.tsx",
+  "packages/web/src/pages/agent-detail/runtime-section.tsx",
+  "packages/web/src/pages/clients/cards/shared/providers.ts",
+  "packages/client/src/handlers/auth-error-hint.ts",
+  "packages/client/src/runtime/runtime-notice.ts",
+  "packages/client/src/runtime/cursor-binary.ts",
+  "packages/client/src/runtime/grok-binary.ts",
+  "packages/client/src/runtime/opencode-binary.ts",
+  "packages/client/src/runtime/pi-binary.ts",
 ] as const;
 
 function listFilesRecursive(root: string, predicate: (path: string) => boolean): string[] {
@@ -50,51 +64,80 @@ function listFilesRecursive(root: string, predicate: (path: string) => boolean):
   return out;
 }
 
+function containsAnyProviderLiteral(source: string): string | null {
+  for (const token of PROVIDER_LITERAL_TOKENS) {
+    if (source.includes(token)) return token;
+  }
+  return null;
+}
+
 describe("runtime provider architecture guard", () => {
   it("keeps migrated generic client files free of concrete provider literals and handler imports", () => {
     for (const rel of GUARDED_CLIENT_FILES) {
       const source = readFileSync(join(clientSrc, rel), "utf8");
       const relPosix = rel.replaceAll("\\", "/");
 
-      if (relPosix === "handlers/index.ts") {
-        // Composition root may import concrete handlers, but must not hard-code
-        // provider id string lists — registration iterates RUNTIME_PROVIDER_IDS.
-        expect(source).toContain("RUNTIME_PROVIDER_IDS");
-        expect(source).toContain("createBuiltinProviderRegistry");
-        for (const literal of ['"claude-code"', '"codex"', '"cursor"', '"grok"', '"pi"']) {
-          expect(source, `${rel} must not hard-code ${literal}`).not.toContain(`registerHandler(${literal}`);
-        }
+      if (COMPOSITION_ALLOWLIST.has(relPosix)) {
         continue;
       }
 
       if (relPosix === "runtime/managed-skills.ts") {
-        // Skill roots come from the active table synced off the installed registry.
-        expect(source).toContain("getProviderSkillRoots");
-        expect(source).not.toMatch(/"claude-code"\s*:\s*"\.claude\/skills"/);
+        expect(source).toContain("PROVIDER_SKILL_ROOTS");
+        expect(source).not.toContain("getProviderSkillRoots");
+        const hit = containsAnyProviderLiteral(source);
+        // managed-skills may mention providers only via typed RuntimeProvider params;
+        // forbid hard-coded skill-root maps and quoted provider ids.
+        expect(hit, `${rel} must not hard-code provider literal ${hit}`).toBeNull();
         continue;
       }
 
       if (relPosix === "runtime/capabilities/index.ts") {
-        expect(source).toContain("peekInstalledBuiltinProviderRegistry");
+        expect(source).toContain("BUILTIN_PROVIDER_PROBES");
         expect(source).toContain("RUNTIME_PROVIDER_IDS");
-        for (const literal of PROVIDER_LITERALS) {
-          expect(source, `${rel} must not contain ${literal}`).not.toContain(literal);
-        }
-        expect(source).not.toMatch(/from "\.\/claude-code\.js"/);
-        expect(source).not.toMatch(/from "\.\/codex\.js"/);
+        expect(source).not.toContain("peekInstalledBuiltinProviderRegistry");
+        expect(source).not.toContain("installBuiltinProviderRegistry");
+        const hit = containsAnyProviderLiteral(source);
+        expect(hit, `${rel} must not contain ${hit}`).toBeNull();
+        // Generic import rule: no concrete capability modules.
+        expect(source).not.toMatch(/from "\.\/[^"]+\.js"/);
         continue;
       }
 
-      for (const literal of PROVIDER_LITERALS) {
-        // runtime.ts / handler.ts may mention provider concepts in comments;
-        // forbid executable string comparisons / imports of concrete handlers.
-        expect(source, `${rel} must not import handlers/<provider>`).not.toMatch(
-          /from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/,
-        );
-        if (relPosix === "runtime/handler.ts" || relPosix === "runtime/runtime.ts") {
-          expect(source).not.toContain(`=== "${literal.replaceAll('"', "").replaceAll("'", "")}"`);
-        }
+      if (relPosix === "handlers/auth-error-hint.ts") {
+        expect(source).toContain("runtimeProviderChatAuthLoginPhrase");
+        expect(source).toContain("runtimeProviderAuthOwnerLabel");
+        expect(source).not.toMatch(/case ["']codex["']/);
+        // Detection keywords may mention provider names in comments/strings;
+        // forbid runtime-id branching for login/owner copy.
+        expect(source).not.toMatch(/runtime\s*===\s*["']/);
+        continue;
       }
+
+      if (relPosix === "runtime/runtime-notice.ts") {
+        expect(source).toContain("runtimeProviderLabel");
+        expect(source).not.toMatch(/function providerLabel/);
+        expect(source).not.toMatch(/case ["']codex["']:\s*return ["']Codex["']/);
+        continue;
+      }
+
+      expect(source).not.toMatch(/from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/);
+      if (relPosix === "runtime/handler.ts" || relPosix === "runtime/runtime.ts") {
+        const hit = containsAnyProviderLiteral(source);
+        expect(hit, `${rel} must not contain ${hit}`).toBeNull();
+        expect(source).not.toContain("installHandlers");
+      }
+    }
+  });
+
+  it("names only the concrete composition files as registration roots", () => {
+    for (const rel of ["handlers/index.ts", "providers/builtin-registry.ts"] as const) {
+      const source = readFileSync(join(clientSrc, rel), "utf8");
+      expect(source).toContain("RUNTIME_PROVIDER_IDS");
+      expect(source).toContain("createBuiltinHandlerRegistry");
+      expect(source).not.toContain("installBuiltinProviderRegistry");
+      expect(source).not.toContain("installedRegistry");
+      expect(source).not.toMatch(/probe\s*:/);
+      expect(source).not.toMatch(/skillRoot\s*:/);
     }
   });
 
@@ -115,7 +158,7 @@ describe("runtime provider architecture guard", () => {
     }
   });
 
-  it("keeps web provider surfaces derived from the shared catalog", () => {
+  it("keeps live catalog consumers on shared helpers (not parallel switches)", () => {
     const providersTs = readFileSync(
       join(repoRoot, "packages/web/src/pages/clients/cards/shared/providers.ts"),
       "utf8",
@@ -123,27 +166,43 @@ describe("runtime provider architecture guard", () => {
     expect(providersTs).toContain("RUNTIME_PROVIDER_CATALOG");
     expect(providersTs).toContain("enabledRuntimeProviders");
     expect(providersTs).toContain("runtimeProviderInstallCommand");
-    // Parallel data tables must not be reintroduced.
+    expect(providersTs).toContain("recordByRuntimeProvider");
     expect(providersTs).not.toMatch(
       /export const PROVIDER_LABEL: Record<RuntimeProvider, string> = \{\s*"claude-code":/,
     );
 
-    const newAgent = readFileSync(join(repoRoot, "packages/web/src/components/new-agent-dialog.tsx"), "utf8");
-    expect(newAgent).toContain("pickPreferredRuntimeProvider");
-    expect(newAgent).toContain("runtimeProviderLabel");
-    expect(newAgent).not.toContain('provider === "claude-code"');
-    expect(newAgent).not.toMatch(/function prettyRuntimeLabel/);
-
-    const runtimeSection = readFileSync(
-      join(repoRoot, "packages/web/src/pages/agent-detail/runtime-section.tsx"),
-      "utf8",
-    );
-    expect(runtimeSection).toContain("runtimeProviderLabel");
-    expect(runtimeSection).not.toMatch(/const RUNTIME_NAME/);
-
-    const authHint = readFileSync(join(clientSrc, "handlers/auth-error-hint.ts"), "utf8");
-    expect(authHint).toContain("runtimeProviderChatAuthLoginPhrase");
-    expect(authHint).toContain("runtimeProviderAuthOwnerLabel");
-    expect(authHint).not.toContain('runtime === "codex"');
+    for (const rel of CATALOG_CONSUMER_FILES) {
+      const source = readFileSync(join(repoRoot, rel), "utf8");
+      if (rel.endsWith("new-agent-dialog.tsx")) {
+        expect(source).toContain("pickPreferredRuntimeProvider");
+        expect(source).toContain("runtimeProviderLabel");
+        expect(source).not.toContain('provider === "claude-code"');
+        expect(source).not.toMatch(/function prettyRuntimeLabel/);
+        expect(source).not.toMatch(/function asRuntimeProvider/);
+      }
+      if (rel.endsWith("runtime-section.tsx")) {
+        expect(source).toContain("runtimeProviderLabel");
+        expect(source).not.toMatch(/const RUNTIME_NAME/);
+      }
+      if (rel.endsWith("auth-error-hint.ts")) {
+        expect(source).toContain("runtimeProviderChatAuthLoginPhrase");
+        expect(source).toContain("runtimeProviderAuthOwnerLabel");
+      }
+      if (rel.endsWith("runtime-notice.ts")) {
+        expect(source).toContain("runtimeProviderLabel");
+      }
+      if (rel.endsWith("cursor-binary.ts") || rel.endsWith("grok-binary.ts")) {
+        expect(source).toMatch(/from "@first-tree\/shared"/);
+        expect(source).toContain("INSTALL_COMMAND");
+      }
+      if (rel.endsWith("opencode-binary.ts")) {
+        expect(source).toContain("OPENCODE_MINIMUM_VERSION");
+        expect(source).toContain("runtimeProviderInstallCommand");
+      }
+      if (rel.endsWith("pi-binary.ts")) {
+        expect(source).toContain("runtimeProviderInstallCommand");
+        expect(source).toContain("runtimeProviderLoginCommand");
+      }
+    }
   });
 });

@@ -10,151 +10,76 @@ import { createOpenCodeHandler } from "../handlers/opencode/index.js";
 import { createPiHandler } from "../handlers/pi/index.js";
 import { createLogger } from "../observability/logger.js";
 import type { HandlerFactory } from "../runtime/handler.js";
-import {
-  BUILTIN_PROVIDER_PROBES,
-  type CapabilityProbe,
-  installBuiltinProviderProbes,
-  probedRuntimeProviders,
-  resetBuiltinProviderProbesForTests,
-} from "./builtin-probes.js";
-import { installProviderSkillRoots, PROVIDER_SKILL_ROOTS, resetProviderSkillRootsForTests } from "./skill-roots.js";
+import { probedRuntimeProviders } from "./builtin-probes.js";
 
 export { probedRuntimeProviders };
 
-/** Injectable seam so tests can force a Claude-executable resolution (no real PATH / shell spawn). */
-export type BuiltinRegistryDeps = {
+/** Injectable seam for Claude executable resolution in tests. */
+export type BuiltinHandlerRegistryDeps = {
   resolveExecutable?: () => ClaudeExecutableResolution;
 };
 
 /**
- * Built-in provider module entry on the existing Handler / probe surfaces.
- * Not a new Handler contract — only aggregates today's wiring points.
+ * Built-in handler factory map — composition-owned, immutable, exhaustive.
+ *
+ * Probe and skill-root projections live in sibling modules
+ * (`BUILTIN_PROVIDER_PROBES`, `PROVIDER_SKILL_ROOTS`); this registry only owns
+ * handler factories so generic probe/skills paths do not import heavy SDKs.
  */
-export type BuiltinProviderEntry = {
+export type BuiltinHandlerEntry = {
   factory: HandlerFactory;
-  probe: CapabilityProbe;
-  skillRoot: string;
 };
 
-export type BuiltinProviderRegistry = Readonly<Record<RuntimeProvider, BuiltinProviderEntry>>;
+export type BuiltinHandlerRegistry = Readonly<Record<RuntimeProvider, BuiltinHandlerEntry>>;
 
-function probesFromRegistry(registry: BuiltinProviderRegistry): Record<RuntimeProvider, CapabilityProbe> {
-  const out = {} as Record<RuntimeProvider, CapabilityProbe>;
-  for (const id of RUNTIME_PROVIDER_IDS) {
-    out[id] = registry[id].probe;
-  }
-  return out;
-}
-
-function skillRootsFromRegistry(registry: BuiltinProviderRegistry): Record<RuntimeProvider, string> {
-  const out = {} as Record<RuntimeProvider, string>;
-  for (const id of RUNTIME_PROVIDER_IDS) {
-    out[id] = registry[id].skillRoot;
-  }
-  return out;
-}
+/** @deprecated Prefer {@link BuiltinHandlerRegistry}. */
+export type BuiltinProviderRegistry = BuiltinHandlerRegistry;
+/** @deprecated Prefer {@link BuiltinHandlerEntry}. */
+export type BuiltinProviderEntry = BuiltinHandlerEntry;
+/** @deprecated Prefer {@link BuiltinHandlerRegistryDeps}. */
+export type BuiltinRegistryDeps = BuiltinHandlerRegistryDeps;
 
 /**
- * Build the immutable, exhaustive built-in provider registry.
+ * Build an immutable, exhaustive built-in handler registry value.
  *
- * This is the single composition root for handler factories, install probes,
- * and native skill roots. Seeded from the default probe/skill-root tables;
- * {@link installBuiltinProviderRegistry} then syncs those active tables from
- * the installed registry so generic consumers cannot drift.
+ * Consumed once by {@link registerBuiltinHandlers}; not installed into
+ * process-global state.
  */
-export function createBuiltinProviderRegistry(deps: BuiltinRegistryDeps = {}): BuiltinProviderRegistry {
+export function createBuiltinHandlerRegistry(deps: BuiltinHandlerRegistryDeps = {}): BuiltinHandlerRegistry {
   const resolution = (deps.resolveExecutable ?? (() => resolveClaudeCodeExecutable({ includeLoginShell: false })))();
-  // Always seed from the default tables — not from any previously installed
-  // override — so composition stays deterministic.
-  const probes = BUILTIN_PROVIDER_PROBES;
-  const skillRoots = PROVIDER_SKILL_ROOTS;
 
   return {
     "claude-code": {
       factory: (config) => createClaudeCodeHandler({ ...config, claudeCodeExecutable: resolution.path }),
-      probe: probes["claude-code"],
-      skillRoot: skillRoots["claude-code"],
     },
     "claude-code-tui": {
       factory: (config) => createClaudeCodeTuiHandler({ ...config, claudeCodeExecutable: resolution.path }),
-      probe: probes["claude-code-tui"],
-      skillRoot: skillRoots["claude-code-tui"],
     },
     codex: {
       factory: (config) => createCodexHandler(config),
-      probe: probes.codex,
-      skillRoot: skillRoots.codex,
     },
     cursor: {
       factory: (config) => createCursorHandler(config),
-      probe: probes.cursor,
-      skillRoot: skillRoots.cursor,
     },
     grok: {
       factory: (config) => createGrokHandler(config),
-      probe: probes.grok,
-      skillRoot: skillRoots.grok,
     },
     "kimi-code": {
       factory: (config) => createKimiCodeHandler(config),
-      probe: probes["kimi-code"],
-      skillRoot: skillRoots["kimi-code"],
     },
     opencode: {
       factory: (config) => createOpenCodeHandler(config),
-      probe: probes.opencode,
-      skillRoot: skillRoots.opencode,
     },
     pi: {
       factory: (config) => createPiHandler(config),
-      probe: probes.pi,
-      skillRoot: skillRoots.pi,
     },
-  } as const satisfies BuiltinProviderRegistry;
+  } as const satisfies BuiltinHandlerRegistry;
 }
 
-/** Process-wide installed registry used after `registerBuiltinHandlers`. */
-let installedRegistry: BuiltinProviderRegistry | null = null;
+/** @deprecated Prefer {@link createBuiltinHandlerRegistry}. */
+export const createBuiltinProviderRegistry = createBuiltinHandlerRegistry;
 
-/**
- * Install (or replace) the process-wide built-in registry and sync the active
- * probe + skill-root tables from it. Capability aggregation and managed-skills
- * lookup read those synced tables so they cannot disagree with the registry.
- */
-export function installBuiltinProviderRegistry(registry: BuiltinProviderRegistry): void {
-  installedRegistry = registry;
-  installBuiltinProviderProbes(probesFromRegistry(registry));
-  installProviderSkillRoots(skillRootsFromRegistry(registry));
-}
-
-/** Peek at the installed registry without lazily creating one. */
-export function peekInstalledBuiltinProviderRegistry(): BuiltinProviderRegistry | null {
-  return installedRegistry;
-}
-
-/**
- * Return the installed registry, lazily creating the default built-ins when a
- * caller needs the full factory table before explicit registration.
- */
-export function getBuiltinProviderRegistry(): BuiltinProviderRegistry {
-  if (!installedRegistry) {
-    installBuiltinProviderRegistry(createBuiltinProviderRegistry());
-  }
-  const registry = installedRegistry;
-  if (!registry) {
-    throw new Error("builtin provider registry failed to install");
-  }
-  return registry;
-}
-
-/** Test helper — clears the process-wide registry install and synced tables. */
-export function resetBuiltinProviderRegistryForTests(): void {
-  installedRegistry = null;
-  resetBuiltinProviderProbesForTests();
-  resetProviderSkillRootsForTests();
-}
-
-/** Log Claude executable resolution the same way the previous registerBuiltinHandlers did. */
+/** Log Claude executable resolution (same behavior as prior registerBuiltinHandlers). */
 export function logClaudeExecutableResolution(resolution: ClaudeExecutableResolution): void {
   const log = createLogger("handlers");
   if (resolution.path) {
@@ -167,14 +92,14 @@ export function logClaudeExecutableResolution(resolution: ClaudeExecutableResolu
 }
 
 /** Resolve + log Claude executable using the same deps seam as registry creation. */
-export function resolveAndLogClaudeExecutable(deps: BuiltinRegistryDeps = {}): ClaudeExecutableResolution {
+export function resolveAndLogClaudeExecutable(deps: BuiltinHandlerRegistryDeps = {}): ClaudeExecutableResolution {
   const resolution = (deps.resolveExecutable ?? (() => resolveClaudeCodeExecutable({ includeLoginShell: false })))();
   logClaudeExecutableResolution(resolution);
   return resolution;
 }
 
 /** All registry keys — must equal {@link RUNTIME_PROVIDER_IDS}. */
-export function builtinRegistryProviderIds(registry: BuiltinProviderRegistry): RuntimeProvider[] {
+export function builtinRegistryProviderIds(registry: BuiltinHandlerRegistry): RuntimeProvider[] {
   return [...RUNTIME_PROVIDER_IDS].filter((id) => id in registry);
 }
 

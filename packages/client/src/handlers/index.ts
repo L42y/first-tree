@@ -1,22 +1,22 @@
 import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
 import {
-  type BuiltinRegistryDeps,
-  createBuiltinProviderRegistry,
-  installBuiltinProviderRegistry,
+  type BuiltinHandlerRegistryDeps,
+  createBuiltinHandlerRegistry,
   resolveAndLogClaudeExecutable,
 } from "../providers/builtin-registry.js";
 import { registerHandler } from "../runtime/handler.js";
 
 /** Injectable seam so tests can force a Claude-executable resolution (no real PATH / shell spawn). */
-export type RegisterBuiltinHandlersDeps = BuiltinRegistryDeps;
+export type RegisterBuiltinHandlersDeps = BuiltinHandlerRegistryDeps;
 
 /**
- * Register all built-in handlers from the shared composition registry.
- * Call once at startup (daemon `ClientRuntime` and standalone `AgentRuntime`).
+ * Register all built-in handlers from an immutable handler registry value.
+ * Call once at startup (daemon `ClientRuntime`).
  *
- * Built-ins no longer rely on scattered import side effects — this function is
- * the sole process-global wiring step. Custom `registerHandler` callers remain
- * supported afterward and do not alter the built-in registry snapshot.
+ * Builds the registry once, registers each factory, and discards the value —
+ * there is no process-global installed registry snapshot. Probe/skill consumers
+ * read their own immutable composition tables (`BUILTIN_PROVIDER_PROBES` /
+ * `PROVIDER_SKILL_ROOTS`).
  */
 export function registerBuiltinHandlers(deps: RegisterBuiltinHandlersDeps = {}): void {
   // Registration runs synchronously in the ClientRuntime constructor, BEFORE the
@@ -27,13 +27,17 @@ export function registerBuiltinHandlers(deps: RegisterBuiltinHandlersDeps = {}):
   // (which re-resolves with the login-shell probe) and by the capability probe
   // (post-registration) — neither of which is on the pre-connect path.
   const resolution = resolveAndLogClaudeExecutable(deps);
-  const registry = createBuiltinProviderRegistry({ resolveExecutable: () => resolution });
-  installBuiltinProviderRegistry(registry);
+  const registry = createBuiltinHandlerRegistry({
+    resolveExecutable: () => resolution,
+  });
 
   for (const id of RUNTIME_PROVIDER_IDS) {
     registerHandler(id, registry[id].factory);
   }
 }
 
-/** Re-export registry builder for boot-path parity tests and composition roots. */
-export { createBuiltinProviderRegistry } from "../providers/builtin-registry.js";
+/** Re-export registry builder for composition roots and tests. */
+export {
+  createBuiltinHandlerRegistry,
+  createBuiltinProviderRegistry,
+} from "../providers/builtin-registry.js";
