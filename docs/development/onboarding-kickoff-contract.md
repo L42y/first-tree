@@ -13,8 +13,13 @@ chats and the adjacent campaign quickstart handoff.
   as silent, replayable context and adds the server-owned
   `firstChatOrientation` marker for Web rendering. The next ordinary visible
   human message wakes the target agent and carries that bootstrap as preceding
-  context. The pending Orientation bootstrap remains replayable beyond the
-  generic silent-context window until that handoff occurs. Omitting
+  context. The server marks that exact continuation and advances the
+  chat-scoped lifecycle to `continued`; Web treats the lifecycle as canonical
+  completion even when the continuation is outside its cached message window.
+  The bootstrap remains replayable beyond the generic silent-context window
+  only for that marked first handoff. Afterward it is excluded from exceptional
+  replay, including silent history backfilled to participants added later.
+  Omitting
   `orientation` preserves the immediate-wake behavior for fresh kickoffs; if a
   legacy client reuses a keyed pending Orientation chat, the server promotes
   its existing bootstrap to one immediate wake and suppresses Orientation UI

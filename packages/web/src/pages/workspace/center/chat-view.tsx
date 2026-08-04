@@ -1399,6 +1399,7 @@ type ChatTimelineProps = {
   pillCount: number;
   onPillClick: () => void;
   orientationContinuing: boolean;
+  orientationLifecycleCompleted: boolean;
   orientationHidden: boolean;
   onOrientationContinue: (bootstrap: MessageWithDelivery) => void;
 };
@@ -1431,6 +1432,7 @@ const ChatTimeline = memo(function ChatTimeline({
   pillCount,
   onPillClick,
   orientationContinuing,
+  orientationLifecycleCompleted,
   orientationHidden,
   onOrientationContinue,
 }: ChatTimelineProps) {
@@ -1447,6 +1449,12 @@ const ChatTimeline = memo(function ChatTimeline({
     const messageItems = visibleItems.filter(
       (item): item is Extract<TimelineItem, { kind: "message" }> => item.kind === "message",
     );
+    if (orientationLifecycleCompleted) {
+      for (const item of messageItems) {
+        if (isFirstChatOrientationMessage(item.data, myAgentId)) completed.add(item.data.id);
+      }
+      return completed;
+    }
     let lastOwnMessageIndex = -1;
     for (let index = messageItems.length - 1; index >= 0; index -= 1) {
       if (messageItems[index]?.data.senderId === myAgentId) {
@@ -1460,7 +1468,7 @@ const ChatTimeline = memo(function ChatTimeline({
       if (item && isFirstChatOrientationMessage(item.data, myAgentId)) completed.add(item.data.id);
     }
     return completed;
-  }, [myAgentId, visibleItems]);
+  }, [myAgentId, orientationLifecycleCompleted, visibleItems]);
   // Which non-human agents this turn awaits a reply from — routing-derived from
   // the latest message's persisted recipients (metadata.addressedAgentIds, which
   // includes the system addressedToAgentIds routing the onboarding bootstrap uses
@@ -4369,6 +4377,9 @@ export function ChatView({
             pillCount={pillCount}
             onPillClick={onPillClick}
             orientationContinuing={sendMut.isPending}
+            orientationLifecycleCompleted={
+              readFirstChatOrientationChatState(chatDetail?.metadata) === FIRST_CHAT_ORIENTATION_CHAT_STATES.CONTINUED
+            }
             orientationHidden={
               readFirstChatOrientationChatState(chatDetail?.metadata) ===
               FIRST_CHAT_ORIENTATION_CHAT_STATES.LEGACY_STARTED

@@ -8,6 +8,7 @@ import {
   extractCaption,
   FIRST_CHAT_ORIENTATION_CHAT_METADATA_KEY,
   FIRST_CHAT_ORIENTATION_CHAT_STATES,
+  FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY,
   FIRST_CHAT_ORIENTATION_METADATA_KEY,
   imageBatchRefContentSchema,
   imageRefContentSchema,
@@ -82,6 +83,7 @@ function stripUntrustedMetadataKeys(
   const shouldStripAskAgent = ASK_AGENT_METADATA_KEY in meta;
   const shouldStripCliBodyOrigin = CLI_BODY_ORIGIN_METADATA_KEY in meta;
   const shouldStripEditedAt = "editedAt" in meta;
+  const shouldStripFirstChatOrientationContinuation = FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY in meta;
   const shouldStripFirstChatOrientation =
     !options.allowFirstChatOrientation && FIRST_CHAT_ORIENTATION_METADATA_KEY in meta;
   if (
@@ -90,6 +92,7 @@ function stripUntrustedMetadataKeys(
     !shouldStripAskAgent &&
     !shouldStripCliBodyOrigin &&
     !shouldStripEditedAt &&
+    !shouldStripFirstChatOrientationContinuation &&
     !shouldStripFirstChatOrientation
   ) {
     return meta;
@@ -101,6 +104,7 @@ function stripUntrustedMetadataKeys(
         key !== ASK_AGENT_METADATA_KEY &&
         key !== CLI_BODY_ORIGIN_METADATA_KEY &&
         key !== "editedAt" &&
+        key !== FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY &&
         (options.allowFirstChatOrientation || key !== FIRST_CHAT_ORIENTATION_METADATA_KEY) &&
         (options.allowSystemSender || key !== "systemSender"),
     ),
@@ -951,6 +955,13 @@ async function sendMessageInner(
           requestId,
           agentId: asker.agentId,
         },
+      };
+    }
+
+    if (continuesFirstChatOrientation) {
+      metadataToStore = {
+        ...metadataToStore,
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
       };
     }
 

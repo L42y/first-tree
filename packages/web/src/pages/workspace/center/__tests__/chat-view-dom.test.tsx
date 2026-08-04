@@ -906,6 +906,37 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("treats the server-owned continued lifecycle as complete without a later visible own message", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const bootstrap = message({
+      id: "orientation-bootstrap-server-continued",
+      senderId: "human-agent-self",
+      content: "Nova, welcome aboard.",
+      metadata: {
+        mentions: ["agent-1"],
+        [FIRST_CHAT_ORIENTATION_METADATA_KEY]: { version: 1 },
+      },
+      source: "api",
+      createdAt: "2026-05-28T11:55:00.000Z",
+    });
+    const continuedChat = chatDetail({
+      metadata: withFirstChatOrientationChatState({}, FIRST_CHAT_ORIENTATION_CHAT_STATES.CONTINUED),
+    });
+    const page = messages([bootstrap]);
+    chatMocks.listChatMessages.mockResolvedValue(page);
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={continuedChat} />,
+      (queryClient) => seedChat(queryClient, continuedChat, page),
+      "/",
+    );
+
+    await waitForText(container, "Watch again");
+    expect(container.textContent).not.toContain("Skip introduction and start");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
   it("hides Orientation chrome after a legacy retry owns the first wake", async () => {
     const { ChatView } = await import("../chat-view.js");
     const bootstrap = message({

@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
-import { FIRST_CHAT_ORIENTATION_CHAT_STATES, readFirstChatOrientationChatState } from "@first-tree/shared";
+import {
+  FIRST_CHAT_ORIENTATION_CHAT_STATES,
+  FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY,
+  readFirstChatOrientationChatState,
+} from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
@@ -11,6 +15,7 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { createAgent } from "../services/agent.js";
+import { addParticipant } from "../services/chat.js";
 import { pollInbox } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -146,6 +151,9 @@ describe("POST /me/onboarding/kickoff", () => {
     expect(readFirstChatOrientationChatState(continuedChat?.metadata)).toBe(
       FIRST_CHAT_ORIENTATION_CHAT_STATES.CONTINUED,
     );
+    expect(continued.message.metadata).toMatchObject({
+      [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
+    });
     const inbox = await pollInbox(app.db, agent.inboxId, 10);
     const wake = inbox.find((entry) => entry.messageId === continued.message.id);
     expect(wake?.message.content).toBe("I'm ready. Please help me get started with First Tree.");
@@ -156,6 +164,53 @@ describe("POST /me/onboarding/kickoff", () => {
       }),
     ]);
     expect(res.json<{ chatId: string }>().chatId).toBe(chatId);
+  });
+
+  it("does not replay a completed Orientation bootstrap to a later participant outside the normal window", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const agent = await createOrgAgent(app, admin);
+    const laterAgent = await createOrgAgent(app, admin);
+
+    const res = await app.inject({
+      method: "POST",
+      url: KICKOFF_URL,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: {
+        organizationId: admin.organizationId,
+        agentUuid: agent.uuid,
+        bootstrap: "First Tree is getting Bootstrap Agent up to speed on acme/web.",
+        topic: "Get started with First Tree",
+        orientation: 1,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const { chatId } = res.json<{ chatId: string }>();
+
+    await sendMessage(app.db, chatId, admin.humanAgentUuid, {
+      format: "text",
+      content: "I'm ready. Please help me get started with First Tree.",
+      metadata: { mentions: [agent.uuid] },
+      source: "web",
+    });
+    await addParticipant(app.db, chatId, admin.humanAgentUuid, { agentId: laterAgent.uuid });
+
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await app.db
+      .update(inboxEntries)
+      .set({ createdAt: stale })
+      .where(and(eq(inboxEntries.inboxId, laterAgent.inboxId), eq(inboxEntries.chatId, chatId)));
+
+    const trigger = await sendMessage(app.db, chatId, admin.humanAgentUuid, {
+      format: "text",
+      content: `@${laterAgent.name} please review the current task.`,
+      metadata: { mentions: [laterAgent.uuid] },
+      source: "web",
+    });
+    const delivery = (await pollInbox(app.db, laterAgent.inboxId, 10)).find(
+      (entry) => entry.messageId === trigger.message.id,
+    );
+    expect(delivery?.message.precedingMessages).toEqual([]);
   });
 
   it("preserves the immediate wake contract for clients that do not opt into Orientation", async () => {

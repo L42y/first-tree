@@ -1,4 +1,7 @@
-import { FIRST_CHAT_ORIENTATION_METADATA_KEY } from "@first-tree/shared";
+import {
+  FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY,
+  FIRST_CHAT_ORIENTATION_METADATA_KEY,
+} from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { preflightMessageSendIntent, type SendIntentParticipant } from "../services/message.js";
 
@@ -28,6 +31,7 @@ function preflight(allowFirstChatOrientation = false) {
       source: "api",
       metadata: {
         [FIRST_CHAT_ORIENTATION_METADATA_KEY]: { version: 1 },
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
         mentions: [AGENT.agentId],
       },
     },
@@ -39,9 +43,11 @@ function preflight(allowFirstChatOrientation = false) {
 describe("first-chat Orientation metadata trust boundary", () => {
   it("strips a caller-authored marker from an ordinary message", () => {
     expect(preflight().metadata[FIRST_CHAT_ORIENTATION_METADATA_KEY]).toBeUndefined();
+    expect(preflight().metadata[FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]).toBeUndefined();
   });
 
   it("preserves the marker for the trusted onboarding kickoff path", () => {
     expect(preflight(true).metadata[FIRST_CHAT_ORIENTATION_METADATA_KEY]).toEqual({ version: 1 });
+    expect(preflight(true).metadata[FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]).toBeUndefined();
   });
 });

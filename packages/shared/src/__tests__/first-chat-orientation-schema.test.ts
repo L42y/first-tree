@@ -8,7 +8,12 @@ import {
   withFirstChatOrientationChatState,
 } from "../schemas/chat-metadata.js";
 import { kickoffOnboardingSchema } from "../schemas/me-extras.js";
-import { FIRST_CHAT_ORIENTATION_METADATA_KEY, readFirstChatOrientationMessageMetadata } from "../schemas/message.js";
+import {
+  FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY,
+  FIRST_CHAT_ORIENTATION_METADATA_KEY,
+  readFirstChatOrientationContinuationMessageMetadata,
+  readFirstChatOrientationMessageMetadata,
+} from "../schemas/message.js";
 
 describe("first-chat Orientation message metadata", () => {
   it("accepts only the current versioned marker", () => {
@@ -23,6 +28,19 @@ describe("first-chat Orientation message metadata", () => {
       }),
     ).toBeNull();
     expect(readFirstChatOrientationMessageMetadata({})).toBeNull();
+  });
+
+  it("accepts only the current server-owned continuation marker", () => {
+    expect(
+      readFirstChatOrientationContinuationMessageMetadata({
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 1 },
+      }),
+    ).toEqual({ version: 1 });
+    expect(
+      readFirstChatOrientationContinuationMessageMetadata({
+        [FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY]: { version: 2 },
+      }),
+    ).toBeNull();
   });
 
   it("keeps the server-owned chat lifecycle typed and caller-inaccessible", () => {
