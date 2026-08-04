@@ -175,9 +175,10 @@ const WHITESPACE = /\s/;
  * Ceiling on any token the scanner will assemble or parse, whether it arrived
  * whole or across chunk boundaries. A sign-in URL that does not fit is not a
  * link worth handing to a browser anyway, so an over-long run of non-whitespace
- * is skipped rather than retained, concatenated, or matched. This is what keeps
- * both the retained state and the per-token work constant no matter how much a
- * provider prints during the five-minute login window.
+ * is skipped rather than retained, concatenated, or matched. This bounds the
+ * token state the scanner retains, assembles and URL-parses; finding token
+ * boundaries still reads each character, so total scan work stays linear in the
+ * bytes a provider prints during the five-minute login window.
  */
 export const AUTH_URL_TOKEN_MAX = 2048;
 
