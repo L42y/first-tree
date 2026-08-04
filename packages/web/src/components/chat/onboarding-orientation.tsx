@@ -37,7 +37,7 @@ export const ONBOARDING_ORIENTATION_CHAPTERS = {
     posterSrc: "/onboarding/orientation/stills/github-poster.png",
     captionsSrc: "/onboarding/orientation/github.vtt",
     transcript:
-      "After a repository-scoped GitHub App is connected, assigning an Issue to a First Tree teammate creates or reuses an Issue Chat and wakes that teammate’s configured Delegate Agent with the source context. A pull request linked to the Issue stays attached to that Chat, and its review, check, approval, and merge events return automatically. Routing requires a matched GitHub identity and an active Delegate, while repository access remains limited to the connected installation.",
+      "After a repository-scoped GitHub App is connected, assigning an Issue to a First Tree teammate creates or reuses an Issue Chat and wakes that teammate’s configured Delegate Agent with the source context. A pull request linked to the Issue stays attached to that Chat, and its review, update, approval, and merge events return automatically. Routing requires a matched GitHub identity and an active Delegate, while repository access remains limited to the connected installation.",
   },
 } as const;
 
