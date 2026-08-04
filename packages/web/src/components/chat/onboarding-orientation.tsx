@@ -28,6 +28,17 @@ export const ONBOARDING_ORIENTATION_CHAPTERS = {
     transcript:
       "Context Tree carries durable team knowledge from one task into the next. Before working, an Agent reads only the task-relevant Context Tree paths it is authorized to use, so settled constraints guide design, code, and tests without replacing verification. Afterward, temporary implementation detail stays with the code while lasting decisions become source-backed proposals. A dedicated Context Reviewer checks evidence, consistency, authorization boundaries, and durable value before an approved update enters the team's shared snapshot. The real Context view keeps Agent reads and writes visible, and every future Agent begins with reviewed knowledge instead of starting from zero.",
   },
+  github: {
+    id: "github",
+    title: "GitHub automation",
+    summary: "Issue-to-PR work stays connected in one Chat",
+    durationInSeconds: 31,
+    videoSrc: "/onboarding/orientation/github.mp4",
+    posterSrc: "/onboarding/orientation/stills/github-poster.png",
+    captionsSrc: "/onboarding/orientation/github.vtt",
+    transcript:
+      "After a repository-scoped GitHub App is connected, assigning an Issue to a First Tree teammate creates or reuses an Issue Chat and wakes that teammate’s configured Delegate Agent with the source context. A pull request linked to the Issue stays attached to that Chat, and its review, update, approval, and merge events return automatically. Routing requires a matched GitHub identity and an active Delegate, while repository access remains limited to the connected installation.",
+  },
 } as const;
 
 export type OnboardingOrientationChapterId = keyof typeof ONBOARDING_ORIENTATION_CHAPTERS;
