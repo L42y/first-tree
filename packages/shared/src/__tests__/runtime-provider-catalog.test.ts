@@ -68,4 +68,16 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(asRuntimeProvider("gemini")).toBeNull();
     expect(runtimeProviderLabel("future-provider")).toBe("future-provider");
   });
+
+  it("locks the product-critical install/login strings", () => {
+    expect(runtimeProviderInstallCommand("pi")).toBe("npm install -g --ignore-scripts @earendil-works/pi-coding-agent");
+    expect(runtimeProviderInstallCommand("opencode")).toBe("npm install -g opencode-ai@^1.18.7");
+    expect(runtimeProviderInstallCommand("cursor")).toBe("curl https://cursor.com/install -fsS | bash");
+    expect(runtimeProviderInstallCommand("grok")).toBe("curl -fsSL https://x.ai/cli/install.sh | bash");
+    expect(runtimeProviderLoginCommand("kimi-code")).toBe("kimi # then run /login");
+    expect(runtimeProviderLoginCommand("pi")).toBe("pi # then run /login");
+    expect(RUNTIME_PROVIDER_CATALOG["claude-code-tui"].npmPackage).toBe("@anthropic-ai/claude-code");
+    expect(isRuntimeProviderEnabled("claude-code-tui")).toBe(false);
+    expect(Object.keys(RUNTIME_PROVIDER_CATALOG)).toContain("claude-code-tui");
+  });
 });

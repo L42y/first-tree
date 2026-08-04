@@ -71,6 +71,27 @@ describe("builtin provider registry", () => {
     expect(builtinRegistryProviderIds(getBuiltinProviderRegistry())).toEqual([...RUNTIME_PROVIDER_IDS]);
   });
 
+  it("does not let two registry instances pollute each other", () => {
+    const a = createBuiltinProviderRegistry({
+      resolveExecutable: () => ({ path: "/tmp/claude-a", source: "env" }),
+    });
+    const b = createBuiltinProviderRegistry({
+      resolveExecutable: () => ({ path: "/tmp/claude-b", source: "env" }),
+    });
+
+    installBuiltinProviderRegistry(a);
+    expect(getBuiltinProviderRegistry()).toBe(a);
+    expect(getBuiltinProviderRegistry()).not.toBe(b);
+
+    installBuiltinProviderRegistry(b);
+    expect(getBuiltinProviderRegistry()).toBe(b);
+    expect(getBuiltinProviderRegistry()).not.toBe(a);
+
+    // Factories remain distinct closures bound to their own resolution.
+    expect(a["claude-code"].factory).not.toBe(b["claude-code"].factory);
+    expect(a.codex.probe).toBe(b.codex.probe);
+  });
+
   it("daemon and standalone boot paths share createBuiltinProviderRegistry", async () => {
     // ClientRuntime calls registerBuiltinHandlers(); AgentRuntime accepts the
     // same function via installHandlers. Both must resolve to this builder.
