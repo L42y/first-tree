@@ -4,10 +4,11 @@ import { canManageAgentDetail } from "./access.js";
 export type TabDef = { key: string; label: string; path: string };
 
 // IA labels only. Routing `path` and the `key` (deep-link mapping) are kept
-// stable so existing URLs keep resolving; only the `runtime` label changed
-// (Environment → Runtime) and `repositories` was added.
+// stable so existing URLs keep resolving. Responsibilities has its own stable
+// deep link alongside the previously added Runtime and Repositories routes.
 const TAB_LABELS: Record<string, string> = {
   profile: "Profile",
+  responsibilities: "Responsibilities",
   runtime: "Runtime",
   prompt: "Instructions",
   capabilities: "Tools & skills",
@@ -23,11 +24,15 @@ const TAB_LABELS: Record<string, string> = {
  */
 export function tabKeysFor(canEditConfig: boolean, isHuman: boolean): { key: string; path: string }[] {
   const tabs: { key: string; path: string }[] = [{ key: "profile", path: "profile" }];
+  if (!isHuman) {
+    tabs.push({ key: "responsibilities", path: "responsibilities" });
+  }
   if (canEditConfig) {
-    // engine-first: Runtime (model/effort/computer/env) before Instructions, then
-    // the two resource tabs. Repositories is editor-only — repos + the read-only
-    // context tree lived on the old (editor-only) Environment tab, so non-editors
-    // never saw them and still don't.
+    // Responsibility comes directly after identity, followed by Runtime
+    // (model/effort/computer/env), Instructions, then the two resource tabs.
+    // Repositories is editor-only — repos + the read-only context tree lived on
+    // the old (editor-only) Environment tab, so non-editors never saw them and
+    // still don't.
     tabs.push(
       { key: "runtime", path: "runtime" },
       { key: "prompt", path: "prompt" },

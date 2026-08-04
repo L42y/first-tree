@@ -14,6 +14,7 @@ import { ProfileTab } from "./pages/agent-detail/profile-tab.js";
 import { PromptTab } from "./pages/agent-detail/prompt-tab.js";
 import { RepositoriesTab } from "./pages/agent-detail/repositories-tab.js";
 import { ResourcesTab } from "./pages/agent-detail/resources-tab.js";
+import { ResponsibilitiesTab } from "./pages/agent-detail/responsibilities-tab.js";
 import { RuntimeTab } from "./pages/agent-detail/runtime-tab.js";
 import { UsageTab } from "./pages/agent-detail/usage-tab.js";
 import { AgentDetailPage } from "./pages/agent-detail.js";
@@ -470,13 +471,14 @@ export function App() {
                   <Route path="agents/:uuid" element={<AgentDetailPage />}>
                     <Route index element={<Navigate to="profile" replace />} />
                     <Route path="profile" element={<ProfileTab />} />
-                    <Route path="usage" element={<UsageTab />} />
+                    <Route path="responsibilities" element={<ResponsibilitiesTab />} />
                     <Route path="runtime" element={<RuntimeTab />} />
                     <Route path="setup" element={<Navigate to="../runtime" replace />} />
                     <Route path="prompt" element={<PromptTab />} />
                     <Route path="tools" element={<Navigate to="../profile" replace />} />
                     <Route path="capabilities" element={<ResourcesTab />} />
                     <Route path="repositories" element={<RepositoriesTab />} />
+                    <Route path="usage" element={<UsageTab />} />
                     {/* Legacy deep links: the tab was renamed Resources → Capabilities. */}
                     <Route path="resources" element={<Navigate to="../capabilities" replace />} />
                   </Route>

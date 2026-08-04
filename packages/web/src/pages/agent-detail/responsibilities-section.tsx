@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { trackEvent } from "../../analytics.js";
 import { listAgentTemplates, updateAgentTemplates } from "../../api/agent-templates.js";
 import { ApiError } from "../../api/client.js";
+import { TemplateResponsibilityLabel } from "../../components/template-responsibility-label.js";
 import { Button } from "../../components/ui/button.js";
 import { DenseBadge } from "../../components/ui/dense-badge.js";
 import {
@@ -23,8 +24,8 @@ import { Section } from "../../components/ui/section.js";
 import { agentResourcesMutationHandlers } from "./capability-section.js";
 
 /**
- * Responsibilities — the compact card between identity and the config tabs.
- * Shows the agent's adopted official Templates (0-3) with public-safe
+ * Responsibilities — the content of the dedicated Agent Detail tab. Shows
+ * the agent's adopted official Templates (0-3) with public-safe
  * summaries only. Managers of an ACTIVE agent edit via the full replace-set
  * PATCH; everyone else sees the same card read-only. Saved changes apply
  * before the agent's next action — there is no current/next version display
@@ -74,22 +75,7 @@ export function ResponsibilitiesSection({
       ) : (
         <div className="space-y-3">
           {ordered.map((summary) => (
-            <div key={summary.id} className="space-y-0.5">
-              <div className="flex items-baseline gap-2 min-w-0">
-                <span className="text-body font-medium truncate">{summary.name ?? "Unavailable template"}</span>
-                <TemplateStatusBadge status={summary.status} />
-                {summary.status === "retired" && summary.replacement && (
-                  <span className="text-caption text-muted-foreground truncate">Try {summary.replacement.name}</span>
-                )}
-              </div>
-              {summary.public && (
-                <div className="text-caption text-muted-foreground">
-                  <div className="truncate">{summary.public.purpose}</div>
-                  <div className="truncate">{summary.public.userValue}</div>
-                  <div className="truncate">{summary.public.toolsAndSkillsSummary}</div>
-                </div>
-              )}
-            </div>
+            <TemplateResponsibilityLabel key={summary.id} template={summary} />
           ))}
         </div>
       )}

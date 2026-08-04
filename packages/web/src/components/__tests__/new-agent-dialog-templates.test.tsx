@@ -276,18 +276,25 @@ describe("NewAgentDialog template responsibilities", () => {
     await renderDialog();
     await fillNameAndOpenPicker("Build Bot");
     await waitForText("PR Engineer");
+    const pickerLabel = [...document.body.querySelectorAll('[data-slot="template-responsibility-label"]')].find((el) =>
+      el.textContent?.includes("PR Engineer"),
+    );
+    expect(pickerLabel?.textContent).toBe(
+      "PR EngineerActivePurpose of PR EngineerValue of PR EngineerTools of PR Engineer",
+    );
     await click(optionCardByText("PR Engineer"));
 
     // Draft intact: name, visibility, computer, runtime untouched by selection.
     const nameInput = document.body.querySelector<HTMLInputElement>("#new-agent-display-name");
     expect(nameInput?.value).toBe("Build Bot");
-    // The selected card shows the complete safe summary: purpose, audience,
-    // value, and capabilities.
-    expect(document.body.textContent).toContain("Tagline of PR Engineer");
-    expect(document.body.textContent).toContain("Purpose of PR Engineer");
-    expect(document.body.textContent).toContain("For Users of PR Engineer");
-    expect(document.body.textContent).toContain("Value of PR Engineer");
-    expect(document.body.textContent).toContain("Tools of PR Engineer");
+    // Picker and selection use the same compact responsibility label. The
+    // catalog-only tagline and audience are not repeated in this Team flow.
+    const selectedLabel = [...document.body.querySelectorAll('[data-slot="template-responsibility-label"]')].find(
+      (el) => el.textContent?.includes("PR Engineer"),
+    );
+    expect(selectedLabel?.textContent).toBe(pickerLabel?.textContent);
+    expect(document.body.textContent).not.toContain("Tagline of PR Engineer");
+    expect(document.body.textContent).not.toContain("Users of PR Engineer");
 
     await click(buttonByText("Create"));
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length === 1, "create not called");

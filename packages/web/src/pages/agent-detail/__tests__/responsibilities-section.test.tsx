@@ -215,6 +215,9 @@ describe("ResponsibilitiesSection", () => {
     expect(text).toContain("Retired");
     expect(text).toContain("Try Docs Writer");
     expect(text).toContain("Unavailable template");
+    const labels = document.body.querySelectorAll('[data-slot="template-responsibility-label"]');
+    expect(labels).toHaveLength(3);
+    expect(labels[0]?.textContent).toBe("PR EngineerActivepurposevaluetools");
   });
 
   it("hides the edit affordance for read-only members", async () => {
@@ -336,6 +339,9 @@ describe("ResponsibilitiesSection", () => {
     await renderSection({ templateIds: [TEMPLATE_A_ID], adoptedTemplates: [summary({ id: TEMPLATE_A_ID })] });
     await click(buttonByText("Edit responsibilities"));
     await waitForText("Docs Writer");
+    const editor = document.body.querySelector('[role="dialog"]');
+    expect(editor?.querySelector('[data-slot="template-responsibility-label"]')).toBeNull();
+    expect(editor?.textContent).toContain("Tagline of Docs Writer");
     await click(buttonByText("Add"));
     await click(buttonByText("Save"));
     await waitForCondition(() => templateMocks.updateAgentTemplates.mock.calls.length === 1, "save not called");

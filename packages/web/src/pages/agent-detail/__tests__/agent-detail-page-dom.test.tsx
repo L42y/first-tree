@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
 import { ToastProvider } from "../../../components/ui/toast.js";
+import { ResponsibilitiesTab } from "../responsibilities-tab.js";
 import { UsageTab } from "../usage-tab.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -179,7 +180,7 @@ function agentResources(overrides: Partial<AgentResourcesOutput> = {}): AgentRes
   return {
     version: overrides.version ?? 7,
     templateIds: overrides.templateIds ?? [],
-    adoptedTemplates: [],
+    adoptedTemplates: overrides.adoptedTemplates ?? [],
     effective: overrides.effective ?? {
       version: overrides.version ?? 7,
       repos: [],
@@ -200,6 +201,24 @@ function agentResources(overrides: Partial<AgentResourcesOutput> = {}): AgentRes
       },
     ],
     availableTeamResources: overrides.availableTeamResources ?? [],
+  };
+}
+
+function adoptedTemplate(): AgentResourcesOutput["adoptedTemplates"][number] {
+  return {
+    id: "0190f000-0000-7000-8000-000000000001",
+    slug: "pr-engineer",
+    name: "PR Engineer",
+    status: "active",
+    public: {
+      tagline: "Ship review-ready pull requests",
+      purpose: "Review and implement focused changes",
+      targetUsers: "Software teams",
+      userValue: "Move pull requests forward safely",
+      instructionsSummary: "Review, implement, and verify",
+      toolsAndSkillsSummary: "Code review and repository tools",
+    },
+    replacement: null,
   };
 }
 
@@ -306,6 +325,7 @@ async function renderDom(route: string, child: ReactElement): Promise<{ containe
             <Routes>
               <Route path="/agents/:uuid" element={<AgentDetailPage />}>
                 <Route path="profile" element={child} />
+                <Route path="responsibilities" element={<ResponsibilitiesTab />} />
                 <Route path="prompt" element={child} />
                 <Route path="resources" element={<div>Resources route</div>} />
                 <Route path="runtime" element={child} />
@@ -458,6 +478,73 @@ afterEach(() => {
 });
 
 describe("AgentDetailPage", () => {
+  it("keeps Responsibilities out of Profile and renders the same section in its own tab", async () => {
+    const { ProfileTab } = await import("../profile-tab.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(
+      agentResources({
+        templateIds: [adoptedTemplate().id],
+        adoptedTemplates: [adoptedTemplate()],
+      }),
+    );
+
+    const profile = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(profile.container, "Identity");
+    expect(profile.container.textContent).not.toContain("PR Engineer");
+    expect([...profile.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim())).not.toContain(
+      "Responsibilities",
+    );
+    const profileTabList = profile.container.querySelector('[role="tablist"]');
+    expect(profileTabList?.parentElement?.previousElementSibling?.getAttribute("aria-hidden")).toBe("true");
+    expect([...profile.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+      "Profile",
+      "Responsibilities",
+      "Runtime",
+      "Instructions",
+      "Tools & skills",
+      "Repositories",
+      "Usage",
+    ]);
+    await act(async () => profile.root.unmount());
+
+    const responsibilities = await renderDom("/agents/agent-1/responsibilities", <ProfileTab />);
+    await waitForText(responsibilities.container, "PR Engineer");
+    expect(responsibilities.container.querySelectorAll('[data-slot="template-responsibility-label"]')).toHaveLength(1);
+    expect(responsibilities.container.textContent).toContain("Edit responsibilities");
+    await act(async () => responsibilities.root.unmount());
+  });
+
+  it("keeps Responsibilities visible and read-only for a non-editor", async () => {
+    authMock.value = { memberId: "member-other", role: "member", organizationId: "org-1" };
+    agentMocks.getAgent.mockResolvedValue(agent({ managerId: "member-owner" }));
+    agentResourceMocks.getAgentResources.mockResolvedValue(
+      agentResources({
+        templateIds: [adoptedTemplate().id],
+        adoptedTemplates: [adoptedTemplate()],
+      }),
+    );
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Profile route</div>);
+    await waitForText(view.container, "PR Engineer");
+    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+      "Profile",
+      "Responsibilities",
+      "Tools & skills",
+      "Usage",
+    ]);
+    expect(view.container.textContent).not.toContain("Edit responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("hides Responsibilities for a human and redirects its deep link to Profile", async () => {
+    agentMocks.getAgent.mockResolvedValue(agent({ type: "human", clientId: null }));
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Human Profile route</div>);
+    await waitForText(view.container, "Human Profile route");
+    expect(view.container.querySelector('[role="tablist"]')).toBeNull();
+    expect(view.container.textContent).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
   it("renders prompt resource blocks and edits the custom prompt inline", async () => {
     const { PromptTab } = await import("../prompt-tab.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(
@@ -493,6 +580,7 @@ describe("AgentDetailPage", () => {
     expect(container.textContent).toContain("Chat");
     expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
+      "Responsibilities",
       "Runtime",
       "Instructions",
       "Tools & skills",
