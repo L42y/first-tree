@@ -587,6 +587,7 @@ type MessageBodyProps = {
   requestTagAgentId: string | null;
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
+  orientationTargetName: string | null;
   orientationCompleted: boolean;
   orientationHidden: boolean;
   orientationContinuing: boolean;
@@ -657,6 +658,7 @@ const MessageBody = memo(function MessageBody({
   requestTagAgentId,
   myAgentId,
   mentionParticipants,
+  orientationTargetName,
   orientationCompleted,
   orientationHidden,
   orientationContinuing,
@@ -931,6 +933,7 @@ const MessageBody = memo(function MessageBody({
         <OnboardingOrientation
           completed={orientationCompleted}
           continuing={orientationContinuing}
+          targetAgentName={orientationTargetName}
           onContinue={() => onOrientationContinue(msg)}
         />
       ) : null}
@@ -991,6 +994,8 @@ const MessageRow = memo(function MessageRow({
       ? GITLAB_SYSTEM_SENDER_NAME
       : agentNameFn(msg.senderId);
   const isSelf = !isSystem && myAgentId === msg.senderId;
+  const orientationTargetAgentId = firstChatOrientationTargetAgentId(msg);
+  const orientationTargetName = orientationTargetAgentId ? agentNameFn(orientationTargetAgentId) : null;
 
   return (
     <div
@@ -1068,6 +1073,7 @@ const MessageRow = memo(function MessageRow({
           requestTagAgentId={requestTagAgentId}
           myAgentId={myAgentId}
           mentionParticipants={mentionParticipants}
+          orientationTargetName={orientationTargetName}
           orientationCompleted={orientationCompleted}
           orientationHidden={orientationHidden}
           orientationContinuing={orientationContinuing}
@@ -1100,6 +1106,7 @@ function areMessageBodyPropsEqual(prev: MessageBodyProps, next: MessageBodyProps
     messageBodyFieldsEqual(prev.msg, next.msg) &&
     prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
+    prev.orientationTargetName === next.orientationTargetName &&
     prev.orientationCompleted === next.orientationCompleted &&
     prev.orientationHidden === next.orientationHidden &&
     prev.orientationContinuing === next.orientationContinuing &&
