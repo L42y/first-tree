@@ -465,19 +465,30 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
 
   it("caps a thrown error and an unresolved-artifact error too", async () => {
     const thrown = harness(
-      fakeDriver({ provider: "codex", throwLogin: new Error(`token=${"a".repeat(2_000)}`) }).driver,
+      fakeDriver({
+        provider: "codex",
+        throwLogin: new Error(`spawn failed with token=abcdef1234567890\n${LONG_DIAGNOSTIC_TAIL}`),
+      }).driver,
       "codex",
     );
     await runRuntimeAuthLogin({ provider: "codex", ref: "cap-throw" }, thrown.deps);
     const thrownMessage = thrown.calls.at(-1)?.entry.lastAuthError?.message ?? "";
-    expect(thrownMessage.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN);
+    expect(thrownMessage).not.toContain("abcdef1234567890");
     expect(thrownMessage).toContain("[REDACTED]");
+    expect(thrownMessage.length).toBe(RUNTIME_AUTH_ERROR_MAX_LEN);
+    expect(thrownMessage.endsWith("…")).toBe(true);
 
     const unresolved = harness(
-      fakeDriver({ provider: "codex", resolveError: `no codex at https://svc:pw_abcdef@registry.example/x` }).driver,
+      fakeDriver({
+        provider: "codex",
+        resolveError: `no codex at https://svc:pw_abcdef@registry.example/x\n${LONG_DIAGNOSTIC_TAIL}`,
+      }).driver,
       "codex",
     );
     await runRuntimeAuthLogin({ provider: "codex", ref: "cap-resolve" }, unresolved.deps);
-    expect(unresolved.calls.at(-1)?.entry.lastAuthError?.message).not.toContain("pw_abcdef");
+    const resolveMessage = unresolved.calls.at(-1)?.entry.lastAuthError?.message ?? "";
+    expect(resolveMessage).not.toContain("pw_abcdef");
+    expect(resolveMessage.length).toBe(RUNTIME_AUTH_ERROR_MAX_LEN);
+    expect(resolveMessage.endsWith("…")).toBe(true);
   });
 });
