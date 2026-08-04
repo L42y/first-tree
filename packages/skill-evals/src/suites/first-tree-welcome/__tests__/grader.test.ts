@@ -956,6 +956,14 @@ describe("first-tree-welcome grader", () => {
       "a Chinese connective plus generic service",
       "我读到了 README。可以从该服务开始。请选择一个，或自由输入其他微任务。",
     ],
+    [
+      "a Chinese generic project possessive module",
+      "我读到了 README。当前项目的模块是起点。请选择一个，或自由输入其他微任务。",
+    ],
+    [
+      "a Chinese generic project possessive entry",
+      "我读到了 README。这个项目的入口是起点。请选择一个，或自由输入其他微任务。",
+    ],
   ])("rejects a two-sentence receipt naming only %s", (_description, receipt) => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-generic-start-"));
     try {

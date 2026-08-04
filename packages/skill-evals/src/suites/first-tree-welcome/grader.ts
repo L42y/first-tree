@@ -431,7 +431,7 @@ function hasNamedStartingPoint(text: string): boolean {
   if (!chineseNamedSurface) return false;
 
   const withoutGenericSuffix = chineseNamedSurface.replace(
-    /(?:(?:我们的|你们的|这个|当前|一个|项目|我们|你们|该|其|本|此))+$/u,
+    /(?:(?:(?:这个|当前|该|本|此)?项目(?:中|里|里面)?的?|(?:我们|你们)(?:的)?|(?:这个|当前|一个|该|其|本|此)(?:的)?))+$/u,
     "",
   );
   const withoutConnector = withoutGenericSuffix.replace(
