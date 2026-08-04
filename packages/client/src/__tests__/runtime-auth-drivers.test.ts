@@ -56,6 +56,28 @@ describe("RUNTIME_AUTH_DRIVERS composition root", () => {
   });
 });
 
+describe("every driver keeps a broken artifact lookup away from the login", () => {
+  // Resolvers touch PATH and the filesystem, so they can throw as well as
+  // report a gap. Neither outcome may reach a spawn; the dispatcher turns the
+  // throw into the same "login never started" reflection.
+  const boom = () => {
+    throw new Error("PATH lookup exploded");
+  };
+
+  type FakeLogin = () => Promise<LoginOutcome>;
+
+  it.each([
+    ["claude-code", (login: FakeLogin) => createClaudeAuthDriver({ resolveLogin: boom, runBrowserLogin: login })],
+    ["codex", (login: FakeLogin) => createCodexAuthDriver({ resolveBinary: boom, runBrowserLogin: login })],
+    ["cursor", (login: FakeLogin) => createCursorAuthDriver({ resolveBinary: boom, runBrowserLogin: login })],
+    ["grok", (login: FakeLogin) => createGrokAuthDriver({ resolveBinary: boom, runBrowserLogin: login })],
+  ] as const)("%s", async (_provider, build) => {
+    const login = vi.fn(async (): Promise<LoginOutcome> => ({ ok: true }));
+    await expect(build(login).resolveLogin()).rejects.toThrow("PATH lookup exploded");
+    expect(login).not.toHaveBeenCalled();
+  });
+});
+
 describe("codex auth driver", () => {
   it("drives the resolved binary and re-probes only codex", async () => {
     const runBrowserLogin = vi.fn(async (): Promise<LoginOutcome> => ({ ok: true }));

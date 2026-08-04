@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { ClientPausedReason, SessionEvent } from "@first-tree/shared";
+import { type ClientPausedReason, runtimeAuthProviderSchema, type SessionEvent } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoundAgent } from "../client-connection.js";
 
@@ -730,6 +730,29 @@ describe("ClientConnection — additional branch coverage", () => {
     expect(commands).toContainEqual({ type: "session:resume", agentId: "agent-1", chatId: "chat-1" });
     expect(runtimeAuthStarts).toContainEqual({ provider: "codex", method: "browser", ref: "auth-ref" });
     expect(reconciles).toContainEqual({ agentId: "agent-1", staleChatIds: ["chat-1"] });
+
+    priv(connection).clearTimers();
+  });
+
+  it("emits a typed runtime-auth start for every legal target and for nothing else", async () => {
+    const connection = await makeConnection();
+    const socket = await openRegisteredConnection(connection);
+    await bindAgent(connection, socket);
+
+    const starts: Array<{ provider: string }> = [];
+    connection.on("runtime-auth:start", (command) => starts.push(command));
+
+    // The wire already narrows Connect to these four targets; the daemon now
+    // dispatches on that key, so an out-of-set target must never reach it.
+    // `claude-code-tui` shares Claude's credential and Kimi is a host login.
+    for (const provider of runtimeAuthProviderSchema.options) {
+      socket.emitMessage({ type: "runtime-auth:start", provider, method: "browser", ref: `ref-${provider}` });
+    }
+    for (const provider of ["claude-code-tui", "kimi", "opencode", "pi"]) {
+      socket.emitMessage({ type: "runtime-auth:start", provider, method: "browser", ref: `ref-${provider}` });
+    }
+
+    expect(starts.map((s) => s.provider)).toEqual([...runtimeAuthProviderSchema.options]);
 
     priv(connection).clearTimers();
   });

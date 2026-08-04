@@ -193,6 +193,12 @@ export type AuthUrlScanner = {
   push(chunk: string): string | null;
   /** Characters currently held between chunks (diagnostics and tests). */
   retainedChars(): number;
+  /**
+   * Characters examined so far. Read-only seam that lets a test assert the
+   * work stays linear in the output and stops entirely once a URL is found,
+   * rather than inferring it from how fast the test ran.
+   */
+  scannedChars(): number;
 };
 
 export function createAuthUrlScanner(): AuthUrlScanner {
@@ -200,10 +206,12 @@ export function createAuthUrlScanner(): AuthUrlScanner {
   /** The in-progress token blew the cap: drop it until the next whitespace. */
   let discarding = false;
   let found = false;
+  let scanned = 0;
 
   return {
     push(chunk: string): string | null {
       if (found) return null;
+      scanned += chunk.length;
       let start = 0;
       for (let i = 0; i < chunk.length; i++) {
         if (!WHITESPACE.test(chunk[i] as string)) continue;
@@ -228,6 +236,7 @@ export function createAuthUrlScanner(): AuthUrlScanner {
       return null;
     },
     retainedChars: () => carry.length,
+    scannedChars: () => scanned,
   };
 }
 

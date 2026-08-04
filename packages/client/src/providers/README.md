@@ -75,6 +75,11 @@ provider id. A driver contributes only `logLabel` / `loginLabel` /
 `artifactLabel` copy plus `resolveLogin()` and `reprobe()`; it never publishes a
 capability entry, and it never owns retry, ordering, or error policy.
 
+Because the dispatcher owns ordering, a driver may resolve slowly, print its
+sign-in URL at any moment, or throw: entry writes are chained so the URL always
+lands before the terminal re-probe, and a thrown resolver or login is contained
+and reflected the same way a reported failure is.
+
 `reprobe()` returns rows in publish order and may return more than one when
 providers share a credential (a Claude login refreshes both Claude rows while
 the TUI is enabled, and neither probes nor writes the TUI row while it is

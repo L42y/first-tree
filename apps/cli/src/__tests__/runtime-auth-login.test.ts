@@ -34,6 +34,7 @@ type FakeDriverOptions = {
   loginLabel?: string;
   artifactLabel?: string;
   resolveError?: string;
+  throwResolve?: unknown;
   outcome?: LoginOutcome;
   fireAuthUrl?: string;
   throwLogin?: unknown;
@@ -50,6 +51,7 @@ function fakeDriver(opts: FakeDriverOptions) {
     loginLabel: opts.loginLabel ?? `${opts.provider} login`,
     artifactLabel: opts.artifactLabel ?? "binary",
     async resolveLogin() {
+      if (opts.throwResolve !== undefined) throw opts.throwResolve;
       if (opts.resolveError) return { ok: false, error: opts.resolveError };
       return {
         ok: true,
@@ -70,13 +72,21 @@ function fakeDriver(opts: FakeDriverOptions) {
   return { driver, loginCalls };
 }
 
-function harness(driver: RuntimeAuthDriver, provider: RuntimeAuthProvider, current?: CapabilityEntry) {
+function harness(
+  driver: RuntimeAuthDriver,
+  provider: RuntimeAuthProvider,
+  current?: CapabilityEntry,
+  /** Per-write latency, to expose ordering that a fast write would hide. */
+  writeDelayMs?: (entry: CapabilityEntry) => number,
+) {
   const calls: Recorded[] = [];
   const logs: string[] = [];
   const drivers = { [provider]: driver } as unknown as RuntimeAuthDriverTable;
   const deps: RuntimeAuthLoginDeps = {
     currentEntry: () => current,
     setProviderEntry: async (p, entry) => {
+      const delay = writeDelayMs?.(entry) ?? 0;
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
       calls.push({ provider: p, entry });
     },
     log: (_symbol, msg) => {
@@ -175,6 +185,19 @@ describe("runRuntimeAuthLogin — browser OAuth lifecycle", () => {
     expect(withUrl?.entry.pendingAuth).toMatchObject({ method: "browser", authUrl: "https://auth.openai.com/x" });
   });
 
+  it("keeps the auth URL ahead of the terminal entry even when the write is slow", async () => {
+    // The URL arrives from the login's output stream, so its write is in flight
+    // when the login resolves. A slow write must not land after the terminal
+    // re-probe and resurrect a pending marker on a finished login.
+    const { driver } = fakeDriver({ provider: "codex", fireAuthUrl: "https://auth.openai.com/slow" });
+    const h = harness(driver, "codex", undefined, (entry) => (entry.pendingAuth?.authUrl ? 20 : 0));
+    await runRuntimeAuthLogin({ provider: "codex", ref: "order" }, h.deps);
+
+    expect(
+      h.calls.map((c) => (c.entry.pendingAuth?.authUrl ? "pending+url" : c.entry.pendingAuth ? "pending" : "terminal")),
+    ).toEqual(["pending", "pending+url", "terminal"]);
+  });
+
   it("preserves the prior entry's runtimeSource/version on the pending entry", async () => {
     const { driver } = fakeDriver({ provider: "codex" });
     const h = harness(driver, "codex", okEntry({ runtimeSource: "bundled" }));
@@ -197,6 +220,25 @@ describe("runRuntimeAuthLogin — browser OAuth lifecycle", () => {
     expect(h.calls).toHaveLength(1);
     expect(h.calls[0]?.entry.state).toBe("missing");
     expect(h.logs.some((l) => l.includes("codex binary unavailable"))).toBe(true);
+  });
+
+  it("contains a thrown resolver on the same path as a reported one", async () => {
+    const { driver, loginCalls } = fakeDriver({
+      provider: "codex",
+      throwResolve: new Error("PATH lookup exploded"),
+      probeResult: okEntry({ state: "missing", available: false }),
+    });
+    const h = harness(driver, "codex");
+    await runRuntimeAuthLogin({ provider: "codex", ref: "resolve-throw" }, h.deps);
+
+    expect(loginCalls).toHaveLength(0);
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.entry.state).toBe("missing");
+    expect(h.calls[0]?.entry.lastAuthError).toMatchObject({
+      reason: "spawn-error",
+      message: "PATH lookup exploded",
+    });
+    expect(h.logs.some((l) => l.includes("codex binary lookup threw: PATH lookup exploded"))).toBe(true);
   });
 
   it("uses the driver's artifact wording for a CLI-backed provider", async () => {

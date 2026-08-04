@@ -65,24 +65,27 @@ describe("auth URL scanner keeps retained state bounded", () => {
     expect(scanner.push("visit https://auth.openai.com/x\n")).toBe("https://auth.openai.com/x");
   });
 
-  it("stops growing and stops reporting once a URL is found", () => {
+  it("stops scanning, stops growing and stops reporting once a URL is found", () => {
     const scanner = createAuthUrlScanner();
     expect(scanner.push("visit https://auth.openai.com/x\n")).toBe("https://auth.openai.com/x");
+    const scannedAtHit = scanner.scannedChars();
     for (let i = 0; i < 1_000; i++) {
       expect(scanner.push(`https://auth.example/later-${i} and a very long unterminated tail`)).toBeNull();
       expect(scanner.retainedChars()).toBe(0);
     }
+    expect(scanner.scannedChars()).toBe(scannedAtHit);
   });
 
-  it("scans a large stream in linear time (no cumulative full-buffer rescans)", () => {
-    // Roughly 4 MB with no URL. Re-splitting the accumulated buffer per chunk
-    // would be quadratic here (tens of GB of scanning); an incremental parser
-    // finishes in milliseconds, so a generous ceiling is still a real guard.
+  it("examines a large stream once, not once per accumulated buffer", () => {
+    // Roughly 4 MB with no URL. Re-splitting the accumulated buffer on every
+    // chunk would examine tens of GB here; an incremental parser examines each
+    // character exactly once, which the scan counter asserts directly rather
+    // than inferring it from how fast the test ran.
     const scanner = createAuthUrlScanner();
     const chunk = `${"provider chatter ".repeat(12)}\n`;
-    const started = Date.now();
-    for (let i = 0; i < 20_000; i++) scanner.push(chunk);
-    expect(Date.now() - started).toBeLessThan(5_000);
+    const chunks = 20_000;
+    for (let i = 0; i < chunks; i++) scanner.push(chunk);
+    expect(scanner.scannedChars()).toBe(chunk.length * chunks);
     expect(scanner.retainedChars()).toBe(0);
   });
 });

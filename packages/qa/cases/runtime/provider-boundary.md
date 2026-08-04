@@ -56,34 +56,21 @@ records the human cross-surface checks those tests cannot fully cover.
    - Confirm `first-tree daemon probe --json --no-upload` still returns entries
      for enabled providers only, and a single probe failure does not drop the
      rest of the snapshot.
-   - Confirm the runtime-auth driver projection covers exactly the
-     server-accepted in-product targets, with no host-login provider and no
+   - Confirm the runtime-auth driver registry is frozen and exhaustive over the
+     server-accepted in-product targets: no host-login provider, and no
      separate entry for the shared-credential Claude Code CLI target.
 
-4. **In-product login boundary**
-   - Confirm a Connect on each in-product target still walks pending → sign-in
-     URL (when the provider emits one) → re-probe, and that an unresolved
-     artifact, a failed or thrown login, and a thrown re-probe each end with a
-     published capability entry rather than a stuck pending row.
-   - Confirm a Claude Code login refreshes both Claude rows while the CLI/TUI
-     entry is enabled, and touches only the Claude Code row while it is
-     centrally disabled.
-   - Confirm a long or noisy login run does not grow daemon memory with
-     retained login output, reports an external sign-in URL exactly once even
-     when it arrives split across output chunks, and never reports a loopback
-     callback URL.
-   - Confirm every published `lastAuthError.message` is length-bounded and
-     carries no credential or token text, including errors originating from the
-     artifact resolver or a spawn failure.
-
-5. **Skill roots**
+4. **Skill roots**
    - Confirm managed-skills reads `PROVIDER_SKILL_ROOTS` directly (Claude →
      `.claude/skills`, Codex/Pi → `.agents/skills`, etc.).
 
-6. **Architecture guard**
+5. **Architecture guard**
    - Confirm the committed provider-boundary guard remains green: generic
      modules stay free of provider-literal switches, guard tokens derive from
      `RUNTIME_PROVIDER_IDS`, and live consumers use catalog helpers.
+   - Confirm the generic daemon runtime-auth entry point stays provider-neutral:
+     no in-product provider literal, no provider-specific resolver / probe /
+     login import, and no branch on the requested provider.
 
 ## Evidence
 
@@ -101,8 +88,8 @@ provider-literal regression in the guarded generic modules.
 `FAIL` means a generic module regained concrete provider branches/lists, web
 reintroduced a parallel provider table, probe aggregation diverged from the
 enabled provider set, skill-root / preference order drifted from catalog data,
-or an in-product login lost a lifecycle step, leaked credential text, or
-retained unbounded login output.
+or the runtime-auth registry stopped being frozen and exhaustive while the
+generic daemon entry point regained provider knowledge.
 
 `BLOCKED` means the run cell could not exercise probe/UI surfaces for
 environment reasons; record the gap and keep product-test evidence separate.

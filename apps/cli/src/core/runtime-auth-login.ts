@@ -5,6 +5,7 @@ import {
   type RuntimeAuthCommand,
   type RuntimeAuthDriver,
   type RuntimeAuthDriverTable,
+  type RuntimeAuthLoginResolution,
   redactErrorPreview,
 } from "@first-tree/client";
 import type { CapabilityEntry, PendingAuth, RuntimeAuthFailureReason } from "@first-tree/shared";
@@ -168,18 +169,42 @@ async function driveRuntimeAuthLogin(
 
   deps.log("•", `runtime-auth: starting ${loginLabel} (method=browser, ref ${command.ref})`);
 
-  const resolution = await driver.resolveLogin();
+  // A resolver reaches into PATH and the host filesystem, so it can throw as
+  // well as report a missing artifact. To an operator both mean the login never
+  // started, and neither may escape this orchestrator.
+  let resolution: RuntimeAuthLoginResolution;
+  try {
+    resolution = await driver.resolveLogin();
+  } catch (err) {
+    deps.log("⚠️", `runtime-auth: ${logLabel} ${artifactLabel} lookup threw: ${message(err)}`);
+    await reflect(`after ${artifactLabel} lookup threw`, { reason: "spawn-error", message: message(err) });
+    return;
+  }
   if (!resolution.ok) {
     deps.log("⚠️", `runtime-auth: ${logLabel} ${artifactLabel} unavailable: ${resolution.error}`);
     await reflect(`after unresolved ${artifactLabel}`, { reason: "spawn-error", message: resolution.error });
     return;
   }
 
-  const setPending = (authUrl?: string): Promise<void> =>
-    deps.setProviderEntry(
-      command.provider,
-      pendingEntry(deps.currentEntry(command.provider), browserPending(now(), authUrl), now()),
-    );
+  // `onAuthUrl` fires from the login's output stream, so its entry write races
+  // the terminal re-probe that follows the login. Chaining the pending writes
+  // and draining them before the terminal reflection keeps the operator's view
+  // moving forwards — pending, then pending + URL, then the outcome — instead
+  // of a late pending marker landing on top of an already finished login.
+  let pendingWrites: Promise<void> = Promise.resolve();
+  const setPending = (authUrl?: string): Promise<void> => {
+    pendingWrites = pendingWrites.then(async () => {
+      try {
+        await deps.setProviderEntry(
+          command.provider,
+          pendingEntry(deps.currentEntry(command.provider), browserPending(now(), authUrl), now()),
+        );
+      } catch (err) {
+        deps.log("⚠️", `runtime-auth: ${logLabel} pending update failed: ${message(err)}`);
+      }
+    });
+    return pendingWrites;
+  };
   await setPending();
   deps.log("•", `runtime-auth: ${logLabel} browser sign-in opened on this host`);
 
@@ -190,10 +215,12 @@ async function driveRuntimeAuthLogin(
     outcome = await resolution.login({ onAuthUrl: (url) => void setPending(url) });
   } catch (err) {
     deps.log("⚠️", `runtime-auth: ${loginLabel} threw: ${message(err)}`);
+    await pendingWrites;
     await reflect("after login threw", { reason: "spawn-error", message: message(err) });
     return;
   }
 
+  await pendingWrites;
   await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
   logOutcome(logLabel, command.ref, outcome, deps);
 }
