@@ -26,9 +26,11 @@ const mocks = vi.hoisted(() => ({
   readConfig: vi.fn(),
   resolveRelease: vi.fn(),
   validateActivation: vi.fn(),
+  channelConfig: { channel: "dev", binName: "first-tree-dev" },
 }));
 
 vi.mock("../core/output.js", () => ({ print: output }));
+vi.mock("../core/channel.js", () => ({ channelConfig: mocks.channelConfig }));
 vi.mock("../core/context-integration/account-state-guard.js", () => ({
   readActiveContextAccountClientId: mocks.readAccount,
   withAccountStateMutationLockAsync: (action: () => Promise<unknown>) => action(),
@@ -76,6 +78,8 @@ const project = { kind: "path" as const, root: "/work/repo" };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.channelConfig.channel = "dev";
+  mocks.channelConfig.binName = "first-tree-dev";
   mocks.readAccount.mockReturnValue("client-1");
   mocks.inspectLocation.mockReturnValue({
     project,
@@ -111,12 +115,113 @@ beforeEach(() => {
 describe("context enable v3 command", () => {
   it("keeps plan read-only and fixes the grant-store fingerprint", async () => {
     await runContextEnable(context({ plan: true }));
-    const result = output.result.mock.calls[0]?.[0] as { plan: { planId: string; grantStoreFingerprint: string } };
-    expect(result.plan.grantStoreFingerprint).toBe("a".repeat(64));
-    expect(result.plan.planId).toContain(`.${"a".repeat(64)}.`);
+    const planIdPattern = `v1\\.[0-9a-f]{64}\\.${"a".repeat(64)}\\.[0-9a-f]{64}\\.[0-9a-f]{64}`;
+    expect(output.result).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "choice_required",
+        plan: expect.objectContaining({
+          grantStoreFingerprint: "a".repeat(64),
+          planId: expect.stringMatching(new RegExp(planIdPattern, "u")),
+          choices: expect.arrayContaining(
+            ["global", "directory", "session"].map((scope) =>
+              expect.objectContaining({
+                kind: scope,
+                applyCommand: expect.stringMatching(
+                  new RegExp(
+                    `^'first-tree-dev' --json context enable --provider 'codex' --team 'org-a' --project-root '/work/repo' --scope '${scope}' --plan-id '${planIdPattern}' --yes$`,
+                    "u",
+                  ),
+                ),
+              }),
+            ),
+          ),
+        }),
+      }),
+    );
     expect(mocks.enableOperation).not.toHaveBeenCalled();
     expect(mocks.issueSession).not.toHaveBeenCalled();
     expect(mocks.assertFingerprint).not.toHaveBeenCalled();
+  });
+
+  it("omits an apply command for an unavailable directory choice", async () => {
+    mocks.inspectLocation.mockReturnValue({
+      project: { kind: "pathless" },
+      directory: null,
+      directoryAvailable: false,
+      temporaryDirectory: false,
+      warning: null,
+    });
+    await runContextEnable(context({ plan: true, projectRoot: undefined, pathless: true }));
+    expect(output.result).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: expect.objectContaining({
+          choices: expect.arrayContaining([
+            expect.objectContaining({ kind: "directory", available: false, applyCommand: null }),
+            expect.objectContaining({ kind: "global", applyCommand: expect.stringContaining(" --pathless ") }),
+            expect.objectContaining({ kind: "session", applyCommand: expect.stringContaining(" --pathless ") }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it("renders exact apply commands in the human-readable plan", async () => {
+    await runContextEnable({ ...context({ plan: true }), options: { json: false, debug: false, quiet: false } });
+    const statusRows = output.status.mock.calls.map(([label, value]) => `${label}: ${value}`).join("\n");
+    expect(statusRows).toContain(
+      `Apply command: 'first-tree-dev' --json context enable --provider 'codex' --team 'org-a' --project-root '/work/repo' --scope 'global'`,
+    );
+    expect(statusRows).toContain("Next: Choose one scope, then run its exact apply command unchanged.");
+  });
+
+  it("pins non-dev apply commands to the portable executable without quoting away tilde expansion", async () => {
+    mocks.channelConfig.channel = "staging";
+    mocks.channelConfig.binName = "first-tree-staging";
+    await runContextEnable(context({ plan: true }));
+    expect(output.result).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: expect.objectContaining({
+          choices: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "global",
+              applyCommand: expect.stringMatching(/^~\/\.local\/bin\/first-tree-staging --json context enable/u),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it("applies an exact generated command with its canonical project root after cwd changes", async () => {
+    await runContextEnable(context({ plan: true, projectRoot: "/requested/../work/repo" }));
+    const command = readApplyCommand("global");
+    expect(command).toContain(" --project-root '/work/repo' ");
+
+    output.result.mockClear();
+    await runContextEnable(context(parseGeneratedApplyCommand(command)));
+
+    expect(mocks.enableOperation).toHaveBeenCalledTimes(1);
+    expect(output.result.mock.calls[0]?.[0]).toMatchObject({ setup: { complete: true } });
+  });
+
+  it("applies an exact generated pathless command without reclassifying the shell cwd", async () => {
+    mocks.inspectLocation.mockReturnValue({
+      project: { kind: "pathless" },
+      directory: null,
+      directoryAvailable: false,
+      temporaryDirectory: false,
+      warning: "This provider session did not expose a usable directory.",
+    });
+    await runContextEnable(context({ plan: true, projectRoot: undefined, pathless: true }));
+    const command = readApplyCommand("session");
+    expect(command).toContain(" --pathless ");
+    expect(command).not.toContain("--project-root");
+
+    output.result.mockClear();
+    await runContextEnable(context(parseGeneratedApplyCommand(command)));
+
+    expect(mocks.issueSession).toHaveBeenCalledTimes(1);
+    expect(output.result.mock.calls[0]?.[0]).toMatchObject({ setup: { complete: true } });
   });
 
   it("rejects a concurrent grant add/remove before persistent mutation", async () => {
@@ -293,6 +398,34 @@ async function createPlanId(): Promise<string> {
   output.result.mockClear();
   await runContextEnable(context({ plan: true }));
   return (output.result.mock.calls[0]?.[0] as { plan: { planId: string } }).plan.planId;
+}
+
+function readApplyCommand(kind: "global" | "directory" | "session"): string {
+  const result: unknown = output.result.mock.calls.at(-1)?.[0];
+  if (!isRecord(result) || !isRecord(result.plan) || !Array.isArray(result.plan.choices)) {
+    throw new Error("Missing setup plan result");
+  }
+  const choice = result.plan.choices.find((candidate: unknown) => isRecord(candidate) && candidate.kind === kind);
+  const command = isRecord(choice) ? choice.applyCommand : null;
+  if (typeof command !== "string") throw new Error(`Missing ${kind} apply command`);
+  return command;
+}
+
+function parseGeneratedApplyCommand(command: string): Record<string, unknown> {
+  const value = (flag: string): string | undefined => new RegExp(`${flag} '([^']+)'`, "u").exec(command)?.[1];
+  return {
+    provider: value("--provider"),
+    team: value("--team"),
+    projectRoot: value("--project-root"),
+    pathless: command.includes(" --pathless "),
+    scope: value("--scope"),
+    planId: value("--plan-id"),
+    yes: command.endsWith(" --yes"),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function context(options: Record<string, unknown>): CommandContext {

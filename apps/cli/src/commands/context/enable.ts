@@ -21,6 +21,7 @@ import { planContextIntegrationInstall } from "../../core/context-integration/in
 import { enableContextIntegrationOperation } from "../../core/context-integration/operation.js";
 import { providerPluginRoot, resolveContextIntegrationRelease } from "../../core/context-integration/release.js";
 import { inspectContextIntegrationRuntime } from "../../core/context-integration/runtime-health.js";
+import { buildContextSetupChoices, type ContextSetupChoice } from "../../core/context-integration/setup-plan.js";
 import { print } from "../../core/output.js";
 import { createMemberSdk } from "../_shared/member.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
@@ -46,13 +47,7 @@ type SetupPlan = {
   provider: ContextIntegrationProvider;
   team: { organizationId: string; displayName: string; role: string };
   location: ReturnType<typeof inspectContextSetupLocation>;
-  choices: Array<{
-    kind: "global" | "directory" | "session";
-    label: string;
-    available: boolean;
-    recommended: boolean;
-    description: string;
-  }>;
+  choices: ContextSetupChoice[];
   [setupPlanAccountClientId]: string;
 };
 
@@ -200,46 +195,21 @@ async function buildSetupPlan(
       ? contextGrantStoreFingerprintAfterGrant(grantStore, directoryGrant)
       : null,
   };
+  const planId = renderSetupPlanToken(token);
   return {
     schemaVersion: 1,
-    planId: renderSetupPlanToken(token),
+    planId,
     grantStoreFingerprint: grantStore.fingerprint,
     provider,
     team: activation.team,
     location,
-    choices: buildContextSetupChoices(location),
+    choices: buildContextSetupChoices(location, {
+      provider,
+      teamId: activation.team.organizationId,
+      planId,
+    }),
     [setupPlanAccountClientId]: accountClientId,
   };
-}
-
-export function buildContextSetupChoices(
-  location: ReturnType<typeof inspectContextSetupLocation>,
-): SetupPlan["choices"] {
-  return [
-    {
-      kind: "global",
-      label: "All sessions",
-      available: true,
-      recommended: !location.temporaryDirectory,
-      description: "Make this Team eligible in every session for this provider.",
-    },
-    {
-      kind: "directory",
-      label: location.directory ? `This directory: ${location.directory}` : "This directory",
-      available: location.directoryAvailable,
-      recommended: location.directoryAvailable && !location.temporaryDirectory,
-      description: location.directoryAvailable
-        ? "Make this Team eligible in this directory and its descendants."
-        : "Unavailable because the provider did not expose a stable directory.",
-    },
-    {
-      kind: "session",
-      label: "This session only",
-      available: true,
-      recommended: location.temporaryDirectory,
-      description: "Use verified Read/Write Skills now without installing a Plugin, Hook, or persistent grant.",
-    },
-  ];
 }
 
 function parseActivationScope(scope: string, plan: SetupPlan): ContextActivationScope {
@@ -439,8 +409,9 @@ function renderPlan(plan: SetupPlan, json: boolean): void {
   if (plan.location.warning) print.status("Warning", plan.location.warning);
   for (const choice of plan.choices) {
     print.status(choice.label, choice.available ? choice.description : `Unavailable — ${choice.description}`);
+    if (choice.applyCommand) print.status("Apply command", choice.applyCommand);
   }
-  print.status("Next", "Choose one scope, then rerun with --scope <scope> --plan-id <planId> --yes.");
+  print.status("Next", "Choose one scope, then run its exact apply command unchanged.");
 }
 
 function renderScope(scope: ContextActivationScope): string {
