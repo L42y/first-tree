@@ -51,6 +51,7 @@ function mergeRequestPayload(input: {
   actor?: string;
   projectPath?: string;
   title?: string;
+  description?: string;
   draft?: boolean;
   oldrev?: string;
 }) {
@@ -70,7 +71,7 @@ function mergeRequestPayload(input: {
       iid: input.iid ?? 17,
       ...(input.action === null ? {} : { action: input.action ?? "open" }),
       title: input.title ?? "Review this change",
-      description: "Please review",
+      description: input.description ?? "Please review",
       url: `https://gitlab.internal/${projectPath}/-/merge_requests/${input.iid ?? 17}`,
       state: "opened",
       updated_at: "2026-07-28T10:00:00.000Z",
@@ -1208,6 +1209,86 @@ describe("GitLab Stage 3 personnel routing", () => {
       .from(messages)
       .where(and(eq(messages.chatId, existingChat.id), eq(messages.source, "gitlab")));
     expect(card?.metadata).toMatchObject({ mentions: [setup.delegate.uuid] });
+  });
+
+  it("does not reuse a related exact-pair chat after the wake agent leaves", async () => {
+    const app = getApp();
+    const setup = await setupTarget(app);
+    const relatedChat = await createChat(app.db, setup.admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [setup.delegate.uuid],
+    });
+    await app.db.insert(gitlabEntityChatMappings).values({
+      id: randomUUID(),
+      organizationId: setup.admin.organizationId,
+      connectionId: setup.connection.connectionId,
+      chatId: relatedChat.id,
+      declaredByAgentId: setup.admin.humanAgentUuid,
+      boundVia: "identity_target",
+      identityLinkId: setup.link.id,
+      humanAgentId: setup.admin.humanAgentUuid,
+      delegateAgentId: setup.delegate.uuid,
+      attentionMode: "paired",
+      attentionBackfillVersion: 1,
+      active: true,
+      entityType: "issue",
+      entityIid: 42,
+      projectId: 801,
+      projectPath: "Acme/Reviews",
+      projectPathNormalized: "acme/reviews",
+      entityUrl: "https://gitlab.internal/Acme/Reviews/-/issues/42",
+      title: "Related issue",
+      entityState: "open",
+    });
+    await app.db
+      .delete(chatMembership)
+      .where(and(eq(chatMembership.chatId, relatedChat.id), eq(chatMembership.agentId, setup.delegate.uuid)));
+
+    const iid = 125;
+    expect(
+      (
+        await postMr(
+          app,
+          setup.connection.bearer,
+          mergeRequestPayload({
+            iid,
+            description: "Closes #42",
+            reviewers: [],
+            assignees: [{ username: "Reviewer.One" }],
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+
+    const [targetLine] = await app.db
+      .select()
+      .from(gitlabEntityChatMappings)
+      .where(
+        and(
+          eq(gitlabEntityChatMappings.connectionId, setup.connection.connectionId),
+          eq(gitlabEntityChatMappings.entityType, "pull_request"),
+          eq(gitlabEntityChatMappings.entityIid, iid),
+        ),
+      );
+    expect(targetLine).toMatchObject({
+      boundVia: "identity_target",
+      humanAgentId: setup.admin.humanAgentUuid,
+      delegateAgentId: setup.delegate.uuid,
+      active: true,
+    });
+    expect(targetLine?.chatId).not.toBe(relatedChat.id);
+    expect(
+      await app.db
+        .select()
+        .from(chatMembership)
+        .where(
+          and(
+            eq(chatMembership.chatId, targetLine?.chatId ?? ""),
+            eq(chatMembership.agentId, setup.delegate.uuid),
+            eq(chatMembership.accessMode, "speaker"),
+          ),
+        ),
+    ).toHaveLength(1);
   });
 
   it("unfollows an automatic route and lets a later reviewer event create a fresh chat", async () => {

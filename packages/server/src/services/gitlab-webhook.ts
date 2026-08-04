@@ -1040,32 +1040,24 @@ async function resolveGitlabPersonnelTargetInTransaction(
       });
     }
   } else {
-    const relatedChatId = await findGitlabRelatedEntityChat(db, {
-      organizationId: input.organizationId,
-      connectionId: input.connectionId,
-      relatedRefs: input.event.relatedRefs,
-      humanAgentId,
-      wakeAgentId,
+    // `strict_new_line` means no locked current-entity candidate was safe.
+    // Related-entity mappings are outside that speaker snapshot, so they may
+    // not be used as an unchecked shortcut for a fresh personnel line.
+    const metadata = chatMetadataSchema.parse({
+      source: "gitlab",
+      entityType: input.entity.entityType,
+      entityKey: input.event.entity.key,
+      entityUrl: input.entity.entityUrl,
+      ...(input.target.entry.reason === "review_requested" ? { reviewRequestRouted: true } : {}),
     });
-    if (relatedChatId) {
-      chatId = relatedChatId;
-    } else {
-      const metadata = chatMetadataSchema.parse({
-        source: "gitlab",
-        entityType: input.entity.entityType,
-        entityKey: input.event.entity.key,
-        entityUrl: input.entity.entityUrl,
-        ...(input.target.entry.reason === "review_requested" ? { reviewRequestRouted: true } : {}),
-      });
-      const createdChat = await createChat(db, humanAgentId, {
-        type: "group",
-        participantIds: [wakeAgentId],
-        topic: formatGitlabEntityTopic(input.entity, input.target.entry.reason === "review_requested"),
-        metadata,
-      });
-      chatId = createdChat.id;
-      created = true;
-    }
+    const createdChat = await createChat(db, humanAgentId, {
+      type: "group",
+      participantIds: [wakeAgentId],
+      topic: formatGitlabEntityTopic(input.entity, input.target.entry.reason === "review_requested"),
+      metadata,
+    });
+    chatId = createdChat.id;
+    created = true;
   }
 
   await db.insert(gitlabEntityChatMappings).values({
@@ -1093,47 +1085,6 @@ async function resolveGitlabPersonnelTargetInTransaction(
     updatedAt: new Date(),
   });
   return { chatId, created, membershipChanged };
-}
-
-async function findGitlabRelatedEntityChat(
-  db: Database,
-  input: {
-    organizationId: string;
-    connectionId: string;
-    relatedRefs: NormalizedScmEvent["relatedRefs"];
-    humanAgentId: string;
-    wakeAgentId: string;
-  },
-): Promise<string | null> {
-  const issueRefs = input.relatedRefs.flatMap((ref) => {
-    if (ref.type !== "issue") return [];
-    const match = /^(\d+):issue:(\d+)$/.exec(ref.key);
-    if (!match?.[1] || !match[2]) return [];
-    return [{ projectId: Number(match[1]), issueIid: Number(match[2]) }];
-  });
-  if (issueRefs.length === 0) return null;
-
-  const candidateChatIds = new Set<string>();
-  for (const ref of issueRefs) {
-    const rows = await db
-      .select({ chatId: gitlabEntityChatMappings.chatId })
-      .from(gitlabEntityChatMappings)
-      .where(
-        and(
-          eq(gitlabEntityChatMappings.organizationId, input.organizationId),
-          eq(gitlabEntityChatMappings.connectionId, input.connectionId),
-          eq(gitlabEntityChatMappings.projectId, ref.projectId),
-          eq(gitlabEntityChatMappings.entityType, "issue"),
-          eq(gitlabEntityChatMappings.entityIid, ref.issueIid),
-          eq(gitlabEntityChatMappings.humanAgentId, input.humanAgentId),
-          eq(gitlabEntityChatMappings.delegateAgentId, input.wakeAgentId),
-          eq(gitlabEntityChatMappings.active, true),
-        ),
-      );
-    for (const row of rows) candidateChatIds.add(row.chatId);
-    if (candidateChatIds.size > 1) return null;
-  }
-  return candidateChatIds.size === 1 ? ([...candidateChatIds][0] ?? null) : null;
 }
 
 export async function deliverGitlabCards(

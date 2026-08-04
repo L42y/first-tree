@@ -312,21 +312,26 @@ async function resolveTargetChatInTransaction(
     }
   }
 
-  // (b) Fixes-link reuse.
-  for (const ref of relatedEntities) {
-    const linked = await lookupMapping(db, organizationId, humanAgentId, delegateAgentId, ref);
-    if (!linked) continue;
-    const inserted = await insertMappingIfAbsent(db, {
-      organizationId,
-      humanAgentId,
-      delegateAgentId,
-      entity,
-      chatId: linked.chatId,
-      boundVia: "fixes_link",
-      entityState,
-    });
-    // If the insert lost a race, our re-read returns the winner's row.
-    return { chatId: inserted.chatId, created: false, boundVia: inserted.boundVia };
+  // (b) Fixes-link reuse remains a provider-task behavior. A strict personnel
+  // target has already failed safe co-location against its entity candidates;
+  // reusing an unrelated entity's mapping here would bypass the locked speaker
+  // snapshot and could persist a line whose wake agent is no longer a speaker.
+  if (intent.kind === "provider_task_target") {
+    for (const ref of relatedEntities) {
+      const linked = await lookupMapping(db, organizationId, humanAgentId, delegateAgentId, ref);
+      if (!linked) continue;
+      const inserted = await insertMappingIfAbsent(db, {
+        organizationId,
+        humanAgentId,
+        delegateAgentId,
+        entity,
+        chatId: linked.chatId,
+        boundVia: "fixes_link",
+        entityState,
+      });
+      // If the insert lost a race, our re-read returns the winner's row.
+      return { chatId: inserted.chatId, created: false, boundVia: inserted.boundVia };
+    }
   }
 
   // (b.5) Creation-event guard. `pull_request.opened` / `issues.opened` must
