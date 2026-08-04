@@ -98,11 +98,14 @@ five-minute window, so the subprocess retains no full output buffer: the
 fallback sign-in URL comes from an incremental scanner whose only carried state
 is the current partial token, and stderr keeps a bounded tail.
 
-Every free-text string the dispatcher publishes passes through
+Every error/failure string the dispatcher republishes — `CapabilityEntry.error`
+and `lastAuthError.message`, and nothing else — passes through
 `redactErrorPreview` under a hard ceiling that counts the helper's truncation
-ellipsis: the login's own `lastAuthError.message`, and the `error` of *each*
-row a `reprobe()` returns — including the extra rows of a shared-credential
-driver, whose detection text comes from the same hosts and subprocesses.
+ellipsis. That covers the login's own verdict and the `error` of *each* row a
+`reprobe()` returns, including the extra rows of a shared-credential driver,
+whose detection text comes from the same hosts and subprocesses. Structured
+fields such as `pendingAuth.authUrl` or the detected version are not error text
+and are not redacted.
 Starting a login also drops the previous attempt's `error` and `lastAuthError`
 instead of carrying them onto the pending entry, so nothing escapes the
 boundary by riding an older snapshot. Do not put that ceiling on the shared

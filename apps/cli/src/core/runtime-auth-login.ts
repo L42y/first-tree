@@ -58,7 +58,10 @@ function message(err: unknown): string {
 type AuthFailure = { reason: RuntimeAuthFailureReason; message?: string };
 
 /**
- * Every free-text string this orchestrator publishes goes through here.
+ * Every error/failure string this orchestrator republishes goes through here:
+ * `CapabilityEntry.error` and `lastAuthError.message`. Structured fields the
+ * daemon itself produces — `pendingAuth.authUrl`, the detected version, the
+ * runtime source — are not error text and deliberately do not pass through.
  *
  * `redactErrorPreview` treats its argument as the body budget and appends a
  * single ellipsis when it truncates, so hand it one less than the ceiling to

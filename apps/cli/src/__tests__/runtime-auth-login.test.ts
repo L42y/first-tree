@@ -337,6 +337,16 @@ describe("runRuntimeAuthLogin — shared-credential providers", () => {
   });
 });
 
+/**
+ * Ordinary diagnostic prose, long enough to blow the budget on its own and
+ * deliberately free of every shape the redaction helper matches — no
+ * credential-ish key, no `Bearer`, no `sk-` run, no scheme with userinfo. A
+ * secret that IS matched collapses into a short placeholder, so a test that
+ * only feeds a secret proves redaction and never reaches the cap; pairing the
+ * two on separate lines is what exercises both.
+ */
+const LONG_DIAGNOSTIC_TAIL = "the provider kept printing ordinary diagnostic prose ".repeat(40);
+
 describe("runRuntimeAuthLogin — published failure text is redacted and bounded (#1720)", () => {
   it("redacts credential shapes before they reach the capability snapshot", async () => {
     const { driver } = fakeDriver({
@@ -390,7 +400,7 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
       probeResult: okEntry({
         state: "error",
         available: false,
-        error: `detect failed for https://svc:hunter2pwd@registry.example/x token=${"b".repeat(2_000)}`,
+        error: `detect failed for https://svc:hunter2pwd@registry.example/x\n${LONG_DIAGNOSTIC_TAIL}`,
       }),
     });
     const h = harness(driver, "codex");
@@ -399,7 +409,9 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
     const published = h.calls.at(-1)?.entry.error ?? "";
     expect(published).not.toContain("hunter2pwd");
     expect(published).toContain("[REDACTED]");
-    expect(published.length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN);
+    // The tail survives redaction, so the cap is what ends the string.
+    expect(published.length).toBe(RUNTIME_AUTH_ERROR_MAX_LEN);
+    expect(published.endsWith("…")).toBe(true);
   });
 
   it("sanitizes a probe-reported error on a shared-credential extra row too", async () => {
@@ -413,7 +425,9 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
           entry: okEntry({
             state: "error",
             available: false,
-            error: `tui detect failed: Authorization: Bearer sk-ant-abcdefghijklmnopqrstuvwx ${"x".repeat(2_000)}`,
+            // The Authorization pattern eats to end-of-line, so the tail has to
+            // start on the next one to reach the cap.
+            error: `tui detect failed\nAuthorization: Bearer sk-ant-abcdefghijklmnopqrstuvwx\n${LONG_DIAGNOSTIC_TAIL}`,
           }),
         },
       ],
@@ -424,7 +438,8 @@ describe("runRuntimeAuthLogin — published failure text is redacted and bounded
     const tuiRow = h.calls.filter((c) => c.provider === "claude-code-tui").at(-1)?.entry;
     expect(tuiRow?.error).not.toContain("sk-ant-abcdefghijklmnopqrstuvwx");
     expect(tuiRow?.error).toContain("[REDACTED]");
-    expect((tuiRow?.error ?? "").length).toBeLessThanOrEqual(RUNTIME_AUTH_ERROR_MAX_LEN);
+    expect(tuiRow?.error?.length).toBe(RUNTIME_AUTH_ERROR_MAX_LEN);
+    expect(tuiRow?.error?.endsWith("…")).toBe(true);
     // The extra row still carries no failure marker — that belongs to the target.
     expect(tuiRow?.lastAuthError).toBeUndefined();
   });
