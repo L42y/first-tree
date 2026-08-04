@@ -150,6 +150,31 @@ describe("auth URL scanner rejects a candidate that carries its own auth materia
     expect(scanner.push("cached at https://ghp_abcdef1234567890@raw.githubusercontent.com/x\n")).toBeNull();
     expect(scanner.push("visit https://auth.openai.com/oauth?x=1\n")).toBe("https://auth.openai.com/oauth?x=1");
   });
+
+  it("rejects a credential in a URL fragment, which has no query params at all", () => {
+    // A #fragment has no searchParams, so a check scoped to query-string keys
+    // misses this shape entirely even though redactErrorPreview's key=value
+    // rule (which does not care about URL syntax) still matches it.
+    const scanner = createAuthUrlScanner();
+    expect(scanner.push("stray redirect echo https://auth.example/#access_token=abc123def456\n")).toBeNull();
+    expect(scanner.push("sign in at https://auth.openai.com/oauth/authorize?client_id=cli\n")).toBe(
+      "https://auth.openai.com/oauth/authorize?client_id=cli",
+    );
+  });
+
+  it("rejects a vendor-prefixed token sitting under a neutral query key", () => {
+    // `context` is not a credential-shaped key name, so a check scoped to
+    // credential-NAMED keys misses this: the value itself is a GitHub PAT
+    // shape, which redactErrorPreview's vendor-token rule catches regardless
+    // of what key it is assigned to.
+    const scanner = createAuthUrlScanner();
+    expect(
+      scanner.push("callback https://auth.example/?context=ghp_AbCdEf0123456789abcdef0123456789abcd\n"),
+    ).toBeNull();
+    expect(scanner.push("sign in at https://auth.openai.com/oauth/authorize?client_id=cli\n")).toBe(
+      "https://auth.openai.com/oauth/authorize?client_id=cli",
+    );
+  });
 });
 
 describe("runBrowserLogin does not retain the provider's output", () => {

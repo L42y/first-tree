@@ -28,14 +28,8 @@
 /** Default cap matches the resilience-event payload budget (256 chars). */
 const DEFAULT_MAX_LEN = 256;
 
-/**
- * Query/form/env key names that make ANY value on them a credential.
- * Exported so a second no-secret boundary — the fallback sign-in URL
- * candidacy check in `runtime-login.ts`, which must reject a URL carrying
- * one of these as a query parameter rather than redact it — shares this
- * exact definition instead of maintaining its own list that could drift.
- */
-export const CREDENTIAL_KEY_PATTERN =
+/** Query/form/env key names that make ANY value on them a credential. */
+const CREDENTIAL_KEY_PATTERN =
   "(?:token|access[_-]?token|api[_-]?key|apikey|private[_-]?token|password|passwd|secret|client[_-]?secret)";
 
 /**

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { CREDENTIAL_KEY_PATTERN } from "./redact-error-preview.js";
+import { redactErrorPreview } from "./redact-error-preview.js";
 
 /**
  * Provider-agnostic plumbing for driving an official CLI login on the daemon
@@ -143,30 +143,36 @@ function isLoopbackHost(host: string): boolean {
   return host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
 }
 
-/** Matches a bare query-param name against the shared credential-key set. */
-const CREDENTIAL_QUERY_KEY = new RegExp(`^${CREDENTIAL_KEY_PATTERN}$`, "i");
-
 /**
- * True if the URL carries its own auth material: RFC-3986 userinfo
- * (`https://user:pass@host/...`), or a query parameter shaped like a
- * credential (the same {@link CREDENTIAL_KEY_PATTERN} set `redactErrorPreview`
- * treats as unsafe to publish). The provider's real sign-in link is, by
- * definition, a URL the operator has NOT yet authenticated against, so a
- * string with this shape in a login CLI's output is diagnostic noise (a proxy
- * URL, a redirect echo, a copy-pasted example, …) rather than the fallback
- * link. `pendingAuth.authUrl` is a structured field, not error text, so it
- * never passes through `redactErrorPreview` (see `runtime-auth-login.ts`) —
- * candidacy is the only gate here, and it rejects rather than rewrites: an
- * OAuth URL's query string is part of the provider's protocol, so stripping
- * or altering a matched parameter risks handing the browser a broken
- * redirect instead of just declining to surface an unrelated string.
+ * True if the exact string we would publish as `pendingAuth.authUrl` carries
+ * a credential by ANY of `redactErrorPreview`'s detection rules: URL
+ * userinfo, a vendor-prefixed token shape (`ghp_...`, `sk-...`, ...)
+ * regardless of which key or fragment it sits under, an
+ * Authorization/Bearer shape, or a credential-named key=value pair anywhere
+ * in the string, including inside a `#fragment`. The provider's real sign-in
+ * link is, by definition, a URL the operator has NOT yet authenticated
+ * against, so a string with this shape in a login CLI's output is
+ * diagnostic noise (a proxy URL, a redirect echo, a copy-pasted example, ...)
+ * rather than the fallback link. `pendingAuth.authUrl` is a structured field,
+ * not error text, so it never passes through `redactErrorPreview` itself
+ * (see `runtime-auth-login.ts`) - candidacy is the only gate standing
+ * between such a string and the capability snapshot, and it rejects rather
+ * than rewrites: an OAuth URL's query string is part of the provider's
+ * protocol, so stripping or altering a matched parameter risks handing the
+ * browser a broken redirect instead of just declining to surface an
+ * unrelated string.
+ *
+ * Delegating to `redactErrorPreview` itself - rather than re-checking a
+ * subset of its rules (e.g. only credential-NAMED query keys, which misses a
+ * vendor token sitting under a neutral key like `?context=ghp_...`, and
+ * misses a `#access_token=...` fragment entirely) - is what keeps this
+ * candidacy gate provably at least as strict as the publication boundary
+ * `CapabilityEntry.error` / `lastAuthError.message` go through: a partial
+ * reimplementation would silently fall behind the moment that helper gains a
+ * new detection rule.
  */
-function hasCredentialShape(url: URL): boolean {
-  if (url.username || url.password) return true;
-  for (const key of url.searchParams.keys()) {
-    if (CREDENTIAL_QUERY_KEY.test(key)) return true;
-  }
-  return false;
+function hasCredentialShape(url: string): boolean {
+  return redactErrorPreview(url, Number.POSITIVE_INFINITY) !== url;
 }
 
 /**
@@ -196,7 +202,7 @@ function authUrlFromToken(token: string): string | null {
   } catch {
     return null;
   }
-  if (isLoopbackHost(parsed.hostname) || hasCredentialShape(parsed)) return null;
+  if (isLoopbackHost(parsed.hostname) || hasCredentialShape(url)) return null;
   return url;
 }
 

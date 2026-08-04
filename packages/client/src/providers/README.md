@@ -104,12 +104,14 @@ fallback sign-in URL comes from an incremental scanner whose only carried state
 is the current partial token, and stderr keeps a bounded tail. `runLoginSubprocess`
 feeds both stdout and stderr to the same scanner, so a URL candidate can come
 from either stream. Because `pendingAuth.authUrl` is a structured field that
-never passes through `redactErrorPreview` (see below), URL candidacy is
-itself a no-secret boundary: a token carrying RFC-3986 userinfo or a
-credential-shaped query parameter (the same key set `redactErrorPreview`
-treats as unsafe, via the shared `CREDENTIAL_KEY_PATTERN`) is rejected outright
-rather than rewritten, and scanning continues to a later, legitimate URL in
-the same output.
+never passes through `redactErrorPreview` itself (see below), URL candidacy is
+itself a no-secret boundary: `hasCredentialShape` rejects a candidate the
+moment `redactErrorPreview` would change it — URL userinfo, a vendor-prefixed
+token shape under any key (or inside a URL fragment), an Authorization/Bearer
+shape, or a credential-named key=value pair — rather than re-checking a
+narrower subset of those rules that could fall behind. Rejection never
+rewrites the URL (an OAuth query string is part of the provider's protocol),
+and scanning continues to a later, legitimate URL in the same output.
 
 Every error/failure string the dispatcher republishes — `CapabilityEntry.error`
 and `lastAuthError.message`, and nothing else — passes through

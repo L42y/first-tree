@@ -237,13 +237,15 @@ describe("runtime provider architecture guard", () => {
     // No full-output accumulation, and no full-buffer handoff to consumers.
     expect(source).not.toMatch(/\bbuffer\s*\+=/);
     expect(source).not.toMatch(/onOutput\?\.\([^)]*,/);
-    // `pendingAuth.authUrl` is a structured field that never passes through
-    // redactErrorPreview, so URL candidacy is the only gate that keeps a
-    // credential-bearing string (proxy URL, redirect echo, β€¦) out of the
-    // capability snapshot. It must share the same key set redactErrorPreview
-    // uses rather than maintain a second list that can drift, and it must
-    // reject a bad candidate outright rather than rewrite it.
-    expect(source).toContain("CREDENTIAL_KEY_PATTERN");
+    // `pendingAuth.authUrl` is a structured field that never itself passes
+    // through redactErrorPreview, so URL candidacy is the only gate that
+    // keeps a credential-bearing string (proxy URL, redirect echo, a vendor
+    // token under a neutral key, ...) out of the capability snapshot. It must
+    // delegate to that exact sanitizer rather than re-check a subset of its
+    // rules (a partial reimplementation would fall behind the moment that
+    // helper gains a new detection rule), and it must reject a bad candidate
+    // outright rather than rewrite it.
+    expect(source).toContain("redactErrorPreview");
     expect(source).toContain("hasCredentialShape");
   });
 
