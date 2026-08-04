@@ -948,6 +948,14 @@ describe("first-tree-welcome grader", () => {
       "I read README. The current service is the clearest starting point. Choose one, or type a different microtask.",
     ],
     ["a Chinese generic project entry", "我读到了 README。当前项目入口是起点。请选择一个，或自由输入其他微任务。"],
+    [
+      "a Chinese connective plus current module",
+      "我读到了 README。我们可以从当前模块开始。请选择一个，或自由输入其他微任务。",
+    ],
+    [
+      "a Chinese connective plus generic service",
+      "我读到了 README。可以从该服务开始。请选择一个，或自由输入其他微任务。",
+    ],
   ])("rejects a two-sentence receipt naming only %s", (_description, receipt) => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-generic-start-"));
     try {

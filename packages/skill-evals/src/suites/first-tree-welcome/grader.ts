@@ -428,10 +428,17 @@ function hasNamedStartingPoint(text: string): boolean {
   const chineseNamedSurface = text.match(
     /([\p{Script=Han}a-z0-9_.-]{1,24}?)(?:模块|服务|组件|包|处理器|子系统|入口|边界|路由|流程|分支|测试|待办|起点)/iu,
   )?.[1];
-  return Boolean(
-    chineseNamedSurface &&
-      !/^(?:(?:项目|这个|该|当前|其|我们(?:的)?|你们(?:的)?|一个|本|此))+$/u.test(chineseNamedSurface),
+  if (!chineseNamedSurface) return false;
+
+  const withoutGenericSuffix = chineseNamedSurface.replace(
+    /(?:(?:我们的|你们的|这个|当前|一个|项目|我们|你们|该|其|本|此))+$/u,
+    "",
   );
+  const withoutConnector = withoutGenericSuffix.replace(
+    /^(?:(?:我们|你们|大家)(?:可以|能够|应该|需要)?|(?:可以|能够|应该|需要|建议))(?:先|就)?(?:从|由)?/u,
+    "",
+  );
+  return withoutConnector.length > 0;
 }
 
 function hasTwoSentenceReceipt(text: string): boolean {
