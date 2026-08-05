@@ -1,9 +1,9 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 import { runCommand } from "../../core/commands.js";
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
-import { type ShellConnector, shellCommandSegmentsWithConnectors } from "../../core/shell.js";
+import { type ShellConnector, shellCommandSegmentsWithConnectors, shellWords } from "../../core/shell.js";
 import type { RunPaths } from "../../core/types.js";
 import type { EvalMetrics, FirstTreeWelcomeEvalCase, FixtureValidation, WelcomeExpectedAction } from "./types.js";
 
@@ -584,45 +584,6 @@ function sourceRepoCwdScope(cwd: string | null, workspacePath: string): SourceRe
   return resolvedCwd.startsWith(`${sourceRepoPath}${sep}`) ? "descendant" : "outside";
 }
 
-function shellWords(segment: string): string[] {
-  const words: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
-  const push = (): void => {
-    if (current.length > 0) words.push(current);
-    current = "";
-  };
-
-  for (const character of segment.trim()) {
-    if (escaped) {
-      current += character;
-      escaped = false;
-      continue;
-    }
-    if (character === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (character === quote) quote = null;
-      else current += character;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (/\s/u.test(character)) {
-      push();
-      continue;
-    }
-    current += character;
-  }
-  push();
-  return words;
-}
-
 function rgFilesPathOperands(words: readonly string[]): string[] {
   const filesIndex = words.indexOf("--files");
   if (filesIndex < 0) return [];
@@ -640,27 +601,80 @@ function rgFilesPathOperands(words: readonly string[]): string[] {
   return operands;
 }
 
-function isDirectFileReference(operand: string): boolean {
+function isDirectFileReference(operand: string, cwd: string): boolean {
+  if (operand.endsWith("/")) return false;
+  const candidate = resolve(cwd, operand);
+  try {
+    return statSync(candidate).isFile();
+  } catch {
+    // Parser-only eval events may omit the fixture path. Fall back to path
+    // shape while live runs use the real file type above.
+  }
   const basename = operand.replace(/\/$/u, "").split("/").at(-1) ?? "";
-  return basename !== "." && basename !== ".." && basename.includes(".");
+  return (
+    basename !== "." &&
+    basename !== ".." &&
+    !basename.startsWith(".") &&
+    (basename.includes(".") || (basename.length > 1 && basename !== basename.toLowerCase()))
+  );
 }
 
-function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope): boolean {
+function rgSearchPathOperands(words: readonly string[]): string[] {
+  const optionsWithValues = new Set([
+    "-A",
+    "-B",
+    "-C",
+    "-e",
+    "--file",
+    "-f",
+    "-g",
+    "--glob",
+    "--regexp",
+    "-t",
+    "--type",
+    "-T",
+    "--type-not",
+  ]);
+  const operands: string[] = [];
+  let patternSeen = false;
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (optionsWithValues.has(word)) {
+      const suppliesPattern = word === "-e" || word === "--regexp" || word === "-f" || word === "--file";
+      if (suppliesPattern) patternSeen = true;
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    if (!patternSeen) {
+      patternSeen = true;
+      continue;
+    }
+    operands.push(word);
+  }
+  return operands;
+}
+
+function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope, cwd: string): boolean {
   const words = shellWords(segment);
   const program = (words[0] ?? "").split("/").at(-1) ?? "";
   const cwdIsSourceRepo = cwdScope !== "outside";
   const relativeRootOperand = words.some((word) => word === "." || word === "./");
+  const recursiveLs = program === "ls" && words.some((word) => /^-[A-Za-z]*R[A-Za-z]*$/u.test(word));
+  const rgSearchOperands = program === "rg" && !words.includes("--files") ? rgSearchPathOperands(words) : [];
   const relativeRecursiveScan =
     cwdIsSourceRepo &&
-    ((program === "tree" && relativeRootOperand) ||
-      (program === "ls" && words.some((word) => /^-[A-Za-z]*R[A-Za-z]*$/u.test(word)) && relativeRootOperand) ||
-      (program === "rg" && relativeRootOperand));
+    (program === "tree" ||
+      recursiveLs ||
+      (program === "rg" &&
+        !words.includes("--files") &&
+        (rgSearchOperands.length === 0 || rgSearchOperands.some((operand) => !isDirectFileReference(operand, cwd)))));
   if (relativeRecursiveScan) return true;
   const rgFilesOperands = program === "rg" ? rgFilesPathOperands(words) : [];
   if (
     cwdIsSourceRepo &&
     words.includes("--files") &&
-    (rgFilesOperands.length === 0 || rgFilesOperands.some((operand) => !isDirectFileReference(operand)))
+    (rgFilesOperands.length === 0 || rgFilesOperands.some((operand) => !isDirectFileReference(operand, cwd)))
   ) {
     return true;
   }
@@ -714,7 +728,13 @@ function segmentOutcomeStates(state: ShellState, segmentText: string): ShellStat
     return [success, applySubshellClosures({ ...state, status: "failure" }, segmentText)];
   }
 
-  const program = (shellWords(segmentText)[0] ?? "").split("/").at(-1) ?? "";
+  let commandText = segmentText.trimEnd();
+  let remainingClosures = state.subshellCwds.length;
+  while (remainingClosures > 0 && commandText.endsWith(")") && !commandText.endsWith("\\)")) {
+    commandText = commandText.slice(0, -1).trimEnd();
+    remainingClosures -= 1;
+  }
+  const program = (shellWords(commandText)[0] ?? "").split("/").at(-1) ?? "";
   if (program === "true") {
     return [applySubshellClosures({ ...state, status: "success" }, segmentText)];
   }
@@ -745,7 +765,9 @@ function commandUsesBroadRepoScan(command: string, cwd: string | null, workspace
         segmentText = segmentText.slice(1).trimStart();
       }
       const enteredState = { ...state, subshellCwds };
-      if (segmentUsesBroadRepoScan(segmentText, sourceRepoCwdScope(enteredState.cwd, workspacePath))) {
+      if (
+        segmentUsesBroadRepoScan(segmentText, sourceRepoCwdScope(enteredState.cwd, workspacePath), enteredState.cwd)
+      ) {
         return true;
       }
       nextStates.push(...segmentOutcomeStates(enteredState, segmentText));

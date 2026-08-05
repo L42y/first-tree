@@ -85,3 +85,42 @@ export function shellCommandSegmentsWithConnectors(text: string): ShellCommandSe
 export function shellCommandSegments(text: string): string[] {
   return shellCommandSegmentsWithConnectors(text).map((segment) => segment.text);
 }
+
+export function shellWords(segment: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  const push = (): void => {
+    if (current.length > 0) words.push(current);
+    current = "";
+  };
+
+  for (const character of segment.trim()) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      push();
+      continue;
+    }
+    current += character;
+  }
+  push();
+  return words;
+}
