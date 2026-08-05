@@ -624,38 +624,86 @@ function isDirectFileReference(operand: string, cwd: string): boolean {
   );
 }
 
-function rgSearchPathOperands(words: readonly string[]): string[] {
-  const optionsWithValues = new Set([
-    "-A",
-    "-B",
-    "-C",
-    "-e",
-    "--file",
-    "-f",
-    "-g",
-    "--glob",
-    "--regexp",
-    "-t",
-    "--type",
-    "-T",
-    "--type-not",
-  ]);
-  const operands: string[] = [];
+const RG_OPTIONS_WITH_VALUES = new Set([
+  "-A",
+  "-B",
+  "-C",
+  "-e",
+  "--file",
+  "-f",
+  "-g",
+  "--glob",
+  "--regexp",
+  "-t",
+  "--type",
+  "-T",
+  "--type-not",
+]);
+const RG_PATTERN_OPTIONS = new Set(["-e", "--regexp", "-f", "--file"]);
+
+function attachedRgPatternOption(word: string): { consumesNext: boolean } | null {
+  if (/^--(?:regexp|file)=/u.test(word)) return { consumesNext: false };
+  const shortMatch = word.match(/^-[A-Za-z]*[ef](.*)$/u);
+  if (!shortMatch) return null;
+  return { consumesNext: (shortMatch[1] ?? "").length === 0 };
+}
+
+function rgCommandUsesInformationalMode(words: readonly string[]): boolean {
   let patternSeen = false;
   for (let index = 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
-    if (/^(?:-e.+|--regexp=.+|-f.+|--file=.+)$/u.test(word)) {
+    if (word === "--") return false;
+    const attachedPattern = attachedRgPatternOption(word);
+    if (attachedPattern !== null) {
       patternSeen = true;
+      if (attachedPattern.consumesNext) index += 1;
       continue;
     }
-    if (/^(?:-g.+|--glob=.+|-t.+|--type=.+|-T.+|--type-not=.+)$/u.test(word)) continue;
-    if (optionsWithValues.has(word)) {
-      const suppliesPattern = word === "-e" || word === "--regexp" || word === "-f" || word === "--file";
-      if (suppliesPattern) patternSeen = true;
+    if (RG_OPTIONS_WITH_VALUES.has(word)) {
+      if (RG_PATTERN_OPTIONS.has(word)) patternSeen = true;
       index += 1;
       continue;
     }
-    if (word.startsWith("-")) continue;
+    if (!patternSeen && ["--help", "--version", "-h", "-V"].includes(word)) return true;
+    if (!word.startsWith("-")) patternSeen = true;
+  }
+  return false;
+}
+
+function commandUsesInformationalMode(program: string, words: readonly string[]): boolean {
+  if (program === "rg") return rgCommandUsesInformationalMode(words);
+  for (const word of words.slice(1)) {
+    if (word === "--") return false;
+    if (word === "--help" || word === "--version") return true;
+  }
+  return false;
+}
+
+function rgSearchPathOperands(words: readonly string[]): string[] {
+  const operands: string[] = [];
+  let patternSeen = false;
+  let optionsEnded = false;
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!optionsEnded && word === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded) {
+      const attachedPattern = attachedRgPatternOption(word);
+      if (attachedPattern !== null) {
+        patternSeen = true;
+        if (attachedPattern.consumesNext) index += 1;
+        continue;
+      }
+      if (/^(?:-g.+|--glob=.+|-t.+|--type=.+|-T.+|--type-not=.+)$/u.test(word)) continue;
+      if (RG_OPTIONS_WITH_VALUES.has(word)) {
+        if (RG_PATTERN_OPTIONS.has(word)) patternSeen = true;
+        index += 1;
+        continue;
+      }
+      if (word.startsWith("-")) continue;
+    }
     if (!patternSeen) {
       patternSeen = true;
       continue;
@@ -668,12 +716,7 @@ function rgSearchPathOperands(words: readonly string[]): string[] {
 function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope, cwd: string): boolean {
   const words = shellWords(segment);
   const program = (words[0] ?? "").split("/").at(-1) ?? "";
-  if (
-    words.some((word) => word === "--help" || word === "--version") ||
-    (program === "rg" && words.some((word) => word === "-h" || word === "-V"))
-  ) {
-    return false;
-  }
+  if (commandUsesInformationalMode(program, words)) return false;
   const cwdIsSourceRepo = cwdScope !== "outside";
   const relativeRootOperand = words.some((word) => word === "." || word === "./");
   const recursiveLs = program === "ls" && words.some((word) => /^-[A-Za-z]*R[A-Za-z]*$/u.test(word));

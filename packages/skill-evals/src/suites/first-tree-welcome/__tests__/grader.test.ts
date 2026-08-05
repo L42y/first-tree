@@ -1971,6 +1971,27 @@ Type a different task if you prefer.`;
             workdir: join(tempRoot, "source-repo"),
           }),
         ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg -neTODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg --regexp= README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg -- --help README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
       ];
       const repoRelativeDirectoryScan = broadScanSafetyResult(
         tempRoot,
@@ -2097,6 +2118,18 @@ Type a different task if you prefer.`;
         {
           event: commandExecutionEvent("rg TODO src", { workdir: sourceRepoPath }),
           label: "relative child recursive rg",
+        },
+        {
+          event: commandExecutionEvent("rg -- --help .", { workdir: sourceRepoPath }),
+          label: "relative rg help operand",
+        },
+        {
+          event: commandExecutionEvent("rg -- --help", { workdir: sourceRepoPath }),
+          label: "relative rg help pattern",
+        },
+        {
+          event: commandExecutionEvent("rg -e --version .", { workdir: sourceRepoPath }),
+          label: "relative rg version pattern",
         },
       ];
 
