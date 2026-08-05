@@ -59,7 +59,7 @@ function processPass(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetrics): 
     return metrics.repoEvidenceReadObserved && metrics.chatAskCount === 1 && metrics.taskChatCreateCount === 0;
   }
   if (evalCase.expected.action === "offer_one_contextual_bridge") {
-    return metrics.chatAskCount === 1 && metrics.taskChatCreateCount === 0;
+    return metrics.expectedBridgeSatisfied && metrics.chatAskCount === 1 && metrics.taskChatCreateCount === 0;
   }
   return false;
 }
@@ -85,7 +85,7 @@ function outcomePass(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetrics): 
     return metrics.resultArtifactObserved && metrics.expectedBridgeSatisfied && metrics.bridgeCount === 1;
   }
   if (evalCase.expected.action === "offer_one_contextual_bridge") {
-    return metrics.bridgeCount === 1 && !metrics.taskOptionsObserved;
+    return metrics.expectedBridgeSatisfied && metrics.bridgeCount === 1 && !metrics.taskOptionsObserved;
   }
   return false;
 }

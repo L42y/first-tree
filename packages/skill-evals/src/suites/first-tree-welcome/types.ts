@@ -30,7 +30,9 @@ export type FirstTreeWelcomeFixture = {
 
 export type FirstTreeWelcomeExpected = {
   action: WelcomeExpectedAction;
+  bridgeForbiddenHints?: readonly string[];
   bridgeKind?: "pull_request";
+  bridgeRequiredHints?: readonly string[];
   evidenceSnippets?: readonly string[];
   requiredResponseHints: readonly string[];
   taskOptionHints?: readonly string[];

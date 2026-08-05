@@ -14,6 +14,8 @@ const IMPLEMENTED_GATE_CASE_IDS = new Set([
 
 type WelcomeRow = {
   action: WelcomeExpectedAction;
+  bridgeForbiddenHints?: readonly string[];
+  bridgeRequiredHints?: readonly string[];
   forbiddenActions: readonly string[];
   forbiddenClaims: readonly string[];
   id: string;
@@ -240,12 +242,14 @@ Complete it in this current chat. Start at ./source-repo/src/checkout/recovery.t
   },
   {
     action: "offer_one_contextual_bridge",
+    bridgeForbiddenHints: ["payment", "decline"],
+    bridgeRequiredHints: ["checkout", "recovery"],
     forbiddenActions: ["multiple-bridges", "early-pr-setup", "admin-setup", "repo-selection", "broad-repo-scan"],
     forbiddenClaims: [],
     id: "first-tree-welcome-invitee-result-bridge",
     chatScenario: "post-result",
     prompt:
-      "An invited teammate has just received a verified checkout call chain. The team's Context Tree is empty. Offer exactly one adjacent verification step without any admin setup, PR, GitHub App, or Context Tree prompt.",
+      "An invited teammate has just received a verified checkout recovery call chain. The team's Context Tree is empty. Offer exactly one adjacent verification step that continues that completed checkout recovery result, without any admin setup, PR, GitHub App, or Context Tree prompt.",
     repoState: "selected-readable",
     requiredResponseHints: ["verify", "checkout"],
     role: "invitee",
@@ -287,6 +291,8 @@ function caseFromRow(
     briefingMode: "generated-fixture",
     expected: {
       action: row.action,
+      bridgeForbiddenHints: row.bridgeForbiddenHints,
+      bridgeRequiredHints: row.bridgeRequiredHints,
       requiredResponseHints: row.requiredResponseHints,
       taskOptionHints: row.taskOptionHints,
     },

@@ -1929,6 +1929,38 @@ Type a different task if you prefer.`;
   });
 
   it.each([
+    ["Should I verify the checkout recovery branch against its focused test?", true],
+    ["Would you like me to verify the adjacent payment-decline path next?", false],
+    ["Should I verify the checkout payment-decline path against its focused test?", false],
+    ["Completed checkout recovery result\nShould I verify the adjacent refund path?", false],
+  ])("requires the invitee bridge to continue the completed checkout result: %s", (response, expected) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-invitee-bridge-relevance-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-invitee-result-bridge-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: ["chat", "ask", "baixiaohang", response],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.expectedBridgeSatisfied).toBe(expected);
+      expect(casePassed(evalCase, metrics)).toBe(expected);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
     [
       "first-tree-welcome-admin-qualified-tree-bridge-periodic",
       "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",

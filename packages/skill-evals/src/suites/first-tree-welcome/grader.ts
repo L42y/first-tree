@@ -159,6 +159,14 @@ function containsAny(haystack: string, needles: readonly string[]): boolean {
   return false;
 }
 
+function containsAll(haystack: string, needles: readonly string[]): boolean {
+  const normalizedHaystack = normalizeForMatch(haystack);
+  return needles.every((needle) => {
+    const normalizedNeedle = normalizeForMatch(needle);
+    return normalizedNeedle.length > 0 && normalizedHaystack.includes(normalizedNeedle);
+  });
+}
+
 function offersBothRepoEntryChoices(text: string): boolean {
   const localMatch = text.match(
     /local project folder path|local clone path|local repository path|local repo path|本地(?:项目文件夹|项目|仓库|克隆)?路径/iu,
@@ -498,10 +506,31 @@ function countBridgeQuestions(text: string): number {
     .length;
 }
 
-function matchesExpectedBridge(evalCase: FirstTreeWelcomeEvalCase, text: string): boolean {
-  if (evalCase.expected.bridgeKind !== "pull_request") return true;
+function bridgeQuestions(text: string): string[] {
+  return text
+    .split(/\r?\n/u)
+    .filter((line) => /[?？]/u.test(line))
+    .map((line) => {
+      const questionStart = line.match(
+        /\b(?:would you like|do you want|should i|shall i|want me to)\b|要我|是否要|要不要/iu,
+      );
+      return questionStart?.index === undefined ? line : line.slice(questionStart.index);
+    });
+}
 
-  const questions = text.split(/(?<=[.!?。！？])\s+/u).filter((part) => /[?？]/u.test(part));
+function matchesExpectedBridge(evalCase: FirstTreeWelcomeEvalCase, text: string): boolean {
+  const questions = bridgeQuestions(text);
+  const questionText = questions.join("\n");
+
+  if (evalCase.expected.bridgeKind !== "pull_request") {
+    const requiredHints = evalCase.expected.bridgeRequiredHints ?? [];
+    const forbiddenHints = evalCase.expected.bridgeForbiddenHints ?? [];
+    if (requiredHints.length === 0 && forbiddenHints.length === 0) return true;
+    return (
+      questions.length > 0 && containsAll(questionText, requiredHints) && !containsAny(questionText, forbiddenHints)
+    );
+  }
+
   const asksForPullRequestConsent = questions.some((question) =>
     /\b(?:would you like|do you want|should i|shall i|want me to)\b.{0,100}\b(?:create|open)\b.{0,40}\b(?:pr|pull request|merge request)\b|\b(?:create|open)\b.{0,40}\b(?:pr|pull request|merge request)\b.{0,100}[?？]/iu.test(
       question,
@@ -1049,6 +1078,7 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
 
   if (evalCase.expected.action === "offer_one_contextual_bridge") {
     return (
+      metrics.expectedBridgeSatisfied &&
       metrics.bridgeCount === 1 &&
       metrics.chatAskCount === 1 &&
       metrics.taskChatCreateCount === 0 &&
@@ -1087,8 +1117,9 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
     if (metrics.taskChatCreateCount > 0)
       notes.push("The first selected task fanned out instead of staying in this chat.");
   }
-  if (evalCase.expected.action === "offer_one_contextual_bridge" && metrics.bridgeCount !== 1) {
-    notes.push(`Expected one contextual bridge; observed ${metrics.bridgeCount}.`);
+  if (evalCase.expected.action === "offer_one_contextual_bridge") {
+    if (!metrics.expectedBridgeSatisfied) notes.push("The contextual bridge did not continue the completed result.");
+    if (metrics.bridgeCount !== 1) notes.push(`Expected one contextual bridge; observed ${metrics.bridgeCount}.`);
   }
   if (evalCase.expected.action === "route_to_tree_skill" && metrics.taskOptionsObserved) {
     notes.push("Tree kickoff row offered value-chat task options.");
