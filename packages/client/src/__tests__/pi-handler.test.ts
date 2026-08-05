@@ -17,6 +17,7 @@ import {
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import { clearGitRepoIdentityCacheForTests } from "../runtime/git-repo-identity.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
+import { noopDeliveryToken } from "../runtime/handler.js";
 import * as managedSkills from "../runtime/managed-skills.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
 import { readSessionBriefingFingerprint } from "../runtime/session-briefing-fingerprint.js";
@@ -1383,7 +1384,12 @@ describe("Pi handler", () => {
       providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
     const sessionCtx = makeContext([]);
-    await handler.resume(undefined, freshStartPiSessionId("agent-pi", "chat-pi", "m1"), sessionCtx);
+    await handler.resume(
+      undefined,
+      freshStartPiSessionId("agent-pi", "chat-pi", "m1"),
+      sessionCtx,
+      noopDeliveryToken(),
+    );
     const receipt = handler.inject(message("m-queue", "queued"), makeToken());
     expect(receipt).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(specs.some((spec) => spec.args.includes("--mode"))).toBe(true));

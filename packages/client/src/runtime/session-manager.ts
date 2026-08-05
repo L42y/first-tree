@@ -536,9 +536,6 @@ function normalizeStartReceipt(result: StartResult): {
   sessionId: string;
   route: Extract<HandlerRouteReceipt, { kind: "owned" }>;
 } {
-  if (typeof result === "string") {
-    return { sessionId: result, route: { kind: "owned", mode: "queued" } };
-  }
   return result;
 }
 
@@ -546,9 +543,6 @@ function normalizeResumeReceipt(result: ResumeResult): {
   sessionId: string;
   route: Extract<HandlerRouteReceipt, { kind: "owned" }> | null;
 } {
-  if (typeof result === "string") {
-    return { sessionId: result, route: { kind: "owned", mode: "queued" } };
-  }
   return result;
 }
 

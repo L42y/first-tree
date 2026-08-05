@@ -30,8 +30,8 @@ function internals(sm: SessionManager): SessionManagerInternals {
 
 function handler(): AgentHandler {
   return {
-    start: async () => "sess",
-    resume: async () => "sess",
+    start: async () => ({ sessionId: "sess", route: { kind: "owned" as const, mode: "queued" as const } }),
+    resume: async () => ({ sessionId: "sess", route: { kind: "owned" as const, mode: "queued" as const } }),
     inject: () => ({ kind: "owned", mode: "queued" }),
     suspend: async () => undefined,
     shutdown: async () => undefined,

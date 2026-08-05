@@ -384,8 +384,8 @@ async function makeSlot(options?: {
   const connection = new FakeClientConnection(sdk);
   const { AgentSlot } = await import("../runtime/agent-slot.js");
   const handlerFactory = vi.fn((config: HandlerConfig) => ({
-    start: vi.fn(async () => "session-1"),
-    resume: vi.fn(async () => "session-1"),
+    start: vi.fn(async () => ({ sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } })),
+    resume: vi.fn(async () => ({ sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } })),
     inject: vi.fn(),
     suspend: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),

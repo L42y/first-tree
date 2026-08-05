@@ -33,7 +33,8 @@ import type {
   SessionContext,
   SessionMessage,
 } from "../../runtime/handler.js";
-import { deliveryTokenFromSessionContext } from "../../runtime/handler.js";
+import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/handler.js";
+
 import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import {
   isSupportedPiVersion,
@@ -448,7 +449,7 @@ export async function defaultPiRetrySleep(delayMs: number, signal: AbortSignal):
 
 export const createPiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
-  const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider ?? "pi");
+  const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
@@ -1938,8 +1939,7 @@ export const createPiHandler: HandlerFactory = (config) => {
 
   const handler = {
     async start(message, sessionCtx, token) {
-      const explicitToken = token !== undefined;
-      const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      const deliveryToken = token;
       // Mint the fresh-start identity from the first inbound message plus any
       // durable Reset tombstone (see freshStartPiSessionId). Mapping deletion
       // alone is not enough: same-row redelivery after restart must still mint
@@ -1956,34 +1956,26 @@ export const createPiHandler: HandlerFactory = (config) => {
       } catch (error) {
         if (error instanceof PiLifecycleCancelledError) {
           deliveryToken.retry([message], "pi_turn_cancelled");
-          return explicitToken
-            ? { sessionId: startSessionId, route: { kind: "owned", mode: "processing" } }
-            : startSessionId;
+          return { sessionId: startSessionId, route: { kind: "owned", mode: "processing" } };
         }
         await cleanupFailedInitialization();
         throw error;
       }
       if (!sessionActive) {
         deliveryToken.retry([message], "pi_turn_cancelled");
-        return explicitToken
-          ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
-          : prepared.sessionId;
+        return { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } };
       }
       initialTurnPreparing = true;
       try {
         const client = await ensureRpcClient(prepared, sessionCtx);
         if (!sessionActive) {
           deliveryToken.retry([message], "pi_turn_cancelled");
-          return explicitToken
-            ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
-            : prepared.sessionId;
+          return { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } };
         }
         const basePrompt = await sessionCtx.formatInboundContent(message);
         if (!sessionActive) {
           deliveryToken.retry([message], "pi_turn_cancelled");
-          return explicitToken
-            ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
-            : prepared.sessionId;
+          return { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } };
         }
         const prompt = await buildTurnPrompt(sessionCtx, basePrompt, prepared);
         await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
@@ -1994,9 +1986,7 @@ export const createPiHandler: HandlerFactory = (config) => {
         }
         if (error instanceof PiLifecycleCancelledError) {
           deliveryToken.retry([message], "pi_turn_cancelled");
-          return explicitToken
-            ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
-            : prepared.sessionId;
+          return { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } };
         }
         await cleanupFailedInitialization();
         throw error;
@@ -2004,14 +1994,11 @@ export const createPiHandler: HandlerFactory = (config) => {
         initialTurnPreparing = false;
         scheduleQueuedMessagesDrain();
       }
-      return explicitToken
-        ? { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } }
-        : prepared.sessionId;
+      return { sessionId: prepared.sessionId, route: { kind: "owned", mode: "processing" } };
     },
 
     async resume(message, id, sessionCtx, token) {
-      const explicitToken = token !== undefined;
-      const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      const deliveryToken = message ? requireDeliveryToken(token, "messageful resume") : noopDeliveryToken();
       let prepared: PreparedSession;
       try {
         // Resume adopts the persisted mapping id verbatim: First Tree's
@@ -2021,7 +2008,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       } catch (error) {
         if (error instanceof PiLifecycleCancelledError) {
           if (message) deliveryToken.retry([message], "pi_turn_cancelled");
-          return explicitToken ? { sessionId: id, route: message ? { kind: "owned", mode: "processing" } : null } : id;
+          return { sessionId: id, route: message ? { kind: "owned", mode: "processing" } : null };
         }
         await cleanupFailedInitialization();
         throw error;
@@ -2029,34 +2016,28 @@ export const createPiHandler: HandlerFactory = (config) => {
       if (message) {
         if (!sessionActive) {
           deliveryToken.retry([message], "pi_turn_cancelled");
-          return explicitToken
-            ? {
-                sessionId: prepared.sessionId,
-                route: { kind: "owned", mode: "processing" },
-              }
-            : prepared.sessionId;
+          return {
+            sessionId: prepared.sessionId,
+            route: { kind: "owned", mode: "processing" },
+          };
         }
         initialTurnPreparing = true;
         try {
           const client = await ensureRpcClient(prepared, sessionCtx);
           if (!sessionActive) {
             deliveryToken.retry([message], "pi_turn_cancelled");
-            return explicitToken
-              ? {
-                  sessionId: prepared.sessionId,
-                  route: { kind: "owned", mode: "processing" },
-                }
-              : prepared.sessionId;
+            return {
+              sessionId: prepared.sessionId,
+              route: { kind: "owned", mode: "processing" },
+            };
           }
           const basePrompt = await sessionCtx.formatInboundContent(message);
           if (!sessionActive) {
             deliveryToken.retry([message], "pi_turn_cancelled");
-            return explicitToken
-              ? {
-                  sessionId: prepared.sessionId,
-                  route: { kind: "owned", mode: "processing" },
-                }
-              : prepared.sessionId;
+            return {
+              sessionId: prepared.sessionId,
+              route: { kind: "owned", mode: "processing" },
+            };
           }
           const prompt = await buildTurnPrompt(sessionCtx, basePrompt, prepared);
           await runTurn(prompt, sessionCtx, [{ messages: [message], token: deliveryToken }], client);
@@ -2067,12 +2048,10 @@ export const createPiHandler: HandlerFactory = (config) => {
           }
           if (error instanceof PiLifecycleCancelledError) {
             deliveryToken.retry([message], "pi_turn_cancelled");
-            return explicitToken
-              ? {
-                  sessionId: prepared.sessionId,
-                  route: { kind: "owned", mode: "processing" },
-                }
-              : prepared.sessionId;
+            return {
+              sessionId: prepared.sessionId,
+              route: { kind: "owned", mode: "processing" },
+            };
           }
           await cleanupFailedInitialization();
           throw error;
@@ -2083,17 +2062,15 @@ export const createPiHandler: HandlerFactory = (config) => {
       } else {
         scheduleQueuedMessagesDrain();
       }
-      return explicitToken
-        ? {
-            sessionId: prepared.sessionId,
-            route: message ? { kind: "owned", mode: "processing" } : null,
-          }
-        : prepared.sessionId;
+      return {
+        sessionId: prepared.sessionId,
+        route: message ? { kind: "owned", mode: "processing" } : null,
+      };
     },
 
     inject(message, token) {
       if (!ctx || !sessionActive) return { kind: "rejected", reason: "no_active_context", retryable: true };
-      const deliveryToken = token ?? deliveryTokenFromSessionContext(ctx);
+      const deliveryToken = token;
       // Steer once the active turn has crossed the provider write/accept
       // boundary — do not wait for the first stream event. Once the current
       // observation is settled, close the steer window: post-agent_settled

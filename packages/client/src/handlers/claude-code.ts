@@ -26,14 +26,15 @@ import { renderDocumentAttachmentsForLLM } from "../runtime/agent-io.js";
 import { type PredeclaredSourceRepo, writeAgentBriefing } from "../runtime/bootstrap.js";
 import { type ChatContext, fetchChatContext } from "../runtime/chat-context.js";
 import { createContextTreeGitWriteTracker } from "../runtime/context-tree-git-status.js";
-import {
-  type AgentHandler,
-  type DeliveryToken,
-  deliveryTokenFromSessionContext,
-  type HandlerFactory,
-  type SessionContext,
-  type SessionMessage,
+import type {
+  AgentHandler,
+  DeliveryToken,
+  HandlerFactory,
+  SessionContext,
+  SessionMessage,
 } from "../runtime/handler.js";
+import { noopDeliveryToken, requireDeliveryToken } from "../runtime/handler.js";
+
 import { findImagePath } from "../runtime/image-store.js";
 import { InputController } from "../runtime/input-controller.js";
 import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
@@ -394,9 +395,7 @@ function emitTokenUsageFromResult(
  */
 export const createClaudeCodeHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
-  const runtimeProvider: RuntimeProvider = runtimeProviderSchema.safeParse(config.runtimeProvider).success
-    ? runtimeProviderSchema.parse(config.runtimeProvider)
-    : "claude-code";
+  const runtimeProvider: RuntimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const providerTurnMaxRetries = maxProviderTurnRetryAttempts();
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   // Pre-resolved by registerBuiltinHandlers at process start. Undefined =
@@ -1755,8 +1754,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
 
   const handler: AgentHandler = {
     async start(message, sessionCtx, token) {
-      const hasExplicitDeliveryToken = token !== undefined;
-      const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      const deliveryToken = token;
       ctx = sessionCtx;
       claudeSessionId = randomUUID();
       // Per agent-session-cwd-redesign: cwd is per-agent, shared by every
@@ -1813,14 +1811,11 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       scheduleInjectedMessagesDrain(sessionCtx, claudeSessionId);
 
       sessionCtx.log(`Session started (${claudeSessionId})`);
-      return hasExplicitDeliveryToken
-        ? { sessionId: claudeSessionId, route: { kind: "owned", mode: "processing" } }
-        : claudeSessionId;
+      return { sessionId: claudeSessionId, route: { kind: "owned", mode: "processing" } };
     },
 
     async resume(message, sessionId, sessionCtx, token) {
-      const hasExplicitDeliveryToken = token !== undefined;
-      const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      const deliveryToken = message ? requireDeliveryToken(token, "messageful resume") : noopDeliveryToken();
       ctx = sessionCtx;
       claudeSessionId = sessionId;
       retryCount = 0;
@@ -1891,9 +1886,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         }
         scheduleInjectedMessagesDrain(sessionCtx, sessionId);
         sessionCtx.log(`Session resumed at legacy cwd (${sessionId})`);
-        return hasExplicitDeliveryToken
-          ? { sessionId, route: message ? { kind: "owned", mode: "processing" } : null }
-          : sessionId;
+        return { sessionId, route: message ? { kind: "owned", mode: "processing" } : null };
       }
 
       // Normal new-design resume path: cwd is the agent home.
@@ -1951,9 +1944,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         }
         scheduleInjectedMessagesDrain(sessionCtx, freshSessionId);
         sessionCtx.log(`Session started (${freshSessionId}, replacing ${sessionId})`);
-        return hasExplicitDeliveryToken
-          ? { sessionId: freshSessionId, route: message ? { kind: "owned", mode: "processing" } : null }
-          : freshSessionId;
+        return { sessionId: freshSessionId, route: message ? { kind: "owned", mode: "processing" } : null };
       }
 
       sessionCtx.log(`Resuming session (${sessionId}), cwd=${cwd}`);
@@ -1979,9 +1970,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       scheduleInjectedMessagesDrain(sessionCtx, sessionId);
 
       sessionCtx.log(`Session resumed (${sessionId})`);
-      return hasExplicitDeliveryToken
-        ? { sessionId, route: message ? { kind: "owned", mode: "processing" } : null }
-        : sessionId;
+      return { sessionId, route: message ? { kind: "owned", mode: "processing" } : null };
     },
 
     inject(message, token) {
@@ -1990,7 +1979,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         return { kind: "rejected", reason: "no_active_session", retryable: true };
       }
       const sessionCtx = ctx;
-      const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+      const deliveryToken = token;
       const sid = claudeSessionId;
       queuedInjectedMessages.push({ message, token: deliveryToken });
       scheduleInjectedMessagesDrain(sessionCtx, sid);
