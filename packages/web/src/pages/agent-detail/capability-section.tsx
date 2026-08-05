@@ -37,7 +37,7 @@ import { titleWithSemantics, useJustSaved } from "./save-semantics.js";
 /**
  * Shared agent-resource (repo / skill / mcp) section, used by two tabs:
  *   - Tools & skills tab (`resources-tab.tsx`) renders the `skill` + `mcp` sections.
- *   - Environment tab (`runtime-tab.tsx`) renders the `repo` section.
+ *   - Repositories (`repositories-tab.tsx`) renders the `repo` section.
  *
  * Both consume the SAME `["agent-resources", uuid]` React Query cache via
  * `useAgentResources`, so a mutation on one tab is reflected on the other with

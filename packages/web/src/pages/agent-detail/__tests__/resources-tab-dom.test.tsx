@@ -243,7 +243,7 @@ describe("ResourcesTab", () => {
     expect(container.textContent).toContain("Integrations");
     expect(container.textContent).toContain("This agent’s manager or a team admin manages skills.");
     expect(container.textContent).toContain("This agent’s manager or a team admin manages integrations.");
-    // Code repositories moved to the Environment tab — not on Tools & skills.
+    // Code repositories live in Repositories — not in Tools & skills.
     expect(container.textContent).not.toContain("Repositories");
     expect(container.textContent).not.toContain("Agent repo");
 

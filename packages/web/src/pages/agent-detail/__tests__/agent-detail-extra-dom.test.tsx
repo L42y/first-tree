@@ -958,25 +958,15 @@ describe("UsageTab extra DOM states", () => {
 });
 
 describe("agent detail pure helpers", () => {
-  it("covers access, tab resolution, and bindability edge cases", async () => {
+  it("covers access, tab visibility, and bindability edge cases", async () => {
     const { canManageAgentDetail } = await import("../access.js");
-    const { buildTabs, canEditConfigFor, resolveTabPath } = await import("../tabs.js");
+    const { buildTabs } = await import("../tabs.js");
     const { isBindableClient } = await import("../action-state.js");
 
     expect(canManageAgentDetail(undefined, "member-self", "admin")).toBe(false);
     expect(canManageAgentDetail({ managerId: "member-self" }, null, "member")).toBe(false);
     expect(canManageAgentDetail({ managerId: "member-other" }, null, "admin")).toBe(true);
 
-    expect(canEditConfigFor(agent(), "member-self", "member")).toBe(true);
-    expect(canEditConfigFor(agent({ type: "human", clientId: null }), "member-self", "admin")).toBe(false);
-    expect(resolveTabPath(agent({ type: "human", clientId: null }), "member-self", "admin", "usage")).toBe("profile");
-    expect(resolveTabPath(agent({ type: "human", clientId: null }), "member-self", "admin", "responsibilities")).toBe(
-      "profile",
-    );
-    expect(resolveTabPath(agent(), "member-other", "member", "usage")).toBe("usage");
-    expect(resolveTabPath(agent(), "member-other", "member", "responsibilities")).toBe("responsibilities");
-    expect(resolveTabPath(agent(), "member-other", "member", "responsibilities", false)).toBe("profile");
-    expect(resolveTabPath(agent(), "member-other", "member", "runtime")).toBe("profile");
     expect(buildTabs(false, false).map((tab) => tab.path)).toEqual([
       "profile",
       "responsibilities",

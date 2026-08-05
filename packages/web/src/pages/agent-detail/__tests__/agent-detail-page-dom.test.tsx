@@ -757,7 +757,7 @@ describe("AgentDetailPage", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("keeps Responsibilities hidden when cached-empty agent-resources background refetch fails", async () => {
+  it("fail-opens Responsibilities when cached-empty agent-resources background refetch fails", async () => {
     templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
     agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
 
@@ -772,11 +772,14 @@ describe("AgentDetailPage", () => {
     await act(async () => {
       await view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
     });
-    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
+    await waitForCondition(
+      () => agentSectionLabels(view.container).includes("Responsibilities"),
+      "Expected Responsibilities to fail-open after a cached-empty refetch error",
+    );
     await act(async () => view.root.unmount());
   });
 
-  it("redirects a Responsibilities deep link when cached-empty data has a failing refetch", async () => {
+  it("keeps a Responsibilities deep link when opening with cached-empty data and a failing refetch", async () => {
     templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
     agentResourceMocks.getAgentResources.mockRejectedValue(new Error("refetch boom"));
 
@@ -802,12 +805,15 @@ describe("AgentDetailPage", () => {
       },
     );
 
-    await waitForText(view.container, "Must not redirect");
-    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
+    await waitForCondition(
+      () => agentSectionLabels(view.container).includes("Responsibilities"),
+      "Expected deep link to keep Responsibilities under cached-empty refetch error",
+    );
+    expect(view.container.textContent).not.toContain("Must not redirect");
     await act(async () => view.root.unmount());
   });
 
-  it("keeps cached-empty Responsibilities visibility stable during a background refetch", async () => {
+  it("fail-opens while cached-empty resources refetch is in flight, then closes after settled empty", async () => {
     templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
     agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
 
@@ -828,14 +834,17 @@ describe("AgentDetailPage", () => {
     await act(async () => {
       void view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
     });
-    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
+    await waitForCondition(
+      () => agentSectionLabels(view.container).includes("Responsibilities"),
+      "Expected Responsibilities to fail-open while empty resources are refetching",
+    );
 
     await act(async () => {
       releaseRefetch?.(agentResources({ templateIds: [], adoptedTemplates: [] }));
     });
     await waitForCondition(
       () => !agentSectionLabels(view.container).includes("Responsibilities"),
-      "Expected Responsibilities to remain closed after settled empty refetch",
+      "Expected Responsibilities to close again after settled empty refetch",
     );
     await act(async () => view.root.unmount());
   });

@@ -4,7 +4,6 @@ import {
   isConfirmedEmptyResponsibilitiesSide,
   type ResponsibilitiesSideState,
   type ResponsibilitiesVisibilityInput,
-  resolveTabPath,
   responsibilitiesSideFromQuery,
   shouldShowResponsibilitiesTab,
   tabKeysFor,
@@ -28,30 +27,6 @@ function visibility(
     agentResources: side({ count: 0, ...overrides.agentResources }),
   };
 }
-
-const agent = {
-  uuid: "agent-1",
-  name: "vega",
-  displayName: "Vega",
-  type: "agent" as const,
-  managerId: "member-self",
-  visibility: "organization" as const,
-  avatarColorToken: null,
-  avatarImageUrl: null,
-  status: "active" as const,
-  organizationId: "org-1",
-  delegateMention: null,
-  inboxId: "inbox-1",
-  metadata: {},
-  source: "portal" as const,
-  clientId: "client-1",
-  runtimeProvider: "claude-code" as const,
-  runtimeState: "idle" as const,
-  createdAt: "2026-05-28T12:00:00.000Z",
-  updatedAt: "2026-05-28T12:00:00.000Z",
-};
-
-const human = { ...agent, type: "human" as const, clientId: null };
 
 describe("agent-detail tabs", () => {
   it("gives an editor the 7-tab set with Responsibilities after Profile", () => {
@@ -102,7 +77,6 @@ describe("agent-detail tabs", () => {
   it("never grants Responsibilities to a human even when the caller passes true", () => {
     expect(tabKeysFor(false, true, true).map((t) => t.key)).toEqual(["profile"]);
     expect(buildTabs(false, true, true).map((t) => t.key)).toEqual(["profile"]);
-    expect(resolveTabPath(human, "member-self", "admin", "responsibilities", true)).toBe("profile");
   });
 
   it("omits Responsibilities when the empty-catalog gate is closed", () => {
@@ -179,7 +153,7 @@ describe("shouldShowResponsibilitiesTab", () => {
     ).toBe(true);
   });
 
-  it("keeps cached-empty visibility stable when agent-resources has a background refetch error", () => {
+  it("fail-opens when cached-empty agent-resources has a background refetch error", () => {
     // React Query retains empty data and sets isError on refetch failure.
     expect(
       shouldShowResponsibilitiesTab(
@@ -189,11 +163,11 @@ describe("shouldShowResponsibilitiesTab", () => {
           agentResources: { hasData: true, hasError: true, count: 0 },
         }),
       ),
-    ).toBe(false);
-    expect(isConfirmedEmptyResponsibilitiesSide(side({ hasData: true, hasError: true, count: 0 }))).toBe(true);
+    ).toBe(true);
+    expect(isConfirmedEmptyResponsibilitiesSide(side({ hasData: true, hasError: true, count: 0 }))).toBe(false);
   });
 
-  it("keeps cached-empty visibility stable while a side is refetching", () => {
+  it("fail-opens while a cached-empty side is refetching, then can close after settled empty", () => {
     expect(
       shouldShowResponsibilitiesTab(
         false,
@@ -202,7 +176,7 @@ describe("shouldShowResponsibilitiesTab", () => {
           agentResources: { hasData: true, isFetching: true, count: 0 },
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldShowResponsibilitiesTab(
         false,
@@ -211,14 +185,13 @@ describe("shouldShowResponsibilitiesTab", () => {
           agentResources: { count: 0 },
         }),
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldShowResponsibilitiesTab(false, visibility({ catalog: { count: 0 }, agentResources: { count: 0 } })),
     ).toBe(false);
   });
 
-  it("fail-opens for the switcher when target agent-resources are unknown, loading, or errored", () => {
-    // Keep the Responsibilities path; the destination page decides once settled.
+  it("fail-opens when agent resources are unknown, loading, or errored", () => {
     expect(
       shouldShowResponsibilitiesTab(
         false,
@@ -248,7 +221,7 @@ describe("shouldShowResponsibilitiesTab", () => {
     ).toBe(true);
   });
 
-  it("maps React Query observations while retaining settled empty visibility on error", () => {
+  it("maps React Query observations without treating retained data as settled success on error", () => {
     const cachedEmptyWithRefetchError = responsibilitiesSideFromQuery({
       count: 0,
       isFetching: false,
@@ -260,7 +233,7 @@ describe("shouldShowResponsibilitiesTab", () => {
       hasError: true,
       count: 0,
     });
-    expect(isConfirmedEmptyResponsibilitiesSide(cachedEmptyWithRefetchError)).toBe(true);
+    expect(isConfirmedEmptyResponsibilitiesSide(cachedEmptyWithRefetchError)).toBe(false);
 
     const settledEmpty = responsibilitiesSideFromQuery({
       count: 0,
@@ -268,15 +241,5 @@ describe("shouldShowResponsibilitiesTab", () => {
       isError: false,
     });
     expect(isConfirmedEmptyResponsibilitiesSide(settledEmpty)).toBe(true);
-  });
-});
-
-describe("resolveTabPath responsibilities gate", () => {
-  it("falls back to profile when Responsibilities is closed for the target", () => {
-    expect(resolveTabPath(agent, "member-self", "admin", "responsibilities", false)).toBe("profile");
-  });
-
-  it("preserves Responsibilities when the target still exposes it (including uncertain targets)", () => {
-    expect(resolveTabPath(agent, "member-self", "admin", "responsibilities", true)).toBe("responsibilities");
   });
 });

@@ -299,12 +299,12 @@ describe("extra preview pages", () => {
   it("renders the seeded agent-detail preview sections", async () => {
     const rendered = await renderPreview(<AgentDetailPreviewPage />);
 
-    expect(text(rendered.container)).toContain("Agent switcher");
-    expect(text(rendered.container)).toContain("Environment tab");
-    expect(text(rendered.container)).toContain("Tools & skills tab");
-    expect(text(rendered.container)).toContain("Instructions tab");
-    expect(text(rendered.container)).toContain("Usage tab");
-    expect(text(rendered.container)).toContain("Vega");
+    expect(text(rendered.container)).toContain("Agent Detail section states");
+    expect(text(rendered.container)).toContain("Repositories section");
+    expect(text(rendered.container)).toContain("Tools & skills section");
+    expect(text(rendered.container)).toContain("Instructions section");
+    expect(text(rendered.container)).toContain("Usage section");
+    expect(text(rendered.container)).toContain("Validate the shared shell");
     expect(text(rendered.container)).toContain("first-tree");
     expect(text(rendered.container)).toContain("release-notes");
     expect(text(rendered.container)).toContain("Team style guide");

@@ -4,7 +4,7 @@ import { Button } from "../../components/ui/button.js";
 import { ResourceTypeSection, useAgentResources } from "./capability-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 
-// The "Tools & skills" tab. Code repositories moved to the Environment tab
+// The "Tools & skills" section. Code repositories live in Repositories
 // (they're part of the workspace the agent runs in); prompts are managed in the
 // Instructions tab. So this tab lists only skills and MCP integrations.
 const RESOURCE_TYPES: ResourceType[] = ["skill", "mcp"];
