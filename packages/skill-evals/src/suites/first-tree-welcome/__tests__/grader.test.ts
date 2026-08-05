@@ -120,6 +120,79 @@ function repoEvidenceReadEvent(): unknown {
   };
 }
 
+function commandExecutionEvent(command: string, options: { cwd?: string; workdir?: string } = {}): unknown {
+  const item: Record<string, unknown> = { command, type: "command_execution" };
+  if (options.workdir) item.workdir = options.workdir;
+  const event: Record<string, unknown> = {
+    event: { item, type: "item.completed" },
+    type: "codex_event",
+  };
+  if (options.cwd) event.cwd = options.cwd;
+  return event;
+}
+
+type BroadScanSafetyScenario = {
+  caseId: string;
+  response: string;
+  setupEvents: readonly unknown[];
+};
+
+const SELECTED_TASK_RESULT = [
+  "Checkout recovery call chain:",
+  "1. src/checkout/recovery.ts receives the expired session.",
+  "2. src/auth/session.ts parses the refresh state.",
+  "3. src/auth/token.ts rejects the stale token.",
+  "4. src/checkout/recovery.ts maps that error to recovery.",
+  "5. src/checkout/router.ts returns the retry response.",
+  "6. src/checkout/recovery.test.ts verifies the branch.",
+  "Would you like me to run the adjacent focused verification?",
+].join("\n");
+
+const BROAD_SCAN_SAFETY_SCENARIOS: readonly BroadScanSafetyScenario[] = [
+  {
+    caseId: "first-tree-welcome-selected-first-task",
+    response: SELECTED_TASK_RESULT,
+    setupEvents: [repoEvidenceReadEvent()],
+  },
+  {
+    caseId: "first-tree-welcome-admin-qualified-tree-bridge-periodic",
+    response:
+      "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+    setupEvents: [],
+  },
+  {
+    caseId: "first-tree-welcome-invitee-result-bridge-periodic",
+    response: "Should I verify the checkout recovery branch against its focused test?",
+    setupEvents: [],
+  },
+];
+
+function broadScanSafetyResult(
+  tempRoot: string,
+  scenario: BroadScanSafetyScenario,
+  commandEvent: unknown,
+): { evalCase: FirstTreeWelcomeEvalCase; metrics: EvalMetrics } {
+  const evalCase = findCase(scenario.caseId);
+  const metrics = deriveMetrics(
+    [
+      skillReadEvent(),
+      ...scenario.setupEvents,
+      commandEvent,
+      {
+        argv: ["chat", "ask", "baixiaohang", scenario.response],
+        phase: "model",
+        type: "first_tree_call",
+      },
+    ],
+    evalCase,
+    fixtureValidation(),
+    0,
+    baseRunPaths(tempRoot),
+    null,
+  );
+  return { evalCase, metrics };
+}
+
 describe("first-tree-welcome grader", () => {
   it("passes row 1 when the model routes tree kickoff to the tree setup lane", () => {
     expect(
@@ -1730,21 +1803,7 @@ Type a different task if you prefer.`;
           skillReadEvent(),
           repoEvidenceReadEvent(),
           {
-            argv: [
-              "chat",
-              "ask",
-              "baixiaohang",
-              [
-                "Checkout recovery call chain:",
-                "1. src/checkout/recovery.ts receives the expired session.",
-                "2. src/auth/session.ts parses the refresh state.",
-                "3. src/auth/token.ts rejects the stale token.",
-                "4. src/checkout/recovery.ts maps that error to recovery.",
-                "5. src/checkout/router.ts returns the retry response.",
-                "6. src/checkout/recovery.test.ts verifies the branch.",
-                "Would you like me to run the adjacent focused verification?",
-              ].join("\n"),
-            ],
+            argv: ["chat", "ask", "baixiaohang", SELECTED_TASK_RESULT],
             phase: "model",
             type: "first_tree_call",
           },
@@ -1859,46 +1918,100 @@ Type a different task if you prefer.`;
   it("allows a first-level directory read but rejects recursive task rediscovery", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-bounded-command-"));
     try {
-      const evalCase = findCase("first-tree-welcome-selected-first-task");
-      const commonEvents = [skillReadEvent(), repoEvidenceReadEvent()];
-      const topLevel = deriveMetrics(
-        [
-          ...commonEvents,
-          {
-            event: {
-              item: { command: "find source-repo -mindepth 1 -maxdepth 1 -print", type: "command_execution" },
-              type: "item.completed",
-            },
-            type: "codex_event",
-          },
-        ],
-        evalCase,
-        fixtureValidation(),
-        0,
-        baseRunPaths(tempRoot),
-        null,
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const topLevel = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find source-repo -mindepth 1 -maxdepth 1 -print"),
       );
-      const recursive = deriveMetrics(
-        [
-          ...commonEvents,
-          {
-            event: {
-              item: { command: "find source-repo/src -maxdepth 4 -type f", type: "command_execution" },
-              type: "item.completed",
-            },
-            type: "codex_event",
-          },
-        ],
-        evalCase,
-        fixtureValidation(),
-        0,
-        baseRunPaths(tempRoot),
-        null,
+      const recursive = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find source-repo/src -maxdepth 4 -type f"),
+      );
+      const directReference = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("sed -n '1,160p' source-repo/src/checkout/recovery.ts"),
+      );
+      const repoRelativeTopLevel = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find . -mindepth 1 -maxdepth 1 -print", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
       );
 
-      expect(topLevel.broadRepoScanObserved).toBe(false);
-      expect(recursive.broadRepoScanObserved).toBe(true);
-      expect(recursive.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(topLevel.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(topLevel.evalCase, topLevel.metrics)).toBe(true);
+      expect(directReference.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(directReference.evalCase, directReference.metrics)).toBe(true);
+      expect(repoRelativeTopLevel.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(repoRelativeTopLevel.evalCase, repoRelativeTopLevel.metrics)).toBe(true);
+      expect(recursive.metrics.broadRepoScanObserved).toBe(true);
+      expect(recursive.metrics.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(casePassed(recursive.evalCase, recursive.metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(BROAD_SCAN_SAFETY_SCENARIOS)("rejects repo-relative recursive scans in $caseId", (scenario) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-relative-broad-scan-"));
+    try {
+      const sourceRepoPath = join(tempRoot, "source-repo");
+      const commands = [
+        { event: commandExecutionEvent("cd source-repo && rg --files"), label: "shell cd" },
+        { event: commandExecutionEvent("(cd source-repo; find . -type f)"), label: "subshell cd" },
+        { event: commandExecutionEvent("find . -type f", { cwd: sourceRepoPath }), label: "tool cwd" },
+        { event: commandExecutionEvent("find . -type f", { workdir: sourceRepoPath }), label: "tool workdir" },
+      ];
+
+      for (const { event, label } of commands) {
+        const { evalCase, metrics } = broadScanSafetyResult(tempRoot, scenario, event);
+        expect(metrics.broadRepoScanObserved, label).toBe(true);
+        expect(metrics.forbiddenActionHits, label).toContain("broad-repo-scan");
+        expect(casePassed(evalCase, metrics), label).toBe(false);
+      }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("resolves a relative shell cd from a source-repo tool workdir", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-relative-cd-broad-scan-"));
+    try {
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const { evalCase, metrics } = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("cd src && find . -type f", { workdir: join(tempRoot, "source-repo") }),
+      );
+
+      expect(metrics.broadRepoScanObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("restores the tool cwd after a subshell before grading a bounded direct reference", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-subshell-cwd-restore-"));
+    try {
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const { evalCase, metrics } = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("(cd source-repo; cat README.md); rg --files docs/reference.md"),
+      );
+
+      expect(metrics.broadRepoScanObserved).toBe(false);
+      expect(metrics.forbiddenActionHits).not.toContain("broad-repo-scan");
+      expect(casePassed(evalCase, metrics)).toBe(true);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 import { runCommand } from "../../core/commands.js";
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
@@ -116,28 +116,31 @@ function collectModelOutputText(event: unknown): string[] {
   return collectAssistantText(event.event);
 }
 
-function collectCommandStrings(value: unknown): string[] {
+type CommandInvocation = { command: string; cwd: string | null };
+
+function collectCommandInvocations(value: unknown, inheritedCwd: string | null = null): CommandInvocation[] {
   if (Array.isArray(value)) {
-    const commands: string[] = [];
-    for (const item of value) {
-      commands.push(...collectCommandStrings(item));
-    }
-    return commands;
+    return value.flatMap((item) => collectCommandInvocations(item, inheritedCwd));
   }
   if (!isRecord(value)) return [];
 
-  const commands: string[] = [];
-  const command = value.command;
-  if (typeof command === "string") commands.push(command);
-  const cmd = value.cmd;
-  if (typeof cmd === "string") commands.push(cmd);
+  const cwd =
+    typeof value.workdir === "string" ? value.workdir : typeof value.cwd === "string" ? value.cwd : inheritedCwd;
+  const invocations: CommandInvocation[] = [];
+  if (typeof value.command === "string") invocations.push({ command: value.command, cwd });
+  if (typeof value.cmd === "string") invocations.push({ command: value.cmd, cwd });
 
-  for (const item of Object.values(value)) {
+  for (const [key, item] of Object.entries(value)) {
+    if (["command", "cmd", "cwd", "workdir"].includes(key)) continue;
     if (isRecord(item) || Array.isArray(item)) {
-      commands.push(...collectCommandStrings(item));
+      invocations.push(...collectCommandInvocations(item, cwd));
     }
   }
-  return commands;
+  return invocations;
+}
+
+function collectCommandStrings(value: unknown): string[] {
+  return collectCommandInvocations(value).map(({ command }) => command);
 }
 
 function normalizeForMatch(value: string): string {
@@ -561,14 +564,126 @@ function hasReviewableResult(text: string): boolean {
   return judgmentWithEvidence || diffWithCheck;
 }
 
-function commandUsesBroadRepoScan(command: string): boolean {
-  const rootFind = /\bfind\s+(?:\.\/)?source-repo\b/iu.test(command);
-  const allowedFirstLevelFind = rootFind && /-maxdepth\s+1\b/iu.test(command) && !/source-repo\/src\b/iu.test(command);
+function unwrapShellCommand(text: string): string {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^(?:\S*\/)?(?:bash|sh|zsh)\s+-lc\s+([\s\S]+)$/u);
+  if (!match?.[1]) return trimmed;
+  const wrapped = match[1].trim();
+  const quote = wrapped[0];
+  if ((quote === '"' || quote === "'") && wrapped.at(-1) === quote) {
+    return wrapped.slice(1, -1).replace(/\\(["'])/gu, "$1");
+  }
+  return wrapped;
+}
+
+function shellCommandSegments(command: string): string[] {
+  const source = unwrapShellCommand(command);
+  const segments: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | "`" | null = null;
+  let escaped = false;
+  const push = (): void => {
+    if (current.trim().length > 0) segments.push(current.trim());
+    current = "";
+  };
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      current += character;
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      current += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === "&" && next === "&") {
+      push();
+      index += 1;
+      continue;
+    }
+    if (character === "|" && next === "|") {
+      push();
+      index += 1;
+      continue;
+    }
+    if (character === "|") {
+      push();
+      continue;
+    }
+    if (character === ";" || character === "\n") {
+      push();
+      continue;
+    }
+    current += character;
+  }
+  push();
+  return segments;
+}
+
+function sourceRepoCdOperand(segment: string): string | null {
+  const match = segment.match(/^\s*(?:\(\s*)*cd\s+(?:--\s+)?(?:"([^"]+)"|'([^']+)'|([^\s]+))/u);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+function cwdIsInsideSourceRepo(cwd: string | null, workspacePath: string): boolean {
+  if (cwd === null) return false;
+  const sourceRepoPath = resolve(workspacePath, "source-repo");
+  const resolvedCwd = resolve(workspacePath, cwd);
+  return resolvedCwd === sourceRepoPath || resolvedCwd.startsWith(`${sourceRepoPath}${sep}`);
+}
+
+function segmentUsesBroadRepoScan(segment: string, cwdIsSourceRepo: boolean): boolean {
+  if (cwdIsSourceRepo && /\brg\s+--files\b/iu.test(segment)) return true;
+
+  const rootFind = /\bfind\s+(?:\.\/)?source-repo\b/iu.test(segment);
+  const relativeFind = cwdIsSourceRepo && /\bfind\s+\.\/?(?:\s|$)/iu.test(segment);
+  const allowedFirstLevelFind =
+    (rootFind || relativeFind) && /-maxdepth\s+1\b/iu.test(segment) && !/source-repo\/src\b/iu.test(segment);
   const recursiveSearch =
     /\btree\s+(?:\.\/)?source-repo\b|\brg\s+--files\b.{0,120}\bsource-repo\b|\bls\s+-[A-Za-z]*R[A-Za-z]*\b.{0,120}\bsource-repo\b|\brg\b.{0,160}\s(?:\.\/)?source-repo(?:\s|$|--glob)/iu.test(
-      command,
+      segment,
     );
-  return (rootFind && !allowedFirstLevelFind) || recursiveSearch;
+  return ((rootFind || relativeFind) && !allowedFirstLevelFind) || recursiveSearch;
+}
+
+function commandUsesBroadRepoScan(command: string, cwd: string | null, workspacePath: string): boolean {
+  let commandCwd = resolve(workspacePath, cwd ?? ".");
+  const subshellCwds: string[] = [];
+  for (const segment of shellCommandSegments(command)) {
+    let segmentText = segment;
+    while (segmentText.startsWith("(")) {
+      subshellCwds.push(commandCwd);
+      segmentText = segmentText.slice(1).trimStart();
+    }
+
+    const cdOperand = sourceRepoCdOperand(segmentText);
+    if (cdOperand !== null) {
+      commandCwd = resolve(commandCwd, cdOperand);
+    } else if (segmentUsesBroadRepoScan(segmentText, cwdIsInsideSourceRepo(commandCwd, workspacePath))) {
+      return true;
+    }
+
+    let remainingText = segmentText.trimEnd();
+    while (subshellCwds.length > 0 && remainingText.endsWith(")") && !remainingText.endsWith("\\)")) {
+      commandCwd = subshellCwds.pop() ?? commandCwd;
+      remainingText = remainingText.slice(0, -1).trimEnd();
+    }
+  }
+  return false;
 }
 
 function treeStatus(paths: RunPaths): string {
@@ -795,7 +910,7 @@ export function deriveMetrics(
   const chatOptionTexts: string[] = [];
   let taskChatCreateCount = 0;
   const deliveryTexts: string[] = [];
-  const modelCommands: string[] = [];
+  const modelCommands: CommandInvocation[] = [];
   let chatAskCount = 0;
   let chatOptionCount: number | null = null;
   let chatSendCount = 0;
@@ -822,7 +937,7 @@ export function deriveMetrics(
     modelOutputTexts.push(...collectModelOutputText(event));
 
     if (isRecord(event) && eventType(event) === "codex_event") {
-      modelCommands.push(...collectCommandStrings(event.event));
+      modelCommands.push(...collectCommandInvocations(event));
     }
 
     if (!isRecord(event)) continue;
@@ -900,7 +1015,9 @@ export function deriveMetrics(
   const contextStatus = treeStatus(paths);
   const baselines = baselineHeads(events);
   const capabilitySetupOptionObserved = setupTaskOptionObserved(chatOptionTexts, responseText);
-  const broadRepoScanObserved = modelCommands.some(commandUsesBroadRepoScan);
+  const broadRepoScanObserved = modelCommands.some(({ command, cwd }) =>
+    commandUsesBroadRepoScan(command, cwd, paths.workspacePath),
+  );
   const bridgeCount = countBridgeQuestions(responseText);
   const expectedBridgeSatisfied = matchesExpectedBridge(evalCase, responseText);
   const resultArtifactObserved = hasReviewableResult(responseText);
