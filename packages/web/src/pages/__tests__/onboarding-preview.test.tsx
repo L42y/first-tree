@@ -357,11 +357,13 @@ describe("onboarding preview review surface", () => {
         <OnboardingPreviewPage />
       </MemoryRouter>,
     );
-    expect(start.container.textContent).toContain("Meet your agent");
+    expect(start.container.textContent).toContain("YOUR FIRST TREE AGENT");
+    expect(start.container.textContent).toContain("Meet Gandy's assistant");
     expect(start.container.textContent).toContain(
-      "Explore First Tree together, then choose what you’d like to try first.",
+      "Gandy's assistant is ready to explore First Tree with you. Bring a question, a project, or a task you want to move forward.",
     );
-    expect(start.container.textContent).toContain("Start exploring");
+    expect(start.container.textContent).toContain("Meet your agent");
+    expect(start.container.textContent).toContain("You’ll open your first Chat and can start typing right away.");
     expect(start.container.textContent).not.toContain("Stay connected");
     expect(start.container.textContent).not.toContain("WeChat group");
     expect(start.container.textContent).not.toContain("Discord");
@@ -373,11 +375,11 @@ describe("onboarding preview review surface", () => {
         <OnboardingPreviewPage />
       </MemoryRouter>,
     );
-    expect(liveStart.container.textContent).toContain("Meet your agent");
+    expect(liveStart.container.textContent).toContain("Meet Gandy's assistant");
     expect(liveStart.container.textContent).toContain(
-      "Explore First Tree together, then choose what you’d like to try first.",
+      "Gandy's assistant is ready to explore First Tree with you. Bring a question, a project, or a task you want to move forward.",
     );
-    expect(liveStart.container.textContent).toContain("Start exploring");
+    expect(liveStart.container.textContent).toContain("Meet your agent");
     expect(liveStart.container.textContent).not.toContain("Stay connected");
     await act(async () => liveStart.root.unmount());
 

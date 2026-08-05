@@ -9,15 +9,14 @@ import { Avatar } from "../components/avatar.js";
 import { OnboardingOrientation } from "../components/chat/onboarding-orientation.js";
 import type { ComputerConnection } from "../features/agent-setup/use-computer-connection.js";
 import { InviteAcceptCard, InviteAcceptError, InviteAcceptShell, InviteAcceptSkeleton } from "./invite-accept.js";
-import { COPY } from "./onboarding/copy.js";
-import { FlowHint, StepHeading, WorkingState } from "./onboarding/flow-ui.js";
+import { FlowHint, StepHeading } from "./onboarding/flow-ui.js";
 import { OnboardingFlowContext, type OnboardingFlowValue, type TreeBindingPlan } from "./onboarding/onboarding-flow.js";
 import { OnboardingShell } from "./onboarding/onboarding-shell.js";
 import { StepConnectCode } from "./onboarding/steps/step-connect-code.js";
 import { StepConnectComputer } from "./onboarding/steps/step-connect-computer.js";
 import { StepCreateAgent } from "./onboarding/steps/step-create-agent.js";
 import { StepGetStarted } from "./onboarding/steps/step-get-started.js";
-import { StepStartChat } from "./onboarding/steps/step-start-chat.js";
+import { AgentArrival, StepStartChat } from "./onboarding/steps/step-start-chat.js";
 import { StepTeam } from "./onboarding/steps/step-team.js";
 import { getStepSequence, type OnboardingPath, type StepId } from "./onboarding/steps.js";
 
@@ -152,6 +151,25 @@ const INSTALLATION_USER: GithubAppInstallationOutput = {
 
 const NOOP = (): void => {};
 const ASYNC_NOOP = async (): Promise<void> => {};
+const PREVIEW_ARRIVAL_AGENT = {
+  uuid: "01920000-0000-7000-8000-00000000000b",
+  name: "gandy-assistant",
+  displayName: "Gandy's assistant",
+  type: "agent",
+  organizationId: ORG_ID,
+  inboxId: "inbox-1",
+  visibility: "organization",
+  runtimeProvider: "claude-code",
+  status: "active",
+  clientId: HOST.id,
+  avatarImageUrl: null,
+};
+const PREVIEW_LONG_NAME_AGENT = {
+  ...PREVIEW_ARRIVAL_AGENT,
+  uuid: "01920000-0000-7000-8000-00000000000c",
+  name: "customer-platform-reliability-assistant",
+  displayName: "Customer Platform Reliability and Release Coordination Assistant",
+};
 
 // ── Computer-connection fixtures (drive the connect-computer + create-agent steps) ──
 // `selectedRuntime` / `setSelectedRuntime` are made interactive per-scenario in
@@ -834,7 +852,17 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     wizard: {
       step: "start-chat",
       flow: { selectedRepoUrls: [REPO_WEB] },
-      body: <WorkingState label={COPY.startChat.starting} />,
+      body: <AgentArrival agent={PREVIEW_ARRIVAL_AGENT} error={null} onStart={NOOP} phase="starting" />,
+    },
+  },
+  {
+    id: "admin-ko-long-name",
+    label: "Long agent name",
+    group: "Meet-your-agent states",
+    role: "admin",
+    wizard: {
+      step: "start-chat",
+      body: <AgentArrival agent={PREVIEW_LONG_NAME_AGENT} error={null} onStart={NOOP} phase="idle" />,
     },
   },
 
@@ -1316,7 +1344,10 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     label: "Starting…",
     group: "Meet-your-agent states",
     role: "invitee",
-    wizard: { step: "start-chat", body: <WorkingState label={COPY.startChat.starting} /> },
+    wizard: {
+      step: "start-chat",
+      body: <AgentArrival agent={PREVIEW_ARRIVAL_AGENT} error={null} onStart={NOOP} phase="starting" />,
+    },
   },
 ];
 

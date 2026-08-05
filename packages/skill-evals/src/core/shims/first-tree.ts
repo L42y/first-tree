@@ -513,7 +513,15 @@ function runTreeVerify(argv, phase) {
 
 const argv = process.argv.slice(2);
 const phase = process.env.FIRST_TREE_EVAL_PHASE || "model";
-append({ type: "first_tree_call", phase, argv, cwd: process.cwd() });
+const recordedChatBody =
+  argv[0] === "chat" && ["ask", "send", "update"].includes(argv[1] || "") ? bodyFromFileOption(argv) : "";
+append({
+  type: "first_tree_call",
+  phase,
+  argv,
+  body: recordedChatBody || undefined,
+  cwd: process.cwd(),
+});
 trace("first-tree call: " + commandLine(argv));
 
 if (AUDIT_FIXTURE_PATH && argv[0] === "gitlab" && argv[1] === "follow") {
