@@ -1,7 +1,4 @@
-import type { Agent } from "@first-tree/shared";
-import { canManageAgentDetail } from "./access.js";
-
-export type TabDef = { key: string; label: string; path: string };
+export type TabDef = { key: string; label: string; path: string; description: string };
 
 // IA labels only. Routing `path` and the `key` (deep-link mapping) are kept
 // stable so existing URLs keep resolving. Responsibilities has its own stable
@@ -14,6 +11,16 @@ const TAB_LABELS: Record<string, string> = {
   capabilities: "Tools & skills",
   repositories: "Repositories",
   usage: "Usage",
+};
+
+const TAB_DESCRIPTIONS: Record<string, string> = {
+  profile: "Identity, ownership, and lifecycle for this agent.",
+  responsibilities: "Starting responsibilities imported from Agent Templates.",
+  runtime: "Where this agent runs and how it is configured.",
+  prompt: "Guidance that shapes how this agent behaves.",
+  capabilities: "Skills and integrations configured for this agent.",
+  repositories: "Code repositories and team context available in this agent’s workspace.",
+  usage: "Activity and turn history for this agent.",
 };
 
 /**
@@ -82,10 +89,8 @@ export function shouldShowResponsibilitiesTab(
 }
 
 /**
- * Single source of truth for WHICH tabs exist for an agent (key + path),
- * independent of label/order. `buildTabs` adds the display label on top, and the
- * agent switcher uses this to know whether a target agent supports the current
- * tab — so the two can never drift on tab availability.
+ * Single source of truth for WHICH sections exist for an agent (key + path),
+ * independent of label/order. `buildTabs` adds the display label and description.
  *
  * Humans never receive Responsibilities, even when a caller passes `true`.
  */
@@ -128,30 +133,6 @@ export function buildTabs(
   return tabKeysFor(canEditConfig, isHuman, showResponsibilities).map((t) => ({
     ...t,
     label: TAB_LABELS[t.key] ?? t.key,
+    description: TAB_DESCRIPTIONS[t.key] ?? "",
   }));
-}
-
-/** Mirror of the shell's `canEditConfig` derivation, for any agent (e.g. switcher targets). */
-export function canEditConfigFor(agent: Agent, memberId: string | null, role: string | null): boolean {
-  return agent.type !== "human" && canManageAgentDetail(agent, memberId, role);
-}
-
-/**
- * Which tab PATH to open when switching to `agent`: keep the current tab when the
- * target supports it, else fall back to profile. (Some tabs render blank rather
- * than redirect for unsupported agents, so we resolve this up front.)
- *
- * Humans never keep a Responsibilities path, even if `showResponsibilities` is true.
- */
-export function resolveTabPath(
-  agent: Agent,
-  memberId: string | null,
-  role: string | null,
-  currentPath: string,
-  showResponsibilities: boolean = agent.type !== "human",
-): string {
-  const paths = tabKeysFor(canEditConfigFor(agent, memberId, role), agent.type === "human", showResponsibilities).map(
-    (t) => t.path,
-  );
-  return paths.includes(currentPath) ? currentPath : "profile";
 }

@@ -68,6 +68,10 @@ const orgSettingsMocks = vi.hoisted(() => ({
   getContextTreeSetting: vi.fn(),
 }));
 
+const providerModelMocks = vi.hoisted(() => ({
+  getProviderModels: vi.fn(),
+}));
+
 vi.mock("../../../api/activity.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../api/activity.js")>()),
   listClients: activityMocks.listClients,
@@ -105,7 +109,7 @@ vi.mock("../../../api/org-settings.js", () => orgSettingsMocks);
 // catalog; `null` keeps these page tests on the curated-fallback control they
 // exercise (catalog rendering is covered in model-section-catalog.test.tsx).
 vi.mock("../../../api/provider-models.js", () => ({
-  getProviderModels: vi.fn(async () => null),
+  getProviderModels: providerModelMocks.getProviderModels,
 }));
 
 const NOW = "2026-05-28T12:00:00.000Z";
@@ -152,7 +156,7 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     source: overrides.source ?? "portal",
     clientId: overrides.clientId === undefined ? "client-1" : overrides.clientId,
     runtimeProvider: overrides.runtimeProvider ?? "claude-code",
-    runtimeState: overrides.runtimeState ?? "idle",
+    runtimeState: overrides.runtimeState === undefined ? "idle" : overrides.runtimeState,
     createdAt: overrides.createdAt ?? NOW,
     updatedAt: overrides.updatedAt ?? NOW,
   };
@@ -285,11 +289,11 @@ function client(overrides: Partial<HubClient> = {}): HubClient {
   };
 }
 
-function installBrowserStubs(): void {
+function installBrowserStubs(wide = true): void {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: (query: string) => ({
-      matches: query.includes("80rem") || query.includes("48rem"),
+      matches: wide && (query.includes("80rem") || query.includes("48rem")),
       media: query,
       onchange: null,
       addEventListener: () => undefined,
@@ -359,6 +363,7 @@ async function renderDom(
                 <Route path="profile" element={child} />
                 <Route path="responsibilities" element={<ResponsibilitiesTab />} />
                 <Route path="prompt" element={child} />
+                <Route path="capabilities" element={child} />
                 <Route path="resources" element={<div>Resources route</div>} />
                 <Route path="runtime" element={child} />
                 <Route path="usage" element={<UsageTab />} />
@@ -408,6 +413,11 @@ function exactButtonByText(container: ParentNode, text: string): HTMLButtonEleme
   return [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === text) ?? null;
 }
 
+function agentSectionLabels(container: ParentNode): Array<string | undefined> {
+  const nav = container.querySelector('nav[aria-label="Agent sections"]');
+  return nav ? [...nav.querySelectorAll("button")].map((button) => button.textContent?.trim()) : [];
+}
+
 function menuItemByText(container: ParentNode, text: string): HTMLButtonElement | null {
   return (
     ([...container.querySelectorAll('[role="menuitem"]')] as HTMLButtonElement[]).find(
@@ -433,9 +443,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   authMock.value = { memberId: "member-self", role: "admin", organizationId: "org-1" };
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({ repo: "https://github.com/acme/tree", branch: "main" });
+  providerModelMocks.getProviderModels.mockResolvedValue(null);
   agentMocks.getAgent.mockResolvedValue(agent());
-  // Agent switcher list (admin → listAllAgents). Include a second agent so the
-  // switcher has a switch target.
+  // Cross-agent navigation helpers use the same agent list as the Team surface.
   const switcherAgents = {
     items: [agent(), agent({ uuid: "agent-2", name: "nova", displayName: "Nova" })],
     nextCursor: null,
@@ -457,12 +467,8 @@ beforeEach(() => {
       lastSeenAt: NOW,
     },
   });
-  // Use mockResolvedValue (persistent), not ...Once: the page shell now also
-  // observes agent-resources (to badge Tools & skills), so the query can be
-  // fetched more than once per render (a stale-time refetch fires when the tab's
-  // own observer mounts). The real GET is idempotent — every call returns the
-  // same state — so per-test overrides below also use mockResolvedValue; a
-  // one-shot mock with an empty fallback would clobber the cache on refetch.
+  // Keep the resource query stable across each mounted tab; the real GET is
+  // idempotent, so per-test overrides below use the same persistent shape.
   agentResourceMocks.getAgentResources.mockResolvedValue(agentResources());
   // Non-empty public catalog by default so Responsibilities stays visible even
   // when the agent has zero adopted templateIds (the empty-entry gate needs
@@ -514,6 +520,106 @@ afterEach(() => {
 });
 
 describe("AgentDetailPage", () => {
+  it("reduces precise runtime facts to one clear header status and action", async () => {
+    const { ProfileTab } = await import("../profile-tab.js");
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ clientId: null, runtimeState: null }));
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({ online: false, clientId: null, offlineSince: null });
+    const needsSetup = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(needsSetup.container, "Needs setup");
+    const breadcrumb = needsSetup.container.querySelector('nav[aria-label="Breadcrumb"]');
+    expect(breadcrumb).toBeTruthy();
+    expect(breadcrumb?.querySelector('[aria-current="page"]')?.textContent).toBe("Vega");
+    expect(needsSetup.container.textContent).toContain("No computer assigned.");
+    expect(exactButtonByText(needsSetup.container, "Choose computer")).toBeTruthy();
+    expect(needsSetup.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
+    await act(async () => needsSetup.root.unmount());
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ runtimeState: null }));
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({
+      online: true,
+      clientId: "client-1",
+      offlineSince: null,
+    });
+    const recoveredPresence = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(recoveredPresence.container, "Offline");
+    expect(recoveredPresence.container.textContent).toContain("Computer connection unavailable.");
+    expect(recoveredPresence.container.textContent).not.toContain("Online");
+    await act(async () => recoveredPresence.root.unmount());
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
+    const suspended = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(suspended.container, "Suspended");
+    expect(suspended.container.textContent).toContain("Can’t receive new work.");
+    expect(suspended.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
+    expect(exactButtonByText(suspended.container, "Reactivate agent")).toBeTruthy();
+    await act(async () => suspended.root.unmount());
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", clientId: null, runtimeState: null }));
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({ online: false, clientId: null, offlineSince: null });
+    const suspendedUnbound = await renderDom("/agents/agent-1/capabilities", <ProfileTab />);
+    await waitForText(suspendedUnbound.container, "Choose runtime");
+    expect(exactButtonByText(suspendedUnbound.container, "Reactivate agent")).toBeNull();
+    await click(exactButtonByText(suspendedUnbound.container, "Choose runtime"));
+    await waitForText(document.body, "Switch runtime");
+    await click(buttonByText(document.body, "gandy-macbook"));
+    expect(document.body.querySelector('button[aria-pressed="true"]')).toBeTruthy();
+    await act(async () => suspendedUnbound.root.unmount());
+  });
+
+  it("uses a section selector instead of horizontal tabs on narrow web", async () => {
+    installBrowserStubs(false);
+    const { ProfileTab } = await import("../profile-tab.js");
+    const view = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(view.container, "Profile");
+    expect(view.container.querySelector('nav[aria-label="Agent sections"]')).toBeNull();
+    expect(view.container.querySelector('[aria-label="Agent section"]')).toBeTruthy();
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps reactivation failures and retry beside the shared header action", async () => {
+    const { ResourcesTab } = await import("../resources-tab.js");
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
+    agentMocks.reactivateAgent.mockRejectedValueOnce(new Error("runtime is still unavailable"));
+
+    const view = await renderDom("/agents/agent-1/capabilities", <ResourcesTab />);
+    await waitForText(view.container, "Reactivate agent");
+    await click(exactButtonByText(view.container, "Reactivate agent"));
+    await waitForText(view.container, "Couldn’t reactivate this agent");
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain("runtime is still unavailable");
+
+    await click(exactButtonByText(view.container, "Retry"));
+    await waitForCondition(() => agentMocks.reactivateAgent.mock.calls.length === 2, "Expected reactivation retry");
+    await act(async () => view.root.unmount());
+  });
+
+  it("removes a stale reactivation retry after lifecycle recovery", async () => {
+    const { ResourcesTab } = await import("../resources-tab.js");
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
+    agentMocks.reactivateAgent.mockRejectedValueOnce(new Error("runtime is still unavailable"));
+
+    const view = await renderDom("/agents/agent-1/capabilities", <ResourcesTab />);
+    await waitForText(view.container, "Reactivate agent");
+    await click(exactButtonByText(view.container, "Reactivate agent"));
+    await waitForText(view.container, "Couldn’t reactivate this agent");
+
+    await act(async () => {
+      view.queryClient.setQueryData(["agent", "agent-1"], agent({ status: "active", runtimeState: "idle" }));
+    });
+    await flush();
+    await waitForText(view.container, "Online");
+    expect(view.container.textContent).not.toContain("Couldn’t reactivate this agent");
+    expect(exactButtonByText(view.container, "Retry")).toBeNull();
+
+    await act(async () => {
+      view.queryClient.setQueryData(["agent", "agent-1"], agent({ status: "suspended", runtimeState: null }));
+    });
+    await flush();
+    expect(view.container.textContent).not.toContain("Couldn’t reactivate this agent");
+    expect(exactButtonByText(view.container, "Retry")).toBeNull();
+    await act(async () => view.root.unmount());
+  });
+
   it("keeps Responsibilities out of Profile and renders the same section in its own tab", async () => {
     const { ProfileTab } = await import("../profile-tab.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(
@@ -529,9 +635,9 @@ describe("AgentDetailPage", () => {
     expect([...profile.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim())).not.toContain(
       "Responsibilities",
     );
-    const profileTabList = profile.container.querySelector('[role="tablist"]');
-    expect(profileTabList?.parentElement?.previousElementSibling?.getAttribute("aria-hidden")).toBe("true");
-    expect([...profile.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+    const profileNav = profile.container.querySelector('nav[aria-label="Agent sections"]');
+    if (!profileNav) throw new Error("Expected Agent navigation");
+    expect([...profileNav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
       "Runtime",
@@ -545,6 +651,12 @@ describe("AgentDetailPage", () => {
     const responsibilities = await renderDom("/agents/agent-1/responsibilities", <ProfileTab />);
     await waitForText(responsibilities.container, "PR Engineer");
     expect(responsibilities.container.querySelectorAll('[data-slot="template-responsibility-label"]')).toHaveLength(1);
+    expect(
+      [...responsibilities.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim()),
+    ).toContain("Responsibilities");
+    expect(
+      [...responsibilities.container.querySelectorAll("h3")].map((heading) => heading.textContent?.trim()),
+    ).not.toContain("Responsibilities");
     expect(responsibilities.container.textContent).toContain("Edit responsibilities");
     await act(async () => responsibilities.root.unmount());
   });
@@ -561,7 +673,9 @@ describe("AgentDetailPage", () => {
 
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Profile route</div>);
     await waitForText(view.container, "PR Engineer");
-    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+    const viewerNav = view.container.querySelector('nav[aria-label="Agent sections"]');
+    if (!viewerNav) throw new Error("Expected Agent navigation");
+    expect([...viewerNav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
       "Tools & skills",
@@ -576,7 +690,7 @@ describe("AgentDetailPage", () => {
 
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Human Profile route</div>);
     await waitForText(view.container, "Human Profile route");
-    expect(view.container.querySelector('[role="tablist"]')).toBeNull();
+    expect(view.container.querySelector('nav[aria-label="Agent sections"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Responsibilities");
     await act(async () => view.root.unmount());
   });
@@ -591,7 +705,7 @@ describe("AgentDetailPage", () => {
       () => templateMocks.listAgentTemplates.mock.calls.length >= 1,
       "Expected the public template catalog to load",
     );
-    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+    expect(agentSectionLabels(view.container)).toEqual([
       "Profile",
       "Runtime",
       "Instructions",
@@ -614,9 +728,7 @@ describe("AgentDetailPage", () => {
 
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Profile route</div>);
     await waitForText(view.container, "PR Engineer");
-    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toContain(
-      "Responsibilities",
-    );
+    expect(agentSectionLabels(view.container)).toContain("Responsibilities");
     await act(async () => view.root.unmount());
   });
 
@@ -630,9 +742,7 @@ describe("AgentDetailPage", () => {
       () => templateMocks.listAgentTemplates.mock.calls.length >= 1,
       "Expected the catalog request to run",
     );
-    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toContain(
-      "Responsibilities",
-    );
+    expect(agentSectionLabels(view.container)).toContain("Responsibilities");
     await act(async () => view.root.unmount());
   });
 
@@ -643,9 +753,7 @@ describe("AgentDetailPage", () => {
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Empty-gate Profile route</div>);
     await waitForText(view.container, "Empty-gate Profile route");
     expect(view.container.textContent).not.toContain("No template responsibilities are assigned to this agent.");
-    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).not.toContain(
-      "Responsibilities",
-    );
+    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
     await act(async () => view.root.unmount());
   });
 
@@ -656,10 +764,7 @@ describe("AgentDetailPage", () => {
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Empty-gate Profile route</div>);
     await waitForText(view.container, "Empty-gate Profile route");
     await waitForCondition(
-      () =>
-        ![...view.container.querySelectorAll('[role="tab"]')]
-          .map((tab) => tab.textContent?.trim())
-          .includes("Responsibilities"),
+      () => !agentSectionLabels(view.container).includes("Responsibilities"),
       "Expected Responsibilities to close after confirmed empty catalog + resources",
     );
 
@@ -668,10 +773,7 @@ describe("AgentDetailPage", () => {
       await view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
     });
     await waitForCondition(
-      () =>
-        [...view.container.querySelectorAll('[role="tab"]')]
-          .map((tab) => tab.textContent?.trim())
-          .includes("Responsibilities"),
+      () => agentSectionLabels(view.container).includes("Responsibilities"),
       "Expected Responsibilities to fail-open after a cached-empty refetch error",
     );
     await act(async () => view.root.unmount());
@@ -704,10 +806,7 @@ describe("AgentDetailPage", () => {
     );
 
     await waitForCondition(
-      () =>
-        [...view.container.querySelectorAll('[role="tab"]')]
-          .map((tab) => tab.textContent?.trim())
-          .includes("Responsibilities"),
+      () => agentSectionLabels(view.container).includes("Responsibilities"),
       "Expected deep link to keep Responsibilities under cached-empty refetch error",
     );
     expect(view.container.textContent).not.toContain("Must not redirect");
@@ -721,10 +820,7 @@ describe("AgentDetailPage", () => {
     const view = await renderDom("/agents/agent-1/profile", <div>Profile route</div>);
     await waitForText(view.container, "Profile route");
     await waitForCondition(
-      () =>
-        ![...view.container.querySelectorAll('[role="tab"]')]
-          .map((tab) => tab.textContent?.trim())
-          .includes("Responsibilities"),
+      () => !agentSectionLabels(view.container).includes("Responsibilities"),
       "Expected Responsibilities to close after confirmed empty",
     );
 
@@ -739,10 +835,7 @@ describe("AgentDetailPage", () => {
       void view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
     });
     await waitForCondition(
-      () =>
-        [...view.container.querySelectorAll('[role="tab"]')]
-          .map((tab) => tab.textContent?.trim())
-          .includes("Responsibilities"),
+      () => agentSectionLabels(view.container).includes("Responsibilities"),
       "Expected Responsibilities to fail-open while empty resources are refetching",
     );
 
@@ -750,10 +843,7 @@ describe("AgentDetailPage", () => {
       releaseRefetch?.(agentResources({ templateIds: [], adoptedTemplates: [] }));
     });
     await waitForCondition(
-      () =>
-        ![...view.container.querySelectorAll('[role="tab"]')]
-          .map((tab) => tab.textContent?.trim())
-          .includes("Responsibilities"),
+      () => !agentSectionLabels(view.container).includes("Responsibilities"),
       "Expected Responsibilities to close again after settled empty refetch",
     );
     await act(async () => view.root.unmount());
@@ -790,9 +880,11 @@ describe("AgentDetailPage", () => {
     const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
     await waitForText(container, "Team style guide");
     expect(container.textContent).toContain("Vega");
-    expect(container.textContent).toContain("1 active");
-    expect(container.textContent).toContain("Chat");
-    expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+    expect(container.textContent).not.toContain("1 active");
+    expect(container.textContent).toContain("Start chat");
+    const nav = container.querySelector('nav[aria-label="Agent sections"]');
+    if (!nav) throw new Error("Expected Agent navigation");
+    expect([...nav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
       "Runtime",
@@ -805,15 +897,17 @@ describe("AgentDetailPage", () => {
     expect(container.textContent).toContain("All instructions");
     await waitForText(container, "Team style guide");
     expect(container.textContent).toContain("Team style guide");
-    expect(container.textContent).toContain("Added by you");
+    expect(container.textContent).toContain("Custom for this agent");
     // The merged block renders each contributed instruction as its own labelled
     // segment (not one blob): the team segment + the agent's own "Custom" segment.
     const effBlock = container.querySelector('[aria-label="All instructions"]');
     expect(effBlock).toBeTruthy();
     const segLabels = [...(effBlock?.querySelectorAll(".text-eyebrow") ?? [])].map((n) => n.textContent?.trim());
     // Each segment label is "<name> · <source>", aligned with the source rows.
-    expect(segLabels.some((l) => l?.includes("Team style guide") && l?.includes("From your team"))).toBe(true);
-    expect(segLabels.some((l) => l?.includes("Custom instructions") && l?.includes("Added by you"))).toBe(true);
+    expect(segLabels.some((l) => l?.includes("Team style guide") && l?.includes("Team default"))).toBe(true);
+    expect(segLabels.some((l) => l?.includes("Custom instructions") && l?.includes("Custom for this agent"))).toBe(
+      true,
+    );
     expect(effBlock?.textContent).toContain("Use the team house style.");
 
     // The custom prompt's edit action now lives in the row's ⋯ overflow menu.
@@ -896,7 +990,7 @@ describe("AgentDetailPage", () => {
 
     const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
     await waitForText(container, "Team style guide");
-    await waitForText(container, "Added by you");
+    await waitForText(container, "Custom for this agent");
     expect(container.textContent).toContain("No instructions yet.");
 
     await clickRowMenuItem(container, "More actions for Custom instructions", "Edit custom instructions");
@@ -1280,15 +1374,15 @@ describe("AgentDetailPage", () => {
     agentMocks.getAgent.mockResolvedValueOnce(unclaimedAgent);
 
     const first = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
-    await waitForText(first.container, "No computer bound");
+    await waitForText(first.container, "Execution");
     expect(first.container.textContent).toContain("Execution");
     expect(first.container.textContent).toContain("Model settings");
-    expect(first.container.textContent).toContain("No computer bound");
-    await click(buttonByText(first.container, "Bind computer"));
+    expect(first.container.textContent).toContain("No computer assigned");
+    await click(buttonByText(first.container, "Choose computer"));
     await waitForText(document.body, "gandy-macbook");
-    expect(document.body.textContent).toContain("Bind computer");
+    expect(document.body.textContent).toContain("Choose a computer");
     await click(buttonByText(document.body, "gandy-macbook"));
-    await click(exactButtonByText(document.body, "Bind"));
+    await click(exactButtonByText(document.body, "Assign"));
     await waitForCondition(() => agentMocks.updateAgent.mock.calls.length > 0, "Expected bind mutation");
     expect(agentMocks.updateAgent).toHaveBeenCalledWith("agent-1", { clientId: "client-1" });
     await act(async () => first.root.unmount());
@@ -1296,8 +1390,15 @@ describe("AgentDetailPage", () => {
 
   it("switches an agent runtime from the Runtime tab", async () => {
     const { RuntimeTab } = await import("../runtime-tab.js");
+    agentConfigMocks.getAgentClientStatus.mockRejectedValueOnce(new Error("status endpoint unavailable"));
     const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
     await waitForText(view.container, "Switch runtime");
+    expect(view.container.textContent).not.toContain("Could not verify computer binding");
+    await waitForCondition(
+      () => providerModelMocks.getProviderModels.mock.calls.length > 0,
+      "Expected model discovery to use the Agent route",
+    );
+    expect(providerModelMocks.getProviderModels).toHaveBeenCalledWith("client-1", "claude-code");
 
     await click(buttonByText(view.container, "Switch runtime"));
     await waitForText(document.body, "Switch runtime");
@@ -1334,9 +1435,9 @@ describe("AgentDetailPage", () => {
     agentMocks.switchAgentRuntime.mockResolvedValue(agent({ clientId: "client-2", runtimeProvider: "codex" }));
 
     const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
-    await waitForText(view.container, "No computer bound");
+    await waitForText(view.container, "No computer assigned");
     await waitForText(view.container, "Switch runtime");
-    expect(buttonByText(view.container, "Bind computer")).toBeNull();
+    expect(buttonByText(view.container, "Choose computer")).toBeNull();
 
     await click(buttonByText(view.container, "Switch runtime"));
     await waitForText(document.body, "alice-linux");
@@ -1382,7 +1483,7 @@ describe("AgentDetailPage", () => {
     expect(active.container.textContent).toContain("Agent lifecycle");
     expect(active.container.textContent).not.toContain("Lifecycle changes save immediately.");
     expect(
-      [...active.container.querySelectorAll("section h2")].filter((heading) =>
+      [...active.container.querySelectorAll("section h3")].filter((heading) =>
         heading.textContent?.includes("Agent lifecycle"),
       ),
     ).toHaveLength(1);
@@ -1397,8 +1498,9 @@ describe("AgentDetailPage", () => {
 
     agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
     const suspended = await renderDom("/agents/agent-1/profile", <ProfileTab />);
-    await waitForText(suspended.container, "Reactivate");
-    await click(exactButtonByText(suspended.container, "Reactivate"));
+    await waitForText(suspended.container, "Reactivate agent");
+    expect(suspended.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
+    await click(exactButtonByText(suspended.container, "Reactivate agent"));
     await waitForCondition(() => agentMocks.reactivateAgent.mock.calls.length > 0, "Expected reactivate mutation");
     expect(agentMocks.reactivateAgent).toHaveBeenCalledWith("agent-1");
     await act(async () => suspended.root.unmount());

@@ -1006,11 +1006,11 @@ describe("page SSR smoke coverage", () => {
     for (const [route, expected] of [
       // IA recut: runtime shows model/effort/execution/env; repos + context tree
       // moved to their own Repositories tab; Tools & skills lists only skills + MCP.
-      ["/agents/agent-1/responsibilities", "No template responsibilities are assigned to this agent."],
+      ["/agents/agent-1/responsibilities", "No starting responsibilities yet."],
       ["/agents/agent-1/runtime", "Reasoning effort"],
       ["/agents/agent-1/repositories", "Team web"],
       ["/agents/agent-1/prompt", "Instructions"],
-      ["/agents/agent-1/resources", "Integrations (MCP)"],
+      ["/agents/agent-1/resources", "Integrations"],
     ] as const) {
       expect(
         renderPage(

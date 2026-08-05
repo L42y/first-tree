@@ -47,8 +47,8 @@ export function PromptTab() {
         bindings: updatePromptBindings(resourcesQuery.data.bindings, editor, body),
       });
     },
-    // Same hardening as the shared resource hook (stale-GET cancel + 409 refetch),
-    // since the shell now also observes this cache. `onSuccessAfter` closes the editor.
+    // Same hardening as the shared resource hook (stale-GET cancel + 409 refetch).
+    // `onSuccessAfter` closes the editor.
     ...agentResourcesMutationHandlers(queryClient, ctx.uuid, {
       onSuccessAfter: () => {
         setEditor(null);
@@ -130,6 +130,7 @@ export function PromptTab() {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
       <Section
+        headingLevel={3}
         title={titleWithSemantics("Instructions", justSaved)}
         action={
           canEditPrompt && !resourceError && !editor && resources ? (
@@ -274,7 +275,7 @@ function EffectiveInstructionsBlock({ prompt, sections }: { prompt: string; sect
 // exactly like its row does.
 function segmentLabel(section: PromptSection): string {
   const name = section.name.trim() || "Custom instructions";
-  const source = section.scope === "team" ? "From your team" : "Added by you";
+  const source = section.scope === "team" ? "Team default" : "Custom for this agent";
   return `${name} · ${source}`;
 }
 
@@ -696,7 +697,11 @@ function PromptResourceBlock(props: {
   return (
     <ResourceRowView
       name={props.name}
-      source={props.templateName !== undefined ? templateSourceLabel(props.templateName) : sourceLabel(props.source)}
+      source={
+        <span title={props.templateName !== undefined ? templateSourceLabel(props.templateName) : undefined}>
+          {sourceLabel(props.source)}
+        </span>
+      }
       status={props.marker}
       toggle={props.toggle}
       menu={props.menu}

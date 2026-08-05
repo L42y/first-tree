@@ -12,7 +12,7 @@ import { cn } from "../../lib/utils.js";
  * appear:
  *   - line 1: name → source → status, then the converged action cluster
  *     (`[Switch] [⋯]`), then an optional expand chevron;
- *   - line 2 (collapsed): a single-line truncated `peek`;
+ *   - line 2 (collapsed): a two-line clamped `peek`;
  *   - expanded / editing: a sunken contained block below.
  *
  * Actions are structured, not freeform: a `toggle` (the on/off Switch for a
@@ -39,12 +39,12 @@ export function ResourceRowView(props: {
   /** Row title. `null` when the row has no resource name (inline custom prompt);
    *  the peek then carries identity. */
   name: ReactNode | null;
-  /** Already-resolved source label text (e.g. "From your team"). */
+  /** Already-resolved source label text (e.g. "Team default"). */
   source: ReactNode;
   /** Overridden / Can't load marker — omitted for a normal row. A disabled row
    *  is conveyed by `toggle` (off) + `dimmed`, not a status badge. */
   status?: RowStatusMarker;
-  /** Collapsed single-line preview. */
+  /** Collapsed preview, clamped to two lines. */
   peek?: ReactNode;
   /** Render the peek in mono — for technical content (repo URL, MCP command),
    *  NOT for prose (a skill description). */
@@ -102,7 +102,7 @@ export function ResourceRowView(props: {
                   : `Expand${expandNoun ? ` ${expandNoun}` : ""}`
               }
               onClick={props.expand?.onToggle}
-              className="block w-full text-left"
+              className="block min-h-11 w-full text-left"
               style={{ background: "transparent", border: 0, padding: 0, cursor: "pointer" }}
             >
               <RowHeading
@@ -154,8 +154,15 @@ export function ResourceRowView(props: {
         </div>
       ) : props.peek ? (
         <p
-          className={cn("m-0 text-caption truncate", props.monoPeek && "mono")}
-          style={{ color: "var(--fg-3)", marginTop: "var(--sp-0_5)" }}
+          className={cn("m-0 text-caption", props.monoPeek && "mono")}
+          style={{
+            color: "var(--fg-3)",
+            marginTop: "var(--sp-0_5)",
+            display: "-webkit-box",
+            WebkitBoxOrient: "vertical",
+            WebkitLineClamp: 2,
+            overflow: "hidden",
+          }}
         >
           {props.peek}
         </p>

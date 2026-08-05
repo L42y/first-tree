@@ -545,10 +545,12 @@ video[data-onboarding-orientation-video]::cue {
   --sp-95: 23.75rem; /* 380px — chat-description popover card width (~60ch) */
   --mobile-tabbar-height: 3.5rem; /* 56px */
 
-  /* Agent detail content rail — one uniform readable width across every tab
-     (header, tabs, and content all share it), centered like the context / team
-     / settings pages. */
-  --agent-detail-rail: 52rem;
+  /* Agent detail shell: a compact local-navigation rail plus one readable
+     configuration column. The sum stays below the Settings wrapper while the
+     content column remains wide enough for two-line capability descriptions. */
+  --agent-detail-shell: 72rem;
+  --agent-detail-local-nav: 14rem;
+  --agent-detail-rail: 56rem;
   --agent-detail-error-rail: 30rem;
   /* Shared label column for ConfigRow / IdentityField / DangerActionRow grids. */
   --agent-detail-label-col: 8.25rem;

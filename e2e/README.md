@@ -14,6 +14,8 @@ The journeys these tests walk are owned by the cases
 [`registration-first-run-onboarding`](../packages/qa/cases/cross-surface/registration-first-run-onboarding.md)
 and
 [`external-context-current-session-handoff`](../packages/qa/cases/cross-surface/external-context-current-session-handoff.md).
+The Agent Detail journey is owned by
+[`agent-detail-availability-and-capabilities`](../packages/qa/cases/cross-surface/agent-detail-availability-and-capabilities.md).
 Those cases remain the contracts and the place judgement lives. This directory
 is one way to execute parts of them unattended, in the same spirit as the
 fixtures and environment recipes under `packages/qa` — useful for a quick
@@ -98,6 +100,7 @@ the local stack and the local tests do not touch staging.
 | `registration-new-user.test.yaml` | local | A brand-new account is created and lands on onboarding step 1 |
 | `onboarding-complete-setup.test.yaml` | local | The whole first-run journey: sign up → create team → connect a computer → create the first agent → start the kickoff chat → land in the workspace → open the Team-scoped own-agent setup path |
 | `settings-coding-agent-prompt-dialog.test.yaml` | local | A signed-in Team with a bound Context Tree opens the real setup prompt, reviews the provider-neutral handoff, and copies it from the dialog |
+| `agent-detail-configuration.test.yaml` | local | A Team admin follows one agent from the directory through its availability and effective tools into shared resource Settings |
 | `dev-cloud-sign-in-available.test.yaml` | first-tree-dev-cloud | Staging serves the landing page and offers Google + GitHub sign-in |
 
 `modules/sign-up-fresh-user.module.yaml` holds the shared sign-up flow. Each run
