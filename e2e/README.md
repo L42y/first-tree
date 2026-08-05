@@ -10,20 +10,24 @@ unchanged: deterministic behaviour belongs in per-package Vitest suites,
 agent-skill regression in `@first-tree/skill-evals`, and judgment / live /
 cross-surface validation in committed `@first-tree/qa` cases.
 
-The journey these tests walk is owned by the case
-[`registration-first-run-onboarding`](../packages/qa/cases/cross-surface/registration-first-run-onboarding.md).
-That case remains the contract and the place judgement lives. This directory is
-one way to execute part of it unattended, in the same spirit as the fixtures and
-environment recipes under `packages/qa` — useful for a quick regression pass, not
-a substitute for the case and not a new authority over what "validated" means.
+The journeys these tests walk are owned by the cases
+[`registration-first-run-onboarding`](../packages/qa/cases/cross-surface/registration-first-run-onboarding.md)
+and
+[`external-context-current-session-handoff`](../packages/qa/cases/cross-surface/external-context-current-session-handoff.md).
+Those cases remain the contracts and the place judgement lives. This directory
+is one way to execute parts of them unattended, in the same spirit as the
+fixtures and environment recipes under `packages/qa` — useful for a quick
+regression pass, not a substitute for the cases and not a new authority over
+what "validated" means.
 
 Two limits follow from that and are deliberate:
 
 - It is **not a CI gate** and is not wired into any workflow. Steps resolve from
   natural-language descriptions through a hosted model and some assertions are
   model-evaluated, so a red run is a signal to investigate, not a merge blocker.
-- It covers the happy path plus the connect-computer gate — not the negative
-  branches, degraded states and evidence judgement the case asks for.
+- It covers the registration happy path, the connect-computer gate, and the Web
+  setup-prompt dialog — not the negative branches, provider handoff execution,
+  degraded states, or evidence judgement the cases ask for.
 
 A stable invariant that Vitest could assert still belongs in Vitest. Do not move
 a check here to escape a flaky product test.
@@ -93,6 +97,7 @@ the local stack and the local tests do not touch staging.
 | --- | --- | --- |
 | `registration-new-user.test.yaml` | local | A brand-new account is created and lands on onboarding step 1 |
 | `onboarding-complete-setup.test.yaml` | local | The whole first-run journey: sign up → create team → connect a computer → create the first agent → start the kickoff chat → land in the workspace |
+| `settings-coding-agent-prompt-dialog.test.yaml` | local | A signed-in Team with a bound Context Tree opens the real setup prompt, reviews the provider-neutral handoff, and copies it from the dialog |
 | `dev-cloud-sign-in-available.test.yaml` | first-tree-dev-cloud | Staging serves the landing page and offers Google + GitHub sign-in |
 
 `modules/sign-up-fresh-user.module.yaml` holds the shared sign-up flow. Each run
@@ -137,7 +142,10 @@ the github.com round trip removed, and it 404s unless explicitly opted in
 Two steps of onboarding wait on a *second machine* that a browser test does not
 have: the First Tree client daemon, plus an installed coding-agent runtime.
 `scripts/seed-connected-computer.js` and `scripts/seed-agent-online.js` seed the
-rows that daemon would otherwise write.
+rows that daemon would otherwise write. The setup-prompt test also uses
+`scripts/seed-context-tree-binding.js` to supply the bound-tree prerequisite;
+provider repository creation and authorization are separate from the prompt
+dialog journey under test.
 
 The fixtures replace the machine, not the behaviour under test — every screen,
 transition, API call and assertion around them is exercised for real. What they
