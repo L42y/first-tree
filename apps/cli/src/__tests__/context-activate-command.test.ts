@@ -4,42 +4,57 @@ import type { CommandContext } from "../commands/types.js";
 
 const mocks = vi.hoisted(() => ({
   hook: vi.fn(),
-  inspectRuntime: vi.fn(),
+  issueSync: vi.fn(),
+  readInstall: vi.fn(),
+  resolveRelease: vi.fn(),
+  assertPayloadHealthy: vi.fn(),
 }));
 
-vi.mock("../core/output.js", () => ({
-  print: {
-    hook: mocks.hook,
-  },
+vi.mock("../core/output.js", () => ({ print: { hook: mocks.hook } }));
+vi.mock("../core/channel.js", () => ({ channelConfig: { channel: "dev" } }));
+vi.mock("../core/context-integration/adapter-sync.js", () => ({
+  AdapterSyncRejectedError: class AdapterSyncRejectedError extends Error {},
+  issueAdapterSyncAction: mocks.issueSync,
 }));
-
-vi.mock("../core/context-integration/runtime-health.js", () => ({
-  inspectContextIntegrationRuntime: mocks.inspectRuntime,
+vi.mock("../core/context-integration/manifest.js", () => ({
+  readContextIntegrationInstallManifest: mocks.readInstall,
+}));
+vi.mock("../core/context-integration/release.js", () => ({
+  resolveContextIntegrationRelease: mocks.resolveRelease,
+}));
+vi.mock("../core/context-integration/adapter-payload-health.js", () => ({
+  assertContextAdapterPayloadHealthy: mocks.assertPayloadHealthy,
 }));
 
 import { runContextActivate } from "../commands/context/activate.js";
 
 function context(options: Record<string, unknown>): CommandContext {
   return {
-    command: {
-      opts: () => options,
-    } as unknown as Command,
+    command: { opts: () => options } as unknown as Command,
     options: { json: false, debug: false, quiet: false },
   };
 }
-
-const stalePluginHealth = {
-  healthy: false,
-  issues: ["The installed Context Plugin payload differs from this release."],
-  install: { adapterDigest: "sha256:old" },
-  release: { manifest: { providers: { codex: { adapterDigest: "sha256:new" } } } },
-};
 
 describe("context activate command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("FIRST_TREE_AGENT_ID", "");
     vi.stubEnv("FIRST_TREE_CHAT_ID", "");
+    mocks.readInstall.mockReturnValue({
+      accountClientId: "client_1234abcd",
+      channel: "dev",
+      loaderProtocolVersion: 1,
+      adapterVersion: "1.0.0",
+      adapterDigest: "sha256:old",
+    });
+    mocks.resolveRelease.mockReturnValue({
+      manifest: { providers: { codex: { adapterVersion: "1.1.0", adapterDigest: "sha256:new" } } },
+    });
+    mocks.issueSync.mockReturnValue({
+      code: "adapter_sync_required",
+      command: "first-tree-dev --json context adapter-sync --provider codex --challenge opaque",
+    });
+    mocks.assertPayloadHealthy.mockReturnValue(undefined);
   });
 
   afterEach(() => {
@@ -50,9 +65,12 @@ describe("context activate command", () => {
     vi.stubEnv("FIRST_TREE_AGENT_ID", "agent-1");
     vi.stubEnv("FIRST_TREE_CHAT_ID", "chat-1");
 
-    await runContextActivate(context({ provider: "codex", releaseDigest: "sha256:old" }));
+    await runContextActivate(context({ provider: "codex", adapterDigest: "sha256:old" }), {
+      readHookInput: () => ({ session_id: "session-a" }),
+    });
 
-    expect(mocks.inspectRuntime).not.toHaveBeenCalled();
+    expect(mocks.resolveRelease).not.toHaveBeenCalled();
+    expect(mocks.issueSync).not.toHaveBeenCalled();
     expect(mocks.hook).toHaveBeenCalledWith({ continue: true });
   });
 
@@ -62,35 +80,88 @@ describe("context activate command", () => {
   ])("keeps external activation enabled when only the managed %s marker is present", async (_marker, agentId, chatId) => {
     vi.stubEnv("FIRST_TREE_AGENT_ID", agentId);
     vi.stubEnv("FIRST_TREE_CHAT_ID", chatId);
-    mocks.inspectRuntime.mockReturnValue(stalePluginHealth);
 
-    await runContextActivate(context({ provider: "codex", releaseDigest: "sha256:old" }));
+    await runContextActivate(context({ provider: "codex", adapterDigest: "sha256:old" }), {
+      readHookInput: () => ({ session_id: "session-a" }),
+    });
 
-    expect(mocks.inspectRuntime).toHaveBeenCalledOnce();
+    expect(mocks.issueSync).toHaveBeenCalledOnce();
     expect(mocks.hook.mock.calls[0]?.[0]).toMatchObject({
+      continue: true,
       hookSpecificOutput: { hookEventName: "SessionStart" },
     });
   });
 
-  it("keeps stale Plugin sessions usable and makes repair explicit-user-only", async () => {
-    mocks.inspectRuntime.mockReturnValue(stalePluginHealth);
+  it("returns a bounded exact sync action without installing or treating a routine update as failure", async () => {
+    const started = performance.now();
 
-    await runContextActivate(context({ provider: "codex", releaseDigest: "sha256:old" }));
-
-    expect(mocks.inspectRuntime).toHaveBeenCalledOnce();
-    expect(mocks.hook).toHaveBeenCalledOnce();
-    const response = mocks.hook.mock.calls[0]?.[0];
-    expect(response).toMatchObject({
-      continue: true,
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-      },
+    await runContextActivate(context({ provider: "codex", adapterDigest: "sha256:old" }), {
+      readHookInput: () => ({ session_id: "session-a" }),
     });
-    expect(response.systemMessage).toContain("Ordinary provider work can continue.");
-    expect(response.systemMessage).toContain("first-tree-dev context repair --provider codex");
-    expect(response.hookSpecificOutput.additionalContext).toContain(
-      "Do not repair, upgrade, or synchronize the Plugin automatically.",
-    );
-    expect(response.hookSpecificOutput.additionalContext).toContain("Only if the user explicitly asks");
+
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(mocks.issueSync).toHaveBeenCalledOnce();
+    const response = mocks.hook.mock.calls[0]?.[0];
+    expect(response.systemMessage).toContain("update is available");
+    expect(response.systemMessage).toContain("remains usable");
+    expect(response.hookSpecificOutput.additionalContext).toContain("adapter_sync_required");
+    expect(response.hookSpecificOutput.additionalContext).toContain("context adapter-sync");
+    expect(response.hookSpecificOutput.additionalContext).toContain("currentAdapterUsable=true");
+    expect(response.hookSpecificOutput.additionalContext).not.toContain("context repair");
+  });
+
+  it("keeps a compatible session usable when issuing the automatic update is temporarily unavailable", async () => {
+    mocks.issueSync.mockImplementation(() => {
+      throw new Error("temporary local write failure");
+    });
+
+    await runContextActivate(context({ provider: "codex", adapterDigest: "sha256:old" }), {
+      readHookInput: () => ({ session_id: "session-a" }),
+    });
+
+    const response = mocks.hook.mock.calls[0]?.[0];
+    expect(response.systemMessage).toContain("remains usable");
+    expect(response.hookSpecificOutput.additionalContext).toContain("update_deferred");
+    expect(response.hookSpecificOutput.additionalContext).not.toContain("temporary local write failure");
+    expect(response.hookSpecificOutput.additionalContext).not.toContain("context repair");
+  });
+
+  it("keeps incompatible or corrupt adapter state out of the routine-update path", async () => {
+    mocks.readInstall.mockReturnValue({
+      accountClientId: "client_1234abcd",
+      channel: "dev",
+      loaderProtocolVersion: 0,
+      adapterVersion: "1.0.0",
+      adapterDigest: "sha256:old",
+    });
+    mocks.issueSync.mockImplementation(() => {
+      throw new Error("repair required");
+    });
+
+    await runContextActivate(context({ provider: "codex", adapterDigest: "sha256:old" }), {
+      readHookInput: () => ({ session_id: "session-a" }),
+    });
+
+    const response = mocks.hook.mock.calls[0]?.[0];
+    expect(response.systemMessage).toContain("needs attention");
+    expect(response.systemMessage).not.toContain("remains usable");
+    expect(response.hookSpecificOutput.additionalContext).toContain("context repair");
+  });
+
+  it("does not trust a self-reported digest when the installed payload has drifted", async () => {
+    mocks.assertPayloadHealthy.mockImplementation(() => {
+      throw new Error("provider cache drifted");
+    });
+    mocks.issueSync.mockImplementation(() => {
+      throw new Error("repair required");
+    });
+
+    await runContextActivate(context({ provider: "codex", adapterDigest: "sha256:old" }), {
+      readHookInput: () => ({ session_id: "session-a" }),
+    });
+
+    const response = mocks.hook.mock.calls[0]?.[0];
+    expect(response.systemMessage).toContain("needs attention");
+    expect(response.hookSpecificOutput.additionalContext).toContain("context repair");
   });
 });

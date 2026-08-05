@@ -97,6 +97,9 @@ export async function preflightContextTreeWrite(
   input: PreflightContextTreeWriteInput,
   runGit: ContextTreeReadGitRunner = runContextTreeReadGit,
   verifyProviderAuth: ContextTreeWriteProviderAuthChecker = verifyLocalContextTreeWriteProviderAuth,
+  dependencies: {
+    fetchCurrentCommit?: (teamId: string, binding: ContextTreeWritePreflight["binding"]) => string;
+  } = {},
 ): Promise<ContextTreeWritePreflight> {
   const teamId = validateInlineInput(input.teamId, "--team", "Team id");
   const requesterGithubLogin = input.requesterGithubLogin
@@ -155,7 +158,9 @@ export async function preflightContextTreeWrite(
     );
   }
 
-  const fetchedCommit = fetchCurrentBindingCommit(authority.binding, runGit);
+  const fetchedCommit = dependencies.fetchCurrentCommit
+    ? dependencies.fetchCurrentCommit(teamId, authority.binding)
+    : fetchCurrentBindingCommit(authority.binding, runGit);
   if (fetchedCommit !== snapshot.commit) {
     throw new ContextTreeWritePreflightCliError(
       "CONTEXT_TREE_WRITE_SNAPSHOT_STALE",

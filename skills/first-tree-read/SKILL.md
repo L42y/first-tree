@@ -1,6 +1,6 @@
 ---
 name: first-tree-read
-version: 0.4.0
+version: 0.5.0
 description: Read the applicable Context Tree before acting. In BYO sessions, route only among locally authorized Teams by reading each exact root SCOPE.md before selecting one task snapshot; in managed workspaces, use the bound Tree. Do not use for a Context Tree PR/MR review or an explicit broad audit of stored tree content.
 ---
 
@@ -84,16 +84,14 @@ unavailable candidate would not match: its SCOPE could not be evaluated. When
 `selectionBlocked` is true, automatic selection is forbidden and an
 unavailable candidate itself cannot be selected. Never guess.
 
-After selection, choose a new task-owned directory and activate only the opaque
-candidate:
+After selection, ask the CLI to activate only the opaque candidate:
 
 ```bash
-byo_read_root="$(mktemp -d)"
-first-tree --json context snapshot --candidate "<candidate-id>" \
-  --snapshot "$byo_read_root/context-tree"
+first-tree --json context snapshot --candidate "<candidate-id>"
 ```
 
-The command revalidates the selected Team binding and requires the branch head
+The CLI owns the private temporary snapshot location. The command revalidates
+the selected Team binding and requires the branch head
 to equal the SCOPE commit before atomically publishing the detached snapshot.
 Any drift requires routing again. Preserve the returned Team, candidate,
 binding, exact commit, snapshot, and activation-project receipt for the entire

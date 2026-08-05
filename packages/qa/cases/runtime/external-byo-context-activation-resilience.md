@@ -36,6 +36,26 @@ together.
 
 - Start, resume, clear, and compact a provider session with applicable grants.
   Observe the real SessionStart hook transcript and measure end-to-end hook time.
+- Install an older, complete protocol-v1 thin adapter with a newer CLI release.
+  Confirm SessionStart returns `adapter_sync_required` plus one exact action
+  within its deadline and never invokes provider installation. Let the agent run
+  that action in the normal turn. If update succeeds, current Context work
+  continues on the already loaded adapter; if the provider update fails and
+  rolls back, confirm `update_deferred` keeps that known-good adapter usable and
+  does not surface an internal failure to the user.
+- For Claude, optionally run `/reload-plugins`, reply `continue`, and verify the
+  new `UserPromptSubmit` Hook returns one current-session opaque receipt. For
+  Codex, require `/hooks` trust only when the provider reports a changed Hook
+  identity. Without either optional current-session action, the new adapter is
+  used on the next session.
+- Independently tamper one stable stub, one provider-cache file, and one partial
+  cache tree while leaving the embedded digest literal unchanged. SessionStart,
+  reload observation, persistent route, snapshot, and Write start must all
+  reject the unhealthy payload; session-only loading remains independent.
+- Run standalone Claude repair, then interrupt before reload. `context status`
+  must show the pending adoption; after `/reload-plugins` and one submitted
+  message, the new Hook consumes that obligation and persistent routing resumes
+  without another Team setup apply.
 - Repeat in the ungranted path and confirm no Team Context is injected. Choose
   session-only in a projectless session and confirm it works now without
   Plugin/Hook/grant state but does not reactivate after clear/compact/new session.
@@ -56,13 +76,14 @@ together.
   provider hook completes within its outer budget with a controlled unavailable
   result, normal coding remains usable, and no Context is injected.
 
-Record provider version, Plugin release digest, resolved project kind/reason, exact
+Record provider version, Plugin adapter version/digest and Core release digest, resolved project kind/reason, exact
 Team identifier, hook transcript, operation output, endpoint fault used, attempt
 count, and latency. Redact credentials and private Context content.
 
 ## Expected Result
 
-`PASS`: bound healthy sessions inject the exact Team Context; unbound sessions
+`PASS`: bound healthy sessions inject the exact Team Context; routine adapter
+updates remain user-transparent and perform no install inside SessionStart; unbound sessions
 remain inactive; SessionStart always returns within the provider hook budget;
 explicit operations make only the allowed same-target transient retry; and every
 unresolved authority failure remains fail closed with a stable actionable

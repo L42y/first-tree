@@ -30,7 +30,9 @@ full Tree is read before one candidate is fixed.
    the real directory and all three choices and waits for a new user reply.
 2. Apply global, then independently directory and session-only choices. Confirm
    the selected CLI-authored `applyCommand` is run unchanged and still enforces
-   the exact plan id. Repeat setup for Team B; the shared Plugin is not duplicated.
+   the exact plan id. Repeat setup for Team B; the shared Plugin is not duplicated,
+   its adapter identity is unchanged, Claude does not reload, and Codex does not
+   request trust again.
 3. In Codex projectless mode, confirm the scratch directory is displayed with
    a temporary-directory warning and session-only is recommended.
 4. For session-only, inspect filesystem/provider state: no grant, Plugin, Hook,
@@ -59,6 +61,13 @@ full Tree is read before one candidate is fixed.
     natural-language SCOPE with no fixed section template.
 12. Place a v2 context store in a disposable home. Confirm it is atomically
     backed up, v3 starts empty, and the user must authorize again.
+13. Select the same Team once from Claude and once from Codex. Confirm both
+    snapshots are created from one `data/byo/<org>/context-tree.git`, while an
+    equivalent binding in another Team uses a physically separate bare repo.
+14. Switch the local Client from account A to B and back to A. Confirm each
+    account sees only its parked/restored BYO repositories, an A receipt fails
+    under B, reset removes active and parked BYO data, and an active Write
+    blocks the switch before any move journal is created.
 
 ## Observe
 
@@ -72,6 +81,9 @@ full Tree is read before one candidate is fixed.
   Multiple or zero clear matches produce a user question.
 - Selected Read is pinned to the exact SCOPE/binding commit and never falls
   back to another Team, cached authority or changed cwd.
+- Unselected route candidates leave no long-lived clone. The selected Team's
+  bare repo is shared across providers and branches, while task snapshots stay
+  temporary, detached, and remote-free.
 - A providerless historical binding is normalized identically by route and
   snapshot authority; provider, repository and branch remain strict guards.
 

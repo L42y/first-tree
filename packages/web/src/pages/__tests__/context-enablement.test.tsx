@@ -103,7 +103,7 @@ describe("personal Context access", () => {
     expect(preview?.value).toContain("context enable --provider 'codex' --team 'org-1'");
     expect(preview?.closest('[data-clarity-mask="true"]')).not.toBeNull();
     expect(document.body.textContent).toContain(
-      "Review the complete prompt, then copy and paste it into Claude Code or Codex.",
+      "The coding agent will handle technical steps and ask only when needed.",
     );
     expect(document.body.textContent).toContain("Contains a temporary sign-in code. Don't share it.");
 
@@ -147,13 +147,15 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("--provider 'codex'");
     expect(copiedPrompt).toContain("--provider 'claude-code'");
     expect(copiedPrompt).toContain("exact `applyCommand` from the plan envelope");
-    expect(copiedPrompt).toContain("follow `data.nextActions`");
-    expect(copiedPrompt).toContain("`data.currentSessionHandoff.schemaVersion` is `2`");
-    expect(copiedPrompt).toContain("follow its `activationContext` as standing instructions");
+    expect(copiedPrompt).toContain("follow its `nextActions`");
+    expect(copiedPrompt).toContain("current-session handoff uses schema version 3");
+    expect(copiedPrompt).toContain("adopt its `activationContext`");
     expect(copiedPrompt).toContain("immutable activation receipt");
     expect(copiedPrompt).toContain("even if cwd changes later");
-    expect(copiedPrompt).toContain("no restart, new conversation, or Plugin reload is needed");
-    expect(copiedPrompt).not.toContain("/hooks");
+    expect(copiedPrompt).toContain("Claude `/reload-plugins`");
+    expect(copiedPrompt).toContain("Codex Hook trust");
+    expect(copiedPrompt).toContain("at most twice");
+    expect(copiedPrompt).toContain("Never show raw JSON");
     expect(copiedPrompt).not.toContain("--scope global|directory|session");
     expect(copiedPrompt).not.toContain("Exit and start a new Codex session");
   });
@@ -295,7 +297,7 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("--json context enable");
     expect(copiedPrompt).toContain("exact `applyCommand`");
     expect(copiedPrompt).toContain("First Tree CLI JSON envelopes");
-    expect(copiedPrompt).toContain("`data.currentSessionHandoff.schemaVersion` is `2`");
+    expect(copiedPrompt).toContain("current-session handoff uses schema version 3");
     expect(copiedPrompt).not.toContain("--scope global|directory|session");
     expect(copiedPrompt).not.toContain("Complete result with a missing or invalid handoff");
     expect(copiedPrompt).not.toContain("Determine whether this session has an attached local project");
@@ -388,7 +390,7 @@ describe("personal Context access", () => {
       intent: "onboarding",
     });
 
-    expect(prompt).toContain("`data.currentSessionHandoff.schemaVersion` is `2`");
+    expect(prompt).toContain("current-session handoff uses schema version 3");
     expect(prompt).toContain("immutable activation receipt");
     expect(prompt).toContain("even if cwd changes later");
     expect(prompt).not.toContain("run the SCOPE router");

@@ -16,6 +16,11 @@ const mocks = vi.hoisted(() => ({
   createDriver: vi.fn(),
   enableOperation: vi.fn(),
   fingerprintAfter: vi.fn(() => "b".repeat(64)),
+  consumeReload: vi.fn(),
+  consumeReloadRequired: vi.fn(() => false),
+  hasReloadRequired: vi.fn(() => false),
+  hasPendingReload: vi.fn(() => false),
+  registerPendingReload: vi.fn(),
   inspectHook: vi.fn(),
   inspectLocation: vi.fn(),
   inspectRuntime: vi.fn(),
@@ -37,6 +42,16 @@ vi.mock("../core/context-integration/account-state-guard.js", () => ({
 }));
 vi.mock("../core/context-integration/client-preflight.js", () => ({
   inspectContextSetupLocation: mocks.inspectLocation,
+}));
+vi.mock("../core/context-integration/adapter-observation.js", () => ({
+  consumeContextAdapterReloadReceipt: mocks.consumeReload,
+  consumeContextAdapterReloadRequiredMarker: mocks.consumeReloadRequired,
+  hasContextAdapterReloadRequiredMarker: mocks.hasReloadRequired,
+  ContextReloadReceiptError: class ContextReloadReceiptError extends Error {
+    code = "CONTEXT_RELOAD_RECEIPT_INVALID";
+  },
+  hasPendingContextAdapterReload: mocks.hasPendingReload,
+  registerPendingContextAdapterReload: mocks.registerPendingReload,
 }));
 vi.mock("../core/context-integration/context-binding-store.js", () => ({
   assertContextGrantStoreFingerprint: mocks.assertFingerprint,
@@ -81,6 +96,9 @@ beforeEach(() => {
   mocks.channelConfig.channel = "dev";
   mocks.channelConfig.binName = "first-tree-dev";
   mocks.readAccount.mockReturnValue("client-1");
+  mocks.hasReloadRequired.mockReturnValue(false);
+  mocks.consumeReloadRequired.mockReturnValue(false);
+  mocks.hasPendingReload.mockReturnValue(false);
   mocks.inspectLocation.mockReturnValue({
     project,
     directory: "/work/repo",
@@ -93,10 +111,10 @@ beforeEach(() => {
     config: { schemaVersion: 3, grants: [] },
     fingerprint: "a".repeat(64),
   });
-  mocks.resolveRelease.mockReturnValue({ root: "/release" });
+  mocks.resolveRelease.mockReturnValue({ root: "/release", manifest: { release: "manifest" } });
   mocks.validateActivation.mockResolvedValue({ schemaVersion: 2, outcome: "connected", team });
   mocks.issueSession.mockResolvedValue({ receipt: "signed-session" });
-  mocks.buildHandoff.mockReturnValue({ schemaVersion: 2, consumerKind: "byo", provider: "codex", project });
+  mocks.buildHandoff.mockReturnValue({ schemaVersion: 3, consumerKind: "byo", provider: "codex", project });
   mocks.readConfig.mockReturnValue({
     schemaVersion: 3,
     grants: [{ provider: "codex", organizationId: "org-a", activationScope: { kind: "global" } }],
@@ -109,13 +127,14 @@ beforeEach(() => {
     issues: [],
     probe: { installed: true, enabled: true, installedPath: "/plugin" },
     install: { marketplaceName: "first-tree", pluginName: "first-tree-context" },
+    release: { manifest: { release: "manifest" } },
   });
 });
 
 describe("context enable v3 command", () => {
   it("keeps plan read-only and fixes the grant-store fingerprint", async () => {
     await runContextEnable(context({ plan: true }));
-    const planIdPattern = `v1\\.[0-9a-f]{64}\\.${"a".repeat(64)}\\.[0-9a-f]{64}\\.[0-9a-f]{64}`;
+    const planIdPattern = `v2\\.[0-9a-f]{64}\\.${"a".repeat(64)}\\.[0-9a-f]{64}\\.[0-9a-f]{64}\\.[0-9a-f]{64}`;
     expect(output.result).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "choice_required",
@@ -284,6 +303,83 @@ describe("context enable v3 command", () => {
     expect(mocks.buildHandoff).not.toHaveBeenCalled();
   });
 
+  it("keeps first-time Claude setup incomplete until the reloaded thin adapter is observed", async () => {
+    mocks.createDriver.mockReturnValue({ provider: "claude-code", inspectHook: mocks.inspectHook });
+    mocks.planInstall.mockReturnValue({ operation: "install" });
+    mocks.readConfig.mockReturnValue({
+      schemaVersion: 3,
+      grants: [{ provider: "claude-code", organizationId: "org-a", activationScope: { kind: "global" } }],
+    });
+    await runContextEnable(context({ provider: "claude-code", plan: true }));
+    const planId = (output.result.mock.calls[0]?.[0] as { plan: { planId: string } }).plan.planId;
+    output.result.mockClear();
+
+    await runContextEnable(context({ provider: "claude-code", scope: "global", planId, yes: true }));
+
+    const result = output.result.mock.calls[0]?.[0] as {
+      setup: { complete: boolean; missingLayers: string[] };
+      currentSessionHandoff: unknown;
+      nextActions: string[];
+    };
+    expect(result.setup.complete).toBe(false);
+    expect(result.setup.missingLayers).toContain("Claude Code must reload and observe the thin Context Plugin.");
+    expect(result.currentSessionHandoff).toBeNull();
+    expect(result.nextActions).toEqual([expect.stringContaining("/reload-plugins")]);
+    expect(mocks.registerPendingReload).toHaveBeenCalledTimes(1);
+    expect(mocks.buildHandoff).not.toHaveBeenCalled();
+  });
+
+  it("writes the exact pending plan before clearing a recovered setup reload marker", async () => {
+    mocks.createDriver.mockReturnValue({ provider: "claude-code", inspectHook: mocks.inspectHook });
+    mocks.planInstall.mockReturnValue({ operation: "unchanged" });
+    mocks.hasReloadRequired.mockReturnValue(true);
+    mocks.readConfig.mockReturnValue({
+      schemaVersion: 3,
+      grants: [{ provider: "claude-code", organizationId: "org-a", activationScope: { kind: "global" } }],
+    });
+    await runContextEnable(context({ provider: "claude-code", plan: true }));
+    const planId = (output.result.mock.calls[0]?.[0] as { plan: { planId: string } }).plan.planId;
+    output.result.mockClear();
+
+    await runContextEnable(context({ provider: "claude-code", scope: "global", planId, yes: true }));
+
+    expect(mocks.registerPendingReload).toHaveBeenCalledOnce();
+    expect(mocks.consumeReloadRequired).toHaveBeenCalledWith(expect.anything(), "setup");
+    expect(mocks.registerPendingReload.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.consumeReloadRequired.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it("consumes a session-loaded receipt only for the original pending Claude plan", async () => {
+    mocks.createDriver.mockReturnValue({ provider: "claude-code", inspectHook: mocks.inspectHook });
+    mocks.hasPendingReload.mockReturnValue(true);
+    mocks.readConfig.mockReturnValue({
+      schemaVersion: 3,
+      grants: [{ provider: "claude-code", organizationId: "org-a", activationScope: { kind: "global" } }],
+    });
+    await runContextEnable(context({ provider: "claude-code", plan: true }));
+    const planId = (output.result.mock.calls[0]?.[0] as { plan: { planId: string } }).plan.planId;
+    output.result.mockClear();
+
+    await runContextEnable(
+      context({
+        provider: "claude-code",
+        scope: "global",
+        planId,
+        yes: true,
+        reloadReceipt: "opaque-session-loaded-receipt",
+      }),
+    );
+
+    expect(mocks.consumeReload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planChallenge: planId.split(".").at(-1),
+        receipt: "opaque-session-loaded-receipt",
+      }),
+    );
+    expect(output.result.mock.calls[0]?.[0]).toMatchObject({ setup: { complete: true } });
+  });
+
   it("does not send a Plugin failure into the Codex Hook recovery loop", async () => {
     const planId = await createPlanId();
     output.result.mockClear();
@@ -364,6 +460,7 @@ describe("context enable v3 command", () => {
       expect.objectContaining({ organizationId: "org-a", activationScope: { kind: "global" } }),
       { beforeFingerprint: "a".repeat(64), afterFingerprint: "b".repeat(64) },
       "client-1",
+      { reloadObligationKind: undefined },
     );
     expect(output.result.mock.calls[0]?.[0]).toMatchObject({
       setup: { complete: true },

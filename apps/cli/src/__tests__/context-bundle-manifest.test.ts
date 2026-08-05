@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { contextIntegrationReleaseManifestSchema } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inspectContextAdapterReloadObligation } from "../core/context-integration/adapter-observation.js";
 import {
   contextIntegrationMarketplaceSourcePath,
   installContextIntegration,
@@ -47,7 +47,79 @@ afterEach(() => {
 });
 
 describe("context integration bundle", () => {
-  it("projects provider-guarded Read/Write Skills and byte-identical policy into both providers", () => {
+  it("persists a required Claude reload obligation before provider mutation", () => {
+    const home = mkdtempSync(join(tmpdir(), "first-tree-context-home-"));
+    const releaseRoot = mkdtempSync(join(tmpdir(), "first-tree-context-release-"));
+    roots.push(home, releaseRoot);
+    process.env.FIRST_TREE_HOME = home;
+    mkdirSync(join(home, "config"), { recursive: true });
+    writeFileSync(join(home, "config", "client.yaml"), "client:\n  id: client_1234abcd\n");
+    const repoRoot = resolve(import.meta.dirname, "../../../..");
+    execFileSync(process.execPath, [
+      join(repoRoot, "scripts", "build-context-integration-bundle.mjs"),
+      "--out-dir",
+      releaseRoot,
+      "--version",
+      COMMAND_VERSION,
+      "--channel",
+      "dev",
+    ]);
+    const release = contextIntegrationReleaseManifestSchema.parse(
+      JSON.parse(readFileSync(join(releaseRoot, "release-manifest.json"), "utf8")),
+    );
+    const installedPath = join(home, "provider-cache", "first-tree-context");
+    const initialProbe: ProviderPluginProbe = {
+      provider: "claude-code",
+      binaryAvailable: true,
+      version: "2.1.121",
+      compatible: true,
+      installed: false,
+      enabled: false,
+      installedPath: null,
+      issues: [],
+    };
+    const driver: ContextIntegrationProviderDriver = {
+      provider: "claude-code",
+      executable: "claude",
+      minimumVersion: "2.1.121",
+      probe: () => initialProbe,
+      inspectHook: async () => ({ trust: "provider_managed", enabled: true, source: "provider_managed", issues: [] }),
+      validateMarketplace: () => undefined,
+      install: ({ marketplaceRoot }) => {
+        expect(inspectContextAdapterReloadObligation(release)).toBe("setup");
+        cpSync(join(marketplaceRoot, "plugins", "first-tree-context"), installedPath, { recursive: true });
+        return { ...initialProbe, installed: true, enabled: true, installedPath };
+      },
+      uninstall: () => undefined,
+    };
+
+    const plan = planContextIntegrationInstall(driver, { releaseRoot });
+    const installed = installContextIntegration(driver, plan, { reloadObligationKind: "setup" });
+
+    expect(inspectContextAdapterReloadObligation(release)).toBe("setup");
+    expect(installed.manifest.materializedPayloadDigest).toMatch(/^sha256:/u);
+    expect(installed.manifest.materializedMarketplaceDigest).toMatch(/^sha256:/u);
+    expect(installed.manifest.adoptionGeneration).toMatch(/^[0-9a-f]{48}$/u);
+    expect(readFileSync(join(installedPath, "hooks", "hooks.json"), "utf8")).toContain(
+      `--adoption-generation ${installed.manifest.adoptionGeneration}`,
+    );
+
+    uninstallContextIntegration(driver);
+    const failingDriver: ContextIntegrationProviderDriver = {
+      ...driver,
+      install: () => {
+        expect(inspectContextAdapterReloadObligation(release)).toBe("setup");
+        throw new Error("provider install failed");
+      },
+    };
+    const failingPlan = planContextIntegrationInstall(failingDriver, { releaseRoot });
+    expect(() => installContextIntegration(failingDriver, failingPlan, { reloadObligationKind: "setup" })).toThrow(
+      "provider install failed",
+    );
+    expect(inspectContextAdapterReloadObligation(release)).toBeNull();
+  });
+
+  it("packages only thin provider discovery stubs and keeps canonical Core paths in the CLI release", () => {
     const root = mkdtempSync(join(tmpdir(), "first-tree-context-bundle-"));
     roots.push(root);
     const repoRoot = resolve(import.meta.dirname, "../../../..");
@@ -68,115 +140,168 @@ describe("context integration bundle", () => {
     const manifest = contextIntegrationReleaseManifestSchema.parse(
       JSON.parse(readFileSync(join(root, "release-manifest.json"), "utf8")),
     );
-    const canonicalPolicy = readFileSync(
-      join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md"),
-    );
-    const expectedPolicyDigest = `sha256:${createHash("sha256").update(canonicalPolicy).digest("hex")}`;
-    expect(manifest.policyDigest).toBe(expectedPolicyDigest);
-
-    const policyPath = "skills/first-tree-read/references/context-tree-policy.md";
-    const claudePolicy = readFileSync(join(root, "claude-code", "plugins", "first-tree-context", policyPath));
-    const codexPolicy = readFileSync(join(root, "codex", "plugins", "first-tree-context", policyPath));
-    expect(claudePolicy.equals(codexPolicy)).toBe(true);
-    const projectedSkills = new Map<string, { read: string; write: string }>();
+    expect(manifest.policyDigest).toBe(manifest.core.policy.digest);
+    expect(manifest.core.policy.path).toBe("dist/runtime-assets/context-tree-policy.md");
+    expect(manifest.core.skills["first-tree-read"].path).toBe("skills/first-tree-read/SKILL.md");
+    expect(manifest.core.skills["first-tree-write"].path).toBe("skills/first-tree-write/SKILL.md");
     for (const provider of ["claude-code", "codex"]) {
       const pluginRoot = join(root, provider, "plugins", "first-tree-context");
       const hook = readFileSync(join(pluginRoot, "hooks", "hooks.json"), "utf8");
       const readSkill = readFileSync(join(pluginRoot, "skills", "first-tree-read", "SKILL.md"), "utf8");
       const writeSkill = readFileSync(join(pluginRoot, "skills", "first-tree-write", "SKILL.md"), "utf8");
       const manualSkill = readFileSync(join(pluginRoot, "skills", "first-tree", "SKILL.md"), "utf8");
-      projectedSkills.set(provider, { read: readSkill, write: writeSkill });
+      expect(manifest.providers[provider as "claude-code" | "codex"].adapterVersion).toBe("1.0.0");
       expect(hook).toContain('"timeout": 5');
-      expect(hook).not.toContain('"timeout": 3');
       expect(hook).toContain('"matcher": "startup|resume|clear|compact"');
-      expect(readSkill).toContain(`context route --provider ${provider}`);
-      expect(readSkill).toContain('context snapshot --candidate "<candidate-id>"');
-      expect(writeSkill).toContain("context write-preflight");
-      const writeDescription = /^description: (.+)$/mu.exec(writeSkill)?.[1];
-      expect(writeDescription).toContain(`for ${provider} BYO sessions`);
-      expect(writeDescription).toContain("exact SCOPE-routed snapshot");
-      expect(writeDescription).toContain("new user confirmation");
-      expect(writeSkill).toContain("a source repo change you just completed");
-      expect(writeSkill).toContain("an evidence-backed `context-tree-audit` finding");
-      expect(writeSkill).toContain("This Source Gate\nremains intentionally broader than the generic automatic route.");
-      expect(writeSkill).toContain(
-        "Authorization to publish a source PR/MR is\nnot, by itself, a separate or transitive Tree write-intent rule.",
-      );
-      expect(writeSkill).toContain(
-        "standing classification selects this workflow but never\nbypasses its live write preflight",
-      );
-      expect(readSkill).toContain("read `references/context-tree-policy.md` completely");
-      expect(writeSkill).toContain("read `references/context-tree-policy.md` completely");
-      expect(readSkill).toContain(
-        `__FIRST_TREE_SKILL_INVOCATION__ --json context route --provider ${provider} <immutable-project-selector>`,
-      );
-      expect(readSkill).not.toMatch(/\bfirst-tree\s+(?:chat|context|github|gitlab|tree)\b/u);
-      expect(writeSkill).not.toMatch(/\bfirst-tree\s+(?:chat|context|github|gitlab|tree)\b/u);
-      expect(readSkill).not.toContain('first_tree_project_root="<attached-project-root>"');
-      expect(readSkill).toContain("activation-project receipt");
-      expect(writeSkill).toContain('context write-preflight \\\n  --snapshot "<exact-snapshot>"');
-      expect(manualSkill).toContain(`context route --provider ${provider}`);
-      expect(manualSkill).toContain('context snapshot --candidate "<candidate-id>"');
-      expect(manualSkill).toContain("current session's original project identity");
-      expect(manualSkill).toContain("<host-confirmed-project-selector>");
+      expect(hook).toContain("--adapter-digest __ADAPTER_DIGEST__");
       if (provider === "claude-code") {
-        expect(manualSkill).toContain("Never derive the root from shell `pwd`/cwd");
-        expect(manualSkill).toContain("assume `CLAUDE_PROJECT_DIR` exists");
+        expect(hook).toContain('"UserPromptSubmit"');
+        expect(hook).toContain("context-observe-loaded");
+        expect(hook).toContain('"timeout": 2');
       } else {
-        expect(manualSkill).toContain("Do not reclassify from the current shell cwd");
-        expect(manualSkill).toContain("do not copy or reproduce the Codex scratch-path heuristic");
+        expect(hook).not.toContain('"UserPromptSubmit"');
       }
-      expect(manualSkill).toContain("activation-project receipt");
-      expect(manualSkill).toContain("when selectionBlocked is true or any highest-priority candidate is unavailable");
-      expect(manualSkill).toContain("automatic selection is forbidden");
-      expect(manualSkill).not.toContain("<project-selector>");
-      expect(manualSkill).toContain("../first-tree-read/references/context-tree-policy.md");
-      expect(manualSkill).not.toContain("--team");
-      expect(readSkill).not.toMatch(/tree read --team/u);
-      expect(writeSkill).not.toMatch(/tree write --team/u);
-      expect(readSkill).toContain("External BYO Projection Boundary");
-      expect(readSkill).toContain("consumerKind is always byo");
-      expect(writeSkill).toContain("All BYO writes require");
-      expect(readSkill).not.toMatch(/request (?:an explicit |it from the user|the )?Team id/iu);
-      expect(writeSkill).not.toMatch(/request (?:an explicit |it from the user|the )?Team id/iu);
+      expect(hook).not.toContain("__RELEASE_DIGEST__");
+      expect(readSkill).toContain(`context skill load --protocol 1 --provider ${provider} --name first-tree-read`);
+      expect(writeSkill).toContain(`context skill load --protocol 1 --provider ${provider} --name first-tree-write`);
+      expect(manualSkill).toContain(`context skill load --protocol 1 --provider ${provider} --name first-tree-read`);
+      expect(readSkill).not.toContain("context route");
+      expect(writeSkill).not.toContain("context write-preflight");
+      expect(readdirSync(join(pluginRoot, "skills", "first-tree-read"))).toEqual(["SKILL.md"]);
+      expect(readdirSync(join(pluginRoot, "skills", "first-tree-write"))).toEqual(["SKILL.md"]);
+      expect(manualSkill).toContain("current session's original project identity");
     }
-    const claudeSkills = projectedSkills.get("claude-code");
-    const codexSkills = projectedSkills.get("codex");
-    expect(claudeSkills?.read.replaceAll("claude-code", "<provider>")).toBe(
-      codexSkills?.read.replaceAll("codex", "<provider>"),
-    );
-    expect(claudeSkills?.write.replaceAll("claude-code", "<provider>")).toBe(
-      codexSkills?.write.replaceAll("codex", "<provider>"),
-    );
     expect(readdirSync(join(root, "codex", "plugins", "first-tree-context", "skills"))).not.toContain(
       "first-tree-seed",
     );
   });
 
-  it("changes the Codex hook definition when the release digest changes", () => {
-    const root = mkdtempSync(join(tmpdir(), "first-tree-context-bundle-"));
-    roots.push(root);
+  it("keeps adapter identity and bytes stable across a Core-only CLI release", () => {
+    const firstRoot = mkdtempSync(join(tmpdir(), "first-tree-context-bundle-first-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "first-tree-context-bundle-second-"));
+    const planRoot = mkdtempSync(join(tmpdir(), "first-tree-context-bundle-plan-"));
+    const coreRoot = mkdtempSync(join(tmpdir(), "first-tree-context-core-"));
+    roots.push(firstRoot, secondRoot, planRoot, coreRoot);
     const repoRoot = resolve(import.meta.dirname, "../../../..");
+    cpSync(join(repoRoot, "skills"), join(coreRoot, "skills"), { recursive: true });
+    const policyTarget = join(coreRoot, "packages", "client", "src", "runtime", "assets");
+    mkdirSync(policyTarget, { recursive: true });
+    cpSync(
+      join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md"),
+      join(policyTarget, "context-tree-policy.md"),
+    );
     execFileSync(
       process.execPath,
       [
         join(repoRoot, "scripts", "build-context-integration-bundle.mjs"),
         "--out-dir",
-        root,
+        firstRoot,
         "--version",
         "1.2.3",
         "--channel",
-        "prod",
+        "dev",
+        "--core-root",
+        coreRoot,
       ],
       { stdio: "pipe" },
     );
-    const hook = readFileSync(join(root, "codex", "plugins", "first-tree-context", "hooks", "hooks.json"), "utf8");
-    expect(hook).toContain("__RELEASE_DIGEST__");
-    const launcher = readFileSync(
-      join(root, "codex", "plugins", "first-tree-context", "bin", "context-session-start"),
-      "utf8",
+    writeFileSync(
+      join(coreRoot, "skills", "first-tree-read", "SKILL.md"),
+      `${readFileSync(join(coreRoot, "skills", "first-tree-read", "SKILL.md"), "utf8")}\nCore-only change.\n`,
     );
-    expect(launcher).toContain("__FIRST_TREE_INVOCATION__");
+    execFileSync(
+      process.execPath,
+      [
+        join(repoRoot, "scripts", "build-context-integration-bundle.mjs"),
+        "--out-dir",
+        secondRoot,
+        "--version",
+        "1.2.4",
+        "--channel",
+        "dev",
+        "--core-root",
+        coreRoot,
+      ],
+      { stdio: "pipe" },
+    );
+    execFileSync(
+      process.execPath,
+      [
+        join(repoRoot, "scripts", "build-context-integration-bundle.mjs"),
+        "--out-dir",
+        planRoot,
+        "--version",
+        COMMAND_VERSION,
+        "--channel",
+        "dev",
+      ],
+      { stdio: "pipe" },
+    );
+    const first = contextIntegrationReleaseManifestSchema.parse(
+      JSON.parse(readFileSync(join(firstRoot, "release-manifest.json"), "utf8")),
+    );
+    const second = contextIntegrationReleaseManifestSchema.parse(
+      JSON.parse(readFileSync(join(secondRoot, "release-manifest.json"), "utf8")),
+    );
+    expect(first.core.digest).not.toBe(second.core.digest);
+    for (const provider of ["claude-code", "codex"] as const) {
+      expect(first.providers[provider]).toEqual(second.providers[provider]);
+      expect(snapshotTree(join(firstRoot, provider))).toEqual(snapshotTree(join(secondRoot, provider)));
+    }
+
+    const home = mkdtempSync(join(tmpdir(), "first-tree-context-core-only-home-"));
+    const installedPath = join(home, "provider-cache", "first-tree-context");
+    roots.push(home);
+    process.env.FIRST_TREE_HOME = home;
+    mkdirSync(join(home, "config"), { recursive: true });
+    writeFileSync(join(home, "config", "client.yaml"), "client:\n  id: client_1234abcd\n");
+    const marketplaceRoot = contextIntegrationMarketplaceSourcePath("codex");
+    cpSync(join(firstRoot, "codex"), marketplaceRoot, { recursive: true });
+    const invocation = materializeContextPluginPayload(
+      join(marketplaceRoot, "plugins", "first-tree-context"),
+      first.providers.codex.adapterDigest,
+      { kind: "bin", program: "/opt/first-tree/bin/first-tree" },
+    );
+    cpSync(join(marketplaceRoot, "plugins", "first-tree-context"), installedPath, { recursive: true });
+    writeContextIntegrationInstallManifest({
+      schemaVersion: 1,
+      accountClientId: "client_1234abcd",
+      channel: "dev",
+      provider: "codex",
+      firstTreeVersion: "1.2.3",
+      bundleVersion: "1.2.3",
+      adapterVersion: first.providers.codex.adapterVersion,
+      loaderProtocolVersion: 1,
+      bundleDigest: first.bundleDigest,
+      policyDigest: first.policyDigest,
+      adapterDigest: first.providers.codex.adapterDigest,
+      marketplaceName: "first-tree-dev",
+      pluginName: "first-tree-context",
+      materializedInvocation: invocation,
+      installedAt: "2026-08-05T00:00:00.000Z",
+    });
+    const probe: ProviderPluginProbe = {
+      provider: "codex",
+      binaryAvailable: true,
+      version: "0.145.0",
+      compatible: true,
+      installed: true,
+      enabled: true,
+      installedPath,
+      issues: [],
+    };
+    const driver: ContextIntegrationProviderDriver = {
+      provider: "codex",
+      executable: "codex",
+      minimumVersion: "0.144.0",
+      probe: () => probe,
+      inspectHook: async () => ({ trust: "trusted", enabled: true, source: "provider_api", issues: [] }),
+      validateMarketplace: () => undefined,
+      install: () => probe,
+      uninstall: () => undefined,
+    };
+
+    expect(planContextIntegrationInstall(driver, { releaseRoot: planRoot }).operation).toBe("unchanged");
   });
 
   it.each([
@@ -278,6 +403,8 @@ describe("context integration bundle", () => {
     const installedPath = join(home, "provider-cache", "first-tree-context");
     roots.push(home, releaseRoot);
     process.env.FIRST_TREE_HOME = home;
+    mkdirSync(join(home, "config"), { recursive: true });
+    writeFileSync(join(home, "config", "client.yaml"), "client:\n  id: client_1234abcd\n");
     mkdirSync(installedPath, { recursive: true });
     writeFileSync(join(installedPath, "old-release.txt"), "previous\n");
     mkdirSync(join(installedPath, "bin"), { recursive: true });
@@ -390,6 +517,8 @@ describe("context integration bundle", () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), "first-tree-context-release-"));
     roots.push(home, releaseRoot);
     process.env.FIRST_TREE_HOME = home;
+    mkdirSync(join(home, "config"), { recursive: true });
+    writeFileSync(join(home, "config", "client.yaml"), "client:\n  id: client_1234abcd\n");
     const repoRoot = resolve(import.meta.dirname, "../../../..");
     execFileSync(
       process.execPath,
@@ -675,3 +804,17 @@ describe("context integration bundle", () => {
     expect(existsSync(journalPath)).toBe(true);
   });
 });
+
+function snapshotTree(root: string): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+  const visit = (directory: string, prefix = ""): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) visit(path, name);
+      else if (entry.isFile()) snapshot[name] = readFileSync(path).toString("base64");
+    }
+  };
+  visit(root);
+  return snapshot;
+}
