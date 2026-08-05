@@ -40,7 +40,12 @@ import { AgentSwitcherStrip } from "./agent-detail/agent-switcher-strip.js";
 import { useAgentResources } from "./agent-detail/capability-section.js";
 import { ContextBar } from "./agent-detail/context-bar.js";
 import type { AgentDetailContext, RuntimeSwitchClaimView } from "./agent-detail/layout-context.js";
-import { buildTabs, shouldShowResponsibilitiesTab, type TabDef } from "./agent-detail/tabs.js";
+import {
+  buildTabs,
+  responsibilitiesSideFromQuery,
+  shouldShowResponsibilitiesTab,
+  type TabDef,
+} from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
 import { useLegacyAnchorRedirect } from "./agent-detail/use-legacy-anchor-redirect.js";
 import { PROVIDER_ORDER, runtimeProviderLabel } from "./clients/cards/shared/providers.js";
@@ -276,20 +281,25 @@ function AgentDetailPageView() {
   const showResponsibilities = useMemo(
     () =>
       shouldShowResponsibilitiesTab(isHumanLocal, {
-        catalogFetched: templateCatalogQuery.isSuccess,
-        catalogError: templateCatalogQuery.isError,
-        catalogCount: templateCatalogQuery.data?.templates.length ?? 0,
-        agentResourcesFetched: toolsResources.data != null,
-        agentResourcesError: toolsResources.error != null && toolsResources.data == null,
-        agentTemplateIdCount: toolsResources.data?.templateIds.length ?? 0,
+        catalog: responsibilitiesSideFromQuery({
+          count: templateCatalogQuery.data ? templateCatalogQuery.data.templates.length : null,
+          isFetching: templateCatalogQuery.isFetching,
+          isError: templateCatalogQuery.isError,
+        }),
+        agentResources: responsibilitiesSideFromQuery({
+          count: toolsResources.data ? toolsResources.data.templateIds.length : null,
+          isFetching: toolsResources.isFetching,
+          isError: toolsResources.isError,
+        }),
       }),
     [
       isHumanLocal,
-      templateCatalogQuery.isSuccess,
+      templateCatalogQuery.data,
+      templateCatalogQuery.isFetching,
       templateCatalogQuery.isError,
-      templateCatalogQuery.data?.templates.length,
       toolsResources.data,
-      toolsResources.error,
+      toolsResources.isFetching,
+      toolsResources.isError,
     ],
   );
   const tabs = useMemo(

@@ -17,47 +17,68 @@ const TAB_LABELS: Record<string, string> = {
 };
 
 /**
- * Inputs for whether the Responsibilities tab should appear. Hide only when
- * both the public official Template catalog and the agent's adopted
- * `templateIds` are confirmed empty. Loading and request failures must fail
- * open (keep the tab) so uncertainty is never treated as "no data".
+ * One side of the empty-entry gate (public catalog or agent-resources).
+ *
+ * Confirmed empty requires: data present from a successful response, no
+ * in-flight fetch/refetch, no error (including background refetch errors that
+ * retain cached data), and a zero count. Anything else is uncertain → fail open.
  */
-export type ResponsibilitiesVisibilityInput = {
-  catalogFetched: boolean;
-  catalogError: boolean;
-  catalogCount: number;
-  agentResourcesFetched: boolean;
-  agentResourcesError: boolean;
-  agentTemplateIdCount: number;
+export type ResponsibilitiesSideState = {
+  hasData: boolean;
+  isFetching: boolean;
+  hasError: boolean;
+  count: number;
 };
+
+export type ResponsibilitiesVisibilityInput = {
+  catalog: ResponsibilitiesSideState;
+  agentResources: ResponsibilitiesSideState;
+};
+
+/** Build a side state from a live React Query observation. */
+export function responsibilitiesSideFromQuery(args: {
+  /** `null` when the query has never produced data (or cache miss). */
+  count: number | null;
+  isFetching: boolean;
+  isError: boolean;
+}): ResponsibilitiesSideState {
+  return {
+    hasData: args.count != null,
+    isFetching: args.isFetching,
+    hasError: args.isError,
+    count: args.count ?? 0,
+  };
+}
+
+export function isConfirmedEmptyResponsibilitiesSide(side: ResponsibilitiesSideState): boolean {
+  return side.hasData && !side.isFetching && !side.hasError && side.count === 0;
+}
 
 /**
  * Whether Agent Detail should expose the Responsibilities tab.
  *
- * - Humans never see it.
- * - Non-humans see it whenever the public catalog has any templates, or the
- *   agent already carries adopted Template ids (active / retired / missing
- *   provenance still needs a home).
- * - Hide only when both sides are confirmed empty.
- * - When the agent's resources are still unknown, `assumeShowWhenAgentUnknown`
- *   controls fail-open (page chrome) vs fail-closed (switcher path preservation
- *   must not send the user into an entry that will immediately close).
+ * Hide only when both the public catalog and the agent's adopted `templateIds`
+ * are confirmed empty (latest request succeeded, not fetching/refetching, empty
+ * arrays). Loading, in-flight background refetch, initial errors, and cached
+ * data with a refetch error all fail open. Non-empty `templateIds` keep the tab
+ * for provenance even when the official catalog is empty.
  */
 export function shouldShowResponsibilitiesTab(
   isHuman: boolean,
   input: ResponsibilitiesVisibilityInput | null,
-  opts?: { assumeShowWhenAgentUnknown?: boolean },
 ): boolean {
   if (isHuman) return false;
   if (!input) return true;
-  if (!input.catalogFetched || input.catalogError) return true;
-  if (input.catalogCount > 0) return true;
-  // Catalog is confirmed empty — keep the tab only when this agent still has
-  // adopted Template responsibilities (including retired / missing provenance).
-  if (!input.agentResourcesFetched || input.agentResourcesError) {
-    return opts?.assumeShowWhenAgentUnknown ?? true;
+  // Provenance / available catalog: any known non-empty side keeps the entry.
+  if (input.agentResources.hasData && input.agentResources.count > 0) return true;
+  if (input.catalog.hasData && input.catalog.count > 0) return true;
+  if (
+    isConfirmedEmptyResponsibilitiesSide(input.catalog) &&
+    isConfirmedEmptyResponsibilitiesSide(input.agentResources)
+  ) {
+    return false;
   }
-  return input.agentTemplateIdCount > 0;
+  return true;
 }
 
 /**
@@ -65,6 +86,8 @@ export function shouldShowResponsibilitiesTab(
  * independent of label/order. `buildTabs` adds the display label on top, and the
  * agent switcher uses this to know whether a target agent supports the current
  * tab — so the two can never drift on tab availability.
+ *
+ * Humans never receive Responsibilities, even when a caller passes `true`.
  */
 export function tabKeysFor(
   canEditConfig: boolean,
@@ -72,7 +95,7 @@ export function tabKeysFor(
   showResponsibilities: boolean = !isHuman,
 ): { key: string; path: string }[] {
   const tabs: { key: string; path: string }[] = [{ key: "profile", path: "profile" }];
-  if (showResponsibilities) {
+  if (!isHuman && showResponsibilities) {
     tabs.push({ key: "responsibilities", path: "responsibilities" });
   }
   if (canEditConfig) {
@@ -117,6 +140,8 @@ export function canEditConfigFor(agent: Agent, memberId: string | null, role: st
  * Which tab PATH to open when switching to `agent`: keep the current tab when the
  * target supports it, else fall back to profile. (Some tabs render blank rather
  * than redirect for unsupported agents, so we resolve this up front.)
+ *
+ * Humans never keep a Responsibilities path, even if `showResponsibilities` is true.
  */
 export function resolveTabPath(
   agent: Agent,

@@ -4,7 +4,7 @@ import { listAgentTemplates } from "../../api/agent-templates.js";
 import { useAgentResources } from "./capability-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 import { ResponsibilitiesSection } from "./responsibilities-section.js";
-import { shouldShowResponsibilitiesTab } from "./tabs.js";
+import { responsibilitiesSideFromQuery, shouldShowResponsibilitiesTab } from "./tabs.js";
 
 export function ResponsibilitiesTab() {
   const ctx = useAgentDetailContext();
@@ -19,12 +19,16 @@ export function ResponsibilitiesTab() {
   });
 
   const showResponsibilities = shouldShowResponsibilitiesTab(ctx.isHuman, {
-    catalogFetched: catalogQuery.isSuccess,
-    catalogError: catalogQuery.isError,
-    catalogCount: catalogQuery.data?.templates.length ?? 0,
-    agentResourcesFetched: resources.data != null,
-    agentResourcesError: resources.error != null && resources.data == null,
-    agentTemplateIdCount: resources.data?.templateIds.length ?? 0,
+    catalog: responsibilitiesSideFromQuery({
+      count: catalogQuery.data ? catalogQuery.data.templates.length : null,
+      isFetching: catalogQuery.isFetching,
+      isError: catalogQuery.isError,
+    }),
+    agentResources: responsibilitiesSideFromQuery({
+      count: resources.data ? resources.data.templateIds.length : null,
+      isFetching: resources.isFetching,
+      isError: resources.isError,
+    }),
   });
 
   if (ctx.isHuman || !showResponsibilities) return <Navigate to="../profile" replace />;

@@ -7,7 +7,7 @@ import { useAuth } from "../../auth/auth-context.js";
 import { Avatar } from "../../components/avatar.js";
 import { matchesAgentScope, readAgentFilterPreference } from "../team/agent-filter.js";
 import { fetchAllAgents } from "../team/index.js";
-import { resolveTabPath, shouldShowResponsibilitiesTab } from "./tabs.js";
+import { resolveTabPath, responsibilitiesSideFromQuery, shouldShowResponsibilitiesTab } from "./tabs.js";
 
 /**
  * Agent switcher (vertical-B): replaces the breadcrumb at the top of agent
@@ -95,25 +95,27 @@ export function AgentSwitcherStrip({
   }, [updateEdges]);
 
   const tabPathFor = (target: Agent): string => {
-    // Prefer React Query cache already warmed by Agent Detail. When the public
-    // catalog is confirmed empty and the target's resources are unknown, fail
-    // closed so we never preserve `/responsibilities` into a closed entry.
+    // Prefer React Query cache already warmed by Agent Detail. Fall back to
+    // Profile only when the target's resources are confirmed empty (with an
+    // empty catalog). Unknown / loading / error for the target keeps the
+    // Responsibilities path; the destination page re-evaluates and redirects
+    // once it has a settled answer.
     const catalogState = queryClient.getQueryState<AgentTemplatePublicList>(["agent-templates-catalog"]);
     const catalog = queryClient.getQueryData<AgentTemplatePublicList>(["agent-templates-catalog"]);
     const resourcesState = queryClient.getQueryState<AgentResourcesOutput>(["agent-resources", target.uuid]);
     const resources = queryClient.getQueryData<AgentResourcesOutput>(["agent-resources", target.uuid]);
-    const showResponsibilities = shouldShowResponsibilitiesTab(
-      target.type === "human",
-      {
-        catalogFetched: catalogState?.status === "success",
-        catalogError: catalogState?.status === "error",
-        catalogCount: catalog?.templates.length ?? 0,
-        agentResourcesFetched: resources != null,
-        agentResourcesError: resourcesState?.status === "error" && resources == null,
-        agentTemplateIdCount: resources?.templateIds.length ?? 0,
-      },
-      { assumeShowWhenAgentUnknown: false },
-    );
+    const showResponsibilities = shouldShowResponsibilitiesTab(target.type === "human", {
+      catalog: responsibilitiesSideFromQuery({
+        count: catalog ? catalog.templates.length : null,
+        isFetching: catalogState?.fetchStatus === "fetching",
+        isError: catalogState?.status === "error",
+      }),
+      agentResources: responsibilitiesSideFromQuery({
+        count: resources ? resources.templateIds.length : null,
+        isFetching: resourcesState?.fetchStatus === "fetching",
+        isError: resourcesState?.status === "error",
+      }),
+    });
     return resolveTabPath(target, memberId, role, currentTabPath, showResponsibilities);
   };
 
