@@ -166,6 +166,7 @@ export function StepCreateAgent() {
   // jump. A disabled pill + the reconnect hint reads as "your agent's here, just
   // temporarily unreachable", not "it's gone".
   const connected = !!computer.connectedClient;
+  const noRuntime = connected && computer.capabilitiesLoaded && orderedOkRuntimes.length === 0;
   const displayProviders = connected
     ? orderedOkRuntimes
     : computer.connectedClients.length === 0 && selectedRuntime
@@ -273,6 +274,20 @@ export function StepCreateAgent() {
         <p className="text-caption text-muted-foreground" role="status" style={{ margin: 0 }}>
           Detecting what this computer can run…
         </p>
+      ) : noRuntime ? (
+        <FlowHint role="status">
+          {COPY.createAgent.noRuntime.pre}
+          <a
+            href="/settings/computers"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium underline underline-offset-2"
+            style={{ color: "var(--primary)" }}
+          >
+            {COPY.createAgent.noRuntime.link}
+          </a>
+          {COPY.createAgent.noRuntime.post}
+        </FlowHint>
       ) : displayProviders.length > 0 ? (
         <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
           {displayProviders.map((provider) => (

@@ -2134,6 +2134,48 @@ describe("web DOM interaction coverage", () => {
     await unmountRoot(root);
   });
 
+  it("explains how to recover when the selected computer has no ready runtime", async () => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: false };
+    const { StepCreateAgent } = await import("../onboarding/steps/step-create-agent.js");
+    const firstClient = CLIENTS[0];
+    const secondClientBase = CLIENTS[1];
+    if (!firstClient || !secondClientBase) throw new Error("Expected two connected client fixtures");
+    const secondClient: HubClient = {
+      ...secondClientBase,
+      status: "connected",
+      authState: "ok",
+    };
+    const { container, root } = await renderOnboardingDom(<StepCreateAgent />, {
+      activeStep: "create-agent",
+      computer: {
+        connectedClients: [firstClient, secondClient],
+        selectedClientId: secondClient.id,
+        setSelectedClientId: vi.fn(),
+        connectedClient: secondClient,
+        capabilitiesLoaded: true,
+        okRuntimes: [],
+        selectedRuntime: null,
+        setSelectedRuntime: vi.fn(),
+        cliCommand: "first-tree-dev login token",
+        tokenError: null,
+        retry: vi.fn(),
+      },
+    });
+
+    await waitForText("Nothing is ready to run on this computer", container);
+    expect(container.textContent).not.toContain("Not ready");
+    expect(container.querySelectorAll('input[name="onboarding-coding-agent"]')).toHaveLength(0);
+    const recoveryLink = container.querySelector<HTMLAnchorElement>('a[href="/settings/computers"]');
+    expect(recoveryLink?.textContent).toContain("Finish setup in Settings → Computers");
+    expect(recoveryLink?.target).toBe("_blank");
+    expect(recoveryLink?.rel).toContain("noopener");
+    const create = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Create agent"),
+    );
+    expect(create?.disabled).toBe(true);
+    await unmountRoot(root);
+  });
+
   it("handles create-agent timeout actions", async () => {
     const { StepCreateAgent } = await import("../onboarding/steps/step-create-agent.js");
     const retryAgent = vi.fn(async () => undefined);
