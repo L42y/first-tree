@@ -569,6 +569,11 @@ function hasReviewableResult(text: string): boolean {
   return judgmentWithEvidence || diffWithCheck;
 }
 
+function sourceRepoCdOperand(segment: string): string | null {
+  const match = segment.match(/^\s*(?:\(\s*)*cd\s+(?:--\s+)?(?:"([^"]+)"|'([^']+)'|([^\s)]+))/u);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
 type SourceRepoCwdScope = "descendant" | "outside" | "root";
 
 function sourceRepoCwdScope(cwd: string | null, workspacePath: string): SourceRepoCwdScope {
@@ -749,16 +754,8 @@ function isShellAssignment(word: string | undefined): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word ?? "");
 }
 
-type EffectiveShellCommand = {
-  childCwdOperands: readonly string[];
-  shellBuiltinAllowed: boolean;
-  words: readonly string[];
-};
-
-function effectiveShellCommand(words: readonly string[]): EffectiveShellCommand {
+function effectiveCommandWords(words: readonly string[]): string[] {
   let index = 0;
-  const childCwdOperands: string[] = [];
-  let shellBuiltinAllowed = true;
   while (isShellAssignment(words[index])) index += 1;
 
   while (index < words.length) {
@@ -776,15 +773,12 @@ function effectiveShellCommand(words: readonly string[]): EffectiveShellCommand 
           index += 1;
           continue;
         }
-        if (/^-[p]*[vV]/u.test(option)) {
-          return { childCwdOperands, shellBuiltinAllowed, words: words.slice(prefixIndex) };
-        }
+        if (/^-[p]*[vV]/u.test(option)) return words.slice(prefixIndex);
         break;
       }
       continue;
     }
     if (program === "env") {
-      shellBuiltinAllowed = false;
       index += 1;
       while (index < words.length) {
         const option = words[index] ?? "";
@@ -796,34 +790,16 @@ function effectiveShellCommand(words: readonly string[]): EffectiveShellCommand 
           index += 1;
           break;
         }
-        if (option === "--help" || option === "--version") {
-          return { childCwdOperands, shellBuiltinAllowed, words: words.slice(prefixIndex) };
-        }
+        if (option === "--help" || option === "--version") return words.slice(prefixIndex);
         if (["-i", "--ignore-environment", "-0", "--null", "-v", "--debug"].includes(option)) {
           index += 1;
           continue;
         }
-        if (/^-C.+/u.test(option)) {
-          childCwdOperands.push(option.slice(2));
+        if (/^-(?:u|C|P|S).+/u.test(option) || /^--(?:unset|chdir|split-string)=/u.test(option)) {
           index += 1;
           continue;
         }
-        if (option.startsWith("--chdir=")) {
-          childCwdOperands.push(option.slice("--chdir=".length));
-          index += 1;
-          continue;
-        }
-        if (option === "-C" || option === "--chdir") {
-          const operand = words[index + 1];
-          if (operand !== undefined) childCwdOperands.push(operand);
-          index += 2;
-          continue;
-        }
-        if (/^-(?:u|P).+/u.test(option) || /^--unset=/u.test(option)) {
-          index += 1;
-          continue;
-        }
-        if (["-u", "-P", "--unset"].includes(option)) {
+        if (["-u", "-C", "-P", "-S", "--unset", "--chdir", "--split-string"].includes(option)) {
           index += 2;
           continue;
         }
@@ -833,26 +809,11 @@ function effectiveShellCommand(words: readonly string[]): EffectiveShellCommand 
     }
     break;
   }
-  return { childCwdOperands, shellBuiltinAllowed, words: words.slice(index) };
+  return words.slice(index);
 }
 
-function effectiveCommandCwd(command: EffectiveShellCommand, cwd: string): string {
-  return command.childCwdOperands.reduce((resolvedCwd, operand) => resolve(resolvedCwd, operand), cwd);
-}
-
-function shellCdOperand(command: EffectiveShellCommand): string | null {
-  if (!command.shellBuiltinAllowed || shellProgram(command.words[0]) !== "cd") return null;
-  const operands = command.words[1] === "--" ? command.words.slice(2) : command.words.slice(1);
-  return operands[0] ?? null;
-}
-
-function segmentUsesBroadRepoScan(
-  segment: string,
-  command: EffectiveShellCommand,
-  cwdScope: SourceRepoCwdScope,
-  cwd: string,
-): boolean {
-  const words = command.words;
+function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope, cwd: string): boolean {
+  const words = effectiveCommandWords(shellWordsWithoutRedirections(segment));
   const program = shellProgram(words[0]);
   if (commandUsesInformationalMode(program, words)) return false;
   const cwdIsSourceRepo = cwdScope !== "outside";
@@ -908,8 +869,8 @@ function applySubshellClosures(state: ShellState, segmentText: string): ShellSta
   return { ...state, cwd, subshellCwds };
 }
 
-function segmentOutcomeStates(state: ShellState, segmentText: string, command: EffectiveShellCommand): ShellState[] {
-  const cdOperand = shellCdOperand(command);
+function segmentOutcomeStates(state: ShellState, segmentText: string): ShellState[] {
+  const cdOperand = sourceRepoCdOperand(segmentText);
   if (cdOperand !== null) {
     const nextCwd = resolve(state.cwd, cdOperand);
     const success = applySubshellClosures({ ...state, cwd: nextCwd, status: "success" }, segmentText);
@@ -917,7 +878,13 @@ function segmentOutcomeStates(state: ShellState, segmentText: string, command: E
     return [success, applySubshellClosures({ ...state, status: "failure" }, segmentText)];
   }
 
-  const program = shellProgram(command.words[0]);
+  let commandText = segmentText.trimEnd();
+  let remainingClosures = state.subshellCwds.length;
+  while (remainingClosures > 0 && commandText.endsWith(")") && !commandText.endsWith("\\)")) {
+    commandText = commandText.slice(0, -1).trimEnd();
+    remainingClosures -= 1;
+  }
+  const program = shellProgram(effectiveCommandWords(shellWordsWithoutRedirections(commandText))[0]);
   if (program === "true") {
     return [applySubshellClosures({ ...state, status: "success" }, segmentText)];
   }
@@ -948,20 +915,12 @@ function commandUsesBroadRepoScan(command: string, cwd: string | null, workspace
         segmentText = segmentText.slice(1).trimStart();
       }
       const enteredState = { ...state, subshellCwds };
-      let commandText = segmentText.trimEnd();
-      let remainingClosures = enteredState.subshellCwds.length;
-      while (remainingClosures > 0 && commandText.endsWith(")") && !commandText.endsWith("\\)")) {
-        commandText = commandText.slice(0, -1).trimEnd();
-        remainingClosures -= 1;
-      }
-      const parsedCommand = effectiveShellCommand(shellWordsWithoutRedirections(commandText));
-      const commandCwd = effectiveCommandCwd(parsedCommand, enteredState.cwd);
       if (
-        segmentUsesBroadRepoScan(commandText, parsedCommand, sourceRepoCwdScope(commandCwd, workspacePath), commandCwd)
+        segmentUsesBroadRepoScan(segmentText, sourceRepoCwdScope(enteredState.cwd, workspacePath), enteredState.cwd)
       ) {
         return true;
       }
-      nextStates.push(...segmentOutcomeStates(enteredState, segmentText, parsedCommand));
+      nextStates.push(...segmentOutcomeStates(enteredState, segmentText));
     }
     states = dedupeShellStates(nextStates);
   }

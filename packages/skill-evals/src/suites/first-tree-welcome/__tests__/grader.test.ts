@@ -2196,30 +2196,6 @@ Type a different task if you prefer.`;
           event: commandExecutionEvent("/usr/bin/env -i LC_ALL=C rg --files", { workdir: sourceRepoPath }),
           label: "env option-and-assignment-prefixed relative rg",
         },
-        {
-          event: commandExecutionEvent("LC_ALL=C cd source-repo && rg --files"),
-          label: "assignment-prefixed shell cd",
-        },
-        {
-          event: commandExecutionEvent("command cd source-repo && rg --files"),
-          label: "command-prefixed shell cd",
-        },
-        {
-          event: commandExecutionEvent("2>/dev/null cd source-repo && rg --files"),
-          label: "redirection-prefixed shell cd",
-        },
-        {
-          event: commandExecutionEvent("/usr/bin/env -C source-repo rg --files"),
-          label: "env child cwd relative rg",
-        },
-        {
-          event: commandExecutionEvent("/usr/bin/env --chdir=source-repo rg --files"),
-          label: "env attached child cwd relative rg",
-        },
-        {
-          event: commandExecutionEvent("/usr/bin/env --chdir source-repo rg --files"),
-          label: "env separated child cwd relative rg",
-        },
       ];
 
       for (const { event, label } of commands) {
