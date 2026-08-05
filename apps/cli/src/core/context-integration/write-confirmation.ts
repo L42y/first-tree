@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ContextTreeActiveBinding, contextTreeActiveBindingSchema } from "@first-tree/shared";
 import { defaultHome } from "@first-tree/shared/config";
@@ -21,7 +21,6 @@ export function writeContextWritePlanReceipt(
   input: Omit<ContextWritePlanReceipt, "schemaVersion" | "accountClientId" | "createdAt">,
 ): ContextWritePlanReceipt {
   assertAnchor(input.planAnchor);
-  cleanupExpiredWritePlanReceipts(input.organizationId);
   const receipt: ContextWritePlanReceipt = {
     schemaVersion: 1,
     accountClientId: readActiveContextAccountClientId(),
@@ -42,10 +41,16 @@ export function writeContextWritePlanReceipt(
 
 export function readContextWritePlanReceipt(organizationId: string, planAnchor: string): ContextWritePlanReceipt {
   assertAnchor(planAnchor);
-  const value: unknown = JSON.parse(readFileSync(receiptPath(organizationId, planAnchor), "utf8"));
+  const path = receiptPath(organizationId, planAnchor);
+  const value: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (typeof value !== "object" || value === null) throw new Error("Invalid Context write plan receipt.");
   const receipt = value as Partial<ContextWritePlanReceipt>;
   const binding = contextTreeActiveBindingSchema.safeParse(receipt.binding);
+  const expired =
+    typeof receipt.createdAt === "string" &&
+    Number.isFinite(Date.parse(receipt.createdAt)) &&
+    Date.now() - Date.parse(receipt.createdAt) > PLAN_TTL_MS;
+  if (expired) rmSync(path, { force: true });
   if (
     receipt.schemaVersion !== 1 ||
     receipt.accountClientId !== readActiveContextAccountClientId() ||
@@ -55,7 +60,7 @@ export function readContextWritePlanReceipt(organizationId: string, planAnchor: 
     !/^[0-9a-f]{40,64}$/u.test(receipt.commit ?? "") ||
     typeof receipt.createdAt !== "string" ||
     !Number.isFinite(Date.parse(receipt.createdAt)) ||
-    Date.now() - Date.parse(receipt.createdAt) > PLAN_TTL_MS ||
+    expired ||
     !binding.success
   ) {
     throw new Error("Context write plan receipt is invalid, expired, or belongs to another local account.");
@@ -74,31 +79,4 @@ function receiptPath(organizationId: string, planAnchor: string): string {
 
 function assertAnchor(value: string): void {
   if (!/^[0-9a-f]{64}$/u.test(value)) throw new Error("Invalid Context write plan anchor.");
-}
-
-function cleanupExpiredWritePlanReceipts(organizationId: string): void {
-  const root = dirname(receiptPath(organizationId, "0".repeat(64)));
-  let entries: string[];
-  try {
-    entries = readdirSync(root)
-      .filter((entry) => /^[0-9a-f]{64}\.json$/u.test(entry))
-      .sort((left, right) => statSync(join(root, left)).mtimeMs - statSync(join(root, right)).mtimeMs)
-      .slice(0, 256);
-  } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT") {
-      return;
-    }
-    throw error;
-  }
-  for (const entry of entries) {
-    const path = join(root, entry);
-    try {
-      const value = JSON.parse(readFileSync(path, "utf8")) as { createdAt?: unknown };
-      if (typeof value.createdAt === "string" && Date.now() - Date.parse(value.createdAt) > PLAN_TTL_MS) {
-        rmSync(path, { force: true });
-      }
-    } catch {
-      // Invalid evidence remains for fail-closed diagnosis.
-    }
-  }
 }

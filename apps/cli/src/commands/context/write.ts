@@ -4,7 +4,6 @@ import {
   assertContextMutationCanStart,
   withAccountStateMutationLockAsync,
 } from "../../core/context-integration/account-state-guard.js";
-import { assertContextAdapterReadyForRouting } from "../../core/context-integration/adapter-observation.js";
 import { ensureByoContextRepository } from "../../core/context-integration/byo-repository.js";
 import { readContextRouteReceipt } from "../../core/context-integration/context-route.js";
 import { writeContextWritePlanReceipt } from "../../core/context-integration/write-confirmation.js";
@@ -61,7 +60,6 @@ export async function runContextWrite(context: CommandContext): Promise<void> {
       .digest("hex");
     const preflight = await withAccountStateMutationLockAsync(async () => {
       assertContextMutationCanStart();
-      if (candidate.source !== "session") assertContextAdapterReadyForRouting(candidate.provider);
       const result = await preflightContextTreeWrite(
         {
           preflightMemberContextTreeWrite(teamId, request, callOptions): Promise<unknown> {

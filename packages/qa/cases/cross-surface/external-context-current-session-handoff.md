@@ -42,7 +42,9 @@ CLI upgrade needs no Plugin reinstall, Claude reload, or repeated Codex trust.
    and no handoff until `/reload-plugins` is performed. Reply `continue`, verify
    the reloaded Plugin's `UserPromptSubmit` Hook returns one opaque
    current-session receipt, and rerun the original exact apply with that receipt.
-   Confirm the general Skill loader creates no observation state.
+   Confirm the general Skill loader creates no observation state. After the
+   obligation is consumed, submit another prompt and confirm the Hook is a pure
+   no-op with no provider probe, receipt, or additional Context injection.
 5. Install Codex, complete `/hooks` trust in the same conversation, then rerun
    the same apply command. Repeat with an already trusted Hook.
 6. Inspect the complete schema-v3 handoff. Trigger Read and Write separately;

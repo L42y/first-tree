@@ -1264,8 +1264,10 @@ adopts the handoff. Session-only installs no Hook, so it needs no Trust.
 Claude Code requires `/reload-plugins` after first thin-Plugin install, legacy
 full-Plugin migration, or adapter repair. Setup remains incomplete until the
 reloaded thin Plugin's `UserPromptSubmit` hook issues a session-bound opaque
-receipt and the same exact apply command consumes it. Later Core-only upgrades
-and additional Team grants require no reload or repeated Codex trust.
+receipt and the same exact apply command consumes it. With no pending adoption
+obligation the hook is a pure no-op; it performs no provider probe, payload
+hash, receipt signing, or context injection. Later Core-only upgrades and
+additional Team grants require no reload or repeated Codex trust.
 
 `context.yaml` schema v3 stores zero or more global/directory grants keyed by
 provider, Team and exact scope. A legacy v2/v1 file is atomically backed up,
@@ -1318,9 +1320,13 @@ stored root. Already-read model context is not revoked.
 
 `context activate`, `context route`, `context snapshot`, and `context write-preflight`
 are hidden provider bridges. SessionStart injects only the neutral router
-contract; it does not select or expose a Team before task routing. Any
-membership, binding, SCOPE, payload or authority failure is fail-closed for
-First Tree while ordinary provider work can continue.
+contract; it does not select or expose a Team before task routing. Persistent
+adapter payload health is checked once at `context route`, before the task gets
+an opaque candidate. Snapshot and Write boundaries then rely on that candidate,
+live membership/binding, exact snapshot identity and Write confirmation instead
+of repeatedly probing provider-owned Plugin state. Any applicable membership,
+binding, SCOPE, payload or authority failure is fail-closed for First Tree while
+ordinary provider work can continue.
 
 ---
 

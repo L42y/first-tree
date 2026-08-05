@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ContextIntegrationProvider } from "@first-tree/shared";
 import { defaultHome } from "@first-tree/shared/config";
@@ -25,7 +25,6 @@ type AdapterSyncReceipt = {
   accountClientId: string;
   channel: "prod" | "staging" | "dev";
   provider: ContextIntegrationProvider;
-  sessionId: string;
   challenge: string;
   fromAdapterVersion: string;
   fromAdapterDigest: string;
@@ -48,7 +47,6 @@ export function issueAdapterSyncAction(
   },
   options: { releaseRoot?: string; coreRoot?: string; driver?: ContextIntegrationProviderDriver } = {},
 ): AdapterSyncAction {
-  cleanupExpiredAdapterSyncReceipts(input.provider);
   assertSessionId(input.sessionId);
   const accountClientId = readActiveContextAccountClientId();
   const installed = readContextIntegrationInstallManifest(input.provider);
@@ -92,7 +90,6 @@ export function issueAdapterSyncAction(
     accountClientId,
     channel: channelConfig.channel,
     provider: input.provider,
-    sessionId: input.sessionId,
     challenge,
     fromAdapterVersion: installed.adapterVersion,
     fromAdapterDigest: installed.adapterDigest,
@@ -241,7 +238,6 @@ function readReceipt(provider: ContextIntegrationProvider, challenge: string): A
       value.provider !== provider ||
       value.challenge !== challenge ||
       typeof value.accountClientId !== "string" ||
-      typeof value.sessionId !== "string" ||
       typeof value.fromAdapterVersion !== "string" ||
       typeof value.fromAdapterDigest !== "string" ||
       typeof value.targetAdapterVersion !== "string" ||
@@ -252,6 +248,10 @@ function readReceipt(provider: ContextIntegrationProvider, challenge: string): A
     ) {
       throw new Error("invalid receipt");
     }
+    if (Date.parse(value.expiresAt) <= Date.now()) {
+      rmSync(receiptPath(provider, challenge), { force: true });
+      throw new AdapterSyncRejectedError("The automatic First Tree Context update action expired.");
+    }
     return value as AdapterSyncReceipt;
   } catch (error) {
     if (error instanceof AdapterSyncRejectedError) throw error;
@@ -261,33 +261,6 @@ function readReceipt(provider: ContextIntegrationProvider, challenge: string): A
 
 function receiptPath(provider: ContextIntegrationProvider, challenge: string): string {
   return join(defaultHome(), "state", "context", "providers", provider, "adapter-sync", `${challenge}.json`);
-}
-
-function cleanupExpiredAdapterSyncReceipts(provider: ContextIntegrationProvider): void {
-  const root = dirname(receiptPath(provider, "0".repeat(48)));
-  let entries: string[];
-  try {
-    entries = readdirSync(root)
-      .filter((entry) => /^[0-9a-f]{48}\.json$/u.test(entry))
-      .sort((left, right) => statSync(join(root, left)).mtimeMs - statSync(join(root, right)).mtimeMs)
-      .slice(0, 256);
-  } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT") {
-      return;
-    }
-    throw error;
-  }
-  for (const entry of entries) {
-    const path = join(root, entry);
-    try {
-      const value = JSON.parse(readFileSync(path, "utf8")) as { expiresAt?: unknown };
-      if (typeof value.expiresAt === "string" && Date.parse(value.expiresAt) <= Date.now()) {
-        rmSync(path, { force: true });
-      }
-    } catch {
-      // Invalid evidence remains for fail-closed diagnosis.
-    }
-  }
 }
 
 function assertSessionId(value: string): void {

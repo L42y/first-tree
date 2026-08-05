@@ -8,6 +8,7 @@ import {
   consumeContextAdapterReloadReceipt,
   consumeContextAdapterReloadRequiredMarker,
   hasPendingContextAdapterReload,
+  inspectContextAdapterLoadedObservationObligation,
   issueContextAdapterSessionLoadedReceipt,
   markContextAdapterReloadRequired,
   registerPendingContextAdapterReload as registerPendingContextAdapterReloadImpl,
@@ -48,6 +49,17 @@ afterEach(() => {
 });
 
 describe("Claude adapter reload observation", () => {
+  it("does not observe a healthy adapter when no reload obligation exists", () => {
+    const release = installCurrentAdapter();
+    expect(
+      inspectContextAdapterLoadedObservationObligation({
+        provider: "claude-code",
+        adapterDigest: release.manifest.providers["claude-code"].adapterDigest,
+        adoptionGeneration: ADOPTION_GENERATION,
+      }),
+    ).toBeNull();
+  });
+
   it("blocks Context routing while a repair marker or exact setup reload is still pending", () => {
     const release = installCurrentAdapter();
     expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).not.toThrow();
@@ -83,7 +95,7 @@ describe("Claude adapter reload observation", () => {
     const release = installCurrentAdapter();
     markContextAdapterReloadRequired(release.manifest, "standalone_repair");
 
-    loadedReceipt("session-after-repair", release.manifest.providers["claude-code"].adapterDigest);
+    expect(observeLoaded("session-after-repair", release.manifest.providers["claude-code"].adapterDigest)).toBeNull();
 
     expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).not.toThrow();
     expect(consumeContextAdapterReloadRequiredMarker(release.manifest)).toBe(false);
@@ -103,12 +115,18 @@ describe("Claude adapter reload observation", () => {
         release.manifest.providers["claude-code"].adapterDigest,
         ADOPTION_GENERATION,
       ),
-    ).toThrow("did not load");
+    ).toThrow();
     expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).toThrow(
       "Reload the provider Plugin",
     );
 
-    loadedReceipt("session-after-reload", release.manifest.providers["claude-code"].adapterDigest, repairedGeneration);
+    expect(
+      observeLoaded(
+        "session-after-reload",
+        release.manifest.providers["claude-code"].adapterDigest,
+        repairedGeneration,
+      ),
+    ).toBeNull();
     expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).not.toThrow();
   });
 
@@ -175,7 +193,7 @@ describe("Claude adapter reload observation", () => {
     const targetDigest = release.manifest.providers["claude-code"].adapterDigest;
     const challenge = "b".repeat(64);
     registerPendingContextAdapterReload(challenge, release.manifest);
-    expect(() => loadedReceipt("session-a", `sha256:${"0".repeat(64)}`)).toThrow("did not load");
+    expect(() => loadedReceipt("session-a", `sha256:${"0".repeat(64)}`)).toThrow("no matching");
     expect(() => loadedReceipt("", targetDigest)).toThrow("session identity");
     expect(() =>
       consumeContextAdapterReloadReceipt({
@@ -303,7 +321,7 @@ describe("Claude adapter reload observation", () => {
     ).toThrow("consumed Claude reload state is unreadable or invalid");
   });
 
-  it("rejects stable stub drift, provider-cache drift, and partial provider payloads", () => {
+  it("leaves payload health enforcement at the task routing boundary", () => {
     const release = installCurrentAdapter();
     const target = release.manifest.providers["claude-code"];
     const stableStub = join(
@@ -327,11 +345,31 @@ describe("Claude adapter reload observation", () => {
     installCurrentAdapter();
     const providerStub = join(home, "provider-cache", "first-tree-context", "skills", "first-tree-read", "SKILL.md");
     writeFileSync(providerStub, "tampered provider stub\n");
-    expect(() => loadedReceipt("session-provider-drift", target.adapterDigest)).toThrow("does not match");
+    const providerChallenge = "6".repeat(64);
+    registerPendingContextAdapterReload(providerChallenge, release.manifest);
+    const providerReceipt = loadedReceipt("session-provider-drift", target.adapterDigest);
+    consumeContextAdapterReloadReceipt({
+      planChallenge: providerChallenge,
+      receipt: providerReceipt,
+      release: release.manifest,
+    });
+    expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).toThrow(
+      "payload has drifted",
+    );
 
     installCurrentAdapter();
     rmSync(join(home, "provider-cache", "first-tree-context", "bin", "context-observe-loaded"));
-    expect(() => loadedReceipt("session-partial-cache", target.adapterDigest)).toThrow();
+    const partialChallenge = "7".repeat(64);
+    registerPendingContextAdapterReload(partialChallenge, release.manifest);
+    const partialReceipt = loadedReceipt("session-partial-cache", target.adapterDigest);
+    consumeContextAdapterReloadReceipt({
+      planChallenge: partialChallenge,
+      receipt: partialReceipt,
+      release: release.manifest,
+    });
+    expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).toThrow(
+      "payload has drifted",
+    );
   });
 });
 
@@ -374,10 +412,18 @@ function installCurrentAdapter() {
 }
 
 function loadedReceipt(sessionId: string, adapterDigest: string, adoptionGeneration = ADOPTION_GENERATION): string {
-  return issueContextAdapterSessionLoadedReceipt(
-    { provider: "claude-code", adapterDigest, adoptionGeneration, sessionId },
-    observationOptions(),
-  );
+  const receipt = observeLoaded(sessionId, adapterDigest, adoptionGeneration);
+  if (receipt === null) throw new Error("expected a setup reload receipt");
+  return receipt;
+}
+
+function observeLoaded(sessionId: string, adapterDigest: string, adoptionGeneration = ADOPTION_GENERATION) {
+  return issueContextAdapterSessionLoadedReceipt({
+    provider: "claude-code",
+    adapterDigest,
+    adoptionGeneration,
+    sessionId,
+  });
 }
 
 function registerPendingContextAdapterReload(

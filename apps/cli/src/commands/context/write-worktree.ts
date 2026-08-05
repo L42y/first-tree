@@ -3,7 +3,6 @@ import {
   assertContextMutationCanStart,
   withAccountStateMutationLockAsync,
 } from "../../core/context-integration/account-state-guard.js";
-import { assertContextAdapterReadyForRouting } from "../../core/context-integration/adapter-observation.js";
 import {
   createByoContextWriteWorktree,
   ensureByoContextRepository,
@@ -47,7 +46,6 @@ export async function runContextWriteWorktree(context: CommandContext): Promise<
   const sdk = createMemberSdk();
   const result = await withAccountStateMutationLockAsync(async () => {
     assertContextMutationCanStart();
-    if (candidate.source !== "session") assertContextAdapterReadyForRouting(candidate.provider);
     const planAnchor = options.planAnchor ?? "";
     const existing = inspectByoContextWriteWorktree(candidate.organizationId, planAnchor);
     if (existing) {

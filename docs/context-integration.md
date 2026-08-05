@@ -197,8 +197,12 @@ lightweight `UserPromptSubmit` Hook receives Claude's session identity and
 returns a per-install adoption generation from the loaded Hook configuration
 plus a signed opaque receipt. The same exact apply consumes that receipt once
 and binds the pending setup plan to the current session. A Hook loaded before a
-same-version repair cannot reuse the new generation. The general Skill
-loader is read-only and never records reload state. Later
+same-version repair cannot reuse the new generation. When no install, migration,
+or repair adoption is pending, this Hook is a pure no-op: it does not probe the
+provider, hash Plugin payloads, sign a receipt, or inject additional context.
+Full payload health is checked by setup/status and once at each new task route;
+the exact routed snapshot and Write authority then own the rest of that task.
+The general Skill loader is read-only and never records reload state. Later
 Core-only CLI upgrades and additional Team grants require neither another
 reload nor repeated Codex trust.
 

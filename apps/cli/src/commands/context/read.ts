@@ -7,7 +7,6 @@ import {
   withAccountStateMutationLockAsync,
 } from "../../core/context-integration/account-state-guard.js";
 import { buildByoContextAdditionalContext } from "../../core/context-integration/activation.js";
-import { assertContextAdapterReadyForRouting } from "../../core/context-integration/adapter-observation.js";
 import { ensureByoContextRepository } from "../../core/context-integration/byo-repository.js";
 import { readContextRouteReceipt } from "../../core/context-integration/context-route.js";
 import { activateContextTreeRead, ContextTreeReadActivationError } from "../../core/context-tree-read.js";
@@ -29,7 +28,6 @@ export async function runContextRead(context: CommandContext): Promise<void> {
     const snapshotPath = join(mkdtempSync(join(tmpdir(), "first-tree-read-")), "context-tree");
     const snapshot = await withAccountStateMutationLockAsync(async () => {
       assertContextMutationCanStart();
-      if (candidate.source !== "session") assertContextAdapterReadyForRouting(candidate.provider);
       return activateContextTreeRead(
         {
           getMemberContextTreeSetting(teamId, callOptions): Promise<unknown> {

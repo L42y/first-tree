@@ -162,6 +162,28 @@ describe("context enable v3 command", () => {
     expect(mocks.assertFingerprint).not.toHaveBeenCalled();
   });
 
+  it("rejects setup before planning when the Core loader root is mutable", async () => {
+    mocks.resolveRelease.mockImplementationOnce(() => {
+      throw Object.assign(new Error("Use a version-pinned portable First Tree release."), {
+        code: "CONTEXT_SKILL_RELEASE_ROOT_UNTRUSTED",
+      });
+    });
+
+    await expect(runContextEnable(context({ plan: true }))).rejects.toMatchObject({
+      code: "CONTEXT_SKILL_RELEASE_ROOT_UNTRUSTED",
+    });
+    expect(output.fail).toHaveBeenCalledWith(
+      "CONTEXT_SKILL_RELEASE_ROOT_UNTRUSTED",
+      "Use a version-pinned portable First Tree release.",
+      2,
+      {
+        nextActions: ["Install or use a version-pinned First Tree CLI release, then retry Context setup."],
+      },
+    );
+    expect(mocks.enableOperation).not.toHaveBeenCalled();
+    expect(mocks.buildHandoff).not.toHaveBeenCalled();
+  });
+
   it("omits an apply command for an unavailable directory choice", async () => {
     mocks.inspectLocation.mockReturnValue({
       project: { kind: "pathless" },

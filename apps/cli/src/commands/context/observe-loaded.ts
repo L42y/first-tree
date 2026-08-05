@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { Command } from "commander";
 import {
   ContextReloadReceiptError,
+  inspectContextAdapterLoadedObservationObligation,
   issueContextAdapterSessionLoadedReceipt,
 } from "../../core/context-integration/adapter-observation.js";
 import { print } from "../../core/output.js";
@@ -17,17 +18,41 @@ function configure(command: Command): void {
     .requiredOption("--adoption-generation <generation>");
 }
 
-export function runContextObserveLoaded(context: CommandContext): void {
+export function runContextObserveLoaded(
+  context: CommandContext,
+  dependencies: {
+    inspectObligation?: typeof inspectContextAdapterLoadedObservationObligation;
+    issueReceipt?: typeof issueContextAdapterSessionLoadedReceipt;
+  } = {},
+): void {
   const options = context.command.opts<Options>();
   const provider = parseContextProvider(options.provider ?? "");
   try {
-    const input = readHookInput();
-    const receipt = issueContextAdapterSessionLoadedReceipt({
+    const identity = {
       provider,
       adapterDigest: options.adapterDigest ?? "",
       adoptionGeneration: options.adoptionGeneration ?? "",
+    };
+    const obligation = (dependencies.inspectObligation ?? inspectContextAdapterLoadedObservationObligation)(identity);
+    if (obligation === null) {
+      print.hook({ continue: true });
+      return;
+    }
+    const input = readHookInput();
+    const receipt = (dependencies.issueReceipt ?? issueContextAdapterSessionLoadedReceipt)({
+      ...identity,
       sessionId: input.session_id,
     });
+    if (receipt === null) {
+      print.hook({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: "First Tree Context repair was adopted by this Claude session.",
+        },
+      });
+      return;
+    }
     print.hook({
       continue: true,
       hookSpecificOutput: {

@@ -54,76 +54,90 @@ type ConsumedReloadReceipt = {
   consumedAt: string;
 };
 
-export function issueContextAdapterSessionLoadedReceipt(
-  input: {
-    provider: ContextIntegrationProvider;
-    adapterDigest: string;
-    adoptionGeneration: string;
-    sessionId: string;
-  },
-  options: { releaseRoot?: string; coreRoot?: string; driver?: ContextIntegrationProviderDriver } = {},
-): string {
+export function issueContextAdapterSessionLoadedReceipt(input: {
+  provider: ContextIntegrationProvider;
+  adapterDigest: string;
+  adoptionGeneration: string;
+  sessionId: string;
+}): string | null {
   return withAccountStateMutationLock(() => {
     assertContextMutationCanStart();
-    return issueContextAdapterSessionLoadedReceiptLocked(input, options);
+    return issueContextAdapterSessionLoadedReceiptLocked(input);
   });
 }
 
-function issueContextAdapterSessionLoadedReceiptLocked(
-  input: {
-    provider: ContextIntegrationProvider;
-    adapterDigest: string;
-    adoptionGeneration: string;
-    sessionId: string;
-  },
-  options: { releaseRoot?: string; coreRoot?: string; driver?: ContextIntegrationProviderDriver },
-): string {
-  cleanupExpiredObservationFiles();
+function issueContextAdapterSessionLoadedReceiptLocked(input: {
+  provider: ContextIntegrationProvider;
+  adapterDigest: string;
+  adoptionGeneration: string;
+  sessionId: string;
+}): string | null {
   if (input.provider !== "claude-code") throw new ContextReloadReceiptError("Only Claude reloads use this receipt.");
   assertSessionId(input.sessionId);
-  const release = resolveContextIntegrationRelease(options.releaseRoot, { coreRoot: options.coreRoot });
-  const target = release.manifest.providers[input.provider];
+  const obligation = inspectContextAdapterLoadedObservationObligation(input);
+  if (obligation === null) {
+    throw new ContextReloadReceiptError("This Claude session has no matching adapter adoption obligation.");
+  }
   const install = readContextIntegrationInstallManifest(input.provider);
   if (
-    input.adapterDigest !== target.adapterDigest ||
+    input.adapterDigest !== install?.adapterDigest ||
     input.adoptionGeneration !== install?.adoptionGeneration ||
     !ADOPTION_GENERATION_RE.test(input.adoptionGeneration) ||
-    install?.adapterVersion !== target.adapterVersion ||
-    install.adapterDigest !== target.adapterDigest
+    !install.adapterVersion
   ) {
     throw new ContextReloadReceiptError("This Claude hook did not load the current First Tree Context adapter.");
   }
-  assertContextAdapterPayloadHealthy(options.driver ?? createContextIntegrationProviderDriver(input.provider), target);
+  if (obligation === "standalone_repair") {
+    rmSync(join(providerStateRoot("claude-code"), "reload-required.json"), { force: true });
+    return null;
+  }
   const payload: SessionLoadedReceipt = {
     schemaVersion: 1,
     accountClientId: readActiveContextAccountClientId(),
     provider: "claude-code",
-    adapterVersion: target.adapterVersion,
-    adapterDigest: target.adapterDigest,
+    adapterVersion: install.adapterVersion,
+    adapterDigest: install.adapterDigest,
     adoptionGeneration: input.adoptionGeneration,
     sessionId: input.sessionId,
     nonce: randomBytes(24).toString("hex"),
     expiresAt: new Date(Date.now() + RECEIPT_TTL_MS).toISOString(),
   };
-  const receipt = signReceipt(payload);
-  // A standalone repair has no setup plan to bind. The provider-native hook
-  // itself is the exact adoption proof, so it consumes the durable marker
-  // after payload health and target identity have both been revalidated.
-  const required = readContextAdapterReloadRequiredMarker(release.manifest);
-  if (required && required.adoptionGeneration !== input.adoptionGeneration) {
-    throw new ContextReloadReceiptError("This Claude hook did not load the adapter generation awaiting adoption.");
+  return signReceipt(payload);
+}
+
+export function inspectContextAdapterLoadedObservationObligation(input: {
+  provider: ContextIntegrationProvider;
+  adapterDigest: string;
+  adoptionGeneration: string;
+}): ContextAdapterReloadObligationKind | null {
+  if (
+    input.provider !== "claude-code" ||
+    !/^sha256:[0-9a-f]{64}$/u.test(input.adapterDigest) ||
+    !ADOPTION_GENERATION_RE.test(input.adoptionGeneration)
+  ) {
+    return null;
   }
-  if (required?.kind === "standalone_repair") {
-    consumeContextAdapterReloadRequiredMarker(release.manifest, "standalone_repair");
+  const install = readContextIntegrationInstallManifest("claude-code");
+  if (
+    !install?.adapterVersion ||
+    install.adapterDigest !== input.adapterDigest ||
+    install.adoptionGeneration !== input.adoptionGeneration
+  ) {
+    return null;
   }
-  return receipt;
+  const target = { adapterVersion: install.adapterVersion, adapterDigest: install.adapterDigest };
+  const accountClientId = readActiveContextAccountClientId();
+  const required = readContextAdapterReloadRequiredMarkerForTarget(target, accountClientId);
+  if (required) {
+    return required.adoptionGeneration === input.adoptionGeneration ? required.kind : null;
+  }
+  return hasAnyPendingContextAdapterReloadForTarget(target, input.adoptionGeneration, accountClientId) ? "setup" : null;
 }
 
 export function registerPendingContextAdapterReload(
   planChallenge: string,
   release: ContextIntegrationReleaseManifest,
 ): void {
-  cleanupExpiredObservationFiles();
   assertPlanChallenge(planChallenge);
   const target = release.providers["claude-code"];
   const install = readContextIntegrationInstallManifest("claude-code");
@@ -222,13 +236,22 @@ export function inspectContextAdapterReloadObligation(
 function readContextAdapterReloadRequiredMarker(
   release: ContextIntegrationReleaseManifest,
 ): { kind: ContextAdapterReloadObligationKind; adoptionGeneration: string } | null {
+  return readContextAdapterReloadRequiredMarkerForTarget(
+    release.providers["claude-code"],
+    readActiveContextAccountClientId(),
+  );
+}
+
+function readContextAdapterReloadRequiredMarkerForTarget(
+  target: { adapterVersion: string; adapterDigest: string },
+  accountClientId: string,
+): { kind: ContextAdapterReloadObligationKind; adoptionGeneration: string } | null {
   const path = join(providerStateRoot("claude-code"), "reload-required.json");
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    const target = release.providers["claude-code"];
     if (
       value.schemaVersion !== 1 ||
-      value.accountClientId !== readActiveContextAccountClientId() ||
+      value.accountClientId !== accountClientId ||
       value.provider !== "claude-code" ||
       value.adapterVersion !== target.adapterVersion ||
       value.adapterDigest !== target.adapterDigest ||
@@ -377,7 +400,19 @@ export function assertContextAdapterReadyForRouting(
 }
 
 function hasAnyPendingContextAdapterReload(release: ContextIntegrationReleaseManifest): boolean {
-  cleanupExpiredObservationFiles();
+  const target = release.providers["claude-code"];
+  const accountClientId = readActiveContextAccountClientId();
+  const install = readContextIntegrationInstallManifest("claude-code");
+  return install?.adoptionGeneration
+    ? hasAnyPendingContextAdapterReloadForTarget(target, install.adoptionGeneration, accountClientId)
+    : false;
+}
+
+function hasAnyPendingContextAdapterReloadForTarget(
+  target: { adapterVersion: string; adapterDigest: string },
+  adoptionGeneration: string,
+  accountClientId: string,
+): boolean {
   const root = join(providerStateRoot("claude-code"), "reload-pending");
   let entries: string[];
   try {
@@ -386,9 +421,6 @@ function hasAnyPendingContextAdapterReload(release: ContextIntegrationReleaseMan
     if (isMissing(error)) return false;
     throw error;
   }
-  const target = release.providers["claude-code"];
-  const accountClientId = readActiveContextAccountClientId();
-  const install = readContextIntegrationInstallManifest("claude-code");
   return entries.some((entry) => {
     if (!/^[0-9a-f]{64}\.json$/u.test(entry)) {
       throw new ContextReloadRecoveryStateError("The pending Claude reload state contains an invalid entry.");
@@ -399,7 +431,7 @@ function hasAnyPendingContextAdapterReload(release: ContextIntegrationReleaseMan
       pending.accountClientId !== accountClientId ||
       pending.adapterVersion !== target.adapterVersion ||
       pending.adapterDigest !== target.adapterDigest ||
-      pending.adoptionGeneration !== install?.adoptionGeneration
+      pending.adoptionGeneration !== adoptionGeneration
     ) {
       throw new ContextReloadRecoveryStateError(
         "The pending Claude reload state belongs to another account or adapter target.",
@@ -598,31 +630,6 @@ function readConsumedNonce(nonce: string): ConsumedReloadReceipt | null {
   } catch (error) {
     if (isMissing(error)) return null;
     throw new ContextReloadRecoveryStateError("The consumed Claude reload state is unreadable or invalid.");
-  }
-}
-
-function cleanupExpiredObservationFiles(): void {
-  for (const directory of ["reload-pending", "reload-consumed"]) {
-    const root = join(providerStateRoot("claude-code"), directory);
-    let entries: string[];
-    try {
-      entries = readdirSync(root).filter((entry) => entry.endsWith(".json"));
-    } catch (error) {
-      if (isMissing(error)) continue;
-      throw error;
-    }
-    for (const entry of entries) {
-      const path = join(root, entry);
-      try {
-        const value = JSON.parse(readFileSync(path, "utf8")) as { expiresAt?: unknown };
-        if (typeof value.expiresAt === "string" && Date.parse(value.expiresAt) <= Date.now()) {
-          rmSync(path, { force: true });
-        }
-      } catch {
-        // Invalid state remains fail-closed for its exact lookup; cleanup must
-        // not turn malformed evidence into an accepted absence.
-      }
-    }
   }
 }
 

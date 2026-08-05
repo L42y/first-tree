@@ -50,8 +50,12 @@ together.
   used on the next session.
 - Independently tamper one stable stub, one provider-cache file, and one partial
   cache tree while leaving the embedded digest literal unchanged. SessionStart,
-  reload observation, persistent route, snapshot, and Write start must all
-  reject the unhealthy payload; session-only loading remains independent.
+  status/setup and the next persistent task route must reject the unhealthy
+  payload; session-only loading remains independent. With no reload obligation,
+  `UserPromptSubmit` must remain a pure no-op with no provider probe, receipt or
+  injected context. After a route succeeds, snapshot and Write boundaries must
+  rely on the routed candidate and their live authority checks rather than
+  repeatedly hashing the provider-owned Plugin cache.
 - Run standalone Claude repair, then interrupt before reload. `context status`
   must show the pending adoption; after `/reload-plugins` and one submitted
   message, the new Hook consumes that obligation and persistent routing resumes

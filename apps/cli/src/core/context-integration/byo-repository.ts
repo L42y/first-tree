@@ -399,6 +399,7 @@ function recoverWriteJournal(journal: WriteJournal, repositoryPath: string): Wri
     if (head !== journal.baseCommit) {
       throw new Error("The prepared BYO write worktree is incomplete or inconsistent.");
     }
+    assertPreparedWriteWorktreeClean(journal);
   } else {
     git(repositoryPath, ["worktree", "prune"]);
     if (branchExists) {
@@ -414,6 +415,18 @@ function recoverWriteJournal(journal: WriteJournal, repositoryPath: string): Wri
   const active = { ...journal, phase: "active" as const };
   writePrivateJson(writeJournalPath(journal.organizationId, journal.operationId), active);
   return active;
+}
+
+function assertPreparedWriteWorktreeClean(journal: WriteJournal): void {
+  const changes = git(journal.worktreePath, [
+    "status",
+    "--porcelain=v1",
+    "--untracked-files=all",
+    "--ignored=matching",
+  ]);
+  if (changes.length > 0) {
+    throw new Error("The prepared BYO write worktree is not a clean exact-base checkout.");
+  }
 }
 
 function assertRegisteredWriteWorktree(

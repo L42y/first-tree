@@ -180,9 +180,10 @@ async function buildSetupPlan(
   if (activation.outcome !== "connected") {
     print.fail(activation.reasonCode, activation.nextAction.message, 1);
   }
-  // Verify the release payload during planning. This is read-only and ensures
-  // session-only never exposes an unchecked Skill bundle.
-  resolveContextIntegrationRelease();
+  // Verify the exact immutable Core root during planning. Every apply rebuilds
+  // this plan, so an unusable loader is rejected before setup mutates state or
+  // returns a handoff that cannot load its canonical workflow.
+  resolvePinnedContextCoreRelease();
   const planIdentity = {
     schemaVersion: 1,
     provider,
@@ -259,7 +260,7 @@ async function applySessionOnly(
     assertPlannedAccount(plan);
     assertContextGrantStoreFingerprint(expectedGrantStoreFingerprint);
     const finalActivation = await validateExactTeam(plan);
-    const release = resolveContextIntegrationRelease();
+    const release = resolvePinnedContextCoreRelease();
     const sessionCandidate = await createMemberSdk().issueMemberContextSessionCandidate(
       {
         schemaVersion: 1,
@@ -290,6 +291,23 @@ async function applySessionOnly(
       nextActions: ["Adopt the verified handoff in this session. It will not auto-activate in a future session."],
     };
   });
+}
+
+function resolvePinnedContextCoreRelease() {
+  try {
+    return resolveContextIntegrationRelease(undefined, { requirePinnedCoreRoot: true });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      Reflect.get(error, "code") === "CONTEXT_SKILL_RELEASE_ROOT_UNTRUSTED"
+    ) {
+      print.fail("CONTEXT_SKILL_RELEASE_ROOT_UNTRUSTED", error instanceof Error ? error.message : String(error), 2, {
+        nextActions: ["Install or use a version-pinned First Tree CLI release, then retry Context setup."],
+      });
+    }
+    throw error;
+  }
 }
 
 async function applyPersistent(

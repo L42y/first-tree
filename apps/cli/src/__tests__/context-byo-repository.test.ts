@@ -234,6 +234,29 @@ describe("BYO Context Tree repository manager", () => {
     expect(JSON.parse(readFileSync(prepared.journalPath, "utf8"))).toMatchObject({ phase: "prepared" });
   });
 
+  it("rejects a partial prepared checkout before promoting its journal", () => {
+    const remote = createRemote("prepared-partial", "https://example.test/acme/context-tree.git");
+    const repository = ensureByoContextRepository("org-acme", { repo: remote.url, branch: "main" });
+    const prepared = writePreparedJournal(remote.url, repository.commit, "8".repeat(64));
+    mkdirSync(join(prepared.worktreePath, ".."), { recursive: true });
+    execFileSync("git", [
+      "-C",
+      repository.repositoryPath,
+      "worktree",
+      "add",
+      "-b",
+      prepared.branch,
+      prepared.worktreePath,
+      repository.commit,
+    ]);
+    rmSync(join(prepared.worktreePath, "SCOPE.md"));
+
+    expect(() => inspectByoContextWriteWorktree("org-acme", prepared.planAnchor)).toThrow(
+      "not a clean exact-base checkout",
+    );
+    expect(JSON.parse(readFileSync(prepared.journalPath, "utf8"))).toMatchObject({ phase: "prepared" });
+  });
+
   it("rejects a prepared worktree registered to another repository", () => {
     const remote = createRemote("prepared-wrong-repo", "https://example.test/acme/context-tree.git");
     const repository = ensureByoContextRepository("org-acme", { repo: remote.url, branch: "main" });
