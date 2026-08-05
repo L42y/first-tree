@@ -184,6 +184,7 @@ import { RuntimeAuthControls } from "../../clients/cards/shared/runtime-auth-con
 import { loginTargetProvider } from "../../clients/cards/shared/runtime-auth-view.js";
 import { MobileCurrentStateCard } from "../../mobile/current-state-card.js";
 import { applyPersistedChatRename } from "../chat-title-cache.js";
+import { needYouQueryOptions, removeResolvedNeedYouRequest } from "../need-you/query.js";
 import { GitHubSection } from "../right-sidebar/github-section.js";
 import { ChatRightSidebar } from "../right-sidebar/index.js";
 import { ParticipantsSection } from "../right-sidebar/participants-section.js";
@@ -1748,7 +1749,7 @@ export function ChatView({
    * `ChatRowAvatar` on the left rail (both feed `resolveAvatarHue`).
    */
   const agentColorToken = useCallback((id: string) => agentIdentity(id)?.avatarColorToken ?? null, [agentIdentity]);
-  const { agentId: myAgentId, memberId: myMemberId, user } = useAuth();
+  const { agentId: myAgentId, memberId: myMemberId, organizationId, user } = useAuth();
   // Unsent draft text, cached per user + chat in browser-local storage so it
   // survives chat switches and reloads (ChatView is not remounted on switch).
   // Clearing the draft on send empties its stored entry.
@@ -1772,6 +1773,15 @@ export function ChatView({
   useLayoutEffect(() => {
     chatIdRef.current = chatId;
   }, [chatId]);
+  // Always-current committed search params, for async callbacks that must
+  // not act on the snapshot captured when their operation STARTED (e.g. the
+  // need-you queue advance: a manual chat switch mid-send deletes `nq`, and
+  // the stale closure must not resurrect it). Same commit discipline as
+  // `chatIdRef` above.
+  const latestSearchParamsRef = useRef(searchParams);
+  useLayoutEffect(() => {
+    latestSearchParamsRef.current = searchParams;
+  }, [searchParams]);
   const [cursor, setCursor] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -2687,13 +2697,66 @@ export function ChatView({
       // after the question was resolved, so the resolution itself restores
       // the full timeline. The stored (explicitly chosen) filter is not
       // touched — only the navigation-applied params clear.
-      if (searchParams.has("focus") || searchParams.has("focusMsg")) {
-        const next = new URLSearchParams(searchParams);
-        next.delete("focus");
-        next.delete("focusMsg");
-        setSearchParams(next, { replace: true });
+      //
+      // Every read below is LIVE, never the snapshot captured when the send
+      // started: the rail stays usable while a resolve is in flight, and a
+      // manual chat switch both changes the chat and deletes `nq` — a stale
+      // continuation must neither hijack that navigation nor resurrect the
+      // session. Three layers: bail when the committed chat moved on, decide
+      // from the committed params, and re-validate inside the functional
+      // updater (the final word at write time).
+      if (chatIdRef.current !== chatId) return;
+      // Need-you queue session (`?nq=1`, set by the Need you entry): each
+      // resolution advances to the NEXT chat holding an open question. A
+      // next question in THIS chat needs no navigation — the FIFO takeover
+      // advances in place, and the session flag survives for the question
+      // after it. An empty queue (or an unavailable one — never strand a
+      // stale flag) ends the session.
+      let queueDecision: { kind: "advance"; chatId: string } | { kind: "end" } | null = null;
+      if (latestSearchParamsRef.current.get("nq") === "1") {
+        if (organizationId === null) {
+          queueDecision = { kind: "end" };
+        } else {
+          removeResolvedNeedYouRequest(queryClient, organizationId, request.id);
+          try {
+            const queue = await queryClient.fetchQuery(needYouQueryOptions(organizationId));
+            const nextItem = queue.items.find((item) => item.request.id !== request.id) ?? null;
+            if (!nextItem) queueDecision = { kind: "end" };
+            else if (nextItem.chat.id !== chatId) queueDecision = { kind: "advance", chatId: nextItem.chat.id };
+          } catch {
+            queueDecision = { kind: "end" };
+          }
+        }
       }
-      scrollToBottom("smooth");
+      if (chatIdRef.current !== chatId) return;
+      // Build the write from the LIVE committed params, re-read AFTER the
+      // queue await. The functional setSearchParams form is deliberately not
+      // used here: in the pinned react-router, that setter closes over the
+      // params of the render that created it and hands the updater a copy of
+      // that snapshot — so it cannot see a same-chat exit that only deleted
+      // `nq` while the queue fetch was pending. `latestSearchParamsRef` is
+      // commit-synced (layout effect), which makes it the live authority.
+      const live = latestSearchParamsRef.current;
+      if ((live.get("c") ?? chatId) !== chatId) return;
+      const sessionStillLive = live.get("nq") === "1";
+      const advancing = sessionStillLive && queueDecision?.kind === "advance";
+      const next = new URLSearchParams(live);
+      next.delete("focus");
+      next.delete("focusMsg");
+      if (queueDecision && sessionStillLive) {
+        if (queueDecision.kind === "end") {
+          next.delete("nq");
+        } else {
+          next.set("c", queueDecision.chatId);
+          next.delete("showAsk");
+        }
+      }
+      if (next.toString() !== live.toString()) {
+        // Advancing is a navigation (push — Back walks the queue hops);
+        // param cleanup in place is not (replace).
+        setSearchParams(next, { replace: !advancing });
+      }
+      if (!advancing) scrollToBottom("smooth");
       // Leave `askBusy` true: the overlay disables itself until the resolved
       // request unmounts it, so a slow refetch can't invite a second submit.
     } catch (err) {
@@ -2969,11 +3032,6 @@ export function ChatView({
     humanAgentId: myAgentId,
     askerAgentId: dockRequest?.senderId ?? null,
   });
-  const enterAskInspectMode = useCallback(() => {
-    const next = new URLSearchParams(searchParams);
-    next.set("showAsk", "false");
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
   // "Show earlier chat" from the blocking ask: inspect mode + the transient
   // pair filter on the asker, so the takeover gives way to exactly the
   // conversation the question grew out of. URL-only — leaving the chat drops
@@ -4368,8 +4426,7 @@ export function ChatView({
                   error: askAgent.error,
                   onAsk: askAgent.ask,
                 }}
-                onDismiss={enterAskInspectMode}
-                onRequestEarlierContext={showEarlierChatFromAsk}
+                onShowEarlierChat={showEarlierChatFromAsk}
                 onReply={(answer) => {
                   void submitAskAnswer(dockRequest, answer);
                 }}
@@ -5044,7 +5101,7 @@ export function ChatView({
                       ?
                     </span>
                     <span className="text-body flex-1">
-                      {openRequestCount === 1 ? "有 1 条待处理的问题" : `有 ${openRequestCount} 条待处理的问题`}
+                      {openRequestCount === 1 ? "1 pending question" : `${openRequestCount} pending questions`}
                     </span>
                     <span className="text-label" style={{ color: "var(--fg-4)" }}>
                       Open
