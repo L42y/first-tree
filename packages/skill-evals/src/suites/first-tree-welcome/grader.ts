@@ -1,8 +1,13 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 
 import { runCommand } from "../../core/commands.js";
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
+import {
+  type ShellConnector,
+  shellCommandSegmentsWithConnectors,
+  shellWordsWithRedirectsRemoved,
+} from "../../core/shell.js";
 import type { RunPaths } from "../../core/types.js";
 import type { EvalMetrics, FirstTreeWelcomeEvalCase, FixtureValidation, WelcomeExpectedAction } from "./types.js";
 
@@ -116,28 +121,31 @@ function collectModelOutputText(event: unknown): string[] {
   return collectAssistantText(event.event);
 }
 
-function collectCommandStrings(value: unknown): string[] {
+type CommandInvocation = { command: string; cwd: string | null };
+
+function collectCommandInvocations(value: unknown, inheritedCwd: string | null = null): CommandInvocation[] {
   if (Array.isArray(value)) {
-    const commands: string[] = [];
-    for (const item of value) {
-      commands.push(...collectCommandStrings(item));
-    }
-    return commands;
+    return value.flatMap((item) => collectCommandInvocations(item, inheritedCwd));
   }
   if (!isRecord(value)) return [];
 
-  const commands: string[] = [];
-  const command = value.command;
-  if (typeof command === "string") commands.push(command);
-  const cmd = value.cmd;
-  if (typeof cmd === "string") commands.push(cmd);
+  const cwd =
+    typeof value.workdir === "string" ? value.workdir : typeof value.cwd === "string" ? value.cwd : inheritedCwd;
+  const invocations: CommandInvocation[] = [];
+  if (typeof value.command === "string") invocations.push({ command: value.command, cwd });
+  if (typeof value.cmd === "string") invocations.push({ command: value.cmd, cwd });
 
-  for (const item of Object.values(value)) {
+  for (const [key, item] of Object.entries(value)) {
+    if (["command", "cmd", "cwd", "workdir"].includes(key)) continue;
     if (isRecord(item) || Array.isArray(item)) {
-      commands.push(...collectCommandStrings(item));
+      invocations.push(...collectCommandInvocations(item, cwd));
     }
   }
-  return commands;
+  return invocations;
+}
+
+function collectCommandStrings(value: unknown): string[] {
+  return collectCommandInvocations(value).map(({ command }) => command);
 }
 
 function normalizeForMatch(value: string): string {
@@ -561,14 +569,389 @@ function hasReviewableResult(text: string): boolean {
   return judgmentWithEvidence || diffWithCheck;
 }
 
-function commandUsesBroadRepoScan(command: string): boolean {
-  const rootFind = /\bfind\s+(?:\.\/)?source-repo\b/iu.test(command);
-  const allowedFirstLevelFind = rootFind && /-maxdepth\s+1\b/iu.test(command) && !/source-repo\/src\b/iu.test(command);
+type SourceRepoCwdScope = "descendant" | "outside" | "root";
+
+function sourceRepoCwdScope(cwd: string | null, workspacePath: string): SourceRepoCwdScope {
+  if (cwd === null) return "outside";
+  const lexicalSourceRepoPath = resolve(workspacePath, "source-repo");
+  const lexicalCwd = resolve(workspacePath, cwd);
+  const sourceRepoPath = existsSync(lexicalSourceRepoPath)
+    ? realpathSync(lexicalSourceRepoPath)
+    : lexicalSourceRepoPath;
+  const resolvedCwd = existsSync(lexicalCwd) ? realpathSync(lexicalCwd) : lexicalCwd;
+  if (resolvedCwd === sourceRepoPath) return "root";
+  return resolvedCwd.startsWith(`${sourceRepoPath}${sep}`) ? "descendant" : "outside";
+}
+
+function isDirectFileReference(operand: string, cwd: string): boolean {
+  if (operand.endsWith("/")) return false;
+  const candidate = resolve(cwd, operand);
+  try {
+    return statSync(candidate).isFile();
+  } catch {
+    // Parser-only eval events may omit the fixture path. Fall back to path
+    // shape while live runs use the real file type above.
+  }
+  const basename = operand.replace(/\/$/u, "").split("/").at(-1) ?? "";
+  const knownExtensionlessFile =
+    /^(?:README|LICENSE|NOTICE|CHANGELOG|CONTRIBUTING|SECURITY|CODEOWNERS|Makefile|Dockerfile)(?:[-_][A-Za-z0-9-]+)?$/iu.test(
+      basename,
+    );
+  const knownFileExtension =
+    /\.(?:[cm]?[jt]sx?|astro|bash|c|cc|conf|config|cpp|cs|css|env|fish|go|gql|graphql|h|hpp|html?|ini|java|jsonc?|kt|kts|less|lock|mdx?|php|proto|ps1|py|rb|rs|sass|scss|sh|sql|svelte|toml|tsx?|txt|vue|ya?ml|zsh)$/iu.test(
+      basename,
+    );
+  return (
+    basename !== "." && basename !== ".." && !basename.startsWith(".") && (knownExtensionlessFile || knownFileExtension)
+  );
+}
+
+const RG_LONG_VALUE_OPTIONS = new Set([
+  "--after-context",
+  "--before-context",
+  "--color",
+  "--colors",
+  "--context",
+  "--context-separator",
+  "--dfa-size-limit",
+  "--encoding",
+  "--engine",
+  "--file",
+  "--field-context-separator",
+  "--field-match-separator",
+  "--glob",
+  "--hostname-bin",
+  "--hyperlink-format",
+  "--iglob",
+  "--ignore-file",
+  "--max-columns",
+  "--max-count",
+  "--max-depth",
+  "--max-filesize",
+  "--path-separator",
+  "--pre",
+  "--pre-glob",
+  "--regexp",
+  "--regex-size-limit",
+  "--replace",
+  "--sort",
+  "--sortr",
+  "--threads",
+  "--type",
+  "--type-add",
+  "--type-clear",
+  "--type-not",
+]);
+const RG_PATTERN_LONG_OPTIONS = new Set(["--regexp", "--file"]);
+const RG_SHORT_VALUE_OPTIONS = new Set(["A", "B", "C", "E", "M", "T", "d", "e", "f", "g", "j", "m", "r", "t"]);
+const RG_PATTERN_SHORT_OPTIONS = new Set(["e", "f"]);
+
+type RgOptionEffect = {
+  consumesNext: boolean;
+  filesMode: boolean;
+  informational: boolean;
+  suppliesPattern: boolean;
+};
+
+function rgOptionEffect(word: string): RgOptionEffect | null {
+  if (word.startsWith("--")) {
+    const equalsIndex = word.indexOf("=");
+    const name = equalsIndex < 0 ? word : word.slice(0, equalsIndex);
+    if (["--help", "--version", "--type-list", "--pcre2-version"].includes(name)) {
+      return { consumesNext: false, filesMode: false, informational: true, suppliesPattern: false };
+    }
+    if (name === "--generate") {
+      return {
+        consumesNext: equalsIndex < 0,
+        filesMode: false,
+        informational: true,
+        suppliesPattern: false,
+      };
+    }
+    if (name === "--files") {
+      return { consumesNext: false, filesMode: true, informational: false, suppliesPattern: false };
+    }
+    if (RG_LONG_VALUE_OPTIONS.has(name)) {
+      return {
+        consumesNext: equalsIndex < 0,
+        filesMode: false,
+        informational: false,
+        suppliesPattern: RG_PATTERN_LONG_OPTIONS.has(name),
+      };
+    }
+    return { consumesNext: false, filesMode: false, informational: false, suppliesPattern: false };
+  }
+  if (!/^-[^-]/u.test(word)) return null;
+
+  const cluster = word.slice(1);
+  let informational = false;
+  for (let index = 0; index < cluster.length; index += 1) {
+    const option = cluster[index] ?? "";
+    if (RG_SHORT_VALUE_OPTIONS.has(option)) {
+      return {
+        consumesNext: index === cluster.length - 1,
+        filesMode: false,
+        informational,
+        suppliesPattern: RG_PATTERN_SHORT_OPTIONS.has(option),
+      };
+    }
+    if (option === "h" || option === "V") informational = true;
+  }
+  return { consumesNext: false, filesMode: false, informational, suppliesPattern: false };
+}
+
+type RgArguments = { filesMode: boolean; informational: boolean; pathOperands: string[] };
+
+function parseRgArguments(words: readonly string[]): RgArguments {
+  const positionals: string[] = [];
+  let filesMode = false;
+  let optionsEnded = false;
+  let patternSupplied = false;
+
+  for (let index = 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (!optionsEnded && word === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded) {
+      const effect = rgOptionEffect(word);
+      if (effect !== null) {
+        if (effect.informational) return { filesMode, informational: true, pathOperands: [] };
+        if (effect.filesMode) filesMode = true;
+        if (effect.suppliesPattern) patternSupplied = true;
+        if (effect.consumesNext) index += 1;
+        continue;
+      }
+    }
+    positionals.push(word);
+  }
+  return {
+    filesMode,
+    informational: false,
+    pathOperands: filesMode || patternSupplied ? positionals : positionals.slice(1),
+  };
+}
+
+function commandUsesInformationalMode(program: string, words: readonly string[]): boolean {
+  if (program === "rg") return parseRgArguments(words).informational;
+  for (const word of words.slice(1)) {
+    if (word === "--") return false;
+    if (word === "--help" || word === "--version") return true;
+  }
+  return false;
+}
+
+function shellProgram(word: string | undefined): string {
+  return (word ?? "").split("/").at(-1) ?? "";
+}
+
+function isShellAssignment(word: string | undefined): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word ?? "");
+}
+
+type EffectiveShellCommand = {
+  inputFileRedirected: boolean;
+  shellBuiltinAllowed: boolean;
+  words: readonly string[];
+};
+
+function effectiveShellCommand(segment: string): EffectiveShellCommand {
+  const shellCommand = shellWordsWithRedirectsRemoved(segment);
+  const words = shellCommand.words;
+  let index = 0;
+  let shellBuiltinAllowed = true;
+  while (isShellAssignment(words[index])) index += 1;
+
+  while (index < words.length) {
+    const prefixIndex = index;
+    const program = shellProgram(words[index]);
+    if (program === "command") {
+      index += 1;
+      while (index < words.length) {
+        const option = words[index] ?? "";
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (/^-[p]+$/u.test(option)) {
+          index += 1;
+          continue;
+        }
+        if (/^-[p]*[vV]/u.test(option)) {
+          return { ...shellCommand, shellBuiltinAllowed, words: words.slice(prefixIndex) };
+        }
+        break;
+      }
+      continue;
+    }
+    if (program === "env") {
+      shellBuiltinAllowed = false;
+      index += 1;
+      while (index < words.length) {
+        const option = words[index] ?? "";
+        if (isShellAssignment(option)) {
+          index += 1;
+          continue;
+        }
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (option === "--help" || option === "--version") {
+          return { ...shellCommand, shellBuiltinAllowed, words: words.slice(prefixIndex) };
+        }
+        if (["-i", "--ignore-environment", "-0", "--null", "-v", "--debug"].includes(option)) {
+          index += 1;
+          continue;
+        }
+        if (/^-(?:u|P).+/u.test(option) || /^--unset=/u.test(option)) {
+          index += 1;
+          continue;
+        }
+        if (["-u", "-P", "--unset"].includes(option)) {
+          index += 2;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+    break;
+  }
+  return { ...shellCommand, shellBuiltinAllowed, words: words.slice(index) };
+}
+
+function shellCdOperand(command: EffectiveShellCommand): string | null {
+  if (!command.shellBuiltinAllowed || shellProgram(command.words[0]) !== "cd") return null;
+  const operandIndex = command.words[1] === "--" ? 2 : 1;
+  return command.words[operandIndex] ?? null;
+}
+
+function segmentUsesBroadRepoScan(
+  segment: string,
+  command: EffectiveShellCommand,
+  cwdScope: SourceRepoCwdScope,
+  cwd: string,
+): boolean {
+  const words = command.words;
+  const program = shellProgram(words[0]);
+  if (commandUsesInformationalMode(program, words)) return false;
+  const cwdIsSourceRepo = cwdScope !== "outside";
+  const relativeRootOperand = words.some((word) => word === "." || word === "./");
+  const recursiveLs = program === "ls" && words.some((word) => /^-[A-Za-z]*R[A-Za-z]*$/u.test(word));
+  const rgArguments = program === "rg" ? parseRgArguments(words) : null;
+  const relativeRecursiveScan =
+    cwdIsSourceRepo &&
+    (program === "tree" ||
+      recursiveLs ||
+      (program === "rg" &&
+        ((rgArguments?.pathOperands.length === 0 && (rgArguments.filesMode || !command.inputFileRedirected)) ||
+          rgArguments?.pathOperands.some((operand) => !isDirectFileReference(operand, cwd)))));
+  if (relativeRecursiveScan) return true;
+
+  const rootFind = /\bfind\s+(?:\.\/)?source-repo\b/iu.test(segment);
+  const relativeFind = cwdIsSourceRepo && program === "find";
+  const rootRelativeFind = cwdScope === "root" && relativeRootOperand;
+  const allowedFirstLevelFind =
+    (rootFind || rootRelativeFind) && /-maxdepth\s+1\b/iu.test(segment) && !/source-repo\/src\b/iu.test(segment);
   const recursiveSearch =
     /\btree\s+(?:\.\/)?source-repo\b|\brg\s+--files\b.{0,120}\bsource-repo\b|\bls\s+-[A-Za-z]*R[A-Za-z]*\b.{0,120}\bsource-repo\b|\brg\b.{0,160}\s(?:\.\/)?source-repo(?:\s|$|--glob)/iu.test(
-      command,
+      segment,
     );
-  return (rootFind && !allowedFirstLevelFind) || recursiveSearch;
+  return ((rootFind || relativeFind) && !allowedFirstLevelFind) || recursiveSearch;
+}
+
+type ShellExitStatus = "failure" | "success";
+type ShellState = { cwd: string; status: ShellExitStatus; subshellCwds: readonly string[] };
+
+function dedupeShellStates(states: readonly ShellState[]): ShellState[] {
+  const unique = new Map<string, ShellState>();
+  for (const state of states) {
+    unique.set(`${state.cwd}\0${state.status}\0${state.subshellCwds.join("\0")}`, state);
+  }
+  return [...unique.values()];
+}
+
+function executesAfter(connector: ShellConnector | null, status: ShellExitStatus): boolean {
+  if (connector === "&&") return status === "success";
+  if (connector === "||") return status === "failure";
+  return true;
+}
+
+function applySubshellClosures(state: ShellState, segmentText: string): ShellState {
+  const subshellCwds = [...state.subshellCwds];
+  let cwd = state.cwd;
+  let remainingText = segmentText.trimEnd();
+  while (subshellCwds.length > 0 && remainingText.endsWith(")") && !remainingText.endsWith("\\)")) {
+    cwd = subshellCwds.pop() ?? cwd;
+    remainingText = remainingText.slice(0, -1).trimEnd();
+  }
+  return { ...state, cwd, subshellCwds };
+}
+
+function segmentOutcomeStates(state: ShellState, segmentText: string, command: EffectiveShellCommand): ShellState[] {
+  const cdOperand = shellCdOperand(command);
+  if (cdOperand !== null) {
+    const nextCwd = resolve(state.cwd, cdOperand);
+    const success = applySubshellClosures({ ...state, cwd: nextCwd, status: "success" }, segmentText);
+    if (existsSync(nextCwd)) return [success];
+    return [success, applySubshellClosures({ ...state, status: "failure" }, segmentText)];
+  }
+
+  const program = shellProgram(command.words[0]);
+  if (program === "true") {
+    return [applySubshellClosures({ ...state, status: "success" }, segmentText)];
+  }
+  if (program === "false") {
+    return [applySubshellClosures({ ...state, status: "failure" }, segmentText)];
+  }
+  return [
+    applySubshellClosures({ ...state, status: "success" }, segmentText),
+    applySubshellClosures({ ...state, status: "failure" }, segmentText),
+  ];
+}
+
+function commandUsesBroadRepoScan(command: string, cwd: string | null, workspacePath: string): boolean {
+  let states: ShellState[] = [{ cwd: resolve(workspacePath, cwd ?? "."), status: "success", subshellCwds: [] }];
+
+  for (const segment of shellCommandSegmentsWithConnectors(command)) {
+    const nextStates: ShellState[] = [];
+    for (const state of states) {
+      if (!executesAfter(segment.connectorBefore, state.status)) {
+        nextStates.push(applySubshellClosures(state, segment.text));
+        continue;
+      }
+
+      let segmentText = segment.text.trim();
+      const subshellCwds = [...state.subshellCwds];
+      while (segmentText.startsWith("(")) {
+        subshellCwds.push(state.cwd);
+        segmentText = segmentText.slice(1).trimStart();
+      }
+      const enteredState = { ...state, subshellCwds };
+      let commandText = segmentText.trimEnd();
+      let remainingClosures = enteredState.subshellCwds.length;
+      while (remainingClosures > 0 && commandText.endsWith(")") && !commandText.endsWith("\\)")) {
+        commandText = commandText.slice(0, -1).trimEnd();
+        remainingClosures -= 1;
+      }
+      const effectiveCommand = effectiveShellCommand(commandText);
+      if (
+        segmentUsesBroadRepoScan(
+          commandText,
+          effectiveCommand,
+          sourceRepoCwdScope(enteredState.cwd, workspacePath),
+          enteredState.cwd,
+        )
+      ) {
+        return true;
+      }
+      nextStates.push(...segmentOutcomeStates(enteredState, segmentText, effectiveCommand));
+    }
+    states = dedupeShellStates(nextStates);
+  }
+  return false;
 }
 
 function treeStatus(paths: RunPaths): string {
@@ -795,7 +1178,7 @@ export function deriveMetrics(
   const chatOptionTexts: string[] = [];
   let taskChatCreateCount = 0;
   const deliveryTexts: string[] = [];
-  const modelCommands: string[] = [];
+  const modelCommands: CommandInvocation[] = [];
   let chatAskCount = 0;
   let chatOptionCount: number | null = null;
   let chatSendCount = 0;
@@ -822,7 +1205,7 @@ export function deriveMetrics(
     modelOutputTexts.push(...collectModelOutputText(event));
 
     if (isRecord(event) && eventType(event) === "codex_event") {
-      modelCommands.push(...collectCommandStrings(event.event));
+      modelCommands.push(...collectCommandInvocations(event));
     }
 
     if (!isRecord(event)) continue;
@@ -900,7 +1283,9 @@ export function deriveMetrics(
   const contextStatus = treeStatus(paths);
   const baselines = baselineHeads(events);
   const capabilitySetupOptionObserved = setupTaskOptionObserved(chatOptionTexts, responseText);
-  const broadRepoScanObserved = modelCommands.some(commandUsesBroadRepoScan);
+  const broadRepoScanObserved = modelCommands.some(({ command, cwd }) =>
+    commandUsesBroadRepoScan(command, cwd, paths.workspacePath),
+  );
   const bridgeCount = countBridgeQuestions(responseText);
   const expectedBridgeSatisfied = matchesExpectedBridge(evalCase, responseText);
   const resultArtifactObserved = hasReviewableResult(responseText);

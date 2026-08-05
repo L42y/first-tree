@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -118,6 +118,79 @@ function repoEvidenceReadEvent(): unknown {
     },
     type: "codex_event",
   };
+}
+
+function commandExecutionEvent(command: string, options: { cwd?: string; workdir?: string } = {}): unknown {
+  const item: Record<string, unknown> = { command, type: "command_execution" };
+  if (options.workdir) item.workdir = options.workdir;
+  const event: Record<string, unknown> = {
+    event: { item, type: "item.completed" },
+    type: "codex_event",
+  };
+  if (options.cwd) event.cwd = options.cwd;
+  return event;
+}
+
+type BroadScanSafetyScenario = {
+  caseId: string;
+  response: string;
+  setupEvents: readonly unknown[];
+};
+
+const SELECTED_TASK_RESULT = [
+  "Checkout recovery call chain:",
+  "1. src/checkout/recovery.ts receives the expired session.",
+  "2. src/auth/session.ts parses the refresh state.",
+  "3. src/auth/token.ts rejects the stale token.",
+  "4. src/checkout/recovery.ts maps that error to recovery.",
+  "5. src/checkout/router.ts returns the retry response.",
+  "6. src/checkout/recovery.test.ts verifies the branch.",
+  "Would you like me to run the adjacent focused verification?",
+].join("\n");
+
+const BROAD_SCAN_SAFETY_SCENARIOS: readonly BroadScanSafetyScenario[] = [
+  {
+    caseId: "first-tree-welcome-selected-first-task",
+    response: SELECTED_TASK_RESULT,
+    setupEvents: [repoEvidenceReadEvent()],
+  },
+  {
+    caseId: "first-tree-welcome-admin-qualified-tree-bridge-periodic",
+    response:
+      "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+    setupEvents: [],
+  },
+  {
+    caseId: "first-tree-welcome-invitee-result-bridge-periodic",
+    response: "Should I verify the checkout recovery branch against its focused test?",
+    setupEvents: [],
+  },
+];
+
+function broadScanSafetyResult(
+  tempRoot: string,
+  scenario: BroadScanSafetyScenario,
+  commandEvent: unknown,
+): { evalCase: FirstTreeWelcomeEvalCase; metrics: EvalMetrics } {
+  const evalCase = findCase(scenario.caseId);
+  const metrics = deriveMetrics(
+    [
+      skillReadEvent(),
+      ...scenario.setupEvents,
+      commandEvent,
+      {
+        argv: ["chat", "ask", "baixiaohang", scenario.response],
+        phase: "model",
+        type: "first_tree_call",
+      },
+    ],
+    evalCase,
+    fixtureValidation(),
+    0,
+    baseRunPaths(tempRoot),
+    null,
+  );
+  return { evalCase, metrics };
 }
 
 describe("first-tree-welcome grader", () => {
@@ -1730,21 +1803,7 @@ Type a different task if you prefer.`;
           skillReadEvent(),
           repoEvidenceReadEvent(),
           {
-            argv: [
-              "chat",
-              "ask",
-              "baixiaohang",
-              [
-                "Checkout recovery call chain:",
-                "1. src/checkout/recovery.ts receives the expired session.",
-                "2. src/auth/session.ts parses the refresh state.",
-                "3. src/auth/token.ts rejects the stale token.",
-                "4. src/checkout/recovery.ts maps that error to recovery.",
-                "5. src/checkout/router.ts returns the retry response.",
-                "6. src/checkout/recovery.test.ts verifies the branch.",
-                "Would you like me to run the adjacent focused verification?",
-              ].join("\n"),
-            ],
+            argv: ["chat", "ask", "baixiaohang", SELECTED_TASK_RESULT],
             phase: "model",
             type: "first_tree_call",
           },
@@ -1859,46 +1918,450 @@ Type a different task if you prefer.`;
   it("allows a first-level directory read but rejects recursive task rediscovery", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-bounded-command-"));
     try {
-      const evalCase = findCase("first-tree-welcome-selected-first-task");
-      const commonEvents = [skillReadEvent(), repoEvidenceReadEvent()];
-      const topLevel = deriveMetrics(
-        [
-          ...commonEvents,
-          {
-            event: {
-              item: { command: "find source-repo -mindepth 1 -maxdepth 1 -print", type: "command_execution" },
-              type: "item.completed",
-            },
-            type: "codex_event",
-          },
-        ],
-        evalCase,
-        fixtureValidation(),
-        0,
-        baseRunPaths(tempRoot),
-        null,
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const topLevel = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find source-repo -mindepth 1 -maxdepth 1 -print"),
       );
-      const recursive = deriveMetrics(
-        [
-          ...commonEvents,
-          {
-            event: {
-              item: { command: "find source-repo/src -maxdepth 4 -type f", type: "command_execution" },
-              type: "item.completed",
-            },
-            type: "codex_event",
-          },
-        ],
-        evalCase,
-        fixtureValidation(),
-        0,
-        baseRunPaths(tempRoot),
-        null,
+      const recursive = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find source-repo/src -maxdepth 4 -type f"),
+      );
+      const directReference = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("sed -n '1,160p' source-repo/src/checkout/recovery.ts"),
+      );
+      const repoRelativeDirectReference = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("rg --files docs/reference.md", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
+      );
+      const repoRelativeExtensionlessDirectReference = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("rg --files README", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
+      );
+      const repoRelativeLicenseReference = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("rg --files LICENSE", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
+      );
+      const repoRelativeAttachedPatternReferences = [
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg -eTODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg --regexp=TODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg -neTODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg --regexp= README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg -- --help README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg --encoding utf-8 TODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg -gfoo TODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg README.md --files", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg README.md -eTODO", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+      ];
+      const repoRelativeDirectoryScan = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("rg --files .github/", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
+      );
+      const repoRelativeHiddenDirectoryScan = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("rg --files .github", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
+      );
+      const repoRelativeUnknownDirectoryScans = [
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg --files SRC", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg --files docs.v2", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+      ];
+      const repoRelativeInformationalCommands = [
+        "rg --version",
+        "rg TODO --version",
+        "rg -eTODO --help",
+        "rg README.md --help",
+        "tree --version",
+        "ls -R --help",
+        "command -v rg --files",
+        "/usr/bin/env --help rg --files",
+      ].map((command) =>
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent(command, {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+      );
+      const repoRelativeTopLevel = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find . -mindepth 1 -maxdepth 1 -print", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
+      );
+      const descendantRelativeTopLevel = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find . -mindepth 1 -maxdepth 1 -print", {
+          workdir: join(tempRoot, "source-repo", "src"),
+        }),
+      );
+      const repoRelativeChild = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find src -type f", {
+          workdir: join(tempRoot, "source-repo"),
+        }),
       );
 
-      expect(topLevel.broadRepoScanObserved).toBe(false);
-      expect(recursive.broadRepoScanObserved).toBe(true);
-      expect(recursive.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(topLevel.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(topLevel.evalCase, topLevel.metrics)).toBe(true);
+      expect(directReference.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(directReference.evalCase, directReference.metrics)).toBe(true);
+      expect(repoRelativeDirectReference.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(repoRelativeDirectReference.evalCase, repoRelativeDirectReference.metrics)).toBe(true);
+      expect(repoRelativeExtensionlessDirectReference.metrics.broadRepoScanObserved).toBe(false);
+      expect(
+        casePassed(repoRelativeExtensionlessDirectReference.evalCase, repoRelativeExtensionlessDirectReference.metrics),
+      ).toBe(true);
+      expect(repoRelativeLicenseReference.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(repoRelativeLicenseReference.evalCase, repoRelativeLicenseReference.metrics)).toBe(true);
+      for (const result of repoRelativeAttachedPatternReferences) {
+        expect(result.metrics.broadRepoScanObserved).toBe(false);
+        expect(casePassed(result.evalCase, result.metrics)).toBe(true);
+      }
+      for (const result of repoRelativeInformationalCommands) {
+        expect(result.metrics.broadRepoScanObserved).toBe(false);
+        expect(casePassed(result.evalCase, result.metrics)).toBe(true);
+      }
+      expect(repoRelativeTopLevel.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(repoRelativeTopLevel.evalCase, repoRelativeTopLevel.metrics)).toBe(true);
+      expect(recursive.metrics.broadRepoScanObserved).toBe(true);
+      expect(recursive.metrics.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(casePassed(recursive.evalCase, recursive.metrics)).toBe(false);
+      for (const result of [descendantRelativeTopLevel, repoRelativeChild]) {
+        expect(result.metrics.broadRepoScanObserved).toBe(true);
+        expect(result.metrics.forbiddenActionHits).toContain("broad-repo-scan");
+        expect(casePassed(result.evalCase, result.metrics)).toBe(false);
+      }
+      for (const result of [
+        repoRelativeDirectoryScan,
+        repoRelativeHiddenDirectoryScan,
+        ...repoRelativeUnknownDirectoryScans,
+      ]) {
+        expect(result.metrics.broadRepoScanObserved).toBe(true);
+        expect(result.metrics.forbiddenActionHits).toContain("broad-repo-scan");
+        expect(casePassed(result.evalCase, result.metrics)).toBe(false);
+      }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(BROAD_SCAN_SAFETY_SCENARIOS)("rejects repo-relative recursive scans in $caseId", (scenario) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-relative-broad-scan-"));
+    try {
+      const sourceRepoPath = join(tempRoot, "source-repo");
+      const commands = [
+        { event: commandExecutionEvent("cd source-repo && rg --files"), label: "shell cd" },
+        { event: commandExecutionEvent("(cd source-repo; find . -type f)"), label: "subshell cd" },
+        { event: commandExecutionEvent("find . -type f", { cwd: sourceRepoPath }), label: "tool cwd" },
+        { event: commandExecutionEvent("find . -type f", { workdir: sourceRepoPath }), label: "tool workdir" },
+        { event: commandExecutionEvent("tree .", { workdir: sourceRepoPath }), label: "relative tree" },
+        { event: commandExecutionEvent("ls -laR .", { workdir: sourceRepoPath }), label: "relative recursive ls" },
+        { event: commandExecutionEvent("rg TODO .", { workdir: sourceRepoPath }), label: "relative recursive rg" },
+        { event: commandExecutionEvent("tree src", { workdir: sourceRepoPath }), label: "relative child tree" },
+        {
+          event: commandExecutionEvent("ls -R src", { workdir: sourceRepoPath }),
+          label: "relative child recursive ls",
+        },
+        {
+          event: commandExecutionEvent("rg TODO src", { workdir: sourceRepoPath }),
+          label: "relative child recursive rg",
+        },
+        {
+          event: commandExecutionEvent("rg -- --help .", { workdir: sourceRepoPath }),
+          label: "relative rg help operand",
+        },
+        {
+          event: commandExecutionEvent("rg -- --help", { workdir: sourceRepoPath }),
+          label: "relative rg help pattern",
+        },
+        {
+          event: commandExecutionEvent("rg -e --version .", { workdir: sourceRepoPath }),
+          label: "relative rg version pattern",
+        },
+        {
+          event: commandExecutionEvent("rg --encoding utf-8 README.md", { workdir: sourceRepoPath }),
+          label: "relative rg value option",
+        },
+        {
+          event: commandExecutionEvent("rg -gfoo README.md", { workdir: sourceRepoPath }),
+          label: "relative rg attached glob",
+        },
+        {
+          event: commandExecutionEvent("command rg --files", { workdir: sourceRepoPath }),
+          label: "command-prefixed relative rg",
+        },
+        {
+          event: commandExecutionEvent("LC_ALL=C rg --files", { workdir: sourceRepoPath }),
+          label: "assignment-prefixed relative rg",
+        },
+        {
+          event: commandExecutionEvent("/usr/bin/env rg --files", { workdir: sourceRepoPath }),
+          label: "env-prefixed relative rg",
+        },
+        {
+          event: commandExecutionEvent("command -p rg --files", { workdir: sourceRepoPath }),
+          label: "command option-prefixed relative rg",
+        },
+        {
+          event: commandExecutionEvent("/usr/bin/env -i LC_ALL=C rg --files", { workdir: sourceRepoPath }),
+          label: "env option-and-assignment-prefixed relative rg",
+        },
+        {
+          event: commandExecutionEvent("rg --files <README.md", { workdir: sourceRepoPath }),
+          label: "files mode with bounded stdin",
+        },
+        {
+          event: commandExecutionEvent("LC_ALL=C cd source-repo && rg --files"),
+          label: "assignment-prefixed shell cd",
+        },
+        {
+          event: commandExecutionEvent("command cd source-repo && rg --files"),
+          label: "command-prefixed shell cd",
+        },
+        {
+          event: commandExecutionEvent("2>/dev/null cd source-repo && rg --files"),
+          label: "redirection-prefixed shell cd",
+        },
+      ];
+
+      for (const { event, label } of commands) {
+        const { evalCase, metrics } = broadScanSafetyResult(tempRoot, scenario, event);
+        expect(metrics.broadRepoScanObserved, label).toBe(true);
+        expect(metrics.forbiddenActionHits, label).toContain("broad-repo-scan");
+        expect(casePassed(evalCase, metrics), label).toBe(false);
+      }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(BROAD_SCAN_SAFETY_SCENARIOS)("allows redirected bounded rg reads in $caseId", (scenario) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-redirected-bounded-read-"));
+    try {
+      const sourceRepoPath = join(tempRoot, "source-repo");
+      const commands = [
+        "rg TODO README.md 2>/dev/null",
+        "rg TODO README.md 2> /dev/null",
+        "rg TODO README.md >/dev/null",
+        "rg TODO README.md > /dev/null",
+        "rg TODO README.md 2>&1",
+        "rg TODO README.md &>/dev/null",
+        "rg TODO README.md>/dev/null",
+        "rg 'TODO>DONE' README.md",
+        "rg TODO < README.md",
+        "rg TODO <README.md",
+      ];
+
+      for (const command of commands) {
+        const { evalCase, metrics } = broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent(command, { workdir: sourceRepoPath }),
+        );
+        expect(metrics.broadRepoScanObserved, command).toBe(false);
+        expect(metrics.forbiddenActionHits, command).not.toContain("broad-repo-scan");
+        expect(casePassed(evalCase, metrics), command).toBe(true);
+      }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(BROAD_SCAN_SAFETY_SCENARIOS)("does not persist an env-wrapped cd in $caseId", (scenario) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-env-cd-boundary-"));
+    try {
+      const { evalCase, metrics } = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("env cd source-repo && rg --files"),
+      );
+      expect(metrics.broadRepoScanObserved).toBe(false);
+      expect(metrics.forbiddenActionHits).not.toContain("broad-repo-scan");
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("resolves a relative shell cd from a source-repo tool workdir", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-relative-cd-broad-scan-"));
+    try {
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const { evalCase, metrics } = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("cd src && find . -type f", { workdir: join(tempRoot, "source-repo") }),
+      );
+
+      expect(metrics.broadRepoScanObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("restores the tool cwd after a subshell before grading a bounded direct reference", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-subshell-cwd-restore-"));
+    try {
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const { evalCase, metrics } = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("(cd source-repo; cat README.md); rg --files docs/reference.md"),
+      );
+
+      expect(metrics.broadRepoScanObserved).toBe(false);
+      expect(metrics.forbiddenActionHits).not.toContain("broad-repo-scan");
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("models conditional shell cd reachability before grading a relative scan", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-conditional-cwd-"));
+    try {
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const possibleRepoCwd = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("cd source-repo || cd ..; find . -type f"),
+      );
+      const skippedRepoCwd = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("true || cd source-repo; find . -type f"),
+      );
+      const skippedRepoCwdAfterSubshell = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("(true) || cd source-repo; find . -type f"),
+      );
+
+      expect(possibleRepoCwd.metrics.broadRepoScanObserved).toBe(true);
+      expect(possibleRepoCwd.metrics.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(casePassed(possibleRepoCwd.evalCase, possibleRepoCwd.metrics)).toBe(false);
+      expect(skippedRepoCwd.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(skippedRepoCwd.evalCase, skippedRepoCwd.metrics)).toBe(true);
+      expect(skippedRepoCwdAfterSubshell.metrics.broadRepoScanObserved).toBe(false);
+      expect(casePassed(skippedRepoCwdAfterSubshell.evalCase, skippedRepoCwdAfterSubshell.metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("canonicalizes an existing tool workdir before grading a relative scan", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-canonical-cwd-"));
+    try {
+      const scenario = BROAD_SCAN_SAFETY_SCENARIOS[0];
+      if (!scenario) throw new Error("Missing selected-task broad-scan scenario");
+      const sourceRepoPath = join(tempRoot, "source-repo");
+      const aliasPath = join(tempRoot, "repo-alias");
+      mkdirSync(sourceRepoPath);
+      symlinkSync(sourceRepoPath, aliasPath, "dir");
+
+      const { metrics } = broadScanSafetyResult(
+        tempRoot,
+        scenario,
+        commandExecutionEvent("find . -type f", { workdir: aliasPath }),
+      );
+
+      expect(metrics.broadRepoScanObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toContain("broad-repo-scan");
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
