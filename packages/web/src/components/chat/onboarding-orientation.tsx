@@ -1,9 +1,13 @@
-import { Check, ChevronDown, Play, RotateCcw } from "lucide-react";
+import { Check, Play, RotateCcw } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
 
-export const ONBOARDING_ORIENTATION_CONTINUE_MESSAGE = "I'm ready. Please help me get started with First Tree.";
+export const ONBOARDING_ORIENTATION_CONTINUE_MESSAGE = "I'm ready — let's get started.";
+
+export function onboardingOrientationComposerPlaceholder(targetAgentName: string): string {
+  return `Message ${targetAgentName} anything — or start with the tour above`;
+}
 
 export const ONBOARDING_ORIENTATION_CHAPTERS = {
   "multi-agent": {
@@ -76,6 +80,7 @@ export function OnboardingOrientation({
 }: OnboardingOrientationProps) {
   const titleId = useId();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const startFooterRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(!completed);
   const [selectedId, setSelectedId] = useState<OnboardingOrientationChapterId>(
     ONBOARDING_ORIENTATION_DEFAULT_CHAPTER_ID,
@@ -84,10 +89,20 @@ export function OnboardingOrientation({
   const [watchedIds, setWatchedIds] = useState<Set<OnboardingOrientationChapterId>>(() => new Set());
   const [videoError, setVideoError] = useState(false);
   const normalizedTargetAgentName = targetAgentName?.trim() || null;
+  const tourComplete = watchedIds.size === CHAPTERS.length;
 
   useEffect(() => {
     if (completed) setExpanded(false);
   }, [completed]);
+
+  useEffect(() => {
+    if (!tourComplete || completed) return;
+    const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    startFooterRef.current?.scrollIntoView?.({
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+      block: "nearest",
+    });
+  }, [completed, tourComplete]);
 
   const selected = ONBOARDING_ORIENTATION_CHAPTERS[selectedId];
 
@@ -155,16 +170,29 @@ export function OnboardingOrientation({
       style={{ borderRadius: "var(--radius-panel)" }}
     >
       <header className="flex flex-col" style={{ gap: "var(--sp-1)", padding: "var(--sp-4)" }}>
-        <div className="flex flex-wrap items-baseline justify-between" style={{ gap: "var(--sp-2)" }}>
+        <div className="flex flex-wrap items-center justify-between" style={{ gap: "var(--sp-2)" }}>
           <p id={titleId} className="text-title font-semibold text-balance">
             Get to know First Tree
           </p>
-          <p className="mono text-caption shrink-0 text-muted-foreground">
-            Optional · {formatTotalDuration(TOTAL_DURATION_IN_SECONDS)}
-          </p>
+          <div className="flex shrink-0 items-center" style={{ gap: "var(--sp-2)" }}>
+            <p className="mono text-caption text-muted-foreground">
+              Optional · {formatTotalDuration(TOTAL_DURATION_IN_SECONDS)}
+            </p>
+            {!completed ? (
+              <Button type="button" variant="ghost" size="sm" disabled={continuing} onClick={() => void onContinue()}>
+                Skip intro
+              </Button>
+            ) : (
+              <Button type="button" variant="ghost" size="sm" onClick={() => setExpanded(false)}>
+                Close tour
+              </Button>
+            )}
+          </div>
         </div>
         <p className="text-body max-w-[65ch] text-muted-foreground text-pretty">
-          Watch the short tours, or continue when you’re ready.
+          {completed
+            ? "Replay any chapter, then close the tour when you’re done."
+            : "Watch the short tours, or start whenever you’re ready."}
         </p>
       </header>
 
@@ -180,14 +208,14 @@ export function OnboardingOrientation({
         </div>
 
         <div
-          className="relative aspect-video overflow-hidden border border-border bg-muted/40"
+          className={cn("overflow-hidden border border-border bg-muted/40", videoError ? "" : "relative aspect-video")}
           style={{ borderRadius: "var(--radius-input)" }}
         >
           <video
             key={selected.id}
             ref={videoRef}
             data-onboarding-orientation-video={selected.id}
-            className="size-full"
+            className={cn("size-full", videoError && "hidden")}
             controls
             playsInline
             preload="metadata"
@@ -204,27 +232,30 @@ export function OnboardingOrientation({
           </video>
           {videoError ? (
             <div
-              className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 p-6 text-center"
-              role="alert"
-              style={{ gap: "var(--sp-3)" }}
+              data-onboarding-orientation-video-error
+              className="flex flex-col bg-background text-left"
+              style={{ gap: "var(--sp-3)", padding: "var(--sp-4)" }}
             >
-              <div>
-                <p className="text-label font-medium">This video couldn’t load</p>
-                <p className="text-body mt-1 text-muted-foreground">
-                  Read the transcript below or try loading it again.
+              <div className="flex flex-wrap items-center justify-between" style={{ gap: "var(--sp-2)" }}>
+                <p className="text-label font-medium" role="status">
+                  This video couldn’t load. You can read the transcript instead.
                 </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setVideoError(false);
+                    videoRef.current?.load();
+                  }}
+                >
+                  Try again
+                </Button>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setVideoError(false);
-                  videoRef.current?.load();
-                }}
-              >
-                Try again
-              </Button>
+              <section aria-label={`${selected.title} transcript`}>
+                <p className="mono text-caption text-muted-foreground">Transcript</p>
+                <p className="text-body mt-1 max-w-[65ch] text-muted-foreground text-pretty">{selected.transcript}</p>
+              </section>
             </div>
           ) : null}
         </div>
@@ -275,33 +306,29 @@ export function OnboardingOrientation({
 
         {!completed ? (
           <div
+            ref={startFooterRef}
             className="mt-4 flex flex-col border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between"
             style={{ gap: "var(--sp-3)" }}
           >
-            <p className="text-caption text-muted-foreground">You can return to these videos anytime.</p>
+            <p className="text-caption text-muted-foreground" aria-live="polite">
+              {tourComplete ? "Tour complete. Start whenever you’re ready." : "You can return to these videos anytime."}
+            </p>
             <Button
               type="button"
               variant="cta"
-              className="min-h-11 w-full shrink-0 sm:w-auto"
+              className="h-auto min-h-11 w-full max-w-full shrink-0 whitespace-normal break-words text-center sm:w-auto"
+              style={{ overflowWrap: "anywhere" }}
               disabled={continuing}
               onClick={() => void onContinue()}
             >
               {continuing
-                ? "Continuing…"
+                ? "Starting…"
                 : normalizedTargetAgentName
-                  ? `Continue with ${normalizedTargetAgentName}`
-                  : "Continue"}
+                  ? `Start with ${normalizedTargetAgentName}`
+                  : "Start"}
             </Button>
           </div>
         ) : null}
-
-        <details className="group mt-3 border-t border-border pt-3">
-          <summary className="text-label inline-flex min-h-11 cursor-pointer items-center font-medium">
-            Transcript
-            <ChevronDown className="ml-2 size-4 transition-transform group-open:rotate-180" aria-hidden="true" />
-          </summary>
-          <p className="text-body mt-2 max-w-[65ch] text-muted-foreground text-pretty">{selected.transcript}</p>
-        </details>
       </div>
     </section>
   );

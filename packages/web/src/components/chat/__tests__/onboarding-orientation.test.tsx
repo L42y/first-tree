@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe("OnboardingOrientation", () => {
-  it("shows the selected video, persistent chapter list, and one continue action", async () => {
+  it("shows the selected video, persistent chapter list, and header skip plus start actions", async () => {
     const onContinue = vi.fn();
     const { container } = await renderOrientation({ onContinue });
 
@@ -50,14 +50,43 @@ describe("OnboardingOrientation", () => {
     expect(container.textContent).toContain("Context Tree");
     expect(container.textContent).toContain("GitHub automation");
     expect(container.textContent).not.toContain("Video placeholder");
-    expect(container.textContent).toContain("Transcript");
+    expect(container.textContent).not.toContain("Transcript");
     expect(container.querySelector("video")?.autoplay).toBe(false);
 
-    const continueButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Continue with Nova",
+    const skipButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Skip intro",
     );
-    await click(continueButton ?? null);
+    await click(skipButton ?? null);
     expect(onContinue).toHaveBeenCalledTimes(1);
+
+    const startButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Start with Nova",
+    );
+    await click(startButton ?? null);
+    expect(onContinue).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the transcript inside the failed-video overlay", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => undefined);
+    const { container } = await renderOrientation();
+    expect(container.querySelector("[data-onboarding-orientation-video-error]")).toBeNull();
+
+    const video = container.querySelector("video");
+    await act(async () => {
+      video?.dispatchEvent(new Event("error"));
+    });
+    const errorState = container.querySelector("[data-onboarding-orientation-video-error]");
+    expect(errorState?.textContent).toContain("This video couldn’t load");
+    expect(errorState?.textContent).toContain("Give one lead agent a clear software task");
+    const status = errorState?.querySelector('[role="status"]');
+    expect(status?.textContent).not.toContain("Give one lead agent a clear software task");
+    expect(errorState?.querySelector('[aria-label="Multi-agent collaboration transcript"]')).not.toBeNull();
+
+    const tryAgain = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Try again",
+    );
+    await click(tryAgain ?? null);
+    expect(container.querySelector("[data-onboarding-orientation-video-error]")).toBeNull();
   });
 
   it("plays a chapter when its persistent playlist item is clicked and marks it watched on completion", async () => {
@@ -76,7 +105,7 @@ describe("OnboardingOrientation", () => {
     expect(video?.getAttribute("poster")).toBe("/onboarding/orientation/stills/multi-agent-poster.png");
     expect(video?.querySelector("source")?.getAttribute("src")).toBe("/onboarding/orientation/multi-agent.mp4");
     expect(video?.querySelector("track")?.getAttribute("src")).toBe("/onboarding/orientation/multi-agent.vtt");
-    expect(container.textContent).toContain("Transcript");
+    expect(container.textContent).not.toContain("Transcript");
     expect(container.textContent).not.toContain("Choose another chapter");
 
     await act(async () => {
@@ -84,11 +113,39 @@ describe("OnboardingOrientation", () => {
     });
     expect(multiAgent?.dataset.orientationChapterStatus).toBe("watched");
 
-    const continueButton = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Continue with Nova",
+    const startButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Start with Nova",
     );
-    await click(continueButton ?? null);
+    await click(startButton ?? null);
     expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("acknowledges completion after all three chapters finish", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    const { container } = await renderOrientation();
+    const chapterButtons = [...container.querySelectorAll<HTMLButtonElement>("[data-orientation-chapter]")];
+
+    for (const chapterButton of chapterButtons) {
+      await click(chapterButton);
+      await act(async () => {
+        container.querySelector("video")?.dispatchEvent(new Event("ended"));
+      });
+    }
+
+    expect(container.textContent).toContain("Tour complete. Start whenever you’re ready.");
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest" });
+  });
+
+  it("wraps an unbroken long agent name inside the start action", async () => {
+    const { container } = await renderOrientation({ targetAgentName: "A".repeat(231) });
+    const startButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.startsWith("Start with A"),
+    );
+
+    expect(startButton?.style.overflowWrap).toBe("anywhere");
+    expect(startButton?.className).toContain("h-auto");
+    expect(startButton?.className).toContain("whitespace-normal");
   });
 
   it("connects the Context Tree chapter to its silent media, captions, and transcript", async () => {
@@ -129,12 +186,20 @@ describe("OnboardingOrientation", () => {
 
     expect(container.querySelector('[data-onboarding-orientation="completed"]')).not.toBeNull();
     expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(0);
-    expect(container.textContent).not.toContain("Continue with Nova");
+    expect(container.textContent).not.toContain("Start with Nova");
 
     const review = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Watch");
     await click(review ?? null);
     expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(3);
     expect(onContinue).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("Continue with Nova");
+    expect(container.textContent).not.toContain("Start with Nova");
+    expect(container.textContent).not.toContain("Skip intro");
+    expect(container.textContent).toContain("Replay any chapter");
+
+    const close = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Close tour",
+    );
+    await click(close ?? null);
+    expect(container.querySelector('[data-onboarding-orientation="completed"]')).not.toBeNull();
   });
 });

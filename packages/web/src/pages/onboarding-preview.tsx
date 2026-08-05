@@ -1,11 +1,12 @@
 import type { AgentVisibility, GithubAppInstallationOutput, RuntimeProvider } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Bot, CircleCheck, MessageSquare, Plus, SendHorizontal } from "lucide-react";
+import { CircleCheck, MessageSquare, Plus, SendHorizontal } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { HubClient } from "../api/activity.js";
 import { getApiSelectedOrganizationId, setApiSelectedOrganizationId } from "../api/client.js";
 import type { GithubRepo } from "../api/github.js";
 import { Avatar } from "../components/avatar.js";
+import { OnboardingOrientation } from "../components/chat/onboarding-orientation.js";
 import type { ComputerConnection } from "../features/agent-setup/use-computer-connection.js";
 import { InviteAcceptCard, InviteAcceptError, InviteAcceptShell, InviteAcceptSkeleton } from "./invite-accept.js";
 import { FlowHint, StepHeading } from "./onboarding/flow-ui.js";
@@ -18,10 +19,6 @@ import { StepGetStarted } from "./onboarding/steps/step-get-started.js";
 import { AgentArrival, StepStartChat } from "./onboarding/steps/step-start-chat.js";
 import { StepTeam } from "./onboarding/steps/step-team.js";
 import { getStepSequence, type OnboardingPath, type StepId } from "./onboarding/steps.js";
-import {
-  buildInviteeReadyBootstrap,
-  buildTeamAgentStartBootstrap,
-} from "./workspace/center/onboarding/bootstrap-prose.js";
 
 /**
  * DEV-only gallery of every onboarding screen + state, mounted at
@@ -1357,15 +1354,14 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
 /**
  * The onboarding step components redirect into the normal chat route after
  * kickoff, so the gallery needs an explicit destination frame to make the
- * member journey reviewable end to end. This deliberately shows the stable
- * first-chat contract (selected chat, visible bootstrap, agent working state,
- * composer) without pretending to be a second interactive Chat implementation.
+ * member journey reviewable end to end. It uses the real senderless Orientation
+ * component plus a static composer without pretending to be a second
+ * interactive Chat implementation.
  */
 function MemberChatDestination({ mode }: { mode: "team-agent" | "personal-agent" }) {
   const teamAgent = mode === "team-agent";
   const agentName = teamAgent ? "Dev Assistant" : "Gandy's assistant";
   const agentHandle = teamAgent ? "@dev-assistant" : "@gandy-assistant";
-  const bootstrap = teamAgent ? buildTeamAgentStartBootstrap(agentName) : buildInviteeReadyBootstrap(agentName);
 
   return (
     <div className="flex h-full" style={{ background: "var(--bg)" }}>
@@ -1464,34 +1460,13 @@ function MemberChatDestination({ mode }: { mode: "team-agent" | "personal-agent"
           style={{ width: "min(48rem, 100%)", margin: "0 auto", padding: "var(--sp-7) var(--sp-6)" }}
         >
           <div className="flex-1 overflow-y-auto">
-            <div className="flex justify-end">
-              <div
-                className="text-label"
-                style={{
-                  maxWidth: "78%",
-                  whiteSpace: "pre-wrap",
-                  padding: "var(--sp-3) var(--sp-4)",
-                  borderRadius: "var(--radius-panel)",
-                  background: "var(--fg)",
-                  color: "var(--bg)",
-                }}
-              >
-                {bootstrap}
-              </div>
-            </div>
-
-            <div className="flex items-start" style={{ gap: "var(--sp-3)", marginTop: "var(--sp-6)" }}>
-              <Avatar name={agentName} seed={agentHandle} size={30} />
-              <div className="min-w-0">
-                <div className="text-label font-medium">{agentName}</div>
-                <div
-                  className="text-label inline-flex items-center"
-                  style={{ gap: "var(--sp-2)", marginTop: "var(--sp-2)", color: "var(--fg-3)" }}
-                >
-                  <Bot className="h-4 w-4" aria-hidden />
-                  {teamAgent ? "Starting your first Team-agent conversation…" : "Getting your first Agent Chat ready…"}
-                </div>
-              </div>
+            <div className="[&>section]:mt-0">
+              <OnboardingOrientation
+                completed={false}
+                continuing={false}
+                targetAgentName={agentName}
+                onContinue={NOOP}
+              />
             </div>
           </div>
 

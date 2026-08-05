@@ -834,16 +834,29 @@ describe("ChatView", () => {
       source: "api",
       createdAt: "2026-05-28T11:55:00.000Z",
     });
+    const orientationChat = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "agent-2", name: "design", displayName: "Design Critique" }),
+      ],
+    });
     chatMocks.listChatMessages.mockResolvedValue(messages([bootstrap]));
     const { container, root } = await renderDom(
-      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={chatDetail()} />,
-      (queryClient) => seedChat(queryClient, chatDetail(), messages([bootstrap])),
+      <ChatView agentId="agent-2" chatId="chat-1" initialChatDetail={orientationChat} />,
+      (queryClient) => seedChat(queryClient, orientationChat, messages([bootstrap])),
       "/",
     );
 
-    await waitForText(container, "Continue with Design Critique");
+    await waitForText(container, "Start with Design Critique");
+    const orientationRow = container.querySelector(
+      '[data-onboarding-orientation-row][data-message-id="orientation-bootstrap"]',
+    );
+    expect(orientationRow).not.toBeNull();
+    expect(orientationRow?.textContent).not.toContain("welcome aboard");
+    expect(container.textContent).not.toContain("Design Critique, welcome aboard.");
     const composer = container.querySelector<HTMLTextAreaElement>("textarea");
     if (!composer) throw new Error("Composer textarea missing");
+    expect(composer.placeholder).toBe("Message Design Critique anything — or start with the tour above");
     await setValue(composer, "A draft I still want to send");
     chatMocks.listChatMessages.mockResolvedValue(
       messages([
@@ -851,21 +864,108 @@ describe("ChatView", () => {
         message({
           id: "orientation-ready-message",
           senderId: "human-agent-self",
-          content: "I'm ready. Please help me get started with First Tree.",
+          content: "I'm ready — let's get started.",
           metadata: { mentions: ["agent-2"] },
           createdAt: "2026-05-28T11:56:00.000Z",
         }),
       ]),
     );
-    await click(buttonByText(container, "Continue with Design Critique"));
-    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith(
-      "chat-1",
-      "I'm ready. Please help me get started with First Tree.",
-      ["agent-2"],
-    );
+    const skipButton = buttonByText(container, "Skip intro");
+    const startButton = buttonByText(container, "Start with Design Critique");
+    if (!skipButton || !startButton) throw new Error("Orientation actions missing");
+    // Both controls are visible at once. A fast double activation must still
+    // produce only one continuation before React has time to disable them.
+    await act(async () => {
+      skipButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      startButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected Orientation continuation");
+    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", "I'm ready — let's get started.", ["agent-2"]);
+    expect(chatMocks.sendChatMessage).toHaveBeenCalledTimes(1);
     expect(composer.value).toBe("A draft I still want to send");
     await waitForText(container, "Watch");
     expect(container.querySelectorAll('[data-onboarding-orientation="pending"]')).toHaveLength(0);
+    expect(composer.placeholder).not.toContain("tour above");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the trusted Orientation bootstrap senderless for a later human viewer", async () => {
+    authMock.value = {
+      agentId: "human-agent-alice",
+      memberId: "member-alice",
+      organizationId: "org-1",
+      role: "member",
+    };
+    const { ChatView } = await import("../chat-view.js");
+    const bootstrap = message({
+      id: "orientation-bootstrap-shared-view",
+      senderId: "human-agent-self",
+      content: "Design Critique, welcome aboard. Please help me get started with First Tree.",
+      metadata: {
+        mentions: ["agent-2"],
+        [FIRST_CHAT_ORIENTATION_METADATA_KEY]: { version: 1 },
+      },
+      source: "api",
+      createdAt: "2026-05-28T11:55:00.000Z",
+    });
+    const sharedChat = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "human-agent-alice", type: "human", name: "alice", displayName: "Alice" }),
+        participant({ agentId: "agent-2", name: "design", displayName: "Design Critique" }),
+      ],
+    });
+    const page = messages([bootstrap]);
+    chatMocks.listChatMessages.mockResolvedValue(page);
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-2" chatId="chat-1" initialChatDetail={sharedChat} />,
+      (queryClient) => seedChat(queryClient, sharedChat, page),
+      "/",
+    );
+
+    await waitForText(container, "First Tree introduction");
+    expect(
+      container.querySelector('[data-onboarding-orientation-row][data-message-id="orientation-bootstrap-shared-view"]'),
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain("welcome aboard");
+    expect(container.textContent).not.toContain("Start with Design Critique");
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not advertise a removed Orientation target in the composer", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const bootstrap = message({
+      id: "orientation-bootstrap-removed-target",
+      senderId: "human-agent-self",
+      content: "Nova, welcome aboard.",
+      metadata: {
+        mentions: ["agent-1"],
+        [FIRST_CHAT_ORIENTATION_METADATA_KEY]: { version: 1 },
+      },
+      source: "api",
+      createdAt: "2026-05-28T11:55:00.000Z",
+    });
+    const targetRemovedChat = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "agent-2", name: "design", displayName: "Design Critique" }),
+      ],
+    });
+    const page = messages([bootstrap]);
+    chatMocks.listChatMessages.mockResolvedValue(page);
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={targetRemovedChat} />,
+      (queryClient) => seedChat(queryClient, targetRemovedChat, page),
+      "/",
+    );
+
+    await waitForText(container, "Start with Nova");
+    const composer = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!composer) throw new Error("Composer textarea missing");
+    expect(composer.placeholder).not.toContain("tour above");
 
     await act(async () => root.unmount());
   });
@@ -900,7 +1000,7 @@ describe("ChatView", () => {
 
     await waitForText(container, "Watch");
     expect(container.textContent).toContain("Start by reading /projects/acme.");
-    expect(container.textContent).not.toContain("Continue with Nova");
+    expect(container.textContent).not.toContain("Start with Nova");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
@@ -934,7 +1034,7 @@ describe("ChatView", () => {
       "/",
     );
 
-    await waitForText(container, "Continue with Nova");
+    await waitForText(container, "Start with Nova");
     expect(container.querySelectorAll('[data-onboarding-orientation="pending"]')).toHaveLength(1);
     expect(container.textContent).not.toContain("First Tree introduction");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
@@ -967,7 +1067,7 @@ describe("ChatView", () => {
     );
 
     await waitForText(container, "Watch");
-    expect(container.textContent).not.toContain("Continue with Nova");
+    expect(container.textContent).not.toContain("Start with Nova");
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
