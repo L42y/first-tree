@@ -42,6 +42,11 @@ const agentResourceMocks = vi.hoisted(() => ({
   updateAgentResources: vi.fn(),
 }));
 
+const templateMocks = vi.hoisted(() => ({
+  listAgentTemplates: vi.fn(),
+  updateAgentTemplates: vi.fn(),
+}));
+
 const sessionMocks = vi.hoisted(() => ({
   listAgentSessions: vi.fn(),
 }));
@@ -76,6 +81,8 @@ vi.mock("../../../api/agents.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../../api/agent-resources.js", () => agentResourceMocks);
+
+vi.mock("../../../api/agent-templates.js", () => templateMocks);
 
 vi.mock("../../../api/sessions.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../api/sessions.js")>()),
@@ -222,6 +229,26 @@ function adoptedTemplate(): AgentResourcesOutput["adoptedTemplates"][number] {
   };
 }
 
+function publicCatalogTemplate() {
+  const adopted = adoptedTemplate();
+  return {
+    id: adopted.id,
+    slug: "pr-engineer",
+    name: "PR Engineer",
+    status: "active" as const,
+    public: {
+      tagline: "Ship review-ready pull requests",
+      purpose: "Review and implement focused changes",
+      targetUsers: "Software teams",
+      userValue: "Move pull requests forward safely",
+      instructionsSummary: "Review, implement, and verify",
+      toolsAndSkillsSummary: "Code review and repository tools",
+    },
+    updatedAt: NOW,
+    replacement: null,
+  };
+}
+
 function client(overrides: Partial<HubClient> = {}): HubClient {
   return {
     id: overrides.id ?? "client-1",
@@ -306,7 +333,11 @@ async function waitForCondition(predicate: () => boolean, message: string, timeo
   throw new Error(message);
 }
 
-async function renderDom(route: string, child: ReactElement): Promise<{ container: HTMLElement; root: Root }> {
+async function renderDom(
+  route: string,
+  child: ReactElement,
+  setup?: (queryClient: QueryClient) => void | Promise<void>,
+): Promise<{ container: HTMLElement; root: Root; queryClient: QueryClient }> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -316,6 +347,7 @@ async function renderDom(route: string, child: ReactElement): Promise<{ containe
       mutations: { retry: false },
     },
   });
+  await setup?.(queryClient);
   const { AgentDetailPage } = await import("../../agent-detail.js");
   await act(async () => {
     root.render(
@@ -341,7 +373,7 @@ async function renderDom(route: string, child: ReactElement): Promise<{ containe
     );
   });
   await flush();
-  return { container, root };
+  return { container, root, queryClient };
 }
 
 function LocationEcho() {
@@ -432,6 +464,10 @@ beforeEach(() => {
   // same state — so per-test overrides below also use mockResolvedValue; a
   // one-shot mock with an empty fallback would clobber the cache on refetch.
   agentResourceMocks.getAgentResources.mockResolvedValue(agentResources());
+  // Non-empty public catalog by default so Responsibilities stays visible even
+  // when the agent has zero adopted templateIds (the empty-entry gate needs
+  // both sides confirmed empty).
+  templateMocks.listAgentTemplates.mockResolvedValue({ templates: [publicCatalogTemplate()] });
   agentResourceMocks.updateAgentResources.mockImplementation(
     async (_agentId: string, body: { bindings: AgentResourcesOutput["bindings"] }) =>
       agentResources({ version: 8, bindings: body.bindings }),
@@ -542,6 +578,184 @@ describe("AgentDetailPage", () => {
     await waitForText(view.container, "Human Profile route");
     expect(view.container.querySelector('[role="tablist"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("hides Responsibilities when the public catalog and agent templateIds are both empty", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/profile", <div>Profile route</div>);
+    await waitForText(view.container, "Profile route");
+    await waitForCondition(
+      () => templateMocks.listAgentTemplates.mock.calls.length >= 1,
+      "Expected the public template catalog to load",
+    );
+    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+      "Profile",
+      "Runtime",
+      "Instructions",
+      "Tools & skills",
+      "Repositories",
+      "Usage",
+    ]);
+    expect(view.container.textContent).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps Responsibilities when the catalog is empty but the agent still has adopted templates", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(
+      agentResources({
+        templateIds: [adoptedTemplate().id],
+        adoptedTemplates: [adoptedTemplate()],
+      }),
+    );
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Profile route</div>);
+    await waitForText(view.container, "PR Engineer");
+    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toContain(
+      "Responsibilities",
+    );
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps Responsibilities while the catalog request is failing", async () => {
+    templateMocks.listAgentTemplates.mockRejectedValue(new Error("catalog down"));
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/profile", <div>Profile route</div>);
+    await waitForText(view.container, "Profile route");
+    await waitForCondition(
+      () => templateMocks.listAgentTemplates.mock.calls.length >= 1,
+      "Expected the catalog request to run",
+    );
+    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toContain(
+      "Responsibilities",
+    );
+    await act(async () => view.root.unmount());
+  });
+
+  it("redirects a Responsibilities deep link to Profile when the empty-catalog gate is closed", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Empty-gate Profile route</div>);
+    await waitForText(view.container, "Empty-gate Profile route");
+    expect(view.container.textContent).not.toContain("No template responsibilities are assigned to this agent.");
+    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).not.toContain(
+      "Responsibilities",
+    );
+    await act(async () => view.root.unmount());
+  });
+
+  it("fail-opens Responsibilities when cached-empty agent-resources background refetch fails", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Empty-gate Profile route</div>);
+    await waitForText(view.container, "Empty-gate Profile route");
+    await waitForCondition(
+      () =>
+        ![...view.container.querySelectorAll('[role="tab"]')]
+          .map((tab) => tab.textContent?.trim())
+          .includes("Responsibilities"),
+      "Expected Responsibilities to close after confirmed empty catalog + resources",
+    );
+
+    agentResourceMocks.getAgentResources.mockRejectedValue(new Error("refetch boom"));
+    await act(async () => {
+      await view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
+    });
+    await waitForCondition(
+      () =>
+        [...view.container.querySelectorAll('[role="tab"]')]
+          .map((tab) => tab.textContent?.trim())
+          .includes("Responsibilities"),
+      "Expected Responsibilities to fail-open after a cached-empty refetch error",
+    );
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps a Responsibilities deep link when opening with cached-empty data and a failing refetch", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockRejectedValue(new Error("refetch boom"));
+
+    const view = await renderDom(
+      "/agents/agent-1/responsibilities",
+      <div>Must not redirect</div>,
+      async (queryClient) => {
+        queryClient.setQueryData(["agent-templates-catalog"], { templates: [] });
+        queryClient.setQueryData(
+          ["agent-resources", "agent-1"],
+          agentResources({ templateIds: [], adoptedTemplates: [] }),
+        );
+        // Leave the resources query in the retained-data + error state RQ produces
+        // after a background refetch failure, before the page mounts.
+        try {
+          await queryClient.fetchQuery({
+            queryKey: ["agent-resources", "agent-1"],
+            queryFn: () => agentResourceMocks.getAgentResources("agent-1"),
+          });
+        } catch {
+          // expected — keeps cached empty data with isError=true
+        }
+      },
+    );
+
+    await waitForCondition(
+      () =>
+        [...view.container.querySelectorAll('[role="tab"]')]
+          .map((tab) => tab.textContent?.trim())
+          .includes("Responsibilities"),
+      "Expected deep link to keep Responsibilities under cached-empty refetch error",
+    );
+    expect(view.container.textContent).not.toContain("Must not redirect");
+    await act(async () => view.root.unmount());
+  });
+
+  it("fail-opens while cached-empty resources refetch is in flight, then closes after settled empty", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/profile", <div>Profile route</div>);
+    await waitForText(view.container, "Profile route");
+    await waitForCondition(
+      () =>
+        ![...view.container.querySelectorAll('[role="tab"]')]
+          .map((tab) => tab.textContent?.trim())
+          .includes("Responsibilities"),
+      "Expected Responsibilities to close after confirmed empty",
+    );
+
+    let releaseRefetch: ((value: ReturnType<typeof agentResources>) => void) | null = null;
+    agentResourceMocks.getAgentResources.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRefetch = resolve;
+        }),
+    );
+    await act(async () => {
+      void view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
+    });
+    await waitForCondition(
+      () =>
+        [...view.container.querySelectorAll('[role="tab"]')]
+          .map((tab) => tab.textContent?.trim())
+          .includes("Responsibilities"),
+      "Expected Responsibilities to fail-open while empty resources are refetching",
+    );
+
+    await act(async () => {
+      releaseRefetch?.(agentResources({ templateIds: [], adoptedTemplates: [] }));
+    });
+    await waitForCondition(
+      () =>
+        ![...view.container.querySelectorAll('[role="tab"]')]
+          .map((tab) => tab.textContent?.trim())
+          .includes("Responsibilities"),
+      "Expected Responsibilities to close again after settled empty refetch",
+    );
     await act(async () => view.root.unmount());
   });
 

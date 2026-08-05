@@ -41,6 +41,10 @@ import { titleWithSemantics, useJustSaved } from "./save-semantics.js";
 export type AgentResourcesController = {
   data: AgentResourcesOutput | undefined;
   isLoading: boolean;
+  /** True for the initial load and for background refetches (shared cache observers). */
+  isFetching: boolean;
+  /** True for hard failures and for background refetch failures that retain cached data. */
+  isError: boolean;
   error: unknown;
   /** Submit the full bindings array; saves immediately. */
   mutateBindings: (bindings: AgentResourceBindingInput[]) => void;
@@ -100,6 +104,8 @@ export function useAgentResources(uuid: string, opts: { enabled: boolean }): Age
   return {
     data: resourcesQuery.data,
     isLoading: resourcesQuery.isLoading,
+    isFetching: resourcesQuery.isFetching,
+    isError: resourcesQuery.isError,
     error: resourcesQuery.error,
     mutateBindings: updateMut.mutate,
     pending: updateMut.isPending,

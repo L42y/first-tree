@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { type HubClient, listClients } from "./../api/activity.js";
 import { type ClientStatusInfo, getAgentClientStatus, getAgentConfig } from "./../api/agent-config.js";
+import { listAgentTemplates } from "./../api/agent-templates.js";
 import {
   deleteAgent,
   getAgent,
@@ -39,7 +40,12 @@ import { AgentSwitcherStrip } from "./agent-detail/agent-switcher-strip.js";
 import { useAgentResources } from "./agent-detail/capability-section.js";
 import { ContextBar } from "./agent-detail/context-bar.js";
 import type { AgentDetailContext, RuntimeSwitchClaimView } from "./agent-detail/layout-context.js";
-import { buildTabs, type TabDef } from "./agent-detail/tabs.js";
+import {
+  buildTabs,
+  responsibilitiesSideFromQuery,
+  shouldShowResponsibilitiesTab,
+  type TabDef,
+} from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
 import { useLegacyAnchorRedirect } from "./agent-detail/use-legacy-anchor-redirect.js";
 import { PROVIDER_ORDER, runtimeProviderLabel } from "./clients/cards/shared/providers.js";
@@ -120,8 +126,18 @@ function AgentDetailPageView() {
   // click". One light query in the same tier as agent-config / client-status;
   // Responsibilities, Tools & skills, and Repositories then read+write this same
   // ["agent-resources", uuid] cache, so their useAgentResources calls become
-  // cache hits.
+  // cache hits. Also feeds Responsibilities tab visibility (adopted templateIds).
   const toolsResources = useAgentResources(uuid, { enabled: !!uuid && agentQuery.data?.type !== "human" });
+
+  // Public official Template catalog — same key as the Responsibilities editor
+  // so the shell and the edit dialog share one cache. Drives whether the
+  // Responsibilities tab exists when the agent has no adopted templates yet.
+  const templateCatalogQuery = useQuery({
+    queryKey: ["agent-templates-catalog"],
+    queryFn: listAgentTemplates,
+    enabled: !!uuid && agentQuery.data?.type !== "human",
+    retry: 1,
+  });
 
   // Immediate-save controller for model / reasoning effort / env. Lives in the
   // shell (not the Runtime tab) so its "Saved" flash and pending state survive a
@@ -262,7 +278,34 @@ function AgentDetailPageView() {
     return badges;
   }, [toolsResources.data]);
 
-  const tabs = useMemo(() => buildTabs(canEditConfig, isHumanLocal), [canEditConfig, isHumanLocal]);
+  const showResponsibilities = useMemo(
+    () =>
+      shouldShowResponsibilitiesTab(isHumanLocal, {
+        catalog: responsibilitiesSideFromQuery({
+          count: templateCatalogQuery.data ? templateCatalogQuery.data.templates.length : null,
+          isFetching: templateCatalogQuery.isFetching,
+          isError: templateCatalogQuery.isError,
+        }),
+        agentResources: responsibilitiesSideFromQuery({
+          count: toolsResources.data ? toolsResources.data.templateIds.length : null,
+          isFetching: toolsResources.isFetching,
+          isError: toolsResources.isError,
+        }),
+      }),
+    [
+      isHumanLocal,
+      templateCatalogQuery.data,
+      templateCatalogQuery.isFetching,
+      templateCatalogQuery.isError,
+      toolsResources.data,
+      toolsResources.isFetching,
+      toolsResources.isError,
+    ],
+  );
+  const tabs = useMemo(
+    () => buildTabs(canEditConfig, isHumanLocal, showResponsibilities),
+    [canEditConfig, isHumanLocal, showResponsibilities],
+  );
   const currentTabKey = useMemo(() => {
     const segments = location.pathname.split("/");
     const last = segments[segments.length - 1] ?? "";
