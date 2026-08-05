@@ -113,8 +113,9 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("context enable --provider 'claude-code' --team 'org-1'");
     expect(copiedPrompt).toContain("First Tree Web owns onboarding completion separately.");
     expect(copiedPrompt).not.toContain("onboarding completion has been recorded");
-    expect(promptPreview()).toBeNull();
-    expect(host.textContent).toContain("Setup prompt copied.");
+    expect(promptPreview()?.value).toContain("'first-tree-staging' login 'short-lived-code'");
+    expect(document.body.textContent).toContain("Copied");
+    expect(document.body.querySelector('span[aria-live="polite"]')?.textContent).toBe("Setup prompt copied.");
     expect(host.textContent).not.toContain("Copied — paste it into");
   });
 
@@ -190,6 +191,7 @@ describe("personal Context access", () => {
 
   it("surfaces an onboarding clipboard failure", async () => {
     vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("clipboard denied"));
+    vi.mocked(navigator.clipboard.writeText).mockResolvedValueOnce();
     await render(true);
 
     await clickAndFlush(buttonByText(host, "View setup prompt"));
@@ -197,15 +199,22 @@ describe("personal Context access", () => {
 
     expect(document.body.textContent).toContain("Could not copy the setup prompt.");
     expect(promptPreview()).not.toBeNull();
+
+    await clickAndFlush(buttonByText(document.body, "Copy prompt"));
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain("Copied");
+    expect(document.body.textContent).not.toContain("Could not copy the setup prompt.");
+    expect(promptPreview()).not.toBeNull();
   });
 
-  it("lets the member cancel without copying or retaining the temporary prompt", async () => {
+  it("lets the member close without copying or retaining the temporary prompt", async () => {
     await render(true);
 
     await clickAndFlush(buttonByText(host, "View setup prompt"));
     expect(promptPreview()).not.toBeNull();
 
-    await clickAndFlush(buttonByText(document.body, "Cancel"));
+    await clickAndFlush(buttonByText(document.body, "Close"));
 
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(promptPreview()).toBeNull();
@@ -291,7 +300,8 @@ describe("personal Context access", () => {
     expect(copiedPrompt).not.toContain("Complete result with a missing or invalid handoff");
     expect(copiedPrompt).not.toContain("Determine whether this session has an attached local project");
     expect(copiedPrompt).toContain("Do not mark onboarding complete.");
-    expect(host.textContent).toContain("Setup prompt copied.");
+    expect(promptPreview()).not.toBeNull();
+    expect(document.body.textContent).toContain("Copied");
     expect(host.textContent).not.toContain("Copied — paste it into");
     expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
     expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(2);
@@ -404,14 +414,14 @@ describe("personal Context access", () => {
     expect(promptPreview()?.value).toBe("ready-prompt");
     await clickAndFlush(buttonByText(document.body, "Copy prompt"));
 
-    expect(promptPreview()).toBeNull();
-    expect(host.textContent).toContain("Setup prompt copied.");
+    expect(promptPreview()?.value).toBe("ready-prompt");
+    expect(document.body.textContent).toContain("Copied");
     expect(host.textContent).not.toContain("Copied — paste it into");
     expect(preparePrompt).toHaveBeenCalledTimes(2);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("ready-prompt");
   });
 
-  it("keeps successful copy feedback transient without adding a visible helper row", async () => {
+  it("keeps successful copy feedback transient and lets the member copy again", async () => {
     vi.useFakeTimers();
     try {
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -440,19 +450,53 @@ describe("personal Context access", () => {
         await Promise.resolve();
       });
 
-      expect(host.querySelector("svg.lucide-check")).not.toBeNull();
-      expect(host.textContent).toContain("Setup prompt copied.");
+      const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+      expect(dialog?.querySelector("svg.lucide-check")).not.toBeNull();
+      expect(dialog?.textContent).toContain("Copied");
+      expect(promptPreview()?.value).toBe("ready-prompt");
       expect(actions?.childElementCount).toBe(actionChildCount);
-      expect(actions?.querySelector('span.sr-only[aria-live="polite"]')?.textContent).toBe("Setup prompt copied.");
+      expect(dialog?.querySelector('span.sr-only[aria-live="polite"]')?.textContent).toBe("Setup prompt copied.");
       expect(actions?.querySelector('p[aria-live="polite"]')).toBeNull();
+      expect(buttonByText(dialog ?? document.body, "Copied")?.getAttribute("aria-label")).toBe(
+        "Copied. Copy prompt again",
+      );
+
+      let resolveRepeatedCopy: (() => void) | undefined;
+      vi.mocked(navigator.clipboard.writeText).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRepeatedCopy = resolve;
+          }),
+      );
+      await act(async () => {
+        buttonByText(dialog ?? document.body, "Copied")?.click();
+        await Promise.resolve();
+      });
+
+      const copyingAgain = buttonByText(dialog ?? document.body, "Copying…");
+      expect(copyingAgain?.getAttribute("aria-label")).toBeNull();
+      expect(copyingAgain?.disabled).toBe(true);
+      expect(dialog?.querySelector("svg.lucide-check")).toBeNull();
+      expect(dialog?.querySelector("svg.lucide-clipboard")).not.toBeNull();
+
+      await act(async () => {
+        resolveRepeatedCopy?.();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2);
+      expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("ready-prompt");
+      expect(promptPreview()?.value).toBe("ready-prompt");
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(COPY_FEEDBACK_MS);
       });
 
-      expect(host.querySelector("svg.lucide-check")).toBeNull();
+      expect(dialog?.querySelector("svg.lucide-check")).toBeNull();
       expect(host.querySelector("svg.lucide-eye")).not.toBeNull();
-      expect(host.textContent).not.toContain("Setup prompt copied.");
+      expect(dialog?.textContent).toContain("Copy prompt");
+      expect(dialog?.textContent).not.toContain("Copied");
     } finally {
       vi.useRealTimers();
     }
@@ -479,7 +523,7 @@ describe("personal Context access", () => {
     });
     await clickAndFlush(buttonByText(host, "View setup prompt"));
     await clickAndFlush(buttonByText(document.body, "Copy prompt"));
-    await clickAndFlush(buttonByText(document.body, "Cancel"));
+    await clickAndFlush(buttonByText(document.body, "Close"));
     await clickAndFlush(buttonByText(host, "View setup prompt"));
 
     expect(promptPreview()?.value).toBe("second-prompt");

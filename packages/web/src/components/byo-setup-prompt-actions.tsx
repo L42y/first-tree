@@ -79,13 +79,9 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
     const renderedResetKey = resetKey;
     setCopyingPrompt(true);
     void (async () => {
-      const result = await copyFeedback.copy(renderedPrompt);
+      await copyFeedback.copy(renderedPrompt);
       if (copyAttempt.current !== copy || activeResetKey.current !== renderedResetKey) return;
       setCopyingPrompt(false);
-      if (result === "copied") {
-        setOpen(false);
-        setPrompt(null);
-      }
     })();
   };
 
@@ -100,16 +96,9 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
         style={{ gap: "var(--sp-1)" }}
       >
         <Button type="button" size="sm" disabled={preparing} onClick={prepare}>
-          {copyFeedback.status === "copied" ? (
-            <Check className="h-3.5 w-3.5" aria-hidden />
-          ) : (
-            <Eye className="h-3.5 w-3.5" aria-hidden />
-          )}
+          <Eye className="h-3.5 w-3.5" aria-hidden />
           {preparing ? "Preparing…" : "View setup prompt"}
         </Button>
-        <span aria-live="polite" className="sr-only">
-          {copyFeedback.status === "copied" ? "Setup prompt copied." : ""}
-        </span>
       </div>
 
       {prepareFailed ? (
@@ -159,12 +148,24 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
           </div>
 
           <DialogFooter>
+            <span aria-live="polite" className="sr-only">
+              {copyFeedback.status === "copied" ? "Setup prompt copied." : ""}
+            </span>
             <Button type="button" variant="ghost" onClick={closePrompt}>
-              Cancel
+              Close
             </Button>
-            <Button type="button" disabled={copyingPrompt} onClick={copyPrompt}>
-              <Clipboard className="h-4 w-4" aria-hidden />
-              {copyingPrompt ? "Copying…" : "Copy prompt"}
+            <Button
+              type="button"
+              aria-label={!copyingPrompt && copyFeedback.status === "copied" ? "Copied. Copy prompt again" : undefined}
+              disabled={copyingPrompt}
+              onClick={copyPrompt}
+            >
+              {!copyingPrompt && copyFeedback.status === "copied" ? (
+                <Check className="h-4 w-4" aria-hidden />
+              ) : (
+                <Clipboard className="h-4 w-4" aria-hidden />
+              )}
+              {copyingPrompt ? "Copying…" : copyFeedback.status === "copied" ? "Copied" : "Copy prompt"}
             </Button>
           </DialogFooter>
         </DialogContent>

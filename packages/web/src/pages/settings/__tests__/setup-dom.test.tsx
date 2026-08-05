@@ -1028,6 +1028,8 @@ describe("Settings Setup overview", () => {
       expect.stringContaining("first-tree-dev login short-lived-code"),
     );
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("exact `applyCommand`"));
+    expect(document.body.querySelector("[data-byo-setup-prompt-preview]")).not.toBeNull();
+    expect(document.body.textContent).toContain("Copied");
 
     await act(async () => view.root.unmount());
   });
@@ -1075,6 +1077,8 @@ describe("Settings Setup overview", () => {
       expect.stringContaining("first-tree-dev login short-lived-code"),
     );
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("exact `applyCommand`"));
+    expect(document.body.querySelector("[data-byo-setup-prompt-preview]")).not.toBeNull();
+    expect(document.body.textContent).toContain("Copied");
 
     await act(async () => view.root.unmount());
   });
