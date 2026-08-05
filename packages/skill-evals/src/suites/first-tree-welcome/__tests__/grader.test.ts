@@ -2023,7 +2023,14 @@ Type a different task if you prefer.`;
           }),
         ),
       ];
-      const repoRelativeInformationalCommands = ["rg --version", "tree --version", "ls -R --help"].map((command) =>
+      const repoRelativeInformationalCommands = [
+        "rg --version",
+        "rg TODO --version",
+        "rg -eTODO --help",
+        "rg README.md --help",
+        "tree --version",
+        "ls -R --help",
+      ].map((command) =>
         broadScanSafetyResult(
           tempRoot,
           scenario,

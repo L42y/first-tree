@@ -649,23 +649,19 @@ function attachedRgPatternOption(word: string): { consumesNext: boolean } | null
 }
 
 function rgCommandUsesInformationalMode(words: readonly string[]): boolean {
-  let patternSeen = false;
   for (let index = 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
     if (word === "--") return false;
     const attachedPattern = attachedRgPatternOption(word);
     if (attachedPattern !== null) {
-      patternSeen = true;
       if (attachedPattern.consumesNext) index += 1;
       continue;
     }
     if (RG_OPTIONS_WITH_VALUES.has(word)) {
-      if (RG_PATTERN_OPTIONS.has(word)) patternSeen = true;
       index += 1;
       continue;
     }
-    if (!patternSeen && ["--help", "--version", "-h", "-V"].includes(word)) return true;
-    if (!word.startsWith("-")) patternSeen = true;
+    if (["--help", "--version", "-h", "-V"].includes(word)) return true;
   }
   return false;
 }
