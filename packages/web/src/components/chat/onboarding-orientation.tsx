@@ -1,5 +1,7 @@
 import { Check, Play, RotateCcw } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import orientationAuthoring from "../../../orientation-videos/chapters.json";
 import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
 
@@ -14,34 +16,28 @@ export const ONBOARDING_ORIENTATION_CHAPTERS = {
     id: "multi-agent",
     title: "Multi-agent collaboration",
     summary: "The right agents join as the work unfolds",
-    durationInSeconds: 35,
+    durationInSeconds: orientationAuthoring.chapters["multi-agent"].durationInSeconds,
     videoSrc: "/onboarding/orientation/multi-agent.mp4",
     posterSrc: "/onboarding/orientation/stills/multi-agent-poster.png",
     captionsSrc: "/onboarding/orientation/multi-agent.vtt",
-    transcript:
-      "Give one lead agent a clear software task. As the work unfolds, the lead @mentions UX, development, and QA agents in the same chat—each only when needed. Their working updates and replies stay in the shared conversation, and the verified pull request appears in the GitHub sidebar without the user coordinating separate chats.",
   },
   "context-tree": {
     id: "context-tree",
     title: "Context Tree",
     summary: "Read, work, review, update—then start smarter",
-    durationInSeconds: 59,
+    durationInSeconds: orientationAuthoring.chapters["context-tree"].durationInSeconds,
     videoSrc: "/onboarding/orientation/context-tree.mp4",
     posterSrc: "/onboarding/orientation/stills/context-tree-poster.png",
     captionsSrc: "/onboarding/orientation/context-tree.vtt",
-    transcript:
-      "Context Tree carries durable team knowledge from one task into the next. Before working, an Agent reads only the task-relevant Context Tree paths it is authorized to use, so settled constraints guide design, code, and tests without replacing verification. Afterward, temporary implementation detail stays with the code while lasting decisions become source-backed proposals. A dedicated Context Reviewer checks evidence, consistency, authorization boundaries, and durable value before an approved update enters the team's shared snapshot. The real Context view keeps Agent reads and writes visible, and every future Agent begins with reviewed knowledge instead of starting from zero.",
   },
   github: {
     id: "github",
     title: "GitHub automation",
     summary: "Issue-to-PR work stays connected in one Chat",
-    durationInSeconds: 31,
+    durationInSeconds: orientationAuthoring.chapters.github.durationInSeconds,
     videoSrc: "/onboarding/orientation/github.mp4",
     posterSrc: "/onboarding/orientation/stills/github-poster.png",
     captionsSrc: "/onboarding/orientation/github.vtt",
-    transcript:
-      "After a repository-scoped GitHub App is connected, assigning an Issue to a First Tree teammate creates or reuses an Issue Chat and wakes that teammate’s configured Delegate Agent with the source context. A pull request linked to the Issue stays attached to that Chat, and its review, update, approval, and merge events return automatically. Routing requires a matched GitHub identity and an active Delegate, while repository access remains limited to the connected installation.",
   },
 } as const;
 
@@ -85,9 +81,9 @@ export function OnboardingOrientation({
   const [selectedId, setSelectedId] = useState<OnboardingOrientationChapterId>(
     ONBOARDING_ORIENTATION_DEFAULT_CHAPTER_ID,
   );
-  const [requestedAutoplayId, setRequestedAutoplayId] = useState<OnboardingOrientationChapterId | null>(null);
   const [watchedIds, setWatchedIds] = useState<Set<OnboardingOrientationChapterId>>(() => new Set());
   const [videoError, setVideoError] = useState(false);
+  const [playbackNeedsUserAction, setPlaybackNeedsUserAction] = useState(false);
   const normalizedTargetAgentName = targetAgentName?.trim() || null;
   const tourComplete = watchedIds.size === CHAPTERS.length;
 
@@ -107,18 +103,24 @@ export function OnboardingOrientation({
   const selected = ONBOARDING_ORIENTATION_CHAPTERS[selectedId];
 
   const playSelectedChapter = (): void => {
-    const playPromise = videoRef.current?.play();
-    if (playPromise) void playPromise.catch(() => undefined);
+    setPlaybackNeedsUserAction(false);
+    try {
+      const playPromise = videoRef.current?.play();
+      if (playPromise) void playPromise.catch(() => setPlaybackNeedsUserAction(true));
+    } catch {
+      setPlaybackNeedsUserAction(true);
+    }
   };
 
   const selectChapter = (chapterId: OnboardingOrientationChapterId): void => {
-    setVideoError(false);
-    if (chapterId === selectedId) {
-      playSelectedChapter();
-      return;
-    }
-    setRequestedAutoplayId(chapterId);
-    setSelectedId(chapterId);
+    // Mount the selected media synchronously so play() remains part of the
+    // chapter button's user gesture, including on WebKit with audible media.
+    flushSync(() => {
+      setVideoError(false);
+      setPlaybackNeedsUserAction(false);
+      if (chapterId !== selectedId) setSelectedId(chapterId);
+    });
+    playSelectedChapter();
   };
 
   const markSelectedChapterWatched = (): void => {
@@ -219,16 +221,15 @@ export function OnboardingOrientation({
             controls
             playsInline
             preload="metadata"
-            autoPlay={requestedAutoplayId === selected.id}
             poster={selected.posterSrc}
             aria-label={`${selected.title} orientation video`}
-            onPlay={() => setRequestedAutoplayId(null)}
+            onPlay={() => setPlaybackNeedsUserAction(false)}
             onEnded={markSelectedChapterWatched}
             onError={() => setVideoError(true)}
           >
             <source src={selected.videoSrc} type="video/mp4" />
-            <track kind="captions" src={selected.captionsSrc} srcLang="en" label="English" default />
-            {selected.transcript}
+            <track kind="captions" src={selected.captionsSrc} srcLang="en" label="English captions" />
+            Your browser does not support this video.
           </video>
           {videoError ? (
             <div
@@ -237,9 +238,12 @@ export function OnboardingOrientation({
               style={{ gap: "var(--sp-3)", padding: "var(--sp-4)" }}
             >
               <div className="flex flex-wrap items-center justify-between" style={{ gap: "var(--sp-2)" }}>
-                <p className="text-label font-medium" role="status">
-                  This video couldn’t load. You can read the transcript instead.
-                </p>
+                <div>
+                  <p className="text-label font-medium" role="status">
+                    This video couldn’t load
+                  </p>
+                  <p className="text-body mt-1 text-muted-foreground text-pretty">{selected.summary}</p>
+                </div>
                 <Button
                   type="button"
                   variant="outline"
@@ -252,13 +256,24 @@ export function OnboardingOrientation({
                   Try again
                 </Button>
               </div>
-              <section aria-label={`${selected.title} transcript`}>
-                <p className="mono text-caption text-muted-foreground">Transcript</p>
-                <p className="text-body mt-1 max-w-[65ch] text-muted-foreground text-pretty">{selected.transcript}</p>
-              </section>
             </div>
           ) : null}
         </div>
+
+        {playbackNeedsUserAction && !videoError ? (
+          <div
+            data-onboarding-orientation-playback-prompt
+            className="mt-2 flex flex-wrap items-center justify-between text-muted-foreground"
+            style={{ gap: "var(--sp-2)" }}
+            role="status"
+          >
+            <p className="text-body">Playback is ready. Press play to watch this chapter.</p>
+            <Button type="button" variant="outline" size="sm" onClick={playSelectedChapter}>
+              <Play className="size-3.5" aria-hidden="true" />
+              Play chapter
+            </Button>
+          </div>
+        ) : null}
 
         <nav className="mt-4" aria-label="Orientation chapters">
           <p className="text-label font-medium">Chapters</p>
