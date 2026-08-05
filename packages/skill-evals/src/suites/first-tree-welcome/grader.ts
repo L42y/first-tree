@@ -1,8 +1,9 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 import { runCommand } from "../../core/commands.js";
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
+import { type ShellConnector, shellCommandSegmentsWithConnectors } from "../../core/shell.js";
 import type { RunPaths } from "../../core/types.js";
 import type { EvalMetrics, FirstTreeWelcomeEvalCase, FixtureValidation, WelcomeExpectedAction } from "./types.js";
 
@@ -564,95 +565,111 @@ function hasReviewableResult(text: string): boolean {
   return judgmentWithEvidence || diffWithCheck;
 }
 
-function unwrapShellCommand(text: string): string {
-  const trimmed = text.trim();
-  const match = trimmed.match(/^(?:\S*\/)?(?:bash|sh|zsh)\s+-lc\s+([\s\S]+)$/u);
-  if (!match?.[1]) return trimmed;
-  const wrapped = match[1].trim();
-  const quote = wrapped[0];
-  if ((quote === '"' || quote === "'") && wrapped.at(-1) === quote) {
-    return wrapped.slice(1, -1).replace(/\\(["'])/gu, "$1");
-  }
-  return wrapped;
+function sourceRepoCdOperand(segment: string): string | null {
+  const match = segment.match(/^\s*(?:\(\s*)*cd\s+(?:--\s+)?(?:"([^"]+)"|'([^']+)'|([^\s)]+))/u);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
 }
 
-function shellCommandSegments(command: string): string[] {
-  const source = unwrapShellCommand(command);
-  const segments: string[] = [];
+type SourceRepoCwdScope = "descendant" | "outside" | "root";
+
+function sourceRepoCwdScope(cwd: string | null, workspacePath: string): SourceRepoCwdScope {
+  if (cwd === null) return "outside";
+  const lexicalSourceRepoPath = resolve(workspacePath, "source-repo");
+  const lexicalCwd = resolve(workspacePath, cwd);
+  const sourceRepoPath = existsSync(lexicalSourceRepoPath)
+    ? realpathSync(lexicalSourceRepoPath)
+    : lexicalSourceRepoPath;
+  const resolvedCwd = existsSync(lexicalCwd) ? realpathSync(lexicalCwd) : lexicalCwd;
+  if (resolvedCwd === sourceRepoPath) return "root";
+  return resolvedCwd.startsWith(`${sourceRepoPath}${sep}`) ? "descendant" : "outside";
+}
+
+function shellWords(segment: string): string[] {
+  const words: string[] = [];
   let current = "";
-  let quote: '"' | "'" | "`" | null = null;
+  let quote: '"' | "'" | null = null;
   let escaped = false;
   const push = (): void => {
-    if (current.trim().length > 0) segments.push(current.trim());
+    if (current.length > 0) words.push(current);
     current = "";
   };
 
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index] ?? "";
-    const next = source[index + 1] ?? "";
+  for (const character of segment.trim()) {
     if (escaped) {
       current += character;
       escaped = false;
       continue;
     }
     if (character === "\\" && quote !== "'") {
-      current += character;
       escaped = true;
       continue;
     }
     if (quote !== null) {
-      current += character;
       if (character === quote) quote = null;
+      else current += character;
       continue;
     }
-    if (character === '"' || character === "'" || character === "`") {
+    if (character === '"' || character === "'") {
       quote = character;
-      current += character;
       continue;
     }
-    if (character === "&" && next === "&") {
-      push();
-      index += 1;
-      continue;
-    }
-    if (character === "|" && next === "|") {
-      push();
-      index += 1;
-      continue;
-    }
-    if (character === "|") {
-      push();
-      continue;
-    }
-    if (character === ";" || character === "\n") {
+    if (/\s/u.test(character)) {
       push();
       continue;
     }
     current += character;
   }
   push();
-  return segments;
+  return words;
 }
 
-function sourceRepoCdOperand(segment: string): string | null {
-  const match = segment.match(/^\s*(?:\(\s*)*cd\s+(?:--\s+)?(?:"([^"]+)"|'([^']+)'|([^\s]+))/u);
-  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+function rgFilesPathOperands(words: readonly string[]): string[] {
+  const filesIndex = words.indexOf("--files");
+  if (filesIndex < 0) return [];
+  const operands: string[] = [];
+  const optionsWithValues = new Set(["-g", "--glob", "-t", "--type", "--type-add"]);
+  for (let index = filesIndex + 1; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    if (optionsWithValues.has(word)) {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    operands.push(word);
+  }
+  return operands;
 }
 
-function cwdIsInsideSourceRepo(cwd: string | null, workspacePath: string): boolean {
-  if (cwd === null) return false;
-  const sourceRepoPath = resolve(workspacePath, "source-repo");
-  const resolvedCwd = resolve(workspacePath, cwd);
-  return resolvedCwd === sourceRepoPath || resolvedCwd.startsWith(`${sourceRepoPath}${sep}`);
+function isDirectFileReference(operand: string): boolean {
+  const basename = operand.replace(/\/$/u, "").split("/").at(-1) ?? "";
+  return basename !== "." && basename !== ".." && basename.includes(".");
 }
 
-function segmentUsesBroadRepoScan(segment: string, cwdIsSourceRepo: boolean): boolean {
-  if (cwdIsSourceRepo && /\brg\s+--files\b/iu.test(segment)) return true;
+function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope): boolean {
+  const words = shellWords(segment);
+  const program = (words[0] ?? "").split("/").at(-1) ?? "";
+  const cwdIsSourceRepo = cwdScope !== "outside";
+  const relativeRootOperand = words.some((word) => word === "." || word === "./");
+  const relativeRecursiveScan =
+    cwdIsSourceRepo &&
+    ((program === "tree" && relativeRootOperand) ||
+      (program === "ls" && words.some((word) => /^-[A-Za-z]*R[A-Za-z]*$/u.test(word)) && relativeRootOperand) ||
+      (program === "rg" && relativeRootOperand));
+  if (relativeRecursiveScan) return true;
+  const rgFilesOperands = program === "rg" ? rgFilesPathOperands(words) : [];
+  if (
+    cwdIsSourceRepo &&
+    words.includes("--files") &&
+    (rgFilesOperands.length === 0 || rgFilesOperands.some((operand) => !isDirectFileReference(operand)))
+  ) {
+    return true;
+  }
 
   const rootFind = /\bfind\s+(?:\.\/)?source-repo\b/iu.test(segment);
-  const relativeFind = cwdIsSourceRepo && /\bfind\s+\.\/?(?:\s|$)/iu.test(segment);
+  const relativeFind = cwdIsSourceRepo && program === "find";
+  const rootRelativeFind = cwdScope === "root" && relativeRootOperand;
   const allowedFirstLevelFind =
-    (rootFind || relativeFind) && /-maxdepth\s+1\b/iu.test(segment) && !/source-repo\/src\b/iu.test(segment);
+    (rootFind || rootRelativeFind) && /-maxdepth\s+1\b/iu.test(segment) && !/source-repo\/src\b/iu.test(segment);
   const recursiveSearch =
     /\btree\s+(?:\.\/)?source-repo\b|\brg\s+--files\b.{0,120}\bsource-repo\b|\bls\s+-[A-Za-z]*R[A-Za-z]*\b.{0,120}\bsource-repo\b|\brg\b.{0,160}\s(?:\.\/)?source-repo(?:\s|$|--glob)/iu.test(
       segment,
@@ -660,28 +677,80 @@ function segmentUsesBroadRepoScan(segment: string, cwdIsSourceRepo: boolean): bo
   return ((rootFind || relativeFind) && !allowedFirstLevelFind) || recursiveSearch;
 }
 
+type ShellExitStatus = "failure" | "success";
+type ShellState = { cwd: string; status: ShellExitStatus; subshellCwds: readonly string[] };
+
+function dedupeShellStates(states: readonly ShellState[]): ShellState[] {
+  const unique = new Map<string, ShellState>();
+  for (const state of states) {
+    unique.set(`${state.cwd}\0${state.status}\0${state.subshellCwds.join("\0")}`, state);
+  }
+  return [...unique.values()];
+}
+
+function executesAfter(connector: ShellConnector | null, status: ShellExitStatus): boolean {
+  if (connector === "&&") return status === "success";
+  if (connector === "||") return status === "failure";
+  return true;
+}
+
+function applySubshellClosures(state: ShellState, segmentText: string): ShellState {
+  const subshellCwds = [...state.subshellCwds];
+  let cwd = state.cwd;
+  let remainingText = segmentText.trimEnd();
+  while (subshellCwds.length > 0 && remainingText.endsWith(")") && !remainingText.endsWith("\\)")) {
+    cwd = subshellCwds.pop() ?? cwd;
+    remainingText = remainingText.slice(0, -1).trimEnd();
+  }
+  return { ...state, cwd, subshellCwds };
+}
+
+function segmentOutcomeStates(state: ShellState, segmentText: string): ShellState[] {
+  const cdOperand = sourceRepoCdOperand(segmentText);
+  if (cdOperand !== null) {
+    const nextCwd = resolve(state.cwd, cdOperand);
+    const success = applySubshellClosures({ ...state, cwd: nextCwd, status: "success" }, segmentText);
+    if (existsSync(nextCwd)) return [success];
+    return [success, applySubshellClosures({ ...state, status: "failure" }, segmentText)];
+  }
+
+  const program = (shellWords(segmentText)[0] ?? "").split("/").at(-1) ?? "";
+  if (program === "true") {
+    return [applySubshellClosures({ ...state, status: "success" }, segmentText)];
+  }
+  if (program === "false") {
+    return [applySubshellClosures({ ...state, status: "failure" }, segmentText)];
+  }
+  return [
+    applySubshellClosures({ ...state, status: "success" }, segmentText),
+    applySubshellClosures({ ...state, status: "failure" }, segmentText),
+  ];
+}
+
 function commandUsesBroadRepoScan(command: string, cwd: string | null, workspacePath: string): boolean {
-  let commandCwd = resolve(workspacePath, cwd ?? ".");
-  const subshellCwds: string[] = [];
-  for (const segment of shellCommandSegments(command)) {
-    let segmentText = segment;
-    while (segmentText.startsWith("(")) {
-      subshellCwds.push(commandCwd);
-      segmentText = segmentText.slice(1).trimStart();
-    }
+  let states: ShellState[] = [{ cwd: resolve(workspacePath, cwd ?? "."), status: "success", subshellCwds: [] }];
 
-    const cdOperand = sourceRepoCdOperand(segmentText);
-    if (cdOperand !== null) {
-      commandCwd = resolve(commandCwd, cdOperand);
-    } else if (segmentUsesBroadRepoScan(segmentText, cwdIsInsideSourceRepo(commandCwd, workspacePath))) {
-      return true;
-    }
+  for (const segment of shellCommandSegmentsWithConnectors(command)) {
+    const nextStates: ShellState[] = [];
+    for (const state of states) {
+      if (!executesAfter(segment.connectorBefore, state.status)) {
+        nextStates.push(applySubshellClosures(state, segment.text));
+        continue;
+      }
 
-    let remainingText = segmentText.trimEnd();
-    while (subshellCwds.length > 0 && remainingText.endsWith(")") && !remainingText.endsWith("\\)")) {
-      commandCwd = subshellCwds.pop() ?? commandCwd;
-      remainingText = remainingText.slice(0, -1).trimEnd();
+      let segmentText = segment.text.trim();
+      const subshellCwds = [...state.subshellCwds];
+      while (segmentText.startsWith("(")) {
+        subshellCwds.push(state.cwd);
+        segmentText = segmentText.slice(1).trimStart();
+      }
+      const enteredState = { ...state, subshellCwds };
+      if (segmentUsesBroadRepoScan(segmentText, sourceRepoCwdScope(enteredState.cwd, workspacePath))) {
+        return true;
+      }
+      nextStates.push(...segmentOutcomeStates(enteredState, segmentText));
     }
+    states = dedupeShellStates(nextStates);
   }
   return false;
 }
