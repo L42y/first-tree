@@ -55,6 +55,9 @@ vi.mock("../../../features/agent-setup/use-agent-creation.js", async (importOrig
 });
 vi.mock("../../../features/agent-setup/use-computer-connection.js", () => ({
   useComputerConnection: () => ({
+    connectedClients: [],
+    selectedClientId: null,
+    setSelectedClientId: vi.fn(),
     connectedClient: null,
     capabilitiesLoaded: false,
     okRuntimes: [],

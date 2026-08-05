@@ -759,6 +759,9 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
     teamDisplayName: "Acme",
     orgHasOtherMembers: true,
     computer: {
+      connectedClients: CLIENTS[0] ? [CLIENTS[0]] : [],
+      selectedClientId: CLIENTS[0]?.id ?? null,
+      setSelectedClientId: () => undefined,
       connectedClient: CLIENTS[0] ?? null,
       capabilitiesLoaded: true,
       okRuntimes: ["claude-code", "codex"],

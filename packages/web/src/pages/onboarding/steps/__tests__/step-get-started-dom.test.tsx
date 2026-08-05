@@ -51,6 +51,9 @@ function flow(overrides: Partial<OnboardingFlowValue> = {}): OnboardingFlowValue
     teamDisplayName: "Acme",
     orgHasOtherMembers: true,
     computer: {
+      connectedClients: [],
+      selectedClientId: null,
+      setSelectedClientId: vi.fn(),
       connectedClient: null,
       capabilitiesLoaded: false,
       okRuntimes: [],
@@ -204,6 +207,9 @@ describe("StepGetStarted", () => {
   it("skips the computer step when a supported coding tool is already ready", async () => {
     const value = flow({
       computer: {
+        connectedClients: [],
+        selectedClientId: "client-1",
+        setSelectedClientId: vi.fn(),
         connectedClient: {
           id: "client-1",
           hostname: "caseys-mac",
@@ -334,6 +340,9 @@ describe("StepGetStarted", () => {
     const value = flow({
       offerTeamAgentStart: false,
       computer: {
+        connectedClients: [],
+        selectedClientId: "client-1",
+        setSelectedClientId: vi.fn(),
         connectedClient: {
           id: "client-1",
           hostname: "caseys-mac",
@@ -364,6 +373,9 @@ describe("StepGetStarted", () => {
   it("does not infer BYO provider readiness from the globally connected Computer", async () => {
     const value = flow({
       computer: {
+        connectedClients: [],
+        selectedClientId: "client-1",
+        setSelectedClientId: vi.fn(),
         connectedClient: {
           id: "client-1",
           hostname: "caseys-mac",
@@ -391,6 +403,9 @@ describe("StepGetStarted", () => {
   it("allows BYO from a Browser whose connected Computer reports only another runtime", async () => {
     const value = flow({
       computer: {
+        connectedClients: [],
+        selectedClientId: "client-1",
+        setSelectedClientId: vi.fn(),
         connectedClient: {
           id: "client-1",
           hostname: "caseys-mac",

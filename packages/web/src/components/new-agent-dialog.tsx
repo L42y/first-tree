@@ -10,7 +10,6 @@ import {
   isReservedAgentName,
   MAX_AGENT_TEMPLATE_IDS,
   PREFERRED_RUNTIME_PROVIDER,
-  pickPreferredRuntimeProvider,
   type RuntimeProvider,
   runtimeProviderLabel,
 } from "@first-tree/shared";
@@ -22,9 +21,11 @@ import { listAgentTemplates } from "../api/agent-templates.js";
 import { checkAgentNameAvailability, createAgent } from "../api/agents.js";
 import { ApiError, api, type ValidationIssue } from "../api/client.js";
 import { useAuth } from "../auth/auth-context.js";
+import { resolveComputerSelection, resolveRuntimeSelection } from "../features/agent-setup/computer-selection.js";
 import { useCopyFeedback } from "../lib/use-copy-feedback.js";
 import { runVisibilityAwareInterval } from "../lib/visibility-interval.js";
 import { slugify } from "../utils/agent-naming.js";
+import { ConnectedComputerSelect, ConnectedComputerSummary } from "./connected-computer-select.js";
 import { activeTemplateResponsibilityLabel, TemplateResponsibilityLabel } from "./template-responsibility-label.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog.js";
@@ -144,15 +145,6 @@ async function resolveAvailableHandle(base: string, isStale: () => boolean): Pro
   return null;
 }
 
-/**
- * Pick the preferred runtime among the ones in `ok` state on a given client.
- * Uses the catalog-owned Codex/Claude preference prefix, then preserves the
- * selected Client's reported order (which may differ from display order).
- */
-function pickPreferredRuntime(caps: ClientCapabilities): RuntimeProvider | null {
-  return pickPreferredRuntimeProvider(caps);
-}
-
 function availabilityReasonMessage(reason: "invalid" | "reserved" | "taken"): string {
   switch (reason) {
     case "taken":
@@ -201,6 +193,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // personal until explicitly shared.
   const [visibility, setVisibility] = useState<AgentVisibility>("private");
   const [runtime, setRuntime] = useState<RuntimeProvider>(PREFERRED_RUNTIME_PROVIDER);
+  const runtimeSelectionIsManualRef = useRef(false);
 
   // Handle resolution. The slug follows the display name (auto-deduped on
   // collision); `resolvedHandle` is the winner. `manualHandle` is only used
@@ -215,7 +208,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // installed there) before clicking Create. Mirrors onboarding step 2.
   const [connectedClients, setConnectedClients] = useState<HubClient[]>([]);
   const [clientsLoaded, setClientsLoaded] = useState(false);
-  const [pickedClientId, setPickedClientId] = useState<string | null>(null);
+  const [pickedClientIdState, setPickedClientIdState] = useState<string | null>(null);
+  const explicitlyPickedClientIdRef = useRef<string | null>(null);
+  const clientsRequestSeqRef = useRef(0);
+  const capabilitiesRequestSeqRef = useRef(0);
   const [capabilities, setCapabilities] = useState<ClientCapabilities | null>(null);
   const [capabilitiesClientId, setCapabilitiesClientId] = useState<string | null>(null);
   // Connect-token state for the zero-computer recovery affordance. We only
@@ -298,13 +294,15 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
       setDisplayName("");
       setVisibility("private");
       setRuntime(PREFERRED_RUNTIME_PROVIDER);
+      runtimeSelectionIsManualRef.current = false;
       setResolvedHandle("");
       setHandleState({ status: "idle" });
       setManualHandle("");
       setManualAvailability({ status: "idle" });
       setConnectedClients([]);
       setClientsLoaded(false);
-      setPickedClientId(null);
+      setPickedClientIdState(null);
+      explicitlyPickedClientIdRef.current = null;
       setCapabilities(null);
       setCapabilitiesClientId(null);
       setConnectToken(null);
@@ -435,6 +433,20 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     return () => window.clearTimeout(timer);
   }, [open, handleState.status, manualHandle]);
 
+  const connectedClientIds = useMemo(() => connectedClients.map((client) => client.id), [connectedClients]);
+  const pickedClientId = resolveComputerSelection({
+    clientIds: connectedClientIds,
+    currentClientId: pickedClientIdState,
+    explicitlySelectedClientId: explicitlyPickedClientIdRef.current,
+    requireExplicitWhenMultiple: true,
+  });
+  const currentPickedClientIdRef = useRef<string | null>(null);
+  currentPickedClientIdRef.current = pickedClientId;
+  const pickClient = useCallback((next: string): void => {
+    explicitlyPickedClientIdRef.current = next;
+    setPickedClientIdState(next);
+  }, []);
+
   // Poll `listClients` to keep the connected-computer list fresh while the
   // dialog is open. 5s cadence so a computer coming online (or going
   // offline) reflects without the user closing and reopening the dialog.
@@ -445,9 +457,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     if (!open) return;
     let cancelled = false;
     const tick = async (): Promise<void> => {
+      const seq = ++clientsRequestSeqRef.current;
       try {
         const list = await listClients();
-        if (cancelled) return;
+        if (cancelled || seq !== clientsRequestSeqRef.current) return;
         const connected = list
           .filter((c) => c.status === "connected")
           .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
@@ -457,28 +470,27 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
         // Best-effort. Mark as loaded so the empty-state UI shows instead of
         // a forever spinner — the user can still see *something* and the
         // next tick will recover.
-        if (!cancelled) setClientsLoaded(true);
+        if (!cancelled && seq === clientsRequestSeqRef.current) setClientsLoaded(true);
       }
     };
     const dispose = runVisibilityAwareInterval(tick, 5_000);
     return () => {
       cancelled = true;
+      clientsRequestSeqRef.current += 1;
       dispose();
     };
   }, [open]);
 
-  // Auto-pick the most-recently-seen connected client, but stay on the
-  // user's manual choice as long as it's still in the list.
+  // Synchronise storage with the effective selection. The effective value is
+  // derived during render, so an automatic one-computer choice never flashes
+  // as selected after a second computer appears.
   useEffect(() => {
-    if (connectedClients.length === 0) {
-      setPickedClientId(null);
-      return;
+    const explicitClientId = explicitlyPickedClientIdRef.current;
+    if (explicitClientId && !connectedClientIds.includes(explicitClientId)) {
+      explicitlyPickedClientIdRef.current = null;
     }
-    setPickedClientId((prev) => {
-      if (prev && connectedClients.some((c) => c.id === prev)) return prev;
-      return connectedClients[0]?.id ?? null;
-    });
-  }, [connectedClients]);
+    setPickedClientIdState((prev) => (prev === pickedClientId ? prev : pickedClientId));
+  }, [connectedClientIds, pickedClientId]);
 
   // Capability fetch — exposed as a callback so an in-dialog Connect can force
   // an immediate refresh (otherwise the just-signed-in runtime only flips to ok
@@ -486,13 +498,17 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // late write from a previous client is ignored by `activeCapabilities`.
   const refreshCapabilities = useCallback(async (): Promise<void> => {
     if (!pickedClientId) return;
+    const clientId = pickedClientId;
+    const seq = ++capabilitiesRequestSeqRef.current;
     try {
-      const res = await getClientCapabilities(pickedClientId);
+      const res = await getClientCapabilities(clientId);
+      if (seq !== capabilitiesRequestSeqRef.current || currentPickedClientIdRef.current !== clientId) return;
       setCapabilities(res.capabilities);
-      setCapabilitiesClientId(pickedClientId);
+      setCapabilitiesClientId(clientId);
     } catch {
       // Transient — keep whatever we have (initial null shows "detecting…",
       // prior success keeps the chips). The next tick will retry.
+      return;
     }
   }, [pickedClientId]);
 
@@ -502,12 +518,16 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   // reopens the dialog. Visibility-aware (see `runVisibilityAwareInterval`).
   useEffect(() => {
     if (!pickedClientId) {
+      capabilitiesRequestSeqRef.current += 1;
       setCapabilities(null);
       setCapabilitiesClientId(null);
       return;
     }
     const dispose = runVisibilityAwareInterval(refreshCapabilities, 5_000);
-    return () => dispose();
+    return () => {
+      capabilitiesRequestSeqRef.current += 1;
+      dispose();
+    };
   }, [pickedClientId, refreshCapabilities]);
 
   // Connect-token generation. Only fires when the dialog is open AND the
@@ -568,8 +588,13 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   useEffect(() => {
     if (!activeCapabilities) return;
     setRuntime((prev) => {
-      if (okRuntimes.includes(prev)) return prev;
-      return pickPreferredRuntime(activeCapabilities) ?? prev;
+      const next = resolveRuntimeSelection({
+        currentRuntime: prev,
+        selectionIsManual: runtimeSelectionIsManualRef.current,
+        readyRuntimes: okRuntimes,
+      });
+      runtimeSelectionIsManualRef.current = next.selectionIsManual;
+      return next.runtime ?? prev;
     });
   }, [activeCapabilities, okRuntimes]);
 
@@ -839,35 +864,6 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
             )}
           </div>
 
-          <div className="space-y-2">
-            <Label>Visibility</Label>
-            <div className="space-y-2">
-              <OptionCard
-                name="visibility"
-                checked={visibility === "organization"}
-                onSelect={() => setVisibility("organization")}
-              >
-                <div>
-                  <div className="text-body font-medium">Visible to your team</div>
-                  <div className="text-caption text-muted-foreground">
-                    Anyone on your team can @mention it and start work with it — it runs on your computer and uses your
-                    plan.
-                  </div>
-                </div>
-              </OptionCard>
-              <OptionCard
-                name="visibility"
-                checked={visibility === "private"}
-                onSelect={() => setVisibility("private")}
-              >
-                <div>
-                  <div className="text-body font-medium">Private to you</div>
-                  <div className="text-caption text-muted-foreground">Only you can see and chat with it.</div>
-                </div>
-              </OptionCard>
-            </div>
-          </div>
-
           {/* Optional official Template responsibilities. Hidden entirely when
               the catalog is empty or failed to load — the plain create path
               stays byte-identical in those cases. */}
@@ -950,20 +946,16 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
             </div>
           )}
 
-          {/*
-            "Where it runs" block. The computer card and runtime row each render
-            a dimension-matched skeleton while their async data loads
-            (`ComputerCardSkeleton` / `RuntimeChipsSkeleton`), so the block
-            holds a stable height through the detect → loaded transition without
-            a hand-tuned `minHeight`. The 0-computer and N-radio states may grow
-            taller — that's expected; the jump we cared about was the initial
-            detection swap, which the skeletons absorb.
-          */}
+          {/* One execution field: computer identity first, then the runtime
+              options it supports. Control shape and order distinguish the two
+              choices without adding "Run on", "On", "Using", or "Powered by"
+              labels. */}
           <div className="space-y-3">
-            <Label>Where it runs</Label>
+            <Label>This agent will run</Label>
 
-            {/* Computer picker. 0 / 1 / N branches keep the most common
-                case (1 connected computer) free of radio-button noise. */}
+            {/* The common one-computer case is plain read-only information.
+                Multiple computers use one compact dropdown and deliberately
+                start without a selection. */}
             {!clientsLoaded ? (
               <ComputerCardSkeleton label="Detecting connected computers…" />
             ) : connectedClients.length === 0 ? (
@@ -975,35 +967,22 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                   void copyToken(connectCommand);
                 }}
               />
-            ) : connectedClients.length === 1 ? (
-              <SingleComputerCard client={connectedClients[0]} />
+            ) : connectedClients.length === 1 && connectedClients[0] ? (
+              <ConnectedComputerSummary client={connectedClients[0]} />
             ) : (
-              <div className="space-y-2">
-                {connectedClients.map((client) => (
-                  <OptionCard
-                    key={client.id}
-                    name="picked-client"
-                    checked={pickedClientId === client.id}
-                    onSelect={() => setPickedClientId(client.id)}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-body font-medium truncate">{client.hostname ?? client.id}</div>
-                      <div className="text-caption text-muted-foreground">{client.os ?? "unknown OS"} · online</div>
-                    </div>
-                  </OptionCard>
-                ))}
-              </div>
+              <ConnectedComputerSelect
+                clients={connectedClients}
+                value={pickedClientId}
+                onChange={pickClient}
+                id="new-agent-computer"
+              />
             )}
 
-            {/* Runtime row. Renders *whenever* a computer is picked OR while
-                we're still detecting computers — keeping a stable "Powered
-                by" slot below the computer card prevents the second jump
-                (skeleton paragraph being replaced by the runtime chip row).
-                Only the inner content swaps; the section header and a
-                skeleton chip row hold the space. */}
+            {/* Runtime options belong to the selected computer. In the
+                multi-computer path they appear only after the user chooses,
+                so stale capabilities can never look actionable. */}
             {(pickedClientId || !clientsLoaded) && (
               <div className="space-y-1.5">
-                <div className="text-caption text-muted-foreground">Powered by</div>
                 {!pickedClientId || activeCapabilities === null ? (
                   <RuntimeChipsSkeleton />
                 ) : okRuntimes.length === 0 ? (
@@ -1016,7 +995,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                         name="runtime"
                         layout="pill"
                         checked={runtime === provider}
-                        onSelect={() => setRuntime(provider)}
+                        onSelect={() => {
+                          runtimeSelectionIsManualRef.current = true;
+                          setRuntime(provider);
+                        }}
                       >
                         <span className="text-body">{runtimeProviderLabel(provider)}</span>
                       </OptionCard>
@@ -1027,6 +1009,35 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
             )}
 
             {fieldErrors.clientId && <p className="text-caption text-destructive">{fieldErrors.clientId}</p>}
+          </div>
+
+          <div className="space-y-2">
+            <Label>Who can use it?</Label>
+            <div className="space-y-2">
+              <OptionCard
+                name="visibility"
+                checked={visibility === "organization"}
+                onSelect={() => setVisibility("organization")}
+              >
+                <div>
+                  <div className="text-body font-medium">Visible to your team</div>
+                  <div className="text-caption text-muted-foreground">
+                    Anyone on your team can @mention it and start work with it — it runs on your computer and uses your
+                    plan.
+                  </div>
+                </div>
+              </OptionCard>
+              <OptionCard
+                name="visibility"
+                checked={visibility === "private"}
+                onSelect={() => setVisibility("private")}
+              >
+                <div>
+                  <div className="text-body font-medium">Private to you</div>
+                  <div className="text-caption text-muted-foreground">Only you can see and chat with it.</div>
+                </div>
+              </OptionCard>
+            </div>
           </div>
 
           {fieldErrors._root && (
@@ -1080,7 +1091,7 @@ function ZeroComputerBlock({
   return (
     <div className="space-y-2">
       {/* Regular weight + a slightly lighter tone (`--fg-2`) so the section
-          label "Where it runs" stays the heading and this reads as status,
+          label "This agent will run" stays the heading and this reads as status,
           not a competing second title. */}
       <div className="text-body text-fg-2">No computer connected yet.</div>
       <div className="text-caption text-muted-foreground">
@@ -1103,27 +1114,7 @@ function ZeroComputerBlock({
 }
 
 /**
- * Single-computer confirmation. Used in the common case where the user only
- * has one computer connected — non-interactive, so it's just a plain two-line
- * readout of where the agent will live (no card / border / fill; the framed
- * box was over-packaging for read-only content).
- *
- * Layout note: mirrors `ComputerCardSkeleton`'s two-line shape so the
- * "Where it runs" block holds a stable height across the detect → loaded
- * swap. If you change this readout's line count, mirror it in the skeleton.
- */
-function SingleComputerCard({ client }: { client: HubClient | undefined }) {
-  if (!client) return null;
-  return (
-    <div>
-      <div className="text-body font-medium truncate">{client.hostname ?? client.id}</div>
-      <div className="text-caption text-muted-foreground">{client.os ?? "unknown OS"} · online</div>
-    </div>
-  );
-}
-
-/**
- * Loading placeholder that mirrors `SingleComputerCard`'s two-line readout
+ * Loading placeholder that mirrors `ConnectedComputerSummary`'s two-line readout
  * (same plain, borderless shape) so the surrounding form keeps a stable
  * height while `listClients` is in flight. The previous placeholder was a
  * single-line paragraph, which is what made the dialog visibly jump when the
@@ -1143,7 +1134,7 @@ function ComputerCardSkeleton({ label }: { label: string }) {
 /**
  * Loading placeholder for the runtime chip row. A single greyed chip-shaped
  * box reserves the height the real chips will occupy. Pairs with
- * `ComputerCardSkeleton` so the whole "Where it runs" block reaches its
+ * `ComputerCardSkeleton` so the whole execution block reaches its
  * steady-state height on first paint — no second jump when capabilities
  * resolve.
  */

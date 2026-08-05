@@ -399,6 +399,43 @@ describe("onboarding preview review surface", () => {
     await act(async () => live.root.unmount());
   });
 
+  it("previews the explicit multi-computer choice before runtime options", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/preview/onboarding?role=admin&view=states&scenario=admin-ca-multiple-computers",
+    );
+    const { OnboardingPreviewPage } = await import("../onboarding-preview.js");
+    const view = await renderDom(
+      <MemoryRouter>
+        <OnboardingPreviewPage />
+      </MemoryRouter>,
+    );
+
+    await waitForText(view.container, "Choose a computer");
+    expect(view.container.textContent).not.toContain("Codex");
+    expect(view.container.textContent).not.toContain("isn't connected");
+    const create = [...view.container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.trim() === "Create agent",
+    );
+    expect(create?.disabled).toBe(true);
+
+    await clickByText(view.container, "Choose a computer");
+    const studio = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("gandys-studio"),
+    );
+    if (!studio) throw new Error("Missing gandys-studio option");
+    await act(async () => {
+      studio.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(view.container.textContent).toContain("gandys-studioLinux · online");
+    expect(view.container.textContent).toContain("Codex");
+    expect(view.container.textContent).not.toContain("Powered by");
+    await act(async () => view.root.unmount());
+  });
+
   it("does not repeat the BYO choice after the member selected a First Tree agent", async () => {
     authMock.memberships = [{}];
     window.history.replaceState(null, "", "/preview/onboarding?role=invitee&view=flow&scenario=inv-ko-ready");

@@ -262,7 +262,18 @@ describe("NewAgentDialog extra branches", () => {
     const onCreated = vi.fn();
     const container = await renderDom(<NewAgentDialog open onOpenChange={() => undefined} onCreated={onCreated} />);
 
-    await waitForText(container, "gandy-macbook");
+    await waitForText(container, "Choose a computer");
+    expect(document.body.textContent).toContain("This agent will run");
+    expect(document.body.textContent).toContain("Who can use it?");
+    expect(document.body.textContent).not.toContain("Where it runs");
+    expect(document.body.textContent).not.toContain("Powered by");
+    expect(buttonByText(document.body, "Create").disabled).toBe(true);
+    await click(document.body.querySelector("#new-agent-computer"));
+    await click(buttonByText(document.body, "alice-linux"));
+    await waitForCondition(
+      () => activityMocks.getClientCapabilities.mock.calls.some((call) => call[0] === "client-2"),
+      "Expected second client capability fetch",
+    );
     expect(document.body.textContent).toContain("Claude Code");
     const initialRuntimeInputs = [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')];
     expect(initialRuntimeInputs.map((input) => input.closest("label")?.textContent)).toEqual([
@@ -279,15 +290,6 @@ describe("NewAgentDialog extra branches", () => {
       (input) => input.closest("label")?.textContent?.includes("Visible to your team"),
     );
     await click(sharedRadio ?? null);
-    await click(
-      [...document.body.querySelectorAll<HTMLInputElement>('input[name="picked-client"]')].find((input) =>
-        input.closest("label")?.textContent?.includes("alice-linux"),
-      ) ?? null,
-    );
-    await waitForCondition(
-      () => activityMocks.getClientCapabilities.mock.calls.some((call) => call[0] === "client-2"),
-      "Expected second client capability fetch",
-    );
     await click(
       [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].find((input) =>
         input.closest("label")?.textContent?.includes("Codex"),
@@ -308,6 +310,54 @@ describe("NewAgentDialog extra branches", () => {
     );
     expect(authMock.value.refreshMe).toHaveBeenCalled();
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ uuid: "agent-created" }), "codex", 0);
+  });
+
+  it("reapplies runtime priority after an automatic choice but preserves a manual choice", async () => {
+    const { NewAgentDialog } = await import("../new-agent-dialog.js");
+    activityMocks.getClientCapabilities.mockImplementation(async (clientId: string) =>
+      clientId === "client-1"
+        ? client({ capabilities: { "claude-code": capability("ok") } })
+        : client({ id: "client-2", hostname: "alice-linux" }),
+    );
+    await renderDom(<NewAgentDialog open onOpenChange={() => undefined} onCreated={() => undefined} />);
+
+    await waitForText(document.body, "Choose a computer");
+    await click(document.body.querySelector("#new-agent-computer"));
+    await click(buttonByText(document.body, "gandy-macbook"));
+    await waitForCondition(
+      () =>
+        [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].some(
+          (input) => input.checked && input.closest("label")?.textContent?.includes("Claude Code"),
+        ),
+      "Expected the sole ready runtime to be selected",
+    );
+
+    await click(document.body.querySelector("#new-agent-computer"));
+    await click(buttonByText(document.body, "alice-linux"));
+    await waitForCondition(
+      () =>
+        [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].some(
+          (input) => input.checked && input.closest("label")?.textContent?.includes("Codex"),
+        ),
+      "Expected the preferred runtime after switching computers",
+    );
+
+    const claude = [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].find((input) =>
+      input.closest("label")?.textContent?.includes("Claude Code"),
+    );
+    await click(claude ?? null);
+    await click(document.body.querySelector("#new-agent-computer"));
+    await click(buttonByText(document.body, "gandy-macbook"));
+    await waitForText(document.body, "Claude Code");
+    await click(document.body.querySelector("#new-agent-computer"));
+    await click(buttonByText(document.body, "alice-linux"));
+    await waitForCondition(
+      () =>
+        [...document.body.querySelectorAll<HTMLInputElement>('input[name="runtime"]')].some(
+          (input) => input.checked && input.closest("label")?.textContent?.includes("Claude Code"),
+        ),
+      "Expected the explicit runtime choice to be preserved",
+    );
   });
 
   // Dropped "offers in-product Connect when the picked computer has an
@@ -419,6 +469,7 @@ describe("NewAgentDialog extra branches", () => {
 
   it("keeps creation disabled while a name probe fails without blocking submission", async () => {
     const { NewAgentDialog } = await import("../new-agent-dialog.js");
+    activityMocks.listClients.mockResolvedValue([client()]);
     agentMocks.checkAgentNameAvailability.mockRejectedValueOnce(new Error("network"));
     const container = await renderDom(
       <NewAgentDialog open onOpenChange={() => undefined} onCreated={() => undefined} />,
