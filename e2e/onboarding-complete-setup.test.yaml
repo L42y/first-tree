@@ -40,8 +40,13 @@ steps:
   # ── Landing — onboarding is done and the user is in the workspace ───────────
   - waitForUrl: /?c=
   - assert: the workspace is open on a chat named Get started with First Tree,
-      whose first message asks the user's new assistant agent for help getting
-      started, and a message composer addressed to that agent is available
+      where a senderless Get to know First Tree Orientation appears instead of
+      a user-attributed bootstrap message; Skip intro, Start with the new agent,
+      and a message composer addressed to that agent are all available
+  - click: the Start with the new agent button in the Orientation
+  - assert: the Orientation is now a compact First Tree introduction entry and
+      the first attributed timeline message belongs to the user and says I'm
+      ready — let's get started
 
   # ── Settings — the permanent readiness overview keeps its stable route ────
   - click: Settings link in the top navigation

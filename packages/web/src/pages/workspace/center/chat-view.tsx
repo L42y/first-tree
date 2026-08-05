@@ -113,6 +113,7 @@ import { ImageRefGallery } from "../../../components/chat/image-ref-gallery.js";
 import {
   ONBOARDING_ORIENTATION_CONTINUE_MESSAGE,
   OnboardingOrientation,
+  onboardingOrientationComposerPlaceholder,
 } from "../../../components/chat/onboarding-orientation.js";
 import {
   historyContainsThirdParty,
@@ -595,11 +596,6 @@ type MessageBodyProps = {
   requestTagAgentId: string | null;
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
-  orientationTargetName: string | null;
-  orientationCompleted: boolean;
-  orientationHidden: boolean;
-  orientationContinuing: boolean;
-  onOrientationContinue: (bootstrap: MessageWithDelivery) => void;
 };
 
 type MessageMarkdownProps = {
@@ -666,11 +662,6 @@ const MessageBody = memo(function MessageBody({
   requestTagAgentId,
   myAgentId,
   mentionParticipants,
-  orientationTargetName,
-  orientationCompleted,
-  orientationHidden,
-  orientationContinuing,
-  onOrientationContinue,
 }: MessageBodyProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -937,14 +928,6 @@ const MessageBody = memo(function MessageBody({
           {JSON.stringify(msg.content, null, 2)}
         </pre>
       )}
-      {!orientationHidden && isFirstChatOrientationMessage(msg, myAgentId) ? (
-        <OnboardingOrientation
-          completed={orientationCompleted}
-          continuing={orientationContinuing}
-          targetAgentName={orientationTargetName}
-          onContinue={() => onOrientationContinue(msg)}
-        />
-      ) : null}
       <ImageRefGallery
         images={metadataImages}
         hasLeadingContent={typeof msg.content === "string" && msg.content.trim().length > 0}
@@ -1004,6 +987,31 @@ const MessageRow = memo(function MessageRow({
   const isSelf = !isSystem && myAgentId === msg.senderId;
   const orientationTargetAgentId = firstChatOrientationTargetAgentId(msg);
   const orientationTargetName = orientationTargetAgentId ? agentNameFn(orientationTargetAgentId) : null;
+  const isOrientationPresentation = !orientationHidden && isFirstChatOrientationMessage(msg);
+  const ownsOrientation = myAgentId !== null && msg.senderId === myAgentId;
+
+  if (isOrientationPresentation) {
+    return (
+      <div
+        className="[&>section]:mt-0"
+        data-message-id={msg.id}
+        data-onboarding-orientation-row
+        style={{ padding: "var(--sp-1_5) 0" }}
+      >
+        <OnboardingOrientation
+          // The member who started onboarding owns the pending handoff. Other
+          // members may encounter the trusted bootstrap later in shared
+          // history; keep its body/sender hidden for them too, but present it
+          // as a passive replay entry so they cannot consume someone else's
+          // first-chat transition.
+          completed={orientationCompleted || !ownsOrientation}
+          continuing={orientationContinuing}
+          targetAgentName={orientationTargetName}
+          onContinue={() => onOrientationContinue(msg)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -1081,11 +1089,6 @@ const MessageRow = memo(function MessageRow({
           requestTagAgentId={requestTagAgentId}
           myAgentId={myAgentId}
           mentionParticipants={mentionParticipants}
-          orientationTargetName={orientationTargetName}
-          orientationCompleted={orientationCompleted}
-          orientationHidden={orientationHidden}
-          orientationContinuing={orientationContinuing}
-          onOrientationContinue={onOrientationContinue}
         />
       </div>
     </div>
@@ -1114,23 +1117,45 @@ function areMessageBodyPropsEqual(prev: MessageBodyProps, next: MessageBodyProps
     messageBodyFieldsEqual(prev.msg, next.msg) &&
     prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
-    prev.orientationTargetName === next.orientationTargetName &&
-    prev.orientationCompleted === next.orientationCompleted &&
-    prev.orientationHidden === next.orientationHidden &&
-    prev.orientationContinuing === next.orientationContinuing &&
-    prev.onOrientationContinue === next.onOrientationContinue &&
     mentionParticipantsEqual(prev.mentionParticipants, next.mentionParticipants)
   );
 }
 
-function isFirstChatOrientationMessage(msg: MessageWithDelivery, myAgentId: string | null): boolean {
+function isFirstChatOrientationMessage(msg: MessageWithDelivery): boolean {
   return (
-    myAgentId !== null &&
-    msg.senderId === myAgentId &&
-    msg.source === "api" &&
-    msg.format === "text" &&
-    readFirstChatOrientationMessageMetadata(msg.metadata) !== null
+    msg.source === "api" && msg.format === "text" && readFirstChatOrientationMessageMetadata(msg.metadata) !== null
   );
+}
+
+function isOwnedFirstChatOrientationMessage(msg: MessageWithDelivery, myAgentId: string | null): boolean {
+  return myAgentId !== null && msg.senderId === myAgentId && isFirstChatOrientationMessage(msg);
+}
+
+function completedFirstChatOrientationMessageIds(
+  messages: readonly MessageWithDelivery[],
+  lifecycleCompleted: boolean,
+): Set<string> {
+  const completed = new Set<string>();
+  if (lifecycleCompleted) {
+    for (const message of messages) {
+      if (isFirstChatOrientationMessage(message)) completed.add(message.id);
+    }
+    return completed;
+  }
+  for (let bootstrapIndex = 0; bootstrapIndex < messages.length; bootstrapIndex += 1) {
+    const bootstrap = messages[bootstrapIndex];
+    if (!bootstrap || !isFirstChatOrientationMessage(bootstrap)) continue;
+    const targetAgentId = firstChatOrientationTargetAgentId(bootstrap);
+    if (!targetAgentId) continue;
+    for (let messageIndex = bootstrapIndex + 1; messageIndex < messages.length; messageIndex += 1) {
+      const candidate = messages[messageIndex];
+      if (candidate?.senderId === bootstrap.senderId && messageRoutesToAgent(candidate, targetAgentId)) {
+        completed.add(bootstrap.id);
+        break;
+      }
+    }
+  }
+  return completed;
 }
 
 function firstChatOrientationTargetAgentId(msg: MessageWithDelivery): string | null {
@@ -1470,32 +1495,14 @@ const ChatTimeline = memo(function ChatTimeline({
     return map;
   }, [visibleItems]);
   const completedOrientationMessageIds = useMemo(() => {
-    const completed = new Set<string>();
-    if (!myAgentId) return completed;
     const messageItems = visibleItems.filter(
       (item): item is Extract<TimelineItem, { kind: "message" }> => item.kind === "message",
     );
-    if (orientationLifecycleCompleted) {
-      for (const item of messageItems) {
-        if (isFirstChatOrientationMessage(item.data, myAgentId)) completed.add(item.data.id);
-      }
-      return completed;
-    }
-    for (let bootstrapIndex = 0; bootstrapIndex < messageItems.length; bootstrapIndex += 1) {
-      const bootstrap = messageItems[bootstrapIndex]?.data;
-      if (!bootstrap || !isFirstChatOrientationMessage(bootstrap, myAgentId)) continue;
-      const targetAgentId = firstChatOrientationTargetAgentId(bootstrap);
-      if (!targetAgentId) continue;
-      for (let messageIndex = bootstrapIndex + 1; messageIndex < messageItems.length; messageIndex += 1) {
-        const candidate = messageItems[messageIndex]?.data;
-        if (candidate?.senderId === myAgentId && messageRoutesToAgent(candidate, targetAgentId)) {
-          completed.add(bootstrap.id);
-          break;
-        }
-      }
-    }
-    return completed;
-  }, [myAgentId, orientationLifecycleCompleted, visibleItems]);
+    return completedFirstChatOrientationMessageIds(
+      messageItems.map((item) => item.data),
+      orientationLifecycleCompleted,
+    );
+  }, [orientationLifecycleCompleted, visibleItems]);
   // Which non-human agents this turn awaits a reply from — routing-derived from
   // the latest message's persisted recipients (metadata.addressedAgentIds, which
   // includes the system addressedToAgentIds routing the onboarding bootstrap uses
@@ -2358,21 +2365,38 @@ export function ChatView({
     },
   });
   const sendChatMutation = sendMut.mutate;
+  const orientationContinueInFlightRef = useRef({ chatId, pending: false });
 
   const continueOnboardingOrientation = useCallback(
     (bootstrap: MessageWithDelivery) => {
+      if (orientationContinueInFlightRef.current.chatId !== chatId) {
+        orientationContinueInFlightRef.current = { chatId, pending: false };
+      }
+      if (bootstrap.senderId !== myAgentId || orientationContinueInFlightRef.current.pending) return;
       const mentions = readMentions(bootstrap.metadata).filter((id) => id !== myAgentId);
       if (mentions.length === 0) {
         setUploadError("This introduction can no longer reach its agent. Send a message from the composer instead.");
         return;
       }
-      sendChatMutation({
-        content: ONBOARDING_ORIENTATION_CONTINUE_MESSAGE,
-        mentions,
-        preserveDraft: true,
-      });
+      orientationContinueInFlightRef.current = { chatId, pending: true };
+      sendChatMutation(
+        {
+          content: ONBOARDING_ORIENTATION_CONTINUE_MESSAGE,
+          mentions,
+          preserveDraft: true,
+        },
+        {
+          onError: () => {
+            // A failed send did not consume the handoff, so let the member
+            // retry either action after the shared mutation error is shown.
+            if (orientationContinueInFlightRef.current.chatId === chatId) {
+              orientationContinueInFlightRef.current.pending = false;
+            }
+          },
+        },
+      );
     },
-    [myAgentId, sendChatMutation],
+    [chatId, myAgentId, sendChatMutation],
   );
 
   const handleSend = async () => {
@@ -3930,6 +3954,18 @@ export function ChatView({
   );
 
   const displayName = chatScopedAgentName(agentId);
+  const orientationChatState = readFirstChatOrientationChatState(chatDetail?.metadata);
+  const orientationLifecycleCompleted = orientationChatState === FIRST_CHAT_ORIENTATION_CHAT_STATES.CONTINUED;
+  const orientationHidden = orientationChatState === FIRST_CHAT_ORIENTATION_CHAT_STATES.LEGACY_STARTED;
+  const pendingOrientationTargetAgentId = useMemo(() => {
+    if (orientationHidden) return null;
+    const completedIds = completedFirstChatOrientationMessageIds(mergedMessages, orientationLifecycleCompleted);
+    for (const message of mergedMessages) {
+      if (!isOwnedFirstChatOrientationMessage(message, myAgentId) || completedIds.has(message.id)) continue;
+      return firstChatOrientationTargetAgentId(message);
+    }
+    return null;
+  }, [mergedMessages, myAgentId, orientationHidden, orientationLifecycleCompleted]);
 
   // `managedByMe` is `managerId === myMemberId`, derived client-side
   // from the `listAgents` response (the row carries `managerId`). Drives
@@ -4131,6 +4167,10 @@ export function ChatView({
     }
     return null;
   }, [chatDetail, myAgentId]);
+  const orientationComposerTargetName =
+    pendingOrientationTargetAgentId && pendingOrientationTargetAgentId === peerAgentId
+      ? chatScopedAgentName(pendingOrientationTargetAgentId)
+      : null;
   const effectiveSendMentions = useMemo(
     () => (peerAgentId ? [...new Set([...draftMentions, peerAgentId])] : draftMentions),
     [draftMentions, peerAgentId],
@@ -4862,13 +4902,8 @@ export function ChatView({
             pillCount={pillCount}
             onPillClick={onPillClick}
             orientationContinuing={sendMut.isPending}
-            orientationLifecycleCompleted={
-              readFirstChatOrientationChatState(chatDetail?.metadata) === FIRST_CHAT_ORIENTATION_CHAT_STATES.CONTINUED
-            }
-            orientationHidden={
-              readFirstChatOrientationChatState(chatDetail?.metadata) ===
-              FIRST_CHAT_ORIENTATION_CHAT_STATES.LEGACY_STARTED
-            }
+            orientationLifecycleCompleted={orientationLifecycleCompleted}
+            orientationHidden={orientationHidden}
             onOrientationContinue={continueOnboardingOrientation}
           />
 
@@ -5308,19 +5343,21 @@ export function ChatView({
                                   // slash commands or @mention (one agent), so the
                                   // placeholder is just the plain message prompt.
                                   `Message @${displayName}`
-                                : requiresMention
-                                  ? // Group chat: the placeholder carries the rule (this
-                                    // is the calm, always-there teaching surface). It
-                                    // shows only while empty; once the user types it's
-                                    // gone, and the tip bubble covers a blocked send.
-                                    "In a group, @mention who this is for"
-                                  : composerMobile
-                                    ? // Mobile: drop the desktop keyboard-shortcut
-                                      // teaching text — `/` and `@` live in the
-                                      // toolbar and there's no keyboard hint to give
-                                      // on a touch surface. Keep it to the bare prompt.
-                                      `Message @${displayName}`
-                                    : `Message @${displayName}  ·  / for commands  ·  @ to mention`
+                                : orientationComposerTargetName && !requiresMention
+                                  ? onboardingOrientationComposerPlaceholder(orientationComposerTargetName)
+                                  : requiresMention
+                                    ? // Group chat: the placeholder carries the rule (this
+                                      // is the calm, always-there teaching surface). It
+                                      // shows only while empty; once the user types it's
+                                      // gone, and the tip bubble covers a blocked send.
+                                      "In a group, @mention who this is for"
+                                    : composerMobile
+                                      ? // Mobile: drop the desktop keyboard-shortcut
+                                        // teaching text — `/` and `@` live in the
+                                        // toolbar and there's no keyboard hint to give
+                                        // on a touch surface. Keep it to the bare prompt.
+                                        `Message @${displayName}`
+                                      : `Message @${displayName}  ·  / for commands  ·  @ to mention`
                           }
                           // The auto-resize hook measures `scrollHeight` after
                           // `height:auto`, which reverts the box to this `rows` count —

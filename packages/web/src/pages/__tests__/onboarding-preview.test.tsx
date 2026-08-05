@@ -432,7 +432,9 @@ describe("onboarding preview review surface", () => {
     );
 
     expect(container.textContent).toContain("Personal agent setup remains available");
-    expect(container.textContent).toContain("Starting your first Team-agent conversation");
+    expect(container.textContent).toContain("Get to know First Tree");
+    expect(container.textContent).toContain("Start with Dev Assistant");
+    expect(container.textContent).not.toContain("welcome aboard");
     expect(container.textContent).not.toContain("Reading the team's shared context");
     expect(container.textContent).not.toContain("Onboarding complete");
 

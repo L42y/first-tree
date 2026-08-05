@@ -1,13 +1,14 @@
-import { type ReactNode, useState } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, useState } from "react";
 import {
   ONBOARDING_ORIENTATION_CONTINUE_MESSAGE,
   OnboardingOrientation,
+  onboardingOrientationComposerPlaceholder,
 } from "../components/chat/onboarding-orientation.js";
 import { Button } from "../components/ui/button.js";
 
 /** DEV-only visual review surface for the real inline first-chat Orientation. */
 
-type Variant = "current" | "proposed";
+type Variant = "attributed" | "senderless";
 
 function MessageRow({ name, initial, children }: { name: string; initial: string; children: ReactNode }) {
   return (
@@ -26,23 +27,31 @@ function MessageRow({ name, initial, children }: { name: string; initial: string
   );
 }
 
-function ContinuationRows() {
+function ContinuationRows({ humanMessage }: { humanMessage: string }) {
   return (
     <>
       <MessageRow name="Gandy" initial="G">
-        <p>{ONBOARDING_ORIENTATION_CONTINUE_MESSAGE}</p>
+        <p>{humanMessage}</p>
       </MessageRow>
       <MessageRow name="Nova" initial="N">
         <p className="text-muted-foreground">
-          The existing first-task guidance begins here after the visible continue message wakes the agent.
+          The agent wakes from this first visible message, with the stored bootstrap as preceding context.
         </p>
       </MessageRow>
     </>
   );
 }
 
-/** Today's rendering: the bootstrap is an ordinary user-attributed message with the card below its body. */
-function CurrentVariant({ completed, onContinue }: { completed: boolean; onContinue: () => void }) {
+/** Comparison baseline: the bootstrap is a user-attributed message row. */
+function AttributedVariant({
+  completed,
+  humanMessage,
+  onContinue,
+}: {
+  completed: boolean;
+  humanMessage: string;
+  onContinue: () => void;
+}) {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
       <MessageRow name="Gandy" initial="G">
@@ -60,7 +69,7 @@ function CurrentVariant({ completed, onContinue }: { completed: boolean; onConti
           onContinue={onContinue}
         />
       </MessageRow>
-      {completed ? <ContinuationRows /> : null}
+      {completed ? <ContinuationRows humanMessage={humanMessage} /> : null}
     </div>
   );
 }
@@ -70,7 +79,15 @@ function CurrentVariant({ completed, onContinue }: { completed: boolean; onConti
  * The Orientation is a sender-less full-width card; the member's continuation
  * is the first attributed message in the timeline.
  */
-function ProposedVariant({ completed, onContinue }: { completed: boolean; onContinue: () => void }) {
+function SenderlessVariant({
+  completed,
+  humanMessage,
+  onContinue,
+}: {
+  completed: boolean;
+  humanMessage: string;
+  onContinue: () => void;
+}) {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
       <div className="[&>section]:mt-0">
@@ -82,60 +99,145 @@ function ProposedVariant({ completed, onContinue }: { completed: boolean; onCont
           onContinue={onContinue}
         />
       </div>
-      {completed ? <ContinuationRows /> : null}
+      {completed ? <ContinuationRows humanMessage={humanMessage} /> : null}
     </div>
   );
 }
 
-export function OnboardingOrientationPreviewPage() {
-  const [variant, setVariant] = useState<Variant>("proposed");
-  const [completed, setCompleted] = useState(false);
+function ComposerPreview({
+  orientationPending,
+  draft,
+  onDraftChange,
+  onSend,
+}: {
+  orientationPending: boolean;
+  draft: string;
+  onDraftChange: (draft: string) => void;
+  onSend: () => void;
+}) {
+  const submit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    onSend();
+  };
+
+  const sendOnEnter = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    onSend();
+  };
 
   return (
-    <main className="min-h-screen bg-background p-4 sm:p-8">
-      <div className="mx-auto max-w-3xl">
-        <header className="mb-6 flex flex-wrap items-end justify-between" style={{ gap: "var(--sp-3)" }}>
+    <form className="shrink-0 border-t border-border bg-background" onSubmit={submit}>
+      <div
+        className="composer-card m-3 flex items-end border border-border bg-background sm:m-4"
+        style={{ gap: "var(--sp-2)" }}
+      >
+        <textarea
+          aria-label="Message composer preview"
+          className="text-subtitle min-h-14 min-w-0 flex-1 resize-none border-0 bg-transparent p-3 font-normal text-foreground outline-none"
+          placeholder={
+            orientationPending
+              ? onboardingOrientationComposerPlaceholder("Nova")
+              : "Message @Nova  ·  / for commands  ·  @ to mention"
+          }
+          value={draft}
+          onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={sendOnEnter}
+          rows={2}
+        />
+        <Button type="submit" className="m-2 shrink-0" disabled={!draft.trim()}>
+          Send
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+export function OnboardingOrientationPreviewPage() {
+  const [variant, setVariant] = useState<Variant>("senderless");
+  const [completed, setCompleted] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [humanMessage, setHumanMessage] = useState(ONBOARDING_ORIENTATION_CONTINUE_MESSAGE);
+
+  const completeWith = (message: string): void => {
+    setHumanMessage(message);
+    setCompleted(true);
+  };
+
+  const sendDraft = (): void => {
+    const message = draft.trim();
+    if (!message) return;
+    completeWith(message);
+    setDraft("");
+  };
+
+  return (
+    <main className="h-dvh-screen overflow-hidden bg-background p-4 sm:p-8">
+      <div className="mx-auto flex h-full min-h-0 max-w-3xl flex-col">
+        <header className="mb-6 flex shrink-0 flex-wrap items-end justify-between" style={{ gap: "var(--sp-3)" }}>
           <div>
             <p className="mono text-caption text-muted-foreground">DEV PREVIEW · REAL COMPONENT</p>
             <h1 className="text-title font-semibold">First-chat Orientation</h1>
             <p className="text-body text-muted-foreground">
-              Resize to a narrow phone width to review the mobile layout.
+              Compare row ownership, then type in the live composer to exercise the direct-message path.
             </p>
           </div>
           <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
             <div className="flex" style={{ gap: "var(--sp-2)" }}>
               <Button
                 type="button"
-                variant={variant === "current" ? "default" : "outline"}
-                onClick={() => setVariant("current")}
+                variant={variant === "attributed" ? "default" : "outline"}
+                onClick={() => setVariant("attributed")}
               >
-                Current
+                Attributed row
               </Button>
               <Button
                 type="button"
-                variant={variant === "proposed" ? "default" : "outline"}
-                onClick={() => setVariant("proposed")}
+                variant={variant === "senderless" ? "default" : "outline"}
+                onClick={() => setVariant("senderless")}
               >
-                Proposed
+                Senderless row
               </Button>
             </div>
             <div className="flex" style={{ gap: "var(--sp-2)" }}>
               <Button type="button" variant={!completed ? "default" : "outline"} onClick={() => setCompleted(false)}>
                 Pending
               </Button>
-              <Button type="button" variant={completed ? "default" : "outline"} onClick={() => setCompleted(true)}>
+              <Button
+                type="button"
+                variant={completed ? "default" : "outline"}
+                onClick={() => completeWith(ONBOARDING_ORIENTATION_CONTINUE_MESSAGE)}
+              >
                 Completed
               </Button>
             </div>
           </div>
         </header>
 
-        <section aria-label="First chat message preview" className="border-y border-border py-4">
-          {variant === "current" ? (
-            <CurrentVariant completed={completed} onContinue={() => setCompleted(true)} />
-          ) : (
-            <ProposedVariant completed={completed} onContinue={() => setCompleted(true)} />
-          )}
+        <section
+          aria-label="First chat preview"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden border-y border-border"
+        >
+          <div
+            className="min-h-0 flex-1 overflow-y-auto py-4"
+            data-onboarding-orientation-preview-timeline
+            style={{ paddingInline: "var(--sp-1)" }}
+          >
+            {variant === "attributed" ? (
+              <AttributedVariant
+                completed={completed}
+                humanMessage={humanMessage}
+                onContinue={() => completeWith(ONBOARDING_ORIENTATION_CONTINUE_MESSAGE)}
+              />
+            ) : (
+              <SenderlessVariant
+                completed={completed}
+                humanMessage={humanMessage}
+                onContinue={() => completeWith(ONBOARDING_ORIENTATION_CONTINUE_MESSAGE)}
+              />
+            )}
+          </div>
+          <ComposerPreview orientationPending={!completed} draft={draft} onDraftChange={setDraft} onSend={sendDraft} />
         </section>
       </div>
     </main>
