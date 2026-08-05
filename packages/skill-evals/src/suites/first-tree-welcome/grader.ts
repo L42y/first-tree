@@ -795,11 +795,11 @@ function effectiveCommandWords(words: readonly string[]): string[] {
           index += 1;
           continue;
         }
-        if (/^-(?:u|C|P|S).+/u.test(option) || /^--(?:unset|chdir|split-string)=/u.test(option)) {
+        if (/^-(?:u|P).+/u.test(option) || /^--unset=/u.test(option)) {
           index += 1;
           continue;
         }
-        if (["-u", "-C", "-P", "-S", "--unset", "--chdir", "--split-string"].includes(option)) {
+        if (["-u", "-P", "--unset"].includes(option)) {
           index += 2;
           continue;
         }
