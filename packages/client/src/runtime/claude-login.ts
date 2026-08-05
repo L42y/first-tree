@@ -1,6 +1,13 @@
 import type { spawn } from "node:child_process";
+import { isRuntimeProviderEnabled, RUNTIME_PROVIDERS } from "@first-tree/shared";
 import { resolveClaudeCodeExecutable } from "../handlers/claude-executable.js";
-import { resolveBundledClaudeBinary } from "./capabilities/claude-code.js";
+import type {
+  RuntimeAuthDriver,
+  RuntimeAuthLoginResolution,
+  RuntimeAuthProbeResult,
+} from "../providers/auth-driver.js";
+import { probeClaudeCodeCapability, resolveBundledClaudeBinary } from "./capabilities/claude-code.js";
+import { probeClaudeCodeTuiCapability } from "./capabilities/claude-code-tui.js";
 import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "./runtime-login.js";
 
 /**
@@ -65,5 +72,64 @@ export function runClaudeBrowserLogin(options: ClaudeBrowserLoginOptions): Promi
     signal: options.signal,
     timeoutMs: options.timeoutMs ?? BROWSER_LOGIN_TIMEOUT_MS,
     spawnFn: options.spawnFn,
+  });
+}
+
+/** Test seams; production composition passes nothing. */
+export type ClaudeAuthDriverDeps = {
+  resolveLogin?: typeof resolveClaudeLoginInvocation;
+  runBrowserLogin?: typeof runClaudeBrowserLogin;
+  probe?: typeof probeClaudeCodeCapability;
+  probeTui?: typeof probeClaudeCodeTuiCapability;
+  isProviderEnabled?: typeof isRuntimeProviderEnabled;
+};
+
+/**
+ * Claude Code's in-product auth driver.
+ *
+ * Claude auth is a single keychain credential shared by the SDK runtime and the
+ * TUI runtime, so one login authenticates both and the driver refreshes both
+ * rows - otherwise the TUI row keeps reading as a second, separate Claude login
+ * the user still has to perform until the next background poll. While the TUI
+ * provider is centrally disabled this path honours that switch exactly like the
+ * capability aggregator: it must not spawn the TUI probe (`claude` / tmux) or
+ * publish a TUI row.
+ */
+export function createClaudeAuthDriver(deps: ClaudeAuthDriverDeps = {}): RuntimeAuthDriver {
+  const resolveLogin = deps.resolveLogin ?? resolveClaudeLoginInvocation;
+  const browserLogin = deps.runBrowserLogin ?? runClaudeBrowserLogin;
+  const probe = deps.probe ?? probeClaudeCodeCapability;
+  const probeTui = deps.probeTui ?? probeClaudeCodeTuiCapability;
+  const isProviderEnabled = deps.isProviderEnabled ?? isRuntimeProviderEnabled;
+
+  // Frozen so this factory's promise ("a fresh, self-contained driver") holds
+  // even for a caller that never routes through RUNTIME_AUTH_DRIVERS: nothing
+  // downstream of this constructor can repoint resolveLogin/reprobe for the
+  // rest of the process.
+  return Object.freeze({
+    logLabel: "claude",
+    loginLabel: "claude auth login",
+    // Claude can fall back to the SDK-bundled engine, so the operator-facing
+    // gap is "a claude CLI to drive", not a single external binary.
+    artifactLabel: "CLI",
+    async resolveLogin(): Promise<RuntimeAuthLoginResolution> {
+      const invocation = resolveLogin();
+      if (!invocation.ok) return { ok: false, error: invocation.error };
+      return {
+        ok: true,
+        login: ({ onAuthUrl }) =>
+          browserLogin({ command: invocation.command, baseArgs: invocation.baseArgs, onAuthUrl }),
+      };
+    },
+    async reprobe(): Promise<readonly RuntimeAuthProbeResult[]> {
+      if (!isProviderEnabled(RUNTIME_PROVIDERS.CLAUDE_CODE_TUI)) {
+        return [{ provider: RUNTIME_PROVIDERS.CLAUDE_CODE, entry: await probe() }];
+      }
+      const [claudeCode, tui] = await Promise.all([probe(), probeTui()]);
+      return [
+        { provider: RUNTIME_PROVIDERS.CLAUDE_CODE, entry: claudeCode },
+        { provider: RUNTIME_PROVIDERS.CLAUDE_CODE_TUI, entry: tui },
+      ];
+    },
   });
 }

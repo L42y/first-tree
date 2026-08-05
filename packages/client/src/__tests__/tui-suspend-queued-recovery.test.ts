@@ -46,11 +46,14 @@ vi.mock("../runtime/workspace.js", () => ({
   markWorkspaceInitComplete: vi.fn(),
 }));
 
-vi.mock("../handlers/claude-code.js", () => ({
+vi.mock("../handlers/claude/tool-call-processor.js", () => ({
   createToolCallProcessor: vi.fn(() => ({
     flush: vi.fn(),
     onMessage: vi.fn(),
   })),
+}));
+
+vi.mock("../handlers/claude/mcp-config.js", () => ({
   mapMcpServers: vi.fn(() => []),
 }));
 

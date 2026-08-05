@@ -156,6 +156,7 @@ it("keeps a fresh self-directed personnel target wake-eligible", async () => {
           humanAgentId: "actor-human",
           wakeAgentId: "actor-delegate",
           reason: "assigned",
+          requiresPersistentLine: true,
           externalUsername: "actor",
         },
       },
@@ -376,6 +377,10 @@ describe("GitHub/GitLab semantic webhook conformance", () => {
           target.entry.kind === "personnel_target" || target.entry.kind === "provider_task_target"
             ? target.entry.reason
             : target.directedContext?.reason,
+        requiresPersistentLine:
+          target.entry.kind === "personnel_target"
+            ? target.entry.requiresPersistentLine
+            : target.directedContext?.requiresPersistentLine,
         humanAgentId:
           target.entry.kind === "personnel_target" || target.entry.kind === "provider_task_target"
             ? target.entry.humanAgentId
@@ -393,6 +398,7 @@ describe("GitHub/GitLab semantic webhook conformance", () => {
       {
         kind: "personnel_target",
         reason: "mentioned",
+        requiresPersistentLine: true,
         humanAgentId: admin.humanAgentUuid,
         wakeAgentId: delegate.uuid,
       },

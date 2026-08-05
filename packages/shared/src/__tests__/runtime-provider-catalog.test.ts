@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   asRuntimeProvider,
+  capabilityEntrySchema,
   DISABLED_RUNTIME_PROVIDERS,
   enabledOkRuntimeProviders,
   enabledRuntimeProviders,
@@ -137,6 +138,20 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderInProductAuthTarget("kimi-code")).toBeNull();
     expect(runtimeProviderInProductAuthTarget("opencode")).toBeNull();
     expect(runtimeProviderInProductAuthTarget("pi")).toBeNull();
+  });
+
+  it("leaves the published auth-error message uncapped on the wire", () => {
+    // The daemon redacts and truncates before publishing, but the cap stays on
+    // the daemon: a `.max()` here would make a new server reject an older
+    // daemon's snapshot mid-rollout, which is exactly the compatibility break
+    // the capability map is designed to avoid.
+    const parsed = capabilityEntrySchema.safeParse({
+      state: "ok",
+      available: true,
+      detectedAt: "2026-06-22T12:00:00.000Z",
+      lastAuthError: { reason: "exit-nonzero", message: "x".repeat(5_000), at: "2026-06-22T12:00:00.000Z" },
+    });
+    expect(parsed.success).toBe(true);
   });
 
   it("narrows wire strings via safeParse and leaves unknown ids unlabeled", () => {

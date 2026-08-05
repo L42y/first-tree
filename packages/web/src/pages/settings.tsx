@@ -42,7 +42,7 @@ const ACCOUNT_ITEM: Item = {
   label: "Account",
   description: "Manage your profile and ways to sign in. These settings follow you across all your teams.",
 };
-const SETUP_ITEM: Item = { to: "/settings/setup", label: "Setup" };
+const SETUP_ITEM: Item = { to: "/settings/setup", label: "Getting Started" };
 const COMPUTERS_ITEM: Item = { to: "/settings/computers", label: "Computers" };
 const REPOSITORIES_ITEM: Item = {
   to: "/settings/repositories",
@@ -52,7 +52,7 @@ const REPOSITORIES_ITEM: Item = {
 const CONTEXT_TREE_ITEM: Item = {
   to: "/settings/context",
   label: "Context Tree",
-  description: "Manage shared context, automatic review, and coding-agent access for this Team.",
+  description: "Manage shared context, automatic review, and coding agent setup for this Team.",
 };
 const RESOURCES_ITEM: Item = {
   to: "/settings/resources",

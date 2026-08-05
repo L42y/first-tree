@@ -440,7 +440,7 @@ Key mechanics — read these carefully, they are easy to get wrong:
   Context Tree from the connected code — propose an initial structure for me to
   review, then fill it in. Open the Structure PR/MR first. After that milestone,
   preserve any existing Reviewer; if none is selected, guide me to use this same
-  Agent as the default and enable Automatic Review in Settings → Setup. Draft
+  Agent as the default and enable Automatic Review in Settings → Getting Started. Draft
   the initial content, but do not open its PR/MR until a selected Reviewer is
   enabled so that PR/MR can exercise Automatic Review." This explicit
   Reviewer-handoff sentence is part of the brief only for the admin tree-build
@@ -469,7 +469,7 @@ handoff. Do not mention the App before the PR exists or merely because the
 repository is hosted on GitHub.
 
 This section's App-install guidance is GitHub-only. For a GitLab MR, do not call
-`first-tree github follow`, send the user to **Settings → Setup** for GitHub App
+`first-tree github follow`, send the user to **Settings → Getting Started** for GitHub App
 installation, or imply
 that the First Tree GitHub App is involved. Instead, use the
 `first-tree gitlab follow <url>` result and preserve its returned pending or
@@ -624,7 +624,7 @@ milestone makes the capability relevant, then
 guide that one step to completion — do not raise setup as an opening menu, and do
 not give brittle click-by-click paths. When you do hand off, give the most
 specific stable target available (product deep link when authoritative;
-otherwise **Settings → Setup**). Do not guess slugs or URLs, and do not expose
+otherwise **Settings → Getting Started**). Do not guess slugs or URLs, and do not expose
 tokens or secrets. If the human is not an admin, do not send them into an
 admin-only surface; involve the responsible admin.
 

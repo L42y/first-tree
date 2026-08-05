@@ -24,6 +24,7 @@ import {
   providerModelsListCommandSchema,
   RUNTIME_AUTH_START_TYPE,
   type RuntimeAuthMethod,
+  type RuntimeAuthProvider,
   type RuntimeProvider,
   type RuntimeState,
   runtimeAuthStartCommandSchema,
@@ -205,7 +206,14 @@ export type SessionReconcileResult = {
  * re-PATCHing capabilities. See `runtimeAuthStartCommandSchema` in shared.
  */
 export type RuntimeAuthCommand = {
-  provider: RuntimeProvider;
+  /**
+   * Narrower than `RuntimeProvider`: only the server-accepted in-product auth
+   * targets can start a login. The wire shape is unchanged - this is the same
+   * set `runtimeAuthStartCommandSchema` already parses, now visible in the
+   * type so the daemon dispatches by a key that cannot be a host-login-only
+   * provider.
+   */
+  provider: RuntimeAuthProvider;
   method?: RuntimeAuthMethod;
   ref: string;
 };
@@ -237,10 +245,11 @@ type ClientConnectionEvents = {
   "agent:unbound": [agentId: string, reason?: string];
   /**
    * Server pushed a fully-assembled inbox entry over the WS data plane.
-   * Listeners must call `connection.sendInboxAck(frame.entryId)` once the
-   * entry has been durably handed to the session manager.
+   * First arg is `frame.inboxId` (not agentId). ACK is deferred until the
+   * handler turn closes inside SessionManager — do not ACK from this listener
+   * merely because the frame reached the session manager / early buffer.
    */
-  "inbox:deliver": [agentId: string, frame: InboxDeliverFrame];
+  "inbox:deliver": [inboxId: string, frame: InboxDeliverFrame];
   "agent:bind:rejected": [reason: AgentBindRejectReason, agentId: string];
   /**
    * Server announced that an agent has been pinned to this client (either

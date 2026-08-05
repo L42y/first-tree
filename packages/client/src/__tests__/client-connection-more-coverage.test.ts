@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { ClientPausedReason, SessionEvent } from "@first-tree/shared";
+import { type ClientPausedReason, runtimeAuthProviderSchema, type SessionEvent } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BoundAgent } from "../client-connection.js";
 
@@ -196,7 +196,7 @@ describe("ClientConnection — additional branch coverage", () => {
     const commands: unknown[] = [];
     const pins: unknown[] = [];
     const runtimeAuthStarts: unknown[] = [];
-    connection.on("inbox:deliver", (agentId, frame) => delivered.push({ agentId, frame }));
+    connection.on("inbox:deliver", (inboxId, frame) => delivered.push({ inboxId, frame }));
     connection.on("session:command", (command) => commands.push(command));
     connection.on("agent:pinned", (message) => pins.push(message));
     connection.on("runtime-auth:start", (command) => runtimeAuthStarts.push(command));
@@ -270,7 +270,7 @@ describe("ClientConnection — additional branch coverage", () => {
       },
     };
     socket.emitMessage(deliveredFrame);
-    expect(delivered).toEqual([{ agentId: "inbox-agent-1", frame: deliveredFrame }]);
+    expect(delivered).toEqual([{ inboxId: "inbox-agent-1", frame: deliveredFrame }]);
 
     socket.emitMessage({
       type: "session:event:accepted",
@@ -734,6 +734,29 @@ describe("ClientConnection — additional branch coverage", () => {
     priv(connection).clearTimers();
   });
 
+  it("emits a typed runtime-auth start for every legal target and for nothing else", async () => {
+    const connection = await makeConnection();
+    const socket = await openRegisteredConnection(connection);
+    await bindAgent(connection, socket);
+
+    const starts: Array<{ provider: string }> = [];
+    connection.on("runtime-auth:start", (command) => starts.push(command));
+
+    // The wire already narrows Connect to these four targets; the daemon now
+    // dispatches on that key, so an out-of-set target must never reach it.
+    // `claude-code-tui` shares Claude's credential and Kimi is a host login.
+    for (const provider of runtimeAuthProviderSchema.options) {
+      socket.emitMessage({ type: "runtime-auth:start", provider, method: "browser", ref: `ref-${provider}` });
+    }
+    for (const provider of ["claude-code-tui", "kimi", "opencode", "pi"]) {
+      socket.emitMessage({ type: "runtime-auth:start", provider, method: "browser", ref: `ref-${provider}` });
+    }
+
+    expect(starts.map((s) => s.provider)).toEqual([...runtimeAuthProviderSchema.options]);
+
+    priv(connection).clearTimers();
+  });
+
   it("advertises no Reset capability at all to a server that never offered v1", async () => {
     const connection = await makeConnection();
     // This harness emits `auth:ok` before `server:welcome` and advertises
@@ -880,6 +903,70 @@ describe("ClientConnection — additional branch coverage", () => {
       .find((message) => message.type === "client:register");
     expect(registerFrame?.wireCapabilities).toEqual({});
     expect(connection.supportsSessionResetV1).toBe(false);
+
+    priv(connection).clearTimers();
+  });
+});
+
+describe("characterization — inbox:deliver identity and deferred ACK", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.doUnmock("ws");
+    vi.resetModules();
+  });
+
+  it("emits frame.inboxId as the first listener arg and does not ACK merely on deliver", async () => {
+    const connection = await makeConnection();
+    const socket = await openRegisteredConnection(connection, { wsInboxAckConfirm: true });
+    await bindAgent(connection, socket);
+
+    const received: Array<{ firstArg: string; inboxId: string; entryId: number }> = [];
+    connection.on("inbox:deliver", (firstArg, frame) => {
+      received.push({ firstArg, inboxId: frame.inboxId, entryId: frame.entryId });
+    });
+
+    const sentBefore = socket.sent.length;
+    const deliveredFrame = {
+      type: "inbox:deliver",
+      entryId: 777,
+      inboxId: "inbox-agent-1",
+      chatId: "chat-char",
+      message: {
+        id: "message-char",
+        chatId: "chat-char",
+        senderId: "agent-sender",
+        format: "text",
+        content: "hello",
+        metadata: {},
+        inReplyTo: null,
+        source: null,
+        createdAt: "2026-07-10T00:00:00.000Z",
+        configVersion: 1,
+        recipientMode: "full",
+        precedingMessages: [],
+      },
+    };
+    socket.emitMessage(deliveredFrame);
+    await flushMicrotasks();
+
+    expect(received).toEqual([{ firstArg: "inbox-agent-1", inboxId: "inbox-agent-1", entryId: 777 }]);
+    // Receiving a deliver frame must not emit inbox:ack — ACK is owned by the
+    // handler turn completion path (SessionManager → ackEntry → sendInboxAck).
+    const newFrames = socket.sent.slice(sentBefore).map((raw) => JSON.parse(raw) as { type?: string });
+    expect(newFrames.every((frame) => frame.type !== "inbox:ack")).toBe(true);
+
+    // Explicit ACK path remains available and is the only ClientConnection ACK surface.
+    const ackPromise = connection.sendInboxAck(777, "agent-1");
+    const ackFrame = parseSent(socket, socket.sent.length - 1);
+    expect(ackFrame.type).toBe("inbox:ack");
+    expect(ackFrame.entryId).toBe(777);
+    socket.emitMessage({
+      type: "inbox:ack:accepted",
+      entryId: 777,
+      ref: ackFrame.ref,
+      disposition: "acked",
+    });
+    await expect(ackPromise).resolves.toBeUndefined();
 
     priv(connection).clearTimers();
   });

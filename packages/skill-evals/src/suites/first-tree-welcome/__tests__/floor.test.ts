@@ -170,7 +170,7 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).toMatch(/A follow failure does not\s+invalidate the MR/u);
     expect(skillMarkdown).toMatch(/report\s+only the First Tree chat attention gap/u);
     expect(skillMarkdown).toContain(
-      "do not call\n`first-tree github follow`, send the user to **Settings → Setup** for GitHub App",
+      "do not call\n`first-tree github follow`, send the user to **Settings → Getting Started** for GitHub App",
     );
     expect(skillMarkdown).toContain("Never substitute `first-tree github follow`");
     expect(skillMarkdown).not.toContain("A GitLab MR has no documented equivalent here");

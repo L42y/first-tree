@@ -266,7 +266,18 @@ describe("extra preview pages", () => {
     expect(admin.container.querySelector('[data-settings-context-tree-preview="admin"]')).not.toBeNull();
     expect(text(admin.container)).toContain("Binding");
     expect(text(admin.container)).toContain("Automatic review");
-    expect(text(admin.container)).toContain("Coding-agent access");
+    expect(text(admin.container)).toContain("Coding agent setup");
+    const promptActions = admin.container.querySelector<HTMLElement>("[data-byo-prompt-actions]");
+    const viewPrompt = [...(promptActions?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find(
+      (button) => button.textContent === "View setup prompt",
+    );
+    expect(promptActions?.querySelectorAll("button")).toHaveLength(1);
+    await act(async () => viewPrompt?.click());
+    await flush();
+    expect(document.body.querySelector<HTMLTextAreaElement>("[data-byo-setup-prompt-preview]")?.value).toContain(
+      "Connect this coding agent to Gandy's team Context Tree.",
+    );
+    expect(text(document.body)).toContain("Copy prompt");
     expect(admin.container.querySelector('[data-setup-owner-controls="context-tree"]')).not.toBeNull();
     expect(admin.container.querySelector('[role="switch"]')).not.toBeNull();
     expect(globalThis.fetch).not.toHaveBeenCalled();
