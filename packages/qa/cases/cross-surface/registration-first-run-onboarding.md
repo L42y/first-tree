@@ -84,7 +84,8 @@ first user, who becomes an admin and creates the team.
    manual **Join with invite link** action is offered there. Activate the new
    action and verify it lands on
    `/settings/context#coding-agent-access`, where the Context Tree settings page
-   owns the coding-agent access state. This menu check does not replace the
+   opens the **Coding agent setup** section and owns its setup state. This menu
+   check does not replace the
    separate `/invite/:token` join-path contract.
 
 ## Evidence
