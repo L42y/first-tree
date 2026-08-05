@@ -80,6 +80,39 @@ describe("Claude adapter reload observation", () => {
     expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).not.toThrow();
   });
 
+  it("ignores an expired old-target pending reload while a compatible loaded adapter remains usable", () => {
+    const release = installCurrentAdapter();
+    const challenge = "8".repeat(64);
+    registerPendingContextAdapterReload(challenge, release.manifest);
+    const path = join(home, "state", "context", "providers", "claude-code", "reload-pending", `${challenge}.json`);
+    const pending = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    writeFileSync(
+      path,
+      `${JSON.stringify({ ...pending, adapterVersion: "0.0.0", expiresAt: "2000-01-01T00:00:00.000Z" })}\n`,
+    );
+    const install = readContextIntegrationInstallManifest("claude-code");
+    if (!install) throw new Error("missing test install manifest");
+    writeContextIntegrationInstallManifest({ ...install, adapterVersion: "0.0.0" });
+
+    expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).not.toThrow();
+    expect(readFileSync(path, "utf8")).toContain("2000-01-01T00:00:00.000Z");
+    expect(
+      inspectContextAdapterLoadedObservationObligation({
+        provider: "claude-code",
+        adapterDigest: release.manifest.providers["claude-code"].adapterDigest,
+        adoptionGeneration: ADOPTION_GENERATION,
+      }),
+    ).toBeNull();
+    expect(readFileSync(path, "utf8")).toContain("2000-01-01T00:00:00.000Z");
+
+    registerPendingContextAdapterReload(challenge, release.manifest);
+    const unexpired = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    writeFileSync(path, `${JSON.stringify({ ...unexpired, adapterVersion: "0.0.0" })}\n`);
+    expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).toThrow(
+      "another account or adapter target",
+    );
+  });
+
   it("consumes a standalone repair marker once and rejects it after an account switch", () => {
     const release = installCurrentAdapter();
     markContextAdapterReloadRequired(release.manifest);

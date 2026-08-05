@@ -427,6 +427,7 @@ function hasAnyPendingContextAdapterReloadForTarget(
     }
     const pending = readPending(entry.slice(0, -5));
     if (!pending) return false;
+    if (Date.parse(pending.expiresAt) <= Date.now()) return false;
     if (
       pending.accountClientId !== accountClientId ||
       pending.adapterVersion !== target.adapterVersion ||
@@ -437,7 +438,7 @@ function hasAnyPendingContextAdapterReloadForTarget(
         "The pending Claude reload state belongs to another account or adapter target.",
       );
     }
-    return Date.parse(pending.expiresAt) > Date.now();
+    return true;
   });
 }
 
