@@ -11,15 +11,13 @@ type ByoSetupPromptActionsProps = {
   resetKey: string;
 };
 
-type PendingAction = "copy" | "preview" | null;
-
 export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey }: ByoSetupPromptActionsProps) {
   const copyFeedback = useCopyFeedback();
-  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const [preparing, setPreparing] = useState(false);
   const [prepareFailed, setPrepareFailed] = useState(false);
   const [prompt, setPrompt] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [copyingPreview, setCopyingPreview] = useState(false);
+  const [copyingPrompt, setCopyingPrompt] = useState(false);
   const prepareAttempt = useRef(0);
   const copyAttempt = useRef(0);
   const activeResetKey = useRef(resetKey);
@@ -31,11 +29,11 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
     const renderedResetKey = resetKey;
     prepareAttempt.current += 1;
     copyAttempt.current += 1;
-    setPendingAction(null);
+    setPreparing(false);
     setPrepareFailed(false);
     setPrompt(null);
     setOpen(false);
-    setCopyingPreview(false);
+    setCopyingPrompt(false);
     copyFeedback.reset();
     return () => {
       if (activeResetKey.current === renderedResetKey) {
@@ -49,40 +47,26 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
     copyAttempt.current += 1;
     setOpen(false);
     setPrompt(null);
-    setCopyingPreview(false);
+    setCopyingPrompt(false);
     copyFeedback.reset();
   };
 
-  const prepare = (action: Exclude<PendingAction, null>): void => {
+  const prepare = (): void => {
     const attempt = ++prepareAttempt.current;
     const renderedResetKey = resetKey;
-    setPendingAction(action);
+    setPreparing(true);
     setPrepareFailed(false);
     copyFeedback.reset();
     void (async () => {
       try {
         const nextPrompt = await preparePromptRef.current();
         if (prepareAttempt.current !== attempt || activeResetKey.current !== renderedResetKey) return;
-        if (action === "preview") {
-          setPendingAction(null);
-          setPrompt(nextPrompt);
-          setOpen(true);
-          return;
-        }
-
-        const copy = ++copyAttempt.current;
-        await copyFeedback.copy(nextPrompt);
-        if (
-          prepareAttempt.current !== attempt ||
-          copyAttempt.current !== copy ||
-          activeResetKey.current !== renderedResetKey
-        ) {
-          return;
-        }
-        setPendingAction(null);
+        setPreparing(false);
+        setPrompt(nextPrompt);
+        setOpen(true);
       } catch {
         if (prepareAttempt.current !== attempt || activeResetKey.current !== renderedResetKey) return;
-        setPendingAction(null);
+        setPreparing(false);
         setPrepareFailed(true);
       }
     })();
@@ -93,11 +77,11 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
     const copy = ++copyAttempt.current;
     const renderedPrompt = prompt;
     const renderedResetKey = resetKey;
-    setCopyingPreview(true);
+    setCopyingPrompt(true);
     void (async () => {
       const result = await copyFeedback.copy(renderedPrompt);
       if (copyAttempt.current !== copy || activeResetKey.current !== renderedResetKey) return;
-      setCopyingPreview(false);
+      setCopyingPrompt(false);
       if (result === "copied") {
         setOpen(false);
         setPrompt(null);
@@ -115,23 +99,13 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
         className={`flex flex-wrap items-center ${align === "end" ? "justify-end" : "justify-start"}`}
         style={{ gap: "var(--sp-1)" }}
       >
-        <Button type="button" size="sm" disabled={pendingAction !== null} onClick={() => prepare("copy")}>
+        <Button type="button" size="sm" disabled={preparing} onClick={prepare}>
           {copyFeedback.status === "copied" ? (
             <Check className="h-3.5 w-3.5" aria-hidden />
           ) : (
-            <Clipboard className="h-3.5 w-3.5" aria-hidden />
+            <Eye className="h-3.5 w-3.5" aria-hidden />
           )}
-          {pendingAction === "copy" ? "Preparing…" : "Copy setup prompt"}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={pendingAction !== null}
-          onClick={() => prepare("preview")}
-        >
-          <Eye className="h-3.5 w-3.5" aria-hidden />
-          {pendingAction === "preview" ? "Preparing…" : "Preview prompt"}
+          {preparing ? "Preparing…" : "View setup prompt"}
         </Button>
         <span aria-live="polite" className="sr-only">
           {copyFeedback.status === "copied" ? "Setup prompt copied." : ""}
@@ -156,9 +130,9 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
       >
         <DialogContent data-clarity-mask="true" className="max-h-[calc(100vh-var(--sp-8))] max-w-3xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Review setup prompt</DialogTitle>
+            <DialogTitle>Setup prompt</DialogTitle>
             <DialogDescription style={{ color: "var(--fg-2)" }}>
-              Check the exact instructions before copying. Nothing runs until you paste them into Claude Code or Codex.
+              Review the complete prompt, then copy and paste it into Claude Code or Codex.
             </DialogDescription>
           </DialogHeader>
 
@@ -188,9 +162,9 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
             <Button type="button" variant="ghost" onClick={closePrompt}>
               Cancel
             </Button>
-            <Button type="button" disabled={copyingPreview} onClick={copyPrompt}>
+            <Button type="button" disabled={copyingPrompt} onClick={copyPrompt}>
               <Clipboard className="h-4 w-4" aria-hidden />
-              {copyingPreview ? "Copying…" : "Copy prompt"}
+              {copyingPrompt ? "Copying…" : "Copy prompt"}
             </Button>
           </DialogFooter>
         </DialogContent>

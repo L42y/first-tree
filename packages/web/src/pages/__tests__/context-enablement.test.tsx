@@ -85,12 +85,13 @@ describe("personal Context access", () => {
   it("offers an optional onboarding preview without gating on this browser's Computer", async () => {
     await render(true);
     expect(host.textContent).toContain("Use Team Context in your coding agent");
-    expect(host.textContent).toContain("Copy setup prompt");
-    expect(host.textContent).toContain("Preview prompt");
+    expect(host.textContent).toContain("View setup prompt");
+    expect(host.textContent).not.toContain("Copy setup prompt");
+    expect(host.textContent).not.toContain("Preview prompt");
     expect(host.textContent).not.toContain("context enable --provider");
     expect(apiMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
 
-    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
 
     expect(activityMocks.generateConnectToken).toHaveBeenCalledTimes(1);
     expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledWith("org-1", "claude-code", "onboarding");
@@ -101,7 +102,9 @@ describe("personal Context access", () => {
     expect(preview?.value).toContain("context enable --provider 'claude-code' --team 'org-1'");
     expect(preview?.value).toContain("context enable --provider 'codex' --team 'org-1'");
     expect(preview?.closest('[data-clarity-mask="true"]')).not.toBeNull();
-    expect(document.body.textContent).toContain("Nothing runs until you paste them into Claude Code or Codex.");
+    expect(document.body.textContent).toContain(
+      "Review the complete prompt, then copy and paste it into Claude Code or Codex.",
+    );
     expect(document.body.textContent).toContain("Contains a temporary sign-in code. Don't share it.");
 
     await clickAndFlush(buttonByText(document.body, "Copy prompt"));
@@ -121,7 +124,7 @@ describe("personal Context access", () => {
     expect(apiMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
   });
 
-  it("copies one provider-neutral onboarding prompt without a provider picker", async () => {
+  it("copies one provider-neutral onboarding prompt from the dialog without a provider picker", async () => {
     apiMocks.getContextEnablementHandoff.mockImplementation(
       async (_organizationId: string, provider: "claude-code" | "codex") => ({
         organizationId: "org-1",
@@ -134,7 +137,9 @@ describe("personal Context access", () => {
     );
     await render(true);
 
-    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    await clickAndFlush(buttonByText(document.body, "Copy prompt"));
 
     expect(apiMocks.getContextEnablementHandoff).toHaveBeenCalledTimes(2);
     const copiedPrompt = vi.mocked(navigator.clipboard.writeText).mock.calls[0]?.[0];
@@ -164,8 +169,8 @@ describe("personal Context access", () => {
     );
     await render(true);
 
-    const copy = buttonByText(host, "Copy setup prompt");
-    await act(async () => copy?.click());
+    const viewPrompt = buttonByText(host, "View setup prompt");
+    await act(async () => viewPrompt?.click());
     await render(false);
     await act(async () => {
       resolveHandoff?.({
@@ -187,16 +192,17 @@ describe("personal Context access", () => {
     vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("clipboard denied"));
     await render(true);
 
-    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
+    await clickAndFlush(buttonByText(document.body, "Copy prompt"));
 
     expect(document.body.textContent).toContain("Could not copy the setup prompt.");
-    expect(promptPreview()).toBeNull();
+    expect(promptPreview()).not.toBeNull();
   });
 
   it("lets the member cancel without copying or retaining the temporary prompt", async () => {
     await render(true);
 
-    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
     expect(promptPreview()).not.toBeNull();
 
     await clickAndFlush(buttonByText(document.body, "Cancel"));
@@ -219,7 +225,7 @@ describe("personal Context access", () => {
     );
     await render(true);
 
-    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
     for (let attempt = 0; attempt < 5 && !host.textContent?.includes("Could not prepare"); attempt += 1) {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -255,12 +261,12 @@ describe("personal Context access", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(host.textContent).toContain("Use with Claude Code or Codex");
+    expect(host.textContent).toContain("Setup prompt");
     expect(host.textContent).toContain(
-      "Open your project in Claude Code or Codex, then copy and paste the setup prompt.",
+      "Open your project in Claude Code or Codex, then paste this prompt into the conversation.",
     );
     expect(host.textContent).not.toContain("context enable --provider");
-    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(promptPreview()?.value).toContain("If you are Claude Code:");
     expect(promptPreview()?.value).toContain("If you are Codex:");
@@ -391,10 +397,12 @@ describe("personal Context access", () => {
       );
       await Promise.resolve();
     });
-    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
 
     expect(host.textContent).toContain("Could not prepare the setup prompt.");
-    await clickAndFlush(buttonByText(host, "Copy setup prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
+    expect(promptPreview()?.value).toBe("ready-prompt");
+    await clickAndFlush(buttonByText(document.body, "Copy prompt"));
 
     expect(promptPreview()).toBeNull();
     expect(host.textContent).toContain("Setup prompt copied.");
@@ -421,8 +429,13 @@ describe("personal Context access", () => {
       const actions = host.querySelector<HTMLElement>("[data-byo-prompt-actions]");
       const actionChildCount = actions?.childElementCount;
       await act(async () => {
-        buttonByText(host, "Copy setup prompt")?.click();
+        buttonByText(host, "View setup prompt")?.click();
         await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        buttonByText(document.body, "Copy prompt")?.click();
         await Promise.resolve();
         await Promise.resolve();
       });
@@ -438,7 +451,7 @@ describe("personal Context access", () => {
       });
 
       expect(host.querySelector("svg.lucide-check")).toBeNull();
-      expect(host.querySelector("svg.lucide-clipboard")).not.toBeNull();
+      expect(host.querySelector("svg.lucide-eye")).not.toBeNull();
       expect(host.textContent).not.toContain("Setup prompt copied.");
     } finally {
       vi.useRealTimers();
@@ -464,10 +477,10 @@ describe("personal Context access", () => {
       );
       await Promise.resolve();
     });
-    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
     await clickAndFlush(buttonByText(document.body, "Copy prompt"));
     await clickAndFlush(buttonByText(document.body, "Cancel"));
-    await clickAndFlush(buttonByText(host, "Preview prompt"));
+    await clickAndFlush(buttonByText(host, "View setup prompt"));
 
     expect(promptPreview()?.value).toBe("second-prompt");
     await act(async () => {
@@ -496,7 +509,7 @@ describe("personal Context access", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => buttonByText(host, "Copy setup prompt")?.click());
+    await act(async () => buttonByText(host, "View setup prompt")?.click());
 
     await act(async () => {
       root.render(
@@ -511,7 +524,7 @@ describe("personal Context access", () => {
     });
 
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("Copy setup prompt");
+    expect(host.textContent).toContain("View setup prompt");
     expect(promptPreview()).toBeNull();
   });
 
@@ -532,7 +545,7 @@ describe("personal Context access", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => buttonByText(host, "Copy setup prompt")?.click());
+    await act(async () => buttonByText(host, "View setup prompt")?.click());
     await act(async () => root.render(null));
     await act(async () => {
       resolvePrompt?.("unmounted-prompt");
